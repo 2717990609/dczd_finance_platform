@@ -163,7 +163,10 @@ func storeOrganizationSnapshot(ctx context.Context, db *pgxpool.Pool, raw json.R
 		}
 		_, err = tx.Exec(ctx, `INSERT INTO organization_import_state(captured_at,digest) VALUES ($1,$2)
 		 ON CONFLICT(singleton) DO UPDATE SET captured_at=excluded.captured_at,digest=excluded.digest`, snapshot.CapturedAt, digest[:])
-		return err
+		if err != nil {
+			return err
+		}
+		return enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods`)
 	})
 }
 

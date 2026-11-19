@@ -35,17 +35,24 @@ func classifySourcePayment(source, domain, entity, table string) sourceClassific
 	return sourceClassification{}
 }
 
-func storeSourceClassification(ctx context.Context, tx pgx.Tx, version int64, classification sourceClassification, claims []vipClaim) error {
+func storeSourceClassification(ctx context.Context, tx pgx.Tx, version int64, classification sourceClassification, claims []vipClaim) (bool, error) {
 	tag, err := tx.Exec(ctx, `INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier,sales_claims)
 	 VALUES($1,$2,$3,$4,$5) ON CONFLICT(source_version_id) DO UPDATE
-	  SET sales_claims=coalesce(source_order_classifications.sales_claims,excluded.sales_claims)
-	 WHERE (source_order_classifications.sales_claims IS NULL OR excluded.sales_claims IS NULL
-	  OR source_order_classifications.sales_claims=excluded.sales_claims) AND (source_order_classifications.entity_type,source_order_classifications.business_key,source_order_classifications.classifier)
+	  SET sales_claims=excluded.sales_claims
+	 WHERE source_order_classifications.sales_claims IS NULL AND excluded.sales_claims IS NOT NULL
+	 AND (source_order_classifications.entity_type,source_order_classifications.business_key,source_order_classifications.classifier)
 	 =(excluded.entity_type,excluded.business_key,excluded.classifier)`, version, classification.Entity, classification.Key, classification.Classifier, claims)
-	if err == nil && tag.RowsAffected() == 0 {
-		return conflict
+	if err != nil || tag.RowsAffected() != 0 {
+		return err == nil, err
 	}
-	return err
+	var same bool
+	err = tx.QueryRow(ctx, `SELECT (entity_type,business_key,classifier)=($2,$3,$4)
+	 AND ($5::jsonb IS NULL OR sales_claims=$5) FROM source_order_classifications WHERE source_version_id=$1`,
+		version, classification.Entity, classification.Key, classification.Classifier, claims).Scan(&same)
+	if err == nil && !same {
+		err = conflict
+	}
+	return false, err
 }
 
 func normalizeCatalogRoutes(product *legacyCatalogProduct, ids map[string]bool) error {

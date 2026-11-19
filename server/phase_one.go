@@ -128,6 +128,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/orders/sync", Handler: submit(s.requestDCAISync)},
 		{Method: http.MethodGet, Path: "/api/v1/sources", Handler: s.sourceStatuses},
 		{Method: http.MethodGet, Path: "/api/v1/drafts", Handler: s.getDraft},
+		{Method: http.MethodGet, Path: "/api/v1/drafts/status", Handler: s.draftRefreshStatus},
 		{Method: http.MethodGet, Path: "/api/v1/draft-personnel", Handler: s.draftPersonnel},
 		{Method: http.MethodGet, Path: "/api/v1/draft-report", Handler: s.draftReport},
 		{Method: http.MethodGet, Path: "/api/v1/period-rule-matches", Handler: s.catalogMatches},
@@ -171,6 +172,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = 400, err.Error()
 	case errors.Is(err, errLegacyRuleNotAdapted), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
+		errors.Is(err, errDraftChanged),
 		errors.Is(err, errSettlementPools), errors.Is(err, errSettlementPoolHistory),
 		errors.Is(err, errSettlementSourceCoverage), errors.Is(err, errSettlementSourceRefund),
 		errors.Is(err, errSyncOrigin), errors.Is(err, errDCAIUnverified), errors.Is(err, errDCAIFileImport),
@@ -304,7 +306,14 @@ func (s workspace) createMapping(ctx context.Context, p createMappingInput) (any
 	if p.ProductID < 1 || !validSource(p.Source) || !textOK(p.Domain, 80) || !textOK(p.SourceKey, 128) {
 		return nil, invalid
 	}
-	return s.insert(ctx, "INSERT INTO source_mappings(product_id,source,domain,source_key) VALUES($1,$2,$3,$4) RETURNING id", p.ProductID, p.Source, strings.TrimSpace(p.Domain), strings.TrimSpace(p.SourceKey))
+	var id int64
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, "INSERT INTO source_mappings(product_id,source,domain,source_key) VALUES($1,$2,$3,$4) RETURNING id", p.ProductID, p.Source, strings.TrimSpace(p.Domain), strings.TrimSpace(p.SourceKey)).Scan(&id); err != nil {
+			return err
+		}
+		return enqueueDraftConfiguration(ctx, tx, draftRefreshProduct, p.ProductID)
+	})
+	return map[string]int64{"id": id}, err
 }
 func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, error) {
 	if p.ProductID < 1 || !textOK(p.Name, 80) {
@@ -356,9 +365,15 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 				return conflict
 			}
 		}
-		return tx.QueryRow(ctx, `INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month,source_period_key)
+		if err := tx.QueryRow(ctx, `INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month,source_period_key)
 			VALUES($1,$2,$3,$4::text::date,$5::text::date,nullif($6::text,'')::date,nullif($7,'')) RETURNING id`,
-			p.ProductID, strings.TrimSpace(p.Name), ordinal, from, to, month, p.SourcePeriodKey).Scan(&id)
+			p.ProductID, strings.TrimSpace(p.Name), ordinal, from, to, month, p.SourcePeriodKey).Scan(&id); err != nil {
+			return err
+		}
+		if p.SourcePeriodKey != "" {
+			return enqueueDraftConfiguration(ctx, tx, draftRefreshRoster, p.SourcePeriodKey, nil)
+		}
+		return enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods WHERE id=$1`, id)
 	})
 	return map[string]int64{"id": id}, err
 }
@@ -430,9 +445,12 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 				return errPracticeCountPerson
 			}
 		}
-		return tx.QueryRow(ctx, `INSERT INTO rule_versions(product_id,version,label,period_id,from_ordinal,effective_from,components)
+		if err := tx.QueryRow(ctx, `INSERT INTO rule_versions(product_id,version,label,period_id,from_ordinal,effective_from,components)
    SELECT $1,coalesce(max(version),0)+1,$2,$3,$4,$5,$6 FROM rule_versions WHERE product_id=$1 RETURNING version`,
-			p.ProductID, strings.TrimSpace(p.Label), p.PeriodID, p.FromOrdinal, p.EffectiveFrom, raw).Scan(&version)
+			p.ProductID, strings.TrimSpace(p.Label), p.PeriodID, p.FromOrdinal, p.EffectiveFrom, raw).Scan(&version); err != nil {
+			return err
+		}
+		return enqueueDraftConfiguration(ctx, tx, draftRefreshRule, p.ProductID, p.PeriodID, p.FromOrdinal, p.EffectiveFrom)
 	})
 	return map[string]int{"version": version}, err
 }
@@ -472,7 +490,10 @@ func (s workspace) assignIdentity(ctx context.Context, p assignIdentityInput) (a
 				return e
 			}
 		}
-		return tx.QueryRow(ctx, `INSERT INTO identity_mappings(person_id,source,external_id,valid_from) VALUES($1,$2,$3,$4) RETURNING id`, p.PersonID, p.Source, external, start).Scan(&id)
+		if err := tx.QueryRow(ctx, `INSERT INTO identity_mappings(person_id,source,external_id,valid_from) VALUES($1,$2,$3,$4) RETURNING id`, p.PersonID, p.Source, external, start).Scan(&id); err != nil {
+			return err
+		}
+		return enqueueDraftConfiguration(ctx, tx, draftRefreshIdentity, p.Source, start)
 	})
 	return map[string]int64{"id": id}, err
 }
@@ -501,6 +522,8 @@ func startHTTP(ctx context.Context, cfg config, db *pgxpool.Pool) error {
 	api := workspace{db: db, sources: readSources()}
 	stopSync := api.startDCAISyncWorkers(ctx, cfg.dcaiSyncInterval)
 	defer stopSync()
+	stopDraftRefresh := api.startDraftRefreshWorker(ctx, cfg.draftInterval)
+	defer stopDraftRefresh()
 	server.AddRoutes(append([]rest.Route{{Method: http.MethodGet, Path: "/healthz", Handler: health.ServeHTTP}, {Method: http.MethodGet, Path: "/readyz", Handler: health.ServeHTTP}}, api.routes()...))
 	server.Start()
 	return nil

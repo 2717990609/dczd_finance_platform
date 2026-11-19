@@ -387,13 +387,14 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 			}
 		}
 	}
-	var inserted int64
+	var insertedIDs, metadataIDs []int64
 	for _, f := range facts {
 		raw, e := json.Marshal(f)
 		if e != nil {
 			return 0, e
 		}
 		var sourceVersion int64
+		created := false
 		e = tx.QueryRow(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
 		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING RETURNING id`,
 			f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, f.UpdatedAt, raw, f.OccurredAt).Scan(&sourceVersion)
@@ -411,20 +412,32 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 		} else if e != nil {
 			return 0, e
 		} else {
-			inserted++
+			insertedIDs = append(insertedIDs, sourceVersion)
+			created = true
 		}
+		metadataChanged := false
 		if f.Classification.Key != "" {
-			if e := storeSourceClassification(ctx, tx, sourceVersion, f.Classification, f.VIPClaims); e != nil {
+			changed, e := storeSourceClassification(ctx, tx, sourceVersion, f.Classification, f.VIPClaims)
+			if e != nil {
 				return 0, e
 			}
+			metadataChanged = changed
 		}
 		if f.SalesCompanyID != "" {
-			if e := storeSourcePaymentCompany(ctx, tx, sourceVersion, f.SalesCompanyID); e != nil {
+			changed, e := storeSourcePaymentCompany(ctx, tx, sourceVersion, f.SalesCompanyID)
+			if e != nil {
 				return 0, e
 			}
+			metadataChanged = metadataChanged || changed
+		}
+		if metadataChanged && !created {
+			metadataIDs = append(metadataIDs, sourceVersion)
 		}
 	}
-	return inserted, nil
+	if err := enqueueDraftFactChanges(ctx, tx, insertedIDs, metadataIDs); err != nil {
+		return 0, err
+	}
+	return int64(len(insertedIDs)), nil
 }
 
 func touchSourceWrites(ctx context.Context, tx pgx.Tx, sources []string) error {
@@ -434,20 +447,20 @@ func touchSourceWrites(ctx context.Context, tx pgx.Tx, sources []string) error {
 	return err
 }
 
-func storeSourcePaymentCompany(ctx context.Context, tx pgx.Tx, version int64, company string) error {
+func storeSourcePaymentCompany(ctx context.Context, tx pgx.Tx, version int64, company string) (bool, error) {
 	tag, err := tx.Exec(ctx, `INSERT INTO source_payment_companies(source_version_id,company_id)
 	 VALUES($1,$2) ON CONFLICT(source_version_id) DO NOTHING`, version, company)
 	if err != nil || tag.RowsAffected() != 0 {
-		return err
+		return err == nil, err
 	}
 	var same bool
 	if err = tx.QueryRow(ctx, "SELECT company_id=$2 FROM source_payment_companies WHERE source_version_id=$1", version, company).Scan(&same); err != nil {
-		return err
+		return false, err
 	}
 	if !same {
-		return conflict
+		return false, conflict
 	}
-	return nil
+	return false, nil
 }
 
 const ordersSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (

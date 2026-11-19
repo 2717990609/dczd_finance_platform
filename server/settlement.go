@@ -98,7 +98,7 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 	if !scope.catalog && req.ReviewToken != "" {
 		return settlement{}, errSettlementStale
 	}
-	if err := lockSettlementSources(ctx, tx, req.PeriodID); err != nil {
+	if err := lockDraftInputs(ctx, tx, req.PeriodID); err != nil {
 		return settlement{}, err
 	}
 	if scope.catalog {
@@ -112,6 +112,11 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 	}
 	if err := verifySettlementDraft(ctx, tx, req.PeriodID, scope); err != nil {
 		return settlement{}, err
+	}
+	if pending, err := draftRefreshPending(ctx, tx, req.PeriodID); err != nil {
+		return settlement{}, err
+	} else if pending {
+		return settlement{}, errDraftChanged
 	}
 	if scope.catalog {
 		review, err := reviewPoolSettlement(ctx, tx, req.PeriodID, scope)
@@ -131,12 +136,15 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 	result := settlement{PeriodID: req.PeriodID, DraftVersion: req.ExpectedVersion, ConfirmedBy: actor, reviewToken: req.ReviewToken}
 	err = tx.QueryRow(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by,review_token) VALUES($1,$2,$3,$4)
 		RETURNING id,confirmed_at`, result.PeriodID, result.DraftVersion, result.ConfirmedBy, result.reviewToken).Scan(&result.ID, &result.ConfirmedAt)
-	return result, err
+	if err != nil {
+		return settlement{}, err
+	}
+	return result, enqueueDraftPeriods(ctx, tx, draftRefreshAfterClose, req.PeriodID)
 }
 
 func verifySettlementDraft(ctx context.Context, tx pgx.Tx, periodID int64, scope settlementReview) error {
 	summary := draftSummary{PeriodID: periodID}
-	window, rules, err := readDraftScope(ctx, tx, &summary, false)
+	window, rules, err := readDraftScope(ctx, tx, &summary)
 	if err != nil {
 		return err
 	}

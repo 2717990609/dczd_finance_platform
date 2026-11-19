@@ -44,7 +44,7 @@ func readSettlementScope(ctx context.Context, tx pgx.Tx, periodID int64, lock bo
 	 FROM periods p JOIN products pro ON pro.id=p.product_id LEFT JOIN calculation_drafts d ON d.period_id=p.id
 	 WHERE p.id=$1`
 	if lock {
-		query += ` FOR UPDATE OF p`
+		query += ` FOR NO KEY UPDATE OF p`
 	}
 	review := settlementReview{Pools: []settlementPoolGap{}}
 	err := tx.QueryRow(ctx, query, periodID).Scan(&review.Enabled, &review.Ended, &review.mode,
@@ -86,6 +86,10 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 			review.Token = ""
 		}
 		if err != nil || review.Token == "" {
+			return err
+		}
+		if pending, err := draftRefreshPending(ctx, tx, periodID); err != nil || pending {
+			review.DraftStale, review.Token = pending, ""
 			return err
 		}
 		err = verifySettlementDraft(ctx, tx, periodID, review)

@@ -208,14 +208,14 @@ func TestSettlementSourceLockOrdersSyncCommitsWithTheFinanceSnapshot(t *testing.
 		t.Fatal(err)
 	}
 	var pgError *pgconn.PgError
-	if err := lockSettlementSources(ctx, tx, periodID); !errors.As(err, &pgError) || pgError.Code != "40001" {
+	if err := lockDraftInputs(ctx, tx, periodID); !errors.As(err, &pgError) || pgError.Code != "40001" {
 		t.Fatalf("an older snapshot must retry after a concurrent source commit: %v", err)
 	}
 	if err := tx.Rollback(ctx); err != nil {
 		t.Fatal(err)
 	}
 	if err := pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
-		if err := lockSettlementSources(ctx, tx, periodID); err != nil {
+		if err := lockDraftInputs(ctx, tx, periodID); err != nil {
 			return err
 		}
 		blocked, cancel := context.WithTimeout(ctx, 150*time.Millisecond)

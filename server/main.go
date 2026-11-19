@@ -21,6 +21,7 @@ type config struct {
 	addr             string
 	database         *pgxpool.Config
 	dcaiSyncInterval time.Duration
+	draftInterval    time.Duration
 }
 
 func readConfig() (config, error) {
@@ -43,14 +44,27 @@ func readConfig() (config, error) {
 	if addr == "" {
 		addr = "127.0.0.1:8096"
 	}
-	interval := 30 * time.Minute
-	if value := strings.TrimSpace(os.Getenv("FINANCE_DCAI_SYNC_INTERVAL")); value != "" {
-		interval, err = time.ParseDuration(value)
-		if err != nil || interval < 0 || interval > 0 && interval < time.Second {
-			return config{}, errors.New("FINANCE_DCAI_SYNC_INTERVAL must be 0 or a duration of at least one second")
-		}
+	interval, err := intervalSetting("FINANCE_DCAI_SYNC_INTERVAL")
+	if err != nil {
+		return config{}, err
 	}
-	return config{addr: addr, database: database, dcaiSyncInterval: interval}, nil
+	draftInterval, err := intervalSetting("FINANCE_DRAFT_REFRESH_INTERVAL")
+	if err != nil {
+		return config{}, err
+	}
+	return config{addr: addr, database: database, dcaiSyncInterval: interval, draftInterval: draftInterval}, nil
+}
+
+func intervalSetting(name string) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(name))
+	if value == "" {
+		return 30 * time.Minute, nil
+	}
+	interval, err := time.ParseDuration(value)
+	if err != nil || interval < 0 || interval > 0 && interval < time.Second {
+		return 0, errors.New(name + " must be 0 or a duration of at least one second")
+	}
+	return interval, nil
 }
 
 func newHandler(ping func(context.Context) error) http.Handler {

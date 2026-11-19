@@ -92,17 +92,26 @@ func TestHistoricalRefundRoutesToAugustThenCurrentAndReusesFrozenRule(t *testing
 		}
 		return result
 	}
-	original := confirm(draftAt(june, 52, -16, 1, 0))
-	if _, err := service.db.Exec(ctx, "DELETE FROM settlements WHERE id=$1", original.ID); err != nil {
-		t.Fatalf("same-period refund incorrectly blocked technical redo: %v", err)
-	}
-	original = confirm(draftAt(june, 52, -16, 1, 0))
 	makeRefund := func(id, version string, amount int64, occurred, updated time.Time) sourceFact {
 		return sourceFact{Source: "DCAI", Kind: "REFUND_SUCCEEDED", OrderID: "order", RecordKey: "refunds:" + id,
 			Version: version, Domain: "VIP", SourceKey: "VIP", RefundID: id, AmountMinor: &amount, OccurredAt: occurred, UpdatedAt: updated,
 			RefundsPayment: []sourcePaymentReference{{OrderID: "order", RecordID: "1"}}}
 	}
 	saveFact(makeRefund("first", "1", 34, refundedAt, refundedAt))
+	draftAt(august, 0, 0, 0, 1)
+	original := confirm(draftAt(june, 52, -16, 1, 0))
+	if _, err := service.db.Exec(ctx, "DELETE FROM settlements WHERE id=$1", original.ID); err != nil {
+		t.Fatalf("same-period refund incorrectly blocked technical redo: %v", err)
+	}
+	original = confirm(draftAt(june, 52, -16, 1, 0))
+	if err := service.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var deduction int64
+	var issues int
+	if err := service.db.QueryRow(ctx, `SELECT refund_minor,issue_count FROM calculation_drafts WHERE period_id=$1`, august).Scan(&deduction, &issues); err != nil || deduction != -11 || issues != 0 {
+		t.Fatalf("closed payment did not refresh the open refund period: deduction=%d issues=%d error=%v", deduction, issues, err)
+	}
 	confirm(draftAt(august, -11, -11, 1, 0))
 	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, Label: "New rate",
 		Components: []component{{Type: "sales", Mode: "rate", SourceRole: "PID_USER", Value: 5000, RefundPolicy: "non_refundable"}},

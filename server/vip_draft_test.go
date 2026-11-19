@@ -402,6 +402,9 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatalf("changed payment must invalidate confirmation: %v", err)
 	}
 	save("one", "restored-after-review", 10000, boundary.Add(-time.Second), boundary.Add(4*time.Minute), "VIP_ORDER")
+	if rerun := recalc(); rerun.Version != finished.Version {
+		t.Fatalf("restored amount should clear pending work without publishing a new draft: %+v", rerun)
+	}
 	plan.Revision, plan.Retained = 3, 183
 	plan.Shares[0].Amount = 599
 	if _, err := s.savePoolAllocation(ctx, plan); err != nil {

@@ -54,7 +54,6 @@ func TestPracticeTierChangesWithPastRosterAndTimeBoundAccount(t *testing.T) {
 	}
 	product := mustID(service.createProduct(ctx, createProductInput{Code: "PRACTICE", Name: "Practice", PeriodMode: "class"}))
 	mustID(service.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "practice"}))
-	mustID(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "First", Ordinal: 1, StartsOn: "2026-08-01", EndsOn: "2026-08-01", SourcePeriodKey: "PRACTICE:1:1:10"}))
 	current := mustID(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "Second", Ordinal: 2, StartsOn: "2026-08-08", EndsOn: "2026-08-08", SourcePeriodKey: "PRACTICE:1:1:11"}))
 	former := mustID(service.createPerson(ctx, createPersonInput{Name: "Former"}))
 	replacement := mustID(service.createPerson(ctx, createPersonInput{Name: "Replacement"}))
@@ -137,6 +136,14 @@ func TestPracticeTierChangesWithPastRosterAndTimeBoundAccount(t *testing.T) {
 	publish(tiers)
 	check(2, 1200, 1) // Only the person with a current-period reset is ready.
 	writeRoster(10, 1, 1, member("11", "31", "32"))
+	mustID(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "First", Ordinal: 1, StartsOn: "2026-08-01", EndsOn: "2026-08-01", SourcePeriodKey: "PRACTICE:1:1:10"}))
+	if err := service.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var version, total int64
+	if err := service.db.QueryRow(ctx, `SELECT version,total_minor FROM calculation_drafts WHERE period_id=$1`, current).Scan(&version, &total); err != nil || version != 3 || total != 2400 {
+		t.Fatalf("backfilled period did not refresh the cumulative tier: version=%d total=%d error=%v", version, total, err)
+	}
 	check(3, 2400, 0)
 	tiers.PersonCountStarts[0].FromOrdinal = 3
 	publish(tiers)

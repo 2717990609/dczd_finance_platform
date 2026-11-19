@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import CatalogRuleMatches from './CatalogRuleMatches.vue'
 import DraftReport from './DraftReport.vue'
 import DraftPoolAllocations from './DraftPoolAllocations.vue'
@@ -13,7 +13,11 @@ const draft = ref()
 const loading = ref(false)
 const calculating = ref(false)
 const error = ref('')
+const refreshStatus = ref()
 let sequence = 0
+let statusSequence = 0
+let statusTimer
+let unmounted = false
 
 const options = computed(() => props.periods.map(period => ({
   value: period.id,
@@ -22,6 +26,7 @@ const options = computed(() => props.periods.map(period => ({
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
 const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable)
 const matchingOnly = computed(() => hasMatching.value && !selectedPeriod.value?.catalogDraftAvailable)
+const newerDraft = computed(() => refreshStatus.value?.version > (draft.value?.version || 0))
 const componentLabel = code => props.componentOptions.find(option=>option.value===code)?.label || code
 const memberLabel = type => props.memberOptions.find(option=>option.value===(type===3 ? 'new' : 'retrain'))?.label
 const reason = {
@@ -122,7 +127,43 @@ async function load(replace = false) {
     if (request === sequence) loading.value = false
   }
 }
-watch(selected, () => { view.value = 'detail'; load(true) })
+async function checkRefresh() {
+  clearTimeout(statusTimer)
+  const request = ++statusSequence
+  const period = selected.value
+  if (!period || matchingOnly.value || draft.value?.settlement || document.visibilityState === 'hidden') return
+  try {
+    const result = await props.api('/drafts/status?periodId=' + period)
+    if (request !== statusSequence || unmounted) return
+    refreshStatus.value = result
+    if (!loading.value && !calculating.value && (result.settled || (newerDraft.value && view.value !== 'pools'))) await load()
+  } catch {
+    // The current readable draft stays on screen if the status query fails.
+  } finally {
+    if (request === statusSequence && !unmounted && !draft.value?.settlement && document.visibilityState !== 'hidden') {
+      statusTimer = setTimeout(checkRefresh, 15000)
+    }
+  }
+}
+
+function visibilityChanged() {
+  if (document.visibilityState === 'hidden') clearTimeout(statusTimer)
+  else checkRefresh()
+}
+onMounted(() => document.addEventListener('visibilitychange', visibilityChanged))
+onBeforeUnmount(() => {
+  unmounted = true
+  clearTimeout(statusTimer)
+  document.removeEventListener('visibilitychange', visibilityChanged)
+})
+watch(selected, async () => {
+  clearTimeout(statusTimer)
+  const request = ++statusSequence
+  refreshStatus.value = undefined
+  view.value = 'detail'
+  await load(true)
+  if (request === statusSequence) checkRefresh()
+})
 watch(options, (values) => {
   if (selected.value && !values.some(option => option.value === selected.value)) selected.value = undefined
 })
@@ -134,7 +175,10 @@ async function calculate() {
   error.value = ''
   try {
     await props.api('/drafts', { method: 'POST', body: JSON.stringify({ periodId }) })
-    if (selected.value === periodId) await load()
+    if (selected.value === periodId) {
+      await load()
+      await checkRefresh()
+    }
   } catch (err) {
     error.value = err.message
   } finally {
@@ -177,9 +221,12 @@ async function loadMore(section, cursorName) {
       <span v-if="draft?.practiceRosterVersion"> · 签到名单 v{{ draft.practiceRosterVersion }} · 到课 {{ draft.attendanceCount }} 人</span>
       <span v-if="draft?.settlement"> · 已结算 · {{ formatTime(draft.settlement.confirmedAt) }}</span>
       <span v-else-if="draft"> · 草稿 v{{ draft.version }} · {{ formatTime(draft.calculatedAt) }}</span>
+      <span v-if="!draft?.settlement && refreshStatus?.pending && !refreshStatus.message"> · 有变更待试算</span>
+      <span v-if="view==='pools' && newerDraft"> · 草稿已更新，请刷新结果后核对分配</span>
     </p>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
+  <a-alert v-if="!draft?.settlement && refreshStatus?.message" class="feedback" type="warning" :message="refreshStatus.message" show-icon/>
   <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount, 'summary-collection':!draft.refundsReady }">
     <article><div><small>正向计提</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
     <article><div><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div></article>

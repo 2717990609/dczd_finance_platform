@@ -27,11 +27,11 @@ func (s workspace) dcaiSourceKey() string {
 	return client.sourceKey()
 }
 
-func lockSettlementSources(ctx context.Context, tx pgx.Tx, periodID int64) error {
+func lockDraftInputs(ctx context.Context, tx pgx.Tx, periodID int64) error {
 	// Writers update these rows before changing facts or checkpoints. When a
 	// writer committed after our snapshot, PostgreSQL forces a serializable retry.
 	_, err := tx.Exec(ctx, `SELECT source FROM source_write_state
-	 WHERE source IN (
+	 WHERE source='CONFIG' OR source IN (
 	  SELECT c.source_system FROM periods p JOIN legacy_catalog_products c USING(product_id) WHERE p.id=$1
 	  UNION SELECT m.source FROM periods p JOIN source_mappings m USING(product_id) WHERE p.id=$1
 	 ) ORDER BY source FOR SHARE`, periodID)

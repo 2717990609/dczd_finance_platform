@@ -70,24 +70,60 @@ func (s workspace) recalculateDraft(ctx context.Context, input calculateDraftInp
 	if input.PeriodID < 1 {
 		return nil, invalid
 	}
-	summary := draftSummary{PeriodID: input.PeriodID}
+	return s.calculateCurrentDraft(ctx, input.PeriodID, 0)
+}
+
+func (s workspace) calculateCurrentDraft(ctx context.Context, periodID, wantedGeneration int64) (draftSummary, error) {
+	summary := draftSummary{PeriodID: periodID}
 	err := pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
-		window, rules, err := readDraftScope(ctx, tx, &summary, true)
-		if err != nil {
+		lock := `SELECT id FROM periods WHERE id=$1 FOR NO KEY UPDATE`
+		if wantedGeneration != 0 {
+			lock += ` NOWAIT`
+		}
+		var locked int64
+		if err := tx.QueryRow(ctx, lock, periodID).Scan(&locked); err != nil {
+			return err
+		}
+		var generation int64
+		err := tx.QueryRow(ctx, `SELECT generation FROM draft_refresh_queue WHERE period_id=$1`, periodID).Scan(&generation)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if wantedGeneration != 0 && generation != wantedGeneration {
+			return nil
+		}
+		clear := func() error {
+			if generation == 0 {
+				return nil
+			}
+			_, err := tx.Exec(ctx, `DELETE FROM draft_refresh_queue WHERE period_id=$1 AND generation=$2`, periodID, generation)
 			return err
 		}
 		_, err = readSettlement(ctx, tx, summary.PeriodID)
 		if err == nil {
+			if wantedGeneration != 0 {
+				return clear()
+			}
 			return errSettlementClosed
 		}
 		if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		window, rules, err := readDraftScope(ctx, tx, &summary)
+		if err != nil {
 			return err
 		}
 		result, digest, err := computeDraft(ctx, tx, summary, window, rules)
 		if err != nil {
 			return err
 		}
-		return storeDraft(ctx, tx, &summary, digest, result)
+		if err := lockDraftInputs(ctx, tx, periodID); err != nil {
+			return err
+		}
+		if err := storeDraft(ctx, tx, &summary, digest, result); err != nil {
+			return err
+		}
+		return clear()
 	})
 	return summary, err
 }
@@ -120,15 +156,11 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 	return result, digest, err
 }
 
-func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary, lockPeriod bool) (periodWindow, []paymentRule, error) {
+func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (periodWindow, []paymentRule, error) {
 	var window periodWindow
 	var mode, sourceKey string
 	var legacy bool
-	query := draftScopeSQL
-	if lockPeriod {
-		query += ` FOR UPDATE OF p`
-	}
-	err := tx.QueryRow(ctx, query, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &legacy, &summary.Catalog)
+	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &legacy, &summary.Catalog)
 	if err != nil {
 		return window, nil, err
 	}

@@ -193,6 +193,9 @@ func storeLegacyCatalog(ctx context.Context, tx pgx.Tx, input legacyCatalogFile)
 				return err
 			}
 		}
+		if err := enqueueDraftConfiguration(ctx, tx, draftRefreshProduct, id); err != nil {
+			return err
+		}
 	}
 	return nil
 }

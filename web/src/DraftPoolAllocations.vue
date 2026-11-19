@@ -20,7 +20,7 @@ const memberOptions = computed(() => (pool.value?.members || []).map(member => (
   label:member.availableMinor>0 ? member.name : member.name+' · 资格待核',
   disabled:member.availableMinor===0,
 })))
-const editable = computed(() => !report.value?.closed && !saving.value && !loading.value)
+const editable = computed(() => !props.draft.settlement && !report.value?.closed && !saving.value && !loading.value)
 const moneyInput = amount => (amount/100).toFixed(2)
 const toMinor = value => {
   if (value==='' || value==null) return 0
@@ -55,7 +55,7 @@ watch(pool, item => {
   rows.value = shares.filter(row=>row.personId>0).map(row=>({personId:row.personId,amount:moneyInput(row.amountMinor)}))
   retained.value = shares.some(row=>row.personId===0) ? moneyInput(shares.find(row=>row.personId===0).amountMinor) : undefined
 })
-watch(() => [props.draft.periodId,props.draft.version], () => { notice.value=''; load() }, {immediate:true})
+watch(() => [props.draft.periodId,props.draft.version,props.draft.settlement?.confirmedAt], () => { notice.value=''; load() }, {immediate:true})
 onBeforeUnmount(() => { sequence++ })
 
 async function save() {

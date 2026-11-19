@@ -105,7 +105,7 @@ func storeVIPSalesContext(ctx context.Context, db *pgxpool.Pool, raw json.RawMes
 				return fmt.Errorf("invalid sales context %s", item.label)
 			}
 		}
-		return nil
+		return enqueueDraftConfiguration(ctx, tx, draftRefreshSalesContext, s.Source)
 	})
 }
 

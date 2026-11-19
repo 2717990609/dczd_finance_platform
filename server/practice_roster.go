@@ -182,5 +182,8 @@ func storePracticeRoster(ctx context.Context, tx pgx.Tx, roster practiceRoster) 
 	_, err = tx.Exec(ctx, `INSERT INTO practice_roster_members(roster_id,enrollment_id) SELECT $3,e.id FROM `+practiceIncomingRows+`
 	 JOIN practice_enrollments e ON e.period_key=$1 AND e.source_enrollment_id=input.source_enrollment_id AND e.hash=decode(input.hash,'hex')`,
 		roster.Key, roster.Enrollments, id)
+	if err == nil {
+		err = enqueueDraftConfiguration(ctx, tx, draftRefreshRoster, roster.Key, roster.SourceVersion)
+	}
 	return err == nil, err
 }
