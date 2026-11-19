@@ -1,0 +1,160 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t *testing.T) {
+	ctx := context.Background()
+	service := workspace{db: integrationDB(t)}
+	at := func(month time.Month, day int) time.Time { return time.Date(2000, month, day, 12, 0, 0, 0, shanghai) }
+	mustID := func(result any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.(map[string]int64)["id"]
+	}
+	day := 1
+	product := mustID(service.createProduct(ctx, createProductInput{Code: "REFERRAL", Name: "Referral Sample", PeriodMode: "calendar", CycleStartDay: &day}))
+	createPeriod := func(month time.Month) int64 {
+		name := at(month, 1).Format("2006-01")
+		return mustID(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: name, SettlementMonth: name}))
+	}
+	original, july, august, september := createPeriod(time.June), createPeriod(time.July), createPeriod(time.August), createPeriod(time.September)
+	mustID(service.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCAI", Domain: "VIP", SourceKey: "VIP"}))
+	person := func(name string) int64 {
+		id := mustID(service.createPerson(ctx, createPersonInput{Name: name}))
+		mustID(service.assignIdentity(ctx, assignIdentityInput{PersonID: id, Source: "DCAI", ExternalID: name, ValidFrom: "1999-01-01T00:00:00+08:00"}))
+		return id
+	}
+	a, b, c := person("Original recipient"), person("Replacement"), person("Second replacement")
+	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, Label: "Original 10%",
+		Components: []component{{Type: "referral", Mode: "rate", Value: 1000, SourceRole: "DIRECT_REFERRER", RefundPolicy: "proportional"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.Exec(ctx, "UPDATE products SET settlement_enabled=true WHERE id=$1", product); err != nil {
+		t.Fatal(err)
+	}
+	paidAt := at(time.June, 5)
+	save := func(version, recipient, display string, amount int64, observed time.Time) {
+		t.Helper()
+		err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCAI", Kind: "ORDER_PAID", OrderID: "original-order", OrderNo: display, PaymentID: "p1", RecordKey: "orders:1",
+				Version: version, Domain: "VIP", SourceKey: "VIP", AmountMinor: &amount, OccurredAt: paidAt, UpdatedAt: observed, ReferrerID: recipient}})
+			if err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, "UPDATE source_order_versions SET received_at=$2 WHERE version=$1", version, observed)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	draftAt := func(period, net int64, rows, issues int) draftSummary {
+		t.Helper()
+		value, err := service.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+		if err != nil {
+			t.Fatal(err)
+		}
+		draft := value.(draftSummary)
+		if draft.Total != net || draft.CorrectionCount != rows || draft.IssueCount != issues {
+			t.Fatalf("unexpected draft: %+v", draft)
+		}
+		return draft
+	}
+	confirm := func(draft draftSummary) settlement {
+		t.Helper()
+		confirm, err := service.confirmSettlement(ctx, confirmSettlementInput{PeriodID: draft.PeriodID, ExpectedVersion: draft.Version}, "integration")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return confirm
+	}
+	save("paid", "Original recipient", "order", 1000, paidAt)
+	originalSettlement := confirm(draftAt(original, 100, 0, 0))
+	var originalLine int64
+	if err := service.db.QueryRow(ctx, "SELECT id FROM calculation_draft_lines WHERE period_id=$1", original).Scan(&originalLine); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, Label: "Current 50%",
+		Components: []component{{Type: "referral", Mode: "rate", Value: 5000, SourceRole: "DIRECT_REFERRER", RefundPolicy: "proportional"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	review := func(personID int64, outcome string) {
+		t.Helper()
+		err := service.reviewCorrectionRecovery(ctx, reviewCorrectionRecoveryInput{OriginalLineID: originalLine, PersonID: personID, Outcome: outcome}, "integration")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	save("v2", "Replacement", "order", 1200, at(time.July, 5))
+	needsCheck := draftAt(july, 120, 1, 1)
+	save("v2-review-display", "Replacement", "updated order display", 1200, at(time.July, 5).Add(time.Hour))
+	if repeat := draftAt(july, 120, 1, 1); repeat.Version != needsCheck.Version {
+		t.Fatalf("display-only update changed a pending draft: %d -> %d", needsCheck.Version, repeat.Version)
+	}
+	review(a, "recover")
+	draftAt(july, 20, 2, 0)
+	review(a, "departed_unreachable")
+	pending := draftAt(july, 120, 1, 0)
+	save("v2-display", "Replacement", "changed display only", 1200, at(time.July, 6))
+	if repeat := draftAt(july, 120, 1, 0); repeat.Version != pending.Version {
+		t.Fatalf("display-only change produced a new draft version: %d -> %d", pending.Version, repeat.Version)
+	}
+	confirm(pending)
+	save("v3", "Second replacement", "changed display only", 900, at(time.August, 5))
+	review(b, "recover")
+	newDraft := draftAt(august, -30, 2, 0)
+	confirmed := confirm(newDraft)
+	if retried := confirm(newDraft); retried.ID != confirmed.ID {
+		t.Fatal("repeated confirmation was not idempotent")
+	}
+	response := httptest.NewRecorder()
+	service.getDraft(response, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/drafts?periodId=%d", august), nil))
+	var view struct {
+		Corrections []struct {
+			PersonName, OriginalPersonName, SourceVersion string
+			RuleVersion                                   int
+			AmountMinor                                   int64
+		}
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &view); err != nil || response.Code != 200 || len(view.Corrections) != 2 {
+		t.Fatalf("correction detail HTTP %d, error %v", response.Code, err)
+	}
+	if view.Corrections[0].PersonName != "Replacement" || view.Corrections[0].AmountMinor != -120 ||
+		view.Corrections[1].PersonName != "Second replacement" || view.Corrections[1].AmountMinor != 90 ||
+		view.Corrections[0].OriginalPersonName != "Original recipient" || view.Corrections[0].RuleVersion != 1 || view.Corrections[0].SourceVersion != "v3" {
+		t.Fatalf("correction detail invariant failed: %+v", view.Corrections)
+	}
+	review(c, "recover")
+	refund := int64(200)
+	err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCAI", Kind: "REFUND_SUCCEEDED", OrderID: "original-order", RefundID: "refund", RecordKey: "refunds:1",
+			Version: "refund-1", Domain: "VIP", SourceKey: "VIP", AmountMinor: &refund, OccurredAt: at(time.September, 5), UpdatedAt: at(time.September, 5),
+			RefundsPayment: []sourcePaymentReference{{OrderID: "original-order", RecordID: "1"}}}})
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Refund originally references A. The correction restores the difference for A
+	// and charges the part of commission still held by the corrected beneficiary.
+	if got := draftAt(september, -20, 2, 0); got.RefundTotal != -20 || got.CorrectionTotal != 0 {
+		t.Fatalf("refund after recommendation changes=%+v", got)
+	}
+	if _, err = service.db.Exec(ctx, "DELETE FROM settlements WHERE id=$1", originalSettlement.ID); err == nil {
+		t.Fatal("deleted the original settlement despite booked corrections")
+	}
+}

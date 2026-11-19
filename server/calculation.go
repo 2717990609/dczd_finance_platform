@@ -45,14 +45,17 @@ type draftIssue struct {
 	RuleID    int64  `json:"ruleId,omitempty"`
 	Component string `json:"component,omitempty"`
 	Code      string `json:"code"`
+	stableKey string
 }
 
 type paymentDraft struct {
-	Lines       []draftLine
-	Issues      []draftIssue
-	Refunds     []refundLine
-	Total       int64
-	RefundTotal int64
+	Lines           []draftLine
+	Issues          []draftIssue
+	Refunds         []refundLine
+	Corrections     []correctionLine
+	Total           int64
+	RefundTotal     int64
+	CorrectionTotal int64
 }
 
 func isPeriodPayment(window periodWindow, fact sourceFact) bool {

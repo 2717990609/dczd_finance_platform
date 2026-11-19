@@ -33,6 +33,10 @@ const reason = {
   REFUND_AMOUNT_EXCEEDS_PAYMENT: '累计退款或扣回金额超过原付款或原计提',
   REFUND_POLICY_MISSING: '原结算规则缺少退款处理口径',
   REFUND_BOOKED_CHANGED: '已入账退款金额或关联有修订，需核对后办理更正',
+  CORRECTION_SCOPE_CHANGED: '原付款标识、产品或发生时间有变动，需核对归属',
+  CORRECTION_MISSING_FACT_OR_RULE: '缺少原推荐规则或有效的最新付款金额',
+  CORRECTION_REFUND_CONFLICT: '最新付款与已登记退款无法按原规则对平',
+  CORRECTION_RECOVERY_PENDING: '原受益人的扣回处理尚未确认',
 }
 const lineColumns = [
   { title: '原订单', key: 'order', width: 190 },
@@ -49,6 +53,13 @@ const refundColumns = [
   { title: '退款归属期', dataIndex: 'refundPeriod', width: 135 },
   { title: '实际扣减期', dataIndex: 'postingPeriod', width: 135 },
   { title: '退款扣减', key: 'amount', width: 115 },
+]
+const correctionColumns = [
+  { title:'原订单', key:'order', width:180 },
+  { title:'原受益人', dataIndex:'originalPersonName', width:130 },
+  { title:'调整人员', dataIndex:'personName', width:130 },
+  { title:'原结算期', dataIndex:'originalPeriod', width:130 },
+  { title:'调整金额', key:'amount', width:140 },
 ]
 const issueColumns = [
   { title: '原订单 ID', dataIndex: 'orderId', width: 160 },
@@ -131,9 +142,10 @@ async function loadMore(section, cursorName) {
     </p>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
-  <div v-if="draft" class="summary-grid">
+  <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount }">
     <article><div><small>正向计提</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
     <article><div><small>退款扣减</small><strong>{{ formatMoney(draft.refundMinor) }}</strong></div></article>
+    <article v-if="draft.correctionCount"><div><small>推荐人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div></article>
     <article><div><small>本期合计</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
   </div>
   <section v-if="draft" class="records">
@@ -166,6 +178,21 @@ async function loadMore(section, cursorName) {
       </a-table>
     </div>
     <div v-if="draft.refundCount > draft.refunds.length" class="paging"><a-button :loading="loading" @click="loadMore('refunds', 'afterRefundId')">加载下一页</a-button></div>
+  </section>
+  <section v-if="draft?.correctionCount" class="records draft-issues">
+    <div class="records-head"><h2>推荐人更正明细</h2></div>
+    <div class="table-container">
+      <a-table :columns="correctionColumns" :data-source="draft.corrections" :pagination="false" row-key="id" :scroll="{x:710}">
+        <template #bodyCell="{column,record}">
+          <template v-if="column.key==='order'">
+            {{ record.orderNo || record.orderId }}
+            <small class="order-version">原规则 v{{ record.ruleVersion }} · 订单版本 {{ record.sourceVersion }}</small>
+          </template>
+          <template v-else-if="column.key==='amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
+        </template>
+      </a-table>
+    </div>
+    <div v-if="draft.correctionCount > draft.corrections.length" class="paging"><a-button :loading="loading" @click="loadMore('corrections','afterCorrectionId')">加载下一页</a-button></div>
   </section>
   <section v-if="draft?.issueCount" class="records draft-issues">
     <div class="records-head"><h2>待核项</h2></div>

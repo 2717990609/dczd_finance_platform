@@ -176,11 +176,17 @@ BEGIN
     SELECT 1 FROM calculation_draft_lines l
     JOIN calculation_draft_refunds a ON a.original_line_id=l.id
     JOIN settlements s ON s.period_id=a.period_id WHERE l.period_id=OLD.period_id AND s.id<>OLD.id
+ ) OR EXISTS(
+    SELECT 1 FROM calculation_draft_lines l
+    JOIN calculation_draft_corrections a ON a.original_line_id=l.id
+    JOIN settlements s ON s.period_id=a.period_id WHERE l.period_id=OLD.period_id AND s.id<>OLD.id
  ) THEN
   RAISE EXCEPTION 'settlement has booked adjustments' USING ERRCODE='55000';
  END IF;
  DELETE FROM calculation_drafts
  WHERE period_id IN (SELECT a.period_id FROM calculation_draft_refunds a
+   JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id
+   UNION SELECT a.period_id FROM calculation_draft_corrections a
    JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id)
  AND period_id<>OLD.period_id;
  INSERT INTO settlement_removals(settlement_id,period_id,draft_version,removed_by)
@@ -196,7 +202,8 @@ CREATE OR REPLACE FUNCTION protect_settlement_input() RETURNS trigger LANGUAGE p
 BEGIN
  IF TG_TABLE_NAME='source_order_versions' THEN
   IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.source_version_id=OLD.id)
-     OR EXISTS(SELECT 1 FROM calculation_draft_refunds a JOIN settlements s USING(period_id) WHERE a.refund_source_version_id=OLD.id) THEN
+     OR EXISTS(SELECT 1 FROM calculation_draft_refunds a JOIN settlements s USING(period_id) WHERE a.refund_source_version_id=OLD.id)
+     OR EXISTS(SELECT 1 FROM calculation_draft_corrections a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id) THEN
    RAISE EXCEPTION 'source version is referenced by a confirmed calculation' USING ERRCODE='55000';
   END IF;
  ELSE
@@ -237,3 +244,30 @@ CREATE INDEX IF NOT EXISTS calculation_refunds_original ON calculation_draft_ref
 CREATE INDEX IF NOT EXISTS calculation_refunds_source_version ON calculation_draft_refunds(refund_source_version_id);
 CREATE OR REPLACE TRIGGER protect_confirmed_refunds BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_refunds
  FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+
+ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS correction_minor bigint NOT NULL DEFAULT 0;
+ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS correction_count int NOT NULL DEFAULT 0 CHECK(correction_count>=0);
+
+CREATE TABLE IF NOT EXISTS calculation_draft_corrections (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ period_id bigint NOT NULL REFERENCES calculation_drafts(period_id) ON DELETE CASCADE,
+ original_line_id bigint NOT NULL REFERENCES calculation_draft_lines(id),
+ source_version_id bigint NOT NULL REFERENCES source_order_versions(id),
+ person_id bigint NOT NULL REFERENCES people(id),
+ amount_minor bigint NOT NULL CHECK(amount_minor<>0),
+ UNIQUE(period_id,original_line_id,person_id)
+);
+CREATE INDEX IF NOT EXISTS calculation_corrections_page ON calculation_draft_corrections(period_id,id);
+CREATE INDEX IF NOT EXISTS calculation_corrections_original ON calculation_draft_corrections(original_line_id);
+CREATE INDEX IF NOT EXISTS calculation_corrections_source ON calculation_draft_corrections(source_version_id);
+CREATE OR REPLACE TRIGGER protect_confirmed_corrections BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_corrections
+ FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+
+CREATE TABLE IF NOT EXISTS correction_recovery_decisions (
+ original_line_id bigint NOT NULL REFERENCES calculation_draft_lines(id) ON DELETE CASCADE,
+ person_id bigint NOT NULL REFERENCES people(id),
+ outcome text NOT NULL CHECK(outcome IN ('recover','departed_unreachable')),
+ reviewed_by text NOT NULL CHECK(char_length(reviewed_by) BETWEEN 1 AND 128),
+ reviewed_at timestamptz NOT NULL DEFAULT now(),
+ PRIMARY KEY(original_line_id,person_id)
+);

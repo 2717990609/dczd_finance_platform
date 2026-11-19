@@ -21,17 +21,19 @@ var (
 type calculateDraftInput struct{ PeriodID int64 }
 
 type draftSummary struct {
-	PeriodID     int64     `json:"periodId"`
-	RuleID       int64     `json:"ruleId"`
-	RuleVersion  int       `json:"ruleVersion"`
-	Version      int64     `json:"version"`
-	Total        int64     `json:"totalMinor"`
-	Accrued      int64     `json:"accruedMinor"`
-	RefundTotal  int64     `json:"refundMinor"`
-	RefundCount  int       `json:"refundCount"`
-	LineCount    int       `json:"lineCount"`
-	IssueCount   int       `json:"issueCount"`
-	CalculatedAt time.Time `json:"calculatedAt"`
+	PeriodID        int64     `json:"periodId"`
+	RuleID          int64     `json:"ruleId"`
+	RuleVersion     int       `json:"ruleVersion"`
+	Version         int64     `json:"version"`
+	Total           int64     `json:"totalMinor"`
+	Accrued         int64     `json:"accruedMinor"`
+	RefundTotal     int64     `json:"refundMinor"`
+	RefundCount     int       `json:"refundCount"`
+	CorrectionTotal int64     `json:"correctionMinor"`
+	CorrectionCount int       `json:"correctionCount"`
+	LineCount       int       `json:"lineCount"`
+	IssueCount      int       `json:"issueCount"`
+	CalculatedAt    time.Time `json:"calculatedAt"`
 }
 
 const maxDraftPayments = 100000
@@ -93,6 +95,9 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 		return paymentDraft{}, nil, err
 	}
 	if err = addRefunds(ctx, tx, summary.PeriodID, window, rules, facts, &result); err != nil {
+		return paymentDraft{}, nil, err
+	}
+	if err = addRecommendationCorrections(ctx, tx, summary.PeriodID, window, &result); err != nil {
 		return paymentDraft{}, nil, err
 	}
 	digest, err := digestDraft(summary.RuleID, result, facts)
@@ -165,17 +170,22 @@ func readDraftInputs(ctx context.Context, tx pgx.Tx, periodID int64, window peri
 			keys[identityKey{source, input.Fact.ReferrerID}] = true
 		}
 	}
+	identities, err := readIdentityAssignments(ctx, tx, window, keys)
+	return facts, identities, err
+}
+
+func readIdentityAssignments(ctx context.Context, tx pgx.Tx, window periodWindow, keys map[identityKey]bool) (map[identityKey][]identityAssignment, error) {
 	sources := make([]string, 0, len(keys))
 	ids := make([]string, 0, len(keys))
 	for key := range keys {
 		sources, ids = append(sources, key.Source), append(ids, key.ExternalID)
 	}
-	rows, err = tx.Query(ctx, `SELECT i.source,i.external_id,i.id,i.person_id,i.valid_from,i.valid_to
+	rows, err := tx.Query(ctx, `SELECT i.source,i.external_id,i.id,i.person_id,i.valid_from,i.valid_to
 		FROM unnest($1::text[],$2::text[]) AS wanted(source,external_id)
 		JOIN identity_mappings i USING(source,external_id)
 		WHERE i.valid_from<$3 AND (i.valid_to IS NULL OR i.valid_to>$4)`, sources, ids, window.Through, window.Start)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	defer rows.Close()
 	identities := make(map[identityKey][]identityAssignment, len(keys))
@@ -183,11 +193,11 @@ func readDraftInputs(ctx context.Context, tx pgx.Tx, periodID int64, window peri
 		var key identityKey
 		var value identityAssignment
 		if err = rows.Scan(&key.Source, &key.ExternalID, &value.ID, &value.PersonID, &value.ValidFrom, &value.ValidTo); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		identities[key] = append(identities[key], value)
 	}
-	return facts, identities, rows.Err()
+	return identities, rows.Err()
 }
 
 func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]byte, error) {
@@ -218,13 +228,14 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 	}
 	for _, issue := range result.Issues {
 		fact := facts[issue.FactID]
-		if fact.Order != "" {
+		if fact.Order != "" || issue.stableKey != "" {
 			issue.FactID = 0
 		}
 		if err := encode.Encode(struct {
 			Payment stablePayment
 			Issue   draftIssue
-		}{fact, issue}); err != nil {
+			Key     string `json:",omitempty"`
+		}{fact, issue, issue.stableKey}); err != nil {
 			return nil, err
 		}
 	}
@@ -238,27 +249,42 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 			return nil, err
 		}
 	}
+	for _, correction := range result.Corrections {
+		correction.SourceVersionID = 0
+		if err := encode.Encode(correction); err != nil {
+			return nil, err
+		}
+	}
 	return hash.Sum(nil), nil
 }
 
 func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []byte, result paymentDraft) error {
-	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count)
-	  VALUES($1,$2,1,$3,$4,$5,$6,now(),$7,$8)
+	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count)
+	  VALUES($1,$2,1,$3,$4,$5,$6,now(),$7,$8,$9,$10)
 	  ON CONFLICT(period_id) DO UPDATE SET rule_id=excluded.rule_id,version=calculation_drafts.version+1,
 	  input_digest=excluded.input_digest,total_minor=excluded.total_minor,line_count=excluded.line_count,issue_count=excluded.issue_count,
-	  calculated_at=excluded.calculated_at,refund_minor=excluded.refund_minor,refund_count=excluded.refund_count
-	  WHERE calculation_drafts.input_digest<>excluded.input_digest RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count`,
-		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds)).
-		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount)
+	  calculated_at=excluded.calculated_at,refund_minor=excluded.refund_minor,refund_count=excluded.refund_count,
+	  correction_minor=excluded.correction_minor,correction_count=excluded.correction_count
+	  WHERE calculation_drafts.input_digest<>excluded.input_digest RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count`,
+		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections)).
+		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount)
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx, `SELECT version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count
+		err = tx.QueryRow(ctx, `SELECT version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count
 		 FROM calculation_drafts WHERE period_id=$1`, summary.PeriodID).
-			Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount)
-		summary.Total = summary.Accrued + summary.RefundTotal
+			Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount)
+		if err != nil {
+			return err
+		}
+		summary.Total, err = addMinor(summary.Accrued+summary.RefundTotal, summary.CorrectionTotal)
 		return err
 	}
-	summary.Total = summary.Accrued + summary.RefundTotal
 	if err != nil {
+		return err
+	}
+	if summary.Total, err = addMinor(summary.Accrued+summary.RefundTotal, summary.CorrectionTotal); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, "DELETE FROM calculation_draft_corrections WHERE period_id=$1", summary.PeriodID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, "DELETE FROM calculation_draft_refunds WHERE period_id=$1", summary.PeriodID); err != nil {
@@ -293,10 +319,23 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 				return []any{summary.PeriodID, factID, issue.Component, issue.Code}, nil
 			}))
 	}
-	if err != nil || len(result.Refunds) == 0 {
+	if err != nil {
 		return err
 	}
-	return storeDraftRefunds(ctx, tx, summary.PeriodID, result.Refunds)
+	if len(result.Refunds) != 0 {
+		if err = storeDraftRefunds(ctx, tx, summary.PeriodID, result.Refunds); err != nil {
+			return err
+		}
+	}
+	if len(result.Corrections) != 0 {
+		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_corrections"},
+			[]string{"period_id", "original_line_id", "source_version_id", "person_id", "amount_minor"},
+			pgx.CopyFromSlice(len(result.Corrections), func(i int) ([]any, error) {
+				c := result.Corrections[i]
+				return []any{summary.PeriodID, c.OriginalLineID, c.SourceVersionID, c.PersonID, c.Amount}, nil
+			}))
+	}
+	return err
 }
 
 func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds []refundLine) error {
@@ -344,7 +383,8 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 
 const draftDetailSQL = `SELECT jsonb_build_object(
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
- 'totalMinor',d.total_minor+d.refund_minor,'accruedMinor',d.total_minor,'refundMinor',d.refund_minor,'refundCount',d.refund_count,
+ 'totalMinor',d.total_minor+d.refund_minor+d.correction_minor,'accruedMinor',d.total_minor,
+ 'refundMinor',d.refund_minor,'refundCount',d.refund_count,'correctionMinor',d.correction_minor,'correctionCount',d.correction_count,
  'lineCount',d.line_count,'issueCount',d.issue_count,
  'settlement',CASE WHEN st.id IS NOT NULL THEN jsonb_build_object('id',st.id,'confirmedAt',st.confirmed_at,'draftVersion',st.draft_version) END,
  'lines',coalesce((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM (
@@ -366,6 +406,16 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   JOIN periods posting_period ON posting_period.id=a.period_id
   WHERE a.period_id=d.period_id AND a.id>$5 ORDER BY a.id LIMIT 50
  ) a),'[]'),
+ 'corrections',coalesce((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM (
+  SELECT c.id,c.amount_minor AS "amountMinor",v.order_id AS "orderId",v.fact->>'orderNo' AS "orderNo",
+   v.version AS "sourceVersion",p.name AS "personName",old_person.name AS "originalPersonName",
+   original_period.name AS "originalPeriod",r.version AS "ruleVersion"
+  FROM calculation_draft_corrections c JOIN source_order_versions v ON v.id=c.source_version_id
+  JOIN people p ON p.id=c.person_id JOIN calculation_draft_lines l ON l.id=c.original_line_id
+  JOIN people old_person ON old_person.id=l.person_id JOIN periods original_period ON original_period.id=l.period_id
+  JOIN rule_versions r ON r.id=l.rule_id
+  WHERE c.period_id=d.period_id AND c.id>$6 ORDER BY c.id LIMIT 50
+ ) c),'[]'),
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
   SELECT i.id,i.component_type AS "component",i.code,o.source,o.order_id AS "orderId"
   FROM calculation_draft_issues i LEFT JOIN source_order_versions o ON o.id=i.source_version_id
@@ -380,8 +430,8 @@ func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, invalid)
 		return
 	}
-	cursors := [3]int64{}
-	for i, name := range []string{"afterLineId", "afterIssueId", "afterRefundId"} {
+	cursors := [4]int64{}
+	for i, name := range []string{"afterLineId", "afterIssueId", "afterRefundId", "afterCorrectionId"} {
 		if value := query.Get(name); value != "" {
 			cursors[i], err = strconv.ParseInt(value, 10, 64)
 			if err != nil || cursors[i] < 1 {
@@ -399,7 +449,7 @@ func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), draftDetailSQL, periodID, cursors[0], cursors[1], version, cursors[2]).Scan(&result)
+	err = s.db.QueryRow(r.Context(), draftDetailSQL, periodID, cursors[0], cursors[1], version, cursors[2], cursors[3]).Scan(&result)
 	if version > 0 && errors.Is(err, pgx.ErrNoRows) {
 		err = conflict
 	}
