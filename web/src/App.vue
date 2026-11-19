@@ -38,6 +38,11 @@ const components = [
   {value:'sales',label:'销售提成'}, {value:'referral',label:'推荐提成'},
   {value:'manager',label:'负责人提成'}, {value:'delivery',label:'交付提成'},
 ]
+const refundPolicies = [
+  { value: 'proportional', label: '按实际退款比例扣回' },
+  { value: 'full_reversal', label: '有退款即整笔冲回' },
+  { value: 'non_refundable', label: '退款时不扣回' },
+]
 const productOptions = computed(() => data.value.products.map(p => ({value:p.id,label:p.name})))
 const peopleOptions = computed(() => data.value.people.map(p => ({value:p.id,label:p.name})))
 const periodOptions = computed(() => data.value.periods.filter(p => p.productId === draft.value.productId).map(p => ({value:p.id,label:p.name})))
@@ -161,7 +166,8 @@ function bodyFor(kind,f) {
     ...(f.scope === 'period' ? {periodId:must(f.periodId)} : {}),
     ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal)} : {}),
     ...(f.effectiveFrom ? {effectiveFrom:new Date(f.effectiveFrom+'+08:00').toISOString()} : {}),
-    components:f.components.map(c => ({type:must(c.type),mode:c.mode,value:Math.round(Number(must(c.amount,'请填写每个组件的比例或金额'))*100),...(c.sourceRole?.trim() ? {sourceRole:c.sourceRole.trim().toUpperCase()} : {})})),
+    components:f.components.map(c => ({type:must(c.type),mode:c.mode,value:Math.round(Number(must(c.amount,'请填写每个组件的比例或金额'))*100),...(c.sourceRole?.trim() ? {sourceRole:c.sourceRole.trim().toUpperCase()} : {}),
+      ...(c.refundPolicy ? {refundPolicy:c.refundPolicy} : {})})),
   }
   if (kind === 'person') return {name:must(f.name)}
   if (kind === 'identity') return {personId:must(f.personId),source:f.source,externalId:must(f.externalId),validFrom:new Date(must(f.validFrom)+'T00:00:00+08:00').toISOString()}
@@ -306,6 +312,9 @@ async function save() {
           </div>
           <a-form-item v-if="['sales','referral'].includes(c.type)" :label="'分项 '+(i+1)+' 的来源角色'">
             <a-input v-model:value="c.sourceRole" :aria-label="'来源角色 '+(i+1)" placeholder="如 LOCK_SALES_USER 或 DIRECT_REFERRER" :maxlength="64"/>
+          </a-form-item>
+          <a-form-item v-if="selectedProduct?.periodMode==='calendar'" :label="'分项 '+(i+1)+' 的退款处理'" extra="历史退款沿用付款时的规则版本。">
+            <a-select v-model:value="c.refundPolicy" :options="refundPolicies" allow-clear placeholder="选择退款处理"/>
           </a-form-item>
         </div>
         <a-button v-if="draft.components.length<4" type="dashed" block @click="draft.components.push({type:components.find(x=>!draft.components.some(y=>x.value===y.type)).value,mode:'rate',amount:0})">添加组件</a-button>

@@ -25,6 +25,14 @@ const reason = {
   MISSING_PARTICIPANT: '订单缺少该来源角色',
   AMBIGUOUS_IDENTITY: '付款时点命中多份人员归属',
   MISSING_IDENTITY: '付款时点查不到该来源人员的归属',
+  REFUND_MISSING_AMOUNT_OR_ID: '退款缺少有效退款编号或金额',
+  REFUND_DUPLICATE_ID: '同一原退款编号有多条来源事实',
+  REFUND_MISSING_PAYMENT_REFERENCE: '退款未明确关联原付款',
+  REFUND_ORIGINAL_NOT_SETTLED: '找不到可对应的原付款提成',
+  REFUND_PAYMENT_AMBIGUOUS: '退款匹配到多笔原付款',
+  REFUND_AMOUNT_EXCEEDS_PAYMENT: '累计退款或扣回金额超过原付款或原计提',
+  REFUND_POLICY_MISSING: '原结算规则缺少退款处理口径',
+  REFUND_BOOKED_CHANGED: '已入账退款金额或关联有修订，需核对后办理更正',
 }
 const lineColumns = [
   { title: '原订单', key: 'order', width: 190 },
@@ -33,6 +41,14 @@ const lineColumns = [
   { title: '规则版本', key: 'rule', width: 100 },
   { title: '实付基数', key: 'base', width: 115 },
   { title: '应计提成', key: 'amount', width: 115 },
+]
+const refundColumns = [
+  { title: '原订单', key: 'order', width: 190 },
+  { title: '原受益人', dataIndex: 'personName', width: 130 },
+  { title: '原结算账期', dataIndex: 'originalPeriod', width: 135 },
+  { title: '退款归属期', dataIndex: 'refundPeriod', width: 135 },
+  { title: '实际扣减期', dataIndex: 'postingPeriod', width: 135 },
+  { title: '退款扣减', key: 'amount', width: 115 },
 ]
 const issueColumns = [
   { title: '原订单 ID', dataIndex: 'orderId', width: 160 },
@@ -110,9 +126,9 @@ async function loadMore(section, cursorName) {
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
   <div v-if="draft" class="summary-grid">
-    <article><div><small>应计金额</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
-    <article><div><small>计提明细</small><strong>{{ draft.lineCount }}</strong></div></article>
-    <article><div><small>待核项</small><strong>{{ draft.issueCount }}</strong></div></article>
+    <article><div><small>正向计提</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
+    <article><div><small>退款扣减</small><strong>{{ formatMoney(draft.refundMinor) }}</strong></div></article>
+    <article><div><small>本期合计</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
   </div>
   <section v-if="draft" class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>
@@ -129,6 +145,21 @@ async function loadMore(section, cursorName) {
       </a-table>
     </div>
     <div v-if="draft.lineCount > draft.lines.length" class="paging"><a-button :loading="loading" @click="loadMore('lines', 'afterLineId')">加载下一页</a-button></div>
+  </section>
+  <section v-if="draft?.refundCount" class="records draft-issues">
+    <div class="records-head"><h2>退款扣减明细</h2></div>
+    <div class="table-container">
+      <a-table :columns="refundColumns" :data-source="draft.refunds" :pagination="false" row-key="id" :scroll="{ x: 840 }">
+        <template #bodyCell="{ column, record }">
+          <template v-if="column.key === 'order'">
+            {{ record.originalOrderNo || record.originalOrderId }}
+            <small class="order-version">原规则 v{{ record.ruleVersion }} · 退款 {{ record.refundId }}</small>
+          </template>
+          <template v-else-if="column.key === 'amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
+        </template>
+      </a-table>
+    </div>
+    <div v-if="draft.refundCount > draft.refunds.length" class="paging"><a-button :loading="loading" @click="loadMore('refunds', 'afterRefundId')">加载下一页</a-button></div>
   </section>
   <section v-if="draft?.issueCount" class="records draft-issues">
     <div class="records-head"><h2>待核项</h2></div>

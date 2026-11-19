@@ -48,9 +48,11 @@ type draftIssue struct {
 }
 
 type paymentDraft struct {
-	Lines  []draftLine
-	Issues []draftIssue
-	Total  int64
+	Lines       []draftLine
+	Issues      []draftIssue
+	Refunds     []refundLine
+	Total       int64
+	RefundTotal int64
 }
 
 func isPeriodPayment(window periodWindow, fact sourceFact) bool {

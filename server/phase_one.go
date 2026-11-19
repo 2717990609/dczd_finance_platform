@@ -23,10 +23,11 @@ import (
 var schema string
 
 type component struct {
-	Type       string `json:"type"`
-	Mode       string `json:"mode"`
-	Value      int64  `json:"value"`
-	SourceRole string `json:"sourceRole,omitempty"`
+	Type         string `json:"type"`
+	Mode         string `json:"mode"`
+	Value        int64  `json:"value"`
+	SourceRole   string `json:"sourceRole,omitempty"`
+	RefundPolicy string `json:"refundPolicy,omitempty"`
 }
 
 var invalid = errors.New("请核对名称、范围与必填配置")
@@ -43,7 +44,7 @@ func validateComponents(items []component) error {
 		default:
 			return invalid
 		}
-		if seen[c.Type] || c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) {
+		if seen[c.Type] || c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) {
 			return invalid
 		}
 		seen[c.Type] = true

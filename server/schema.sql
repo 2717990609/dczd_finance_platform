@@ -172,6 +172,17 @@ BEGIN
  IF TG_OP='UPDATE' THEN
   RAISE EXCEPTION 'confirmed settlement cannot be changed' USING ERRCODE='55000';
  END IF;
+ IF EXISTS(
+    SELECT 1 FROM calculation_draft_lines l
+    JOIN calculation_draft_refunds a ON a.original_line_id=l.id
+    JOIN settlements s ON s.period_id=a.period_id WHERE l.period_id=OLD.period_id AND s.id<>OLD.id
+ ) THEN
+  RAISE EXCEPTION 'settlement has booked adjustments' USING ERRCODE='55000';
+ END IF;
+ DELETE FROM calculation_drafts
+ WHERE period_id IN (SELECT a.period_id FROM calculation_draft_refunds a
+   JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id)
+ AND period_id<>OLD.period_id;
  INSERT INTO settlement_removals(settlement_id,period_id,draft_version,removed_by)
  VALUES(OLD.id,OLD.period_id,OLD.draft_version,session_user);
  RETURN OLD;
@@ -184,7 +195,8 @@ CREATE OR REPLACE TRIGGER protect_settlements BEFORE UPDATE OR DELETE ON settlem
 CREATE OR REPLACE FUNCTION protect_settlement_input() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_TABLE_NAME='source_order_versions' THEN
-  IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.source_version_id=OLD.id) THEN
+  IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.source_version_id=OLD.id)
+     OR EXISTS(SELECT 1 FROM calculation_draft_refunds a JOIN settlements s USING(period_id) WHERE a.refund_source_version_id=OLD.id) THEN
    RAISE EXCEPTION 'source version is referenced by a confirmed calculation' USING ERRCODE='55000';
   END IF;
  ELSE
@@ -201,3 +213,27 @@ CREATE OR REPLACE TRIGGER protect_settled_order_versions BEFORE UPDATE ON source
  FOR EACH ROW EXECUTE FUNCTION protect_settlement_input();
 CREATE OR REPLACE TRIGGER protect_settled_rule_versions BEFORE UPDATE ON rule_versions
  FOR EACH ROW EXECUTE FUNCTION protect_settlement_input();
+
+ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS refund_minor bigint NOT NULL DEFAULT 0 CHECK(refund_minor<=0);
+ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS refund_count int NOT NULL DEFAULT 0 CHECK(refund_count>=0);
+CREATE INDEX IF NOT EXISTS source_order_versions_refund_date
+ ON source_order_versions(source, (fact->>'domain'), (fact->>'sourceKey'), occurred_at)
+ WHERE kind='REFUND_SUCCEEDED';
+
+CREATE INDEX IF NOT EXISTS source_order_versions_refund_identity
+ ON source_order_versions(source,(fact->>'domain'),(fact->>'refundId')) WHERE kind='REFUND_SUCCEEDED';
+
+CREATE TABLE IF NOT EXISTS calculation_draft_refunds (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ period_id bigint NOT NULL REFERENCES calculation_drafts(period_id) ON DELETE CASCADE,
+ original_line_id bigint NOT NULL REFERENCES calculation_draft_lines(id),
+ refund_period_id bigint NOT NULL REFERENCES periods(id),
+ refund_source_version_id bigint NOT NULL REFERENCES source_order_versions(id),
+ amount_minor bigint NOT NULL CHECK(amount_minor<=0),
+ UNIQUE(period_id, original_line_id, refund_source_version_id)
+);
+CREATE INDEX IF NOT EXISTS calculation_refunds_page ON calculation_draft_refunds(period_id,id);
+CREATE INDEX IF NOT EXISTS calculation_refunds_original ON calculation_draft_refunds(original_line_id);
+CREATE INDEX IF NOT EXISTS calculation_refunds_source_version ON calculation_draft_refunds(refund_source_version_id);
+CREATE OR REPLACE TRIGGER protect_confirmed_refunds BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_refunds
+ FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();

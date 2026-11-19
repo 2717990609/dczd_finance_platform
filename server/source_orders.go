@@ -27,24 +27,31 @@ type sourceConfig struct{ BaseURL, Token string }
 type pullInput struct{ Source, Stream, OrderID string }
 
 type sourceFact struct {
-	Source          string              `json:"source"`
-	OrderID         string              `json:"orderId"`
-	OrderNo         string              `json:"orderNo"`
-	LineID          string              `json:"lineId"`
-	RecordKey       string              `json:"recordKey"`
-	Version         string              `json:"version"`
-	Kind            string              `json:"kind"`
-	Domain          string              `json:"domain"`
-	SourceKey       string              `json:"sourceKey"`
-	TransactionType string              `json:"transactionType"`
-	SourceStatus    string              `json:"sourceStatus"`
-	PaymentID       string              `json:"paymentId,omitempty"`
-	RefundID        string              `json:"refundId,omitempty"`
-	ReferrerID      string              `json:"referrerId,omitempty"`
-	Participants    []sourceParticipant `json:"participants,omitempty"`
-	AmountMinor     *int64              `json:"amountMinor"`
-	OccurredAt      time.Time           `json:"occurredAt"`
-	UpdatedAt       time.Time           `json:"updatedAt"`
+	Source          string                   `json:"source"`
+	OrderID         string                   `json:"orderId"`
+	OrderNo         string                   `json:"orderNo"`
+	LineID          string                   `json:"lineId"`
+	RecordKey       string                   `json:"recordKey"`
+	Version         string                   `json:"version"`
+	Kind            string                   `json:"kind"`
+	Domain          string                   `json:"domain"`
+	SourceKey       string                   `json:"sourceKey"`
+	TransactionType string                   `json:"transactionType"`
+	SourceStatus    string                   `json:"sourceStatus"`
+	PaymentID       string                   `json:"paymentId,omitempty"`
+	RefundID        string                   `json:"refundId,omitempty"`
+	RefundsPayment  []sourcePaymentReference `json:"refundsPayment,omitempty"`
+	ReferrerID      string                   `json:"referrerId,omitempty"`
+	Participants    []sourceParticipant      `json:"participants,omitempty"`
+	AmountMinor     *int64                   `json:"amountMinor"`
+	OccurredAt      time.Time                `json:"occurredAt"`
+	UpdatedAt       time.Time                `json:"updatedAt"`
+}
+
+type sourcePaymentReference struct {
+	OrderID  string `json:"orderId"`
+	LineID   string `json:"lineId,omitempty"`
+	RecordID string `json:"recordId,omitempty"`
 }
 
 type sourceDocument struct {
@@ -78,8 +85,15 @@ type sourceDocument struct {
 		ID string `json:"source_payment_id"`
 	} `json:"payment"`
 	Refund struct {
-		ID string `json:"source_refund_id"`
+		ID string    `json:"source_refund_id"`
+		At time.Time `json:"refunded_at"`
 	} `json:"refund"`
+	Relations []struct {
+		Kind     string `json:"relation"`
+		OrderID  string `json:"target_source_order_id"`
+		LineID   string `json:"target_source_line_id"`
+		RecordID string `json:"target_source_record_id"`
+	} `json:"relations"`
 	Attribution struct {
 		Participants []struct {
 			Role   string `json:"source_role_code"`
@@ -130,11 +144,25 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 		}
 		return participants[i].UserID < participants[j].UserID
 	})
+	var refundTargets []sourcePaymentReference
+	occurredAt := wire.OccurredAt
+	if wire.Kind == "REFUND_SUCCEEDED" {
+		if !wire.Refund.At.IsZero() {
+			occurredAt = wire.Refund.At
+		}
+		for _, link := range wire.Relations {
+			if link.Kind == "REFUNDS_PAYMENT" {
+				refundTargets = append(refundTargets, sourcePaymentReference{
+					OrderID: link.OrderID, LineID: link.LineID, RecordID: link.RecordID,
+				})
+			}
+		}
+	}
 	return sourceFact{Source: source, OrderID: orderID, OrderNo: wire.Order.No, LineID: wire.Order.Line,
 		RecordKey: wire.Record.Table + ":" + wire.Record.ID, Version: wire.Record.Version, Kind: wire.Kind, Domain: wire.Business.Domain,
 		SourceKey: wire.Business.Code, TransactionType: wire.Business.TransactionType, SourceStatus: wire.Order.Status.Code,
-		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, ReferrerID: referrer, Participants: participants, AmountMinor: amount,
-		OccurredAt: wire.OccurredAt, UpdatedAt: wire.Record.UpdatedAt}, nil
+		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, RefundsPayment: refundTargets, ReferrerID: referrer, Participants: participants, AmountMinor: amount,
+		OccurredAt: occurredAt, UpdatedAt: wire.Record.UpdatedAt}, nil
 }
 
 var sourcesList = []string{"DCAI", "DCZD", "DCJK"}

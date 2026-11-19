@@ -26,6 +26,9 @@ type draftSummary struct {
 	RuleVersion  int       `json:"ruleVersion"`
 	Version      int64     `json:"version"`
 	Total        int64     `json:"totalMinor"`
+	Accrued      int64     `json:"accruedMinor"`
+	RefundTotal  int64     `json:"refundMinor"`
+	RefundCount  int       `json:"refundCount"`
 	LineCount    int       `json:"lineCount"`
 	IssueCount   int       `json:"issueCount"`
 	CalculatedAt time.Time `json:"calculatedAt"`
@@ -87,6 +90,9 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 	}
 	result, err := calculatePaymentDraft(window, rules, facts, identities)
 	if err != nil {
+		return paymentDraft{}, nil, err
+	}
+	if err = addRefunds(ctx, tx, summary.PeriodID, window, rules, facts, &result); err != nil {
 		return paymentDraft{}, nil, err
 	}
 	digest, err := digestDraft(summary.RuleID, result, facts)
@@ -212,7 +218,9 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 	}
 	for _, issue := range result.Issues {
 		fact := facts[issue.FactID]
-		issue.FactID = 0
+		if fact.Order != "" {
+			issue.FactID = 0
+		}
 		if err := encode.Encode(struct {
 			Payment stablePayment
 			Issue   draftIssue
@@ -220,22 +228,40 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 			return nil, err
 		}
 	}
+	for _, refund := range result.Refunds {
+		payment := facts[refund.CurrentPaymentVersion]
+		refund.CurrentPaymentVersion, refund.RefundSourceVersionID = 0, 0
+		if err := encode.Encode(struct {
+			Payment stablePayment
+			Refund  refundLine
+		}{payment, refund}); err != nil {
+			return nil, err
+		}
+	}
 	return hash.Sum(nil), nil
 }
 
 func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []byte, result paymentDraft) error {
-	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at)
-	  VALUES($1,$2,1,$3,$4,$5,$6,now())
+	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count)
+	  VALUES($1,$2,1,$3,$4,$5,$6,now(),$7,$8)
 	  ON CONFLICT(period_id) DO UPDATE SET rule_id=excluded.rule_id,version=calculation_drafts.version+1,
 	  input_digest=excluded.input_digest,total_minor=excluded.total_minor,line_count=excluded.line_count,issue_count=excluded.issue_count,
-	  calculated_at=excluded.calculated_at WHERE calculation_drafts.input_digest<>excluded.input_digest
-	  RETURNING version,total_minor,line_count,issue_count,calculated_at`, summary.PeriodID, summary.RuleID, digest,
-		result.Total, len(result.Lines), len(result.Issues)).Scan(&summary.Version, &summary.Total, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt)
+	  calculated_at=excluded.calculated_at,refund_minor=excluded.refund_minor,refund_count=excluded.refund_count
+	  WHERE calculation_drafts.input_digest<>excluded.input_digest RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count`,
+		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds)).
+		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return tx.QueryRow(ctx, `SELECT version,total_minor,line_count,issue_count,calculated_at FROM calculation_drafts WHERE period_id=$1`,
-			summary.PeriodID).Scan(&summary.Version, &summary.Total, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt)
+		err = tx.QueryRow(ctx, `SELECT version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count
+		 FROM calculation_drafts WHERE period_id=$1`, summary.PeriodID).
+			Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount)
+		summary.Total = summary.Accrued + summary.RefundTotal
+		return err
 	}
+	summary.Total = summary.Accrued + summary.RefundTotal
 	if err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, "DELETE FROM calculation_draft_refunds WHERE period_id=$1", summary.PeriodID); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, "DELETE FROM calculation_draft_lines WHERE period_id=$1", summary.PeriodID); err != nil {
@@ -267,12 +293,59 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 				return []any{summary.PeriodID, factID, issue.Component, issue.Code}, nil
 			}))
 	}
+	if err != nil || len(result.Refunds) == 0 {
+		return err
+	}
+	return storeDraftRefunds(ctx, tx, summary.PeriodID, result.Refunds)
+}
+
+func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds []refundLine) error {
+	type lineKey struct {
+		version   int64
+		component string
+	}
+	current := make(map[lineKey]int64)
+	for _, refund := range refunds {
+		if refund.CurrentPaymentVersion == 0 || len(current) != 0 {
+			continue
+		}
+		rows, err := tx.Query(ctx, `SELECT id,source_version_id,component_type FROM calculation_draft_lines WHERE period_id=$1`, periodID)
+		if err != nil {
+			return err
+		}
+		for rows.Next() {
+			var key lineKey
+			var id int64
+			if err = rows.Scan(&id, &key.version, &key.component); err != nil {
+				rows.Close()
+				return err
+			}
+			current[key] = id
+		}
+		if err = rows.Err(); err != nil {
+			return err
+		}
+	}
+	_, err := tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_refunds"},
+		[]string{"period_id", "original_line_id", "refund_period_id", "refund_source_version_id", "amount_minor"},
+		pgx.CopyFromSlice(len(refunds), func(i int) ([]any, error) {
+			refund := refunds[i]
+			lineID := refund.OriginalLineID
+			if refund.CurrentPaymentVersion != 0 {
+				lineID = current[lineKey{refund.CurrentPaymentVersion, refund.ComponentType}]
+			}
+			if lineID == 0 {
+				return nil, errRefundAmount
+			}
+			return []any{periodID, lineID, refund.RefundPeriodID, refund.RefundSourceVersionID, refund.Amount}, nil
+		}))
 	return err
 }
 
 const draftDetailSQL = `SELECT jsonb_build_object(
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
- 'totalMinor',d.total_minor,'lineCount',d.line_count,'issueCount',d.issue_count,
+ 'totalMinor',d.total_minor+d.refund_minor,'accruedMinor',d.total_minor,'refundMinor',d.refund_minor,'refundCount',d.refund_count,
+ 'lineCount',d.line_count,'issueCount',d.issue_count,
  'settlement',CASE WHEN st.id IS NOT NULL THEN jsonb_build_object('id',st.id,'confirmedAt',st.confirmed_at,'draftVersion',st.draft_version) END,
  'lines',coalesce((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM (
   SELECT l.id,p.name AS "personName",l.component_type AS "component",l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",
@@ -281,6 +354,18 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   JOIN rule_versions rv ON rv.id=l.rule_id
   WHERE l.period_id=d.period_id AND l.id>$2 ORDER BY l.id LIMIT 50
  ) l),'[]'),
+ 'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (
+  SELECT a.id,a.amount_minor AS "amountMinor",rv.fact->>'refundId' AS "refundId",rv.version AS "refundVersion",
+   p.name AS "personName",o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",r.version AS "ruleVersion",
+   original_period.name AS "originalPeriod",refund_period.name AS "refundPeriod",posting_period.name AS "postingPeriod"
+  FROM calculation_draft_refunds a
+  JOIN source_order_versions rv ON rv.id=a.refund_source_version_id
+  JOIN calculation_draft_lines l ON l.id=a.original_line_id JOIN people p ON p.id=l.person_id
+  JOIN rule_versions r ON r.id=l.rule_id JOIN source_order_versions o ON o.id=l.source_version_id
+  JOIN periods original_period ON original_period.id=l.period_id JOIN periods refund_period ON refund_period.id=a.refund_period_id
+  JOIN periods posting_period ON posting_period.id=a.period_id
+  WHERE a.period_id=d.period_id AND a.id>$5 ORDER BY a.id LIMIT 50
+ ) a),'[]'),
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
   SELECT i.id,i.component_type AS "component",i.code,o.source,o.order_id AS "orderId"
   FROM calculation_draft_issues i LEFT JOIN source_order_versions o ON o.id=i.source_version_id
@@ -295,8 +380,8 @@ func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, invalid)
 		return
 	}
-	cursors := [2]int64{}
-	for i, name := range []string{"afterLineId", "afterIssueId"} {
+	cursors := [3]int64{}
+	for i, name := range []string{"afterLineId", "afterIssueId", "afterRefundId"} {
 		if value := query.Get(name); value != "" {
 			cursors[i], err = strconv.ParseInt(value, 10, 64)
 			if err != nil || cursors[i] < 1 {
@@ -314,7 +399,7 @@ func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), draftDetailSQL, periodID, cursors[0], cursors[1], version).Scan(&result)
+	err = s.db.QueryRow(r.Context(), draftDetailSQL, periodID, cursors[0], cursors[1], version, cursors[2]).Scan(&result)
 	if version > 0 && errors.Is(err, pgx.ErrNoRows) {
 		err = conflict
 	}
