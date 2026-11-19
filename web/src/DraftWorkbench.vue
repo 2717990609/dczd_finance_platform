@@ -57,14 +57,17 @@ const reason = {
   REFUND_ORIGINAL_NOT_SETTLED: '找不到可对应的原付款提成',
   REFUND_PAYMENT_AMBIGUOUS: '退款匹配到多笔原付款',
   REFUND_AMOUNT_EXCEEDS_PAYMENT: '累计退款或扣回金额超过原付款或原计提',
-  REFUND_POLICY_MISSING: '原结算规则缺少退款处理口径',
+  REFUND_POLICY_MISSING: '适用规则缺少退款处理口径',
   REFUND_BOOKED_CHANGED: '已入账退款金额或关联有修订，需核对后办理更正',
   CORRECTION_SCOPE_CHANGED: '原付款标识、产品或发生时间有变动，需核对归属',
   CORRECTION_MISSING_FACT_OR_RULE: '缺少结算时使用的推荐规则或有效的最新付款金额',
   CORRECTION_REFUND_CONFLICT: '最新付款与已登记退款无法按结算时规则对平',
   CORRECTION_RECOVERY_PENDING: '原受益人的扣回处理尚未确认',
   PRACTICE_DUPLICATE_ENROLLMENT: '同一报名和付款仍在其他期次，请在来源名单核对延期',
-  PRACTICE_REFUND_PENDING: '对应付款已有退款，待核对实战班退款处理',
+  PRACTICE_REFUND_PENDING: '对应付款已有退款，请重新试算',
+  PRACTICE_REFUND_AFTER_ROSTER: '名单确认后发生退款，待按退款归属账期处理',
+  PRACTICE_REFUND_PAYMENT_TIME: '退款时间早于原付款，请在子系统核对',
+  PRACTICE_REFUND_ROSTER_CHANGED: '付款已全退，但报名仍在名单中，请核对并更新确认名单',
   PRACTICE_MEMBER_RULE_MISSING: '规则缺少此报名类型的分润分项',
   PRACTICE_DUPLICATE_PAYMENT: '同一付款出现多次，请在来源核对报名和商品行',
   PRACTICE_MISSING_PAYMENT: '缺少对应付款，请在来源核对订单',
@@ -228,8 +231,8 @@ async function loadMore(section, cursorName) {
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
   <a-alert v-if="!draft?.settlement && refreshStatus?.message" class="feedback" type="warning" :message="refreshStatus.message" show-icon/>
   <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount, 'summary-collection':!draft.refundsReady }">
-    <article><div><small>正向计提</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
-    <article><div><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div></article>
+    <article><div><small>{{ draft.practiceRosterVersion ? '本班计提（含名单确认前退款）' : '正向计提' }}</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
+    <article v-if="!draft.practiceRosterVersion"><div><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div></article>
     <article v-if="draft.correctionCount"><div><small>推荐人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div></article>
     <article v-if="draft.refundsReady"><div><small>本期合计</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
   </div>
@@ -257,7 +260,9 @@ async function loadMore(section, cursorName) {
           </template>
           <template v-else-if="column.key === 'component'">{{ salesRoles[record.componentRole] || record.componentLabel || componentLabel(record.component) }}</template>
           <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}<small v-if="draft.catalog && record.ruleLabel" class="order-version">{{ record.ruleLabel }}</small></template>
-          <template v-else-if="column.key === 'base'">{{ formatMoney(record.baseMinor) }}</template>
+          <template v-else-if="column.key === 'base'">
+            {{ formatMoney(record.baseMinor) }}<small v-if="record.classRefundMinor>0" class="order-version">已扣退款 {{ formatMoney(record.classRefundMinor) }}</small>
+          </template>
           <template v-else-if="column.key === 'amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
         </template>
         <template #emptyText><a-empty description="本期没有可计提明细" /></template>

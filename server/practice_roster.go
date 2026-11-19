@@ -52,6 +52,7 @@ type practiceEnrollment struct {
 	MembershipType     int       `json:"membership_type"`
 	CommissionEligible bool      `json:"commission_eligible"`
 	SignedAt           time.Time `json:"signed_at"`
+	ConfirmedAt        time.Time `json:"-"`
 	PaidOrderIDs       []string  `json:"paid_order_ids"`
 	ContentHash        string    `json:"hash,omitempty"`
 }

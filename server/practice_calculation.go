@@ -15,13 +15,18 @@ func practiceIssue(code string, member practiceEnrollment, rule paymentRule, par
 }
 
 type practicePurchase struct {
-	member   practiceEnrollment
-	payments []paymentInput
-	base     int64
-	issue    string
+	member      practiceEnrollment
+	payments    []paymentInput
+	gross, base int64
+	issue       string
+	issueFactID int64
+	netPayments map[int64]int64
+	refunds     map[int64][]paymentInput
+	lateRefunds []paymentInput
 }
 
-func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string) ([]practicePurchase, error) {
+func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
+	refunds map[int64][]practiceRefundMatch) ([]practicePurchase, error) {
 	counts := make(map[string]int)
 	for _, member := range members {
 		if member.CommissionEligible {
@@ -43,19 +48,23 @@ func preparePracticePurchases(members []practiceEnrollment, orders map[string][]
 				return nil, err
 			}
 		}
+		if purchase.issue == "" {
+			purchase.applyRefunds(refunds)
+		}
 		purchases = append(purchases, purchase)
 	}
 	return purchases, nil
 }
 
 func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orders map[string][]paymentInput,
-	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory) (paymentDraft, error) {
+	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory,
+	refunds map[int64][]practiceRefundMatch) (paymentDraft, error) {
 	var draft paymentDraft
-	purchases, err := preparePracticePurchases(members, orders, blocked)
+	purchases, err := preparePracticePurchases(members, orders, blocked, refunds)
 	if err != nil {
 		return draft, err
 	}
-	awards, tierIssues, err := practiceTierAwards(rule, purchases, orders, identities, blocked, history)
+	awards, tierIssues, err := practiceTierAwards(rule, purchases, orders, identities, blocked, history, refunds)
 	if err != nil {
 		return draft, err
 	}
@@ -68,8 +77,15 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 	for _, purchase := range purchases {
 		member, payments, base := purchase.member, purchase.payments, purchase.base
 		if purchase.issue != "" {
-			draft.Issues = append(draft.Issues, practiceIssue(purchase.issue, member, rule, ""))
+			issue := practiceIssue(purchase.issue, member, rule, "")
+			issue.FactID = purchase.issueFactID
+			draft.Issues = append(draft.Issues, issue)
 			continue
+		}
+		for _, refund := range purchase.lateRefunds {
+			issue := practiceIssue("PRACTICE_REFUND_AFTER_ROSTER", member, rule, "")
+			issue.FactID = refund.ID
+			draft.Issues = append(draft.Issues, issue)
 		}
 		for _, payment := range payments {
 			fact := payment.Fact
@@ -77,10 +93,15 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_DUPLICATE_PERFORMANCE_PAYMENT", member, rule, ""))
 				continue
 			}
-			draft.Performance = append(draft.Performance, draftPerformance{
-				SourceVersionID: payment.ID, Principal: *fact.AmountMinor,
-				PersonID: performanceOwner(fact, &rule, classMember(member.MembershipType), identities),
-			})
+			owner := performanceOwner(fact, &rule, classMember(member.MembershipType), identities)
+			draft.Performance = append(draft.Performance, draftPerformance{SourceVersionID: payment.ID, Principal: *fact.AmountMinor, PersonID: owner})
+			for _, refund := range purchase.refunds[payment.ID] {
+				f := refund.Fact
+				draft.Performance = append(draft.Performance, draftPerformance{
+					SourceVersionID: refund.ID, PaymentVersionID: payment.ID, PersonID: owner, Principal: *f.AmountMinor,
+					Refund: &performanceRefundKey{f.Source, f.Domain, f.RefundID, f.OccurredAt.UTC()},
+				})
+			}
 		}
 		var matched bool
 		for _, part := range rule.Components {
@@ -110,7 +131,11 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				}
 				part.Mode, part.Value = tier.Mode, tier.Value
 			}
-			amount := calculatePaymentAmount(base, part)
+			amount, issue := purchase.commissionAmount(part)
+			if issue != "" {
+				draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+				continue
+			}
 			if isTiered && amount > base {
 				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_TIER_EXCEEDS_PAYMENT", member, rule, part.Type))
 				continue
@@ -121,12 +146,13 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 			var cumulativeBase, previousShare int64
 			for index, payment := range payments {
-				cumulativeBase += *payment.Fact.AmountMinor
+				net := purchase.netAmount(payment)
+				cumulativeBase += net
 				share := prorateMinor(amount, cumulativeBase, base)
 				payee := assignments[index]
 				draft.Lines = append(draft.Lines, draftLine{
 					FactID: payment.ID, RuleID: rule.ID, EnrollmentID: member.ID, PersonID: payee.PersonID,
-					IdentityID: payee.ID, Component: part.Type, Base: *payment.Fact.AmountMinor, Amount: share - previousShare,
+					IdentityID: payee.ID, Component: part.Type, Base: net, Amount: share - previousShare,
 				})
 				previousShare = share
 			}
@@ -169,7 +195,8 @@ func practicePurchaseCompany(payments []paymentInput) (string, string) {
 }
 
 func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map[string][]paymentInput,
-	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory) (map[int64]practiceTier, practiceTierIssues, error) {
+	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory,
+	refunds map[int64][]practiceRefundMatch) (map[int64]practiceTier, practiceTierIssues, error) {
 	part := practiceTierComponent(rule)
 	if part == nil {
 		return nil, practiceTierIssues{}, nil
@@ -222,7 +249,7 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 	var index practicePriorIndex
 	if len(needsCount) != 0 {
 		var err error
-		index, err = indexPracticePrior(history, part.SourceRole, orders, identities, blocked)
+		index, err = indexPracticePrior(history, part.SourceRole, orders, identities, blocked, refunds)
 		if err != nil {
 			return nil, issues, err
 		}

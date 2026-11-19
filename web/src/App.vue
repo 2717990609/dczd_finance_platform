@@ -381,7 +381,7 @@ function countStartBody(form) {
 function ruleComponentBody(row) {
   const sourceRole = row.sourceRole?.trim().toUpperCase()
   const component = {type:must(row.type),mode:must(row.mode,'请选择计提方式'),value:0,
-    ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy ? {refundPolicy:row.refundPolicy} : {}),
+    ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy && (!classRule.value || row.mode!=='rate') ? {refundPolicy:row.refundPolicy} : {}),
     ...(row.classMember ? {classMember:row.classMember} : {})}
   if (row.mode !== 'tiered') {
     component.value = minor(must(row.amount,'请填写每个组件的比例或金额'))
@@ -682,7 +682,8 @@ async function save() {
             <a-input v-model:value="c.sourceRole" :aria-label="'来源角色 '+(i+1)" placeholder="如 LOCK_SALES_USER 或 DIRECT_REFERRER" :maxlength="64"/>
           </a-form-item>
           <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes" :people="peopleOptions" :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"/>
-          <a-form-item v-if="selectedProduct?.periodMode==='calendar'" :label="'分项 '+(i+1)+' 的退款处理'" extra="历史退款沿用付款时的规则版本。">
+          <a-form-item v-if="selectedProduct && (!classRule || c.mode!=='rate')" :label="'分项 '+(i+1)+' 的退款处理'"
+            :extra="classRule ? '适用于确认名单前的固定金额分项或固定金额档位。' : '历史退款沿用付款时的规则版本。'">
             <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>
           </a-form-item>
         </div>

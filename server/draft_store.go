@@ -524,7 +524,8 @@ const draftDetailSQL = `SELECT jsonb_build_object(
    l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",o.source,o.order_id AS "orderId",
    o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",coalesce(rv.version,cv.version_no) AS "ruleVersion",
    coalesce(l.catalog_rule_id::text,l.rule_id::text) AS "ruleId",coalesce(package.name,rv.label) AS "ruleLabel",
-   e.source_enrollment_id AS "enrollmentId",e.membership_type AS "membershipType",coalesce(company_label.label,company.company_id) AS "salesCompany"
+   e.source_enrollment_id AS "enrollmentId",e.membership_type AS "membershipType",coalesce(company_label.label,company.company_id) AS "salesCompany",
+   CASE WHEN e.id IS NOT NULL THEN (o.fact->>'amountMinor')::bigint-l.base_minor END AS "classRefundMinor"
   FROM calculation_draft_lines l JOIN source_order_versions o ON o.id=l.source_version_id
   LEFT JOIN people p ON p.id=l.person_id LEFT JOIN organization_units beneficiary ON beneficiary.id=l.beneficiary_unit_id
   LEFT JOIN rule_versions rv ON rv.id=l.rule_id LEFT JOIN legacy_rule_versions cv ON cv.source_id=l.catalog_rule_id

@@ -42,10 +42,21 @@ const draftRefreshFacts = `WITH keys AS (
  SELECT p.id,p.product_id,v.id AS event_id,v.kind FROM mapped v JOIN calendar p USING(product_id)
  WHERE v.occurred_at>=p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
  AND v.occurred_at<(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
+), refund_versions AS (
+ SELECT v.id FROM events changed JOIN source_order_versions v
+  ON v.source=changed.source AND v.kind='REFUND_SUCCEEDED' AND v.fact->>'domain'=changed.fact->>'domain'
+  AND v.fact->>'refundId'=changed.fact->>'refundId'
+ WHERE changed.kind='REFUND_SUCCEEDED' AND coalesce(changed.fact->>'refundId','')<>''
+ UNION SELECT v.id FROM events changed JOIN source_order_versions v
+  ON v.source='DCZD' AND v.kind='REFUND_SUCCEEDED' AND v.record_key=changed.record_key
+ WHERE changed.source='DCZD' AND changed.kind='REFUND_SUCCEEDED'
+), practice_events AS (
+ SELECT order_id,fact FROM events WHERE source='DCZD' AND fact->>'domain'='PRACTICE' AND kind='ORDER_PAID'
+ UNION ALL SELECT v.order_id,v.fact FROM source_order_versions v JOIN refund_versions changed USING(id)
+ WHERE v.source='DCZD' AND v.fact->>'domain'='PRACTICE'
 ), practice_order AS (
- SELECT order_id FROM events WHERE source='DCZD'
- UNION SELECT a->>'orderId' FROM events v JOIN LATERAL jsonb_array_elements(v.fact->'refundsPayment') a ON true
- WHERE v.source='DCZD'
+ SELECT order_id FROM practice_events
+ UNION SELECT a->>'orderId' FROM practice_events v JOIN LATERAL jsonb_array_elements(v.fact->'refundsPayment') a ON true
 ), classes AS (
  SELECT DISTINCT p.id,p.product_id,p.ordinal,split_part(p.source_period_key,':',3) AS series
  FROM practice_order o JOIN practice_enrollments e ON e.paid_order_ids @> ARRAY[o.order_id]
@@ -59,11 +70,6 @@ const draftRefreshFacts = `WITH keys AS (
  JOIN calculation_draft_lines line ON line.source_version_id=paid.id AND line.component_type='referral'
  JOIN settlements final ON final.period_id=line.period_id JOIN periods prior ON prior.id=line.period_id
  WHERE v.kind='ORDER_PAID'
-), refund_versions AS (
- SELECT DISTINCT v.id FROM events changed JOIN source_order_versions v
-  ON v.source=changed.source AND v.kind='REFUND_SUCCEEDED' AND v.fact->>'domain'=changed.fact->>'domain'
-  AND v.fact->>'refundId'=changed.fact->>'refundId'
- WHERE changed.kind='REFUND_SUCCEEDED' AND coalesce(changed.fact->>'refundId','')<>''
 ), corrected_originals AS (
  SELECT DISTINCT line.id FROM events v JOIN source_order_versions paid
   ON paid.source=v.source AND paid.order_id=v.order_id AND paid.kind='ORDER_PAID'
@@ -112,10 +118,11 @@ WHERE original.id=$1 AND (
 const draftRefreshRoster = `WITH base AS (
  SELECT p.id,p.product_id,p.ordinal,p.source_period_key,split_part(p.source_period_key,':',3) AS series FROM periods p
  WHERE p.source_period_key=$1 AND ($2::bigint IS NULL OR NOT EXISTS(
-  SELECT 1 FROM practice_rosters r WHERE r.period_key=$1 AND r.source_version>$2))
+  SELECT 1 FROM practice_rosters r WHERE r.period_key=$1 AND r.source_version>$2) OR NOT EXISTS(
+  SELECT 1 FROM practice_rosters r WHERE r.period_key=$1 AND r.source_version<$2))
 ), relatives AS (
  SELECT DISTINCT sibling.period_key FROM practice_enrollments e JOIN practice_enrollments sibling
-  ON sibling.source_enrollment_id=e.source_enrollment_id AND sibling.participant_id=e.participant_id AND sibling.paid_order_ids&&e.paid_order_ids
+  ON sibling.paid_order_ids&&e.paid_order_ids AND split_part(sibling.period_key,':',3)=split_part(e.period_key,':',3)
  WHERE e.period_key=$1 AND sibling.period_key<>$1 AND e.commission_eligible AND sibling.commission_eligible
 ), affected AS (
  SELECT id,product_id,ordinal,series FROM base

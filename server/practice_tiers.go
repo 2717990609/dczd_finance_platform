@@ -112,7 +112,7 @@ type practiceTierPurchase struct {
 func validPracticeSalesTiers(part component) bool {
 	tiers := part.Tiers
 	if part.Type != "sales" || part.ClassMember != "new" || part.SourceRole == "" ||
-		part.Value != 0 || part.RefundPolicy != "" || tiers == nil || len(tiers.Count)+len(tiers.Performance)+len(tiers.CompanySchedules) == 0 {
+		part.Value != 0 || tiers == nil || len(tiers.Count)+len(tiers.Performance)+len(tiers.CompanySchedules) == 0 {
 		return false
 	}
 	switch {

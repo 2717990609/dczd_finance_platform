@@ -427,7 +427,14 @@ ALTER TABLE calculation_draft_issues ADD COLUMN IF NOT EXISTS practice_enrollmen
 CREATE INDEX IF NOT EXISTS source_order_versions_practice_refund_payment
  ON source_order_versions USING gin ((fact->'refundsPayment') jsonb_path_ops)
  WHERE source='DCZD' AND kind='REFUND_SUCCEEDED';
+CREATE INDEX IF NOT EXISTS source_order_versions_practice_refund_record
+ ON source_order_versions(record_key,updated_at DESC,id DESC)
+ WHERE source='DCZD' AND kind='REFUND_SUCCEEDED';
 CREATE INDEX IF NOT EXISTS practice_enrollments_paid_orders ON practice_enrollments USING gin(paid_order_ids);
+INSERT INTO draft_refresh_queue(period_id)
+ SELECT DISTINCT i.period_id FROM calculation_draft_issues i
+ WHERE i.code='PRACTICE_REFUND_PENDING' AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=i.period_id)
+ ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS configuration_options (
  group_key text NOT NULL,

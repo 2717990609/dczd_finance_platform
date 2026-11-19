@@ -51,12 +51,12 @@ type practicePriorIndex struct {
 }
 
 func indexPracticePrior(history practiceTierHistory, role string, orders map[string][]paymentInput,
-	identities map[identityKey][]identityAssignment, blocked map[int64]string) (practicePriorIndex, error) {
+	identities map[identityKey][]identityAssignment, blocked map[int64]string, refunds map[int64][]practiceRefundMatch) (practicePriorIndex, error) {
 	index := practicePriorIndex{
 		counts: make(map[int64]map[int64]int64), incomplete: make(map[int64]bool),
 		enrollmentFrom: make(map[string]int64), paymentFrom: make(map[string]int64),
 	}
-	past, err := preparePracticePurchases(history.members, orders, blocked)
+	past, err := preparePracticePurchases(history.members, orders, blocked, refunds)
 	if err != nil {
 		return index, err
 	}
