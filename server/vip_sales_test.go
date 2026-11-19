@@ -12,18 +12,21 @@ func TestVIPRateResolvesCompanyBeforeCategoryAndKeepsExplicitZero(t *testing.T) 
 		{Company: "ANY", Relationship: "ANY", Category: "partner", Rate: 900},
 		{Company: "ANY", Relationship: "ANY", Rate: 0},
 	}
+	partner, unclassified, other := "partner", "", "known"
 	for _, test := range []struct {
-		company, category, issue string
-		want                     int64
-	}{{"fixed", "partner", "", 1000}, {"default", "partner", "", 900},
-		{"default", "", "", 700}, {"other", "", "SALES_CATEGORY_MISSING", 0},
-		{"other", "known", "", 0}, {"other", "partner", "", 900}} {
+		company  string
+		category *string
+		issue    string
+		want     int64
+	}{{"fixed", &partner, "", 1000}, {"default", &partner, "", 900},
+		{"default", nil, "", 700}, {"other", nil, "SALES_CATEGORY_MISSING", 0},
+		{"other", &unclassified, "", 0}, {"other", &other, "", 0}, {"other", &partner, "", 900}} {
 		if got, issue := resolveVIPRate(rows, test.company, "DIRECT", test.category); got != test.want || issue != test.issue {
 			t.Fatalf("%+v: rate=%d issue=%s", test, got, issue)
 		}
 	}
 	rows = append(rows, vipRateRow{Company: "ANY", Relationship: "ANY", Category: "partner", Rate: 902})
-	if _, issue := resolveVIPRate(rows, "other", "DIRECT", "partner"); issue != "SALES_RATE_CONFLICT" {
+	if _, issue := resolveVIPRate(rows, "other", "DIRECT", &partner); issue != "SALES_RATE_CONFLICT" {
 		t.Fatalf("rate conflict=%q", issue)
 	}
 }
@@ -87,7 +90,7 @@ func TestVIPSourceClaimsDistinguishARepeatedRoleFromAnotherSeller(t *testing.T) 
 
 func TestVIPNonCategoryRateRejectsEqualSpecificity(t *testing.T) {
 	rows := []vipRateRow{{Company: "company", Relationship: "ANY", Rate: 1000}, {Company: "ANY", Relationship: "DIRECT", Rate: 500}}
-	if _, issue := resolveVIPRate(rows, "company", "DIRECT", ""); issue != "SALES_RATE_CONFLICT" {
+	if _, issue := resolveVIPRate(rows, "company", "DIRECT", nil); issue != "SALES_RATE_CONFLICT" {
 		t.Fatalf("equal specificity: %s", issue)
 	}
 }

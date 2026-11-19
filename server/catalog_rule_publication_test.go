@@ -13,7 +13,7 @@ func TestChangingSalesRatesPreservesInternalTeamSplit(t *testing.T) {
 		`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY"`,
 		`"item_key":"sales","label":"销售","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY","rate_table":[
 			{"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":1000},
-			{"sales_organization_party_id":"outside","sales_relationship":"DIRECT","rate_bps":700}]`,
+			{"sales_organization_party_id":"outside","sales_relationship":"DIRECT","sales_category_id":"80000000-0000-4000-8000-000000000001","rate_bps":700}]`,
 	).Replace(testVIPBenefits))
 	one, two, rate := 1, 2, int64(850)
 	if _, _, err := editCatalogRates(definition, []catalogRateChange{{ItemKey: "sales", Row: &one, Rate: &rate}}); !errors.Is(err, errCatalogTeamRate) {

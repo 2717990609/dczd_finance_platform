@@ -114,7 +114,7 @@ func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
 	return rows, true
 }
 
-func resolveVIPRate(rows []vipRateRow, company, relationship, category string) (int64, string) {
+func resolveVIPRate(rows []vipRateRow, company, relationship string, category *string) (int64, string) {
 	if company == "" {
 		return 0, "SALES_COMPANY_MISSING"
 	}
@@ -125,7 +125,7 @@ func resolveVIPRate(rows []vipRateRow, company, relationship, category string) (
 	var groups [4][]vipRateRow
 	for _, row := range rows {
 		if row.Company != company && row.Company != "ANY" || row.Relationship != "ANY" && relationship != "" && row.Relationship != relationship ||
-			row.Category != "" && row.Category != category {
+			row.Category != "" && (category == nil || row.Category != *category) {
 			continue
 		}
 		tier := 0
@@ -143,7 +143,7 @@ func resolveVIPRate(rows []vipRateRow, company, relationship, category string) (
 		}
 		groups[tier] = append(groups[tier], row)
 	}
-	if categorized && category == "" && len(groups[0])+len(groups[2]) == 0 {
+	if categorized && category == nil && len(groups[0])+len(groups[2]) == 0 {
 		return 0, "SALES_CATEGORY_MISSING"
 	}
 	for _, choices := range groups {
@@ -205,10 +205,11 @@ type vipSalesData struct {
 }
 
 type vipSalesRequest struct {
-	Order, Product, Project, Seller, Company, Relationship, Category string
-	CompanyUnit                                                      string
-	Paid                                                             int64
-	At                                                               time.Time
+	Order, Product, Project, Seller, Company, Relationship string
+	CompanyUnit                                            string
+	Category                                               *string // Empty when explicitly unclassified, nil without a history record.
+	Paid                                                   int64
+	At                                                     time.Time
 }
 
 type vipSalesPart struct {

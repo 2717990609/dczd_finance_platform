@@ -276,14 +276,18 @@ func editCatalogRates(raw json.RawMessage, changes []catalogRateChange) (json.Ra
 }
 
 func internalTeamRatesChanged(before, after vipSalesPolicy) bool {
-	// Valid category IDs are UUIDs. Include both missing and unmatched categories.
+	// Valid category IDs are UUIDs. Also check no history, unclassified, and unmatched.
 	categories := map[string]bool{"": true, "unmatched": true}
 	for _, row := range before.Sales {
 		categories[row.Category] = true
 	}
+	categoryChecks := []*string{nil}
+	for category := range categories {
+		categoryChecks = append(categoryChecks, &category)
+	}
 	for _, team := range before.Split.Teams {
 		for _, relationship := range []string{"", "DIRECT", "INDIRECT", "NONE"} {
-			for category := range categories {
+			for _, category := range categoryChecks {
 				oldRate, oldIssue := resolveVIPRate(before.Sales, team.Company, relationship, category)
 				newRate, newIssue := resolveVIPRate(after.Sales, team.Company, relationship, category)
 				if oldRate != newRate || oldIssue != newIssue {

@@ -199,9 +199,12 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 		return req, "SALES_COMPANY_CONFLICT"
 	}
 	req.Company, req.CompanyUnit = company.Value, company.Unit
-	req.Category, conflict = resolveVIPLink(d.Categories, req.Company, sale.PaidAt)
+	category, conflict := resolveVIPLinkRecord(d.Categories, req.Company, sale.PaidAt)
 	if conflict {
 		return req, "SALES_CATEGORY_CONFLICT"
+	}
+	if category.Key != "" {
+		req.Category = &category.Value
 	}
 	return req, ""
 }

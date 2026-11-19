@@ -25,7 +25,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	policy := func(ownerRate string) json.RawMessage {
 		return json.RawMessage(strings.NewReplacer(
 			`"amount_basis"`, `"refund_policy":"PROPORTIONAL","schema_version":"1.1","recognition_trigger":"PAID","settlement_policy":{"cycle":"MONTHLY_25_TO_24"},"policy_scope":{"business_sku_codes":["test"],"sales_systems":["DCAI"],"financial_event_types":["order.paid"]},"amount_basis"`,
-			`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY"`, fmt.Sprintf(`"item_key":"sales","label":"销售","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY","rate_table":[{"sales_organization_party_id":%q,"sales_relationship":"ANY","rate_bps":1000}]`, id(14)),
+			`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY"`, fmt.Sprintf(`"item_key":"sales","label":"销售","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY","rate_table":[{"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":1000},{"sales_organization_party_id":"ANY","sales_relationship":"ANY","sales_category_id":%q,"rate_bps":1500}]`, id(29)),
 			`"alice"`, fmt.Sprintf("%q", id(11)), `"tech"`, fmt.Sprintf("%q", id(15)), `"team"`, fmt.Sprintf("%q", id(16)),
 			`"dept"`, fmt.Sprintf("%q", id(18)), `"company"`, fmt.Sprintf("%q", id(14)), `"rate_bps":500`, `"rate_bps":`+ownerRate,
 		).Replace(testVIPBenefits))
@@ -62,14 +62,15 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := fmt.Sprintf(`{"source":"DCAI","capturedAt":"2026-11-01T00:00:00Z","people":[],"personLinks":[{"id":%q,"externalId":"seller","partyId":%q,"from":"2026-01-01T00:00:00Z"}],
-	 "companyLinks":[{"id":%q,"externalId":"seller-company","companyId":%q,"unitId":%q,"from":"2026-01-01T00:00:00Z"}],"categories":[],
+	 "companyLinks":[{"id":%q,"externalId":"seller-company","companyId":%q,"unitId":%q,"from":"2026-01-01T00:00:00Z"}],
+	 "categories":[{"companyId":%q,"categoryId":null,"from":"2026-01-01T00:00:00Z"}],
 	 "appointments":[{"id":%q,"partyId":%q,"role":"PROJECT_OWNER","scope":"PROJECT","key":"AI","from":"2026-01-01T00:00:00Z"},
 	 {"id":%q,"partyId":%q,"role":"SALES","scope":"PROJECT","key":"AI","from":"2026-01-01T00:00:00Z"},
 	 {"id":%q,"partyId":%q,"role":"TEAM_LEAD","scope":"ORGANIZATION_UNIT","key":%q,"from":"2026-01-01T00:00:00Z"},
 	 {"id":%q,"partyId":%q,"role":"DELIVERY","scope":"ORGANIZATION_UNIT","key":%q,"from":"2026-01-01T00:00:00Z"},
 	 {"id":%q,"partyId":%q,"role":"DELIVERY","scope":"ORGANIZATION_UNIT","key":%q,"from":%q}],
 	 "organizations":[{"partyId":%q,"unitId":%q},{"partyId":%q,"unitId":%q}]}`,
-		id(21), id(12), id(22), id(14), id(17), id(23), id(11), id(24), id(12), id(25), id(13), id(18), id(26), id(11), id(18), id(27), id(12), id(18), boundary.Format(time.RFC3339), id(15), id(17), id(16), id(18))
+		id(21), id(12), id(22), id(14), id(17), id(14), id(23), id(11), id(24), id(12), id(25), id(13), id(18), id(26), id(11), id(18), id(27), id(12), id(18), boundary.Format(time.RFC3339), id(15), id(17), id(16), id(18))
 	if err := storeVIPSalesContext(ctx, s.db, json.RawMessage(raw)); err != nil {
 		t.Fatal(err)
 	}
