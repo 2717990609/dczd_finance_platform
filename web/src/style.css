@@ -129,3 +129,25 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .tier-person-starts[open] summary { margin-bottom: 8px; }
 .rule-count-review { margin-top: 4px; font-size: 12px; }
 .rule-count-review ul { margin-block: 4px 0; padding-inline-start: 18px; }
+
+.organization-filters {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.3fr) minmax(155px, .7fr) minmax(170px, 1fr) auto;
+  gap: 12px;
+  padding: 14px 15px;
+  align-items: end;
+  border-bottom: 1px solid var(--line);
+}
+.organization-filters > div { min-width: 0; }
+.organization-filters label { display: block; margin-bottom: 5px; }
+.organization-filters .ant-tree-select { width: 100%; }
+.organization-filters .organization-date { height: 34px; }
+.organization-filters .ant-checkbox-wrapper { display: inline-flex; align-items: center; min-height: 34px; margin: 0; }
+.organization-context { color: var(--muted); font-size: 13px; }
+.organization-directory .ant-table-pagination { padding-inline: 12px; }
+@media (max-width: 820px) {
+  .organization-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 390px) {
+  .organization-filters { grid-template-columns: 1fr; }
+}

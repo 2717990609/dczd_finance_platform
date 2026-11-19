@@ -427,3 +427,44 @@ CREATE TABLE IF NOT EXISTS legacy_rule_versions (
  observed_at timestamptz NOT NULL,
  UNIQUE(package_id,version_no)
 );
+
+CREATE TABLE IF NOT EXISTS organization_units (
+ id uuid PRIMARY KEY,
+ parent_id uuid REFERENCES organization_units(id) DEFERRABLE INITIALLY DEFERRED,
+ kind text NOT NULL CHECK (btrim(kind) <> ''),
+ name text NOT NULL CHECK (btrim(name) <> ''),
+ status text NOT NULL CHECK (status IN ('ACTIVE','INACTIVE')),
+ sort_order integer NOT NULL DEFAULT 100
+);
+
+CREATE TABLE IF NOT EXISTS organization_assignments (
+ id uuid PRIMARY KEY,
+ person_id bigint NOT NULL REFERENCES people(id),
+ unit_id uuid NOT NULL REFERENCES organization_units(id),
+ kind text NOT NULL CHECK (btrim(kind) <> ''),
+ position text NOT NULL DEFAULT '',
+ valid_from timestamptz NOT NULL,
+ valid_to timestamptz CHECK (valid_to > valid_from)
+);
+CREATE INDEX IF NOT EXISTS organization_assignments_unit_time
+ ON organization_assignments(unit_id,valid_from,valid_to);
+CREATE INDEX IF NOT EXISTS organization_assignments_person_time
+ ON organization_assignments(person_id,valid_from,valid_to);
+
+CREATE TABLE IF NOT EXISTS organization_import_state (
+ singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+ captured_at timestamptz NOT NULL,
+ digest bytea NOT NULL
+);
+
+INSERT INTO configuration_options(group_key,option_key,label,display_order) VALUES
+ ('organizationKind','COMPANY','公司',10),
+ ('organizationKind','DEPARTMENT','部门',20),
+ ('organizationKind','TEAM','小组',30),
+ ('organizationKind','STORE','门店',40),
+ ('appointmentKind','PRIMARY','主要任职',10),
+ ('appointmentKind','CONCURRENT','兼任',20),
+ ('appointmentKind','MEMBER','公司成员',30),
+ ('appointmentKind','MANAGER','公司管理人员',40),
+ ('appointmentKind','OWNER','公司负责人',50)
+ON CONFLICT DO NOTHING;

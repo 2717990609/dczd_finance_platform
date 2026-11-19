@@ -6,6 +6,7 @@ import {
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import DraftWorkbench from './DraftWorkbench.vue'
+import OrganizationDirectory from './OrganizationDirectory.vue'
 import PracticeTierEditor from './PracticeTierEditor.vue'
 
 const navigation = [
@@ -14,6 +15,7 @@ const navigation = [
   {key:'periods', title:'核算期次', icon:CalendarOutlined, description:'设置实际开班或结算窗口，查看各期匹配的规则。'},
   {key:'rules', title:'规则配置', icon:ProfileOutlined, description:'组合分润组件，并指定适用期次、起始期数或产品默认范围。'},
   {key:'orders', title:'来源订单', icon:FileSearchOutlined, description:'按原订单 ID 从子系统重拉，查询财务目前收到的业务记录。'},
+  {key:'organization', title:'组织与人员', icon:TeamOutlined},
   {key:'people', title:'人员映射', icon:TeamOutlined, description:'查询财务计算使用的来源人员标识及有效区间。'},
 ]
 const getRoute = () => navigation.some(x => x.key === location.hash.slice(1)) ? location.hash.slice(1) : 'products'
@@ -25,14 +27,7 @@ const scopeSearch = ref('')
 const productScopedPages = new Set(['products','periods','rules','settlement'])
 const usesProductScope = computed(() => productScopedPages.has(current.value))
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
-const legacyOrganizationURL = (() => {
-  try {
-    const url = new URL(import.meta.env.VITE_LEGACY_ORGANIZATION_URL)
-    return url.protocol === 'https:' && !url.username && !url.password ? url.href : ''
-  } catch {
-    return ''
-  }
-})()
+const organization = ref()
 const data = ref({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
 const loading = ref(false)
 const saving = ref(false)
@@ -194,7 +189,7 @@ async function refresh(reloadOptions = false) {
   if (sourceFilter.value) params.set('source',sourceFilter.value)
   if (filter.value.trim()) params.set('orderId',filter.value.trim())
   if (olderThan.value) params.set('beforeId',olderThan.value)
-  const sections = {settlement:['products','periods'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], people:['people','identities']}
+  const sections = {settlement:['products','periods'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
   if (requests.catalogRules) requests.catalogRules = '/rule-catalog'
   if (requests.practiceCountOpenings) requests.practiceCountOpenings = '/practice-count-openings'
@@ -212,6 +207,10 @@ async function refresh(reloadOptions = false) {
     } else globalError.value ||= result.reason.message
   })
   loading.value = false
+}
+function refreshWorkspace() {
+  refresh(true)
+  organization.value?.refresh()
 }
 function changeRoute() {
   current.value = getRoute()
@@ -365,8 +364,7 @@ async function save() {
         <div class="path"><b>财务工作台</b><span aria-hidden="true">/</span><span>{{ active.title }}</span></div>
       </div>
       <div class="topbar-actions">
-        <a-button v-if="legacyOrganizationURL" :href="legacyOrganizationURL" target="_blank" rel="noopener noreferrer">组织与人员</a-button>
-        <a-button v-if="current!=='settlement'" :loading="loading" @click="refresh(true)"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新数据</a-button>
+        <a-button v-if="current!=='settlement'" :loading="loading" @click="refreshWorkspace"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新数据</a-button>
       </div>
     </header>
     <nav class="workspace-nav" aria-label="主导航">
@@ -406,6 +404,10 @@ async function save() {
         <template v-if="current==='settlement'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <DraftWorkbench :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :api="api" :format-money="formatMoney" :format-time="formatTime" />
+        </template>
+        <template v-else-if="current==='organization'">
+          <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
+          <OrganizationDirectory ref="organization" :api="api" :option-label="optionLabel" :format-time="formatTime"/>
         </template>
         <template v-else>
         <section class="heading">

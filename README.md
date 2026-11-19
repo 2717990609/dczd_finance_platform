@@ -19,7 +19,7 @@
 
 已结算订单的推荐分项可以按原规则对照最新订单版本试算差额。更正比较原入账、后续已入账差额及退款，原结算固定。扣回处理尚未核实时显示待核，确认原受益人离职且无法联系的场景保留正确人员的补发。正式登记扣回处理仍需接入获授权的财务办理入口。
 
-结算确认的事务和数据库约束可通过集成测试验证。产品默认关闭确认，开发工作台可查已确认结果。正式办理入口待接入原系统的财务权限及产品对账流程后开放。
+结算确认的事务和数据库约束可通过集成测试验证。产品默认关闭确认，开发工作台可查已确认结果。正式办理入口待完成财务权限配置及产品对账后开放。
 
 ## 本地运行
 
@@ -50,7 +50,13 @@ pnpm --dir web dev
 
 工作台的固定下拉选项由数据库 `configuration_options` 提供，可配置显示名、顺序、是否启用和适用范围。应用从 `GET /api/v1/configuration-options` 读取，初始化仅补入缺少的默认项，不覆盖已有配置。产品、人员和期次从各自的业务表读取。选项编码对应服务端支持的业务行为，改显示名或排列不会修改已经保存的规则。
 
-组织、人员档案和任职沿用现有数据结构。正式使用前需要在本系统接通组织数据、人员映射和权限。开发联调期间，可在 `web/.env.local` 配置 HTTPS 组织入口，重启前端后从「组织与人员」打开。
+工作台的「组织与人员」使用本系统数据库。可按公司、部门、小组或门店筛选直接任职，查看当前归属、指定日期北京时间零点的归属，或全部任职记录。任职起止按区间保存，结束时刻与下一段起始时刻重合时，由新任职生效。组织树显示当前层级，已停用组织仍可查询任职历史。
+
+技术人员可在专用开发库一次性导入组织数据。文件包含 `capturedAt`、`people`、`units` 和 `assignments`。人员使用 `id` 和 `name`，组织使用 `id`、`parentId`、`name`、`kind`、`status` 及可选的 `sortOrder`，任职使用 `id`、`personId`、`unitId`、`kind`、`position`、`from` 和可空的 `to`。相同的人员主键与已有人员档案共用，全部记录在单个事务中写入。
+
+```sh
+go -C server run . import-organization /path/to/organization.json
+```
 
 技术人员可以将核验过的产品与规则快照导入专用开发库。产品进入产品目录，规则进入统一的规则列表，保留其作用域、版本、有效期和暂停状态。完成核算适配和金额验证前，相关产品的规则显示为待启用。新系统运行时直接使用自己的配置库。
 
@@ -66,7 +72,7 @@ go -C server run . import-legacy-catalog /path/to/catalog.json
 go -C server run . import-practice-roster /path/to/roster.json
 ```
 
-已有关账历史的实战班可以沿用旧系统冻结的个人期初。在专用开发库导入 JSON 后，在实战班新报阶梯的默认累计起点选择相应批次。文件使用 `productId`、旧冻结结算的 `sourceSettlementId`、`throughAt` 和 `people`。每个 `people` 项带旧财务人员 `legacyPartyId` 和 `newCount`。首次建立本地人员引用时填入来源的 `displayName`，已有同主键人员可省略。同一个结算的相同内容重复导入会复用批次。
+已有关账历史的实战班可以导入冻结的个人累计期初。在专用开发库导入 JSON 后，在实战班新报阶梯的默认累计起点选择相应批次。文件使用 `productId`、冻结结算的 `sourceSettlementId`、`throughAt` 和 `people`。每个 `people` 项带财务人员识别键 `legacyPartyId` 和 `newCount`。首次建立本地人员引用时填入来源的 `displayName`，已有同主键人员可省略。同一个结算的相同内容重复导入会复用批次。
 
 ```sh
 go -C server run . import-practice-count-opening /path/to/opening.json

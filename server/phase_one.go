@@ -116,6 +116,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.list(catalogRulesSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.list(practiceCountOpeningsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishRule)},
+		{Method: http.MethodGet, Path: "/api/v1/organization-units", Handler: s.list(organizationUnitsSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/organization-assignments", Handler: s.organizationAssignments},
 		{Method: http.MethodGet, Path: "/api/v1/people", Handler: s.list(peopleSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/people", Handler: submit(s.createPerson)},
 		{Method: http.MethodGet, Path: "/api/v1/identities", Handler: s.list(identitiesSQL)},
@@ -218,7 +220,7 @@ const rulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]'
  rv.from_ordinal AS "fromOrdinal",rv.period_id AS "periodId",pr.name AS "periodName",rv.effective_from AS "effectiveFrom",rv.components
  FROM rule_versions rv JOIN products p ON p.id=rv.product_id LEFT JOIN periods pr ON pr.id=rv.period_id ORDER BY rv.id DESC LIMIT 500) a`
 const peopleSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
- (SELECT id,name FROM people ORDER BY id DESC LIMIT 500) p`
+ (SELECT id,name FROM people) p`
 const identitiesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
  (SELECT i.id,i.source,i.external_id AS "externalId",p.name AS "personName",
  i.valid_from AS "validFrom",i.valid_to AS "validTo"
