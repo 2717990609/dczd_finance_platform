@@ -1,0 +1,38 @@
+# 大春之道实战班签到名单读取契约
+
+财务按来源期次主动读取确认名单。来源负责比较最近一次确认名单与当前业务报名、签到和开班时点，并返回是否仍然一致。财务用这份结果核对当前草稿。正式确认提交时再次向来源核验，确认后保存本次核算的订单、名单和规则版本。
+
+## 请求
+
+| 项目 | 约定 |
+| --- | --- |
+| 方法和路径 | `GET /internal/v1/finance/source-orders/practice-rosters` |
+| 来源及凭证 | 大春之道订单服务配置中的 `FINANCE_DCZD_URL` 和 `FINANCE_DCZD_TOKEN`，使用 `Authorization: Bearer <token>` |
+| 协议头 | `X-DCZD-Finance-Contract: dczd.finance-practice-roster-read/1.0` |
+| `period_key` | 实际开班期次稳定键，格式 `PRACTICE:<activity_type>:<strategy_id>:<activity_id>` |
+| `include_versions` | 省略时只返回核验字段。值为 `1` 时附带首次和最新确认名单 |
+
+源端使用服务凭证鉴权，读取和核验在同一数据视图中完成，返回 `Cache-Control: no-store`。生产通过 HTTPS 对接。响应使用 JSON，正文上限为 8 MiB。
+
+## 响应
+
+| 字段 | 类型 | 语义 |
+| --- | --- | --- |
+| `contract_version` | 字符串 | 固定为 `dczd.finance-practice-roster-read/1.0` |
+| `period_key` | 字符串 | 与请求期次一致 |
+| `current` | 布尔值 | 已确认名单仍与当前开班和签到事实一致时为 `true`。暂无确认版或业务已发生变化时为 `false` |
+| `has_payment_conflict` | 布尔值 | 名单中同一应计的订金或尾款也出现在其他仍有效的已确认班次名单中时为 `true`。按付款主键检查来源当前状态，覆盖尚未被财务拉取的班次 |
+| `roster_version` | 正整数 | 最新已确认版本 |
+| `roster_hash` | 字符串 | 最新确认版本存档原文中的 `sha256:` 哈希 |
+| `period_start_at` | RFC 3339 字符串 | 最新确认版本存档原文中的开班时点 |
+| `confirmed_at` | RFC 3339 字符串 | 最新确认版本存档原文中的确认时点 |
+| `first_confirmed_at` | RFC 3339 字符串 | 同一期次第 1 版存档原文中的确认时点，供班次试算区分名单确认前后的退款 |
+| `first_roster`、`latest_roster` | 对象 | 请求 `include_versions=1` 且 `current=true` 时返回。内容为存档的 `dczd.practice-roster/1.0` 对象。只有 1 版时两个字段返回同一对象 |
+
+`current=true` 时，确认版本的元数据和付款冲突状态必须齐全。`current=false` 时可省略这些字段。时间字段使用存档 JSON 中的时点和精度，以保留最初确认时刻。名单继续使用 `dczd.practice-roster/1.0` 既有内容哈希计算方式。接口支持只读服务鉴权和核验，无需触发业务确认或推送。
+
+## 财务行为
+
+- 在「分润试算」选择有来源期次的班次，点击「拉取签到名单」。财务核对期次、版本、开班和确认时点，校验名单内容哈希，将两个必要版本在同一事务写入。相同内容重复拉取会复用对应版本。班次草稿在手动试算或定时处理时读取最新确认版。
+- 在「结算核对」检查当前名单、订单同步覆盖、待核项和团队池分配。授权财务确认时重新计算并复验源端名单。核对标识绑定实际使用的版本及首次确认时刻，即使财务金额相同，刷新名单后也须重新核对。
+- 同一个确认请求可安全重试，返回已有的正式结算。正式账绑定确认时核验通过的来源版本。来源在核验返回之后发生的变化走后续财务更正。

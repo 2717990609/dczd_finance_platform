@@ -15,7 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-var errPracticeSettlementUnavailable = errors.New("实战班正式结算待核对来源和项目规则后开放")
+var errPracticeSettlementUnavailable = errors.New("尚未配置大春之道的签到名单读取连接")
 
 func readImportFile(filename string, target any, limit int64) error {
 	file, err := os.Open(filename)

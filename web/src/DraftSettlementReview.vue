@@ -24,6 +24,15 @@ const coverageStatus = {
   READY:'已覆盖本账期',
 }
 const streamLabel = stream => props.sourceStreams?.find(option => option.value === stream)?.label || '订单来源'
+const rosterStatus = {
+  NOT_CONFIGURED:'班次结算待核验子系统的签到名单版本',
+  UNAVAILABLE:'暂时无法核验大春之道的签到名单',
+  UNCONFIRMED:'签到名单尚未确认或已有变更，请在大春之道确认后重新拉取',
+  PAYMENT_CONFLICT:'报名付款同时出现在多个期次，请在大春之道核对延期',
+  NEEDS_PULL:'签到名单版本已变化，请重新拉取并试算',
+  NEEDS_DRAFT:'已拉取新版签到名单，请重新试算',
+  READY:'签到名单已核对',
+}
 
 async function load() {
   const request = ++sequence
@@ -92,10 +101,12 @@ onBeforeUnmount(() => { sequence++ })
         <a-alert v-if="!review.ended" type="info" :message="review.practiceRoster ? '班次尚未结束' : '账期尚未结束'" show-icon/>
         <a-alert v-if="review.draftStale" type="warning" message="试算数据已变化，请重新试算并核对" show-icon/>
         <a-alert v-if="review.laterPoolActivity" type="warning" message="后续账期已结算此团队池，请核对跨期处理" show-icon/>
-        <a-alert v-if="review.practiceRoster" type="info" message="班次结算待核验子系统的签到名单版本" show-icon>
+        <a-alert v-if="review.practiceRoster" :type="review.practiceRoster.sourceStatus === 'READY' ? 'success' : 'warning'"
+          :message="rosterStatus[review.practiceRoster.sourceStatus] || rosterStatus.NOT_CONFIGURED" show-icon>
           <template #description>
             <span>试算名单 v{{ review.practiceRoster.version }} · {{ review.practiceRoster.attendance }} 人</span>
             <span v-if="review.practiceRoster.latestVersion !== review.practiceRoster.version"> · 已导入 v{{ review.practiceRoster.latestVersion }}</span>
+            <span v-if="review.practiceRoster.sourceVersion && review.practiceRoster.sourceVersion !== review.practiceRoster.latestVersion"> · 来源 v{{ review.practiceRoster.sourceVersion }}</span>
             <span> · 开班 {{ formatTime(review.practiceRoster.startsAt) }}</span>
             <span> · 名单确认于 {{ formatTime(review.practiceRoster.confirmedAt) }}</span>
             <span v-if="review.practiceRoster.refundCutoff !== review.practiceRoster.confirmedAt">
@@ -142,6 +153,7 @@ onBeforeUnmount(() => { sequence++ })
     :cancel-button-props="{disabled:confirming}" @ok="closePeriod" @cancel="confirmation=undefined">
     <p>{{ period?.productName }} · {{ period?.name }}</p>
     <p>草稿 v{{ confirmation?.expectedVersion }} · 合计 <strong>{{ formatMoney(review?.totalMinor) }}</strong></p>
+    <p v-if="review?.practiceRoster">签到名单 v{{ review.practiceRoster.version }} · 首次确认 {{ formatTime(review.practiceRoster.refundCutoff) }}</p>
     <p>确认后锁定本期结算与分配结果。</p>
     <a-alert v-if="confirmationError" :message="confirmationError" type="error" show-icon/>
   </Modal>

@@ -155,6 +155,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/orders/pull", Handler: submit(s.pullOrder)},
 		{Method: http.MethodGet, Path: "/api/v1/orders/sync", Handler: s.getOrderSyncJobs},
 		{Method: http.MethodPost, Path: "/api/v1/orders/sync", Handler: submit(s.requestOrderSync)},
+		{Method: http.MethodPost, Path: "/api/v1/practice-rosters/pull", Handler: submit(s.pullPracticeRoster)},
 		{Method: http.MethodGet, Path: "/api/v1/sources", Handler: s.sourceStatuses},
 		{Method: http.MethodGet, Path: "/api/v1/drafts", Handler: s.getDraft},
 		{Method: http.MethodGet, Path: "/api/v1/drafts/status", Handler: s.draftRefreshStatus},
@@ -215,6 +216,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 	case errors.Is(err, invalid), errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany):
 		code, message = 400, err.Error()
 	case errors.Is(err, errLegacyRuleNotAdapted), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
+		errors.Is(err, errPracticeRosterSource), errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap),
 		errors.Is(err, errPracticeMonthSettlementDependency),
 		errors.Is(err, errCatalogRateStale), errors.Is(err, errCatalogRateUnavailable), errors.Is(err, errCatalogRateDates), errors.Is(err, errCatalogTeamRate),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),

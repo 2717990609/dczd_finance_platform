@@ -12,6 +12,8 @@ const view = ref('detail')
 const draft = ref()
 const loading = ref(false)
 const calculating = ref(false)
+const pullingRoster = ref(false)
+const rosterNotice = ref('')
 const error = ref('')
 const refreshStatus = ref()
 let sequence = 0
@@ -24,6 +26,7 @@ const options = computed(() => props.periods.map(period => ({
   label: `${period.productName} · ${period.name}`,
 })))
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
+const canPullRoster = computed(() => selectedPeriod.value?.periodMode === 'class' && selectedPeriod.value.sourcePeriodKey && !draft.value?.settlement)
 const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable)
 const hasSettlementReview = computed(() => draft.value?.settlementReviewAvailable ?? (draft.value?.catalog && draft.value?.refundsReady))
 const matchingOnly = computed(() => hasMatching.value && !selectedPeriod.value?.catalogDraftAvailable)
@@ -187,6 +190,7 @@ watch(selected, async () => {
   clearTimeout(statusTimer)
   const request = ++statusSequence
   refreshStatus.value = undefined
+  rosterNotice.value = ''
   view.value = 'detail'
   await load(true)
   if (request === statusSequence) checkRefresh()
@@ -210,6 +214,25 @@ async function calculate() {
     error.value = err.message
   } finally {
     calculating.value = false
+  }
+}
+
+async function pullRoster() {
+  const periodId = selected.value
+  if (!canPullRoster.value || pullingRoster.value || calculating.value) return
+  pullingRoster.value = true
+  error.value = ''
+  rosterNotice.value = ''
+  try {
+    const result = await props.api('/practice-rosters/pull', { method: 'POST', body: JSON.stringify({ periodId }) })
+    if (selected.value !== periodId || unmounted) return
+    rosterNotice.value = result.changed ? `已读取签到名单 v${result.version}，可重新试算。` : `签到名单已是 v${result.version}。`
+    if (result.changed && view.value === 'review') await load()
+    await checkRefresh()
+  } catch (err) {
+    if (selected.value === periodId && !unmounted) error.value = err.message
+  } finally {
+    pullingRoster.value = false
   }
 }
 
@@ -242,9 +265,10 @@ async function loadMore(section, cursorName) {
   <section class="records draft-controls">
     <div class="draft-toolbar">
       <label for="draft-period">产品和核算期</label>
-      <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和核算期" :disabled="calculating" />
-      <a-button v-if="!matchingOnly" type="primary" :disabled="!selected || loading || !!draft?.settlement" :loading="calculating" @click="calculate">重新试算</a-button>
-      <a-button v-if="!matchingOnly" :disabled="!selected || loading || calculating" @click="load()">刷新结果</a-button>
+      <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和核算期" :disabled="calculating || pullingRoster" />
+      <a-button v-if="!matchingOnly" type="primary" :disabled="!selected || loading || pullingRoster || !!draft?.settlement" :loading="calculating" @click="calculate">重新试算</a-button>
+      <a-button v-if="canPullRoster" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
+      <a-button v-if="!matchingOnly" :disabled="!selected || loading || calculating || pullingRoster" @click="load()">刷新结果</a-button>
     </div>
     <p v-if="selectedPeriod" class="draft-context">
       {{ selectedPeriod.practiceRefundMonth ? '退款账期' : selectedPeriod.periodMode === 'class' ? '期次' : '账期' }} {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
@@ -256,6 +280,7 @@ async function loadMore(section, cursorName) {
     </p>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
+  <a-alert v-if="rosterNotice" class="feedback" type="success" :message="rosterNotice" show-icon />
   <a-alert v-if="!draft?.settlement && refreshStatus?.message" class="feedback" type="warning" :message="refreshStatus.message" show-icon/>
   <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount, 'summary-collection':!draft.refundsReady }">
     <article v-if="!draft.practiceRefundMonth"><div><small>{{ draft.practiceRosterVersion ? '本班计提（含名单确认前退款）' : '正向计提' }}</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>

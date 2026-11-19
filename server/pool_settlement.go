@@ -44,7 +44,7 @@ type settlementReview struct {
 }
 
 func (r settlementReview) requiresReview() bool {
-	return r.catalog || r.practiceRefundMonth
+	return r.catalog || r.mode == "class"
 }
 
 func (r settlementReview) isPracticeClass() bool {
@@ -84,7 +84,7 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		if review.Version != version || !review.requiresReview() && !review.isPracticeClass() {
+		if review.Version != version || !review.requiresReview() {
 			return errSettlementStale
 		}
 		settled, err := readSettlement(ctx, tx, periodID)
@@ -104,17 +104,14 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 			return err
 		}
 		if review.isPracticeClass() {
-			// The local review can expose the selected roster and current
-			// balances. A source-side roster verification is still required.
-			review.Token = ""
 			roster, err := readPracticeClassRosterReview(ctx, tx, periodID)
 			if err != nil {
 				return err
 			}
 			review.PracticeRoster = &roster
-			pending, err := draftRefreshPending(ctx, tx, periodID)
-			review.DraftStale = pending || roster.Version != roster.LatestVersion
-			return err
+			if roster.Version != roster.LatestVersion {
+				review.DraftStale, review.Token = true, ""
+			}
 		}
 		if settlementCoverageError(review.Sources) != nil {
 			review.Token = ""
@@ -124,12 +121,17 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 				review.Token = ""
 			}
 		}
-		if err != nil || review.Token == "" {
+		if err != nil || review.Token == "" && review.PracticeRoster == nil {
 			return err
 		}
-		if pending, err := draftRefreshPending(ctx, tx, periodID); err != nil || pending {
-			review.DraftStale, review.Token = pending, ""
+		pending, err := draftRefreshPending(ctx, tx, periodID)
+		if err != nil {
 			return err
+		}
+		review.DraftStale = review.DraftStale || pending
+		if review.DraftStale || review.Token == "" {
+			review.Token = ""
+			return nil
 		}
 		err = verifySettlementDraft(ctx, tx, periodID, review)
 		if errors.Is(err, errSettlementStale) || errors.Is(err, errSettlementPending) {
@@ -138,6 +140,13 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		}
 		return err
 	})
+	if err == nil && review.PracticeRoster != nil {
+		if s.checkPracticeClassRoster(ctx, review.PracticeRoster) != nil {
+			review.Token = ""
+		} else if review.Token != "" {
+			review.Token = review.PracticeRoster.reviewToken(review.Token)
+		}
+	}
 	operator := financeUser(ctx)
 	review.CanConfirm = err == nil && review.Token != "" && operator.permitsSettlement(review.product)
 	if operator != nil && !review.CanConfirm {

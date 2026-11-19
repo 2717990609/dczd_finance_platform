@@ -130,7 +130,7 @@ func (s workspace) confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSett
 	if !scope.Ended {
 		return settlement{}, errSettlementOpen
 	}
-	if scope.isPracticeClass() {
+	if scope.isPracticeClass() && s.orderSourceKey("DCZD") == "" {
 		return settlement{}, errPracticeSettlementUnavailable
 	}
 	if scope.Version != req.ExpectedVersion {
@@ -183,7 +183,24 @@ func (s workspace) confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSett
 		if review.LaterPoolActivity {
 			return settlement{}, errSettlementPoolHistory
 		}
-		if req.ReviewToken == "" || req.ReviewToken != review.Token {
+		if review.Token == "" {
+			return settlement{}, errSettlementStale
+		}
+		token := review.Token
+		if scope.isPracticeClass() {
+			roster, err := readPracticeClassRosterReview(ctx, tx, req.PeriodID)
+			if err != nil {
+				return settlement{}, err
+			}
+			token = roster.reviewToken(token)
+			if req.ReviewToken != token {
+				return settlement{}, errSettlementStale
+			}
+			if err := s.checkPracticeClassRoster(ctx, &roster); err != nil {
+				return settlement{}, err
+			}
+		}
+		if req.ReviewToken != token {
 			return settlement{}, errSettlementStale
 		}
 	}

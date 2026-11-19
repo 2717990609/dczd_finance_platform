@@ -96,6 +96,14 @@ func (c orderFeedClient) sourceKey() string {
 }
 
 func (c orderFeedClient) get(ctx context.Context, action string, query url.Values, result any) error {
+	contract := c.contract()
+	if action == "readiness" {
+		contract = ""
+	}
+	return c.getWithContract(ctx, action, contract, query, result)
+}
+
+func (c orderFeedClient) getWithContract(ctx context.Context, action, contract string, query url.Values, result any) error {
 	endpoint := *c.endpoint
 	if action != "" {
 		endpoint = *endpoint.JoinPath(action)
@@ -107,8 +115,11 @@ func (c orderFeedClient) get(ctx context.Context, action string, query url.Value
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
-	if action != "readiness" {
-		req.Header.Set("X-"+c.source+"-Finance-Contract", c.contract())
+	if contract != "" {
+		req.Header.Set("X-"+c.source+"-Finance-Contract", contract)
+	}
+	if contract == practiceRosterReadContract {
+		req.Header.Set("Cache-Control", "no-cache")
 	}
 	res, err := pullClient.Do(req)
 	if err != nil {
