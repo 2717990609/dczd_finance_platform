@@ -220,7 +220,7 @@ function catalogRuleBadge(row) {
   return row.draftSupported ? { text:'可试算', color:'green' } : { text:'未开放试算', color:'blue' }
 }
 function ratePublished(result) {
-  notice.value = result.id === rateRule.value?.id ? '费率无变化。' : '规则 v'+result.version+' 已发布。'
+  notice.value = result.id === rateRule.value?.id ? '规则无变化。' : '规则 v'+result.version+' 已发布。'
   rateRule.value = undefined
   refresh()
 }
@@ -734,7 +734,7 @@ async function save() {
                 <template v-else-if="column.key==='components' && record.catalogPending">
                   <a-tag :color="catalogRuleBadge(record).color">{{ catalogRuleBadge(record).text }}</a-tag>
                   <a-button v-if="record.draftSupported && record.projectMatches && (!session.user || session.user.rules.some(grant=>grant.productId===record.productId))"
-                    type="link" size="small" @click="rateRule=record">分润费率</a-button>
+                    type="link" size="small" @click="rateRule=record">分润配置</a-button>
                 </template>
                 <template v-else-if="column.key==='components'">
                   <div v-for="(c,index) in text" :key="index">

@@ -142,6 +142,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.listForAuthorizedProducts(catalogRulesSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-rates", Handler: s.getCatalogRuleRates},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-rule-rates", Handler: s.postCatalogRuleRates},
+		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-people", Handler: s.getCatalogRulePeople},
 		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.listForAuthorizedProducts(practiceCountOpeningsSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-rule-recipients", Handler: s.practiceRuleRecipients},
 		{Method: http.MethodPost, Path: "/api/v1/practice-pools", Handler: submit(s.createPracticePool)},
@@ -245,7 +246,8 @@ func respond(w http.ResponseWriter, result any, err error) {
 	case errors.Is(err, errCalculationOverflow):
 		code, message = http.StatusConflict, "试算金额超出范围，请核对原单和规则"
 	case errors.Is(err, conflict), errors.Is(err, errAppointmentOverlap), errors.Is(err, errAppointmentChanged), errors.Is(err, errAppointmentUnitInactive),
-		errors.Is(err, errCatalogAppointmentContext), errors.Is(err, errCatalogAppointmentOverlap), errors.Is(err, errCatalogAppointmentHolder):
+		errors.Is(err, errCatalogAppointmentContext), errors.Is(err, errCatalogAppointmentOverlap), errors.Is(err, errCatalogAppointmentHolder),
+		errors.Is(err, errCatalogRecipientAppointment):
 		code, message = 409, err.Error()
 	case errors.Is(err, pgx.ErrNoRows):
 		code, message = 404, "找不到对应记录"

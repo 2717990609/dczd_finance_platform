@@ -81,11 +81,19 @@ const vipRuntimeSQL = `WITH scope AS (
  SELECT ` + vipPersonKey + ` AS person,p.id,a.role,a.scope,a.scope_key AS key,a.valid_from AS "from",a.valid_to AS "to"
  FROM catalog_current_sales_appointments a JOIN people p ON p.id=a.person_id CROSS JOIN scope s
  WHERE a.source='DCAI' AND (a.scope='ORGANIZATION_UNIT' OR a.scope='PRODUCT' AND a.scope_key=s.code OR a.scope='PROJECT' AND a.scope_key=s.project_code)
+), definitions AS MATERIALIZED (
+ SELECT v.source_id,v.definition FROM unnest($3::text[]) r(id) JOIN product_rule_versions v ON v.source_id=r.id::uuid
+), named_people AS (
+ SELECT key#>>'{}' AS key FROM definitions
+ CROSS JOIN LATERAL jsonb_path_query(definition,'$.benefit_actions[*].designated_party_id') key
+ UNION SELECT key#>>'{}' FROM definitions
+ CROSS JOIN LATERAL jsonb_path_query(definition,'$.internal_sales_direct_split.teams[*].head_party_id') key
+ UNION SELECT key#>>'{}' FROM definitions
+ CROSS JOIN LATERAL jsonb_path_query(definition,'$.internal_sales_direct_split.teams[*].service_party_id') key
 ), persons AS MATERIALIZED (
  SELECT p.id,p.name,` + vipPersonKey + ` AS key FROM people p
  WHERE p.legacy_party_id IS NOT NULL OR p.id IN (SELECT id FROM users UNION SELECT id FROM roles)
-), definitions AS MATERIALIZED (
- SELECT v.source_id,v.definition FROM unnest($3::text[]) r(id) JOIN product_rule_versions v ON v.source_id=r.id::uuid
+  OR ('person:'||p.id) IN (SELECT key FROM named_people)
 )
 SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitReady',coalesce(s.benefit_ready,false),
  'organizations',(SELECT jsonb_agg(jsonb_build_object('party',b.party_uuid,'unit',o.id,'name',o.name))

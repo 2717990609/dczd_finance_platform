@@ -671,4 +671,77 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if currentMarch := draftAt(march); currentMarch.Version != marchDraft.Version || currentMarch.Total != marchDraft.Total {
 		t.Fatalf("schedule and result of the next period changed: %+v -> %+v", marchDraft, currentMarch)
 	}
+
+	t.Run("指定收款人的生效边界", func(t *testing.T) {
+		cut := marchAt.AddDate(0, 1, 0)
+		april := createPeriod("2032-04", "收款人变更验证")
+		var base string
+		if err := s.db.QueryRow(ctx, `SELECT source_id::text FROM product_rule_versions WHERE effective_from=$1`, marchAt).Scan(&base); err != nil {
+			t.Fatal(err)
+		}
+		result, err := s.createPerson(ctx, createPersonInput{Name: "新任负责人"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		person := result.(map[string]int64)["id"]
+		save("before-payee", "1", 10000, cut.Add(-time.Second), cut, "VIP_ORDER")
+		save("after-payee", "1", 10000, cut, cut, "VIP_ORDER")
+		previous := draftAt(april)
+		if err := s.saveFinanceAccount(ctx, financeAccountConfig{PersonID: person, Login: "payee.operator", Enabled: true,
+			Rules: []financeRuleGrant{{ProductID: productID, Publish: true}}}, "isolated-payee-test"); err != nil {
+			t.Fatal(err)
+		}
+		session, err := s.loginFinanceAccount(ctx, financeLoginInput{Login: "payee.operator", Password: "isolated-payee-test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		cookie := &http.Cookie{Name: financeAccountCookie, Value: session}
+		submit := func(item string) *httptest.ResponseRecorder {
+			t.Helper()
+			payload := fmt.Sprintf(`{"baseId":%q,"effectiveFrom":%q,"recipientChanges":[{"itemKey":%q,"personId":%d}]}`, base, cut.Format(time.RFC3339), item, person)
+			r := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/catalog-rule-rates", strings.NewReader(payload))
+			r.Header.Set("Origin", "http://localhost")
+			r.Header.Set("Content-Type", "application/json")
+			r.AddCookie(cookie)
+			w := httptest.NewRecorder()
+			s.postCatalogRuleRates(w, r)
+			return w
+		}
+		if blocked := submit("company"); blocked.Code != 400 {
+			t.Fatalf("company beneficiary accepted an individual: %d %s", blocked.Code, blocked.Body)
+		}
+		if blocked := submit("owner"); blocked.Code != 409 {
+			t.Fatalf("payee without an effective appointment was accepted: %d %s", blocked.Code, blocked.Body)
+		}
+		if _, err := editor.addCatalogAppointment(ctx, addCatalogAppointmentInput{
+			PersonID: person, StartsAt: cut, catalogAppointmentTarget: catalogAppointmentTarget{Role: "PROJECT_OWNER", Scope: "PROJECT", ScopeKey: "AI"},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		w := submit("owner")
+		var revision catalogPublication
+		if err := json.Unmarshal(w.Body.Bytes(), &revision); err != nil || w.Code != 200 || revision.ID == "" || revision.ID == base {
+			t.Fatalf("payee publication: %d %s %v", w.Code, w.Body, err)
+		}
+		if err := s.refreshPendingDrafts(ctx); err != nil {
+			t.Fatal(err)
+		}
+		now := draftAt(april)
+		if now.Version != previous.Version+1 || now.Total != previous.Total || now.IssueCount != 0 {
+			t.Fatalf("payee-only change: before=%+v after=%+v", previous, now)
+		}
+		for _, expected := range []struct {
+			order, rule string
+			person      int64
+		}{{"before-payee", base, alice.ID}, {"after-payee", revision.ID, person}} {
+			var actualPerson int64
+			var actualRule string
+			err := s.db.QueryRow(ctx, `SELECT l.person_id,l.catalog_rule_id::text FROM calculation_draft_lines l
+			 JOIN source_order_versions source ON source.id=l.source_version_id
+			 WHERE l.period_id=$1 AND l.component_type='owner' AND source.order_id=$2`, april, expected.order).Scan(&actualPerson, &actualRule)
+			if err != nil || actualPerson != expected.person || actualRule != expected.rule {
+				t.Fatalf("order %s person=%d rule=%s error=%v", expected.order, actualPerson, actualRule, err)
+			}
+		}
+	})
 }

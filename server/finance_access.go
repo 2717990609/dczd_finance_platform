@@ -33,7 +33,7 @@ func isLoopbackHost(host string) bool {
 
 func (s workspace) financeRoute(route rest.Route) rest.Route {
 	switch route.Path {
-	case "/api/v1/session", "/api/v1/catalog-rule-rates":
+	case "/api/v1/session", "/api/v1/catalog-rule-rates", "/api/v1/catalog-rule-people":
 		return route
 	}
 	rulesAccess := false
@@ -97,25 +97,31 @@ func (s workspace) publishAuthorizedRule(ctx context.Context, input publishRuleI
 	return s.publishRule(ctx, input)
 }
 
-func (s workspace) financeRateActor(r *http.Request) (string, func(int64, bool) bool, error) {
+type financeRuleActor struct {
+	subject string
+	permits func(int64, bool) bool
+	account *financePrincipal
+}
+
+func (s workspace) financeRateActor(r *http.Request) (financeRuleActor, error) {
 	if r.Header.Get("Authorization") == "" {
 		p, err := s.accountSession(r)
 		if err != nil {
-			return "", nil, err
+			return financeRuleActor{}, err
 		}
 		if p != nil {
 			if r.Method != http.MethodGet && !catalogCookieWriteAllowed(r) {
-				return "", nil, errRulePermission
+				return financeRuleActor{}, errRulePermission
 			}
-			return p.ID, p.permitsRule, nil
+			return financeRuleActor{subject: p.ID, permits: p.permitsRule, account: p}, nil
 		}
 		if !s.development {
-			return "", nil, errRuleLogin
+			return financeRuleActor{}, errRuleLogin
 		}
 	}
 	p := s.ruleAuth.session(r)
 	if p == nil {
-		return "", nil, errRuleLogin
+		return financeRuleActor{}, errRuleLogin
 	}
-	return p.Subject, p.permits, nil
+	return financeRuleActor{subject: p.Subject, permits: p.permits}, nil
 }

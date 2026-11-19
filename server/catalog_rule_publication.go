@@ -26,9 +26,11 @@ type catalogRateChange struct {
 }
 
 type publishCatalogRatesInput struct {
-	BaseID        string              `json:"baseId"`
-	EffectiveFrom time.Time           `json:"effectiveFrom"`
-	Changes       []catalogRateChange `json:"changes"`
+	BaseID           string                       `json:"baseId"`
+	EffectiveFrom    time.Time                    `json:"effectiveFrom"`
+	Changes          []catalogRateChange          `json:"changes"`
+	RecipientChanges []catalogRuleRecipientChange `json:"recipientChanges"`
+	TeamChanges      []catalogTeamRecipientChange `json:"teamChanges"`
 }
 
 type catalogPublication struct {
@@ -89,10 +91,15 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 	published := catalogPublication{ID: input.BaseID}
 	id, valid := canonicalSourceUUID(input.BaseID)
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
-	if !valid || from.IsZero() || len(input.Changes) == 0 || !textOK(actor, 128) {
+	if !valid || from.IsZero() || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 || !textOK(actor, 128) {
 		return published, invalid
 	}
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if operator := financeUser(ctx); operator != nil {
+			if err := lockCatalogPublisher(ctx, tx, operator, id); err != nil {
+				return err
+			}
+		}
 		var product int64
 		var scope, pack string
 		var fromBase time.Time
@@ -119,9 +126,31 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 		if !from.After(fromBase) {
 			return errCatalogRateDates
 		}
-		body, changed, err := editCatalogRates(definition, input.Changes)
-		if err != nil || !changed {
-			return err
+		body := definition
+		var ratesChanged, recipientsChanged bool
+		if len(input.Changes) != 0 {
+			body, ratesChanged, err = editCatalogRates(body, input.Changes)
+			if err != nil {
+				return err
+			}
+		}
+		if len(input.RecipientChanges)+len(input.TeamChanges) != 0 {
+			keys, err := catalogNewRecipientKeys(ctx, tx, input.RecipientChanges, input.TeamChanges)
+			if err != nil {
+				return err
+			}
+			body, recipientsChanged, err = editCatalogRecipients(body, input.RecipientChanges, input.TeamChanges, keys)
+			if err != nil {
+				return err
+			}
+		}
+		if !ratesChanged && !recipientsChanged {
+			return nil
+		}
+		if recipientsChanged {
+			if err := validateCatalogRecipientAppointments(ctx, tx, product, from, definition, body); err != nil {
+				return err
+			}
 		}
 		contentHash := sha256.Sum256(body)
 		if err := tx.QueryRow(ctx, `INSERT INTO product_rule_versions
@@ -134,6 +163,22 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 		return enqueueDraftConfiguration(ctx, tx, catalogRateDraftPeriodsSQL, product, scope, from, throughBase, published.ID)
 	})
 	return published, err
+}
+
+func lockCatalogPublisher(ctx context.Context, tx pgx.Tx, operator *financePrincipal, ruleID string) error {
+	var allowed int
+	err := tx.QueryRow(ctx, `SELECT 1 FROM finance_accounts a WHERE a.id=$1::uuid AND a.enabled AND EXISTS(
+	 SELECT 1 FROM finance_account_rule_grants g JOIN product_rule_packages p ON p.product_id=g.product_id
+	 JOIN product_rule_versions v ON v.package_id=p.source_id
+	 WHERE g.account_id=a.id AND g.can_publish AND v.source_id=$2::uuid
+	 ) FOR SHARE OF a`, operator.ID, ruleID).Scan(&allowed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errRulePermission
+	}
+	if err != nil {
+		return err
+	}
+	return lockFinanceOperatorSession(ctx, tx, operator)
 }
 
 func catalogRateActions(raw json.RawMessage) (map[string]json.RawMessage, []map[string]json.RawMessage, error) {

@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
 const props = defineProps({ rule: Object, api: Function, formatTime: Function })
 const emit = defineEmits(['close', 'published'])
@@ -8,6 +9,9 @@ const selected = ref()
 const filter = ref('')
 const effectiveFrom = ref('')
 const edits = ref({})
+const recipientEdits = ref(new Map())
+const teamEdits = ref(new Map())
+const selectedTeam = ref()
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -21,6 +25,12 @@ const columns = [
 ]
 const componentOptions = computed(() => (sheet.value?.components || []).map(item => ({value:item.itemKey,label:item.label})))
 const component = computed(() => sheet.value?.components.find(item => item.itemKey === selected.value))
+const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:item.key,label:item.label})))
+const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
+const editable = computed(() => sheet.value?.mayPublish && !saving.value)
+const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
+const recipientsChanged = computed(() => recipientEdits.value.size + teamEdits.value.size > 0)
+const hasEdits = computed(() => recipientsChanged.value || Object.keys(edits.value).length > 0)
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
 const rows = computed(() => {
   const term = filter.value.trim().toLowerCase()
@@ -44,11 +54,28 @@ function rateAsBasisPoints(value) {
   const rate = Number(match[1])*100 + Number((match[2] || '').padEnd(2,'0'))
   return rate <= 10000 ? rate : undefined
 }
+const recipient = computed(() => recipientEdits.value.get(selected.value) || component.value?.recipient)
+function setRecipient(id, option) {
+  if (id===component.value.recipient.id) recipientEdits.value.delete(selected.value)
+  else recipientEdits.value.set(selected.value,{id,name:option.name})
+}
+const teamPerson = field => teamEdits.value.get(selectedTeam.value)?.[field] || team.value?.[field]
+function setTeamPerson(field, id, option) {
+  const key = selectedTeam.value
+  const changes = {...teamEdits.value.get(key)}
+  if (id===team.value[field].id) delete changes[field]
+  else changes[field] = {id,name:option.name}
+  if (Object.keys(changes).length) teamEdits.value.set(key,changes)
+  else teamEdits.value.delete(key)
+}
 
 watch(() => props.rule, async rule => {
   const request = ++sequence
   sheet.value = undefined
   edits.value = {}
+  recipientEdits.value.clear()
+  teamEdits.value.clear()
+  selectedTeam.value = undefined
   filter.value = ''
   effectiveFrom.value = ''
   error.value = ''
@@ -59,6 +86,7 @@ watch(() => props.rule, async rule => {
     if (request !== sequence) return
     sheet.value = result
     selected.value = result.components[0]?.itemKey
+    selectedTeam.value = result.teams?.[0]?.key
   } catch (err) {
     if (request === sequence) error.value = err.message
   } finally {
@@ -81,6 +109,10 @@ async function publish() {
         baseId:props.rule.id,
         effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
         changes,
+        recipientChanges:Array.from(recipientEdits.value,([itemKey, person])=>({itemKey,personId:person.id})),
+        teamChanges:Array.from(teamEdits.value,([teamKey,changes])=>({
+          teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
+        })),
       }),
     })
     emit('published',result)
@@ -93,7 +125,7 @@ async function publish() {
 </script>
 
 <template>
-  <a-drawer :open="!!rule" :width="'min(760px, 100vw)'" title="产品分润费率"
+  <a-drawer :open="!!rule" :width="'min(760px, 100vw)'" title="产品分润配置"
     :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="emit('close')">
     <a-alert v-if="error" type="error" :message="error" show-icon class="feedback"/>
     <a-spin :spinning="loading">
@@ -106,6 +138,12 @@ async function publish() {
         <a-form layout="vertical" @submit.prevent="publish">
           <a-form-item label="分润分项" html-for="catalog-rate-component">
             <a-select id="catalog-rate-component" v-model:value="selected" :options="componentOptions"/>
+          </a-form-item>
+          <a-form-item v-if="recipient" label="指定收款人" html-for="catalog-benefit-person">
+            <AppointmentPersonSelect v-if="sheet.mayPublish" id="catalog-benefit-person" :key="selected"
+              :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="recipient" :value="recipient.id"
+              :disabled="!editable" :placeholder="recipient.id?'输入姓名搜索':recipient.name" @change="setRecipient"/>
+            <span v-else>{{ recipient.name }}</span>
           </a-form-item>
           <a-form-item v-if="component?.rateBps != null" label="比例（%）" html-for="catalog-fixed-rate">
             <a-input-number id="catalog-fixed-rate" :value="displayRate(component.rateBps)" :disabled="!sheet.mayPublish || saving"
@@ -131,15 +169,36 @@ async function publish() {
               </template>
             </a-table>
           </template>
+          <a-collapse v-if="team" ghost>
+            <a-collapse-panel key="team" header="内部团队收款人">
+              <a-form-item label="销售公司" html-for="catalog-team-company">
+                <a-select id="catalog-team-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
+              </a-form-item>
+              <a-form-item label="团队负责人" html-for="catalog-team-head">
+                <AppointmentPersonSelect v-if="sheet.mayPublish" id="catalog-team-head" :key="selectedTeam"
+                  :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('head')" :value="teamPerson('head')?.id"
+                  :disabled="!editable" :placeholder="teamPerson('head')?.id?'输入姓名搜索':teamPerson('head')?.name" @change="(id,option)=>setTeamPerson('head',id,option)"/>
+                <span v-else>{{ team.head.name }}</span>
+              </a-form-item>
+              <a-form-item v-if="team.service" label="服务人员" html-for="catalog-team-service">
+                <AppointmentPersonSelect v-if="sheet.mayPublish" id="catalog-team-service" :key="selectedTeam"
+                  :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('service')" :value="teamPerson('service')?.id"
+                  :disabled="!editable" :placeholder="teamPerson('service')?.id?'输入姓名搜索':teamPerson('service')?.name" @change="(id,option)=>setTeamPerson('service',id,option)"/>
+                <span v-else>{{ team.service.name }}</span>
+              </a-form-item>
+            </a-collapse-panel>
+          </a-collapse>
           <template v-if="sheet.mayPublish">
             <a-form-item label="生效时间（北京时间）" html-for="catalog-rate-effective-date"
-              extra="请选择此版本适用区间内的时间。订单按付款时点匹配，已结算结果保留其规则版本。">
+              :extra="recipientsChanged
+                ? '请选择规则生效时间，并在计提任职核对有关人员的有效区间。已结算结果保留确认时的规则。'
+                : '请选择此版本适用区间内的时间。订单按付款时点匹配，已结算结果保留其规则版本。'">
               <a-input id="catalog-rate-effective-date" v-model:value="effectiveFrom" type="datetime-local"
                 :min="dateInput(sheet.effectiveFrom)" :max="dateInput(sheet.effectiveTo)" required/>
             </a-form-item>
             <div class="form-actions">
               <a-button :disabled="saving" @click="emit('close')">取消</a-button>
-              <a-button html-type="submit" type="primary" :loading="saving" :disabled="!Object.keys(edits).length">保存并生效</a-button>
+              <a-button html-type="submit" type="primary" :loading="saving" :disabled="!hasEdits">保存并生效</a-button>
             </div>
           </template>
         </a-form>

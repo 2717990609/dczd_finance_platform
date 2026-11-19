@@ -64,16 +64,20 @@ func (s workspace) organizationPeople(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
-	name := strings.TrimSpace(r.URL.Query().Get("name"))
+	result, err := s.searchFinancePeople(r.Context(), r.URL.Query().Get("name"))
+	respond(w, result, err)
+}
+
+func (s workspace) searchFinancePeople(ctx context.Context, name string) (json.RawMessage, error) {
+	name = strings.TrimSpace(name)
 	if len([]rune(name)) > 80 {
-		respond(w, nil, invalid)
-		return
+		return nil, invalid
 	}
 	var result json.RawMessage
-	err := s.db.QueryRow(r.Context(), `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.name,p.id),'[]')
+	err := s.db.QueryRow(ctx, `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.name,p.id),'[]')
 	 FROM (SELECT id,name FROM people WHERE $1='' OR strpos(lower(name),lower($1))>0
 	  ORDER BY name,id LIMIT 25) p`, name).Scan(&result)
-	respond(w, result, err)
+	return result, err
 }
 
 func (s workspace) writeAppointments(ctx context.Context, apply func(pgx.Tx, *string) error) error {

@@ -9,10 +9,11 @@ import (
 )
 
 type catalogRateComponent struct {
-	ItemKey string           `json:"itemKey"`
-	Label   string           `json:"label"`
-	Rate    *int64           `json:"rateBps,omitempty"`
-	Rows    []catalogRateRow `json:"rows,omitempty"`
+	ItemKey   string             `json:"itemKey"`
+	Label     string             `json:"label"`
+	Rate      *int64             `json:"rateBps,omitempty"`
+	Rows      []catalogRateRow   `json:"rows,omitempty"`
+	Recipient *catalogRulePerson `json:"recipient,omitempty"`
 }
 
 type catalogRateRow struct {
@@ -34,6 +35,7 @@ type catalogRateSheet struct {
 	EffectiveTo   *time.Time             `json:"effectiveTo"`
 	MayPublish    bool                   `json:"mayPublish"`
 	Components    []catalogRateComponent `json:"components"`
+	Teams         []catalogRuleTeam      `json:"teams,omitempty"`
 }
 
 func catalogRateComponents(raw json.RawMessage, companies, categories, relationships map[string]string) ([]catalogRateComponent, error) {
@@ -90,13 +92,15 @@ func (s workspace) ruleRateProduct(ctx context.Context, raw string) (string, int
 	}
 	var product int64
 	err := s.db.QueryRow(ctx, `SELECT p.product_id FROM product_rule_versions v
-	 JOIN product_rule_packages p ON p.source_id=v.package_id WHERE v.source_id=$1::uuid`, id).Scan(&product)
+	 JOIN product_rule_packages p ON p.source_id=v.package_id
+	 JOIN product_catalog_settings c ON c.product_id=p.product_id AND c.project_code=p.project_code
+	 WHERE v.source_id=$1::uuid AND c.source_system='DCAI' AND p.scope_type='BUSINESS_SCENARIO'`, id).Scan(&product)
 	return id, product, err
 }
 
 func (s workspace) getCatalogRuleRates(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	_, permits, err := s.financeRateActor(r)
+	actor, err := s.financeRateActor(r)
 	if err != nil {
 		respond(w, nil, err)
 		return
@@ -106,17 +110,17 @@ func (s workspace) getCatalogRuleRates(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
-	if !permits(product, false) {
+	if !actor.permits(product, false) {
 		respond(w, nil, errRulePermission)
 		return
 	}
 	sheet, err := s.catalogRuleRateSheet(r.Context(), id)
-	sheet.MayPublish = sheet.MayPublish && permits(product, true)
+	sheet.MayPublish = sheet.MayPublish && actor.permits(product, true)
 	respond(w, sheet, err)
 }
 
 func (s workspace) postCatalogRuleRates(w http.ResponseWriter, r *http.Request) {
-	actor, permits, err := s.financeRateActor(r)
+	actor, err := s.financeRateActor(r)
 	if err != nil {
 		respond(w, nil, err)
 		return
@@ -126,10 +130,13 @@ func (s workspace) postCatalogRuleRates(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			return catalogPublication{}, err
 		}
-		if !permits(product, true) {
+		if !actor.permits(product, true) {
 			return catalogPublication{}, errRulePermission
 		}
-		return s.publishCatalogRates(ctx, input, actor)
+		if actor.account != nil {
+			ctx = context.WithValue(ctx, financePrincipalKey{}, actor.account)
+		}
+		return s.publishCatalogRates(ctx, input, actor.subject)
 	})(w, r)
 }
 
@@ -161,5 +168,8 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	}
 	companyNames["ANY"] = "不限公司"
 	sheet.Components, err = catalogRateComponents(definition, companyNames, categoryNames, relationshipNames)
+	if err == nil {
+		sheet.Teams, err = s.catalogRuleRecipients(ctx, definition, sheet.Components, companyNames)
+	}
 	return sheet, err
 }
