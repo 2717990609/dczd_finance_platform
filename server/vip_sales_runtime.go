@@ -222,7 +222,7 @@ func applyVIPQuotes(items []catalogPaymentMatch, data vipRuntimeData) {
 			continue
 		}
 		if policy, ok := policies[row.RuleID]; ok {
-			row.SalesItem = policy.Split.Item
+			row.SalesItem = policy.Item
 			row.SalesParts, row.SalesStatus = quoteVIPPaid(*row, policy, data)
 			if row.SalesStatus == "" {
 				row.SalesStatus = "CALCULATED"
@@ -245,6 +245,7 @@ func applyVIPBenefitQuotes(items []catalogPaymentMatch, data vipRuntimeData) {
 			continue
 		}
 		if policy, ok := benefits[row.RuleID]; ok {
+			row.FixedParts = row.FixedParts[:0]
 			row.BenefitParts = quoteVIPBenefits(*row, policy, data)
 		} else if data.Product == "DCAI_VIP" {
 			row.BenefitStatus = "BENEFIT_RULE_UNSUPPORTED"

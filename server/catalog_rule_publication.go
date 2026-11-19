@@ -182,7 +182,7 @@ func lockCatalogPublisher(ctx context.Context, tx pgx.Tx, operator *financePrinc
 }
 
 func catalogRateActions(raw json.RawMessage) (map[string]json.RawMessage, []map[string]json.RawMessage, error) {
-	if _, ok := readVIPSalesPolicy(raw); !ok {
+	if policy, ok := readVIPSalesPolicy(raw); !ok || policy.Split.Mode != "DCAI_INTERNAL_DIRECT" {
 		return nil, nil, errCatalogRateUnavailable
 	}
 	if _, ok := readVIPBenefits(raw); !ok {

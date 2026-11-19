@@ -51,22 +51,23 @@ type vipBenefitPart struct {
 }
 
 func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
-	var def struct {
-		Basis    string `json:"amount_basis"`
-		Stacking string `json:"stacking_policy"`
-		Rounding struct {
-			Mode  string
-			Scale int
-		} `json:"rounding_policy"`
-		Split   vipInternalSplit  `json:"internal_sales_direct_split"`
-		Actions []json.RawMessage `json:"benefit_actions"`
-	}
-	if json.Unmarshal(raw, &def) != nil || def.Basis != "ACTUAL_RECEIVED" || def.Stacking != "SUM" ||
-		def.Rounding.Mode != "HALF_UP" || def.Rounding.Scale != 2 || def.Split.Mode != "DCAI_INTERNAL_DIRECT" || def.Split.Item == "" {
+	def, ok := readVIPCommissionDefinition(raw)
+	if !ok {
 		return vipBenefitPolicy{}, false
 	}
-	policy := vipBenefitPolicy{split: def.Split}
-	items := map[string]bool{def.Split.Item: false}
+	var policy vipBenefitPolicy
+	var salesItem string
+	if def.Split != nil {
+		policy.split = *def.Split
+		salesItem = def.Split.Item
+	} else {
+		sales, valid := readDirectSalesPolicy(def.Actions)
+		if !valid {
+			return vipBenefitPolicy{}, false
+		}
+		salesItem = sales.Item
+	}
+	items := make(map[string]bool, len(def.Actions))
 	for _, payload := range def.Actions {
 		var head struct {
 			Item string `json:"item_key"`
@@ -75,7 +76,7 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 			return vipBenefitPolicy{}, false
 		}
 		items[head.Item] = true
-		if head.Item == def.Split.Item {
+		if head.Item == salesItem {
 			continue
 		}
 		var action vipBenefitAction
@@ -100,7 +101,7 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 		}
 		policy.actions = append(policy.actions, action)
 	}
-	return policy, items[def.Split.Item] && len(policy.actions) > 0
+	return policy, items[salesItem] && len(policy.actions) > 0
 }
 
 func (a vipBenefitAction) validTarget() bool {

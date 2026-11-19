@@ -43,48 +43,104 @@ type vipInternalSplit struct {
 }
 
 type vipSalesPolicy struct {
+	Item  string
 	Sales []vipRateRow
 	Split vipInternalSplit
 }
 
-func readVIPSalesPolicy(raw json.RawMessage) (vipSalesPolicy, bool) {
-	var def struct {
-		Basis    string `json:"amount_basis"`
-		Stacking string `json:"stacking_policy"`
-		Rounding struct {
-			Mode  string
-			Scale int
-		} `json:"rounding_policy"`
-		Split   vipInternalSplit `json:"internal_sales_direct_split"`
-		Actions []struct {
-			Kind       string            `json:"type"`
-			Mode       string            `json:"beneficiary_mode"`
-			Role       string            `json:"role"`
-			Item       string            `json:"item_key"`
-			Designated string            `json:"designated_party_id"`
-			Rates      []json.RawMessage `json:"rate_table"`
-		} `json:"benefit_actions"`
-	}
+type vipCommissionDefinition struct {
+	Basis    string `json:"amount_basis"`
+	Stacking string `json:"stacking_policy"`
+	Rounding struct {
+		Mode  string
+		Scale int
+	} `json:"rounding_policy"`
+	Split   *vipInternalSplit `json:"internal_sales_direct_split"`
+	Actions []json.RawMessage `json:"benefit_actions"`
+}
+
+func readVIPCommissionDefinition(raw json.RawMessage) (vipCommissionDefinition, bool) {
+	var def vipCommissionDefinition
 	if json.Unmarshal(raw, &def) != nil || def.Basis != "ACTUAL_RECEIVED" || def.Stacking != "SUM" ||
-		def.Rounding.Mode != "HALF_UP" || def.Rounding.Scale != 2 || def.Split.Mode != "DCAI_INTERNAL_DIRECT" || def.Split.Item == "" {
+		def.Rounding.Mode != "HALF_UP" || def.Rounding.Scale != 2 ||
+		def.Split != nil && (def.Split.Mode != "DCAI_INTERNAL_DIRECT" || def.Split.Item == "") {
+		return vipCommissionDefinition{}, false
+	}
+	return def, true
+}
+
+func readVIPSalesPolicy(raw json.RawMessage) (vipSalesPolicy, bool) {
+	def, ok := readVIPCommissionDefinition(raw)
+	if !ok {
 		return vipSalesPolicy{}, false
 	}
-	var match []vipRateRow
-	for _, action := range def.Actions {
+	if def.Split == nil {
+		return readDirectSalesPolicy(def.Actions)
+	}
+	type salesAction struct {
+		Type       string            `json:"type"`
+		Mode       string            `json:"beneficiary_mode"`
+		Role       string            `json:"role"`
+		Item       string            `json:"item_key"`
+		Designated string            `json:"designated_party_id"`
+		RateTable  []json.RawMessage `json:"rate_table"`
+	}
+	policy := vipSalesPolicy{Split: *def.Split}
+	for _, payload := range def.Actions {
+		var action salesAction
+		if json.Unmarshal(payload, &action) != nil {
+			return vipSalesPolicy{}, false
+		}
 		if action.Item != def.Split.Item {
 			continue
 		}
-		if match != nil || action.Kind != "RATE_TABLE" || action.Mode != "PARTY" || action.Role != "SALES" ||
-			action.Designated != "" || len(action.Rates) == 0 {
+		if policy.Item != "" || action.Type != "RATE_TABLE" || action.Mode != "PARTY" || action.Role != "SALES" || action.Designated != "" {
 			return vipSalesPolicy{}, false
 		}
-		var ok bool
-		match, ok = parseVIPRateTable(action.Rates)
+		policy.Item = action.Item
+		policy.Sales, ok = parseVIPRateTable(action.RateTable)
 		if !ok {
 			return vipSalesPolicy{}, false
 		}
 	}
-	return vipSalesPolicy{Sales: match, Split: def.Split}, match != nil
+	return policy, policy.Item != ""
+}
+
+func readDirectSalesPolicy(actions []json.RawMessage) (vipSalesPolicy, bool) {
+	items := make(map[string]bool, len(actions))
+	var policy vipSalesPolicy
+	for _, payload := range actions {
+		var identity struct {
+			Item string `json:"item_key"`
+			Role string `json:"role"`
+		}
+		if json.Unmarshal(payload, &identity) != nil || identity.Item == "" || items[identity.Item] {
+			return vipSalesPolicy{}, false
+		}
+		items[identity.Item] = true
+		if identity.Role != "SALES" {
+			continue
+		}
+		var action struct {
+			Item      string            `json:"item_key"`
+			Role      string            `json:"role"`
+			Label     string            `json:"label"`
+			Type      string            `json:"type"`
+			Mode      string            `json:"beneficiary_mode"`
+			RateTable []json.RawMessage `json:"rate_table"`
+		}
+		decoder := json.NewDecoder(bytes.NewReader(payload))
+		decoder.DisallowUnknownFields()
+		if decoder.Decode(&action) != nil || policy.Item != "" || action.Type != "RATE_TABLE" || action.Mode != "PARTY" {
+			return vipSalesPolicy{}, false
+		}
+		rates, ok := parseVIPRateTable(action.RateTable)
+		if !ok {
+			return vipSalesPolicy{}, false
+		}
+		policy = vipSalesPolicy{Item: action.Item, Sales: rates}
+	}
+	return policy, policy.Item != ""
 }
 
 func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
