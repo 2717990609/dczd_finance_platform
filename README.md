@@ -64,7 +64,13 @@ go -C server run . import-organization /path/to/organization.json
 go -C server run . import-legacy-catalog /path/to/catalog.json
 ```
 
-开发验证可由技术人员使用现有测试来源接口选取样本。已配置单笔接口的环境可按原订单 ID 查看来源更新。当前阶段的自动数据拉取安排在后续实施。
+固定账期配置包含场景映射时，试算页的「订单规则匹配」按实际付款时间查看来源场景及规则版本。同优先级规则重叠时列为冲突。展示的固定分项用于核对，正式计提待整套规则与实际业务验证后开放。
+
+开发验证可使用测试来源接口选取样本。可将 `source` 和 `facts` 写入同一个 JSON 文件，`facts` 为来源接口返回的 `source.order-fact/1.0` 记录数组。在专用开发库可重复导入同一文件。已配置单笔接口的环境可按原订单 ID 查看来源更新。
+
+```sh
+go -C server run . import-order-facts /path/to/source-order-facts.json
+```
 
 需要验证实战班时，技术人员可以从子系统一次性取得已确认的 `dczd.practice-roster/1.0` 名单，使用已加载的本地环境配置导入。该命令只接收专用开发库，重复导入同一版本会核对内容并复用原记录。然后在「核算期次」填写名单的来源期次标识，配置规则和对应的来源产品映射，在「分润试算」查看结果。原付款仍需作为来源订单事实入库才能计提。
 

@@ -73,6 +73,7 @@ const refundInputsSQL = `SELECT v.id, origin.id, v.fact, coalesce(history.change
     AND (rv.fact->>'domain')=(v.fact->>'domain') AND (rv.fact->>'refundId')=(v.fact->>'refundId')
  ) history ON true
  WHERE target.id=$1 AND v.kind='REFUND_SUCCEEDED' AND v.occurred_at<=CURRENT_TIMESTAMP
+ AND NOT ` + catalogSourceReservedSQL + `
  AND (NOT history.booked OR history.changed)
  AND (origin.id=target.id OR (
   EXISTS(SELECT 1 FROM settlements WHERE period_id=origin.id)

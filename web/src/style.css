@@ -155,3 +155,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .draft-report-dimension { display: flex; align-items: center; gap: 8px; }
 .draft-report-dimension .ant-select { min-width: 106px; }
 .draft-report-note { color: var(--muted); padding: 0 15px; margin: 0 0 10px; }
+
+.catalog-match-totals { display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 4px 15px 14px; }
+.catalog-match .ant-table-pagination { padding-inline: 12px; }

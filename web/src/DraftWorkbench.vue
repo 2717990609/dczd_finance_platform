@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import CatalogRuleMatches from './CatalogRuleMatches.vue'
 import DraftReport from './DraftReport.vue'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, api: Function, formatMoney: Function, formatTime: Function })
@@ -16,6 +17,7 @@ const options = computed(() => props.periods.map(period => ({
   label: `${period.productName} · ${period.name}`,
 })))
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
+const matchingOnly = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable && !draft.value)
 const componentLabel = code => props.componentOptions.find(option=>option.value===code)?.label || code
 const memberLabel = type => props.memberOptions.find(option=>option.value===(type===3 ? 'new' : 'retrain'))?.label
 const reason = {
@@ -153,8 +155,8 @@ async function loadMore(section, cursorName) {
     <div class="draft-toolbar">
       <label for="draft-period">产品和核算期</label>
       <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和核算期" :disabled="calculating" />
-      <a-button type="primary" :disabled="!selected || loading || !!draft?.settlement" :loading="calculating" @click="calculate">重新试算</a-button>
-      <a-button :disabled="!selected || loading || calculating" @click="load()">刷新结果</a-button>
+      <a-button v-if="!matchingOnly" type="primary" :disabled="!selected || loading || !!draft?.settlement" :loading="calculating" @click="calculate">重新试算</a-button>
+      <a-button v-if="!matchingOnly" :disabled="!selected || loading || calculating" @click="load()">刷新结果</a-button>
     </div>
     <p v-if="selectedPeriod" class="draft-context">
       {{ selectedPeriod.periodMode === 'class' ? '期次' : '账期' }} {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
@@ -236,7 +238,8 @@ async function loadMore(section, cursorName) {
     <div v-if="draft.issueCount > draft.issues.length" class="paging"><a-button :loading="loading" @click="loadMore('issues', 'afterIssueId')">加载下一页</a-button></div>
   </section>
   </template>
-  <section v-if="!draft && !error" class="records empty">
+  <CatalogRuleMatches v-if="matchingOnly" :period-id="selected" :api="api" :format-money="formatMoney" :format-time="formatTime"/>
+  <section v-if="!draft && !error && !matchingOnly" class="records empty">
     <a-empty :description="loading ? '正在读取试算' : selected ? '本期暂无草稿' : '请选择核算期'" />
   </section>
 </template>

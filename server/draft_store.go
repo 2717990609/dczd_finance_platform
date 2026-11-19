@@ -56,6 +56,7 @@ const draftPaymentsSQL = `SELECT v.id,v.fact,coalesce(company.company_id,'')
  LEFT JOIN source_payment_companies company ON company.source_version_id=v.id
  WHERE m.product_id=(SELECT product_id FROM periods WHERE id=$1)
    AND v.kind='ORDER_PAID' AND v.occurred_at >= $2 AND v.occurred_at < $3
+   AND NOT ` + catalogSourceReservedSQL + `
    AND NOT EXISTS (
     SELECT 1 FROM source_order_versions newer
     WHERE (newer.source,newer.order_id,newer.line_id,newer.record_key,newer.kind)=(v.source,v.order_id,v.line_id,v.record_key,v.kind)

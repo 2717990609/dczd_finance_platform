@@ -29,15 +29,16 @@ type legacyCatalogFile struct {
 }
 
 type legacyCatalogProduct struct {
-	SourceID      string                 `json:"sourceId"`
-	Code          string                 `json:"code"`
-	Name          string                 `json:"name"`
-	Project       string                 `json:"project"`
-	Source        string                 `json:"source"`
-	SourceKey     string                 `json:"sourceKey"`
-	PeriodMode    string                 `json:"periodMode"`
-	CycleStartDay *int                   `json:"cycleStartDay,omitempty"`
-	Packages      []legacyCatalogPackage `json:"packages"`
+	SourceID       string                 `json:"sourceId"`
+	Code           string                 `json:"code"`
+	Name           string                 `json:"name"`
+	Project        string                 `json:"project"`
+	Source         string                 `json:"source"`
+	SourceKey      string                 `json:"sourceKey"`
+	PeriodMode     string                 `json:"periodMode"`
+	CycleStartDay  *int                   `json:"cycleStartDay,omitempty"`
+	Packages       []legacyCatalogPackage `json:"packages"`
+	BusinessRoutes []catalogBusinessRoute `json:"businessRoutes,omitempty"`
 }
 
 type legacyCatalogPackage struct {
@@ -90,6 +91,10 @@ func normalizeLegacyCatalog(input *legacyCatalogFile) error {
 			return errLegacyCatalogInvalid
 		}
 		ids[id], codes[product.Code], product.SourceID = true, true, id
+		if err := normalizeCatalogRoutes(product, ids); err != nil {
+			return err
+		}
+		sort.Slice(product.BusinessRoutes, func(a, b int) bool { return product.BusinessRoutes[a].SourceID < product.BusinessRoutes[b].SourceID })
 		for j := range product.Packages {
 			pack := &product.Packages[j]
 			id, valid := canonicalSourceUUID(pack.SourceID)
@@ -173,6 +178,11 @@ func storeLegacyCatalog(ctx context.Context, tx pgx.Tx, input legacyCatalogFile)
 		}
 		if !changed {
 			continue
+		}
+		for _, route := range product.BusinessRoutes {
+			if err := storeCatalogRoute(ctx, tx, id, input.CapturedAt, route); err != nil {
+				return err
+			}
 		}
 		for _, pack := range product.Packages {
 			if err := storeLegacyPackage(ctx, tx, id, input.CapturedAt, pack); err != nil {

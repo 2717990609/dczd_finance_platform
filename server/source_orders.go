@@ -44,6 +44,7 @@ type sourceFact struct {
 	ReferrerID      string                   `json:"referrerId,omitempty"`
 	Participants    []sourceParticipant      `json:"participants,omitempty"`
 	SalesCompanyID  string                   `json:"-"`
+	Classification  sourceClassification     `json:"-"`
 	AmountMinor     *int64                   `json:"amountMinor"`
 	OccurredAt      time.Time                `json:"occurredAt"`
 	UpdatedAt       time.Time                `json:"updatedAt"`
@@ -82,6 +83,7 @@ type sourceDocument struct {
 	} `json:"source_record"`
 	Business struct {
 		Domain          string `json:"source_domain_code"`
+		Entity          string `json:"source_entity_type_code"`
 		Code            string `json:"source_product_code"`
 		TransactionType string `json:"source_transaction_type_code"`
 	} `json:"business"`
@@ -206,7 +208,8 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 		RecordKey: wire.Record.Table + ":" + wire.Record.ID, Version: wire.Record.Version, Kind: wire.Kind, Domain: wire.Business.Domain,
 		SourceKey: wire.Business.Code, TransactionType: wire.Business.TransactionType, SourceStatus: wire.Order.Status.Code,
 		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, RefundsPayment: refundTargets, ReferrerID: referrer, Participants: participants, SalesCompanyID: company, AmountMinor: amount,
-		OccurredAt: occurredAt, UpdatedAt: wire.Record.UpdatedAt}, nil
+		OccurredAt: occurredAt, UpdatedAt: wire.Record.UpdatedAt,
+		Classification: classifySourcePayment(source, wire.Business.Domain, wire.Business.Entity, wire.Record.Table)}, nil
 }
 
 var sourcesList = []string{"DCAI", "DCZD", "DCJK"}
@@ -351,6 +354,11 @@ func storeSourceFacts(ctx context.Context, tx pgx.Tx, facts []sourceFact) (int64
 		} else {
 			inserted++
 		}
+		if f.Classification.Key != "" {
+			if e := storeSourceClassification(ctx, tx, sourceVersion, f.Classification); e != nil {
+				return 0, e
+			}
+		}
 		if f.SalesCompanyID != "" {
 			if e := storeSourcePaymentCompany(ctx, tx, sourceVersion, f.SalesCompanyID); e != nil {
 				return 0, e
@@ -379,13 +387,24 @@ func storeSourcePaymentCompany(ctx context.Context, tx pgx.Tx, version int64, co
 const ordersSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
  SELECT v.id,v.fact || jsonb_build_object('id',v.id,'productName',p.name,'mapped',p.id IS NOT NULL) AS data
  FROM (
-  SELECT DISTINCT ON(source,order_id,line_id,record_key,kind) id,source,fact FROM source_order_versions
-  WHERE ($1='' OR source=$1) AND ($2='' OR order_id=$2)
-  ORDER BY source,order_id,line_id,record_key,kind,updated_at DESC,id DESC
+  SELECT * FROM (
+   SELECT DISTINCT ON(source,order_id,line_id,record_key,kind) id,source,record_key,occurred_at,fact FROM source_order_versions
+   WHERE ($1='' OR source=$1) AND ($2='' OR order_id=$2)
+   ORDER BY source,order_id,line_id,record_key,kind,updated_at DESC,id DESC
+  ) latest
+  WHERE ($3::bigint=0 OR latest.id<$3) ORDER BY latest.id DESC LIMIT 50
  ) v
  LEFT JOIN source_mappings m ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'
- LEFT JOIN products p ON p.id=m.product_id
- WHERE ($3::bigint=0 OR v.id<$3) ORDER BY v.id DESC LIMIT 50
+ LEFT JOIN source_order_classifications classification ON classification.source_version_id=v.id
+ LEFT JOIN LATERAL (
+  SELECT min(m.product_id) AS product_id FROM catalog_business_routes m
+  JOIN legacy_catalog_products c ON c.product_id=m.product_id AND c.captured_at=m.observed_at
+  WHERE (m.source,m.domain,m.record_table,m.entity_type,m.business_key,m.classifier)=
+   (v.source,v.fact->>'domain',split_part(v.record_key,':',1),classification.entity_type,classification.business_key,classification.classifier)
+   AND m.effective_from<=v.occurred_at AND (m.effective_to IS NULL OR v.occurred_at<m.effective_to)
+  HAVING count(DISTINCT m.product_id)=1
+ ) route ON true
+ LEFT JOIN products p ON p.id=CASE WHEN ` + catalogSourceReservedSQL + ` THEN route.product_id ELSE m.product_id END
  ) q`
 
 func (s workspace) orders(w http.ResponseWriter, r *http.Request) {

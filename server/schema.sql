@@ -511,3 +511,32 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order) VALU
  ('draftReportDimension','company','公司',20),
  ('draftReportDimension','department','部门',30)
 ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS catalog_business_routes (
+ source_id uuid PRIMARY KEY,
+ product_id bigint NOT NULL REFERENCES legacy_catalog_products(product_id),
+ source text NOT NULL,
+ domain text NOT NULL,
+ entity_type text NOT NULL,
+ record_table text NOT NULL,
+ business_key text NOT NULL,
+ classifier text NOT NULL,
+ sku_code text NOT NULL,
+ sku_label text NOT NULL,
+ mapping_version integer NOT NULL CHECK(mapping_version>0),
+ effective_from timestamptz NOT NULL,
+ effective_to timestamptz CHECK(effective_to>effective_from),
+ observed_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS catalog_business_route_scope
+ ON catalog_business_routes(product_id,observed_at,source,domain,record_table);
+
+CREATE TABLE IF NOT EXISTS source_order_classifications (
+ source_version_id bigint PRIMARY KEY REFERENCES source_order_versions(id),
+ entity_type text NOT NULL,
+ business_key text NOT NULL,
+ classifier text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS catalog_payment_record_scope
+ ON source_order_versions(source,(fact->>'domain'),(split_part(record_key,':',1)),occurred_at)
+ WHERE kind='ORDER_PAID';
