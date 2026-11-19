@@ -20,6 +20,7 @@ type correctionInput struct {
 type correctionLine struct {
 	OriginalLineID, SourceVersionID int64
 	PersonID, Amount                int64
+	organization                    reportOrganization
 }
 
 type correctionBalance struct {
@@ -282,7 +283,7 @@ func computeRecommendationCorrection(input correctionInput, b *correctionBalance
 	}
 	lines := make([]correctionLine, 0, len(deltas))
 	for _, delta := range deltas {
-		lines = append(lines, correctionLine{input.OriginalLineID, input.SourceVersionID, delta.PersonID, delta.Amount})
+		lines = append(lines, correctionLine{OriginalLineID: input.OriginalLineID, SourceVersionID: input.SourceVersionID, PersonID: delta.PersonID, Amount: delta.Amount})
 	}
 	return lines, issue, nil
 }

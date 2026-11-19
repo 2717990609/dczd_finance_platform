@@ -1,8 +1,8 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import DraftPersonnel from './DraftPersonnel.vue'
+import DraftReport from './DraftReport.vue'
 
-const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, api: Function, formatMoney: Function, formatTime: Function })
+const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, api: Function, formatMoney: Function, formatTime: Function })
 const selected = ref()
 const view = ref('detail')
 const draft = ref()
@@ -28,6 +28,8 @@ const reason = {
   MISSING_PARTICIPANT: '订单缺少该来源角色',
   AMBIGUOUS_IDENTITY: '付款时点命中多份人员归属',
   MISSING_IDENTITY: '付款时点查不到该来源人员的归属',
+  REFUND_PERFORMANCE_PAYMENT_MISSING: '没有可对应的原付款业绩，请核对原订单',
+  PRACTICE_DUPLICATE_PERFORMANCE_PAYMENT: '同一原付款出现多次，请核对报名与付款记录',
   REFUND_MISSING_AMOUNT_OR_ID: '退款缺少有效退款编号或金额',
   REFUND_DUPLICATE_ID: '同一原退款编号有多条来源事实',
   REFUND_MISSING_PAYMENT_REFERENCE: '退款未明确关联原付款',
@@ -170,10 +172,10 @@ async function loadMore(section, cursorName) {
   </div>
   <a-tabs v-if="draft" v-model:active-key="view">
     <a-tab-pane key="detail" tab="明细"/>
-    <a-tab-pane key="personnel" tab="人员分润"/>
+    <a-tab-pane v-if="reportDimensions.length" key="report" tab="业绩与分润"/>
   </a-tabs>
-  <DraftPersonnel v-if="draft && view==='personnel'" :draft="draft" :api="api" :format-money="formatMoney"/>
-  <template v-if="draft && view==='detail'">
+  <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney"/>
+  <template v-if="draft && (view==='detail' || !reportDimensions.length)">
   <section class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>
     <div class="table-container">

@@ -188,6 +188,10 @@ BEGIN
     SELECT 1 FROM calculation_draft_lines l
     JOIN calculation_draft_corrections a ON a.original_line_id=l.id
     JOIN settlements s ON s.period_id=a.period_id WHERE l.period_id=OLD.period_id AND s.id<>OLD.id
+ ) OR EXISTS(
+    SELECT 1 FROM calculation_draft_performance o
+    JOIN calculation_draft_performance a ON a.payment_version_id=o.source_version_id
+    JOIN settlements s ON s.period_id=a.period_id WHERE o.period_id=OLD.period_id AND s.id<>OLD.id
  ) THEN
   RAISE EXCEPTION 'settlement has booked adjustments' USING ERRCODE='55000';
  END IF;
@@ -195,7 +199,9 @@ BEGIN
  WHERE period_id IN (SELECT a.period_id FROM calculation_draft_refunds a
    JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id
    UNION SELECT a.period_id FROM calculation_draft_corrections a
-   JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id)
+   JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id
+   UNION SELECT a.period_id FROM calculation_draft_performance a
+   JOIN calculation_draft_performance o ON o.source_version_id=a.payment_version_id WHERE o.period_id=OLD.period_id)
  AND period_id<>OLD.period_id;
  INSERT INTO settlement_removals(settlement_id,period_id,draft_version,removed_by)
  VALUES(OLD.id,OLD.period_id,OLD.draft_version,session_user);
@@ -210,6 +216,7 @@ CREATE OR REPLACE FUNCTION protect_settlement_input() RETURNS trigger LANGUAGE p
 BEGIN
  IF TG_TABLE_NAME='source_order_versions' THEN
   IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.source_version_id=OLD.id)
+     OR EXISTS(SELECT 1 FROM calculation_draft_performance a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id OR a.payment_version_id=OLD.id)
      OR EXISTS(SELECT 1 FROM calculation_draft_refunds a JOIN settlements s USING(period_id) WHERE a.refund_source_version_id=OLD.id)
      OR EXISTS(SELECT 1 FROM calculation_draft_corrections a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id) THEN
    RAISE EXCEPTION 'source version is referenced by a confirmed calculation' USING ERRCODE='55000';
@@ -467,4 +474,40 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order) VALU
  ('appointmentKind','MEMBER','公司成员',30),
  ('appointmentKind','MANAGER','公司管理人员',40),
  ('appointmentKind','OWNER','公司负责人',50)
+ON CONFLICT DO NOTHING;
+
+ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS performance_ready boolean NOT NULL DEFAULT false;
+ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES organization_units(id);
+ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS department_id uuid REFERENCES organization_units(id);
+ALTER TABLE calculation_draft_corrections ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES organization_units(id);
+ALTER TABLE calculation_draft_corrections ADD COLUMN IF NOT EXISTS department_id uuid REFERENCES organization_units(id);
+
+CREATE TABLE IF NOT EXISTS organization_company_sources (
+ source text NOT NULL,
+ source_company_id text NOT NULL,
+ company_id uuid NOT NULL REFERENCES organization_units(id),
+ valid_from timestamptz NOT NULL,
+ valid_to timestamptz CHECK (valid_to > valid_from),
+ PRIMARY KEY(source,source_company_id,valid_from)
+);
+
+CREATE TABLE IF NOT EXISTS calculation_draft_performance (
+ period_id bigint NOT NULL REFERENCES calculation_drafts(period_id) ON DELETE CASCADE,
+ source_version_id bigint NOT NULL REFERENCES source_order_versions(id),
+ payment_version_id bigint REFERENCES source_order_versions(id),
+ person_id bigint REFERENCES people(id),
+ company_id uuid REFERENCES organization_units(id),
+ department_id uuid REFERENCES organization_units(id),
+ PRIMARY KEY(period_id,source_version_id),
+ CHECK (source_version_id<>payment_version_id)
+);
+CREATE INDEX IF NOT EXISTS calculation_performance_source ON calculation_draft_performance(source_version_id);
+CREATE INDEX IF NOT EXISTS calculation_performance_payment ON calculation_draft_performance(payment_version_id);
+CREATE OR REPLACE TRIGGER protect_confirmed_performance BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_performance
+ FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+
+INSERT INTO configuration_options(group_key,option_key,label,display_order) VALUES
+ ('draftReportDimension','person','人员',10),
+ ('draftReportDimension','company','公司',20),
+ ('draftReportDimension','department','部门',30)
 ON CONFLICT DO NOTHING;

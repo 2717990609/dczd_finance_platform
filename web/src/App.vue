@@ -403,7 +403,7 @@ async function save() {
       <main class="workspace-content">
         <template v-if="current==='settlement'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
-          <DraftWorkbench :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :api="api" :format-money="formatMoney" :format-time="formatTime" />
+          <DraftWorkbench :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :api="api" :format-money="formatMoney" :format-time="formatTime" />
         </template>
         <template v-else-if="current==='organization'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>

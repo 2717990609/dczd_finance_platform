@@ -38,6 +38,7 @@ type draftLine struct {
 	FactID, PersonID, IdentityID, RuleID int64
 	EnrollmentID                         int64 `json:",omitempty"`
 	Component                            string
+	organization                         reportOrganization
 	Base, Amount                         int64
 }
 
@@ -54,6 +55,7 @@ type paymentDraft struct {
 	PracticeStartsAt    time.Time
 	PracticeEnrollments []int64
 	Lines               []draftLine
+	Performance         []draftPerformance
 	Issues              []draftIssue
 	Refunds             []refundLine
 	Corrections         []correctionLine
@@ -112,6 +114,10 @@ func calculatePaymentDraft(window periodWindow, rules []paymentRule, facts []pay
 			continue
 		}
 		rule := selectPaymentRule(rules, fact.OccurredAt)
+		result.Performance = append(result.Performance, draftPerformance{
+			SourceVersionID: input.ID, Principal: *fact.AmountMinor,
+			PersonID: performanceOwner(fact, rule, "", identities),
+		})
 		if rule == nil {
 			result.Issues = append(result.Issues, draftIssue{FactID: input.ID, Code: "MISSING_EFFECTIVE_RULE"})
 			continue

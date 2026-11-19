@@ -80,6 +80,7 @@ type organizationSnapshot struct {
 	People      json.RawMessage
 	Units       json.RawMessage
 	Assignments json.RawMessage
+	Companies   json.RawMessage
 }
 
 func importOrganization(ctx context.Context, cfg config, path string) error {
@@ -114,6 +115,9 @@ func storeOrganizationSnapshot(ctx context.Context, db *pgxpool.Pool, raw json.R
 			return invalid
 		}
 	}
+	if len(snapshot.Companies) != 0 && snapshot.Companies[0] != '[' {
+		return invalid
+	}
 	digest := sha256.Sum256(raw)
 	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(637619241)"); err != nil {
@@ -139,6 +143,11 @@ func storeOrganizationSnapshot(ctx context.Context, db *pgxpool.Pool, raw json.R
 		}{{importOrganizationPeopleSQL, snapshot.People}, {importOrganizationUnitsSQL, snapshot.Units}, {importOrganizationAssignmentsSQL, snapshot.Assignments}} {
 			if _, err := tx.Exec(ctx, statement.query, statement.rows); err != nil {
 				return fmt.Errorf("write organization snapshot: %w", err)
+			}
+		}
+		if len(snapshot.Companies) != 0 {
+			if _, err := tx.Exec(ctx, importOrganizationCompanySourcesSQL, snapshot.Companies); err != nil {
+				return fmt.Errorf("write organization company sources: %w", err)
 			}
 		}
 		var cyclic bool
@@ -174,3 +183,9 @@ const importOrganizationAssignmentsSQL = `INSERT INTO organization_assignments(i
  LEFT JOIN people p ON p.legacy_party_id=i."personId"
  ON CONFLICT(id) DO UPDATE SET person_id=excluded.person_id,unit_id=excluded.unit_id,kind=excluded.kind,
  position=excluded.position,valid_from=excluded.valid_from,valid_to=excluded.valid_to`
+
+const importOrganizationCompanySourcesSQL = `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from,valid_to)
+ SELECT i.source,nullif(btrim(i."sourceCompanyId"),''),u.id,i."from",i."to"
+ FROM jsonb_to_recordset($1) AS i(source text,"sourceCompanyId" text,"companyId" uuid,"from" timestamptz,"to" timestamptz)
+ LEFT JOIN organization_units u ON u.id=i."companyId" AND u.kind='COMPANY'
+ ON CONFLICT(source,source_company_id,valid_from) DO UPDATE SET company_id=excluded.company_id,valid_to=excluded.valid_to`

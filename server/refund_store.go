@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"math"
-	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -64,7 +63,11 @@ const refundInputsSQL = `SELECT v.id, origin.id, v.fact, coalesce(history.change
       OR rv.order_id IS DISTINCT FROM v.order_id OR rv.line_id IS DISTINCT FROM v.line_id)
       FILTER (WHERE s.id IS NOT NULL) AS changed
   FROM source_order_versions rv
-  JOIN calculation_draft_refunds a ON a.refund_source_version_id=rv.id
+  JOIN LATERAL (
+   SELECT period_id FROM calculation_draft_refunds WHERE refund_source_version_id=rv.id
+   UNION
+   SELECT period_id FROM calculation_draft_performance WHERE source_version_id=rv.id AND payment_version_id IS NOT NULL
+  ) a ON true
   LEFT JOIN settlements s ON s.period_id=a.period_id
   WHERE rv.kind='REFUND_SUCCEEDED' AND rv.source=v.source
     AND (rv.fact->>'domain')=(v.fact->>'domain') AND (rv.fact->>'refundId')=(v.fact->>'refundId')
@@ -98,7 +101,7 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
  FROM jsonb_to_recordset($1::jsonb) AS q(id bigint,source text,order_id text,line_id text,record_id text)
  JOIN source_order_versions p ON p.source=q.source AND p.order_id=q.order_id AND p.kind='ORDER_PAID'
   AND (q.line_id='' OR p.line_id=q.line_id)
-  AND (q.record_id='' OR split_part(p.record_key,':',2)=q.record_id)
+  AND (q.record_id='' OR substr(p.record_key,strpos(p.record_key,':')+1)=q.record_id AND strpos(p.record_key,':')>0)
  JOIN calculation_draft_lines l ON l.source_version_id=p.id
  JOIN settlements s ON s.period_id=l.period_id
  JOIN periods original ON original.id=l.period_id
@@ -181,8 +184,7 @@ func includeCurrentObligations(window periodWindow, refs []refundReference, obli
 	}
 	for _, ref := range refs {
 		for _, payment := range payments[orderKey{ref.Source, ref.OrderID}] {
-			_, recordID, _ := strings.Cut(payment.Fact.RecordKey, ":")
-			if ref.RecordID != "" && ref.RecordID != recordID || ref.LineID != "" && ref.LineID != payment.Fact.LineID {
+			if !refundRefMatches(ref, payment.Fact) {
 				continue
 			}
 			for _, line := range byVersion[payment.ID] {
@@ -223,6 +225,11 @@ func addRefunds(ctx context.Context, tx pgx.Tx, periodID int64, window periodWin
 			refs = append(refs, refundReference{event.ID, f.Source, link.OrderID, link.LineID, link.RecordID})
 		}
 	}
+	performanceOrigins, err := loadPerformanceRefundOrigins(ctx, tx, periodID, refs, payments, draft.Performance)
+	if err != nil {
+		return err
+	}
+	performanceCredited := make(map[int64]int64)
 	obligations, err := loadRefundObligations(ctx, tx, periodID, refs)
 	if err != nil {
 		return err
@@ -248,6 +255,10 @@ func addRefunds(ctx context.Context, tx pgx.Tx, periodID int64, window periodWin
 			code, err = applyHistoricalRefund(draft, event, obligations[event.ID], history)
 			if err != nil {
 				return err
+			}
+			performanceIssue := recordPerformanceRefund(draft, event, performanceOrigins[event.ID], performanceCredited)
+			if code == "" {
+				code = performanceIssue
 			}
 		}
 		if code != "" {

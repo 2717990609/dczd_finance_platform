@@ -59,11 +59,28 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 	if err != nil {
 		return draft, err
 	}
+	performancePayments := make(map[paymentKey]int)
+	for _, purchase := range purchases {
+		for _, payment := range purchase.payments {
+			performancePayments[paymentKey{payment.Fact.Source, payment.Fact.PaymentID}]++
+		}
+	}
 	for _, purchase := range purchases {
 		member, payments, base := purchase.member, purchase.payments, purchase.base
 		if purchase.issue != "" {
 			draft.Issues = append(draft.Issues, practiceIssue(purchase.issue, member, rule, ""))
 			continue
+		}
+		for _, payment := range payments {
+			fact := payment.Fact
+			if performancePayments[paymentKey{fact.Source, fact.PaymentID}] > 1 {
+				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_DUPLICATE_PERFORMANCE_PAYMENT", member, rule, ""))
+				continue
+			}
+			draft.Performance = append(draft.Performance, draftPerformance{
+				SourceVersionID: payment.ID, Principal: *fact.AmountMinor,
+				PersonID: performanceOwner(fact, &rule, classMember(member.MembershipType), identities),
+			})
 		}
 		var matched bool
 		for _, part := range rule.Components {

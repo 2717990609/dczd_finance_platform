@@ -155,6 +155,15 @@ func TestPracticeDraftFollowsLatestRosterForDeferredEnrollment(t *testing.T) {
 	importRoster(roster(11, 2, targetStart, true), true)
 	check(target, 2, 1, 501, 0)
 
+	for period, expected := range map[int64]int64{original: 0, target: 1000} {
+		var total int64
+		err := service.db.QueryRow(ctx, `SELECT coalesce(sum((v.fact->>'amountMinor')::bigint),0)
+		 FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id WHERE a.period_id=$1`, period).Scan(&total)
+		if err != nil || total != expected {
+			t.Fatalf("class performance=%d, want %d, error=%v", total, expected, err)
+		}
+	}
+
 	var first, second int64
 	err := service.db.QueryRow(ctx, `SELECT min(amount_minor),max(amount_minor) FROM calculation_draft_lines WHERE period_id=$1`, target).Scan(&first, &second)
 	if err != nil || first != 200 || second != 301 {

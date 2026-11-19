@@ -50,9 +50,10 @@ const draftRulesSQL = `SELECT rv.id,rv.version,rv.effective_from,rv.components F
  WHERE p.id=$1 AND (rv.effective_from IS NULL OR rv.effective_from<$2)
  ORDER BY ` + matchingRuleOrder
 
-const draftPaymentsSQL = `SELECT v.id,v.fact
+const draftPaymentsSQL = `SELECT v.id,v.fact,coalesce(company.company_id,'')
  FROM source_mappings m
  JOIN source_order_versions v ON v.source=m.source AND v.fact->>'domain'=m.domain AND v.fact->>'sourceKey'=m.source_key
+ LEFT JOIN source_payment_companies company ON company.source_version_id=v.id
  WHERE m.product_id=(SELECT product_id FROM periods WHERE id=$1)
    AND v.kind='ORDER_PAID' AND v.occurred_at >= $2 AND v.occurred_at < $3
    AND NOT EXISTS (
@@ -104,6 +105,9 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 		return paymentDraft{}, nil, err
 	}
 	if err = addRecommendationCorrections(ctx, tx, summary.PeriodID, window, &result); err != nil {
+		return paymentDraft{}, nil, err
+	}
+	if err = attachReportOrganizations(ctx, tx, &result, facts); err != nil {
 		return paymentDraft{}, nil, err
 	}
 	digest, err := digestDraft(summary.RuleID, result, facts)
@@ -167,7 +171,7 @@ func readDraftInputs(ctx context.Context, tx pgx.Tx, periodID int64, window peri
 	}
 	facts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (paymentInput, error) {
 		var input paymentInput
-		err := row.Scan(&input.ID, &input.Fact)
+		err := row.Scan(&input.ID, &input.Fact, &input.Fact.SalesCompanyID)
 		return input, err
 	})
 	if err != nil {
@@ -247,9 +251,24 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 		fact := facts[line.FactID]
 		line.FactID = 0
 		if err := encode.Encode(struct {
-			Payment stablePayment
-			Line    draftLine
-		}{fact, line}); err != nil {
+			Payment      stablePayment
+			Line         draftLine
+			Organization *reportOrganization `json:",omitempty"`
+		}{fact, line, line.organization.present()}); err != nil {
+			return nil, err
+		}
+	}
+	for _, posting := range result.Performance {
+		fact := facts[posting.SourceVersionID]
+		original, current := facts[posting.PaymentVersionID]
+		posting.SourceVersionID = 0
+		if current {
+			posting.PaymentVersionID = 0
+		}
+		if err := encode.Encode(struct {
+			Fact, Original stablePayment
+			Posting        draftPerformance
+		}{fact, original, posting}); err != nil {
 			return nil, err
 		}
 	}
@@ -278,7 +297,10 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 	}
 	for _, correction := range result.Corrections {
 		correction.SourceVersionID = 0
-		if err := encode.Encode(correction); err != nil {
+		if err := encode.Encode(struct {
+			correctionLine
+			Organization *reportOrganization `json:",omitempty"`
+		}{correction, correction.organization.present()}); err != nil {
 			return nil, err
 		}
 	}
@@ -294,13 +316,13 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 }
 
 func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []byte, result paymentDraft) error {
-	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id)
-	  VALUES($1,$2,1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11)
+	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id,performance_ready)
+	  VALUES($1,$2,1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,true)
 	  ON CONFLICT(period_id) DO UPDATE SET rule_id=excluded.rule_id,version=calculation_drafts.version+1,
 	  input_digest=excluded.input_digest,total_minor=excluded.total_minor,line_count=excluded.line_count,issue_count=excluded.issue_count,
-	  calculated_at=excluded.calculated_at,refund_minor=excluded.refund_minor,refund_count=excluded.refund_count,
+	  performance_ready=true,calculated_at=excluded.calculated_at,refund_minor=excluded.refund_minor,refund_count=excluded.refund_count,
 	  correction_minor=excluded.correction_minor,correction_count=excluded.correction_count,practice_roster_id=excluded.practice_roster_id
-	  WHERE calculation_drafts.input_digest<>excluded.input_digest RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
+	  WHERE NOT calculation_drafts.performance_ready OR calculation_drafts.input_digest<>excluded.input_digest RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
 		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections), summary.PracticeRosterID).
 		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount, &summary.PracticeRosterID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -320,6 +342,9 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	if summary.Total, err = addMinor(summary.Accrued+summary.RefundTotal, summary.CorrectionTotal); err != nil {
 		return err
 	}
+	if err = storeDraftPerformance(ctx, tx, summary.PeriodID, result.Performance); err != nil {
+		return err
+	}
 	if _, err = tx.Exec(ctx, "DELETE FROM calculation_draft_corrections WHERE period_id=$1", summary.PeriodID); err != nil {
 		return err
 	}
@@ -334,14 +359,14 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Lines) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_lines"},
-			[]string{"period_id", "source_version_id", "component_type", "rule_id", "identity_id", "person_id", "base_minor", "amount_minor", "practice_enrollment_id"},
+			[]string{"period_id", "source_version_id", "component_type", "rule_id", "identity_id", "person_id", "base_minor", "amount_minor", "practice_enrollment_id", "company_id", "department_id"},
 			pgx.CopyFromSlice(len(result.Lines), func(i int) ([]any, error) {
 				l := result.Lines[i]
 				var enrollment *int64
 				if l.EnrollmentID != 0 {
 					enrollment = &l.EnrollmentID
 				}
-				return []any{summary.PeriodID, l.FactID, l.Component, l.RuleID, l.IdentityID, l.PersonID, l.Base, l.Amount, enrollment}, nil
+				return []any{summary.PeriodID, l.FactID, l.Component, l.RuleID, l.IdentityID, l.PersonID, l.Base, l.Amount, enrollment, l.organization.Company, l.organization.Department}, nil
 			}))
 		if err != nil {
 			return err
@@ -373,10 +398,10 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Corrections) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_corrections"},
-			[]string{"period_id", "original_line_id", "source_version_id", "person_id", "amount_minor"},
+			[]string{"period_id", "original_line_id", "source_version_id", "person_id", "amount_minor", "company_id", "department_id"},
 			pgx.CopyFromSlice(len(result.Corrections), func(i int) ([]any, error) {
 				c := result.Corrections[i]
-				return []any{summary.PeriodID, c.OriginalLineID, c.SourceVersionID, c.PersonID, c.Amount}, nil
+				return []any{summary.PeriodID, c.OriginalLineID, c.SourceVersionID, c.PersonID, c.Amount, c.organization.Company, c.organization.Department}, nil
 			}))
 	}
 	return err

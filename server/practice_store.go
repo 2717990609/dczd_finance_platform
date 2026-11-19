@@ -300,6 +300,9 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	for _, member := range members {
 		result.PracticeEnrollments = append(result.PracticeEnrollments, member.ID)
 	}
+	if err = attachReportOrganizations(ctx, tx, &result, facts); err != nil {
+		return paymentDraft{}, nil, err
+	}
 	digest, err := digestDraft(rule.ID, result, facts)
 	return result, digest, err
 }

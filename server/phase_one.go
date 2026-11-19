@@ -127,6 +127,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/sources", Handler: s.sourceStatuses},
 		{Method: http.MethodGet, Path: "/api/v1/drafts", Handler: s.getDraft},
 		{Method: http.MethodGet, Path: "/api/v1/draft-personnel", Handler: s.draftPersonnel},
+		{Method: http.MethodGet, Path: "/api/v1/draft-report", Handler: s.draftReport},
 		{Method: http.MethodPost, Path: "/api/v1/drafts", Handler: submit(s.recalculateDraft)},
 	}
 }
