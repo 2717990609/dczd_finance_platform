@@ -123,3 +123,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .tier-values { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
 .tier-values .ant-form-item { margin-bottom: 0; }
 .tier-values .ant-input-number { width: 100%; }
+
+.tier-person-starts { margin-bottom: 16px; }
+.tier-person-starts summary, .rule-count-review summary { cursor: pointer; color: var(--accent); }
+.tier-person-starts[open] summary { margin-bottom: 8px; }
+.rule-count-review { margin-top: 4px; font-size: 12px; }
+.rule-count-review ul { margin-block: 4px 0; padding-inline-start: 18px; }

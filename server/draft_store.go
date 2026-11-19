@@ -22,6 +22,7 @@ type calculateDraftInput struct{ PeriodID int64 }
 type draftSummary struct {
 	PracticeRosterID      *int64    `json:"-"`
 	PracticeStartsAt      time.Time `json:"-"`
+	PeriodOrdinal         int       `json:"-"`
 	PracticeRosterVersion int64     `json:"practiceRosterVersion,omitempty"`
 	PeriodID              int64     `json:"periodId"`
 	RuleID                int64     `json:"ruleId"`
@@ -41,7 +42,7 @@ type draftSummary struct {
 const maxDraftPayments = 100000
 
 const draftScopeSQL = `SELECT pro.period_mode, p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
- (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',coalesce(p.source_period_key,'')
+ (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',coalesce(p.source_period_key,''),p.ordinal
  FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1 FOR UPDATE OF p`
 
 const draftRulesSQL = `SELECT rv.id,rv.version,rv.effective_from,rv.components FROM periods p
@@ -112,7 +113,7 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (periodWindow, []paymentRule, error) {
 	var window periodWindow
 	var mode, sourceKey string
-	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey)
+	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal)
 	if err != nil {
 		return window, nil, err
 	}

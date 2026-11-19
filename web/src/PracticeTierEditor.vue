@@ -6,6 +6,7 @@ const props = defineProps({
   metrics: { type: Array, required: true },
   startModes: { type: Array, required: true },
   amounts: { type: Array, required: true },
+  people: { type: Array, required: true },
 })
 const sections = computed(() => {
   const result = []
@@ -13,6 +14,10 @@ const sections = computed(() => {
   if (props.config.metric !== 'count') result.push({ key: 'performance', title: '本期实付档', unit: '元', decimals: 2 })
   return result
 })
+function eligiblePeople(row) {
+  return props.people.filter(person =>
+    !props.config.personCountStarts.some(other => other !== row && other.personId === person.value))
+}
 </script>
 
 <template>
@@ -21,7 +26,7 @@ const sections = computed(() => {
       <a-select id="tier-metric" v-model:value="config.metric" :options="metrics"/>
     </a-form-item>
     <template v-if="config.metric !== 'performance'">
-      <a-form-item html-for="tier-start-mode" label="累计起点">
+      <a-form-item html-for="tier-start-mode" label="默认累计起点">
         <a-select id="tier-start-mode" v-model:value="config.startMode" :options="startModes"/>
       </a-form-item>
       <a-form-item v-if="config.startMode==='ordinal'" html-for="tier-start-ordinal" label="起始期数" required>
@@ -30,6 +35,26 @@ const sections = computed(() => {
       <a-form-item v-else html-for="tier-start-time" label="起始开班时间" extra="使用北京时间。" required>
         <a-input id="tier-start-time" v-model:value="config.countFromAt" type="datetime-local"/>
       </a-form-item>
+      <details class="tier-person-starts">
+        <summary>按人员设置累计起点</summary>
+        <p class="tier-note">指定起点到达后，该人员按自己的起点累计。</p>
+        <div v-for="(row,index) in config.personCountStarts" :key="index" class="tier-range">
+          <a-form-item :html-for="'tier-person-'+index" label="人员" required>
+            <a-select :id="'tier-person-'+index" v-model:value="row.personId" :options="eligiblePeople(row)" show-search option-filter-prop="label"/>
+          </a-form-item>
+          <a-form-item :html-for="'tier-person-start-mode-'+index" label="个人累计起点">
+            <a-select :id="'tier-person-start-mode-'+index" v-model:value="row.startMode" :options="startModes"/>
+          </a-form-item>
+          <a-form-item v-if="row.startMode==='ordinal'" :html-for="'tier-person-start-ordinal-'+index" label="个人起始期数" required>
+            <a-input-number :id="'tier-person-start-ordinal-'+index" v-model:value="row.countFromOrdinal" :min="1" :precision="0"/>
+          </a-form-item>
+          <a-form-item v-else :html-for="'tier-person-start-time-'+index" label="个人起始开班时间" extra="使用北京时间。" required>
+            <a-input :id="'tier-person-start-time-'+index" v-model:value="row.countFromAt" type="datetime-local"/>
+          </a-form-item>
+          <a-button type="link" danger @click="config.personCountStarts.splice(index,1)">移除个人起点</a-button>
+        </div>
+        <a-button type="dashed" block @click="config.personCountStarts.push({startMode:startModes[0]?.value})">添加个人起点</a-button>
+      </details>
     </template>
     <fieldset v-for="section in sections" :key="section.key" class="tier-ranges">
       <legend>{{ section.title }}</legend>

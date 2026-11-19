@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -132,17 +133,39 @@ func TestPracticeTierChangesWithPastRosterAndTimeBoundAccount(t *testing.T) {
 	}
 	writeRoster(11, 1, 8, member("12", "33"), member("13", "34"))
 	check(1, 0, 2)
+	tiers.PersonCountStarts = []practicePersonCountStart{{PersonID: former, practiceCountStart: practiceCountStart{FromOrdinal: 2}}}
+	publish(tiers)
+	check(2, 1200, 1) // Only the person with a current-period reset is ready.
 	writeRoster(10, 1, 1, member("11", "31", "32"))
-	check(2, 3100, 0)
-	check(2, 3100, 0)
+	check(3, 2400, 0)
+	tiers.PersonCountStarts[0].FromOrdinal = 3
+	publish(tiers)
+	check(4, 3100, 0) // A future reset leaves an already opened period on the default.
+	check(4, 3100, 0)
+	exactFirstClass := time.Date(2026, 8, 1, 4, 0, 0, 0, time.UTC)
+	tiers.PersonCountStarts[0].practiceCountStart = practiceCountStart{FromAt: &exactFirstClass}
+	publish(tiers)
+	check(5, 3100, 0) // The cutoff includes a class opening exactly at the configured time.
+	afterFirstClass := exactFirstClass.Add(time.Second)
+	tiers.PersonCountStarts[0].FromAt = &afterFirstClass
+	publish(tiers)
+	check(6, 2400, 0)
 	duplicate := member("14", "31", "32")
 	duplicate.MembershipType = 2
 	writeRoster(10, 2, 1, member("11", "31", "32"), duplicate)
-	check(3, 0, 2)
-	afterFirstClass := time.Date(2026, 8, 2, 4, 0, 0, 0, time.UTC)
+	check(7, 1200, 1) // The duplicate is outside only the reset person's window.
+
+	tiers.PersonCountStarts = nil
 	tiers.CountFromOrdinal, tiers.CountFromAt = 0, &afterFirstClass
 	publish(tiers)
-	check(4, 2400, 0)
+	check(8, 2400, 0) // Existing default time-based rules still select the same history.
+
+	tiers.PersonCountStarts = []practicePersonCountStart{{PersonID: 999999, practiceCountStart: practiceCountStart{FromOrdinal: 2}}}
+	_, err := service.publishRule(ctx, publishRuleInput{ProductID: product, Label: "Missing person", PeriodID: &current,
+		Components: []component{{Type: "sales", ClassMember: "new", Mode: "tiered", SourceRole: "DIRECT_REFERRER", Tiers: &tiers}}})
+	if !errors.Is(err, errPracticeCountPerson) {
+		t.Fatalf("unexpected validation error: %v", err)
+	}
 }
 
 func TestPracticeTierRangesCanHaveGapsAndRejectOverlap(t *testing.T) {

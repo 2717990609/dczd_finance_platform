@@ -7,10 +7,42 @@ import (
 )
 
 type practiceSalesTiers struct {
-	CountFromOrdinal int            `json:"countFromOrdinal,omitempty"`
-	CountFromAt      *time.Time     `json:"countFromAt,omitempty"`
-	Count            []practiceTier `json:"count,omitempty"`
-	Performance      []practiceTier `json:"performance,omitempty"`
+	CountFromOrdinal  int                        `json:"countFromOrdinal,omitempty"`
+	CountFromAt       *time.Time                 `json:"countFromAt,omitempty"`
+	Count             []practiceTier             `json:"count,omitempty"`
+	Performance       []practiceTier             `json:"performance,omitempty"`
+	PersonCountStarts []practicePersonCountStart `json:"personCountStarts,omitempty"`
+}
+
+type practiceCountStart struct {
+	FromOrdinal int        `json:"countFromOrdinal,omitempty"`
+	FromAt      *time.Time `json:"countFromAt,omitempty"`
+}
+
+type practicePersonCountStart struct {
+	PersonID int64 `json:"personId"`
+	practiceCountStart
+}
+
+func (s practiceCountStart) valid() bool {
+	if s.FromAt == nil {
+		return s.FromOrdinal > 0
+	}
+	return s.FromOrdinal == 0 && !s.FromAt.IsZero()
+}
+
+func (s practiceCountStart) includes(period practiceHistoryPeriod) bool {
+	if s.FromAt == nil {
+		return period.ordinal >= s.FromOrdinal
+	}
+	if period.rosterID != 0 {
+		return !period.startsAt.Before(*s.FromAt)
+	}
+	return period.endsOn.Format(time.DateOnly) >= s.FromAt.In(shanghai).Format(time.DateOnly)
+}
+
+func (t practiceSalesTiers) defaultCountStart() practiceCountStart {
+	return practiceCountStart{FromOrdinal: t.CountFromOrdinal, FromAt: t.CountFromAt}
 }
 
 type practiceTier struct {
@@ -34,10 +66,19 @@ func validPracticeSalesTiers(part component) bool {
 		part.Value != 0 || part.RefundPolicy != "" || tiers == nil || len(tiers.Count)+len(tiers.Performance) == 0 {
 		return false
 	}
-	hasCountStart := tiers.CountFromOrdinal != 0 || tiers.CountFromAt != nil
-	if hasCountStart != (len(tiers.Count) != 0) || tiers.CountFromOrdinal < 0 ||
-		(tiers.CountFromAt != nil && (tiers.CountFromAt.IsZero() || tiers.CountFromOrdinal != 0)) {
+	if len(tiers.Count) == 0 {
+		if tiers.CountFromOrdinal != 0 || tiers.CountFromAt != nil || len(tiers.PersonCountStarts) != 0 {
+			return false
+		}
+	} else if !tiers.defaultCountStart().valid() {
 		return false
+	}
+	seen := make(map[int64]bool, len(tiers.PersonCountStarts))
+	for _, start := range tiers.PersonCountStarts {
+		if start.PersonID < 1 || seen[start.PersonID] || !start.valid() {
+			return false
+		}
+		seen[start.PersonID] = true
 	}
 	for _, rows := range [][]practiceTier{tiers.Count, tiers.Performance} {
 		for i, row := range rows {

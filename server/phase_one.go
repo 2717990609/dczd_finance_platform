@@ -32,6 +32,8 @@ type component struct {
 	Tiers        *practiceSalesTiers `json:"tiers,omitempty"`
 }
 
+var errPracticeCountPerson = errors.New("个人累计起点引用的人员不存在")
+
 var invalid = errors.New("请核对名称、范围与必填配置")
 var conflict = errors.New("记录与现有配置冲突，请重新读取")
 
@@ -150,7 +152,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 	code, message := http.StatusInternalServerError, "处理失败，请稍后重试"
 	var dbErr *pgconn.PgError
 	switch {
-	case errors.Is(err, invalid):
+	case errors.Is(err, invalid), errors.Is(err, errPracticeCountPerson):
 		code, message = 400, err.Error()
 	case errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
@@ -352,9 +354,25 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 		if p.EffectiveFrom != nil && p.EffectiveFrom.IsZero() {
 			return invalid
 		}
+		var personIDs []int64
 		for _, c := range p.Components {
 			if mode != "class" && c.ClassMember != "" {
 				return invalid
+			}
+			if c.Tiers != nil {
+				for _, start := range c.Tiers.PersonCountStarts {
+					personIDs = append(personIDs, start.PersonID)
+				}
+			}
+		}
+		if len(personIDs) != 0 {
+			var missing bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM unnest($1::bigint[]) AS person(id)
+			 WHERE NOT EXISTS(SELECT 1 FROM people WHERE id=person.id))`, personIDs).Scan(&missing); err != nil {
+				return err
+			}
+			if missing {
+				return errPracticeCountPerson
 			}
 		}
 		return tx.QueryRow(ctx, `INSERT INTO rule_versions(product_id,version,label,period_id,from_ordinal,effective_from,components)

@@ -81,6 +81,7 @@ function updateAmountMode(row, mode) {
       startMode:firstOption('tierStartMode'),
       count:[{mode:baseModes.value[0]?.value}],
       performance:[{from:0,mode:baseModes.value[0]?.value}],
+      personCountStarts:[],
     }
   }
 }
@@ -164,7 +165,7 @@ async function refresh(reloadOptions = false) {
   if (sourceFilter.value) params.set('source',sourceFilter.value)
   if (filter.value.trim()) params.set('orderId',filter.value.trim())
   if (olderThan.value) params.set('beforeId',olderThan.value)
-  const sections = {settlement:['products','periods'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules'], orders:['orders','sources'], people:['people','identities']}
+  const sections = {settlement:['products','periods'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people'], orders:['orders','sources'], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
   if (!configurationReady.value || reloadOptions) requests.configuration = '/configuration-options'
   const entries = Object.entries(requests)
@@ -236,6 +237,12 @@ function must(value, msg = '请补齐必填内容') {
   return value
 }
 const minor = value => Math.round(Number(value)*100)
+function countStartBody(form) {
+  must(form.startMode,'请选择累计起点')
+  if (form.startMode === 'ordinal') return {countFromOrdinal:must(form.countFromOrdinal,'请填写累计起始期数')}
+  const at = must(form.countFromAt,'请填写累计起始时间')
+  return {countFromAt:new Date(at+'+08:00').toISOString()}
+}
 function ruleComponentBody(row) {
   const sourceRole = row.sourceRole?.trim().toUpperCase()
   const component = {type:must(row.type),mode:must(row.mode,'请选择计提方式'),value:0,
@@ -247,7 +254,6 @@ function ruleComponentBody(row) {
   }
   const form = row.tierConfig
   must(form.metric,'请选择阶梯指标')
-  if (form.metric !== 'performance') must(form.startMode,'请选择累计起点')
   const serialize = (rows, convert) => rows.map(tier => ({
     from:convert(must(tier.from,'请填写各档位下限')),
     ...(tier.through != null ? {through:convert(tier.through)} : {}),
@@ -257,8 +263,11 @@ function ruleComponentBody(row) {
   component.tiers = {}
   if (form.metric !== 'performance') {
     component.tiers.count = serialize(form.count,Number)
-    if (form.startMode === 'ordinal') component.tiers.countFromOrdinal = must(form.countFromOrdinal,'请填写累计起始期数')
-    else component.tiers.countFromAt = new Date(must(form.countFromAt,'请填写累计起始时间')+'+08:00').toISOString()
+    Object.assign(component.tiers,countStartBody(form))
+    if (form.personCountStarts.length) component.tiers.personCountStarts = form.personCountStarts.map(item => ({
+      personId:must(item.personId,'请选择设置累计起点的人员'),
+      ...countStartBody(item),
+    }))
   }
   if (form.metric !== 'count') component.tiers.performance = serialize(form.performance,minor)
   return component
@@ -396,7 +405,20 @@ async function save() {
                 <template v-else-if="column.key==='version'"><a-tag color="green">v{{ text }}</a-tag></template>
                 <template v-else-if="column.key==='effectiveFrom'">{{ text ? formatTime(text) : '范围默认' }}</template>
                 <template v-else-if="column.key==='scope'">{{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}</template>
-                <template v-else-if="column.key==='components'"><a-tag v-for="c in text" :key="c.type+':'+(c.classMember || '')">{{ optionLabel('component',c.type) }}{{ c.classMember ? ' · '+optionLabel('classMember',c.classMember) : '' }} {{ c.mode==='tiered' ? tierLabel(c.tiers) : c.mode==='rate' ? (c.value/100)+'%' : formatMoney(c.value) }}</a-tag></template>
+                <template v-else-if="column.key==='components'">
+                  <div v-for="c in text" :key="c.type+':'+(c.classMember || '')">
+                    <a-tag>{{ optionLabel('component',c.type) }}{{ c.classMember ? ' · '+optionLabel('classMember',c.classMember) : '' }} {{ c.mode==='tiered' ? tierLabel(c.tiers) : c.mode==='rate' ? (c.value/100)+'%' : formatMoney(c.value) }}</a-tag>
+                    <details v-if="c.tiers?.personCountStarts?.length" class="rule-count-review">
+                      <summary>个人累计起点（{{ c.tiers.personCountStarts.length }}）</summary>
+                      <ul>
+                        <li v-for="start in c.tiers.personCountStarts" :key="start.personId">
+                          {{ peopleOptions.find(person=>person.value===start.personId)?.label || '人员 '+start.personId }}
+                          · {{ start.countFromOrdinal ? '第 '+start.countFromOrdinal+' 期' : formatTime(start.countFromAt) }}
+                        </li>
+                      </ul>
+                    </details>
+                  </div>
+                </template>
                 <template v-else-if="column.key==='source'">{{ sourceLabel(text) }}</template>
                 <template v-else-if="column.key==='orderNo'"><button class="order-link" type="button" @click="open('pull',record)" :title="'原订单 ID '+record.orderId">{{ text || record.orderId }}</button><small class="order-version">版本 {{ record.version }}</small></template>
                 <template v-else-if="column.key==='kind'"><a-tag>{{ labels[text] || text }}</a-tag></template>
@@ -468,7 +490,7 @@ async function save() {
           <a-form-item v-if="['sales','referral'].includes(c.type)" :label="'分项 '+(i+1)+' 的来源角色'">
             <a-input v-model:value="c.sourceRole" :aria-label="'来源角色 '+(i+1)" placeholder="如 LOCK_SALES_USER 或 DIRECT_REFERRER" :maxlength="64"/>
           </a-form-item>
-          <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes"/>
+          <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes" :people="peopleOptions"/>
           <a-form-item v-if="selectedProduct?.periodMode==='calendar'" :label="'分项 '+(i+1)+' 的退款处理'" extra="历史退款沿用付款时的规则版本。">
             <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>
           </a-form-item>

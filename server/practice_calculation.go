@@ -1,7 +1,5 @@
 package main
 
-import "time"
-
 func classMember(kind int) string {
 	if kind == 3 {
 		return "new"
@@ -50,11 +48,6 @@ func preparePracticePurchases(members []practiceEnrollment, orders map[string][]
 	return purchases, nil
 }
 
-type practiceTierHistory struct {
-	members  []practiceEnrollment
-	complete bool
-}
-
 func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orders map[string][]paymentInput,
 	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory) (paymentDraft, error) {
 	var draft paymentDraft
@@ -89,8 +82,12 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 			isTiered := part.Mode == "tiered"
 			if isTiered {
-				if tierIssue != "" {
-					draft.Issues = append(draft.Issues, practiceIssue(tierIssue, member, rule, part.Type))
+				issue := tierIssue[assignments[0].PersonID]
+				if issue == "" {
+					issue = tierIssue[0]
+				}
+				if issue != "" {
+					draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
 					continue
 				}
 				tier, ok := awards[member.ID]
@@ -129,63 +126,88 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 }
 
 func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map[string][]paymentInput,
-	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory) (map[int64]practiceTier, string, error) {
+	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory) (map[int64]practiceTier, map[int64]string, error) {
 	part := practiceTierComponent(rule)
 	if part == nil {
-		return nil, "", nil
+		return nil, nil, nil
 	}
 	config := part.Tiers
-	prior := make(map[int64]int64)
-	seen := make(map[string]bool)
+	issues := make(map[int64]string)
 	seenPayments := make(map[string]bool)
-	if len(config.Count) != 0 {
-		if !history.complete {
-			return nil, "PRACTICE_TIER_HISTORY_MISSING", nil
-		}
-		past, err := preparePracticePurchases(history.members, orders, blocked)
-		if err != nil {
-			return nil, "", err
-		}
-		for _, purchase := range past {
-			if classMember(purchase.member.MembershipType) != "new" {
-				continue
-			}
-			key := purchase.member.SourceEnrollmentID
-			person := practicePurchaseOwner(purchase, part.SourceRole, identities)
-			if person == 0 || seen[key] || repeatedPracticePayment(purchase.payments, seenPayments) {
-				return nil, "PRACTICE_TIER_HISTORY_INCOMPLETE", nil
-			}
-			seen[key] = true
-			prior[person]++
-		}
-	}
-	var rows []practiceTierPurchase
+	rows := make([]practiceTierPurchase, 0, len(current))
+	purchases := make(map[int64]practicePurchase)
 	for _, purchase := range current {
 		member := purchase.member
 		if classMember(member.MembershipType) != "new" {
 			continue
 		}
 		person := practicePurchaseOwner(purchase, part.SourceRole, identities)
-		if person == 0 || seen[member.SourceEnrollmentID] || repeatedPracticePayment(purchase.payments, seenPayments) {
-			return nil, "PRACTICE_TIER_GROUP_INCOMPLETE", nil
+		if person == 0 || repeatedPracticePayment(purchase.payments, seenPayments) {
+			issues[0] = "PRACTICE_TIER_GROUP_INCOMPLETE"
+			return nil, issues, nil
 		}
-		key := purchase.payments[0].Fact.OrderID
+		row := practiceTierPurchase{EnrollmentID: member.ID, PersonID: person, Base: purchase.base,
+			SequenceKey: purchase.payments[0].Fact.OrderID, PaidAt: purchase.payments[0].Fact.OccurredAt}
 		if len(purchase.payments) == 2 {
-			key = member.SourceEnrollmentID
-		}
-		var first time.Time
-		for _, payment := range purchase.payments {
-			at := payment.Fact.OccurredAt
-			if first.IsZero() || at.Before(first) {
-				first = at
+			row.SequenceKey = member.SourceEnrollmentID
+			if second := purchase.payments[1].Fact.OccurredAt; second.Before(row.PaidAt) {
+				row.PaidAt = second
 			}
 		}
-		rows = append(rows, practiceTierPurchase{
-			EnrollmentID: member.ID, SequenceKey: key, PaidAt: first, PersonID: person, Base: purchase.base,
-		})
+		rows = append(rows, row)
+		purchases[member.ID] = purchase
 	}
-	awards, err := choosePracticeSalesTiers(*config, rows, prior)
-	return awards, "", err
+	if len(config.Count) == 0 || len(rows) == 0 {
+		awards, err := choosePracticeSalesTiers(*config, rows, nil)
+		return awards, issues, err
+	}
+
+	index, err := indexPracticePrior(history, part.SourceRole, orders, identities, blocked)
+	if err != nil {
+		return nil, nil, err
+	}
+	startsByPerson := make(map[int64]practiceCountStart)
+	for _, person := range config.PersonCountStarts {
+		if person.includes(history.current) {
+			startsByPerson[person.PersonID] = person.practiceCountStart
+		}
+	}
+	defaultStart := config.defaultCountStart()
+	defaultWindow, defaultReady := history.window(defaultStart)
+	windows := make(map[int64]map[int64]bool)
+	prior := make(map[int64]int64)
+	for _, row := range rows {
+		person := row.PersonID
+		if _, checked := windows[person]; checked {
+			continue
+		}
+		window, ready := defaultWindow, defaultReady
+		if start, personal := startsByPerson[person]; personal {
+			window, ready = history.window(start)
+		}
+		windows[person] = window
+		count, valid := index.personCount(person, window)
+		if !ready {
+			issues[person] = "PRACTICE_TIER_HISTORY_MISSING"
+		} else if !valid {
+			issues[person] = "PRACTICE_TIER_HISTORY_INCOMPLETE"
+		} else {
+			prior[person] = count
+		}
+	}
+	for _, row := range rows {
+		if issues[row.PersonID] == "" && index.repeats(purchases[row.EnrollmentID], windows[row.PersonID]) {
+			issues[row.PersonID] = "PRACTICE_TIER_GROUP_INCOMPLETE"
+		}
+	}
+	ready := rows[:0]
+	for _, row := range rows {
+		if issues[row.PersonID] == "" {
+			ready = append(ready, row)
+		}
+	}
+	awards, err := choosePracticeSalesTiers(*config, ready, prior)
+	return awards, issues, err
 }
 
 func repeatedPracticePayment(payments []paymentInput, seen map[string]bool) bool {

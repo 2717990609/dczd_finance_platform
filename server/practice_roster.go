@@ -46,6 +46,7 @@ type practiceEnrollmentWire struct {
 
 type practiceEnrollment struct {
 	ID                 int64     `json:"-"`
+	RosterID           int64     `json:"-"`
 	SourceEnrollmentID string    `json:"source_enrollment_id"`
 	ParticipantID      string    `json:"participant_id"`
 	MembershipType     int       `json:"membership_type"`
