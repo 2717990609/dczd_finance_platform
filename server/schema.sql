@@ -120,3 +120,84 @@ CREATE TABLE IF NOT EXISTS calculation_draft_issues (
  code text NOT NULL
 );
 CREATE INDEX IF NOT EXISTS calculation_draft_issues_page ON calculation_draft_issues(period_id, id);
+
+ALTER TABLE rule_versions ADD COLUMN IF NOT EXISTS effective_from timestamptz;
+ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS rule_id bigint REFERENCES rule_versions(id);
+UPDATE calculation_draft_lines AS line SET rule_id=draft.rule_id
+ FROM calculation_drafts AS draft WHERE line.period_id=draft.period_id AND line.rule_id IS NULL;
+ALTER TABLE calculation_draft_lines ALTER COLUMN rule_id SET NOT NULL;
+
+ALTER TABLE products ADD COLUMN IF NOT EXISTS settlement_enabled boolean NOT NULL DEFAULT false;
+CREATE UNIQUE INDEX IF NOT EXISTS calculation_drafts_period_version ON calculation_drafts(period_id, version);
+
+CREATE TABLE IF NOT EXISTS settlements (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ period_id bigint NOT NULL UNIQUE REFERENCES periods(id),
+ draft_version bigint NOT NULL,
+ confirmed_at timestamptz NOT NULL DEFAULT now(),
+ confirmed_by text NOT NULL CHECK (char_length(confirmed_by) BETWEEN 1 AND 128),
+ FOREIGN KEY (period_id, draft_version) REFERENCES calculation_drafts(period_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS settlement_removals (
+ settlement_id bigint PRIMARY KEY,
+ period_id bigint NOT NULL REFERENCES periods(id),
+ draft_version bigint NOT NULL,
+ removed_by text NOT NULL,
+ removed_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE OR REPLACE FUNCTION protect_final_calculation() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_OP <> 'INSERT' AND EXISTS (SELECT 1 FROM settlements WHERE period_id=OLD.period_id) THEN
+  RAISE EXCEPTION 'confirmed calculation cannot be changed' USING ERRCODE='55000';
+ END IF;
+ IF TG_OP <> 'DELETE' AND EXISTS (SELECT 1 FROM settlements WHERE period_id=NEW.period_id) THEN
+  RAISE EXCEPTION 'confirmed calculation cannot be changed' USING ERRCODE='55000';
+ END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END
+$$;
+
+CREATE OR REPLACE TRIGGER protect_confirmed_drafts BEFORE INSERT OR UPDATE OR DELETE ON calculation_drafts
+ FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+CREATE OR REPLACE TRIGGER protect_confirmed_lines BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_lines
+ FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+CREATE OR REPLACE TRIGGER protect_confirmed_issues BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_issues
+ FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+
+CREATE OR REPLACE FUNCTION protect_settlement_record() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_OP='UPDATE' THEN
+  RAISE EXCEPTION 'confirmed settlement cannot be changed' USING ERRCODE='55000';
+ END IF;
+ INSERT INTO settlement_removals(settlement_id,period_id,draft_version,removed_by)
+ VALUES(OLD.id,OLD.period_id,OLD.draft_version,session_user);
+ RETURN OLD;
+END
+$$;
+
+CREATE OR REPLACE TRIGGER protect_settlements BEFORE UPDATE OR DELETE ON settlements
+ FOR EACH ROW EXECUTE FUNCTION protect_settlement_record();
+
+CREATE OR REPLACE FUNCTION protect_settlement_input() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_TABLE_NAME='source_order_versions' THEN
+  IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.source_version_id=OLD.id) THEN
+   RAISE EXCEPTION 'source version is referenced by a confirmed calculation' USING ERRCODE='55000';
+  END IF;
+ ELSE
+  IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.rule_id=OLD.id)
+     OR EXISTS(SELECT 1 FROM calculation_drafts d JOIN settlements s USING(period_id) WHERE d.rule_id=OLD.id) THEN
+   RAISE EXCEPTION 'rule version is referenced by a confirmed calculation' USING ERRCODE='55000';
+  END IF;
+ END IF;
+ RETURN NEW;
+END
+$$;
+
+CREATE OR REPLACE TRIGGER protect_settled_order_versions BEFORE UPDATE ON source_order_versions
+ FOR EACH ROW EXECUTE FUNCTION protect_settlement_input();
+CREATE OR REPLACE TRIGGER protect_settled_rule_versions BEFORE UPDATE ON rule_versions
+ FOR EACH ROW EXECUTE FUNCTION protect_settlement_input();

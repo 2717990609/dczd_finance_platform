@@ -27,14 +27,22 @@ type paymentInput struct {
 	Fact sourceFact
 }
 
+type paymentRule struct {
+	ID         int64
+	Version    int
+	From       *time.Time
+	Components []component
+}
+
 type draftLine struct {
-	FactID, PersonID, IdentityID int64
-	Component                    string
-	Base, Amount                 int64
+	FactID, PersonID, IdentityID, RuleID int64
+	Component                            string
+	Base, Amount                         int64
 }
 
 type draftIssue struct {
 	FactID    int64  `json:"factId,omitempty"`
+	RuleID    int64  `json:"ruleId,omitempty"`
 	Component string `json:"component,omitempty"`
 	Code      string `json:"code"`
 }
@@ -49,7 +57,7 @@ func isPeriodPayment(window periodWindow, fact sourceFact) bool {
 	return fact.Kind == "ORDER_PAID" && !fact.OccurredAt.Before(window.Start) && fact.OccurredAt.Before(window.Through)
 }
 
-func calculatePaymentDraft(window periodWindow, components []component, facts []paymentInput,
+func calculatePaymentDraft(window periodWindow, rules []paymentRule, facts []paymentInput,
 	identities map[identityKey][]identityAssignment) (paymentDraft, error) {
 	var result paymentDraft
 	counts := make(map[paymentKey]int, len(facts))
@@ -59,14 +67,23 @@ func calculatePaymentDraft(window periodWindow, components []component, facts []
 			counts[paymentKey{fact.Source, fact.PaymentID}]++
 		}
 	}
-	var applicable []component
-	for _, c := range components {
-		if (c.Type != "sales" && c.Type != "referral") || c.SourceRole == "" {
-			result.Issues = append(result.Issues, draftIssue{Component: c.Type, Code: "UNCONFIGURED_COMPONENT"})
-			continue
-		}
-		applicable = append(applicable, c)
+	type selectedComponents struct {
+		components []component
+		issues     []draftIssue
 	}
+	byRule := make(map[int64]selectedComponents, len(rules))
+	for _, rule := range rules {
+		var policy selectedComponents
+		for _, c := range rule.Components {
+			if (c.Type != "sales" && c.Type != "referral") || c.SourceRole == "" {
+				policy.issues = append(policy.issues, draftIssue{RuleID: rule.ID, Component: c.Type, Code: "UNCONFIGURED_COMPONENT"})
+				continue
+			}
+			policy.components = append(policy.components, c)
+		}
+		byRule[rule.ID] = policy
+	}
+	reportedRules := make(map[int64]bool)
 	for _, input := range facts {
 		fact := input.Fact
 		if !isPeriodPayment(window, fact) {
@@ -85,10 +102,20 @@ func calculatePaymentDraft(window periodWindow, components []component, facts []
 		case *fact.AmountMinor == 0:
 			continue
 		}
-		for _, c := range applicable {
+		rule := selectPaymentRule(rules, fact.OccurredAt)
+		if rule == nil {
+			result.Issues = append(result.Issues, draftIssue{FactID: input.ID, Code: "MISSING_EFFECTIVE_RULE"})
+			continue
+		}
+		policy := byRule[rule.ID]
+		if !reportedRules[rule.ID] {
+			result.Issues = append(result.Issues, policy.issues...)
+			reportedRules[rule.ID] = true
+		}
+		for _, c := range policy.components {
 			assignment, issue := paymentBeneficiary(fact, c.SourceRole, identities)
 			if issue != "" {
-				result.Issues = append(result.Issues, draftIssue{FactID: input.ID, Component: c.Type, Code: issue})
+				result.Issues = append(result.Issues, draftIssue{FactID: input.ID, RuleID: rule.ID, Component: c.Type, Code: issue})
 				continue
 			}
 			amount := calculatePaymentAmount(*fact.AmountMinor, c)
@@ -97,12 +124,25 @@ func calculatePaymentDraft(window periodWindow, components []component, facts []
 			}
 			result.Total += amount
 			result.Lines = append(result.Lines, draftLine{
-				FactID: input.ID, PersonID: assignment.PersonID, IdentityID: assignment.ID, Component: c.Type,
+				FactID: input.ID, PersonID: assignment.PersonID, IdentityID: assignment.ID, RuleID: rule.ID, Component: c.Type,
 				Base: *fact.AmountMinor, Amount: amount,
 			})
 		}
 	}
+	if len(reportedRules) == 0 && len(rules) != 0 {
+		result.Issues = append(result.Issues, byRule[rules[0].ID].issues...)
+	}
 	return result, nil
+}
+
+// Rules arrive in scope priority order, then in descending effective time.
+func selectPaymentRule(rules []paymentRule, at time.Time) *paymentRule {
+	for i := range rules {
+		if rules[i].From == nil || !at.Before(*rules[i].From) {
+			return &rules[i]
+		}
+	}
+	return nil
 }
 
 func paymentBeneficiary(fact sourceFact, role string, identities map[identityKey][]identityAssignment) (identityAssignment, string) {

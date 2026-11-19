@@ -69,7 +69,7 @@ const columns = computed(() => {
     product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['来源映射','mappingCount']],
     mapping:[['产品名称','productName'],['来源系统','source'],['业务域','domain'],['来源标识','sourceKey']],
     period:[['期次名称','name'],['所属产品','productName'],['期数','ordinal'],['开始日期','startsOn'],['结束日期','endsOn'],['匹配规则','ruleVersion']],
-    rule:[['规则名称','label'],['所属产品','productName'],['版本','version'],['适用范围','scope'],['分润组件','components']],
+    rule:[['规则名称','label'],['所属产品','productName'],['版本','version'],['适用范围','scope'],['生效时间','effectiveFrom'],['分润组件','components']],
     pull:[['原订单','orderNo',250],['来源系统','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
     person:[['人员名称','name'],['人员 ID','id']],
     identity:[['归属人员','personName'],['来源系统','source'],['来源人员 ID','externalId'],['生效时间','validFrom'],['结束时间','validTo']],
@@ -118,7 +118,12 @@ function changeRoute() {
 }
 onMounted(() => { addEventListener('hashchange',changeRoute); refresh() })
 onBeforeUnmount(() => removeEventListener('hashchange',changeRoute))
-watch(() => draft.value.productId, (n,o) => { if (drawer.value === 'rule' && n !== o) draft.value.periodId = undefined })
+watch(() => draft.value.productId, (next, previous) => {
+  if (drawer.value === 'rule' && next !== previous) {
+    draft.value.periodId = undefined
+    draft.value.effectiveFrom = undefined
+  }
+})
 function resetOrders() { olderThan.value = ''; pageStack.value=[]; refresh() }
 function nextOrders() {
   pageStack.value.push(olderThan.value)
@@ -155,6 +160,7 @@ function bodyFor(kind,f) {
   if (kind === 'rule') return {productId:must(f.productId),label:must(f.label),
     ...(f.scope === 'period' ? {periodId:must(f.periodId)} : {}),
     ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal)} : {}),
+    ...(f.effectiveFrom ? {effectiveFrom:new Date(f.effectiveFrom+'+08:00').toISOString()} : {}),
     components:f.components.map(c => ({type:must(c.type),mode:c.mode,value:Math.round(Number(must(c.amount,'请填写每个组件的比例或金额'))*100),...(c.sourceRole?.trim() ? {sourceRole:c.sourceRole.trim().toUpperCase()} : {})})),
   }
   if (kind === 'person') return {name:must(f.name)}
@@ -171,7 +177,7 @@ async function save() {
     const payload = bodyFor(kind,draft.value)
     const result = await api(paths[kind],{method:'POST',body:JSON.stringify(payload)})
     notice.value = kind === 'pull' ? '同步完成，读取 '+result.facts+' 条业务记录，新增 '+result.newVersions+' 个版本。'
-      : kind === 'rule' ? '规则 v'+result.version+' 已保存并生效。' : '保存成功。'
+      : kind === 'rule' ? '规则 v'+result.version+' 已保存。' : '保存成功。'
     drawer.value = ''
     if (kind === 'pull') {
       filter.value = payload.orderId
@@ -235,6 +241,7 @@ async function save() {
                 <template v-else-if="column.key==='mappingCount'">{{ data.mappings.filter(x=>x.productId===record.id).length }}</template>
                 <template v-else-if="column.key==='ruleVersion'"><a-tag v-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag><a-tag v-else color="orange">待配规则</a-tag></template>
                 <template v-else-if="column.key==='version'"><a-tag color="green">v{{ text }}</a-tag></template>
+                <template v-else-if="column.key==='effectiveFrom'">{{ text ? formatTime(text) : '范围默认' }}</template>
                 <template v-else-if="column.key==='scope'">{{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}</template>
                 <template v-else-if="column.key==='components'"><a-tag v-for="c in text" :key="c.type">{{ components.find(x=>x.value===c.type)?.label }} {{ c.mode==='rate'?(c.value/100)+'%':formatMoney(c.value) }}</a-tag></template>
                 <template v-else-if="column.key==='source'">{{ sourceLabel(text) }}</template>
@@ -286,6 +293,9 @@ async function save() {
         <a-form-item label="适用范围"><a-select v-model:value="draft.scope" aria-label="适用范围" :options="[{value:'default',label:'产品默认'},{value:'ordinal',label:'从指定期数起'},{value:'period',label:'指定期次'}]"/></a-form-item>
         <a-form-item v-if="draft.scope==='period'" label="指定期次" required><a-select v-model:value="draft.periodId" aria-label="指定期次" :options="periodOptions"/></a-form-item>
         <a-form-item v-if="draft.scope==='ordinal'" label="起始期数" required><a-input-number v-model:value="draft.fromOrdinal" aria-label="起始期数" :min="1" :precision="0"/></a-form-item>
+        <a-form-item v-if="selectedProduct?.periodMode==='calendar'" label="生效时间" extra="按北京时间和原付款时间匹配。留空时作为该适用范围的默认规则。">
+          <a-input v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local"/>
+        </a-form-item>
         <h3 class="form-subhead">分润组件</h3>
         <div v-for="(c,i) in draft.components" :key="i" class="component-editor">
           <div class="component-row">

@@ -34,10 +34,13 @@ type draftSummary struct {
 const maxDraftPayments = 100000
 
 const draftScopeSQL = `SELECT pro.period_mode, p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
- (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai', rule.id, rule.version, rule.components
- FROM periods p JOIN products pro ON pro.id=p.product_id
- LEFT JOIN LATERAL (` + matchingRuleSQL + `) rule ON true
- WHERE p.id=$1 FOR UPDATE OF p`
+ (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
+ FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1 FOR UPDATE OF p`
+
+const draftRulesSQL = `SELECT rv.id,rv.version,rv.effective_from,rv.components FROM periods p
+ JOIN rule_versions rv ON ` + matchingRuleScope + `
+ WHERE p.id=$1 AND (rv.effective_from IS NULL OR rv.effective_from<$2)
+ ORDER BY ` + matchingRuleOrder
 
 const draftPaymentsSQL = `SELECT v.id,v.fact
  FROM source_mappings m
@@ -56,20 +59,19 @@ func (s workspace) recalculateDraft(ctx context.Context, input calculateDraftInp
 		return nil, invalid
 	}
 	summary := draftSummary{PeriodID: input.PeriodID}
-	err := pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, func(tx pgx.Tx) error {
-		window, components, err := readDraftScope(ctx, tx, &summary)
+	err := pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
+		window, rules, err := readDraftScope(ctx, tx, &summary)
 		if err != nil {
 			return err
 		}
-		facts, identities, err := readDraftInputs(ctx, tx, summary.PeriodID, window, components)
-		if err != nil {
+		_, err = readSettlement(ctx, tx, summary.PeriodID)
+		if err == nil {
+			return errSettlementClosed
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		result, err := calculatePaymentDraft(window, components, facts, identities)
-		if err != nil {
-			return err
-		}
-		digest, err := digestDraft(summary.RuleID, result, facts)
+		result, digest, err := computeDraft(ctx, tx, summary, window, rules)
 		if err != nil {
 			return err
 		}
@@ -78,27 +80,51 @@ func (s workspace) recalculateDraft(ctx context.Context, input calculateDraftInp
 	return summary, err
 }
 
-func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (periodWindow, []component, error) {
+func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window periodWindow, rules []paymentRule) (paymentDraft, []byte, error) {
+	facts, identities, err := readDraftInputs(ctx, tx, summary.PeriodID, window, rules)
+	if err != nil {
+		return paymentDraft{}, nil, err
+	}
+	result, err := calculatePaymentDraft(window, rules, facts, identities)
+	if err != nil {
+		return paymentDraft{}, nil, err
+	}
+	digest, err := digestDraft(summary.RuleID, result, facts)
+	return result, digest, err
+}
+
+func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (periodWindow, []paymentRule, error) {
 	var window periodWindow
 	var mode string
-	var ruleID *int64
-	var ruleVersion *int
-	var components []component
-	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &ruleID, &ruleVersion, &components)
+	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through)
 	if err != nil {
 		return window, nil, err
 	}
 	if mode != "calendar" {
 		return window, nil, errDraftScope
 	}
-	if ruleID == nil {
+	rows, err := tx.Query(ctx, draftRulesSQL, summary.PeriodID, window.Through)
+	if err != nil {
+		return window, nil, err
+	}
+	rules, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (paymentRule, error) {
+		var rule paymentRule
+		if err := row.Scan(&rule.ID, &rule.Version, &rule.From, &rule.Components); err != nil {
+			return rule, err
+		}
+		return rule, validateComponents(rule.Components)
+	})
+	if err != nil {
+		return window, nil, err
+	}
+	if len(rules) == 0 {
 		return window, nil, errDraftRule
 	}
-	summary.RuleID, summary.RuleVersion = *ruleID, *ruleVersion
-	return window, components, validateComponents(components)
+	summary.RuleID, summary.RuleVersion = rules[0].ID, rules[0].Version
+	return window, rules, nil
 }
 
-func readDraftInputs(ctx context.Context, tx pgx.Tx, periodID int64, window periodWindow, components []component) ([]paymentInput, map[identityKey][]identityAssignment, error) {
+func readDraftInputs(ctx context.Context, tx pgx.Tx, periodID int64, window periodWindow, rules []paymentRule) ([]paymentInput, map[identityKey][]identityAssignment, error) {
 	rows, err := tx.Query(ctx, draftPaymentsSQL, periodID, window.Start, window.Through, maxDraftPayments+1)
 	if err != nil {
 		return nil, nil, err
@@ -115,9 +141,11 @@ func readDraftInputs(ctx context.Context, tx pgx.Tx, periodID int64, window peri
 		return nil, nil, errDraftLimit
 	}
 
-	selectedRoles := make(map[string]bool, len(components))
-	for _, c := range components {
-		selectedRoles[c.SourceRole] = true
+	selectedRoles := make(map[string]bool)
+	for _, rule := range rules {
+		for _, c := range rule.Components {
+			selectedRoles[c.SourceRole] = true
+		}
 	}
 	keys := make(map[identityKey]bool)
 	for _, input := range facts {
@@ -218,10 +246,10 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Lines) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_lines"},
-			[]string{"period_id", "source_version_id", "component_type", "identity_id", "person_id", "base_minor", "amount_minor"},
+			[]string{"period_id", "source_version_id", "component_type", "rule_id", "identity_id", "person_id", "base_minor", "amount_minor"},
 			pgx.CopyFromSlice(len(result.Lines), func(i int) ([]any, error) {
 				l := result.Lines[i]
-				return []any{summary.PeriodID, l.FactID, l.Component, l.IdentityID, l.PersonID, l.Base, l.Amount}, nil
+				return []any{summary.PeriodID, l.FactID, l.Component, l.RuleID, l.IdentityID, l.PersonID, l.Base, l.Amount}, nil
 			}))
 		if err != nil {
 			return err
@@ -245,10 +273,12 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 const draftDetailSQL = `SELECT jsonb_build_object(
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
  'totalMinor',d.total_minor,'lineCount',d.line_count,'issueCount',d.issue_count,
+ 'settlement',CASE WHEN st.id IS NOT NULL THEN jsonb_build_object('id',st.id,'confirmedAt',st.confirmed_at,'draftVersion',st.draft_version) END,
  'lines',coalesce((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM (
   SELECT l.id,p.name AS "personName",l.component_type AS "component",l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",
-   o.source,o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion"
+   o.source,o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",rv.version AS "ruleVersion"
   FROM calculation_draft_lines l JOIN people p ON p.id=l.person_id JOIN source_order_versions o ON o.id=l.source_version_id
+  JOIN rule_versions rv ON rv.id=l.rule_id
   WHERE l.period_id=d.period_id AND l.id>$2 ORDER BY l.id LIMIT 50
  ) l),'[]'),
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
@@ -256,7 +286,7 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   FROM calculation_draft_issues i LEFT JOIN source_order_versions o ON o.id=i.source_version_id
   WHERE i.period_id=d.period_id AND i.id>$3 ORDER BY i.id LIMIT 50
  ) i),'[]')
-) FROM calculation_drafts d JOIN rule_versions r ON r.id=d.rule_id WHERE d.period_id=$1 AND ($4::bigint=0 OR d.version=$4)`
+) FROM calculation_drafts d JOIN rule_versions r ON r.id=d.rule_id LEFT JOIN settlements st ON st.period_id=d.period_id WHERE d.period_id=$1 AND ($4::bigint=0 OR d.version=$4)`
 
 func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()

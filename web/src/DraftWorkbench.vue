@@ -20,6 +20,7 @@ const reason = {
   MISSING_PAYMENT_ID: '缺少原付款 ID',
   DUPLICATE_PAYMENT: '同一付款出现多条记录，需核对商品行及金额分摊',
   MISSING_PAID_AMOUNT: '缺少有效的实付金额',
+  MISSING_EFFECTIVE_RULE: '付款时点没有有效规则',
   AMBIGUOUS_PARTICIPANT: '同一来源角色有多名受益人',
   MISSING_PARTICIPANT: '订单缺少该来源角色',
   AMBIGUOUS_IDENTITY: '付款时点命中多份人员归属',
@@ -29,6 +30,7 @@ const lineColumns = [
   { title: '原订单', key: 'order', width: 190 },
   { title: '受益人', dataIndex: 'personName', width: 120 },
   { title: '分项', key: 'component', width: 115 },
+  { title: '规则版本', key: 'rule', width: 100 },
   { title: '实付基数', key: 'base', width: 115 },
   { title: '应计提成', key: 'amount', width: 115 },
 ]
@@ -97,12 +99,13 @@ async function loadMore(section, cursorName) {
     <div class="draft-toolbar">
       <label for="draft-period">产品和账期</label>
       <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和账期" :disabled="calculating" />
-      <a-button type="primary" :disabled="!selected || loading" :loading="calculating" @click="calculate">重新试算</a-button>
+      <a-button type="primary" :disabled="!selected || loading || !!draft?.settlement" :loading="calculating" @click="calculate">重新试算</a-button>
       <a-button :disabled="!selected || loading || calculating" @click="load()">刷新结果</a-button>
     </div>
     <p v-if="selectedPeriod" class="draft-context">
       账期 {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
-      <span v-if="draft"> · 规则 v{{ draft.ruleVersion }} · 草稿 v{{ draft.version }} · {{ formatTime(draft.calculatedAt) }}</span>
+      <span v-if="draft?.settlement"> · 已结算 · {{ formatTime(draft.settlement.confirmedAt) }}</span>
+      <span v-else-if="draft"> · 草稿 v{{ draft.version }} · {{ formatTime(draft.calculatedAt) }}</span>
     </p>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
@@ -112,12 +115,13 @@ async function loadMore(section, cursorName) {
     <article><div><small>待核项</small><strong>{{ draft.issueCount }}</strong></div></article>
   </div>
   <section v-if="draft" class="records">
-    <div class="records-head"><h2>计提明细</h2></div>
+    <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>
     <div class="table-container">
-      <a-table :columns="lineColumns" :data-source="draft.lines" :pagination="false" row-key="id" :scroll="{ x: 655 }">
+      <a-table :columns="lineColumns" :data-source="draft.lines" :pagination="false" row-key="id" :scroll="{ x: 755 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">{{ record.orderNo || record.orderId }}<small class="order-version">来源版本 {{ record.sourceVersion }}</small></template>
           <template v-else-if="column.key === 'component'">{{ components[record.component] }}</template>
+          <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}</template>
           <template v-else-if="column.key === 'base'">{{ formatMoney(record.baseMinor) }}</template>
           <template v-else-if="column.key === 'amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
         </template>

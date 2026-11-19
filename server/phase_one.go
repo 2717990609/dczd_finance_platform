@@ -130,7 +130,9 @@ func respond(w http.ResponseWriter, result any, err error) {
 	switch {
 	case errors.Is(err, invalid):
 		code, message = 400, err.Error()
-	case errors.Is(err, errDraftScope), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit):
+	case errors.Is(err, errDraftScope), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit),
+		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
+		errors.Is(err, errSettlementOpen), errors.Is(err, errSettlementDisabled):
 		code, message = http.StatusConflict, err.Error()
 	case errors.Is(err, errCalculationOverflow):
 		code, message = http.StatusConflict, "试算金额超出范围，请核对原单和规则"
@@ -166,13 +168,18 @@ const mappingsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'
 const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
  (SELECT p.id,p.product_id AS "productId",pro.name AS "productName",p.name,p.ordinal,
  p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
- FROM periods p JOIN products pro ON pro.id=p.product_id LEFT JOIN LATERAL (` + matchingRuleSQL + `) rule ON true ORDER BY p.id DESC LIMIT 500) a`
-const matchingRuleSQL = `SELECT rv.id,rv.version,rv.label,rv.components FROM rule_versions rv WHERE rv.product_id=p.product_id AND
-  (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal)))
-  ORDER BY (rv.period_id IS NOT NULL) DESC,rv.from_ordinal DESC NULLS LAST,rv.version DESC LIMIT 1`
+ FROM periods p JOIN products pro ON pro.id=p.product_id LEFT JOIN LATERAL (
+  SELECT rv.version,rv.label FROM rule_versions rv WHERE ` + matchingRuleScope + `
+  AND (rv.effective_from IS NULL OR rv.effective_from < ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'))
+  ORDER BY ` + matchingRuleOrder + ` LIMIT 1
+ ) rule ON true ORDER BY p.id DESC LIMIT 500) a`
+const matchingRuleScope = `rv.product_id=p.product_id AND
+  (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal)))`
+const matchingRuleOrder = `(rv.period_id IS NOT NULL) DESC,rv.from_ordinal DESC NULLS LAST,
+  rv.effective_from DESC NULLS LAST,rv.version DESC`
 const rulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
  (SELECT rv.id,rv.product_id AS "productId",p.name AS "productName",rv.version,rv.label,
- rv.from_ordinal AS "fromOrdinal",rv.period_id AS "periodId",pr.name AS "periodName",rv.components
+ rv.from_ordinal AS "fromOrdinal",rv.period_id AS "periodId",pr.name AS "periodName",rv.effective_from AS "effectiveFrom",rv.components
  FROM rule_versions rv JOIN products p ON p.id=rv.product_id LEFT JOIN periods pr ON pr.id=rv.period_id ORDER BY rv.id DESC LIMIT 500) a`
 const peopleSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT id,name FROM people ORDER BY id DESC LIMIT 500) p`
@@ -211,11 +218,12 @@ type createPeriodInput struct {
 	Ordinal                int
 }
 type publishRuleInput struct {
-	ProductID   int64
-	Label       string
-	PeriodID    *int64
-	FromOrdinal *int
-	Components  []component
+	ProductID     int64
+	Label         string
+	PeriodID      *int64
+	FromOrdinal   *int
+	EffectiveFrom *time.Time
+	Components    []component
 }
 type createPersonInput struct{ Name string }
 type assignIdentityInput struct {
@@ -305,13 +313,16 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 	}
 	var version int
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		var product int64
-		if e := tx.QueryRow(ctx, "SELECT id FROM products WHERE id=$1 FOR UPDATE", p.ProductID).Scan(&product); e != nil {
+		var mode string
+		if e := tx.QueryRow(ctx, "SELECT period_mode FROM products WHERE id=$1 FOR UPDATE", p.ProductID).Scan(&mode); e != nil {
 			return e
 		}
-		return tx.QueryRow(ctx, `INSERT INTO rule_versions(product_id,version,label,period_id,from_ordinal,components)
-   SELECT $1,coalesce(max(version),0)+1,$2,$3,$4,$5 FROM rule_versions WHERE product_id=$1 RETURNING version`,
-			p.ProductID, strings.TrimSpace(p.Label), p.PeriodID, p.FromOrdinal, raw).Scan(&version)
+		if p.EffectiveFrom != nil && (mode != "calendar" || p.EffectiveFrom.IsZero()) {
+			return invalid
+		}
+		return tx.QueryRow(ctx, `INSERT INTO rule_versions(product_id,version,label,period_id,from_ordinal,effective_from,components)
+   SELECT $1,coalesce(max(version),0)+1,$2,$3,$4,$5,$6 FROM rule_versions WHERE product_id=$1 RETURNING version`,
+			p.ProductID, strings.TrimSpace(p.Label), p.PeriodID, p.FromOrdinal, p.EffectiveFrom, raw).Scan(&version)
 	})
 	return map[string]int{"version": version}, err
 }
