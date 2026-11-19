@@ -75,13 +75,7 @@ const healthCompletionAffectedPeriodsSQL = `SELECT target.id FROM health_changes
  ) dates
  JOIN periods boundary ON boundary.product_id=m.product_id
   AND (dates.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN boundary.starts_on AND boundary.ends_on
- JOIN LATERAL (
-  SELECT candidate.id FROM periods candidate
-  WHERE candidate.product_id=boundary.product_id AND candidate.starts_on>=boundary.starts_on
-   AND (dates.completion OR candidate.id=boundary.id)
-   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=candidate.id)
-  ORDER BY candidate.starts_on LIMIT 1
- ) target ON true
+ ` + healthCompletionTargetSQL + `
  CROSS JOIN LATERAL (SELECT cl.source_version_id IS NOT NULL AND m.effective_from<=payment.paid_at
   AND (m.effective_to IS NULL OR payment.paid_at<m.effective_to) AS mapped) route
  WHERE (route.mapped AND EXISTS (` + healthRuleForPaymentSQL + `))
@@ -92,6 +86,14 @@ const healthCompletionAffectedPeriodsSQL = `SELECT target.id FROM health_changes
      AND (v.observed_at=c.captured_at OR v.published_at IS NOT NULL) AND ` + catalogRuleEligible + `
      AND ` + catalogHealthRecognitionPlan + `
  ))`
+
+const healthCompletionTargetSQL = `JOIN LATERAL (
+ SELECT candidate.id FROM periods candidate
+ WHERE candidate.product_id=boundary.product_id AND candidate.starts_on>=boundary.starts_on
+  AND (dates.completion OR candidate.id=boundary.id)
+  AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=candidate.id)
+ ORDER BY candidate.starts_on LIMIT 1
+) target ON true`
 
 const healthRuleForPaymentSQL = `SELECT 1 FROM (` + healthRulesAtPaymentSQL + `) selected
  HAVING count(*)=1 AND bool_or(is_compound)`

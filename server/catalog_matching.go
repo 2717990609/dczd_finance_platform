@@ -22,6 +22,13 @@ const catalogRuleOrder = `priority DESC, (published_at IS NOT NULL) DESC,
 
 const catalogVersionVisible = `(v.observed_at=scope.captured_at OR v.published_at IS NOT NULL)`
 
+const catalogBookedPaymentSQL = `SELECT 1 FROM source_order_versions booked
+ JOIN calculation_draft_performance a ON a.source_version_id=booked.id AND a.payment_version_id IS NULL
+ JOIN settlements st ON st.period_id=a.period_id
+ WHERE booked.kind='ORDER_PAID' AND booked.source=f.source
+  AND ((booked.order_id,booked.line_id,booked.record_key)=(f.order_id,f.line_id,f.record_key)
+   OR ((booked.fact->>'domain'),(booked.fact->>'paymentId'))=(f.domain,f.payment_id))`
+
 const catalogHealthRecognitionPlan = `v.definition->>'schema_version' IN ('1.2','1.3')
  AND CASE WHEN jsonb_typeof(v.definition->'recognition_plan')='object' THEN
   (v.definition->'recognition_plan')-'required_event_types'='{"mode":"ALL_OF","contract_version":"finance.compound-recognition/1.0"}'::jsonb
@@ -138,14 +145,7 @@ const catalogMatchSQL = `WITH period AS (
  LEFT JOIN source_order_versions completed ON completed.id=b.completion_version_id AND completed.source=f.source
   AND completed.order_id=f.order_id AND completed.kind='ORDER_COMPLETED'
   AND completed.fact->>'sourceKey'=f.source_product_code AND completed.occurred_at>=f.occurred_at
- CROSS JOIN LATERAL (SELECT EXISTS(
-  SELECT 1 FROM source_order_versions booked
-  JOIN calculation_draft_performance a ON a.source_version_id=booked.id AND a.payment_version_id IS NULL
-  JOIN settlements st ON st.period_id=a.period_id
-  WHERE booked.kind='ORDER_PAID' AND booked.source=f.source AND a.period_id<>$1
-   AND ((booked.order_id,booked.line_id,booked.record_key)=(f.order_id,f.line_id,f.record_key)
-    OR ((booked.fact->>'domain'),(booked.fact->>'paymentId'))=(f.domain,f.payment_id))
- ) AS other_period) booked
+ CROSS JOIN LATERAL (SELECT EXISTS(` + catalogBookedPaymentSQL + ` AND a.period_id<>$1) AS other_period) booked
  LEFT JOIN LATERAL (
   SELECT count(*) n,min(sku_code) sku,min(sku_label) label,min(mapping_version) version FROM routes m
   WHERE (m.source,m.domain,m.record_table,m.entity_type,m.business_key,m.classifier)=(f.source,f.domain,f.record_table,c.entity_type,c.business_key,c.classifier)

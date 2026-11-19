@@ -135,6 +135,7 @@ async function publish() {
         <p class="draft-report-note">
           生效于 {{ formatTime(sheet.effectiveFrom) }}<span v-if="sheet.effectiveTo"> · 截止 {{ formatTime(sheet.effectiveTo) }}</span>
         </p>
+        <p v-if="sheet.requiresCompletion" class="draft-report-note">规则按付款时间匹配。订单确认完成后计提。</p>
         <a-form layout="vertical" @submit.prevent="publish">
           <a-form-item label="分润分项" html-for="catalog-rate-component">
             <a-select id="catalog-rate-component" v-model:value="selected" :options="componentOptions"/>

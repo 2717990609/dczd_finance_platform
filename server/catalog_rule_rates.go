@@ -27,15 +27,16 @@ type catalogRateRow struct {
 }
 
 type catalogRateSheet struct {
-	ProductID     int64                  `json:"productId"`
-	ProductName   string                 `json:"productName"`
-	Label         string                 `json:"label"`
-	Version       int                    `json:"version"`
-	EffectiveFrom time.Time              `json:"effectiveFrom"`
-	EffectiveTo   *time.Time             `json:"effectiveTo"`
-	MayPublish    bool                   `json:"mayPublish"`
-	Components    []catalogRateComponent `json:"components"`
-	Teams         []catalogRuleTeam      `json:"teams,omitempty"`
+	ProductID          int64                  `json:"productId"`
+	ProductName        string                 `json:"productName"`
+	Label              string                 `json:"label"`
+	Version            int                    `json:"version"`
+	EffectiveFrom      time.Time              `json:"effectiveFrom"`
+	EffectiveTo        *time.Time             `json:"effectiveTo"`
+	MayPublish         bool                   `json:"mayPublish"`
+	RequiresCompletion bool                   `json:"requiresCompletion,omitempty"`
+	Components         []catalogRateComponent `json:"components"`
+	Teams              []catalogRuleTeam      `json:"teams,omitempty"`
 }
 
 func catalogRateComponents(raw json.RawMessage, companies, categories, relationships map[string]string) ([]catalogRateComponent, error) {
@@ -144,9 +145,11 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	var sheet catalogRateSheet
 	var definition json.RawMessage
 	var companyNames, categoryNames, relationshipNames map[string]string
+	var supported bool
 	err := s.db.QueryRow(ctx, `WITH rule AS (
 	 SELECT p.product_id,pro.name AS product_name,p.name,v.version_no,v.effective_from,`+catalogDisplayedThrough+` AS effective_to,v.definition,
-	  v.source_status='PUBLISHED' AND NOT p.paused AND `+catalogVersionVisible+` AS available,
+	  coalesce((`+catalogRateVersionEligibilitySQL+`) AND `+catalogVersionVisible+`,false) AS available,
+	  `+catalogRateConfigurationSQL+` AS supported,`+catalogHealthRateRule+` AS requires_completion,
 	  scope.source_system
 	 FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
 	 JOIN product_catalog_settings scope ON scope.product_id=p.product_id AND scope.project_code=p.project_code
@@ -157,14 +160,17 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	 JOIN catalog_sales_company_aliases a ON a.source=c.source AND a.observed_at=c.captured_at
 	 JOIN organization_units u ON u.id=a.company_unit_id GROUP BY a.company_uuid HAVING count(DISTINCT u.name)=1
 	)
-	SELECT r.product_id,r.product_name,r.name,r.version_no,r.effective_from,r.effective_to,r.definition,r.available,
+	SELECT r.product_id,r.product_name,r.name,r.version_no,r.effective_from,r.effective_to,r.definition,r.available,r.supported,r.requires_completion,
 	 coalesce((SELECT jsonb_object_agg(company_uuid,name) FROM companies),'{}'),
 	 coalesce((SELECT jsonb_object_agg(option_key,label) FROM configuration_options WHERE group_key='catalogSalesCategory' AND enabled),'{}'),
 	 coalesce((SELECT jsonb_object_agg(option_key,label) FROM configuration_options WHERE group_key='catalogSalesRelationship' AND enabled),'{}')
 	FROM rule r`, id).Scan(&sheet.ProductID, &sheet.ProductName, &sheet.Label, &sheet.Version, &sheet.EffectiveFrom, &sheet.EffectiveTo,
-		&definition, &sheet.MayPublish, &companyNames, &categoryNames, &relationshipNames)
+		&definition, &sheet.MayPublish, &supported, &sheet.RequiresCompletion, &companyNames, &categoryNames, &relationshipNames)
 	if err != nil {
 		return sheet, err
+	}
+	if !supported {
+		return sheet, errCatalogRateUnavailable
 	}
 	companyNames["ANY"] = "不限公司"
 	sheet.Components, err = catalogRateComponents(definition, companyNames, categoryNames, relationshipNames)

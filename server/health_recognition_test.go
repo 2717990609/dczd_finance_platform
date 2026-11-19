@@ -23,13 +23,9 @@ func TestHealthRecognitionPlanRejectsIneligibleJSON(t *testing.T) {
 	}
 }
 
-func TestHealthRecognitionUsesPaymentRuleInTheCompletionWindow(t *testing.T) {
-	ctx := context.Background()
-	s := workspace{db: integrationDB(t)}
-	at := time.Date(2026, 8, 25, 0, 0, 0, 0, shanghai)
-	end := at.AddDate(0, 0, -1)
+func creatorTestProduct(at time.Time, definition json.RawMessage) productConfigEntry {
 	day := 25
-	product := productConfigEntry{
+	return productConfigEntry{
 		SourceID: "ab010000-0000-4000-8000-000000000001", Code: "CREATOR", Name: "健康创客", Source: "DCAI", Project: "DCAI",
 		SourceKey: "creator", PeriodMode: "calendar", CycleStartDay: &day,
 		BusinessRoutes: []catalogBusinessRoute{{SourceID: "ab010000-0000-4000-8000-000000000002",
@@ -40,11 +36,19 @@ func TestHealthRecognitionUsesPaymentRuleInTheCompletionWindow(t *testing.T) {
 			Kind: "COMPONENT_RULE", ScopeType: "BUSINESS_SCENARIO", ScopeID: "creator-sku",
 			Versions: []productRuleVersionConfig{
 				{SourceID: "ab010000-0000-4000-8000-000000000004", Number: 1, Status: "PUBLISHED", From: at.AddDate(0, -2, 0),
-					Through: &at, Hash: "before", Definition: json.RawMessage(completionTestPolicy)},
+					Through: &at, Hash: "before", Definition: definition},
 				{SourceID: "ab010000-0000-4000-8000-000000000005", Number: 2, Status: "PUBLISHED", From: at,
-					Hash: "after", Definition: json.RawMessage(completionTestPolicy)},
+					Hash: "after", Definition: definition},
 			}}},
 	}
+}
+
+func TestHealthRecognitionUsesPaymentRuleInTheCompletionWindow(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	at := time.Date(2026, 8, 25, 0, 0, 0, 0, shanghai)
+	end := at.AddDate(0, 0, -1)
+	product := creatorTestProduct(at, json.RawMessage(completionTestPolicy))
 	input := productConfigFile{Environment: "test", CapturedAt: at, Products: []productConfigEntry{product}}
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { return storeProductConfig(ctx, tx, input) }); err != nil {
 		t.Fatal(err)

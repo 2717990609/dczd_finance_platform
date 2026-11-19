@@ -24,6 +24,23 @@ func TestChangingSalesRatesPreservesInternalTeamSplit(t *testing.T) {
 	}
 }
 
+func TestCatalogRateTableRequiresARow(t *testing.T) {
+	actions := strings.Replace(creatorActionsFixture,
+		`"role":"TECHNOLOGY","type":"RATE","beneficiary_mode":"PARTY","company_beneficiary_party_id":"tech","rate_bps":200`,
+		`"role":"TECHNOLOGY","type":"RATE_TABLE","beneficiary_mode":"PARTY","company_beneficiary_party_id":"tech","rate_bps":null,
+		 "rate_table":[{"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":200}]`, 1)
+	definition := creatorBenefitDefinition(actions, "")
+	row, rate := 1, int64(300)
+	change := catalogRateChange{ItemKey: "technology", Rate: &rate}
+	if _, _, err := editCatalogRates(definition, []catalogRateChange{change}); !errors.Is(err, invalid) {
+		t.Fatalf("table component accepted a fixed rate: %v", err)
+	}
+	change.Row = &row
+	if _, changed, err := editCatalogRates(definition, []catalogRateChange{change}); err != nil || !changed {
+		t.Fatalf("could not edit the table row: %t %v", changed, err)
+	}
+}
+
 func TestChangingCatalogRecipientsPreservesInternalTeamRates(t *testing.T) {
 	definition := json.RawMessage(strings.NewReplacer(
 		`"sales_item_key":"sales"`, `"sales_item_key":"sales","total_rate_bps":1000,"head_seller_rate_bps":600,

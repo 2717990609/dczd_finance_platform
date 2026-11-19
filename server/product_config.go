@@ -71,22 +71,17 @@ const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(result) ORDER BY res
  p.scope_id AS "scopeId",scenario.label AS "scopeLabel",
  v.version_no AS version,v.source_status AS "sourceStatus",v.effective_from AS "effectiveFrom",
  ` + catalogDisplayedThrough + ` AS "effectiveTo",
- p.paused,p.resume_from AS "resumeFrom",p.project_code=c.project_code AS "projectMatches",
- (v.observed_at=c.captured_at OR v.published_at IS NOT NULL) AS "inLatestSnapshot",
+ p.paused,p.resume_from AS "resumeFrom",p.project_code=scope.project_code AS "projectMatches",
+ ` + catalogVersionVisible + ` AS "inLatestSnapshot",
  v.published_at AS "publishedAt",
- coalesce(c.source_system='DCAI' AND p.scope_type='BUSINESS_SCENARIO'
-  AND ` + catalogSplitDraftRule + `,false) AS "rateConfigAvailable",
- coalesce(c.source_system='DCAI' AND p.scope_type='BUSINESS_SCENARIO'
-  AND (` + catalogSplitDraftRule + ` OR ((` + catalogHealthRecognitionPlan + `) AND EXISTS (
-   SELECT 1 FROM catalog_business_routes m WHERE m.product_id=p.product_id AND m.observed_at=c.captured_at
-    AND m.sku_code=p.scope_id AND m.source='DCAI' AND m.domain='HEALTH_IDENTITY'
-  ))),false) AS "draftSupported"
+ ` + catalogRateConfigurationSQL + ` AS "rateConfigAvailable",
+ ` + catalogRateConfigurationSQL + ` AS "draftSupported"
  FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
- JOIN product_catalog_settings c ON c.product_id=p.product_id JOIN products pr ON pr.id=c.product_id
+ JOIN product_catalog_settings scope ON scope.product_id=p.product_id JOIN products pr ON pr.id=scope.product_id
  LEFT JOIN LATERAL (
   SELECT min(m.sku_label) AS label FROM catalog_business_routes m
   WHERE p.scope_type='BUSINESS_SCENARIO' AND m.product_id=p.product_id AND m.sku_code=p.scope_id
-   AND m.observed_at=c.captured_at AND m.effective_from<=v.effective_from
+   AND m.observed_at=scope.captured_at AND m.effective_from<=v.effective_from
    AND (m.effective_to IS NULL OR v.effective_from<m.effective_to)
   HAVING count(DISTINCT m.sku_label)=1
  ) scenario ON true

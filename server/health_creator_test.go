@@ -1,10 +1,15 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const creatorSalesFixture = `{"item_key":"creator-sales","role":"SALES","label":"个人销售","type":"RATE_TABLE","beneficiary_mode":"PARTY",
@@ -93,8 +98,136 @@ func TestCreatorRejectsAmbiguousSalesAndUnrecognizedSplit(t *testing.T) {
 	}
 }
 
-func TestCreatorCommissionCalculationDoesNotEnableRatePublication(t *testing.T) {
-	if _, _, err := catalogRateActions(creatorBenefitDefinition(creatorActionsFixture, "")); !errors.Is(err, errCatalogRateUnavailable) {
-		t.Fatalf("unavailable product rate publication error = %v", err)
+func TestCreatorRatePublicationRefreshesOpenCompletionPeriods(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	boundary := time.Date(2026, 8, 25, 0, 0, 0, 0, shanghai)
+	cut := boundary.Add(-12 * time.Hour)
+	definition := creatorBenefitDefinition(creatorActionsFixture, strings.TrimSuffix(strings.TrimPrefix(completionTestPolicy, "{"), "}")+",")
+	product := creatorTestProduct(boundary, definition)
+	input := productConfigFile{Environment: "test", CapturedAt: boundary, Products: []productConfigEntry{product}}
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { return storeProductConfig(ctx, tx, input) }); err != nil {
+		t.Fatal(err)
+	}
+	var productID int64
+	if err := s.db.QueryRow(ctx, "SELECT id FROM products WHERE code='CREATOR'").Scan(&productID); err != nil {
+		t.Fatal(err)
+	}
+	createPeriod := func(month string) int64 {
+		t.Helper()
+		result, err := s.createPeriod(ctx, createPeriodInput{ProductID: productID, Name: month, SettlementMonth: month})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.(map[string]int64)["id"]
+	}
+	august, september, october := createPeriod("2026-08"), createPeriod("2026-09"), createPeriod("2026-10")
+	createPeriod("2026-11")
+	if _, err := s.db.Exec(ctx, `INSERT INTO calculation_drafts(period_id,version,input_digest,total_minor,line_count,issue_count,calculated_at)
+	 VALUES($1,1,decode('00','hex'),0,0,0,now());`, august); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,1,'fixture')`, august); err != nil {
+		t.Fatal(err)
+	}
+	write := func(rowID string, paid, completed time.Time) {
+		t.Helper()
+		wire := healthCompletionReply("HEALTH_CREATOR", boundary.AddDate(0, 2, 1), completed, "42")
+		wire.Cursor.ID = rowID
+		for i := range wire.Facts {
+			wire.Facts[i] = json.RawMessage(strings.NewReplacer(`"42"`, `"`+rowID+`"`, "order-42", "order-"+rowID,
+				"2026-08-02T12:00:00+08:00", paid.Format(time.RFC3339)).Replace(string(wire.Facts[i])))
+		}
+		wire.Gates[0].OrderID = "order-" + rowID
+		row, err := normalizeDCAIOrderRow(dcaiHealthStream, time.Time{}, wire)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			if _, err := storeSourceFacts(ctx, tx, row.Facts); err != nil {
+				return err
+			}
+			return storeDCAIBlockers(ctx, tx, dcaiHealthStream, []orderPageRow{row})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("41", cut.Add(-time.Second), boundary)
+	write("42", cut, boundary.Add(-time.Second))
+	write("43", cut.Add(time.Second), boundary.AddDate(0, 1, 0))
+	if _, err := s.db.Exec(ctx, `DELETE FROM draft_refresh_queue`); err != nil {
+		t.Fatal(err)
+	}
+	base := product.Packages[0].Versions[0].SourceID
+	sheet, err := s.catalogRuleRateSheet(ctx, base)
+	if err != nil || !sheet.MayPublish || !sheet.RequiresCompletion || len(sheet.Components) != 6 || len(sheet.Teams) != 0 {
+		t.Fatalf("creator rate configuration unavailable: %+v %v", sheet, err)
+	}
+	var catalog []struct {
+		RateConfigAvailable bool `json:"rateConfigAvailable"`
+	}
+	if err := s.db.QueryRow(ctx, catalogRulesSQL, []int64{productID}).Scan(&catalog); err != nil || len(catalog) != 2 || !catalog[0].RateConfigAvailable || !catalog[1].RateConfigAvailable {
+		t.Fatalf("creator rule list did not enable rate configuration: %+v %v", catalog, err)
+	}
+	rate := int64(200)
+	edits := publishCatalogRatesInput{BaseID: base, EffectiveFrom: cut, Changes: []catalogRateChange{{ItemKey: "rnd", Rate: &rate}}}
+	published, err := s.publishCatalogRates(ctx, edits, "fixture-publisher")
+	if err != nil || published.Version != 3 || published.ID == base {
+		t.Fatalf("could not publish creator rule: %+v %v", published, err)
+	}
+	if _, err := s.publishCatalogRates(ctx, edits, "fixture-publisher"); !errors.Is(err, errCatalogRateStale) {
+		t.Fatalf("an outdated creator form accepted a second edit: %v", err)
+	}
+	var queued []int64
+	if err := s.db.QueryRow(ctx, `SELECT array_agg(period_id ORDER BY period_id) FROM draft_refresh_queue`).Scan(&queued); err != nil ||
+		!slices.Equal(queued, []int64{september, october}) {
+		t.Fatalf("publication should refresh the two open completion periods: %v %v", queued, err)
+	}
+	for _, period := range []int64{september, october} {
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			report, err := readCatalogMatches(ctx, tx, period, 0, 25)
+			if err != nil {
+				return err
+			}
+			want := 1
+			if period == september {
+				want = 2
+			}
+			if report.OrderCount != want {
+				t.Fatalf("period %d should have %d orders: %+v", period, want, report)
+			}
+			for _, row := range report.Items {
+				wantRule := published.ID
+				wantRND := int64(33600)
+				if row.OrderID == "order-41" {
+					wantRule = base
+					wantRND = 16800
+				}
+				if row.Status != "MATCHED" || row.RuleID != wantRule || row.CompletionCarried != (row.OrderID == "order-42") {
+					t.Fatalf("period %d payment %s picked the wrong rule or posting period: %+v", period, row.OrderID, row)
+				}
+				var amount int64
+				for _, part := range row.FixedParts {
+					if part.ItemKey == "rnd" {
+						amount = part.AmountMinor
+					}
+				}
+				if amount != wantRND {
+					t.Fatalf("order %s RND amount %d, want %d", row.OrderID, amount, wantRND)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE catalog_business_routes SET sku_code='unrelated-scenario' WHERE product_id=$1`, productID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.catalogRuleRateSheet(ctx, base); !errors.Is(err, errCatalogRateUnavailable) {
+		t.Fatalf("a rule without its health scenario was readable: %v", err)
+	}
+	if _, err := s.publishCatalogRates(ctx, edits, "fixture-publisher"); !errors.Is(err, errCatalogRateUnavailable) {
+		t.Fatalf("a rule without its health scenario was editable: %v", err)
 	}
 }
