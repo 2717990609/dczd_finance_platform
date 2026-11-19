@@ -16,7 +16,7 @@ const navigation = [
   {key:'settlement', title:'分润试算', icon:CalculatorOutlined},
   {key:'products', title:'产品目录', icon:AppstoreOutlined, description:'维护核算产品，绑定子系统的原始商品或业务标识。'},
   {key:'periods', title:'核算期次', icon:CalendarOutlined, description:'设置实际开班或结算窗口，查看各期匹配的规则。'},
-  {key:'rules', title:'规则配置', icon:ProfileOutlined, description:'组合分润组件，并指定适用期次、起始期数或产品默认范围。'},
+  {key:'rules', title:'规则配置', icon:ProfileOutlined, description:'按产品配置分润方式、适用范围和生效时间。'},
   {key:'orders', title:'来源订单', icon:FileSearchOutlined, description:'按原订单 ID 从子系统重拉，查询财务目前收到的业务记录。'},
   {key:'organization', title:'组织与人员', icon:TeamOutlined},
   {key:'people', title:'人员映射', icon:TeamOutlined, description:'查询财务计算使用的来源人员标识及有效区间。'},
@@ -164,7 +164,7 @@ const canOpenAction = computed(() => current.value!=='rules' ||
 function catalogRuleBadge(row) {
   const now = Date.now()
   if (!row.inLatestSnapshot) return { text:'历史版本', color:'default' }
-  if (!row.projectMatches) return { text:'其他项目范围', color:'default' }
+  if (!row.projectMatches) return { text:'其他核算项目', color:'default' }
   if (row.sourceStatus!=='PUBLISHED') return { text:'已停用', color:'default' }
   if (row.effectiveTo && new Date(row.effectiveTo).getTime()<=now) return { text:'已截止', color:'default' }
   if (row.paused) return { text:'暂停执行', color:'orange' }
@@ -569,7 +569,6 @@ async function save() {
               <template #bodyCell="{ column, record, text }">
                 <template v-if="column.key==='name'||column.key==='label'">
                   <strong class="primary-cell">{{ text }}</strong>
-                  <small v-if="record.catalogPending && record.packageCode" class="order-version">{{ record.packageCode }}</small>
                 </template>
                 <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ optionLabel('periodMode',text) }}</a-tag></template>
                 <template v-else-if="column.key==='mappingCount'">{{ data.mappings.filter(x=>x.productId===record.id).length }}</template>
@@ -581,8 +580,7 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='scope'">
                   <template v-if="record.catalogPending">
-                    {{ record.scopeId || catalogScopeLabels[record.scopeType] || '未细分范围' }}
-                    <small class="order-version">{{ record.project }}<template v-if="record.scopeId && catalogScopeLabels[record.scopeType]"> · {{ catalogScopeLabels[record.scopeType] }}</template></small>
+                    {{ record.scopeLabel || catalogScopeLabels[record.scopeType] || '未细分范围' }}
                   </template>
                   <template v-else>{{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}</template>
                 </template>

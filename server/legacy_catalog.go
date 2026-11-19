@@ -68,7 +68,7 @@ const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(result) ORDER BY res
  SELECT v.source_id AS id,true AS "catalogPending",p.product_id AS "productId",pr.name AS "productName",p.code AS "packageCode",
  p.name AS label,p.project_code AS project,
  CASE WHEN p.scope_type IN ('BUSINESS_SCENARIO','CROSS_SCENARIO_AGGREGATE') THEN p.scope_type END AS "scopeType",
- p.scope_id AS "scopeId",
+ p.scope_id AS "scopeId",scenario.label AS "scopeLabel",
  v.version_no AS version,v.source_status AS "sourceStatus",v.effective_from AS "effectiveFrom",
  ` + catalogDisplayedThrough + ` AS "effectiveTo",
  p.paused,p.resume_from AS "resumeFrom",p.project_code=c.project_code AS "projectMatches",
@@ -78,6 +78,13 @@ const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(result) ORDER BY res
   AND v.definition->'internal_sales_direct_split'->>'mode'='DCAI_INTERNAL_DIRECT',false) AS "draftSupported"
  FROM legacy_rule_versions v JOIN legacy_rule_packages p ON p.source_id=v.package_id
  JOIN legacy_catalog_products c ON c.product_id=p.product_id JOIN products pr ON pr.id=c.product_id
+ LEFT JOIN LATERAL (
+  SELECT min(m.sku_label) AS label FROM catalog_business_routes m
+  WHERE p.scope_type='BUSINESS_SCENARIO' AND m.product_id=p.product_id AND m.sku_code=p.scope_id
+   AND m.observed_at=c.captured_at AND m.effective_from<=v.effective_from
+   AND (m.effective_to IS NULL OR v.effective_from<m.effective_to)
+  HAVING count(DISTINCT m.sku_label)=1
+ ) scenario ON true
  WHERE ($1::bigint[] IS NULL OR p.product_id=ANY($1))
 ) result`
 

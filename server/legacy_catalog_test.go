@@ -91,3 +91,45 @@ func TestLegacyCatalogImportPreservesVersionAndRejectsStaleOrChangedDefinition(t
 		t.Fatalf("publishing returned %v", err)
 	}
 }
+
+func TestProductRuleListShowsApplicableBusinessScenarioName(t *testing.T) {
+	ctx := context.Background()
+	db := integrationDB(t)
+	at := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
+	cutoff := at.AddDate(0, 1, 0)
+	day := 25
+	input := legacyCatalogFile{Environment: "test", CapturedAt: cutoff, Products: []legacyCatalogProduct{{
+		SourceID: "11000000-0000-4000-8000-000000000001", Code: "MEMBER", Name: "会员", Project: "AI",
+		Source: "DCAI", SourceKey: "member", PeriodMode: "calendar", CycleStartDay: &day,
+		Packages: []legacyCatalogPackage{{SourceID: "11000000-0000-4000-8000-000000000002", Code: "INTERNAL_MEMBER", Name: "会员提成",
+			Project: "AI", Kind: "LEGACY_BUNDLE", ScopeType: "BUSINESS_SCENARIO", ScopeID: "MEMBER_NEW",
+			Versions: []legacyCatalogVersion{
+				{SourceID: "11000000-0000-4000-8000-000000000003", Number: 1, Status: "PUBLISHED", From: at, Through: &cutoff, Hash: "first", Definition: json.RawMessage(`{}`)},
+				{SourceID: "11000000-0000-4000-8000-000000000004", Number: 2, Status: "PUBLISHED", From: cutoff, Hash: "second", Definition: json.RawMessage(`{}`)},
+			}}},
+		BusinessRoutes: []catalogBusinessRoute{
+			{SourceID: "11000000-0000-4000-8000-000000000005", Source: "DCAI", Domain: "VIP", Entity: "VIP_ORDER", RecordTable: "vip_order",
+				BusinessKey: "vip:new", Classifier: "test", SKU: "MEMBER_NEW", Label: "会员新购", Version: 1, From: at, Through: &cutoff},
+			{SourceID: "11000000-0000-4000-8000-000000000006", Source: "DCAI", Domain: "VIP", Entity: "VIP_ORDER", RecordTable: "vip_order",
+				BusinessKey: "vip:new", Classifier: "test", SKU: "MEMBER_NEW", Label: "公司普通新报", Version: 2, From: cutoff},
+		},
+	}}}
+	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error { return storeLegacyCatalog(ctx, tx, input) }); err != nil {
+		t.Fatal(err)
+	}
+	var raw json.RawMessage
+	if err := db.QueryRow(ctx, catalogRulesSQL, nil).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var rows []struct {
+		Version    int
+		ScopeLabel string
+	}
+	if err := json.Unmarshal(raw, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Version != 2 || rows[0].ScopeLabel != "公司普通新报" ||
+		rows[1].Version != 1 || rows[1].ScopeLabel != "会员新购" {
+		t.Fatalf("expected business scenario names from each rule's effective time, got %+v", rows)
+	}
+}
