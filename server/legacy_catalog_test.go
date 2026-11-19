@@ -55,6 +55,28 @@ func TestLegacyCatalogImportPreservesVersionAndRejectsStaleOrChangedDefinition(t
 	 FROM legacy_rule_packages`).Scan(&product, &paused, &total); err != nil || !paused || total != 1 {
 		t.Fatalf("product=%d paused=%t versions=%d err=%v", product, paused, total, err)
 	}
+	var list json.RawMessage
+	if err := db.QueryRow(ctx, catalogRulesSQL).Scan(&list); err != nil {
+		t.Fatal(err)
+	}
+	var rules []struct {
+		ScopeType  string
+		PolicyKind *string
+	}
+	if err := json.Unmarshal(list, &rules); err != nil || len(rules) != 1 ||
+		rules[0].ScopeType != "BUSINESS_SCENARIO" || rules[0].PolicyKind != nil {
+		t.Fatalf("unexpected product rule representation %s: %v", list, err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE legacy_rule_packages SET scope_type='LEGACY_SCOPE'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(ctx, catalogRulesSQL).Scan(&list); err != nil {
+		t.Fatal(err)
+	}
+	rules = nil
+	if err := json.Unmarshal(list, &rules); err != nil || len(rules) != 1 || rules[0].ScopeType != "" {
+		t.Fatalf("unexpected scope in product rule list %s: %v", list, err)
+	}
 	result, err := service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "Check", SettlementMonth: "2026-08"})
 	if err != nil {
 		t.Fatal(err)

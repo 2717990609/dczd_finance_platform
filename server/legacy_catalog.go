@@ -66,7 +66,9 @@ type legacyCatalogVersion struct {
 
 const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(v) ORDER BY v."effectiveFrom" DESC,v.id),'[]') FROM (
  SELECT r.source_id AS id,true AS "catalogPending",p.product_id AS "productId",pr.name AS "productName",p.code AS "packageCode",
- p.name AS label,p.project_code AS project,p.policy_kind AS "policyKind",p.scope_type AS "scopeType",p.scope_id AS "scopeId",
+ p.name AS label,p.project_code AS project,
+ CASE WHEN p.scope_type IN ('BUSINESS_SCENARIO','CROSS_SCENARIO_AGGREGATE') THEN p.scope_type END AS "scopeType",
+ p.scope_id AS "scopeId",
  r.version_no AS version,r.source_status AS "sourceStatus",r.effective_from AS "effectiveFrom",r.effective_to AS "effectiveTo",
  p.paused,p.resume_from AS "resumeFrom",p.project_code=c.project_code AS "projectMatches",
  r.observed_at=c.captured_at AS "inLatestSnapshot",
