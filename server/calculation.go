@@ -54,6 +54,7 @@ type draftIssue struct {
 	Component    string `json:"component,omitempty"`
 	Code         string `json:"code"`
 	EnrollmentID int64  `json:"enrollmentId,omitempty"`
+	Advisory     bool   `json:"advisory,omitempty"`
 	stableKey    string
 }
 
@@ -70,6 +71,16 @@ type paymentDraft struct {
 	Total               int64
 	RefundTotal         int64
 	CorrectionTotal     int64
+}
+
+func (d paymentDraft) blockingIssues() int {
+	count := 0
+	for _, issue := range d.Issues {
+		if !issue.Advisory {
+			count++
+		}
+	}
+	return count
 }
 
 func isPeriodPayment(window periodWindow, fact sourceFact) bool {

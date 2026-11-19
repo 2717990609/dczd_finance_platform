@@ -328,6 +328,9 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 		}
 	}
 	for _, issue := range result.Issues {
+		if issue.Advisory {
+			continue
+		}
 		fact := facts[issue.FactID]
 		if fact.Order != "" || issue.stableKey != "" {
 			issue.FactID = 0
@@ -376,6 +379,7 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 }
 
 func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []byte, result paymentDraft) error {
+	rosterID := summary.PracticeRosterID
 	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id,performance_ready,catalog_refunds_ready,practice_replay_inputs)
 	  VALUES($1,nullif($2::bigint,0),1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,true,$12,$13)
 	  ON CONFLICT(period_id) DO UPDATE SET rule_id=excluded.rule_id,version=calculation_drafts.version+1,
@@ -386,10 +390,17 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	  WHERE NOT calculation_drafts.performance_ready OR calculation_drafts.input_digest<>excluded.input_digest
 	   OR calculation_drafts.catalog_refunds_ready<>excluded.catalog_refunds_ready
 	  RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
-		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections),
+		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), result.blockingIssues(), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections),
 		summary.PracticeRosterID, summary.Catalog, result.practiceReplay).
 		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount, &summary.PracticeRosterID)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// Keep monetary lines and allocations stable when a newer roster
+		// has the same result, or a refund is routed to a separate month.
+		if rosterID != nil {
+			if err := syncPracticeDraftMetadata(ctx, tx, summary.PeriodID, *rosterID, result.Issues); err != nil {
+				return err
+			}
+		}
 		err = tx.QueryRow(ctx, `SELECT d.version,d.total_minor,d.line_count,d.issue_count,d.calculated_at,d.refund_minor,d.refund_count,d.correction_minor,d.correction_count,
 		 d.practice_roster_id,coalesce(r.source_version,0) FROM calculation_drafts d
 		 LEFT JOIN practice_rosters r ON r.id=d.practice_roster_id WHERE d.period_id=$1`, summary.PeriodID).
@@ -449,7 +460,7 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Issues) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_issues"},
-			[]string{"period_id", "source_version_id", "component_type", "code", "practice_enrollment_id"},
+			[]string{"period_id", "source_version_id", "component_type", "code", "practice_enrollment_id", "advisory"},
 			pgx.CopyFromSlice(len(result.Issues), func(i int) ([]any, error) {
 				issue := result.Issues[i]
 				var factID *int64
@@ -460,7 +471,7 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 				if issue.EnrollmentID != 0 {
 					enrollment = &issue.EnrollmentID
 				}
-				return []any{summary.PeriodID, factID, issue.Component, issue.Code, enrollment}, nil
+				return []any{summary.PeriodID, factID, issue.Component, issue.Code, enrollment, issue.Advisory}, nil
 			}))
 	}
 	if err != nil {
@@ -537,7 +548,7 @@ const draftDetailSQL = `SELECT jsonb_build_object(
  'catalog',d.rule_id IS NULL AND NOT (` + practiceRefundMonthScope + `),
  'practiceRefundMonth',(` + practiceRefundMonthScope + `),
  'refundsReady',d.rule_id IS NOT NULL OR d.catalog_refunds_ready OR (` + practiceRefundMonthScope + `),
- 'settlementReviewAvailable',d.rule_id IS NULL AND d.catalog_refunds_ready OR (` + practiceRefundMonthScope + `),
+ 'settlementReviewAvailable',d.rule_id IS NULL AND d.catalog_refunds_ready OR d.practice_roster_id IS NOT NULL OR (` + practiceRefundMonthScope + `),
  'poolAllocationAvailable',(d.rule_id IS NULL AND d.catalog_refunds_ready OR (d.practice_roster_id IS NOT NULL OR (` + practiceRefundMonthScope + `)) AND (EXISTS(
   SELECT 1 FROM pool_account_activity movement JOIN pool_period_order origin ON origin.id=movement.period_id
   JOIN pool_period_order target ON target.id=d.period_id
@@ -549,6 +560,7 @@ const draftDetailSQL = `SELECT jsonb_build_object(
  'totalMinor',d.total_minor+d.refund_minor+d.correction_minor,'accruedMinor',d.total_minor,
  'refundMinor',d.refund_minor,'refundCount',d.refund_count,'correctionMinor',d.correction_minor,'correctionCount',d.correction_count,
  'lineCount',d.line_count,'issueCount',d.issue_count,'practiceRosterVersion',roster.source_version,
+ 'advisoryCount',(SELECT count(*) FROM calculation_draft_issues i WHERE i.period_id=d.period_id AND i.advisory),
  'attendanceCount',roster.attendance_count,
  'settlement',CASE WHEN st.id IS NOT NULL THEN jsonb_build_object('id',st.id,'confirmedAt',st.confirmed_at,'draftVersion',st.draft_version) END,
  'lines',coalesce((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM (
@@ -612,7 +624,7 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   WHERE c.period_id=d.period_id AND c.id>$6 ORDER BY c.id LIMIT 50
  ) c),'[]'),
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
-  SELECT i.id,i.component_type AS "component",i.code,o.source,o.order_id AS "orderId",e.source_enrollment_id AS "enrollmentId",
+  SELECT i.id,i.component_type AS "component",i.code,i.advisory,o.source,o.order_id AS "orderId",e.source_enrollment_id AS "enrollmentId",
    CASE WHEN r.id IS NOT NULL AND starts_with(i.component_type,'period:')
      THEN r.components->(split_part(i.component_type,':',3)::int)->'periodBenefit'->>'label' END AS "componentLabel"
   FROM calculation_draft_issues i LEFT JOIN source_order_versions o ON o.id=i.source_version_id LEFT JOIN practice_enrollments e ON e.id=i.practice_enrollment_id

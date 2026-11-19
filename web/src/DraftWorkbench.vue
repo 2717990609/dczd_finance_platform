@@ -72,7 +72,8 @@ const reason = {
   CORRECTION_RECOVERY_PENDING: '原受益人的扣回处理尚未确认',
   PRACTICE_DUPLICATE_ENROLLMENT: '同一报名和付款仍在其他期次，请在来源名单核对延期',
   PRACTICE_REFUND_PENDING: '对应付款已有退款，请重新试算',
-  PRACTICE_REFUND_AFTER_ROSTER: '名单确认后发生退款，待按退款归属账期处理',
+  PRACTICE_REFUND_AFTER_ROSTER: '名单确认后发生退款，按退款账期办理',
+  PRACTICE_REFUND_PRODUCT_MISMATCH: '退款与原付款的产品归属不一致，请在子系统核对',
   PRACTICE_REFUND_PAYMENT_TIME: '退款时间早于原付款，请在子系统核对',
   PRACTICE_REFUND_ROSTER_CHANGED: '付款已全退，但报名仍在名单中，请核对并更新确认名单',
   PRACTICE_MEMBER_RULE_MISSING: '规则缺少此报名类型的分润分项',
@@ -130,7 +131,7 @@ const correctionColumns = [
 const issueColumns = [
   { title: '原订单或报名', key: 'source', width: 160 },
   { title: '分项', key: 'component', width: 110 },
-  { title: '待核原因', key: 'reason', width: 240 },
+  { title: '处理说明', key: 'reason', width: 240 },
 ]
 
 async function load(replace = false) {
@@ -160,7 +161,8 @@ async function checkRefresh() {
     const result = await props.api('/drafts/status?periodId=' + period)
     if (request !== statusSequence || unmounted) return
     refreshStatus.value = result
-    if (!loading.value && !calculating.value && (result.settled || (newerDraft.value && view.value !== 'pools'))) await load()
+    const metadataChanged = result.calculatedAt && result.calculatedAt !== draft.value?.calculatedAt
+    if (!loading.value && !calculating.value && (result.settled || ((newerDraft.value || metadataChanged) && view.value !== 'pools'))) await load()
   } catch {
     // The current readable draft stays on screen if the status query fails.
   } finally {
@@ -220,7 +222,10 @@ async function loadMore(section, cursorName) {
   error.value = ''
   try {
     const next = await props.api('/drafts?' + params)
-    if (request === sequence) current[section].push(...next[section])
+    if (request === sequence) {
+      if (section === 'issues' && next.calculatedAt !== current.calculatedAt) await load()
+      else current[section].push(...next[section])
+    }
   } catch (err) {
     if (request === sequence) error.value = err.message
   } finally {
@@ -328,18 +333,18 @@ async function loadMore(section, cursorName) {
     </div>
     <div v-if="draft.correctionCount > draft.corrections.length" class="paging"><a-button :loading="loading" @click="loadMore('corrections','afterCorrectionId')">加载下一页</a-button></div>
   </section>
-  <section v-if="draft?.issueCount" class="records draft-issues">
-    <div class="records-head"><h2>待核项</h2></div>
+  <section v-if="draft?.issueCount || draft?.advisoryCount" class="records draft-issues">
+    <div class="records-head"><h2>{{ draft.issueCount ? (draft.advisoryCount ? '待核项与处理提示' : '待核项') : '处理提示' }}</h2></div>
     <div class="table-container">
       <a-table :columns="issueColumns" :data-source="draft.issues" :pagination="false" row-key="id" :scroll="{ x: 510 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'source'">{{ record.orderId || '—' }}<small v-if="record.enrollmentId" class="order-version">报名 {{ record.enrollmentId }}</small></template>
           <template v-else-if="column.key === 'component'">{{ record.componentLabel || componentLabel(record.component) || '—' }}</template>
-          <template v-else-if="column.key === 'reason'">{{ reason[record.code] || record.code }}</template>
+          <template v-else-if="column.key === 'reason'"><a-tag v-if="record.advisory" color="blue">提示</a-tag>{{ reason[record.code] || record.code }}</template>
         </template>
       </a-table>
     </div>
-    <div v-if="draft.issueCount > draft.issues.length" class="paging"><a-button :loading="loading" @click="loadMore('issues', 'afterIssueId')">加载下一页</a-button></div>
+    <div v-if="draft.issueCount + (draft.advisoryCount || 0) > draft.issues.length" class="paging"><a-button :loading="loading" @click="loadMore('issues', 'afterIssueId')">加载下一页</a-button></div>
   </section>
   </template>
   <CatalogRuleMatches v-if="hasMatching && (!draft || view==='matching')" :period-id="selected" :draft-available="selectedPeriod.catalogDraftAvailable"

@@ -130,7 +130,7 @@ func (s workspace) confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSett
 	if !scope.Ended {
 		return settlement{}, errSettlementOpen
 	}
-	if scope.mode == "class" && !scope.practiceRefundMonth {
+	if scope.isPracticeClass() {
 		return settlement{}, errPracticeSettlementUnavailable
 	}
 	if scope.Version != req.ExpectedVersion {
@@ -215,7 +215,7 @@ func verifySettlementDraft(ctx context.Context, tx pgx.Tx, periodID int64, scope
 	if !bytes.Equal(digest, scope.digest) {
 		return errSettlementStale
 	}
-	if len(current.Issues) != 0 {
+	if current.blockingIssues() != 0 {
 		return errSettlementPending
 	}
 	return nil

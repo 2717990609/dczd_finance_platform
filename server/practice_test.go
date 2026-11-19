@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
 	"time"
@@ -172,7 +174,28 @@ func TestPracticeDraftFollowsLatestRosterForDeferredEnrollment(t *testing.T) {
 	check(original, 3, 2, 0, 0)
 	check(target, 2, 1, 501, 0)
 	importRoster(roster(11, 2, targetStart, true), true)
-	check(target, 2, 1, 501, 0)
+	check(target, 2, 2, 501, 0)
+	var rosterVersion int64
+	if err := service.db.QueryRow(ctx, `SELECT r.source_version FROM calculation_drafts d
+	 JOIN practice_rosters r ON r.id=d.practice_roster_id WHERE d.period_id=$1`, target).Scan(&rosterVersion); err != nil || rosterVersion != 2 {
+		t.Fatalf("equivalent draft must stay attached to the latest confirmed roster: %d %v", rosterVersion, err)
+	}
+	reviewResponse := httptest.NewRecorder()
+	service.getSettlementReview(reviewResponse, httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/v1/settlement-review?periodId=%d&version=2", target), nil))
+	var review struct {
+		PracticeRoster *struct {
+			Version, LatestVersion, Attendance int64
+		}
+		Sources []settlementSource
+		Token   string `json:"reviewToken"`
+	}
+	if err := json.Unmarshal(reviewResponse.Body.Bytes(), &review); reviewResponse.Code != http.StatusOK || err != nil ||
+		review.PracticeRoster == nil || review.PracticeRoster.Version != 2 || review.PracticeRoster.LatestVersion != 2 ||
+		review.Token != "" || len(review.Sources) != 1 || review.Sources[0].Status != "NOT_CONFIGURED" {
+		t.Fatalf("class review must show the selected roster and the missing order data prerequisite: %d %s %v",
+			reviewResponse.Code, reviewResponse.Body.String(), err)
+	}
 
 	for period, expected := range map[int64]int64{original: 0, target: 1000} {
 		var total int64
@@ -335,9 +358,20 @@ func TestPracticeDraftUsesLatestPartialRefundForConfirmedEnrollment(t *testing.T
 	}
 
 	late := int64(50)
+	var originalLines []int64
+	if err := s.db.QueryRow(ctx, `SELECT array_agg(id ORDER BY id) FROM calculation_draft_lines WHERE period_id=$1`,
+		period).Scan(&originalLines); err != nil {
+		t.Fatal(err)
+	}
+	originalVersion := run().Version
 	storeRefund(refund("3", "PRACTICE", "1", confirmed.AddDate(0, 1, 0), &late))
-	if got := run(); got.IssueCount != 1 || got.Total != 120 {
-		t.Fatalf("later refund should surface for adjustment and preserve the class result: %+v", got)
+	if got := run(); got.IssueCount != 0 || got.Total != 120 || got.Version != originalVersion {
+		t.Fatalf("valid late refund should not prevent the class from settling: %+v", got)
+	}
+	var unchangedLines bool
+	if err := s.db.QueryRow(ctx, `SELECT array_agg(id ORDER BY id)=$2 FROM calculation_draft_lines WHERE period_id=$1`,
+		period, originalLines).Scan(&unchangedLines); err != nil || !unchangedLines {
+		t.Fatalf("a handoff to the refund month must keep the class funding lines: %v %v", unchangedLines, err)
 	}
 	roster.SourceVersion, roster.ConfirmedAt = 2, confirmed.AddDate(0, 1, 1)
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
@@ -346,17 +380,57 @@ func TestPracticeDraftUsesLatestPartialRefundForConfirmedEnrollment(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := run(); got.IssueCount != 1 || got.Total != 120 {
+	if got := run(); got.IssueCount != 0 || got.Total != 120 {
 		t.Fatalf("a roster revision must not bring a later refund back into the original class: %+v", got)
 	}
+	var issue string
+	if err := s.db.QueryRow(ctx, `SELECT code FROM calculation_draft_issues WHERE period_id=$1`, period).Scan(&issue); err != nil || issue != "PRACTICE_REFUND_AFTER_ROSTER" {
+		t.Fatalf("the handoff to the refund period should remain visible: %q %v", issue, err)
+	}
+	wrongProduct := refund("8", "PRACTICE", "1", confirmed.AddDate(0, 1, 0).Add(time.Hour), &late)
+	wrongProduct.SourceKey = "another-product"
+	storeRefund(wrongProduct)
+	if got := run(); got.IssueCount != 1 || got.Total != 0 {
+		t.Fatalf("a late refund not mapped to the payment's product must not become a handoff: %+v", got)
+	}
+	if err := s.db.QueryRow(ctx, `SELECT code FROM calculation_draft_issues WHERE period_id=$1 AND NOT advisory`, period).Scan(&issue); err != nil || issue != "PRACTICE_REFUND_PRODUCT_MISMATCH" {
+		t.Fatalf("unexpected product mismatch issue: %q %v", issue, err)
+	}
+	wrongProduct.OrderID, wrongProduct.Version = "99", "2"
+	wrongProduct.RefundsPayment = []sourcePaymentReference{{OrderID: "99"}}
+	wrongProduct.UpdatedAt = wrongProduct.UpdatedAt.Add(time.Minute)
+	storeRefund(wrongProduct)
+	excess := int64(151)
+	invalidLate := refund("7", "PRACTICE", "1", confirmed.AddDate(0, 1, 0).Add(time.Hour), &excess)
+	storeRefund(invalidLate)
+	if got := run(); got.IssueCount != 1 || got.Total != 0 {
+		t.Fatalf("cumulative late refunds exceeding the payment must still block: %+v", got)
+	}
+	invalidLate.OrderID, invalidLate.Version = "99", "2"
+	invalidLate.RefundsPayment = []sourcePaymentReference{{OrderID: "99"}}
+	invalidLate.UpdatedAt = invalidLate.UpdatedAt.Add(time.Minute)
+	storeRefund(invalidLate)
 	rest := int64(200)
 	storeRefund(refund("4", "PRACTICE", "1", at.Add(3*time.Hour), &rest))
 	if got := run(); got.IssueCount != 1 || got.Total != 0 {
 		t.Fatalf("paid order fully refunded before confirmation requires roster review: %+v", got)
 	}
-	var issue string
 	if err := s.db.QueryRow(ctx, `SELECT code FROM calculation_draft_issues WHERE period_id=$1`, period).Scan(&issue); err != nil || issue != "PRACTICE_REFUND_ROSTER_CHANGED" {
 		t.Fatalf("incorrect fully refunded roster issue: %q %v", issue, err)
+	}
+}
+
+func TestPracticeRefundCutoffDoesNotCountLatePrincipalWithinTimestampTie(t *testing.T) {
+	paid, late, onTime := int64(1000), int64(100), int64(900)
+	cutoff := time.Date(2026, 8, 8, 7, 0, 0, 0, time.UTC)
+	p := practicePurchase{member: practiceEnrollment{ConfirmedAt: cutoff}, base: paid,
+		payments: []paymentInput{{ID: 1, Fact: sourceFact{AmountMinor: &paid, OccurredAt: cutoff.Add(-time.Hour)}}}}
+	p.applyRefunds(map[int64][]practiceRefundMatch{1: {
+		{event: paymentInput{ID: 2, Fact: sourceFact{AmountMinor: &late, OccurredAt: cutoff.Add(time.Nanosecond)}}},
+		{event: paymentInput{ID: 3, Fact: sourceFact{AmountMinor: &onTime, OccurredAt: cutoff}}},
+	}})
+	if p.issue != "" || p.base != 100 || p.netAmount(p.payments[0]) != 100 || len(p.lateRefunds) != 1 {
+		t.Fatalf("refund cutoff and total-principal validation must be independent: %+v", p)
 	}
 }
 

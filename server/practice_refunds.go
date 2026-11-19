@@ -30,7 +30,10 @@ const practiceRefundsSQL = `WITH wanted AS (SELECT DISTINCT unnest($1::text[]) A
    AND v.fact->>'refundId'=w.refund_id
   WHERE ` + latestPracticeRefund + ` GROUP BY w.refund_id HAVING count(*)>1
  )
- SELECT m.id,m.fact,d.refund_id IS NOT NULL FROM matched m LEFT JOIN duplicate d USING(refund_id)
+ SELECT m.id,m.fact,d.refund_id IS NOT NULL,NOT EXISTS(
+  SELECT 1 FROM source_mappings s JOIN periods p ON p.product_id=s.product_id
+  WHERE p.id=$3 AND s.source='DCZD' AND s.domain='PRACTICE' AND s.source_key=m.fact->>'sourceKey'
+ ) FROM matched m LEFT JOIN duplicate d USING(refund_id)
  ORDER BY m.occurred_at,m.refund_id,m.record_key,m.id`
 
 type practiceRefundMatch struct {
@@ -40,10 +43,11 @@ type practiceRefundMatch struct {
 
 type practiceRefund struct {
 	paymentInput
-	duplicate bool
+	duplicate    bool
+	wrongProduct bool
 }
 
-func readPracticeRefunds(ctx context.Context, tx pgx.Tx, orders map[string][]paymentInput) ([]practiceRefund, error) {
+func readPracticeRefunds(ctx context.Context, tx pgx.Tx, periodID int64, orders map[string][]paymentInput) ([]practiceRefund, error) {
 	if len(orders) == 0 {
 		return nil, nil
 	}
@@ -51,13 +55,13 @@ func readPracticeRefunds(ctx context.Context, tx pgx.Tx, orders map[string][]pay
 	for key := range orders {
 		keys = append(keys, key)
 	}
-	rows, err := tx.Query(ctx, practiceRefundsSQL, keys, maxDraftPayments+1)
+	rows, err := tx.Query(ctx, practiceRefundsSQL, keys, maxDraftPayments+1, periodID)
 	if err != nil {
 		return nil, err
 	}
 	events, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (practiceRefund, error) {
 		var refund practiceRefund
-		err := row.Scan(&refund.ID, &refund.Fact, &refund.duplicate)
+		err := row.Scan(&refund.ID, &refund.Fact, &refund.duplicate, &refund.wrongProduct)
 		return refund, err
 	})
 	if len(events) > maxDraftPayments {
@@ -94,6 +98,8 @@ func matchPracticeRefunds(events []practiceRefund, orders map[string][]paymentIn
 			match.issue = "REFUND_MISSING_AMOUNT_OR_ID"
 		} else if event.duplicate {
 			match.issue = "REFUND_DUPLICATE_ID"
+		} else if event.wrongProduct && match.issue == "" {
+			match.issue = "PRACTICE_REFUND_PRODUCT_MISMATCH"
 		}
 		for _, payment := range targets {
 			if payment.Fact.Domain == "PRACTICE" {
@@ -109,12 +115,10 @@ func (p *practicePurchase) applyRefunds(matches map[int64][]practiceRefundMatch)
 	active := p.payments[:0]
 	for _, payment := range p.payments {
 		net := *payment.Fact.AmountMinor
+		remaining := net
 		for _, match := range matches[payment.ID] {
 			f := match.event.Fact
-			if !p.replaying && f.OccurredAt.After(p.member.ConfirmedAt) {
-				p.lateRefunds = append(p.lateRefunds, match.event)
-				continue
-			}
+			late := !p.replaying && f.OccurredAt.After(p.member.ConfirmedAt)
 			if match.issue != "" {
 				p.issue, p.issueFactID = match.issue, match.event.ID
 				return
@@ -122,14 +126,19 @@ func (p *practicePurchase) applyRefunds(matches map[int64][]practiceRefundMatch)
 			switch {
 			case f.OccurredAt.Before(payment.Fact.OccurredAt):
 				p.issue = "PRACTICE_REFUND_PAYMENT_TIME"
-			case *f.AmountMinor > net:
+			case *f.AmountMinor > remaining:
 				p.issue = "REFUND_AMOUNT_EXCEEDS_PAYMENT"
-			case *f.AmountMinor == net && !p.replaying:
+			case *f.AmountMinor == net && !p.replaying && !late:
 				p.issue = "PRACTICE_REFUND_ROSTER_CHANGED"
 			}
 			if p.issue != "" {
 				p.issueFactID = match.event.ID
 				return
+			}
+			remaining -= *f.AmountMinor
+			if late {
+				p.lateRefunds = append(p.lateRefunds, match.event)
+				continue
 			}
 			net -= *f.AmountMinor
 			p.base -= *f.AmountMinor

@@ -29,6 +29,7 @@ type settlementReview struct {
 	LaterPoolActivity    bool                                `json:"laterPoolActivity"`
 	Pools                []settlementPoolGap                 `json:"pools"`
 	Sources              []settlementSource                  `json:"sources,omitempty"`
+	PracticeRoster       *practiceClassRosterReview          `json:"practiceRoster,omitempty"`
 	PracticeDependencies []practiceMonthSettlementDependency `json:"practiceDependencies,omitempty"`
 	Token                string                              `json:"reviewToken,omitempty"`
 	CanConfirm           bool                                `json:"canConfirm"`
@@ -44,6 +45,10 @@ type settlementReview struct {
 
 func (r settlementReview) requiresReview() bool {
 	return r.catalog || r.practiceRefundMonth
+}
+
+func (r settlementReview) isPracticeClass() bool {
+	return r.mode == "class" && !r.practiceRefundMonth
 }
 
 func readSettlementScope(ctx context.Context, tx pgx.Tx, periodID int64, lock bool) (settlementReview, error) {
@@ -79,7 +84,7 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		if review.Version != version || !review.requiresReview() {
+		if review.Version != version || !review.requiresReview() && !review.isPracticeClass() {
 			return errSettlementStale
 		}
 		settled, err := readSettlement(ctx, tx, periodID)
@@ -96,6 +101,19 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		}
 		review, err = reviewPoolSettlement(ctx, tx, periodID, review)
 		if err != nil {
+			return err
+		}
+		if review.isPracticeClass() {
+			// The local review can expose the selected roster and current
+			// balances. A source-side roster verification is still required.
+			review.Token = ""
+			roster, err := readPracticeClassRosterReview(ctx, tx, periodID)
+			if err != nil {
+				return err
+			}
+			review.PracticeRoster = &roster
+			pending, err := draftRefreshPending(ctx, tx, periodID)
+			review.DraftStale = pending || roster.Version != roster.LatestVersion
 			return err
 		}
 		if settlementCoverageError(review.Sources) != nil {

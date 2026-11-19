@@ -384,7 +384,9 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 		}
 	}
 	start := time.Date(2026, 6, 12, 1, 0, 0, 0, time.UTC)
-	store(paid("10", 4000), paid("11", 6000), paid("12", 10000), refund("10", "1", 1000, at.Add(time.Hour)))
+	julyDate := time.Date(2026, 7, 12, 1, 0, 0, 0, time.UTC)
+	store(paid("10", 4000), paid("11", 6000), paid("12", 10000), refund("10", "1", 1000, at.Add(time.Hour)),
+		refund("10", "2", 3000, julyDate))
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: "PRACTICE:1:1:6", Hash: "replay", SourceVersion: 1, StartsAt: start,
 			ConfirmedAt: start.Add(time.Hour), Enrollments: []practiceEnrollment{
@@ -414,6 +416,12 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 	original := calculate(class)
 	if original.Total != 7600 || original.IssueCount != 0 {
 		t.Fatalf("settled tier before refund: %+v", original)
+	}
+	var keptReplay bool
+	if err := s.db.QueryRow(ctx, `SELECT practice_replay_inputs IS NOT NULL AND EXISTS(
+	 SELECT 1 FROM calculation_draft_issues i WHERE i.period_id=d.period_id AND i.advisory
+	  AND i.code='PRACTICE_REFUND_AFTER_ROSTER') FROM calculation_drafts d WHERE d.period_id=$1`, class).Scan(&keptReplay); err != nil || !keptReplay {
+		t.Fatalf("the valid late refund must be handed off while keeping the class replay inputs: %v %v", keptReplay, err)
 	}
 	freeze(original)
 	future := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "九月实战班", Ordinal: 2,
@@ -459,7 +467,6 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 	publish([]component{{Type: "sales", Mode: "rate", Value: 5000, ClassMember: "new", SourceRole: "DIRECT_REFERRER"}})
 	revised := paid("12", 9900)
 	revised.Version, revised.UpdatedAt = "2", at.Add(time.Hour)
-	julyDate := time.Date(2026, 7, 12, 1, 0, 0, 0, time.UTC)
 	store(revised, refund("10", "2", 3000, julyDate), refund("12", "3", 2000, julyDate.Add(time.Hour)),
 		refund("12", "4", 1000, time.Date(2026, 8, 12, 1, 0, 0, 0, time.UTC)))
 	calculate(august)

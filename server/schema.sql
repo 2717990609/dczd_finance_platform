@@ -245,6 +245,18 @@ CREATE TABLE IF NOT EXISTS settlements (
 );
 ALTER TABLE settlements ADD COLUMN IF NOT EXISTS review_token text NOT NULL DEFAULT '';
 
+DO $$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid='calculation_draft_issues'::regclass AND attname='advisory' AND NOT attisdropped) THEN
+  ALTER TABLE calculation_draft_issues ADD COLUMN advisory boolean NOT NULL DEFAULT false;
+  INSERT INTO draft_refresh_queue(period_id)
+  SELECT DISTINCT i.period_id FROM calculation_draft_issues i WHERE i.code='PRACTICE_REFUND_AFTER_ROSTER'
+   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=i.period_id)
+  ON CONFLICT(period_id) DO NOTHING;
+ END IF;
+END
+$$;
+
 CREATE TABLE IF NOT EXISTS settlement_removals (
  settlement_id bigint PRIMARY KEY,
  period_id bigint NOT NULL REFERENCES periods(id),

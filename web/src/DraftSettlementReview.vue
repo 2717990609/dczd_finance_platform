@@ -89,9 +89,20 @@ onBeforeUnmount(() => { sequence++ })
       </template>
       <template v-else-if="review">
         <a-alert v-if="!review.enabled" type="info" message="该产品尚未开放结算" show-icon/>
-        <a-alert v-if="!review.ended" type="info" message="账期尚未结束" show-icon/>
+        <a-alert v-if="!review.ended" type="info" :message="review.practiceRoster ? '班次尚未结束' : '账期尚未结束'" show-icon/>
         <a-alert v-if="review.draftStale" type="warning" message="试算数据已变化，请重新试算并核对" show-icon/>
         <a-alert v-if="review.laterPoolActivity" type="warning" message="后续账期已结算此团队池，请核对跨期处理" show-icon/>
+        <a-alert v-if="review.practiceRoster" type="info" message="班次结算待核验子系统的签到名单版本" show-icon>
+          <template #description>
+            <span>试算名单 v{{ review.practiceRoster.version }} · {{ review.practiceRoster.attendance }} 人</span>
+            <span v-if="review.practiceRoster.latestVersion !== review.practiceRoster.version"> · 已导入 v{{ review.practiceRoster.latestVersion }}</span>
+            <span> · 开班 {{ formatTime(review.practiceRoster.startsAt) }}</span>
+            <span> · 名单确认于 {{ formatTime(review.practiceRoster.confirmedAt) }}</span>
+            <span v-if="review.practiceRoster.refundCutoff !== review.practiceRoster.confirmedAt">
+              · 计入班次的退款截至 {{ formatTime(review.practiceRoster.refundCutoff) }}
+            </span>
+          </template>
+        </a-alert>
         <a-alert v-if="review.practiceDependencies?.length" type="warning" message="本期涉及以下待结算班次或退款账期" show-icon>
           <template #description>
             <ul>

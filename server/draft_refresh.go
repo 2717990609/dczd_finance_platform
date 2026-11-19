@@ -133,6 +133,7 @@ func (s workspace) draftRefreshStatus(w http.ResponseWriter, r *http.Request) {
 	var status json.RawMessage
 	err = s.db.QueryRow(r.Context(), `SELECT jsonb_build_object('version',coalesce(d.version,0), 'pending',q.period_id IS NOT NULL AND f.id IS NULL,
 	 'message',CASE WHEN f.id IS NULL THEN coalesce(q.message,'') ELSE '' END, 'settled',f.id IS NOT NULL)
+	 || CASE WHEN d.practice_roster_id IS NOT NULL THEN jsonb_build_object('calculatedAt',d.calculated_at) ELSE '{}'::jsonb END
 	 FROM periods p LEFT JOIN calculation_drafts d ON d.period_id=p.id LEFT JOIN draft_refresh_queue q ON q.period_id=p.id
 	 LEFT JOIN settlements f ON f.period_id=p.id WHERE p.id=$1`, period).Scan(&status)
 	respond(w, status, err)

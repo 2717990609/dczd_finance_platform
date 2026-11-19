@@ -97,6 +97,11 @@ FROM scope p CROSS JOIN required r JOIN source_write_state ws ON ws.source='DCAI
 LEFT JOIN dcai_order_sync s ON s.stream=r.stream
 LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream ORDER BY r.stream`
 
+const practiceSettlementCoverageSQL = `
+SELECT r.stream,` + settlementSourceStatusSQL + `,s.initial_from,s.completed_through,s.last_success_at,0,p.from_time,p.through_time
+FROM scope p CROSS JOIN (VALUES ('` + dczdOrderStream + `')) r(stream) JOIN source_write_state ws ON ws.source='DCZD'
+LEFT JOIN dcai_order_sync s ON s.stream=r.stream LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream`
+
 const practiceMonthSettlementSourceSQL = `WITH scope AS (
  SELECT least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',(
    SELECT min(v.occurred_at) FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id
@@ -112,14 +117,14 @@ const practiceMonthSettlementSourceSQL = `WITH scope AS (
  FROM periods p WHERE p.id=$1 AND EXISTS(
   SELECT 1 FROM source_mappings m WHERE m.product_id=p.product_id AND m.source='DCZD' AND m.domain='PRACTICE'
  )
-)
-SELECT r.stream,` + settlementSourceStatusSQL + `,s.initial_from,s.completed_through,s.last_success_at,0,p.from_time,p.through_time
-FROM scope p CROSS JOIN (VALUES ('` + dczdOrderStream + `')) r(stream) JOIN source_write_state ws ON ws.source='DCZD'
-LEFT JOIN dcai_order_sync s ON s.stream=r.stream LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream`
+)` + practiceSettlementCoverageSQL
 
 func (s workspace) settlementSources(ctx context.Context, tx pgx.Tx, periodID int64, review settlementReview) ([]settlementSource, error) {
-	if review.practiceRefundMonth {
+	switch {
+	case review.practiceRefundMonth:
 		return readSettlementSourceCoverage(ctx, tx, periodID, s.orderSourceKey("DCZD"), s.settlementSyncMaxAge, practiceMonthSettlementSourceSQL)
+	case review.isPracticeClass():
+		return readSettlementSourceCoverage(ctx, tx, periodID, s.orderSourceKey("DCZD"), s.settlementSyncMaxAge, practiceClassSettlementSourceSQL)
 	}
 	return readSettlementSourceCoverage(ctx, tx, periodID, s.dcaiSourceKey(), s.settlementSyncMaxAge, settlementSourceCoverageSQL)
 }

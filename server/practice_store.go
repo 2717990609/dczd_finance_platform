@@ -296,7 +296,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err = rows.Err(); err != nil {
 		return paymentDraft{}, nil, err
 	}
-	refunds, err := readPracticeRefunds(ctx, tx, orders)
+	refunds, err := readPracticeRefunds(ctx, tx, summary.PeriodID, orders)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
@@ -327,7 +327,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	for _, member := range members {
 		result.PracticeEnrollments = append(result.PracticeEnrollments, member.ID)
 	}
-	if len(result.Issues) == 0 && hasPracticeReplayDependencies(rule, members) {
+	if result.blockingIssues() == 0 && hasPracticeReplayDependencies(rule, members) {
 		result.practiceReplay = capturePracticeReplayInputs(rule, result, facts, identities, runtime)
 	}
 	if err = attachReportOrganizations(ctx, tx, &result, facts); err != nil {
@@ -338,4 +338,37 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	}
 	digest, err := digestDraft(rule.ID, result, facts)
 	return result, digest, err
+}
+
+func syncPracticeDraftMetadata(ctx context.Context, tx pgx.Tx, periodID, rosterID int64, issues []draftIssue) error {
+	advisories := make([]draftIssue, 0)
+	for _, issue := range issues {
+		if issue.Advisory {
+			advisories = append(advisories, issue)
+		}
+	}
+	_, err := tx.Exec(ctx, `WITH incoming AS MATERIALIZED (
+	 SELECT DISTINCT "factId" AS source_version_id,"enrollmentId" AS practice_enrollment_id,coalesce(component,'') AS component_type,code
+	 FROM jsonb_to_recordset($3::jsonb) AS item("factId" bigint,"enrollmentId" bigint,component text,code text)
+	), existing AS MATERIALIZED (
+	 SELECT id,source_version_id,practice_enrollment_id,component_type,code
+	 FROM calculation_draft_issues WHERE period_id=$1 AND advisory
+	), removed AS (
+	 DELETE FROM calculation_draft_issues WHERE id IN (
+	  SELECT e.id FROM existing e WHERE NOT EXISTS(SELECT 1 FROM incoming i WHERE
+	   (e.source_version_id,e.practice_enrollment_id,e.component_type,e.code)
+	    IS NOT DISTINCT FROM (i.source_version_id,i.practice_enrollment_id,i.component_type,i.code))
+	 ) RETURNING id
+	), added AS (
+	 INSERT INTO calculation_draft_issues(period_id,source_version_id,practice_enrollment_id,component_type,code,advisory)
+	 SELECT $1,i.source_version_id,i.practice_enrollment_id,i.component_type,i.code,true FROM incoming i
+	 WHERE NOT EXISTS(SELECT 1 FROM existing e WHERE
+	  (e.source_version_id,e.practice_enrollment_id,e.component_type,e.code)
+	   IS NOT DISTINCT FROM (i.source_version_id,i.practice_enrollment_id,i.component_type,i.code))
+	 ORDER BY i.source_version_id,i.practice_enrollment_id,i.code RETURNING id
+	)
+	UPDATE calculation_drafts SET practice_roster_id=$2,calculated_at=clock_timestamp()
+	WHERE period_id=$1 AND (practice_roster_id IS DISTINCT FROM $2 OR EXISTS(SELECT 1 FROM removed) OR EXISTS(SELECT 1 FROM added))`,
+		periodID, rosterID, advisories)
+	return err
 }

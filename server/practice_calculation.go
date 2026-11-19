@@ -114,6 +114,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		for _, refund := range purchase.lateRefunds {
 			issue := practiceIssue("PRACTICE_REFUND_AFTER_ROSTER", member, rule, "")
 			issue.FactID = refund.ID
+			issue.Advisory = true
 			draft.Issues = append(draft.Issues, issue)
 		}
 		for _, payment := range payments {
