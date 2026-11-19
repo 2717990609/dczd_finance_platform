@@ -18,13 +18,13 @@ func TestPoolRefundPrefersOriginalLotAndCarriesDeficit(t *testing.T) {
 	if err := account.distribute(1, 90); err != nil {
 		t.Fatal(err)
 	}
-	if err := account.refund(1, 40); err != nil {
+	if err := account.debit(1, 40); err != nil {
 		t.Fatal(err)
 	}
 	if account.balance != 30 || account.lots[0].Remaining != 0 || account.lots[1].Remaining != 30 {
 		t.Fatalf("refund consumed the wrong lots: %+v", account)
 	}
-	if err := account.refund(2, 50); err != nil {
+	if err := account.debit(2, 50); err != nil {
 		t.Fatal(err)
 	}
 	if account.balance != -20 || account.lots[1].Remaining != 0 {

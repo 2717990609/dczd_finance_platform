@@ -92,11 +92,19 @@ onBeforeUnmount(() => { sequence++ })
         <a-alert v-if="!review.ended" type="info" message="账期尚未结束" show-icon/>
         <a-alert v-if="review.draftStale" type="warning" message="试算数据已变化，请重新试算并核对" show-icon/>
         <a-alert v-if="review.laterPoolActivity" type="warning" message="后续账期已结算此团队池，请核对跨期处理" show-icon/>
+        <a-alert v-if="review.practiceDependencies?.length" type="warning" message="本期涉及以下待结算班次或退款账期" show-icon>
+          <template #description>
+            <ul>
+              <li v-for="dependency in review.practiceDependencies" :key="dependency.kind + '/' + dependency.periodId + '/' + dependency.name">{{ dependency.name }}</li>
+            </ul>
+          </template>
+        </a-alert>
         <ul v-if="review.sources?.length" class="review-pools" aria-label="来源同步">
           <li v-for="source in review.sources" :key="source.stream">
             <span>{{ streamLabel(source.stream) }} · {{ coverageStatus[source.status] }}</span>
             <span v-if="source.completedThrough">同步至 {{ formatTime(source.completedThrough) }}</span>
             <span v-if="source.lastSuccessAt">同步完成于 {{ formatTime(source.lastSuccessAt) }}</span>
+            <span v-if="source.status==='OUTSIDE_RANGE' && source.requiredFrom">需覆盖 {{ formatTime(source.requiredFrom) }} 至 {{ formatTime(source.requiredThrough) }}</span>
             <span v-if="source.refundGap">{{ source.refundGap }} 笔退款缺少金额或时间</span>
           </li>
         </ul>
@@ -113,7 +121,8 @@ onBeforeUnmount(() => { sequence++ })
           </ul>
           <div><a-button type="link" @click="emit('show-pools')">查看团队池分配</a-button></div>
         </template>
-        <a-alert v-else-if="!review.laterPoolActivity && !review.draftStale" type="success" message="团队池已对平" show-icon/>
+        <a-alert v-else-if="!review.laterPoolActivity && !review.draftStale" type="success"
+          :message="draft.practiceRefundMonth ? '团队池流水已核对' : '团队池已对平'" show-icon/>
       </template>
     </div>
   </section>

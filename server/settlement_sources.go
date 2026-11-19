@@ -16,12 +16,14 @@ var errSettlementSourceClock = errors.New("来源水位晚于同步完成时间�
 const defaultSettlementSyncMaxAge = time.Hour
 
 type settlementSource struct {
-	Stream    string     `json:"stream"`
-	Status    string     `json:"status"`
-	From      *time.Time `json:"initialFrom"`
-	Through   *time.Time `json:"completedThrough"`
-	LastSync  *time.Time `json:"lastSuccessAt"`
-	RefundGap int        `json:"refundGap"`
+	Stream          string     `json:"stream"`
+	Status          string     `json:"status"`
+	From            *time.Time `json:"initialFrom"`
+	Through         *time.Time `json:"completedThrough"`
+	LastSync        *time.Time `json:"lastSuccessAt"`
+	RefundGap       int        `json:"refundGap"`
+	RequiredFrom    *time.Time `json:"requiredFrom,omitempty"`
+	RequiredThrough *time.Time `json:"requiredThrough,omitempty"`
 }
 
 func (s workspace) dcaiSourceKey() string {
@@ -47,6 +49,19 @@ func lockDraftInputs(ctx context.Context, tx pgx.Tx, periodID int64) error {
 	return err
 }
 
+const settlementSourceStatusSQL = `CASE
+ WHEN r.stream='' THEN 'UNSUPPORTED'
+ WHEN $2='' THEN 'NOT_CONFIGURED'
+ WHEN j.source_key=$2 AND j.status IN ('QUEUED','RUNNING') THEN 'INCOMPLETE'
+ WHEN s.stream IS NULL THEN 'NOT_STARTED'
+ WHEN s.source_key<>$2 OR ws.provider_key IS DISTINCT FROM $2 THEN 'SOURCE_CHANGED'
+ WHEN s.failed THEN 'FAILED'
+ WHEN s.target_through IS NOT NULL THEN 'INCOMPLETE'
+ WHEN s.initial_from>p.from_time OR s.completed_through IS NULL OR s.completed_through<p.through_time THEN 'OUTSIDE_RANGE'
+ WHEN s.completed_through>s.last_success_at THEN 'CLOCK_GAP'
+ WHEN s.last_success_at IS NULL OR least(s.last_success_at,s.completed_through)<clock_timestamp()-$3::interval THEN 'STALE'
+ ELSE 'READY' END`
+
 const settlementSourceCoverageSQL = `WITH scope AS (
  SELECT p.product_id,p.ordinal,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai' AS from_time,
   (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai' AS through_time
@@ -58,18 +73,7 @@ const settlementSourceCoverageSQL = `WITH scope AS (
  JOIN catalog_business_routes r ON r.product_id=p.product_id AND r.observed_at=c.captured_at
  WHERE r.effective_from<p.through_time AND (r.effective_to IS NULL OR r.effective_to>p.from_time)
 )
-SELECT r.stream,CASE
- WHEN r.stream='' THEN 'UNSUPPORTED'
- WHEN $2='' THEN 'NOT_CONFIGURED'
- WHEN j.source_key=$2 AND j.status IN ('QUEUED','RUNNING') THEN 'INCOMPLETE'
- WHEN s.stream IS NULL THEN 'NOT_STARTED'
- WHEN s.source_key<>$2 OR ws.provider_key IS DISTINCT FROM $2 THEN 'SOURCE_CHANGED'
- WHEN s.failed THEN 'FAILED'
- WHEN s.target_through IS NOT NULL THEN 'INCOMPLETE'
- WHEN s.initial_from>p.from_time OR s.completed_through IS NULL OR s.completed_through<p.through_time THEN 'OUTSIDE_RANGE'
- WHEN s.completed_through>s.last_success_at THEN 'CLOCK_GAP'
- WHEN s.last_success_at IS NULL OR least(s.last_success_at,s.completed_through)<clock_timestamp()-$3::interval THEN 'STALE'
- ELSE 'READY' END,
+SELECT r.stream,` + settlementSourceStatusSQL + `,
  s.initial_from,s.completed_through,s.last_success_at,
  CASE WHEN r.stream='VIP_ORDERS' THEN (
   SELECT count(DISTINCT b.order_id) FROM dcai_order_blockers b
@@ -88,22 +92,50 @@ SELECT r.stream,CASE
      WHERE v.source='DCAI' AND v.order_id=b.order_id AND v.kind='ORDER_PAID' AND v.fact->>'domain'='VIP'
     )
    )
- ) ELSE 0 END
+ ) ELSE 0 END,p.from_time,p.through_time
 FROM scope p CROSS JOIN required r JOIN source_write_state ws ON ws.source='DCAI'
 LEFT JOIN dcai_order_sync s ON s.stream=r.stream
 LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream ORDER BY r.stream`
 
-func readSettlementSourceCoverage(ctx context.Context, tx pgx.Tx, periodID int64, provider string, maxAge time.Duration) ([]settlementSource, error) {
+const practiceMonthSettlementSourceSQL = `WITH scope AS (
+ SELECT least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',(
+   SELECT min(v.occurred_at) FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id
+   WHERE a.period_id=p.id AND a.payment_version_id IS NOT NULL
+  ),(
+   SELECT min(older.starts_on)::timestamp AT TIME ZONE 'Asia/Shanghai' FROM periods older
+   WHERE older.product_id=p.product_id AND older.calendar_month IS NOT NULL AND older.starts_on<p.starts_on
+    AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=older.id)
+  ),(
+   SELECT min(v.occurred_at) FROM (` + practiceSettlementPaymentVersionsSQL + `) related
+   JOIN source_order_versions v ON v.id=related.source_version_id
+  )) AS from_time,(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai' AS through_time
+ FROM periods p WHERE p.id=$1 AND EXISTS(
+  SELECT 1 FROM source_mappings m WHERE m.product_id=p.product_id AND m.source='DCZD' AND m.domain='PRACTICE'
+ )
+)
+SELECT r.stream,` + settlementSourceStatusSQL + `,s.initial_from,s.completed_through,s.last_success_at,0,p.from_time,p.through_time
+FROM scope p CROSS JOIN (VALUES ('` + dczdOrderStream + `')) r(stream) JOIN source_write_state ws ON ws.source='DCZD'
+LEFT JOIN dcai_order_sync s ON s.stream=r.stream LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream`
+
+func (s workspace) settlementSources(ctx context.Context, tx pgx.Tx, periodID int64, review settlementReview) ([]settlementSource, error) {
+	if review.practiceRefundMonth {
+		return readSettlementSourceCoverage(ctx, tx, periodID, s.orderSourceKey("DCZD"), s.settlementSyncMaxAge, practiceMonthSettlementSourceSQL)
+	}
+	return readSettlementSourceCoverage(ctx, tx, periodID, s.dcaiSourceKey(), s.settlementSyncMaxAge, settlementSourceCoverageSQL)
+}
+
+func readSettlementSourceCoverage(ctx context.Context, tx pgx.Tx, periodID int64, provider string, maxAge time.Duration, query string) ([]settlementSource, error) {
 	if maxAge == 0 {
 		maxAge = defaultSettlementSyncMaxAge
 	}
-	rows, err := tx.Query(ctx, settlementSourceCoverageSQL, periodID, provider, maxAge)
+	rows, err := tx.Query(ctx, query, periodID, provider, maxAge)
 	if err != nil {
 		return nil, err
 	}
 	var source settlementSource
 	var result []settlementSource
-	_, err = pgx.ForEachRow(rows, []any{&source.Stream, &source.Status, &source.From, &source.Through, &source.LastSync, &source.RefundGap}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&source.Stream, &source.Status, &source.From, &source.Through, &source.LastSync, &source.RefundGap,
+		&source.RequiredFrom, &source.RequiredThrough}, func() error {
 		result = append(result, source)
 		return nil
 	})

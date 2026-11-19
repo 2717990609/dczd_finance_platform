@@ -21,28 +21,35 @@ type settlementPoolGap struct {
 }
 
 type settlementReview struct {
-	Version           int64               `json:"version"`
-	Enabled           bool                `json:"enabled"`
-	Ended             bool                `json:"ended"`
-	IssueCount        int                 `json:"issueCount"`
-	DraftStale        bool                `json:"draftStale"`
-	LaterPoolActivity bool                `json:"laterPoolActivity"`
-	Pools             []settlementPoolGap `json:"pools"`
-	Sources           []settlementSource  `json:"sources,omitempty"`
-	Token             string              `json:"reviewToken,omitempty"`
-	CanConfirm        bool                `json:"canConfirm"`
-	Total             int64               `json:"totalMinor"`
-	Settlement        *settlement         `json:"settlement,omitempty"`
-	mode              string
-	product           int64
-	lastRemoval       int64
-	catalog           bool
-	digest            []byte
+	Version              int64                               `json:"version"`
+	Enabled              bool                                `json:"enabled"`
+	Ended                bool                                `json:"ended"`
+	IssueCount           int                                 `json:"issueCount"`
+	DraftStale           bool                                `json:"draftStale"`
+	LaterPoolActivity    bool                                `json:"laterPoolActivity"`
+	Pools                []settlementPoolGap                 `json:"pools"`
+	Sources              []settlementSource                  `json:"sources,omitempty"`
+	PracticeDependencies []practiceMonthSettlementDependency `json:"practiceDependencies,omitempty"`
+	Token                string                              `json:"reviewToken,omitempty"`
+	CanConfirm           bool                                `json:"canConfirm"`
+	Total                int64                               `json:"totalMinor"`
+	Settlement           *settlement                         `json:"settlement,omitempty"`
+	mode                 string
+	product              int64
+	lastRemoval          int64
+	catalog              bool
+	practiceRefundMonth  bool
+	digest               []byte
+}
+
+func (r settlementReview) requiresReview() bool {
+	return r.catalog || r.practiceRefundMonth
 }
 
 func readSettlementScope(ctx context.Context, tx pgx.Tx, periodID int64, lock bool) (settlementReview, error) {
 	query := `SELECT pro.id,pro.settlement_enabled,
 	 ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')<=CURRENT_TIMESTAMP,pro.period_mode,
+	 pro.period_mode='class' AND p.calendar_month IS NOT NULL,
 	 coalesce(d.version,0),coalesce(d.input_digest,''::bytea),coalesce(d.issue_count,0),
 	 coalesce(d.rule_id IS NULL AND d.catalog_refunds_ready,false),
 	 coalesce(d.total_minor+d.refund_minor+d.correction_minor,0),
@@ -54,7 +61,7 @@ func readSettlementScope(ctx context.Context, tx pgx.Tx, periodID int64, lock bo
 	}
 	review := settlementReview{Pools: []settlementPoolGap{}}
 	err := tx.QueryRow(ctx, query, periodID).Scan(&review.product, &review.Enabled, &review.Ended, &review.mode,
-		&review.Version, &review.digest, &review.IssueCount, &review.catalog, &review.Total, &review.lastRemoval)
+		&review.practiceRefundMonth, &review.Version, &review.digest, &review.IssueCount, &review.catalog, &review.Total, &review.lastRemoval)
 	return review, err
 }
 
@@ -72,7 +79,7 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		if review.Version != version || !review.catalog {
+		if review.Version != version || !review.requiresReview() {
 			return errSettlementStale
 		}
 		settled, err := readSettlement(ctx, tx, periodID)
@@ -83,13 +90,21 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		review.Sources, err = readSettlementSourceCoverage(ctx, tx, periodID, s.dcaiSourceKey(), s.settlementSyncMaxAge)
+		review.Sources, err = s.settlementSources(ctx, tx, periodID, review)
 		if err != nil {
 			return err
 		}
 		review, err = reviewPoolSettlement(ctx, tx, periodID, review)
+		if err != nil {
+			return err
+		}
 		if settlementCoverageError(review.Sources) != nil {
 			review.Token = ""
+		} else if review.practiceRefundMonth {
+			review.PracticeDependencies, err = readPracticeMonthSettlementDependencies(ctx, tx, periodID)
+			if len(review.PracticeDependencies) != 0 {
+				review.Token = ""
+			}
 		}
 		if err != nil || review.Token == "" {
 			return err
@@ -189,10 +204,10 @@ func reviewPoolSettlement(ctx context.Context, tx pgx.Tx, periodID int64, review
 		if stale[key] {
 			unallocated = stage.Balance
 		}
-		if unallocated > 0 || stale[key] {
+		if stale[key] || !review.practiceRefundMonth && unallocated > 0 {
 			review.Pools = append(review.Pools, settlementPoolGap{poolScope: key, Name: stage.Name, Unallocated: max(0, unallocated), Stale: stale[key]})
 		}
-		if stage.current || stage.Balance != stage.balance {
+		if stage.Balance != stage.balance || stage.current && !review.practiceRefundMonth {
 			affected = append(affected, key)
 		}
 	}

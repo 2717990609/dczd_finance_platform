@@ -13,6 +13,123 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func TestPracticeRefundMonthSettlementUsesBoundOrderCoverage(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t), sources: map[string]sourceConfig{
+		"DCZD": {BaseURL: "http://127.0.0.1:9126", Token: "isolated-order-fixture"},
+	}}
+	id := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_CLOSE", Name: "实战班", PeriodMode: "class"}))
+	person := id(s.createPerson(ctx, createPersonInput{Name: "结算人员"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "practice"}))
+	period := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, SettlementMonth: "2026-08", Name: "八月退款"}))
+	if _, err := s.db.Exec(ctx, "UPDATE products SET settlement_enabled=true WHERE id=$1", product); err != nil {
+		t.Fatal(err)
+	}
+	value, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := value.(draftSummary)
+	review := func() settlementReview {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.getSettlementReview(w, httptest.NewRequest(http.MethodGet,
+			fmt.Sprintf("/api/v1/settlement-review?periodId=%d&version=%d", period, draft.Version), nil))
+		var got settlementReview
+		if err := json.Unmarshal(w.Body.Bytes(), &got); w.Code != http.StatusOK || err != nil || len(got.Sources) != 1 {
+			t.Fatalf("expected a DCZD source review: %d %s", w.Code, w.Body.String())
+		}
+		return got
+	}
+	if r := review(); r.Sources[0].Status != "NOT_STARTED" || r.Token != "" {
+		t.Fatalf("a draft without synchronized orders must be blocked: %+v", r)
+	}
+	key := s.orderSourceKey("DCZD")
+	if _, err := s.db.Exec(ctx, `INSERT INTO dcai_order_sync(stream,source_key,initial_from,completed_through,last_success_at,next_updated_at,next_id)
+	 VALUES($1,$2,'2026-08-01',now(),now(),now(),'0')`, dczdOrderStream, key); err != nil {
+		t.Fatal(err)
+	}
+	if r := review(); r.Sources[0].Status != "SOURCE_CHANGED" || r.Token != "" {
+		t.Fatalf("checkpoint alone cannot bind the provider: %+v", r)
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE source_write_state SET provider_key=$1 WHERE source='DCZD'", key); err != nil {
+		t.Fatal(err)
+	}
+	if r := review(); r.Sources[0].Status != "OUTSIDE_RANGE" || r.Token != "" {
+		t.Fatalf("synchronizing from August 1 misses the start of the August account window: %+v", r)
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE dcai_order_sync SET initial_from='2026-07-01',last_success_at=now()-interval '2 hours',completed_through=now()-interval '2 hours'"); err != nil {
+		t.Fatal(err)
+	}
+	if r := review(); r.Sources[0].Status != "STALE" || r.Token != "" {
+		t.Fatalf("stale synchronized orders must block close: %+v", r)
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE dcai_order_sync SET last_success_at=now(),completed_through=now()"); err != nil {
+		t.Fatal(err)
+	}
+	if r := review(); r.Sources[0].Status != "READY" || r.Token == "" || r.Sources[0].Stream != dczdOrderStream {
+		t.Fatalf("expected complete DCZD coverage: %+v", r)
+	}
+	id(s.createPeriod(ctx, createPeriodInput{ProductID: product, SettlementMonth: "2026-06", Name: "六月退款"}))
+	if r := review(); r.Sources[0].Status != "OUTSIDE_RANGE" || r.Token != "" {
+		t.Fatalf("a later checkpoint start must not hide refunds in an earlier open month: %+v", r)
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE dcai_order_sync SET initial_from='2026-05-01'"); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 7, 24, 1, 0, 0, 0, time.UTC)
+	member := practiceEnrollment{SourceEnrollmentID: "10", ParticipantID: "10", MembershipType: 3,
+		CommissionEligible: true, PaidOrderIDs: []string{"10"}, SignedAt: start, ContentHash: "aa"}
+	roster := practiceRoster{Key: "PRACTICE:1:1:6", Hash: "first", SourceVersion: 1,
+		StartsAt: start, ConfirmedAt: start.Add(time.Hour), Enrollments: []practiceEnrollment{member}}
+	amount, happened := int64(1000), start.AddDate(0, 0, 5)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if _, err := storePracticeRoster(ctx, tx, roster); err != nil {
+			return err
+		}
+		_, err := storeSourceFactsFrom(ctx, tx, []sourceFact{{
+			Source: "DCZD", Kind: "REFUND_SUCCEEDED", OrderID: "10", RecordKey: "refund:1", RefundID: "1", Version: "1",
+			Domain: "PRACTICE", SourceKey: "practice", OccurredAt: happened, UpdatedAt: happened, AmountMinor: &amount,
+			RefundsPayment: []sourcePaymentReference{{OrderID: "10", RecordID: "10"}},
+		}}, key)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if r := review(); len(r.PracticeDependencies) != 1 || r.PracticeDependencies[0].Name != roster.Key || r.Token != "" {
+		t.Fatalf("the synchronized refund must expose even a roster without its finance period: %+v", r)
+	}
+	class := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "待结算实战班", Ordinal: 1,
+		StartsOn: "2026-07-24", EndsOn: "2026-07-24", SourcePeriodKey: "PRACTICE:1:1:6"}))
+	if r := review(); len(r.PracticeDependencies) != 1 || r.PracticeDependencies[0].PeriodID != class || r.Token != "" {
+		t.Fatalf("cannot silently exclude the late refund from the still-open class: %+v", r)
+	}
+	roster.SourceVersion, roster.Hash, roster.Enrollments = 2, "new", nil
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storePracticeRoster(ctx, tx, roster)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	value, err = s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft = value.(draftSummary)
+	r := review()
+	if r.Token == "" || len(r.PracticeDependencies) != 0 {
+		t.Fatalf("a refund no longer associated with a qualifying roster must not block close: %+v", r)
+	}
+	verifySettlementHTTP(t, ctx, s, person, product, draft, r.Token)
+}
+
 func TestPracticeRefundUsesFinancialMonthAndKeepsFrozenClass(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
@@ -204,7 +321,10 @@ func TestPracticeRefundUsesFrozenSinglePaymentTerms(t *testing.T) {
 
 func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing.T) {
 	ctx := context.Background()
-	s := workspace{db: integrationDB(t)}
+	s := workspace{db: integrationDB(t), sources: map[string]sourceConfig{
+		"DCZD": {BaseURL: "http://127.0.0.1:9126", Token: "isolated-order-fixture"},
+	}}
+	sourceKey := s.orderSourceKey("DCZD")
 	id := func(value any, err error) int64 {
 		t.Helper()
 		if err != nil {
@@ -216,7 +336,6 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "practice"}))
 	class := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "六月实战班", Ordinal: 1,
 		StartsOn: "2026-06-12", EndsOn: "2026-06-12", SourcePeriodKey: "PRACTICE:1:1:6"}))
-	july := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "七月退款", SettlementMonth: "2026-07"}))
 	august := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "八月退款", SettlementMonth: "2026-08"}))
 	at := time.Date(2026, 5, 10, 1, 0, 0, 0, time.UTC)
 	seller := id(s.createPerson(ctx, createPersonInput{Name: "结算销售"}))
@@ -260,7 +379,7 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 	}
 	store := func(facts ...sourceFact) {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { _, err := storeSourceFacts(ctx, tx, facts); return err }); err != nil {
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { _, err := storeSourceFactsFrom(ctx, tx, facts, sourceKey); return err }); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -323,6 +442,15 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 	if futureDraft.Total != 200 || futureDraft.IssueCount != 0 {
 		t.Fatalf("unexpected later pool credit: %+v", futureDraft)
 	}
+	var poolBasis string
+	if err := s.db.QueryRow(ctx, poolAllocationBasisSQL+"$1", future).Scan(&poolBasis); err != nil {
+		t.Fatal(err)
+	}
+	scope := poolScope{Unit: unit, Scenario: "class", Item: fmt.Sprint(pool)}
+	if _, err := s.savePoolAllocation(ctx, savePoolAllocationInput{PeriodID: future, Version: futureDraft.Version, Basis: poolBasis,
+		poolScope: scope, Retained: 4000}); err != nil {
+		t.Fatal(err)
+	}
 	freeze(futureDraft)
 	if _, err := s.db.Exec(ctx, "UPDATE organization_assignments SET unit_id=$2 WHERE person_id=$1", seller, newDept); err != nil {
 		t.Fatal(err)
@@ -332,7 +460,19 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 	revised := paid("12", 9900)
 	revised.Version, revised.UpdatedAt = "2", at.Add(time.Hour)
 	julyDate := time.Date(2026, 7, 12, 1, 0, 0, 0, time.UTC)
-	store(revised, refund("10", "2", 3000, julyDate), refund("12", "3", 2000, julyDate.Add(time.Hour)))
+	store(revised, refund("10", "2", 3000, julyDate), refund("12", "3", 2000, julyDate.Add(time.Hour)),
+		refund("12", "4", 1000, time.Date(2026, 8, 12, 1, 0, 0, 0, time.UTC)))
+	calculate(august)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		deps, err := readPracticeMonthSettlementDependencies(ctx, tx, august)
+		if err == nil && (len(deps) != 1 || deps[0].Kind != "missing_month" || deps[0].Name != "2026-07 退款账期（待建立）") {
+			t.Fatalf("an unregistered earlier month must still block August: %+v", deps)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	july := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "七月退款", SettlementMonth: "2026-07"}))
 	draft := calculate(july)
 	if draft.Total != -4800 || draft.RefundCount != 6 || draft.IssueCount != 0 {
 		t.Fatalf("whole class must cross the tier using frozen inputs: %+v", draft)
@@ -351,8 +491,7 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 		t.Fatalf("July pool must exclude the September class despite its small ordinal: %+v", julyPool)
 	}
 	var laterActivity bool
-	scope := []poolScope{{Unit: unit, Scenario: "class", Item: fmt.Sprint(pool)}}
-	if err := s.db.QueryRow(ctx, laterSettlementPoolSQL, july, scope).Scan(&laterActivity); err != nil || !laterActivity {
+	if err := s.db.QueryRow(ctx, laterSettlementPoolSQL, july, []poolScope{scope}).Scan(&laterActivity); err != nil || !laterActivity {
 		t.Fatalf("September's confirmed pool must be visible as later activity: %t %v", laterActivity, err)
 	}
 	var lines, related, principal int64
@@ -419,12 +558,20 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 	if repeat := calculate(july); repeat.Version != draft.Version {
 		t.Fatalf("repeat should reuse the same draft: %+v", repeat)
 	}
-	store(refund("12", "4", 1000, time.Date(2026, 8, 12, 1, 0, 0, 0, time.UTC)))
 	if open := calculate(august); open.Total != -400 || open.IssueCount != 0 {
 		t.Fatalf("August draft before July closes: %+v", open)
 	}
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		deps, err := readPracticeMonthSettlementDependencies(ctx, tx, august)
+		if err == nil && (len(deps) != 1 || deps[0].PeriodID != july || deps[0].Kind != "refund_month") {
+			t.Fatalf("settling August before July would skip a relevant earlier tier change: %+v", deps)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	freeze(draft)
-	if septemberPool := readPool(future, futureDraft.Version); septemberPool.Opening != 3800 || septemberPool.Balance != 4000 {
+	if septemberPool := readPool(future, futureDraft.Version); septemberPool.Opening != 3800 || septemberPool.Confirmed != 4000 || septemberPool.Balance != 0 {
 		t.Fatalf("later backfill must not change an already confirmed class's pool balance: %+v", septemberPool)
 	}
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
@@ -453,7 +600,23 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 	if mayPool := readPool(earlier, early.Version); mayPool.Opening != 0 || mayPool.Refund != -50 || mayPool.Balance != -50 {
 		t.Fatalf("the class credit has not entered the May pool: %+v", mayPool)
 	}
-	freeze(early)
+	if _, err := s.db.Exec(ctx, `INSERT INTO dcai_order_sync(stream,source_key,initial_from,completed_through,last_success_at,next_updated_at,next_id)
+	 VALUES($1,$2,'2026-04-01',now(),now(),now(),'0')`, dczdOrderStream, sourceKey); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE products SET settlement_enabled=true WHERE id=$1", product); err != nil {
+		t.Fatal(err)
+	}
+	w := httptest.NewRecorder()
+	s.getSettlementReview(w, httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/v1/settlement-review?periodId=%d&version=%d", earlier, early.Version), nil))
+	var mayReview settlementReview
+	if err := json.Unmarshal(w.Body.Bytes(), &mayReview); w.Code != http.StatusOK || err != nil || mayReview.Token == "" || mayReview.LaterPoolActivity {
+		t.Fatalf("the negative May refund month must be eligible to settle: %d %s", w.Code, w.Body.String())
+	}
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: earlier, ExpectedVersion: early.Version, ReviewToken: mayReview.Token}, "fixture"); err != nil {
+		t.Fatalf("close May through the real settlement transaction: %v", err)
+	}
 	if augustPool := readPool(august, calculate(august).Version); augustPool.Opening != 1350 || augustPool.Refund != -100 || augustPool.Balance != 1250 {
 		t.Fatalf("the June class must offset the deficit before the following months: %+v", augustPool)
 	}
@@ -463,7 +626,7 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 	empty := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "十月退款", SettlementMonth: "2026-10"}))
 	emptyDraft := calculate(empty)
 	freeze(emptyDraft)
-	if item := readPool(empty, emptyDraft.Version); item.Refund != 0 || item.Income != 0 || item.Opening != 1600 || item.Balance != 1600 {
+	if item := readPool(empty, emptyDraft.Version); item.Refund != 0 || item.Income != 0 || item.Opening != -2400 || item.Balance != -2400 {
 		t.Fatalf("an empty refund month still carries the confirmed pool balance: %+v", item)
 	}
 	if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", future); err == nil {

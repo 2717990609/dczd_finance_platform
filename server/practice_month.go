@@ -22,26 +22,10 @@ const practiceRefundMonthEventsSQL = `SELECT v.id,coalesce(origin.id,0),v.fact,c
    AND v2.fact->>'refundId'=v.fact->>'refundId' AND v2.record_key<>v.record_key
    AND NOT EXISTS(SELECT 1 FROM source_order_versions newer
     WHERE newer.source='DCZD' AND newer.kind='REFUND_SUCCEEDED' AND newer.record_key=v2.record_key
-     AND (newer.updated_at,newer.id)>(v2.updated_at,v2.id)))
- FROM periods target JOIN source_mappings m ON m.product_id=target.product_id AND m.source='DCZD' AND m.domain='PRACTICE'
- JOIN source_order_versions v ON v.source=m.source AND v.fact->>'domain'=m.domain AND v.fact->>'sourceKey'=m.source_key
-  AND v.kind='REFUND_SUCCEEDED' AND v.occurred_at<=CURRENT_TIMESTAMP
- LEFT JOIN periods origin ON origin.product_id=target.product_id AND origin.calendar_month IS NOT NULL
-  AND v.occurred_at>=origin.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
-  AND v.occurred_at<(origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
-` + refundPostingHistorySQL + `
- WHERE target.id=$1 AND target.calendar_month IS NOT NULL AND (NOT history.booked OR history.changed)
-  AND ` + latestPracticeRefund + `
-  AND (origin.id=target.id OR (
-   (origin.id IS NULL AND v.occurred_at<target.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
-    OR EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=origin.id))
-   AND (history.reserved_period=target.id OR (history.reserved_period IS NULL
-    AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN target.starts_on AND target.ends_on))))
+     AND (newer.updated_at,newer.id)>(v2.updated_at,v2.id)))` + practiceRefundMonthFromSQL + `
+ WHERE target.id=$1 AND target.calendar_month IS NOT NULL` + practiceRefundMonthRoutingSQL + `
   AND EXISTS(
-   SELECT 1 FROM (
-    SELECT v.order_id AS id
-    UNION SELECT ref->>'orderId' FROM jsonb_array_elements(v.fact->'refundsPayment') ref
-   ) keys
+   SELECT 1 FROM (` + practiceRefundOrderKeysSQL + `) keys
    JOIN source_order_versions paid ON paid.order_id=keys.id AND paid.source='DCZD' AND paid.kind='ORDER_PAID'
    JOIN calculation_draft_performance a ON a.source_version_id=paid.id AND a.payment_version_id IS NULL
    JOIN settlements final ON final.period_id=a.period_id
@@ -50,6 +34,27 @@ const practiceRefundMonthEventsSQL = `SELECT v.id,coalesce(origin.id,0),v.fact,c
    WHERE paid.fact->>'domain'='PRACTICE' AND d.practice_roster_id IS NOT NULL
   )
  ORDER BY v.occurred_at,v.fact->>'refundId',v.record_key,v.id LIMIT $2`
+
+const practiceRefundOrderKeysSQL = `SELECT v.order_id AS id
+ UNION SELECT ref->>'orderId' FROM jsonb_array_elements(v.fact->'refundsPayment') ref`
+
+const practiceRefundMonthFromSQL = ` FROM periods target
+ JOIN source_mappings m ON m.product_id=target.product_id AND m.source='DCZD' AND m.domain='PRACTICE'
+ JOIN source_order_versions v ON v.source=m.source AND v.fact->>'domain'=m.domain AND v.fact->>'sourceKey'=m.source_key
+  AND v.kind='REFUND_SUCCEEDED' AND v.occurred_at<=CURRENT_TIMESTAMP
+  AND v.occurred_at<(target.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
+ LEFT JOIN periods origin ON origin.product_id=target.product_id AND origin.calendar_month IS NOT NULL
+  AND v.occurred_at>=origin.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
+  AND v.occurred_at<(origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
+` + refundPostingHistorySQL
+
+const practiceRefundMonthRoutingSQL = ` AND (NOT history.booked OR history.changed)
+  AND ` + latestPracticeRefund + `
+  AND (origin.id=target.id OR (
+   (origin.id IS NULL AND v.occurred_at<target.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
+    OR EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=origin.id))
+   AND (history.reserved_period=target.id OR (history.reserved_period IS NULL
+    AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN target.starts_on AND target.ends_on))))`
 
 func computePracticeRefundMonth(ctx context.Context, tx pgx.Tx, id int64, window periodWindow) (paymentDraft, []byte, error) {
 	var draft paymentDraft

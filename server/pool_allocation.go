@@ -45,7 +45,7 @@ func (a *poolAccount) credit(id, amount int64) error {
 	return nil
 }
 
-func (a *poolAccount) refund(original, amount int64) error {
+func (a *poolAccount) debit(original, amount int64) error {
 	index, found := a.indices[original]
 	// A late-synced refund may belong to a month before the originating
 	// class was booked. Its debit starts before that income is available.

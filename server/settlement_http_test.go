@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func verifyVIPSettlementHTTP(t *testing.T, ctx context.Context, s workspace, personID, productID int64, draft draftSummary, token string) settlement {
+func verifySettlementHTTP(t *testing.T, ctx context.Context, s workspace, personID, productID int64, draft draftSummary, token string) settlement {
 	t.Helper()
 	router := http.NewServeMux()
 	for _, route := range s.routes() {

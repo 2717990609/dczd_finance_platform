@@ -103,19 +103,19 @@ const poolEntriesSQL = `WITH scope AS (
  ) a ON true
 ), entries AS (
  SELECT l.unit,l.item,l.scenario,l.name,l.period_id,l.seq,l.id AS source_id,l.amount_minor,
-  0 AS kind,l.occurred_at,l.id AS sort_id FROM lines l WHERE l.seq IS NOT NULL
+  0 AS kind,l.occurred_at,l.id AS sort_id,false AS practice_distribution FROM lines l WHERE l.seq IS NOT NULL
  UNION ALL
  SELECT l.unit,l.item,l.scenario,l.name,r.period_id,r.seq,
-  CASE WHEN r.practice AND (l.seq IS NULL OR l.seq>r.seq) THEN 0 ELSE l.id END,r.amount_minor,1,v.occurred_at,r.id
+  CASE WHEN r.practice AND (l.seq IS NULL OR l.seq>r.seq) THEN 0 ELSE l.id END,r.amount_minor,1,v.occurred_at,r.id,false
  FROM refunds r
  JOIN lines l ON l.id=r.original_line_id JOIN source_order_versions v ON v.id=r.refund_source_version_id
  UNION ALL
- SELECT l.unit,l.item,l.scenario,l.name,a.period_id,p.seq,l.id,-f.amount_minor,2,s.confirmed_at,sh.id
+ SELECT l.unit,l.item,l.scenario,l.name,a.period_id,p.seq,l.id,-f.amount_minor,2,s.confirmed_at,sh.id,p.practice
  FROM scope p JOIN settlements s ON s.period_id=p.id JOIN monthly_pool_allocations a ON a.period_id=p.id AND a.draft_version=s.draft_version
  JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
  JOIN monthly_pool_allocation_funding f ON f.share_id=sh.id JOIN lines l ON l.id=f.source_line_id
 )
-SELECT unit,item,scenario,name,period_id,source_id,amount_minor,kind FROM entries
+SELECT unit,item,scenario,name,period_id,source_id,amount_minor,kind,practice_distribution FROM entries
 ORDER BY seq,kind,occurred_at,sort_id,source_id`
 
 const poolEligibilitySQL = `SELECT DISTINCT l.id,m.person_id,person.name FROM unnest($1::bigint[]) source(id)
@@ -169,7 +169,8 @@ func readPoolStages(ctx context.Context, tx pgx.Tx, periodID int64) (map[poolSco
 	var name string
 	var postingPeriod, source, amount int64
 	var kind int
-	_, err = pgx.ForEachRow(rows, []any{&scope.Unit, &scope.Item, &scope.Scenario, &name, &postingPeriod, &source, &amount, &kind}, func() error {
+	var practiceDistribution bool
+	_, err = pgx.ForEachRow(rows, []any{&scope.Unit, &scope.Item, &scope.Scenario, &name, &postingPeriod, &source, &amount, &kind, &practiceDistribution}, func() error {
 		a := states[scope]
 		if a == nil {
 			a = &poolStage{poolDraftItem: poolDraftItem{poolScope: scope, Shares: []poolAllocationShare{}, Members: []poolMember{}}, poolAccount: newPoolAccount()}
@@ -188,14 +189,21 @@ func readPoolStages(ctx context.Context, tx pgx.Tx, periodID int64) (map[poolSco
 				a.Income, err = addMinor(a.Income, amount)
 			}
 		case 1:
-			if err := a.refund(source, -amount); err != nil {
+			if err := a.debit(source, -amount); err != nil {
 				return err
 			}
 			if postingPeriod == periodID {
 				a.Refund, err = addMinor(a.Refund, amount)
 			}
 		case 2:
-			if err := a.distribute(source, -amount); err != nil {
+			// A backdated refund may reduce the lot that funded an already
+			// confirmed distribution. Retain the payment and carry the deficit.
+			if practiceDistribution {
+				err = a.debit(source, -amount)
+			} else {
+				err = a.distribute(source, -amount)
+			}
+			if err != nil {
 				return err
 			}
 			if postingPeriod == periodID {

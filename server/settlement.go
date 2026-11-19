@@ -85,12 +85,11 @@ func (s workspace) confirmSettlement(ctx context.Context, req confirmSettlementI
 	}
 	var result settlement
 	var err error
-	sourceKey := s.dcaiSourceKey()
 	// A competing confirmation may win after this transaction obtains its snapshot.
 	for attempt := 0; attempt < 3; attempt++ {
 		err = pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
 			var applyErr error
-			result, applyErr = confirmPeriod(ctx, tx, req, strings.TrimSpace(actor), sourceKey, s.settlementSyncMaxAge)
+			result, applyErr = s.confirmPeriod(ctx, tx, req, strings.TrimSpace(actor))
 			return applyErr
 		})
 		var dbErr *pgconn.PgError
@@ -101,7 +100,7 @@ func (s workspace) confirmSettlement(ctx context.Context, req confirmSettlementI
 	return settlement{}, conflict
 }
 
-func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, actor, sourceKey string, maxSyncAge time.Duration) (settlement, error) {
+func (s workspace) confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, actor string) (settlement, error) {
 	scope, err := readSettlementScope(ctx, tx, req.PeriodID, true)
 	if err != nil {
 		return settlement{}, err
@@ -111,7 +110,7 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 			return settlement{}, err
 		}
 		// The workbench can only confirm scopes with a supported provider coverage check.
-		if !scope.catalog {
+		if !scope.requiresReview() {
 			return settlement{}, errSettlementUnsupported
 		}
 	}
@@ -131,7 +130,7 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 	if !scope.Ended {
 		return settlement{}, errSettlementOpen
 	}
-	if scope.mode == "class" {
+	if scope.mode == "class" && !scope.practiceRefundMonth {
 		return settlement{}, errPracticeSettlementUnavailable
 	}
 	if scope.Version != req.ExpectedVersion {
@@ -140,20 +139,29 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 	if scope.IssueCount != 0 {
 		return settlement{}, errSettlementPending
 	}
-	if !scope.catalog && req.ReviewToken != "" {
+	if !scope.requiresReview() && req.ReviewToken != "" {
 		return settlement{}, errSettlementStale
 	}
 	if err := lockDraftInputs(ctx, tx, req.PeriodID); err != nil {
 		return settlement{}, err
 	}
 	var sources []settlementSource
-	if scope.catalog {
-		sources, err = readSettlementSourceCoverage(ctx, tx, req.PeriodID, sourceKey, maxSyncAge)
+	if scope.requiresReview() {
+		sources, err = s.settlementSources(ctx, tx, req.PeriodID, scope)
 		if err != nil {
 			return settlement{}, err
 		}
 		if err := settlementCoverageError(sources); err != nil {
 			return settlement{}, err
+		}
+	}
+	if scope.practiceRefundMonth {
+		dependencies, err := readPracticeMonthSettlementDependencies(ctx, tx, req.PeriodID)
+		if err != nil {
+			return settlement{}, err
+		}
+		if len(dependencies) != 0 {
+			return settlement{}, errPracticeMonthSettlementDependency
 		}
 	}
 	if err := verifySettlementDraft(ctx, tx, req.PeriodID, scope); err != nil {
@@ -164,7 +172,7 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 	} else if pending {
 		return settlement{}, errDraftChanged
 	}
-	if scope.catalog {
+	if scope.requiresReview() {
 		review, err := reviewPoolSettlement(ctx, tx, req.PeriodID, scope)
 		if err != nil {
 			return settlement{}, err
@@ -179,7 +187,7 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 			return settlement{}, errSettlementStale
 		}
 	}
-	if err := verifySettlementSourceDeadline(ctx, tx, sources, maxSyncAge); err != nil {
+	if err := verifySettlementSourceDeadline(ctx, tx, sources, s.settlementSyncMaxAge); err != nil {
 		return settlement{}, err
 	}
 	result := settlement{PeriodID: req.PeriodID, DraftVersion: req.ExpectedVersion, ConfirmedBy: actor, reviewToken: req.ReviewToken}
@@ -197,7 +205,7 @@ func verifySettlementDraft(ctx context.Context, tx pgx.Tx, periodID int64, scope
 	if err != nil {
 		return err
 	}
-	if summary.Catalog != scope.catalog {
+	if summary.Catalog != scope.catalog || summary.PracticeRefundMonth != scope.practiceRefundMonth {
 		return errSettlementStale
 	}
 	current, digest, err := computeDraft(ctx, tx, summary, window, rules)

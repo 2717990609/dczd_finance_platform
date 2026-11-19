@@ -436,7 +436,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatalf("a different allocation must invalidate a reviewed draft even when the total is unchanged: %v", err)
 	}
 	secondReview := review(finished)
-	closed := verifyVIPSettlementHTTP(t, ctx, s, alice.ID, productID, finished, secondReview.Token)
+	closed := verifySettlementHTTP(t, ctx, s, alice.ID, productID, finished, secondReview.Token)
 	if after := review(finished); after.Settlement == nil || after.Settlement.ID != closed.ID || after.Token != "" {
 		t.Fatalf("closed review should reference the existing settlement: %+v", after)
 	}

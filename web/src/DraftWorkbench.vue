@@ -25,6 +25,7 @@ const options = computed(() => props.periods.map(period => ({
 })))
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
 const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable)
+const hasSettlementReview = computed(() => draft.value?.settlementReviewAvailable ?? (draft.value?.catalog && draft.value?.refundsReady))
 const matchingOnly = computed(() => hasMatching.value && !selectedPeriod.value?.catalogDraftAvailable)
 const newerDraft = computed(() => refreshStatus.value?.version > (draft.value?.version || 0))
 const componentLabel = code => {
@@ -260,12 +261,12 @@ async function loadMore(section, cursorName) {
     <a-tab-pane key="detail" tab="明细"/>
     <a-tab-pane v-if="reportDimensions.length" key="report" tab="业绩与分润"/>
     <a-tab-pane v-if="draft.poolAllocationAvailable" key="pools" tab="团队池分配"/>
-    <a-tab-pane v-if="draft.catalog && draft.refundsReady" key="review" tab="结算核对"/>
+    <a-tab-pane v-if="hasSettlementReview" key="review" tab="结算核对"/>
     <a-tab-pane v-if="hasMatching" key="matching" tab="订单规则匹配"/>
   </a-tabs>
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney"/>
   <DraftPoolAllocations v-if="draft?.poolAllocationAvailable && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
-  <DraftSettlementReview v-if="draft?.catalog && view==='review'" :draft="draft" :period="selectedPeriod" :api="api" :format-money="formatMoney"
+  <DraftSettlementReview v-if="hasSettlementReview && view==='review'" :draft="draft" :period="selectedPeriod" :api="api" :format-money="formatMoney"
     :format-time="formatTime" :source-streams="sourceStreams" @show-pools="view='pools'" @show-issues="view='detail'" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">
   <section v-if="!draft.practiceRefundMonth" class="records">
