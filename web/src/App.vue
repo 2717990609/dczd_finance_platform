@@ -1,12 +1,14 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  AppstoreOutlined, CalendarOutlined, CloudSyncOutlined, DatabaseOutlined,
+  AppstoreOutlined, CalculatorOutlined, CalendarOutlined, CloudSyncOutlined, DatabaseOutlined,
   FileSearchOutlined, LinkOutlined, PlusOutlined, ProfileOutlined, ReloadOutlined, TeamOutlined,
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
+import DraftWorkbench from './DraftWorkbench.vue'
 
 const navigation = [
+  {key:'settlement', title:'分润试算', icon:CalculatorOutlined},
   {key:'products', title:'产品目录', icon:AppstoreOutlined, description:'维护核算产品，绑定子系统的原始商品或业务标识。'},
   {key:'periods', title:'核算期次', icon:CalendarOutlined, description:'设置实际开班或结算窗口，查看各期匹配的规则。'},
   {key:'rules', title:'规则配置', icon:ProfileOutlined, description:'组合分润组件，并指定适用期次、起始期数或产品默认范围。'},
@@ -39,6 +41,11 @@ const components = [
 const productOptions = computed(() => data.value.products.map(p => ({value:p.id,label:p.name})))
 const peopleOptions = computed(() => data.value.people.map(p => ({value:p.id,label:p.name})))
 const periodOptions = computed(() => data.value.periods.filter(p => p.productId === draft.value.productId).map(p => ({value:p.id,label:p.name})))
+const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
+const calendarPeriods = computed(() => {
+  const ids = new Set(data.value.products.filter(p => p.periodMode === 'calendar').map(p => p.id))
+  return data.value.periods.filter(p => ids.has(p.productId))
+})
 const enabledSources = computed(() => data.value.sources.filter(s => s.configured).length)
 const sourceLabel = key => sources.find(s => s.value === key)?.label.split(' · ')[0] || key
 const titles = {product:'新增产品',mapping:'添加来源映射',period:'新建期次',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
@@ -73,7 +80,11 @@ const columns = computed(() => {
 async function api(path, options) {
   const response = await fetch('/api/v1' + path, {...options, headers:{'Content-Type':'application/json'}})
   const body = await response.json().catch(() => null)
-  if (!response.ok) throw new Error(body?.message || '接口暂不可用，请检查本地服务')
+  if (!response.ok) {
+    const error = new Error(body?.message || '接口暂不可用，请检查本地服务')
+    error.status = response.status
+    throw error
+  }
   return body
 }
 async function refresh() {
@@ -84,7 +95,7 @@ async function refresh() {
   if (sourceFilter.value) params.set('source',sourceFilter.value)
   if (filter.value.trim()) params.set('orderId',filter.value.trim())
   if (olderThan.value) params.set('beforeId',olderThan.value)
-  const sections = {products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules'], orders:['orders','sources'], people:['people','identities']}
+  const sections = {settlement:['products','periods'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules'], orders:['orders','sources'], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
   const entries = Object.entries(requests)
   const results = await Promise.allSettled(entries.map(([,url]) => api(url)))
@@ -121,7 +132,7 @@ function open(kind, row) {
   notice.value = ''
   drawer.value = kind
   draft.value = {
-    periodMode:'class',source:row?.source || 'DCZD',stream:row?.source === 'DCAI' && String(row.domain).includes('HEALTH') ? 'HEALTH_IDENTITY_ORDERS' : 'VIP_ORDERS',
+    periodMode:'class',cycleStartDay:25,source:row?.source || 'DCZD',stream:row?.source === 'DCAI' && String(row.domain).includes('HEALTH') ? 'HEALTH_IDENTITY_ORDERS' : 'VIP_ORDERS',
     orderId:row?.orderId || '',scope:'default',components:[{type:'sales',mode:'rate',amount:0}],
   }
 }
@@ -131,13 +142,20 @@ function must(value, msg = '请补齐必填内容') {
   return value
 }
 function bodyFor(kind,f) {
-  if (kind === 'product') return {code:must(f.code),name:must(f.name),periodMode:f.periodMode}
+  if (kind === 'product') return {code:must(f.code),name:must(f.name),periodMode:f.periodMode,...(f.periodMode==='calendar' ? {cycleStartDay:must(f.cycleStartDay)} : {})}
   if (kind === 'mapping') return {productId:must(f.productId),source:f.source,domain:must(f.domain),sourceKey:must(f.sourceKey)}
-  if (kind === 'period') return {productId:must(f.productId),name:must(f.name),ordinal:must(f.ordinal),startsOn:must(f.startsOn),endsOn:must(f.endsOn)}
+  if (kind === 'period') {
+    const productId = must(f.productId)
+    if (selectedProduct.value?.cycleStartDay) {
+      const settlementMonth = must(f.settlementMonth)
+      return {productId, settlementMonth, name:f.name?.trim() || settlementMonth+' 账期'}
+    }
+    return {productId,name:must(f.name),ordinal:must(f.ordinal),startsOn:must(f.startsOn),endsOn:must(f.endsOn)}
+  }
   if (kind === 'rule') return {productId:must(f.productId),label:must(f.label),
     ...(f.scope === 'period' ? {periodId:must(f.periodId)} : {}),
     ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal)} : {}),
-    components:f.components.map(c => ({type:must(c.type),mode:c.mode,value:Math.round(Number(must(c.amount,'请填写每个组件的比例或金额'))*100)})),
+    components:f.components.map(c => ({type:must(c.type),mode:c.mode,value:Math.round(Number(must(c.amount,'请填写每个组件的比例或金额'))*100),...(c.sourceRole?.trim() ? {sourceRole:c.sourceRole.trim().toUpperCase()} : {})})),
   }
   if (kind === 'person') return {name:must(f.name)}
   if (kind === 'identity') return {personId:must(f.personId),source:f.source,externalId:must(f.externalId),validFrom:new Date(must(f.validFrom)+'T00:00:00+08:00').toISOString()}
@@ -181,6 +199,8 @@ async function save() {
     <div class="surface">
       <header class="topbar"><div class="path">财务工作台 <i>/</i> <strong>{{ active.title }}</strong></div><a-button type="text" :loading="loading" @click="refresh"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新</a-button></header>
       <main class="workspace-content">
+        <DraftWorkbench v-if="current==='settlement'" :periods="calendarPeriods" :api="api" :format-money="formatMoney" :format-time="formatTime" />
+        <template v-else>
         <section class="heading">
           <div><h1>{{ active.title }}</h1><p>{{ active.description }}</p></div>
           <a-button type="primary" size="large" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
@@ -231,6 +251,7 @@ async function save() {
           </div>
           <div v-if="current==='orders'&&mainRows.length" class="paging"><a-button :disabled="!pageStack.length||loading" @click="prevOrders">上一页</a-button><a-button :disabled="mainRows.length<50||loading" @click="nextOrders">下一页</a-button></div>
         </section>
+        </template>
       </main>
     </div>
   </div>
@@ -241,6 +262,7 @@ async function save() {
         <a-form-item label="产品名称" required><a-input v-model:value="draft.name" aria-label="产品名称" :maxlength="80"/></a-form-item>
         <a-form-item label="产品编码" required><a-input v-model:value="draft.code" aria-label="产品编码" :maxlength="48"/></a-form-item>
         <a-form-item label="核算方式"><a-select v-model:value="draft.periodMode" aria-label="核算方式" :options="[{value:'class',label:'实际开班'},{value:'calendar',label:'固定账期'}]"/></a-form-item>
+        <a-form-item v-if="draft.periodMode==='calendar'" label="每月开始日" extra="填 1 表示自然月。填 25 表示上月 25 日至本月 24 日。" required><a-input-number v-model:value="draft.cycleStartDay" aria-label="每月开始日" :min="1" :max="28" :precision="0"/></a-form-item>
       </template>
       <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="productOptions"/></a-form-item>
       <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" label="来源系统"><a-select v-model:value="draft.source" aria-label="来源系统" :options="sources"/></a-form-item>
@@ -249,9 +271,15 @@ async function save() {
         <a-form-item label="源产品标识" required><a-input v-model:value="draft.sourceKey" aria-label="源产品标识"/></a-form-item>
       </template>
       <template v-if="drawer==='period'">
-        <a-form-item label="期次名称" required><a-input v-model:value="draft.name" aria-label="期次名称"/></a-form-item>
-        <a-form-item label="期数" required><a-input-number v-model:value="draft.ordinal" aria-label="期数" :min="1" :precision="0"/></a-form-item>
-        <div class="field-grid"><a-form-item label="开始日期" required><a-input v-model:value="draft.startsOn" aria-label="开始日期" type="date"/></a-form-item><a-form-item label="结束日期" required><a-input v-model:value="draft.endsOn" aria-label="结束日期" type="date"/></a-form-item></div>
+        <template v-if="selectedProduct?.cycleStartDay">
+          <a-form-item label="结算月份" required><a-input v-model:value="draft.settlementMonth" aria-label="结算月份" type="month"/></a-form-item>
+          <a-form-item label="账期名称"><a-input v-model:value="draft.name" aria-label="账期名称" placeholder="默认使用结算月份"/></a-form-item>
+        </template>
+        <template v-else>
+          <a-form-item label="期次名称" required><a-input v-model:value="draft.name" aria-label="期次名称"/></a-form-item>
+          <a-form-item label="期数" required><a-input-number v-model:value="draft.ordinal" aria-label="期数" :min="1" :precision="0"/></a-form-item>
+          <div class="field-grid"><a-form-item label="开始日期" required><a-input v-model:value="draft.startsOn" aria-label="开始日期" type="date"/></a-form-item><a-form-item label="结束日期" required><a-input v-model:value="draft.endsOn" aria-label="结束日期" type="date"/></a-form-item></div>
+        </template>
       </template>
       <template v-if="drawer==='rule'">
         <a-form-item label="规则名称" required><a-input v-model:value="draft.label" aria-label="规则名称"/></a-form-item>
@@ -259,11 +287,16 @@ async function save() {
         <a-form-item v-if="draft.scope==='period'" label="指定期次" required><a-select v-model:value="draft.periodId" aria-label="指定期次" :options="periodOptions"/></a-form-item>
         <a-form-item v-if="draft.scope==='ordinal'" label="起始期数" required><a-input-number v-model:value="draft.fromOrdinal" aria-label="起始期数" :min="1" :precision="0"/></a-form-item>
         <h3 class="form-subhead">分润组件</h3>
-        <div v-for="(c,i) in draft.components" :key="i" class="component-row">
+        <div v-for="(c,i) in draft.components" :key="i" class="component-editor">
+          <div class="component-row">
           <a-select v-model:value="c.type" :aria-label="'组件 '+(i+1)" :options="components.filter(x=>x.value===c.type||!draft.components.some(y=>y.type===x.value))"/>
           <a-select v-model:value="c.mode" :aria-label="'计算方式 '+(i+1)" :options="[{value:'rate',label:'比例 %'},{value:'fixed',label:'金额 ¥'}]"/>
           <a-input-number v-model:value="c.amount" :aria-label="'组件参数 '+(i+1)" :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
           <a-button v-if="draft.components.length>1" type="link" danger @click="draft.components.splice(i,1)">移除</a-button>
+          </div>
+          <a-form-item v-if="['sales','referral'].includes(c.type)" :label="'分项 '+(i+1)+' 的来源角色'">
+            <a-input v-model:value="c.sourceRole" :aria-label="'来源角色 '+(i+1)" placeholder="如 LOCK_SALES_USER 或 DIRECT_REFERRER" :maxlength="64"/>
+          </a-form-item>
         </div>
         <a-button v-if="draft.components.length<4" type="dashed" block @click="draft.components.push({type:components.find(x=>!draft.components.some(y=>x.value===y.type)).value,mode:'rate',amount:0})">添加组件</a-button>
       </template>

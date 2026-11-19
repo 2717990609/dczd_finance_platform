@@ -23,9 +23,10 @@ import (
 var schema string
 
 type component struct {
-	Type  string `json:"type"`
-	Mode  string `json:"mode"`
-	Value int64  `json:"value"`
+	Type       string `json:"type"`
+	Mode       string `json:"mode"`
+	Value      int64  `json:"value"`
+	SourceRole string `json:"sourceRole,omitempty"`
 }
 
 var invalid = errors.New("请核对名称、范围与必填配置")
@@ -42,7 +43,7 @@ func validateComponents(items []component) error {
 		default:
 			return invalid
 		}
-		if seen[c.Type] || c.Value < 0 {
+		if seen[c.Type] || c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) {
 			return invalid
 		}
 		seen[c.Type] = true
@@ -94,6 +95,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/orders", Handler: s.orders},
 		{Method: http.MethodPost, Path: "/api/v1/orders/pull", Handler: submit(s.pullOrder)},
 		{Method: http.MethodGet, Path: "/api/v1/sources", Handler: s.sourceStatuses},
+		{Method: http.MethodGet, Path: "/api/v1/drafts", Handler: s.getDraft},
+		{Method: http.MethodPost, Path: "/api/v1/drafts", Handler: submit(s.recalculateDraft)},
 	}
 }
 
@@ -127,6 +130,10 @@ func respond(w http.ResponseWriter, result any, err error) {
 	switch {
 	case errors.Is(err, invalid):
 		code, message = 400, err.Error()
+	case errors.Is(err, errDraftScope), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit):
+		code, message = http.StatusConflict, err.Error()
+	case errors.Is(err, errCalculationOverflow):
+		code, message = http.StatusConflict, "试算金额超出范围，请核对原单和规则"
 	case errors.Is(err, conflict):
 		code, message = 409, err.Error()
 	case errors.Is(err, pgx.ErrNoRows):
@@ -135,7 +142,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = 409, "来源接口尚未配置"
 	case errors.Is(err, errSourceRead):
 		code, message = 502, "来源读取失败，请核对接口或订单号"
-	case errors.As(err, &dbErr) && dbErr.Code == "23505":
+	case errors.As(err, &dbErr) && (dbErr.Code == "23505" || dbErr.Code == "40001"):
 		code, message = 409, conflict.Error()
 	case errors.As(err, &dbErr) && (dbErr.Code == "23503" || dbErr.Code == "23514"):
 		code, message = 400, invalid.Error()
@@ -152,18 +159,17 @@ func (s workspace) list(query string) http.HandlerFunc {
 }
 
 const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
- (SELECT id,code,name,period_mode AS "periodMode" FROM products ORDER BY id DESC LIMIT 500) p`
+ (SELECT id,code,name,period_mode AS "periodMode",cycle_start_day AS "cycleStartDay" FROM products ORDER BY id DESC LIMIT 500) p`
 const mappingsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT m.id,m.product_id AS "productId",p.name AS "productName",m.source,m.domain,m.source_key AS "sourceKey"
  FROM source_mappings m JOIN products p ON p.id=m.product_id ORDER BY m.id DESC LIMIT 500) p`
 const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
  (SELECT p.id,p.product_id AS "productId",pro.name AS "productName",p.name,p.ordinal,
- p.starts_on AS "startsOn",p.ends_on AS "endsOn",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
- FROM periods p JOIN products pro ON pro.id=p.product_id LEFT JOIN LATERAL (
-  SELECT rv.version,rv.label FROM rule_versions rv WHERE rv.product_id=p.product_id AND
+ p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
+ FROM periods p JOIN products pro ON pro.id=p.product_id LEFT JOIN LATERAL (` + matchingRuleSQL + `) rule ON true ORDER BY p.id DESC LIMIT 500) a`
+const matchingRuleSQL = `SELECT rv.id,rv.version,rv.label,rv.components FROM rule_versions rv WHERE rv.product_id=p.product_id AND
   (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal)))
-  ORDER BY (rv.period_id IS NOT NULL) DESC,rv.from_ordinal DESC NULLS LAST,rv.version DESC LIMIT 1
- ) rule ON true ORDER BY p.id DESC LIMIT 500) a`
+  ORDER BY (rv.period_id IS NOT NULL) DESC,rv.from_ordinal DESC NULLS LAST,rv.version DESC LIMIT 1`
 const rulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
  (SELECT rv.id,rv.product_id AS "productId",p.name AS "productName",rv.version,rv.label,
  rv.from_ordinal AS "fromOrdinal",rv.period_id AS "periodId",pr.name AS "periodName",rv.components
@@ -176,9 +182,24 @@ const identitiesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC)
  FROM identity_mappings i JOIN people p ON p.id=i.person_id ORDER BY i.id DESC LIMIT 500) a`
 
 func textOK(s string, max int) bool { return strings.TrimSpace(s) != "" && len([]rune(s)) <= max }
-func validSource(s string) bool     { return s == "DCAI" || s == "DCZD" || s == "DCJK" }
+func validSourceRole(role string) bool {
+	if len(role) == 0 || len(role) > 64 {
+		return false
+	}
+	for _, ch := range role {
+		if (ch < 'A' || ch > 'Z') && (ch < '0' || ch > '9') && ch != '_' {
+			return false
+		}
+	}
+	return true
+}
 
-type createProductInput struct{ Code, Name, PeriodMode string }
+func validSource(s string) bool { return s == "DCAI" || s == "DCZD" || s == "DCJK" }
+
+type createProductInput struct {
+	Code, Name, PeriodMode string
+	CycleStartDay          *int
+}
 type createMappingInput struct {
 	ProductID                 int64
 	Source, Domain, SourceKey string
@@ -186,6 +207,7 @@ type createMappingInput struct {
 type createPeriodInput struct {
 	ProductID              int64
 	Name, StartsOn, EndsOn string
+	SettlementMonth        string
 	Ordinal                int
 }
 type publishRuleInput struct {
@@ -208,10 +230,11 @@ func (s workspace) insert(ctx context.Context, stmt string, args ...any) (any, e
 }
 
 func (s workspace) createProduct(ctx context.Context, p createProductInput) (any, error) {
-	if !textOK(p.Code, 48) || !textOK(p.Name, 80) || (p.PeriodMode != "class" && p.PeriodMode != "calendar") {
+	if !textOK(p.Code, 48) || !textOK(p.Name, 80) || (p.PeriodMode != "class" && p.PeriodMode != "calendar") ||
+		(p.CycleStartDay != nil && (p.PeriodMode != "calendar" || *p.CycleStartDay < 1 || *p.CycleStartDay > 28)) {
 		return nil, invalid
 	}
-	return s.insert(ctx, "INSERT INTO products(code,name,period_mode) VALUES($1,$2,$3) RETURNING id", strings.ToUpper(strings.TrimSpace(p.Code)), strings.TrimSpace(p.Name), p.PeriodMode)
+	return s.insert(ctx, "INSERT INTO products(code,name,period_mode,cycle_start_day) VALUES($1,$2,$3,$4) RETURNING id", strings.ToUpper(strings.TrimSpace(p.Code)), strings.TrimSpace(p.Name), p.PeriodMode, p.CycleStartDay)
 }
 func (s workspace) createMapping(ctx context.Context, p createMappingInput) (any, error) {
 	if p.ProductID < 1 || !validSource(p.Source) || !textOK(p.Domain, 80) || !textOK(p.SourceKey, 128) {
@@ -220,12 +243,57 @@ func (s workspace) createMapping(ctx context.Context, p createMappingInput) (any
 	return s.insert(ctx, "INSERT INTO source_mappings(product_id,source,domain,source_key) VALUES($1,$2,$3,$4) RETURNING id", p.ProductID, p.Source, strings.TrimSpace(p.Domain), strings.TrimSpace(p.SourceKey))
 }
 func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, error) {
-	from, e1 := time.Parse(time.DateOnly, p.StartsOn)
-	to, e2 := time.Parse(time.DateOnly, p.EndsOn)
-	if p.ProductID < 1 || !textOK(p.Name, 80) || p.Ordinal < 1 || e1 != nil || e2 != nil || to.Before(from) {
+	if p.ProductID < 1 || !textOK(p.Name, 80) {
 		return nil, invalid
 	}
-	return s.insert(ctx, "INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on) VALUES($1,$2,$3,$4,$5) RETURNING id", p.ProductID, strings.TrimSpace(p.Name), p.Ordinal, from, to)
+	var id int64
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		var mode string
+		var day *int
+		if err := tx.QueryRow(ctx, "SELECT period_mode,cycle_start_day FROM products WHERE id=$1 FOR UPDATE", p.ProductID).Scan(&mode, &day); err != nil {
+			return err
+		}
+		var month, from, to string
+		ordinal := p.Ordinal
+		if p.SettlementMonth != "" {
+			if day == nil || p.StartsOn != "" || p.EndsOn != "" || p.Ordinal != 0 {
+				return invalid
+			}
+			window, err := calendarWindow(p.SettlementMonth, *day)
+			if err != nil {
+				return err
+			}
+			month = p.SettlementMonth + "-01"
+			date, err := time.Parse(time.DateOnly, month)
+			if err != nil {
+				return invalid
+			}
+			ordinal = date.Year()*100 + int(date.Month())
+			from, to = window.Start.Format(time.DateOnly), window.Through.AddDate(0, 0, -1).Format(time.DateOnly)
+		} else {
+			start, e1 := time.Parse(time.DateOnly, p.StartsOn)
+			end, e2 := time.Parse(time.DateOnly, p.EndsOn)
+			if day != nil || ordinal < 1 || e1 != nil || e2 != nil || end.Before(start) {
+				return invalid
+			}
+			from, to = p.StartsOn, p.EndsOn
+		}
+		if mode == "calendar" {
+			var overlaps bool
+			err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM periods WHERE product_id=$1
+				AND starts_on<=$3::text::date AND ends_on>=$2::text::date)`, p.ProductID, from, to).Scan(&overlaps)
+			if err != nil {
+				return err
+			}
+			if overlaps {
+				return conflict
+			}
+		}
+		return tx.QueryRow(ctx, `INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month)
+			VALUES($1,$2,$3,$4::text::date,$5::text::date,nullif($6::text,'')::date) RETURNING id`,
+			p.ProductID, strings.TrimSpace(p.Name), ordinal, from, to, month).Scan(&id)
+	})
+	return map[string]int64{"id": id}, err
 }
 func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, error) {
 	if p.ProductID < 1 || !textOK(p.Label, 80) || (p.PeriodID != nil && *p.PeriodID < 1) || (p.FromOrdinal != nil && *p.FromOrdinal < 1) || (p.PeriodID != nil && p.FromOrdinal != nil) || validateComponents(p.Components) != nil {

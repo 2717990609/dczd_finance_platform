@@ -75,3 +75,48 @@ CREATE TABLE IF NOT EXISTS source_order_versions (
 
 CREATE INDEX IF NOT EXISTS source_order_versions_lookup
  ON source_order_versions(source, order_id, line_id, record_key, kind, updated_at DESC, id DESC);
+
+ALTER TABLE products ADD COLUMN IF NOT EXISTS cycle_start_day smallint
+ CHECK (cycle_start_day BETWEEN 1 AND 28 AND period_mode = 'calendar');
+ALTER TABLE periods ADD COLUMN IF NOT EXISTS calendar_month date;
+CREATE UNIQUE INDEX IF NOT EXISTS periods_calendar_month
+ ON periods(product_id, calendar_month) WHERE calendar_month IS NOT NULL;
+
+ALTER TABLE source_order_versions ADD COLUMN IF NOT EXISTS occurred_at timestamptz;
+UPDATE source_order_versions SET occurred_at = (fact->>'occurredAt')::timestamptz WHERE occurred_at IS NULL;
+ALTER TABLE source_order_versions ALTER COLUMN occurred_at SET NOT NULL;
+CREATE INDEX IF NOT EXISTS source_order_versions_payment_date
+ ON source_order_versions(source, (fact->>'domain'), (fact->>'sourceKey'), occurred_at) WHERE kind = 'ORDER_PAID';
+
+CREATE TABLE IF NOT EXISTS calculation_drafts (
+ period_id bigint PRIMARY KEY REFERENCES periods(id),
+ rule_id bigint NOT NULL REFERENCES rule_versions(id),
+ version bigint NOT NULL CHECK (version > 0),
+ input_digest bytea NOT NULL,
+ total_minor bigint NOT NULL CHECK (total_minor >= 0),
+ line_count int NOT NULL CHECK (line_count >= 0),
+ issue_count int NOT NULL CHECK (issue_count >= 0),
+ calculated_at timestamptz NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS calculation_draft_lines (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ period_id bigint NOT NULL REFERENCES calculation_drafts(period_id) ON DELETE CASCADE,
+ source_version_id bigint NOT NULL REFERENCES source_order_versions(id),
+ component_type text NOT NULL,
+ identity_id bigint NOT NULL REFERENCES identity_mappings(id),
+ person_id bigint NOT NULL REFERENCES people(id),
+ base_minor bigint NOT NULL CHECK (base_minor >= 0),
+ amount_minor bigint NOT NULL CHECK (amount_minor >= 0),
+ UNIQUE(period_id, source_version_id, component_type)
+);
+CREATE INDEX IF NOT EXISTS calculation_draft_lines_page ON calculation_draft_lines(period_id, id);
+
+CREATE TABLE IF NOT EXISTS calculation_draft_issues (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ period_id bigint NOT NULL REFERENCES calculation_drafts(period_id) ON DELETE CASCADE,
+ source_version_id bigint REFERENCES source_order_versions(id),
+ component_type text NOT NULL,
+ code text NOT NULL
+);
+CREATE INDEX IF NOT EXISTS calculation_draft_issues_page ON calculation_draft_issues(period_id, id);

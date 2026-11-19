@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -26,23 +27,24 @@ type sourceConfig struct{ BaseURL, Token string }
 type pullInput struct{ Source, Stream, OrderID string }
 
 type sourceFact struct {
-	Source          string    `json:"source"`
-	OrderID         string    `json:"orderId"`
-	OrderNo         string    `json:"orderNo"`
-	LineID          string    `json:"lineId"`
-	RecordKey       string    `json:"recordKey"`
-	Version         string    `json:"version"`
-	Kind            string    `json:"kind"`
-	Domain          string    `json:"domain"`
-	SourceKey       string    `json:"sourceKey"`
-	TransactionType string    `json:"transactionType"`
-	SourceStatus    string    `json:"sourceStatus"`
-	PaymentID       string    `json:"paymentId,omitempty"`
-	RefundID        string    `json:"refundId,omitempty"`
-	ReferrerID      string    `json:"referrerId,omitempty"`
-	AmountMinor     *int64    `json:"amountMinor"`
-	OccurredAt      time.Time `json:"occurredAt"`
-	UpdatedAt       time.Time `json:"updatedAt"`
+	Source          string              `json:"source"`
+	OrderID         string              `json:"orderId"`
+	OrderNo         string              `json:"orderNo"`
+	LineID          string              `json:"lineId"`
+	RecordKey       string              `json:"recordKey"`
+	Version         string              `json:"version"`
+	Kind            string              `json:"kind"`
+	Domain          string              `json:"domain"`
+	SourceKey       string              `json:"sourceKey"`
+	TransactionType string              `json:"transactionType"`
+	SourceStatus    string              `json:"sourceStatus"`
+	PaymentID       string              `json:"paymentId,omitempty"`
+	RefundID        string              `json:"refundId,omitempty"`
+	ReferrerID      string              `json:"referrerId,omitempty"`
+	Participants    []sourceParticipant `json:"participants,omitempty"`
+	AmountMinor     *int64              `json:"amountMinor"`
+	OccurredAt      time.Time           `json:"occurredAt"`
+	UpdatedAt       time.Time           `json:"updatedAt"`
 }
 
 type sourceDocument struct {
@@ -110,7 +112,11 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 		amount = &n
 	}
 	referrer := ""
+	var participants []sourceParticipant
 	for _, p := range wire.Attribution.Participants {
+		if validSourceRole(p.Role) && textOK(p.UserID, 128) {
+			participants = append(participants, sourceParticipant{Role: p.Role, UserID: p.UserID})
+		}
 		if p.Role == "DIRECT_REFERRER" && p.UserID != "" {
 			if referrer != "" && referrer != p.UserID {
 				return sourceFact{}, errSourceRead
@@ -118,10 +124,16 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 			referrer = p.UserID
 		}
 	}
+	sort.Slice(participants, func(i, j int) bool {
+		if participants[i].Role != participants[j].Role {
+			return participants[i].Role < participants[j].Role
+		}
+		return participants[i].UserID < participants[j].UserID
+	})
 	return sourceFact{Source: source, OrderID: orderID, OrderNo: wire.Order.No, LineID: wire.Order.Line,
 		RecordKey: wire.Record.Table + ":" + wire.Record.ID, Version: wire.Record.Version, Kind: wire.Kind, Domain: wire.Business.Domain,
 		SourceKey: wire.Business.Code, TransactionType: wire.Business.TransactionType, SourceStatus: wire.Order.Status.Code,
-		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, ReferrerID: referrer, AmountMinor: amount,
+		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, ReferrerID: referrer, Participants: participants, AmountMinor: amount,
 		OccurredAt: wire.OccurredAt, UpdatedAt: wire.Record.UpdatedAt}, nil
 }
 
@@ -231,36 +243,43 @@ func (s workspace) pullOrder(ctx context.Context, p pullInput) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	inserted := int64(0)
+	var inserted int64
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		for _, f := range facts {
-			raw, e := json.Marshal(f)
-			if e != nil {
-				return e
-			}
-			tag, e := tx.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact)
-			 VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT DO NOTHING`,
-				f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, f.UpdatedAt, raw)
-			if e != nil {
-				return e
-			}
-			if tag.RowsAffected() == 0 {
-				var same bool
-				e = tx.QueryRow(ctx, `SELECT fact=$7::jsonb FROM source_order_versions
-				 WHERE source=$1 AND order_id=$2 AND line_id=$3 AND record_key=$4 AND version=$5 AND kind=$6`,
-					f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, raw).Scan(&same)
-				if e != nil {
-					return e
-				}
-				if !same {
-					return conflict
-				}
-			}
-			inserted += tag.RowsAffected()
-		}
-		return nil
+		var writeErr error
+		inserted, writeErr = storeSourceFacts(ctx, tx, facts)
+		return writeErr
 	})
 	return map[string]any{"facts": len(facts), "newVersions": inserted}, err
+}
+
+func storeSourceFacts(ctx context.Context, tx pgx.Tx, facts []sourceFact) (int64, error) {
+	var inserted int64
+	for _, f := range facts {
+		raw, e := json.Marshal(f)
+		if e != nil {
+			return 0, e
+		}
+		tag, e := tx.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`,
+			f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, f.UpdatedAt, raw, f.OccurredAt)
+		if e != nil {
+			return 0, e
+		}
+		if tag.RowsAffected() == 0 {
+			var same bool
+			e = tx.QueryRow(ctx, `SELECT fact=$7::jsonb OR (NOT (fact ? 'participants') AND fact=$7::jsonb - 'participants') FROM source_order_versions
+			 WHERE source=$1 AND order_id=$2 AND line_id=$3 AND record_key=$4 AND version=$5 AND kind=$6`,
+				f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, raw).Scan(&same)
+			if e != nil {
+				return 0, e
+			}
+			if !same {
+				return 0, conflict
+			}
+		}
+		inserted += tag.RowsAffected()
+	}
+	return inserted, nil
 }
 
 const ordersSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
