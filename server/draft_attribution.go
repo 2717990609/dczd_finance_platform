@@ -222,6 +222,14 @@ func attachReportOrganizations(ctx context.Context, tx pgx.Tx, draft *paymentDra
 	}
 	for i := range draft.Lines {
 		line := &draft.Lines[i]
+		if line.BeneficiaryUnit != nil {
+			line.organization = index.ancestors(*line.BeneficiaryUnit)
+			continue
+		}
+		if line.reportUnit.Valid {
+			line.organization = index.ancestors(line.reportUnit)
+			continue
+		}
 		f := byVersion[line.FactID]
 		var company identityKey
 		if line.Component == "sales" {

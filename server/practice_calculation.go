@@ -58,7 +58,7 @@ func preparePracticePurchases(members []practiceEnrollment, orders map[string][]
 
 func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orders map[string][]paymentInput,
 	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory,
-	refunds map[int64][]practiceRefundMatch) (paymentDraft, error) {
+	refunds map[int64][]practiceRefundMatch, appointments map[practiceAppointmentKey][]practiceAppointment) (paymentDraft, error) {
 	var draft paymentDraft
 	purchases, err := preparePracticePurchases(members, orders, blocked, refunds)
 	if err != nil {
@@ -109,6 +109,9 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				continue
 			}
 			matched = true
+			if part.PeriodBenefit != nil {
+				continue
+			}
 			if (part.Type != "sales" && part.Type != "referral") || part.SourceRole == "" {
 				draft.Issues = append(draft.Issues, practiceIssue("UNCONFIGURED_COMPONENT", member, rule, part.Type))
 				continue
@@ -160,6 +163,9 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		if !matched {
 			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_MEMBER_RULE_MISSING", member, rule, ""))
 		}
+	}
+	if err := appendPracticePeriodBenefits(&draft, rule, purchases, appointments, identities, performancePayments); err != nil {
+		return paymentDraft{}, err
 	}
 	return draft, nil
 }

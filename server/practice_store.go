@@ -283,7 +283,11 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	result, err := calculatePracticeDraft(members, rule, orders, identities, blocked, history, matchPracticeRefunds(refunds, orders))
+	appointments, err := loadPracticeAppointments(ctx, tx, rule)
+	if err != nil {
+		return paymentDraft{}, nil, err
+	}
+	result, err := calculatePracticeDraft(members, rule, orders, identities, blocked, history, matchPracticeRefunds(refunds, orders), appointments)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}

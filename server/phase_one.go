@@ -23,13 +23,14 @@ import (
 var schema string
 
 type component struct {
-	Type         string              `json:"type"`
-	Mode         string              `json:"mode"`
-	Value        int64               `json:"value"`
-	SourceRole   string              `json:"sourceRole,omitempty"`
-	RefundPolicy string              `json:"refundPolicy,omitempty"`
-	ClassMember  string              `json:"classMember,omitempty"`
-	Tiers        *practiceSalesTiers `json:"tiers,omitempty"`
+	Type          string                 `json:"type"`
+	Mode          string                 `json:"mode"`
+	Value         int64                  `json:"value"`
+	SourceRole    string                 `json:"sourceRole,omitempty"`
+	RefundPolicy  string                 `json:"refundPolicy,omitempty"`
+	ClassMember   string                 `json:"classMember,omitempty"`
+	Tiers         *practiceSalesTiers    `json:"tiers,omitempty"`
+	PeriodBenefit *practicePeriodBenefit `json:"periodBenefit,omitempty"`
 }
 
 var errPracticeTierCompany = errors.New("公司阶梯引用的销售公司未配置或已停用")
@@ -40,7 +41,7 @@ var invalid = errors.New("请核对名称、范围与必填配置")
 var conflict = errors.New("记录与现有配置冲突，请重新读取")
 
 func validateComponents(items []component) error {
-	if len(items) == 0 || len(items) > 8 {
+	if len(items) == 0 {
 		return invalid
 	}
 	seen := make(map[string]uint8)
@@ -61,7 +62,16 @@ func validateComponents(items []component) error {
 		default:
 			return invalid
 		}
-		if seen[c.Type]&members != 0 || c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) {
+		if c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) {
+			return invalid
+		}
+		if c.Mode == "period_rate" {
+			if c.Tiers != nil || !validPracticePeriodBenefit(c) {
+				return invalid
+			}
+			continue
+		}
+		if c.PeriodBenefit != nil || seen[c.Type]&members != 0 {
 			return invalid
 		}
 		seen[c.Type] |= members
@@ -123,6 +133,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-rates", Handler: s.getCatalogRuleRates},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-rule-rates", Handler: s.postCatalogRuleRates},
 		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.listForAuthorizedProducts(practiceCountOpeningsSQL, false)},
+		{Method: http.MethodGet, Path: "/api/v1/practice-rule-recipients", Handler: s.practiceRuleRecipients},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-units", Handler: s.list(organizationUnitsSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-assignments", Handler: s.organizationAssignments},
@@ -423,7 +434,7 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 		 FROM products p WHERE id=$1 FOR UPDATE`, p.ProductID).Scan(&mode, &legacy); e != nil {
 			return e
 		}
-		if legacy {
+		if legacy && mode != "class" {
 			return errLegacyRuleNotAdapted
 		}
 		if p.EffectiveFrom != nil && p.EffectiveFrom.IsZero() {
@@ -431,9 +442,27 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 		}
 		var personIDs []int64
 		var companyIDs []string
+		var unitIDs, appointmentKinds []string
 		for _, c := range p.Components {
-			if mode != "class" && c.ClassMember != "" {
+			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil) {
 				return invalid
+			}
+			if mode == "class" && (c.Type == "manager" || c.Type == "delivery") && c.PeriodBenefit == nil {
+				return invalid
+			}
+			if benefit := c.PeriodBenefit; benefit != nil {
+				companyIDs = append(companyIDs, benefit.SalesCompanies...)
+				personIDs = append(personIDs, benefit.SalesPeople...)
+				if benefit.PersonID != 0 {
+					personIDs = append(personIDs, benefit.PersonID)
+				}
+				if benefit.UnitID != "" {
+					unitIDs = append(unitIDs, benefit.UnitID)
+				}
+				if benefit.AppointmentUnitID != "" {
+					unitIDs = append(unitIDs, benefit.AppointmentUnitID)
+					appointmentKinds = append(appointmentKinds, benefit.AppointmentKind)
+				}
 			}
 			if c.Tiers != nil {
 				if c.Tiers.OpeningID != 0 {
@@ -473,6 +502,19 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 			}
 			if missing {
 				return errPracticeCountPerson
+			}
+		}
+		if len(unitIDs) != 0 {
+			var missing bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM unnest($1::text[]) AS wanted(id)
+			 WHERE NOT EXISTS(SELECT 1 FROM organization_units u WHERE u.id=wanted.id::uuid))
+			 OR EXISTS(SELECT 1 FROM unnest($2::text[]) AS wanted(kind)
+			 WHERE NOT EXISTS(SELECT 1 FROM configuration_options o WHERE o.group_key='appointmentKind' AND o.option_key=wanted.kind AND o.enabled))`,
+				unitIDs, appointmentKinds).Scan(&missing); err != nil {
+				return err
+			}
+			if missing {
+				return invalid
 			}
 		}
 		var publisher *string

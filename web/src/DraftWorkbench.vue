@@ -82,6 +82,9 @@ const reason = {
   PRACTICE_TIER_GROUP_INCOMPLETE: '本期新报的付款或人员归属待核，暂无法选档',
   PRACTICE_TIER_NOT_MATCHED: '本笔没有匹配的累计人数档或实付档',
   PRACTICE_TIER_EXCEEDS_PAYMENT: '命中的档位计提超过实付金额',
+  PRACTICE_PERIOD_APPOINTMENT_MISSING: '找不到分项指定的组织任职记录',
+  PRACTICE_PERIOD_BENEFIT_INCOMPLETE: '适用报名或付款待核，暂未汇总此分项',
+  PRACTICE_PERIOD_BENEFIT_TIER_MISSING: '净实收金额没有匹配的班次档位',
 }
 const lineColumns = [
   { title: '原订单', key: 'order', width: 190 },
@@ -256,7 +259,7 @@ async function loadMore(section, cursorName) {
           <template v-if="column.key === 'order'">{{ record.orderNo || record.orderId }}<small class="order-version">来源版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template><template v-if="record.salesCompany"> · {{ record.salesCompany }}</template></small></template>
           <template v-else-if="column.key === 'beneficiary'">
             {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池 · 待分配</small>
-            <small v-else-if="record.beneficiaryKind==='company'" class="order-version">公司分润</small>
+            <small v-else-if="record.beneficiaryKind==='company'" class="order-version">{{ record.beneficiaryUnitKind==='DEPARTMENT' ? '部门分润' : '公司分润' }}</small>
           </template>
           <template v-else-if="column.key === 'component'">{{ salesRoles[record.componentRole] || record.componentLabel || componentLabel(record.component) }}</template>
           <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}<small v-if="draft.catalog && record.ruleLabel" class="order-version">{{ record.ruleLabel }}</small></template>
@@ -310,7 +313,7 @@ async function loadMore(section, cursorName) {
       <a-table :columns="issueColumns" :data-source="draft.issues" :pagination="false" row-key="id" :scroll="{ x: 510 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'source'">{{ record.orderId || '—' }}<small v-if="record.enrollmentId" class="order-version">报名 {{ record.enrollmentId }}</small></template>
-          <template v-else-if="column.key === 'component'">{{ componentLabel(record.component) || '—' }}</template>
+          <template v-else-if="column.key === 'component'">{{ record.componentLabel || componentLabel(record.component) || '—' }}</template>
           <template v-else-if="column.key === 'reason'">{{ reason[record.code] || record.code }}</template>
         </template>
       </a-table>

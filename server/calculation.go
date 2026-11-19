@@ -4,6 +4,8 @@ import (
 	"errors"
 	"math"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 var errCalculationOverflow = errors.New("calculation exceeds the supported amount")
@@ -39,8 +41,10 @@ type draftLine struct {
 	EnrollmentID                         int64 `json:",omitempty"`
 	Component                            string
 	organization                         reportOrganization
+	reportUnit                           pgtype.UUID
 	Base, Amount                         int64
 	Catalog                              *catalogDraftBenefit `json:",omitempty"`
+	BeneficiaryUnit                      *pgtype.UUID         `json:",omitempty"`
 }
 
 type draftIssue struct {

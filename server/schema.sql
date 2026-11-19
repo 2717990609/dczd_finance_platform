@@ -457,14 +457,19 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('ruleScope','period','指定期次',30,'{}'),
  ('component','sales','销售提成',10,'{}'),
  ('component','referral','推荐提成',20,'{}'),
- ('component','manager','负责人提成',30,'{"periodModes":["calendar"]}'),
- ('component','delivery','交付提成',40,'{"periodModes":["calendar"]}'),
+ ('component','manager','负责人提成',30,'{}'),
+ ('component','delivery','交付提成',40,'{}'),
  ('classMember','','全部',10,'{}'),
  ('classMember','new','新报',20,'{}'),
  ('classMember','retrain','复训',30,'{}'),
  ('amountMode','rate','比例 %',10,'{}'),
  ('amountMode','fixed','金额 ¥',20,'{}'),
  ('amountMode','tiered','阶梯',30,'{"periodModes":["class"],"componentTypes":["sales"],"classMembers":["new"]}'),
+ ('amountMode','period_rate','班次比例 %',40,'{"periodModes":["class"],"componentTypes":["manager","delivery"]}'),
+ ('practicePeriodRecipient','person','人员',10,'{}'),
+ ('practicePeriodRecipient','unit','组织',20,'{}'),
+ ('practicePeriodSourceRole','DIRECT_REFERRER','推荐销售',10,'{}'),
+ ('practicePeriodSourceRole','LOCK_SALES_USER','锁定销售',20,'{}'),
  ('refundPolicy','proportional','按实际退款比例扣回',10,'{}'),
  ('refundPolicy','full_reversal','有退款即整笔冲回',20,'{}'),
  ('refundPolicy','non_refundable','退款时不扣回',30,'{}'),
@@ -477,6 +482,9 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('tierStartMode','ordinal','从期数开始',10,'{}'),
  ('tierStartMode','time','从开班时间开始',20,'{}')
 ON CONFLICT (group_key,option_key) DO NOTHING;
+UPDATE configuration_options SET applies_to='{}'
+ WHERE group_key='component' AND option_key IN ('manager','delivery')
+  AND applies_to='{"periodModes":["calendar"]}'::jsonb;
 
 ALTER TABLE people ADD COLUMN IF NOT EXISTS legacy_party_id uuid;
 CREATE UNIQUE INDEX IF NOT EXISTS people_legacy_party_id ON people(legacy_party_id);
@@ -740,10 +748,16 @@ ALTER TABLE calculation_draft_lines
 
 DO $$
 BEGIN
- IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass AND conname='draft_line_rule_and_recipient_check') THEN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass
+   AND conname='draft_line_rule_and_recipient_check' AND strpos(pg_get_constraintdef(oid),'period:')>0) THEN
+  ALTER TABLE calculation_draft_lines DROP CONSTRAINT IF EXISTS draft_line_rule_and_recipient_check;
   ALTER TABLE calculation_draft_lines ADD CONSTRAINT draft_line_rule_and_recipient_check CHECK (
    (catalog_rule_id IS NULL AND rule_id IS NOT NULL AND identity_id IS NOT NULL AND person_id IS NOT NULL
      AND beneficiary_unit_id IS NULL AND allocation_owner_id IS NULL)
+   OR
+   (catalog_rule_id IS NULL AND rule_id IS NOT NULL AND identity_id IS NULL AND practice_enrollment_id IS NOT NULL
+     AND starts_with(component_type,'period:') AND allocation_owner_id IS NULL
+     AND ((person_id IS NOT NULL) <> (beneficiary_unit_id IS NOT NULL)))
    OR
    (catalog_rule_id IS NOT NULL AND rule_id IS NULL AND identity_id IS NULL AND practice_enrollment_id IS NULL
      AND ((person_id IS NOT NULL AND beneficiary_unit_id IS NULL AND allocation_owner_id IS NULL)

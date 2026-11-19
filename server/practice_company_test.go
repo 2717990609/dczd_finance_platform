@@ -105,7 +105,7 @@ func TestPracticeCompanyConflictBlocksAffectedPerson(t *testing.T) {
 		{ID: 2, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"three"}},
 		{ID: 3, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"four"}},
 	}
-	draft, err := calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil)
+	draft, err := calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil, nil)
 	if err != nil || len(draft.Issues) != 2 || len(draft.Lines) != 1 || draft.Total != 1220 ||
 		draft.Lines[0].PersonID != 2 || draft.Issues[0].Code != "PRACTICE_TIER_COMPANY_CONFLICT" ||
 		draft.Issues[1].Code != "PRACTICE_TIER_GROUP_INCOMPLETE" {

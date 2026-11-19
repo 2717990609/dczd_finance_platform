@@ -167,7 +167,7 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 	if summary.Catalog {
 		return window, nil, nil
 	}
-	if legacy {
+	if legacy && mode != "class" {
 		return window, nil, errLegacyRuleNotAdapted
 	}
 	var classStart time.Time
@@ -416,6 +416,9 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 					benefit = *l.Catalog
 					appliedRate = &benefit.Rate
 				}
+				if l.BeneficiaryUnit != nil {
+					benefit.Unit = *l.BeneficiaryUnit
+				}
 				return []any{summary.PeriodID, l.FactID, l.Component, optionalDraftID(l.RuleID), optionalDraftID(l.IdentityID),
 					optionalDraftID(l.PersonID), l.Base, l.Amount, optionalDraftID(l.EnrollmentID), l.organization.Company, l.organization.Department,
 					benefit.Rule, benefit.Unit, optionalDraftID(benefit.AllocationOwnerID), appliedRate}, nil
@@ -520,7 +523,10 @@ const draftDetailSQL = `SELECT jsonb_build_object(
  'lines',coalesce((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM (
   SELECT l.id,coalesce(p.name,action.definition->>'pool_name',beneficiary.name) AS "personName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
-   l.component_type AS "component", action.definition->>'label' AS "componentLabel",nullif(split_part(l.component_type,':',2),'') AS "componentRole",
+   l.component_type AS "component", beneficiary.kind AS "beneficiaryUnitKind",
+   CASE WHEN rv.id IS NOT NULL AND starts_with(l.component_type,'period:')
+     THEN rv.components->(split_part(l.component_type,':',3)::int)->'periodBenefit'->>'label'
+     ELSE action.definition->>'label' END AS "componentLabel",nullif(split_part(l.component_type,':',2),'') AS "componentRole",
    l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",o.source,o.order_id AS "orderId",
    o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",coalesce(rv.version,cv.version_no) AS "ruleVersion",
    coalesce(l.catalog_rule_id::text,l.rule_id::text) AS "ruleId",coalesce(package.name,rv.label) AS "ruleLabel",
@@ -571,7 +577,9 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   WHERE c.period_id=d.period_id AND c.id>$6 ORDER BY c.id LIMIT 50
  ) c),'[]'),
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
-  SELECT i.id,i.component_type AS "component",i.code,o.source,o.order_id AS "orderId",e.source_enrollment_id AS "enrollmentId"
+  SELECT i.id,i.component_type AS "component",i.code,o.source,o.order_id AS "orderId",e.source_enrollment_id AS "enrollmentId",
+   CASE WHEN r.id IS NOT NULL AND starts_with(i.component_type,'period:')
+     THEN r.components->(split_part(i.component_type,':',3)::int)->'periodBenefit'->>'label' END AS "componentLabel"
   FROM calculation_draft_issues i LEFT JOIN source_order_versions o ON o.id=i.source_version_id LEFT JOIN practice_enrollments e ON e.id=i.practice_enrollment_id
   WHERE i.period_id=d.period_id AND i.id>$3 ORDER BY i.id LIMIT 50
  ) i),'[]')
