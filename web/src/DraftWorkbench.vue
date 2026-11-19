@@ -280,7 +280,7 @@ async function loadMore(section, cursorName) {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
             {{ record.originalOrderNo || record.originalOrderId }}
-            <small class="order-version">{{ draft.catalog ? '计提规则' : '结算时规则' }} v{{ record.ruleVersion }} · 退款 {{ record.refundId }}</small>
+            <small class="order-version">计提时规则 v{{ record.ruleVersion }} · 退款 {{ record.refundId }}</small>
           </template>
           <template v-else-if="column.key === 'beneficiary'">
             {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池</small>

@@ -163,7 +163,7 @@ func main() {
 			err = importSourceFactFile(ctx, cfg, os.Args[2])
 		case "import-organization":
 			err = importOrganization(ctx, cfg, os.Args[2])
-		case "import-product-config", "import-legacy-catalog":
+		case "import-product-config":
 			err = importProductConfig(ctx, cfg, os.Args[2])
 		default:
 			log.Fatal(importUsage)

@@ -17,7 +17,7 @@ const navigation = [
   {key:'settlement', title:'分润试算', icon:CalculatorOutlined},
   {key:'products', title:'产品目录', icon:AppstoreOutlined, description:'维护核算产品，绑定子系统的原始商品或业务标识。'},
   {key:'periods', title:'核算期次', icon:CalendarOutlined, description:'设置实际开班或结算窗口，查看各期匹配的规则。'},
-  {key:'rules', title:'规则配置', icon:ProfileOutlined, description:'按产品配置分润方式、适用范围和生效时间。'},
+  {key:'rules', title:'产品规则', icon:ProfileOutlined, description:'按产品配置分润方式、适用范围和生效时间。'},
   {key:'orders', title:'来源订单', icon:FileSearchOutlined, description:'按原订单 ID 从子系统重拉，查询财务目前收到的业务记录。'},
   {key:'organization', title:'组织与人员', icon:TeamOutlined},
   {key:'people', title:'人员映射', icon:TeamOutlined, description:'查询财务计算使用的来源人员标识及有效区间。'},
@@ -611,7 +611,7 @@ async function save() {
               <a-tab-pane key="main" :tab="current==='products'?'产品列表':'人员列表'"/>
               <a-tab-pane :key="current==='products'?'mapping':'identity'" :tab="current==='products'?'来源映射':'映射历史'"/>
             </a-tabs>
-            <h2 v-else>{{ {periods:'期次列表',rules:'产品规则',orders:'订单业务记录'}[current] }}</h2>
+            <h2 v-else>{{ {periods:'期次列表',rules:'规则列表',orders:'订单业务记录'}[current] }}</h2>
             <div class="search">
               <a-input-search v-model:value="filter" :placeholder="current==='orders'?'输入原订单 ID':'在当前列表中搜索'" :aria-label="current==='orders'?'原订单 ID':'搜索列表'" allow-clear @search="current==='orders'&&resetOrders()"/>
             </div>
