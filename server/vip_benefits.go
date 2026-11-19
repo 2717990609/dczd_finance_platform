@@ -46,6 +46,7 @@ type vipBenefitPart struct {
 	Name      string `json:"beneficiaryName,omitempty"`
 	OwnerName string `json:"ownerName,omitempty"`
 	Amount    int64  `json:"amountMinor"`
+	Rate      int64  `json:"-"`
 	Status    string `json:"status"`
 }
 
@@ -139,6 +140,7 @@ func quoteVIPBenefits(row catalogPaymentMatch, policy vipBenefitPolicy, data vip
 		default:
 			bindVIPBenefit(&line, a, req, data)
 			if line.Status == "CALCULATED" {
+				line.Rate = rate
 				line.Amount = calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: rate})
 			}
 		}

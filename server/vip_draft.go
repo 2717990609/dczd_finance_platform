@@ -21,9 +21,10 @@ const catalogDraftAvailableSQL = `(pro.period_mode='calendar' AND EXISTS(
 type catalogDraftBenefit struct {
 	Rule, Unit        pgtype.UUID
 	AllocationOwnerID int64
+	Rate              int64
 }
 
-func computeVIPDraft(ctx context.Context, tx pgx.Tx, periodID int64) (paymentDraft, []byte, error) {
+func computeVIPDraft(ctx context.Context, tx pgx.Tx, periodID int64, window periodWindow) (paymentDraft, []byte, error) {
 	matches, err := readCatalogMatches(ctx, tx, periodID, 0, maxDraftPayments)
 	if err != nil {
 		return paymentDraft{}, nil, err
@@ -57,6 +58,9 @@ func computeVIPDraft(ctx context.Context, tx pgx.Tx, periodID int64) (paymentDra
 			return paymentDraft{}, nil, err
 		}
 	}
+	if err := addRefunds(ctx, tx, periodID, window, nil, payments, &result, vipRefundTermsByRule(data.Definitions)); err != nil {
+		return paymentDraft{}, nil, err
+	}
 	digest, err := digestDraft(0, result, payments)
 	return result, digest, err
 }
@@ -74,6 +78,7 @@ func readVIPDraftFacts(ctx context.Context, tx pgx.Tx, items []catalogPaymentMat
 	inputs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (paymentInput, error) {
 		var item paymentInput
 		f := &item.Fact
+		f.Kind = "ORDER_PAID"
 		err := row.Scan(&item.ID, &f.Source, &f.OrderID, &f.LineID, &f.RecordKey, &f.PaymentID, &f.OccurredAt)
 		return item, err
 	})
@@ -155,12 +160,16 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	} else if row.SalesStatus != "CALCULATED" {
 		issue("sales", row.SalesStatus)
 	}
+	var salesRate int64
+	for _, part := range row.SalesParts {
+		salesRate += part.Rate
+	}
 	for _, part := range row.SalesParts {
 		key := row.SalesItem
-		if part.Role != "SALES" {
+		if len(row.SalesParts) > 1 {
 			key += ":" + part.Role
 		}
-		if err := appendVIPDraftLine(result, row, rule, key, part.Person, "", "", part.Amount, data, organizations); err != nil {
+		if err := appendVIPDraftLine(result, row, rule, key, part.Person, "", "", part.Amount, salesRate, data, organizations); err != nil {
 			return err
 		}
 	}
@@ -170,7 +179,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	for _, part := range row.BenefitParts {
 		switch part.Status {
 		case "CALCULATED":
-			if err := appendVIPDraftLine(result, row, rule, part.Item, part.Party, part.Unit, part.Owner, part.Amount, data, organizations); err != nil {
+			if err := appendVIPDraftLine(result, row, rule, part.Item, part.Party, part.Unit, part.Owner, part.Amount, part.Rate, data, organizations); err != nil {
 				return err
 			}
 		case "ZERO", "INACTIVE":
@@ -181,12 +190,12 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	return nil
 }
 
-func appendVIPDraftLine(result *paymentDraft, row catalogPaymentMatch, rule pgtype.UUID, key, party, unit, owner string, amount int64,
+func appendVIPDraftLine(result *paymentDraft, row catalogPaymentMatch, rule pgtype.UUID, key, party, unit, owner string, amount, rate int64,
 	data vipRuntimeData, organizations reportAttribution) error {
 	if amount == 0 {
 		return nil
 	}
-	benefit := catalogDraftBenefit{Rule: rule, AllocationOwnerID: data.PersonIDs[owner]}
+	benefit := catalogDraftBenefit{Rule: rule, AllocationOwnerID: data.PersonIDs[owner], Rate: rate}
 	person := int64(0)
 	var org reportOrganization
 	if unit != "" {

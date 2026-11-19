@@ -605,13 +605,16 @@ CREATE TABLE IF NOT EXISTS catalog_benefit_organizations (
 );
 
 ALTER TABLE calculation_drafts ALTER COLUMN rule_id DROP NOT NULL;
+ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS catalog_refunds_ready boolean NOT NULL DEFAULT false;
 ALTER TABLE calculation_draft_lines
  ALTER COLUMN rule_id DROP NOT NULL,
  ALTER COLUMN identity_id DROP NOT NULL,
  ALTER COLUMN person_id DROP NOT NULL,
  ADD COLUMN IF NOT EXISTS catalog_rule_id uuid REFERENCES legacy_rule_versions(source_id),
  ADD COLUMN IF NOT EXISTS beneficiary_unit_id uuid REFERENCES organization_units(id),
- ADD COLUMN IF NOT EXISTS allocation_owner_id bigint REFERENCES people(id);
+ ADD COLUMN IF NOT EXISTS allocation_owner_id bigint REFERENCES people(id),
+ ADD COLUMN IF NOT EXISTS applied_rate_bps integer
+  CHECK (applied_rate_bps IS NULL OR (applied_rate_bps BETWEEN 0 AND 10000 AND catalog_rule_id IS NOT NULL));
 
 DO $$
 BEGIN

@@ -94,7 +94,7 @@ func (s workspace) recalculateDraft(ctx context.Context, input calculateDraftInp
 
 func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window periodWindow, rules []paymentRule) (paymentDraft, []byte, error) {
 	if summary.Catalog {
-		return computeVIPDraft(ctx, tx, summary.PeriodID)
+		return computeVIPDraft(ctx, tx, summary.PeriodID, window)
 	}
 	if summary.PracticeRosterID != nil {
 		return computePracticeDraft(ctx, tx, summary, rules[0])
@@ -107,7 +107,7 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	if err = addRefunds(ctx, tx, summary.PeriodID, window, rules, facts, &result); err != nil {
+	if err = addRefunds(ctx, tx, summary.PeriodID, window, rules, facts, &result, nil); err != nil {
 		return paymentDraft{}, nil, err
 	}
 	if err = addRecommendationCorrections(ctx, tx, summary.PeriodID, window, &result); err != nil {
@@ -325,14 +325,17 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 }
 
 func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []byte, result paymentDraft) error {
-	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id,performance_ready)
-	  VALUES($1,nullif($2::bigint,0),1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,true)
+	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id,performance_ready,catalog_refunds_ready)
+	  VALUES($1,nullif($2::bigint,0),1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,true,$12)
 	  ON CONFLICT(period_id) DO UPDATE SET rule_id=excluded.rule_id,version=calculation_drafts.version+1,
 	  input_digest=excluded.input_digest,total_minor=excluded.total_minor,line_count=excluded.line_count,issue_count=excluded.issue_count,
 	  performance_ready=true,calculated_at=excluded.calculated_at,refund_minor=excluded.refund_minor,refund_count=excluded.refund_count,
-	  correction_minor=excluded.correction_minor,correction_count=excluded.correction_count,practice_roster_id=excluded.practice_roster_id
-	  WHERE NOT calculation_drafts.performance_ready OR calculation_drafts.input_digest<>excluded.input_digest RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
-		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections), summary.PracticeRosterID).
+	  correction_minor=excluded.correction_minor,correction_count=excluded.correction_count,practice_roster_id=excluded.practice_roster_id,
+	  catalog_refunds_ready=excluded.catalog_refunds_ready
+	  WHERE NOT calculation_drafts.performance_ready OR calculation_drafts.input_digest<>excluded.input_digest
+	   OR calculation_drafts.catalog_refunds_ready<>excluded.catalog_refunds_ready
+	  RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
+		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections), summary.PracticeRosterID, summary.Catalog).
 		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount, &summary.PracticeRosterID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT d.version,d.total_minor,d.line_count,d.issue_count,d.calculated_at,d.refund_minor,d.refund_count,d.correction_minor,d.correction_count,
@@ -368,16 +371,18 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Lines) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_lines"},
-			[]string{"period_id", "source_version_id", "component_type", "rule_id", "identity_id", "person_id", "base_minor", "amount_minor", "practice_enrollment_id", "company_id", "department_id", "catalog_rule_id", "beneficiary_unit_id", "allocation_owner_id"},
+			[]string{"period_id", "source_version_id", "component_type", "rule_id", "identity_id", "person_id", "base_minor", "amount_minor", "practice_enrollment_id", "company_id", "department_id", "catalog_rule_id", "beneficiary_unit_id", "allocation_owner_id", "applied_rate_bps"},
 			pgx.CopyFromSlice(len(result.Lines), func(i int) ([]any, error) {
 				l := result.Lines[i]
 				var benefit catalogDraftBenefit
+				var appliedRate *int64
 				if l.Catalog != nil {
 					benefit = *l.Catalog
+					appliedRate = &benefit.Rate
 				}
 				return []any{summary.PeriodID, l.FactID, l.Component, optionalDraftID(l.RuleID), optionalDraftID(l.IdentityID),
 					optionalDraftID(l.PersonID), l.Base, l.Amount, optionalDraftID(l.EnrollmentID), l.organization.Company, l.organization.Department,
-					benefit.Rule, benefit.Unit, optionalDraftID(benefit.AllocationOwnerID)}, nil
+					benefit.Rule, benefit.Unit, optionalDraftID(benefit.AllocationOwnerID), appliedRate}, nil
 			}))
 		if err != nil {
 			return err
@@ -470,6 +475,7 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 
 const draftDetailSQL = `SELECT jsonb_build_object(
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,'catalog',d.rule_id IS NULL,
+ 'refundsReady',d.rule_id IS NOT NULL OR d.catalog_refunds_ready,
  'totalMinor',d.total_minor+d.refund_minor+d.correction_minor,'accruedMinor',d.total_minor,
  'refundMinor',d.refund_minor,'refundCount',d.refund_count,'correctionMinor',d.correction_minor,'correctionCount',d.correction_count,
  'lineCount',d.line_count,'issueCount',d.issue_count,'practiceRosterVersion',roster.source_version,
@@ -500,12 +506,19 @@ const draftDetailSQL = `SELECT jsonb_build_object(
  ) l),'[]'),
  'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (
   SELECT a.id,a.amount_minor AS "amountMinor",rv.fact->>'refundId' AS "refundId",rv.version AS "refundVersion",
-   p.name AS "personName",o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",r.version AS "ruleVersion",
+   coalesce(p.name,pool.name,beneficiary.name) AS "personName",
+   CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
+   o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",coalesce(r.version,cv.version_no) AS "ruleVersion",
    original_period.name AS "originalPeriod",refund_period.name AS "refundPeriod",posting_period.name AS "postingPeriod"
   FROM calculation_draft_refunds a
   JOIN source_order_versions rv ON rv.id=a.refund_source_version_id
-  JOIN calculation_draft_lines l ON l.id=a.original_line_id JOIN people p ON p.id=l.person_id
-  JOIN rule_versions r ON r.id=l.rule_id JOIN source_order_versions o ON o.id=l.source_version_id
+  JOIN calculation_draft_lines l ON l.id=a.original_line_id JOIN source_order_versions o ON o.id=l.source_version_id
+  LEFT JOIN people p ON p.id=l.person_id LEFT JOIN organization_units beneficiary ON beneficiary.id=l.beneficiary_unit_id
+  LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN legacy_rule_versions cv ON cv.source_id=l.catalog_rule_id
+  LEFT JOIN LATERAL (
+   SELECT b->>'pool_name' AS name FROM jsonb_array_elements(cv.definition->'benefit_actions') b
+   WHERE l.allocation_owner_id IS NOT NULL AND b->>'item_key'=l.component_type LIMIT 1
+  ) pool ON true
   JOIN periods original_period ON original_period.id=l.period_id JOIN periods refund_period ON refund_period.id=a.refund_period_id
   JOIN periods posting_period ON posting_period.id=a.period_id
   WHERE a.period_id=d.period_id AND a.id>$5 ORDER BY a.id LIMIT 50

@@ -22,7 +22,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	boundary := start.AddDate(0, 0, 5)
 	policy := func(ownerRate string) json.RawMessage {
 		return json.RawMessage(strings.NewReplacer(
-			`"amount_basis"`, `"schema_version":"1.1","recognition_trigger":"PAID","settlement_policy":{"cycle":"MONTHLY_25_TO_24"},"policy_scope":{"business_sku_codes":["test"],"sales_systems":["DCAI"],"financial_event_types":["order.paid"]},"amount_basis"`,
+			`"amount_basis"`, `"refund_policy":"PROPORTIONAL","schema_version":"1.1","recognition_trigger":"PAID","settlement_policy":{"cycle":"MONTHLY_25_TO_24"},"policy_scope":{"business_sku_codes":["test"],"sales_systems":["DCAI"],"financial_event_types":["order.paid"]},"amount_basis"`,
 			`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY"`, fmt.Sprintf(`"item_key":"sales","label":"销售","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY","rate_table":[{"sales_organization_party_id":%q,"sales_relationship":"ANY","rate_bps":1000}]`, id(14)),
 			`"alice"`, fmt.Sprintf("%q", id(11)), `"tech"`, fmt.Sprintf("%q", id(15)), `"team"`, fmt.Sprintf("%q", id(16)),
 			`"dept"`, fmt.Sprintf("%q", id(18)), `"company"`, fmt.Sprintf("%q", id(14)), `"rate_bps":500`, `"rate_bps":`+ownerRate,
@@ -172,4 +172,141 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if reopened := recalc(); reopened.Version != changed.Version || reopened.Total != changed.Total {
 		t.Fatalf("schema reinitialization changed the current draft: %+v", reopened)
 	}
+	saveRefund := func(order, id, version string, amount int64, occurred time.Time) {
+		t.Helper()
+		refund := sourceFact{Source: "DCAI", Domain: "VIP", SourceKey: "vip-test", Kind: "REFUND_SUCCEEDED",
+			RecordKey: "ai_vip_order:" + id, Version: version, OrderID: order, RefundID: id,
+			AmountMinor: &amount, OccurredAt: occurred, UpdatedAt: occurred,
+			RefundsPayment: []sourcePaymentReference{{OrderID: order, RecordID: order}}}
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { _, err := storeSourceFacts(ctx, tx, []sourceFact{refund}); return err }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	saveRefund("two", "partial", "1", 5050, boundary.AddDate(0, 0, 1))
+	partial := recalc()
+	if partial.Version != 3 || partial.Accrued != 6700 || partial.RefundTotal != -1160 || partial.Total != 5540 || partial.RefundCount != 5 || partial.IssueCount != 1 {
+		t.Fatalf("same-period partial refund = %+v", partial)
+	}
+	if recalc().Version != partial.Version {
+		t.Fatal("same refund generated another draft")
+	}
+	w = httptest.NewRecorder()
+	s.getDraft(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/drafts?periodId=%d", periodID), nil))
+	var refundDetail struct {
+		Refunds []struct {
+			BeneficiaryKind, PersonName, RefundPeriod, PostingPeriod string
+			RuleVersion                                              int
+			AmountMinor                                              int64
+		}
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &refundDetail); err != nil || w.Code != 200 || len(refundDetail.Refunds) != 5 {
+		t.Fatalf("refund line detail: %d %v %s", w.Code, err, w.Body)
+	}
+	counts := map[string]int{}
+	for _, line := range refundDetail.Refunds {
+		counts[line.BeneficiaryKind]++
+		if line.PersonName == "" || line.RuleVersion != 2 || line.RefundPeriod != "8 月" || line.PostingPeriod != "8 月" {
+			t.Fatalf("refund identity or period has drifted: %+v", line)
+		}
+	}
+	if counts["person"] != 3 || counts["company"] != 1 || counts["pool"] != 1 {
+		t.Fatalf("refund recipients=%+v", counts)
+	}
+
+	// Seed finalized test periods to exercise cross-period behavior while
+	// the operational confirmation entry for this product remains closed.
+	save("unclassified", "classified", 1100, boundary, boundary.Add(3*time.Minute), "VIP_ORDER")
+	finished := recalc()
+	if finished.IssueCount != 0 {
+		t.Fatalf("expected review to be resolved before closing: %+v", finished)
+	}
+	closeFixture := func(result draftSummary) {
+		t.Helper()
+		if _, err := s.db.Exec(ctx, "INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')", result.PeriodID, result.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	createPeriod := func(month, label string) int64 {
+		t.Helper()
+		out, err := s.createPeriod(ctx, createPeriodInput{ProductID: productID, Name: label, SettlementMonth: month})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out.(map[string]int64)["id"]
+	}
+	draftAt := func(period int64) draftSummary {
+		t.Helper()
+		out, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return out.(draftSummary)
+	}
+	closeFixture(finished)
+	sept := createPeriod("2026-09", "9 月")
+	lateAt := start.AddDate(0, 1, 2)
+	now := time.Now().In(shanghai)
+	activeMonth := now
+	if now.Day() >= 25 {
+		activeMonth = time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, shanghai).AddDate(0, 1, 0)
+	}
+	current := createPeriod(activeMonth.Format("2006-01"), "本次办理期")
+	saveRefund("one", "in-september", "1", 2000, lateAt)
+	if outside := draftAt(current); outside.RefundCount != 0 {
+		t.Fatalf("open September must receive its own refund: %+v", outside)
+	}
+	september := draftAt(sept)
+	if september.Total != -420 || september.RefundCount != 5 || september.IssueCount != 0 {
+		t.Fatalf("September refund = %+v", september)
+	}
+	closeFixture(september)
+
+	saveRefund("two", "after-close", "1", 14950, lateAt.Add(time.Hour))
+	late := draftAt(current)
+	if late.RefundTotal != -3440 || late.Total != -3440 || late.RefundCount != 5 || late.IssueCount != 0 {
+		t.Fatalf("the current period should take only the unbooked remainder: %+v", late)
+	}
+	saveRefund("one", "in-september", "2", 2100, lateAt.Add(time.Minute))
+	bookedChanged := draftAt(current)
+	if bookedChanged.RefundTotal != -3440 || bookedChanged.IssueCount != 1 {
+		t.Fatalf("booked refund revision should need review without changing original debit: %+v", bookedChanged)
+	}
+	for _, dimension := range []string{"person", "company", "department"} {
+		w := httptest.NewRecorder()
+		s.draftReport(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/draft-report?periodId=%d&version=%d&dimension=%s", current, bookedChanged.Version, dimension), nil))
+		var report struct {
+			Items []struct{ TotalMinor, PerformanceMinor int64 }
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &report); err != nil || w.Code != 200 {
+			t.Fatalf("%s report: %d %v", dimension, w.Code, err)
+		}
+		var total, performance int64
+		for _, row := range report.Items {
+			total += row.TotalMinor
+			performance += row.PerformanceMinor
+		}
+		if performance != -14950 || total != -3440 {
+			t.Fatalf("%s refund report: %d %d", dimension, performance, total)
+		}
+	}
+	w = httptest.NewRecorder()
+	s.getDraft(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/drafts?periodId=%d", current), nil))
+	var lateDetail struct {
+		Refunds []struct{ OriginalPeriod, RefundPeriod, PostingPeriod string }
+		Issues  []struct{ Code string }
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &lateDetail); err != nil || w.Code != 200 || len(lateDetail.Refunds) != 5 || len(lateDetail.Issues) != 1 || lateDetail.Issues[0].Code != "REFUND_BOOKED_CHANGED" {
+		t.Fatalf("late detail: %d %v %s", w.Code, err, w.Body)
+	}
+	for _, line := range lateDetail.Refunds {
+		if line.OriginalPeriod != "8 月" || line.RefundPeriod != "9 月" || line.PostingPeriod != "本次办理期" {
+			t.Fatalf("refund period labels drifted: %+v", line)
+		}
+	}
+	// The closed payment and earlier refund stays unchanged after the late run.
+	var confirmedTotal int64
+	if err := s.db.QueryRow(ctx, "SELECT total_minor+refund_minor FROM calculation_drafts WHERE period_id=$1", periodID).Scan(&confirmedTotal); err != nil || confirmedTotal != finished.Total {
+		t.Fatalf("closed payment period changed: %d %v", confirmedTotal, err)
+	}
+
 }

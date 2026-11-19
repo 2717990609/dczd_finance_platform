@@ -82,7 +82,7 @@ const lineColumns = [
 ]
 const refundColumns = [
   { title: '原订单', key: 'order', width: 190 },
-  { title: '原受益人', dataIndex: 'personName', width: 130 },
+  { title: '原受益对象', key: 'beneficiary', width: 140 },
   { title: '原结算账期', dataIndex: 'originalPeriod', width: 135 },
   { title: '退款归属期', dataIndex: 'refundPeriod', width: 135 },
   { title: '实际扣减期', dataIndex: 'postingPeriod', width: 135 },
@@ -177,11 +177,11 @@ async function loadMore(section, cursorName) {
     </p>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
-  <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount, 'summary-collection':draft.catalog }">
+  <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount, 'summary-collection':!draft.refundsReady }">
     <article><div><small>正向计提</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
-    <article><div><small>退款扣减</small><strong>{{ draft.catalog ? '待接入' : formatMoney(draft.refundMinor) }}</strong></div></article>
+    <article><div><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div></article>
     <article v-if="draft.correctionCount"><div><small>推荐人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div></article>
-    <article v-if="!draft.catalog"><div><small>本期合计</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
+    <article v-if="draft.refundsReady"><div><small>本期合计</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
   </div>
   <a-tabs v-if="draft" v-model:active-key="view">
     <a-tab-pane key="detail" tab="明细"/>
@@ -217,7 +217,11 @@ async function loadMore(section, cursorName) {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
             {{ record.originalOrderNo || record.originalOrderId }}
-            <small class="order-version">结算时规则 v{{ record.ruleVersion }} · 退款 {{ record.refundId }}</small>
+            <small class="order-version">{{ draft.catalog ? '计提规则' : '结算时规则' }} v{{ record.ruleVersion }} · 退款 {{ record.refundId }}</small>
+          </template>
+          <template v-else-if="column.key === 'beneficiary'">
+            {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池</small>
+            <small v-else-if="record.beneficiaryKind==='company'" class="order-version">公司分润</small>
           </template>
           <template v-else-if="column.key === 'amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
         </template>

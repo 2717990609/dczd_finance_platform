@@ -143,7 +143,7 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
     </a-table>
     <a-drawer :open="poolOpen" title="本期团队池归集"
       :width="'min(650px, 100vw)'" @close="poolOpen=false">
-      <p class="draft-report-note">按本期付款归集。退款扣减和月度分配待接入。</p>
+      <p class="draft-report-note">按本期付款归集。退款扣减见月结草稿。月度分配待接入。</p>
       <a-alert v-if="poolError" type="error" :message="poolError" show-icon/>
       <a-alert v-if="poolReport?.pendingPaymentCount" type="warning" show-icon
         :message="`${poolReport.pendingPaymentCount} / ${poolReport.paymentCount} 笔付款存在待核归集分项`"/>

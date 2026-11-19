@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type refundInput struct {
@@ -27,7 +28,8 @@ type refundLine struct {
 type refundObligation struct {
 	ID, PaymentVersion, Base, Accrued int64
 	ComponentType                     string
-	Components                        []component
+	Policy                            component
+	SplitRole                         string
 }
 
 type refundLineKey struct {
@@ -48,9 +50,23 @@ type refundHistory struct {
 	byID      map[string]int64
 }
 
-const refundInputsSQL = `SELECT v.id, origin.id, v.fact, coalesce(history.changed,false) FROM periods target
+const refundInputSelectionSQL = `SELECT v.id, origin.id, v.fact, coalesce(history.changed,false) FROM periods target`
+
+const refundInputsSQL = refundInputSelectionSQL + `
  JOIN source_mappings m ON m.product_id=target.product_id
  JOIN source_order_versions v ON v.source=m.source AND v.fact->>'domain'=m.domain AND v.fact->>'sourceKey'=m.source_key
+` + refundPeriodSQL + ` AND NOT ` + catalogSourceReservedSQL + refundEligibilitySQL
+
+const catalogRefundInputsSQL = refundInputSelectionSQL + `
+ JOIN legacy_catalog_products c ON c.product_id=target.product_id
+ JOIN source_order_versions v ON v.source=c.source_system AND EXISTS(
+  SELECT 1 FROM catalog_business_routes m
+  WHERE m.product_id=c.product_id AND m.observed_at=c.captured_at AND m.source=v.source
+   AND (m.domain,m.record_table)=(v.fact->>'domain',split_part(v.record_key,':',1))
+ )
+` + refundPeriodSQL + refundEligibilitySQL
+
+const refundPeriodSQL = `
  JOIN periods origin ON origin.product_id=target.product_id
   AND v.occurred_at >= (origin.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')
   AND v.occurred_at < ((origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
@@ -72,8 +88,9 @@ const refundInputsSQL = `SELECT v.id, origin.id, v.fact, coalesce(history.change
   WHERE rv.kind='REFUND_SUCCEEDED' AND rv.source=v.source
     AND (rv.fact->>'domain')=(v.fact->>'domain') AND (rv.fact->>'refundId')=(v.fact->>'refundId')
  ) history ON true
- WHERE target.id=$1 AND v.kind='REFUND_SUCCEEDED' AND v.occurred_at<=CURRENT_TIMESTAMP
- AND NOT ` + catalogSourceReservedSQL + `
+ WHERE target.id=$1 AND v.kind='REFUND_SUCCEEDED' AND v.occurred_at<=CURRENT_TIMESTAMP`
+
+const refundEligibilitySQL = `
  AND (NOT history.booked OR history.changed)
  AND (origin.id=target.id OR (
   EXISTS(SELECT 1 FROM settlements WHERE period_id=origin.id)
@@ -98,7 +115,9 @@ type refundReference struct {
 }
 
 func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, requests []refundReference) (map[int64][]refundObligation, error) {
-	rows, err := tx.Query(ctx, `SELECT q.id,l.id,p.id,l.base_minor,l.amount_minor,l.component_type,r.components
+	rows, err := tx.Query(ctx, `SELECT q.id,l.id,p.id,l.base_minor,l.amount_minor,l.component_type,r.components,
+  l.catalog_rule_id IS NOT NULL,coalesce(l.applied_rate_bps,-1),coalesce(cv.definition->>'refund_policy',''),
+  coalesce(cv.definition->'internal_sales_direct_split'->>'sales_item_key','')
  FROM jsonb_to_recordset($1::jsonb) AS q(id bigint,source text,order_id text,line_id text,record_id text)
  JOIN source_order_versions p ON p.source=q.source AND p.order_id=q.order_id AND p.kind='ORDER_PAID'
   AND (q.line_id='' OR p.line_id=q.line_id)
@@ -106,7 +125,8 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
  JOIN calculation_draft_lines l ON l.source_version_id=p.id
  JOIN settlements s ON s.period_id=l.period_id
  JOIN periods original ON original.id=l.period_id
- JOIN rule_versions r ON r.id=l.rule_id
+ LEFT JOIN rule_versions r ON r.id=l.rule_id
+ LEFT JOIN legacy_rule_versions cv ON cv.source_id=l.catalog_rule_id
  WHERE original.product_id=(SELECT product_id FROM periods WHERE id=$2)
  ORDER BY q.id,l.id`, requests, periodID)
 	if err != nil {
@@ -117,12 +137,30 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
 	for rows.Next() {
 		var id int64
 		var line refundObligation
-		if err = rows.Scan(&id, &line.ID, &line.PaymentVersion, &line.Base, &line.Accrued, &line.ComponentType, &line.Components); err != nil {
+		var components []component
+		var catalog bool
+		var rate int64
+		var terms vipRefundTerms
+		if err = rows.Scan(&id, &line.ID, &line.PaymentVersion, &line.Base, &line.Accrued, &line.ComponentType,
+			&components, &catalog, &rate, &terms.Mode, &terms.SplitItem); err != nil {
 			return nil, err
+		}
+		line.Policy = refundComponent(components, line.ComponentType)
+		if catalog {
+			terms.apply(&line, rate)
 		}
 		result[id] = append(result[id], line)
 	}
 	return result, rows.Err()
+}
+
+func refundComponent(components []component, key string) component {
+	for _, c := range components {
+		if c.Type == key {
+			return c
+		}
+	}
+	return component{}
 }
 
 func loadRefundHistory(ctx context.Context, tx pgx.Tx, obligations map[int64][]refundObligation) (map[refundLineKey]*refundHistory, error) {
@@ -166,7 +204,7 @@ func loadRefundHistory(ctx context.Context, tx pgx.Tx, obligations map[int64][]r
 }
 
 func includeCurrentObligations(window periodWindow, refs []refundReference, obligations map[int64][]refundObligation,
-	rules []paymentRule, facts []paymentInput, lines []draftLine) {
+	rules []paymentRule, facts []paymentInput, lines []draftLine, catalogTerms map[pgtype.UUID]vipRefundTerms) {
 	type orderKey struct{ source, id string }
 	payments := make(map[orderKey][]paymentInput)
 	for _, item := range facts {
@@ -189,18 +227,26 @@ func includeCurrentObligations(window periodWindow, refs []refundReference, obli
 				continue
 			}
 			for _, line := range byVersion[payment.ID] {
-				obligations[ref.ID] = append(obligations[ref.ID], refundObligation{
+				obligation := refundObligation{
 					PaymentVersion: payment.ID, Base: line.Base, Accrued: line.Amount,
-					ComponentType: line.Component, Components: byRule[line.RuleID],
-				})
+					ComponentType: line.Component, Policy: refundComponent(byRule[line.RuleID], line.Component),
+				}
+				if line.Catalog != nil {
+					catalogTerms[line.Catalog.Rule].apply(&obligation, line.Catalog.Rate)
+				}
+				obligations[ref.ID] = append(obligations[ref.ID], obligation)
 			}
 		}
 	}
 }
 
 func addRefunds(ctx context.Context, tx pgx.Tx, periodID int64, window periodWindow, rules []paymentRule,
-	payments []paymentInput, draft *paymentDraft) error {
-	rows, err := tx.Query(ctx, refundInputsSQL, periodID, maxDraftPayments+1)
+	payments []paymentInput, draft *paymentDraft, catalogTerms map[pgtype.UUID]vipRefundTerms) error {
+	query := refundInputsSQL
+	if catalogTerms != nil {
+		query = catalogRefundInputsSQL
+	}
+	rows, err := tx.Query(ctx, query, periodID, maxDraftPayments+1)
 	if err != nil {
 		return err
 	}
@@ -235,7 +281,7 @@ func addRefunds(ctx context.Context, tx pgx.Tx, periodID int64, window periodWin
 	if err != nil {
 		return err
 	}
-	includeCurrentObligations(window, refs, obligations, rules, payments, draft.Lines)
+	includeCurrentObligations(window, refs, obligations, rules, payments, draft.Lines, catalogTerms)
 	history, err := loadRefundHistory(ctx, tx, obligations)
 	if err != nil {
 		return err
@@ -253,11 +299,13 @@ func addRefunds(ctx context.Context, tx pgx.Tx, periodID int64, window periodWin
 		case len(f.RefundsPayment) != 1 || f.RefundsPayment[0].OrderID == "":
 			code = "REFUND_MISSING_PAYMENT_REFERENCE"
 		default:
-			code, err = applyHistoricalRefund(draft, event, obligations[event.ID], history)
-			if err != nil {
-				return err
-			}
 			performanceIssue := recordPerformanceRefund(draft, event, performanceOrigins[event.ID], performanceCredited)
+			if catalogTerms == nil || performanceIssue == "" {
+				code, err = applyHistoricalRefund(draft, event, obligations[event.ID], history)
+				if err != nil {
+					return err
+				}
+			}
 			if code == "" {
 				code = performanceIssue
 			}
@@ -274,14 +322,14 @@ func applyHistoricalRefund(draft *paymentDraft, event refundInput, originals []r
 		return "REFUND_ORIGINAL_NOT_SETTLED", nil
 	}
 	// Validate every component before publishing any debit for this refund.
-	var pending []refundLine
+	f := event.Fact
+	principal := *f.AmountMinor
+	active := make([]refundObligation, 0, len(originals))
 	for _, original := range originals {
 		if originals[0].PaymentVersion != original.PaymentVersion {
 			return "REFUND_PAYMENT_AMBIGUOUS", nil
 		}
 		h := history[original.key()]
-		f := event.Fact
-		principal := *f.AmountMinor
 		if booked, exists := h.byID[f.RefundID]; exists {
 			if booked != principal {
 				return "REFUND_BOOKED_CHANGED", nil
@@ -291,22 +339,25 @@ func applyHistoricalRefund(draft *paymentDraft, event refundInput, originals []r
 		if h.principal > original.Base || principal > original.Base-h.principal {
 			return "REFUND_AMOUNT_EXCEEDS_PAYMENT", nil
 		}
-		var policy component
-		for _, c := range original.Components {
-			if c.Type == original.ComponentType {
-				policy = c
-				break
+		active = append(active, original)
+	}
+	var order string
+	if len(f.RefundsPayment) == 1 {
+		order = f.Source + ":" + f.RefundsPayment[0].OrderID
+	}
+	group, err := vipRefundGroupDeltas(order, principal, active, history)
+	if err != nil {
+		return refundProblem(err)
+	}
+	var pending []refundLine
+	for _, original := range active {
+		h := history[original.key()]
+		delta, split := group[original.key()]
+		if !split {
+			delta, err = refundDelta(original.Policy, original.Base, original.Accrued, h.principal+principal, h.deducted)
+			if err != nil {
+				return refundProblem(err)
 			}
-		}
-		delta, err := refundDelta(policy, original.Base, original.Accrued, h.principal+principal, h.deducted)
-		if errors.Is(err, errRefundPolicy) {
-			return "REFUND_POLICY_MISSING", nil
-		}
-		if errors.Is(err, errRefundAmount) {
-			return "REFUND_AMOUNT_EXCEEDS_PAYMENT", nil
-		}
-		if err != nil {
-			return "", err
 		}
 		line := refundLine{
 			OriginalLineID: original.ID, RefundPeriodID: event.RefundPeriodID, RefundSourceVersionID: event.ID,
@@ -330,4 +381,15 @@ func applyHistoricalRefund(draft *paymentDraft, event refundInput, originals []r
 		draft.RefundTotal += line.Amount
 	}
 	return "", nil
+}
+
+func refundProblem(err error) (string, error) {
+	switch {
+	case errors.Is(err, errRefundPolicy):
+		return "REFUND_POLICY_MISSING", nil
+	case errors.Is(err, errRefundAmount):
+		return "REFUND_AMOUNT_EXCEEDS_PAYMENT", nil
+	default:
+		return "", err
+	}
 }
