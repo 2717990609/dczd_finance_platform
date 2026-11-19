@@ -132,6 +132,7 @@ function savedOpeningLabel(id) {
 }
 
 const labels = {ORDER_PAID:'付款',ORDER_REFUNDED:'退款',REFUND_SUCCEEDED:'退款',REFUND_ADJUSTED:'退款更正',DELIVERY_COMPLETED:'已交付'}
+const catalogScopeLabels = {BUSINESS_SCENARIO:'业务场景',CROSS_SCENARIO_AGGREGATE:'跨场景汇总'}
 const canOpenAction = computed(() => current.value!=='rules' ||
   !data.value.products.some(product => product.id===productScope.value && product.catalogPending))
 function catalogRuleBadge(row) {
@@ -452,7 +453,8 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='scope'">
                   <template v-if="record.catalogPending">
-                    {{ record.scopeId || record.scopeType }}<small class="order-version">{{ record.project }} · {{ record.scopeType }}</small>
+                    {{ record.scopeId || catalogScopeLabels[record.scopeType] || '未细分范围' }}
+                    <small class="order-version">{{ record.project }}<template v-if="record.scopeId && catalogScopeLabels[record.scopeType]"> · {{ catalogScopeLabels[record.scopeType] }}</template></small>
                   </template>
                   <template v-else>{{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}</template>
                 </template>
