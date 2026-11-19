@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  AppstoreOutlined, CalculatorOutlined, CalendarOutlined, CloudSyncOutlined, DatabaseOutlined,
+  AppstoreOutlined, BankOutlined, CalculatorOutlined, CalendarOutlined, CloudSyncOutlined,
   FileSearchOutlined, LinkOutlined, PlusOutlined, ProfileOutlined, ReloadOutlined, TeamOutlined,
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
@@ -13,12 +13,25 @@ const navigation = [
   {key:'periods', title:'核算期次', icon:CalendarOutlined, description:'设置实际开班或结算窗口，查看各期匹配的规则。'},
   {key:'rules', title:'规则配置', icon:ProfileOutlined, description:'组合分润组件，并指定适用期次、起始期数或产品默认范围。'},
   {key:'orders', title:'来源订单', icon:FileSearchOutlined, description:'按原订单 ID 从子系统重拉，查询财务目前收到的业务记录。'},
-  {key:'people', title:'人员映射', icon:TeamOutlined, description:'将子系统人员标识映射到财务人员，保留历次归属。'},
+  {key:'people', title:'人员映射', icon:TeamOutlined, description:'查询财务计算使用的来源人员标识及有效区间。'},
 ]
 const getRoute = () => navigation.some(x => x.key === location.hash.slice(1)) ? location.hash.slice(1) : 'products'
 const current = ref(getRoute())
 const active = computed(() => navigation.find(x => x.key === current.value))
-const theme = {token:{colorPrimary:'#19745e', colorLink:'#19745e', colorText:'#182a26', borderRadius:8, fontSize:14, controlHeight:38}}
+const theme = {token:{colorPrimary:'#315ab2', colorLink:'#315ab2', colorText:'#253044', borderRadius:6, fontSize:14, controlHeight:34}}
+const productScope = ref()
+const scopeSearch = ref('')
+const productScopedPages = new Set(['products','periods','rules','settlement'])
+const usesProductScope = computed(() => productScopedPages.has(current.value))
+const showScope = computed(() => usesProductScope.value || current.value === 'orders')
+const legacyOrganizationURL = (() => {
+  try {
+    const url = new URL(import.meta.env.VITE_LEGACY_ORGANIZATION_URL)
+    return url.protocol === 'https:' && !url.username && !url.password ? url.href : ''
+  } catch {
+    return ''
+  }
+})()
 const data = ref({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[]})
 const loading = ref(false)
 const saving = ref(false)
@@ -44,12 +57,16 @@ const refundPolicies = [
   { value: 'non_refundable', label: '退款时不扣回' },
 ]
 const productOptions = computed(() => data.value.products.map(p => ({value:p.id,label:p.name})))
+const visibleProducts = computed(() => {
+  const term = scopeSearch.value.trim().toLowerCase()
+  return term ? data.value.products.filter(p => (p.name+' '+p.code).toLowerCase().includes(term)) : data.value.products
+})
 const peopleOptions = computed(() => data.value.people.map(p => ({value:p.id,label:p.name})))
 const periodOptions = computed(() => data.value.periods.filter(p => p.productId === draft.value.productId).map(p => ({value:p.id,label:p.name})))
 const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
 const calendarPeriods = computed(() => {
   const ids = new Set(data.value.products.filter(p => p.periodMode === 'calendar').map(p => p.id))
-  return data.value.periods.filter(p => ids.has(p.productId))
+  return data.value.periods.filter(p => ids.has(p.productId) && (!productScope.value || p.productId === productScope.value))
 })
 const enabledSources = computed(() => data.value.sources.filter(s => s.configured).length)
 const sourceLabel = key => sources.find(s => s.value === key)?.label.split(' · ')[0] || key
@@ -64,7 +81,10 @@ const formatMoney = minor => minor == null ? '—' : new Intl.NumberFormat('zh-C
 const labels = {ORDER_PAID:'付款',ORDER_REFUNDED:'退款',REFUND_SUCCEEDED:'退款',REFUND_ADJUSTED:'退款更正',DELIVERY_COMPLETED:'已交付'}
 const mainRows = computed(() => {
   const key = tab.value === 'mapping' ? 'mappings' : tab.value === 'identity' ? 'identities' : current.value
-  const rows = data.value[key]
+  const result = data.value[key]
+  const rows = usesProductScope.value && productScope.value
+    ? result.filter(row => (key === 'products' ? row.id : row.productId) === productScope.value)
+    : result
   if (current.value === 'orders' || !filter.value.trim()) return rows
   const q = filter.value.trim().toLowerCase()
   return rows.filter(row => Object.values(row).some(value => typeof value === 'string' && value.toLowerCase().includes(q)))
@@ -73,7 +93,7 @@ const columns = computed(() => {
   const values = {
     product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['来源映射','mappingCount']],
     mapping:[['产品名称','productName'],['来源系统','source'],['业务域','domain'],['来源标识','sourceKey']],
-    period:[['期次名称','name'],['所属产品','productName'],['期数','ordinal'],['开始日期','startsOn'],['结束日期','endsOn'],['匹配规则','ruleVersion']],
+    period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],['匹配规则','ruleVersion',200]],
     rule:[['规则名称','label'],['所属产品','productName'],['版本','version'],['适用范围','scope'],['生效时间','effectiveFrom'],['分润组件','components']],
     pull:[['原订单','orderNo',250],['来源系统','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
     person:[['人员名称','name'],['人员 ID','id']],
@@ -81,6 +101,7 @@ const columns = computed(() => {
   }
   return values[actions.value].map(([title,dataIndex,width]) => ({title,dataIndex,key:dataIndex,width}))
 })
+const tableWidth = computed(() => Math.max(620, columns.value.reduce((width, column) => width + (column.width || 0), 0)))
 
 async function api(path, options) {
   const response = await fetch('/api/v1' + path, {...options, headers:{'Content-Type':'application/json'}})
@@ -130,6 +151,10 @@ watch(() => draft.value.productId, (next, previous) => {
   }
 })
 function resetOrders() { olderThan.value = ''; pageStack.value=[]; refresh() }
+function selectSource(source) {
+  sourceFilter.value = source
+  resetOrders()
+}
 function nextOrders() {
   pageStack.value.push(olderThan.value)
   olderThan.value = String(data.value.orders.at(-1).id)
@@ -144,6 +169,7 @@ function open(kind, row) {
   draft.value = {
     periodMode:'class',cycleStartDay:25,source:row?.source || 'DCZD',stream:row?.source === 'DCAI' && String(row.domain).includes('HEALTH') ? 'HEALTH_IDENTITY_ORDERS' : 'VIP_ORDERS',
     orderId:row?.orderId || '',scope:'default',components:[{type:'sales',mode:'rate',amount:0}],
+    productId:['mapping','period','rule'].includes(kind) ? productScope.value : undefined,
   }
 }
 function close() { if (!saving.value) drawer.value = '' }
@@ -201,21 +227,55 @@ async function save() {
 <template>
 <a-config-provider :theme="theme" :locale="zhCN" :auto-insert-space-in-button="false">
   <div class="layout">
-    <aside class="sidebar">
-      <div class="brand"><div class="brand-icon"><DatabaseOutlined /></div><div><b>财务核算平台</b><small>Finance Workspace</small></div></div>
-      <nav aria-label="主导航">
-        <a v-for="entry in navigation" :key="entry.key" :href="'#'+entry.key" :class="{active:current===entry.key}" :aria-current="current === entry.key ? 'page' : undefined"><component :is="entry.icon" aria-hidden="true"/><span>{{ entry.title }}</span></a>
-      </nav>
-      <div class="sidebar-bottom"><span class="live-dot"></span> 本地开发环境</div>
-    </aside>
-    <div class="surface">
-      <header class="topbar"><div class="path">财务工作台 <i>/</i> <strong>{{ active.title }}</strong></div><a-button type="text" :loading="loading" @click="refresh"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新</a-button></header>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-icon"><BankOutlined aria-hidden="true"/></span>
+        <div class="path"><b>财务工作台</b><span aria-hidden="true">/</span><span>{{ active.title }}</span></div>
+      </div>
+      <div class="topbar-actions">
+        <a-button v-if="legacyOrganizationURL" :href="legacyOrganizationURL" target="_blank" rel="noopener noreferrer">组织与人员</a-button>
+        <a-button v-if="current!=='settlement'" :loading="loading" @click="refresh"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新数据</a-button>
+      </div>
+    </header>
+    <nav class="workspace-nav" aria-label="主导航">
+      <a v-for="entry in navigation" :key="entry.key" :href="'#'+entry.key" :class="{active:current===entry.key}" :aria-current="current===entry.key ? 'page' : undefined">
+        <component :is="entry.icon" aria-hidden="true"/><span>{{ entry.title }}</span>
+      </a>
+    </nav>
+    <div class="workspace-body" :class="{ 'with-scope':showScope }">
+      <aside v-if="showScope" class="scope-panel" aria-label="筛选范围">
+        <template v-if="usesProductScope">
+          <label for="scope-product-search" class="desktop-scope scope-title">产品范围</label>
+          <div class="desktop-scope">
+            <a-input id="scope-product-search" v-model:value="scopeSearch" placeholder="搜索产品名称或编码" allow-clear/>
+            <div class="scope-options" aria-label="产品范围">
+              <button type="button" :aria-pressed="!productScope" @click="productScope=undefined">全部产品</button>
+              <button v-for="p in visibleProducts" :key="p.id" type="button" :aria-pressed="p.id===productScope" @click="productScope=p.id">{{ p.name }}</button>
+            </div>
+          </div>
+          <div class="mobile-scope">
+            <label for="scope-product">产品范围</label>
+            <a-select id="scope-product" v-model:value="productScope" placeholder="全部产品" :options="productOptions" allow-clear/>
+          </div>
+        </template>
+        <template v-else>
+          <span class="desktop-scope scope-title">订单来源</span>
+          <div class="desktop-scope scope-options" aria-label="订单来源">
+            <button type="button" :aria-pressed="!sourceFilter" @click="selectSource('')">全部来源</button>
+            <button v-for="entry in sources" :key="entry.value" type="button" :aria-pressed="sourceFilter===entry.value" @click="selectSource(entry.value)">{{ entry.label }}</button>
+          </div>
+          <div class="mobile-scope">
+            <label for="scope-source">订单来源</label>
+            <a-select id="scope-source" :value="sourceFilter || undefined" placeholder="全部来源" :options="sources" allow-clear @change="selectSource($event || '')"/>
+          </div>
+        </template>
+      </aside>
       <main class="workspace-content">
         <DraftWorkbench v-if="current==='settlement'" :periods="calendarPeriods" :api="api" :format-money="formatMoney" :format-time="formatTime" />
         <template v-else>
         <section class="heading">
           <div><h1>{{ active.title }}</h1><p>{{ active.description }}</p></div>
-          <a-button type="primary" size="large" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
+          <a-button type="primary" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
         </section>
         <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
         <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
@@ -231,16 +291,15 @@ async function save() {
           <div class="records-head">
             <a-tabs v-if="current==='products'||current==='people'" v-model:active-key="tab" @change="filter=''">
               <a-tab-pane key="main" :tab="current==='products'?'产品列表':'人员列表'"/>
-              <a-tab-pane :key="current==='products'?'mapping':'identity'" :tab="current==='products'?'来源映射':'归属历史'"/>
+              <a-tab-pane :key="current==='products'?'mapping':'identity'" :tab="current==='products'?'来源映射':'映射历史'"/>
             </a-tabs>
             <h2 v-else>{{ {periods:'期次列表',rules:'已生效规则',orders:'订单业务记录'}[current] }}</h2>
             <div class="search">
-              <a-select v-if="current==='orders'" v-model:value="sourceFilter" style="width:134px" allow-clear placeholder="全部来源" :options="sources" @change="resetOrders"/>
               <a-input-search v-model:value="filter" :placeholder="current==='orders'?'输入原订单 ID':'在当前列表中搜索'" :aria-label="current==='orders'?'原订单 ID':'搜索列表'" allow-clear @search="current==='orders'&&resetOrders()"/>
             </div>
           </div>
           <div class="table-container">
-            <a-table :columns="columns" :data-source="mainRows" :loading="loading" row-key="id" :pagination="current==='orders'?false:{pageSize:12,showSizeChanger:false}" :scroll="{x: current==='orders'?860:620}">
+            <a-table :columns="columns" :data-source="mainRows" :loading="loading" row-key="id" :pagination="current==='orders'?false:{pageSize:12,showSizeChanger:false}" :scroll="{x:tableWidth}">
               <template #bodyCell="{ column, record, text }">
                 <template v-if="column.key==='name'||column.key==='label'"><strong class="primary-cell">{{ text }}</strong></template>
                 <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ text==='class'?'实际开班':'固定账期' }}</a-tag></template>

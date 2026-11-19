@@ -60,7 +60,10 @@ async function load(replace = false) {
   const request = ++sequence
   if (replace) draft.value = undefined
   error.value = ''
-  if (!selected.value) return
+  if (!selected.value) {
+    loading.value = false
+    return
+  }
   loading.value = true
   try {
     const result = await props.api('/drafts?periodId=' + selected.value)
@@ -72,6 +75,9 @@ async function load(replace = false) {
   }
 }
 watch(selected, () => load(true))
+watch(options, (values) => {
+  if (selected.value && !values.some(option => option.value === selected.value)) selected.value = undefined
+})
 
 async function calculate() {
   if (!selected.value || calculating.value) return
