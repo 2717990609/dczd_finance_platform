@@ -100,3 +100,74 @@ func TestFinancialInputChangesRefreshOnlyAffectedDrafts(t *testing.T) {
 		t.Fatalf("unrelated product was calculated: %v %v", exists, err)
 	}
 }
+
+func TestDraftWorkerRetriesLockedPeriodAfterMissingRuleIsPublished(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(result any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.(map[string]int64)["id"]
+	}
+	day := 1
+	product := id(s.createProduct(ctx, createProductInput{Code: "RETRY", Name: "定时试算", PeriodMode: "calendar", CycleStartDay: &day}))
+	period := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "八月", SettlementMonth: "2026-08"}))
+	if err := s.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var waitingGeneration int64
+	var retry bool
+	var message string
+	if err := s.db.QueryRow(ctx, `SELECT generation,retry_on_scan,message FROM draft_refresh_queue WHERE period_id=$1`, period).
+		Scan(&waitingGeneration, &retry, &message); err != nil || retry || message != errDraftRule.Error() {
+		t.Fatalf("missing rules should pause that generation: %t %q %v", retry, message, err)
+	}
+	lock, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback(ctx)
+	if _, err := lock.Exec(ctx, `SELECT id FROM periods WHERE id=$1 FOR NO KEY UPDATE`, period); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, Label: "首版规则", Components: []component{
+		{Type: "sales", Mode: "rate", Value: 1000, SourceRole: "LOCK_SALES_USER"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var generation int64
+	if err := s.db.QueryRow(ctx, `SELECT generation,retry_on_scan,message FROM draft_refresh_queue WHERE period_id=$1`, period).
+		Scan(&generation, &retry, &message); err != nil || generation <= waitingGeneration || !retry || message != "" {
+		t.Fatalf("the refreshed generation should survive a locked period: %d %t %q %v", generation, retry, message, err)
+	}
+	if err := lock.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	stop := s.startDraftRefreshWorker(ctx, 10*time.Millisecond)
+	defer stop()
+	deadline, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		var version int64
+		var pending bool
+		if err := s.db.QueryRow(deadline, `SELECT coalesce((SELECT version FROM calculation_drafts WHERE period_id=$1),0),
+		 EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, period).Scan(&version, &pending); err != nil {
+			t.Fatal(err)
+		}
+		if version == 1 && !pending {
+			return
+		}
+		select {
+		case <-deadline.Done():
+			t.Fatal("the background worker did not process the retained generation")
+		case <-ticker.C:
+		}
+	}
+}

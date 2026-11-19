@@ -426,37 +426,11 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	if _, err = tx.Exec(ctx, "DELETE FROM calculation_draft_refunds WHERE period_id=$1", summary.PeriodID); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, "DELETE FROM calculation_draft_lines WHERE period_id=$1", summary.PeriodID); err != nil {
+	if err = storeDraftLines(ctx, tx, summary, result.Lines); err != nil {
 		return err
 	}
 	if _, err = tx.Exec(ctx, "DELETE FROM calculation_draft_issues WHERE period_id=$1", summary.PeriodID); err != nil {
 		return err
-	}
-	if len(result.Lines) != 0 {
-		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_lines"},
-			[]string{"period_id", "source_version_id", "component_type", "rule_id", "identity_id", "person_id", "base_minor", "amount_minor", "practice_enrollment_id", "company_id", "department_id", "catalog_rule_id", "beneficiary_unit_id", "allocation_owner_id", "applied_rate_bps", "practice_pool_id"},
-			pgx.CopyFromSlice(len(result.Lines), func(i int) ([]any, error) {
-				l := result.Lines[i]
-				var benefit catalogDraftBenefit
-				var appliedRate *int64
-				var practicePoolID int64
-				if l.Catalog != nil {
-					benefit = *l.Catalog
-					appliedRate = &benefit.Rate
-				}
-				if l.BeneficiaryUnit != nil {
-					benefit.Unit = *l.BeneficiaryUnit
-				}
-				if l.PracticePool != nil {
-					practicePoolID, benefit.AllocationOwnerID = l.PracticePool.PoolID, l.PracticePool.OwnerID
-				}
-				return []any{summary.PeriodID, l.FactID, l.Component, optionalDraftID(l.RuleID), optionalDraftID(l.IdentityID),
-					optionalDraftID(l.PersonID), l.Base, l.Amount, optionalDraftID(l.EnrollmentID), l.organization.Company, l.organization.Department,
-					benefit.Rule, benefit.Unit, optionalDraftID(benefit.AllocationOwnerID), appliedRate, optionalDraftID(practicePoolID)}, nil
-			}))
-		if err != nil {
-			return err
-		}
 	}
 	if len(result.Issues) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_issues"},

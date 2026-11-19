@@ -8,11 +8,13 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -60,7 +62,7 @@ func emptyIntegrationDB(t *testing.T) *pgxpool.Pool {
 	return db
 }
 
-func TestDraftStoreReusesUnchangedVersionAndAtomicallyReplacesChangedLines(t *testing.T) {
+func TestDraftStoreReusesUnchangedVersionAndReplacesOnlyChangedOrdinaryLines(t *testing.T) {
 	ctx := context.Background()
 	service := workspace{db: integrationDB(t)}
 	mustID := func(result any, err error) int64 {
@@ -105,21 +107,38 @@ func TestDraftStoreReusesUnchangedVersionAndAtomicallyReplacesChangedLines(t *te
 			t.Fatal(err)
 		}
 		head := data.(draftSummary)
-		if head.Version != version || head.Total != total || head.IssueCount != 0 || head.LineCount != 1 {
+		if head.Version != version || head.Total != total || head.IssueCount != 0 || head.LineCount != 2 {
 			t.Fatalf("unexpected draft: %+v", head)
 		}
 	}
 	insert("1", 990, at)
-	check(1, 99)
+	fact.OrderID, fact.PaymentID, fact.RecordKey = "O2", "P2", "orders:2"
+	insert("1", 2000, at)
+	fact.OrderID, fact.PaymentID, fact.RecordKey = "O1", "P1", "orders:1"
+	idFor := func(order string) int64 {
+		t.Helper()
+		var id int64
+		if err := service.db.QueryRow(ctx, `SELECT l.id FROM calculation_draft_lines l JOIN source_order_versions v ON v.id=l.source_version_id
+		 WHERE l.period_id=$1 AND v.order_id=$2`, period, order).Scan(&id); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	check(1, 299)
+	first, second := idFor("O1"), idFor("O2")
 	fact.OrderNo = "display-only change"
 	insert("2", 990, at.Add(time.Minute))
-	check(1, 99)
+	check(1, 299)
 	insert("3", 105, at.Add(2*time.Minute))
-	check(2, 11)
+	check(2, 211)
+	updated := idFor("O1")
+	if updated == first || idFor("O2") != second {
+		t.Fatal("an order revision should replace its line and keep the unrelated line")
+	}
 	var count int
 	var amount int64
-	err := service.db.QueryRow(ctx, "SELECT count(*), max(amount_minor) FROM calculation_draft_lines WHERE period_id=$1", period).Scan(&count, &amount)
-	if err != nil || count != 1 || amount != 11 {
+	err := service.db.QueryRow(ctx, "SELECT count(*), sum(amount_minor) FROM calculation_draft_lines WHERE period_id=$1", period).Scan(&count, &amount)
+	if err != nil || count != 2 || amount != 211 {
 		t.Fatalf("stored lines: count=%d amount=%d error=%v", count, amount, err)
 	}
 	response := httptest.NewRecorder()
@@ -127,6 +146,92 @@ func TestDraftStoreReusesUnchangedVersionAndAtomicallyReplacesChangedLines(t *te
 	service.getDraft(response, request)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("stale draft pagination returned HTTP %d", response.Code)
+	}
+	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, Label: "新版规则", Components: []component{
+		{Type: "sales", Mode: "rate", Value: 1250, SourceRole: "LOCK_SALES_USER"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	check(3, 263)
+	if idFor("O1") == updated || idFor("O2") == second {
+		t.Fatal("both orders should use the new rule and receive new detail rows")
+	}
+}
+
+func TestDraftStorePreservesUnchangedPoolFundingAndRebuildsChangedOrder(t *testing.T) {
+	ctx := context.Background()
+	db, err := integrationDB(t).Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Release()
+	const unitID = "10000000-0000-4000-8000-000000000001"
+	if _, err := db.Exec(ctx, `INSERT INTO products(code,name,period_mode) VALUES('POOL_STORAGE','班次池','class');
+	 INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on) VALUES(1,'班次',1,'2026-08-01','2026-08-02');
+	 INSERT INTO rule_versions(product_id,version,label,components) VALUES(1,1,'样本','[]');
+	 INSERT INTO people(name) VALUES('销售及池负责人');
+	 INSERT INTO identity_mappings(person_id,source,external_id,valid_from) VALUES(1,'DCZD','seller','2026-01-01');
+	 INSERT INTO organization_units(id,kind,name,status) VALUES('`+unitID+`','COMPANY','样本公司','ACTIVE');
+	 INSERT INTO practice_pools(product_id,unit_id,name) VALUES(1,'`+unitID+`','样本池');
+	 INSERT INTO practice_enrollments(period_key,source_enrollment_id,participant_id,membership_type,commission_eligible,signed_at,paid_order_ids,hash)
+	 VALUES('PRACTICE:1:1:1','1','1',3,true,'2026-08-01',ARRAY['1','2'],decode('00','hex'));
+	 INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
+	 SELECT 'DCZD',n::text,'','orders:'||n,'1','ORDER_PAID','2026-08-01','{}','2026-08-01' FROM generate_series(1,2) n ORDER BY n;`); err != nil {
+		t.Fatal(err)
+	}
+	var unit pgtype.UUID
+	if err := unit.Scan(unitID); err != nil {
+		t.Fatal(err)
+	}
+	first := draftLine{FactID: 1, RuleID: 1, EnrollmentID: 1, Component: "period:pool:1", Amount: 100, Base: 1000,
+		BeneficiaryUnit: &unit, PracticePool: &practicePoolTarget{PoolID: 1, OwnerID: 1}}
+	second := first
+	second.FactID = 2
+	sales := draftLine{FactID: 1, RuleID: 1, PersonID: 1, IdentityID: 1, Component: "sales", Amount: 120, Base: 1000}
+	save := func(version byte, lines []draftLine) {
+		t.Helper()
+		var total int64
+		for _, line := range lines {
+			total += line.Amount
+		}
+		if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+			return storeDraft(ctx, tx, &draftSummary{PeriodID: 1, RuleID: 1}, []byte{version}, paymentDraft{Lines: lines, Total: total})
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	poolLines := func() ([]int64, []int64) {
+		t.Helper()
+		var ids, sources []int64
+		if err := db.QueryRow(ctx, `SELECT array_agg(id ORDER BY id),array_agg(source_version_id ORDER BY id)
+		 FROM calculation_draft_lines WHERE allocation_owner_id IS NOT NULL`).Scan(&ids, &sources); err != nil {
+			t.Fatal(err)
+		}
+		return ids, sources
+	}
+	save(1, []draftLine{first, second, sales})
+	before, _ := poolLines()
+	if _, err := db.Exec(ctx, `INSERT INTO monthly_pool_allocations(period_id,unit_id,item_key,scenario_key,draft_version,basis_token,revision)
+	 VALUES(1,'`+unitID+`','pool','practice',1,'fixture',1);
+	 INSERT INTO monthly_pool_allocation_shares(allocation_id,person_id,amount_minor) VALUES(1,NULL,100);
+	 INSERT INTO monthly_pool_allocation_funding(share_id,source_line_id,amount_minor)
+	 SELECT 1,id,100 FROM calculation_draft_lines WHERE source_version_id=1 AND allocation_owner_id IS NOT NULL;`); err != nil {
+		t.Fatal(err)
+	}
+	sales.Amount = 125
+	save(2, []draftLine{first, sales, second})
+	stable, order := poolLines()
+	if !slices.Equal(before, stable) || !slices.Equal(order, []int64{1, 2}) {
+		t.Fatalf("an ordinary sale should keep the pool postings: %v %v", stable, order)
+	}
+	var funding int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM monthly_pool_allocation_funding`).Scan(&funding); err != nil || funding != 1 {
+		t.Fatalf("unchanged funding was lost: %d %v", funding, err)
+	}
+	save(3, []draftLine{second, sales, first})
+	replaced, order := poolLines()
+	if !slices.Equal(order, []int64{2, 1}) || slices.Contains(before, replaced[0]) || slices.Contains(before, replaced[1]) {
+		t.Fatalf("pool credits should follow the fresh calculation order: %v %v", replaced, order)
 	}
 }
 
