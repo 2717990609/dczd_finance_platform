@@ -123,3 +123,14 @@ func TestDraftStoreReusesUnchangedVersionAndAtomicallyReplacesChangedLines(t *te
 		t.Fatalf("stale draft pagination returned HTTP %d", response.Code)
 	}
 }
+
+func TestCalendarDraftDigestRemainsCompatible(t *testing.T) {
+	result := paymentDraft{Lines: []draftLine{{FactID: 42, PersonID: 3, IdentityID: 4, RuleID: 17, Component: "sales", Base: 990, Amount: 99}}}
+	facts := []paymentInput{{ID: 42, Fact: sourceFact{Source: "DCAI", OrderID: "O1", PaymentID: "P1", RecordKey: "orders:1",
+		OccurredAt: time.Date(2026, 8, 1, 8, 0, 0, 0, time.UTC)}}}
+	digest, err := digestDraft(17, result, facts)
+	const previous = "4d531cd1e84d9fb81bdb5789bb4d9599d98c7732f3190db8fd1322a1249162a1"
+	if err != nil || fmt.Sprintf("%x", digest) != previous {
+		t.Fatalf("calendar digest = %x, error = %v", digest, err)
+	}
+}

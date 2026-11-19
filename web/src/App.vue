@@ -64,9 +64,27 @@ const visibleProducts = computed(() => {
 const peopleOptions = computed(() => data.value.people.map(p => ({value:p.id,label:p.name})))
 const periodOptions = computed(() => data.value.periods.filter(p => p.productId === draft.value.productId).map(p => ({value:p.id,label:p.name})))
 const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
-const calendarPeriods = computed(() => {
-  const ids = new Set(data.value.products.filter(p => p.periodMode === 'calendar').map(p => p.id))
-  return data.value.periods.filter(p => ids.has(p.productId) && (!productScope.value || p.productId === productScope.value))
+const calculationPeriods = computed(() => data.value.periods.filter(p => !productScope.value || p.productId === productScope.value))
+const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
+const classMembers = [{value:'',label:'全部'},{value:'new',label:'新报'},{value:'retrain',label:'复训'}]
+const componentTypes = computed(() => classRule.value ? components.filter(c => ['sales','referral'].includes(c.value)) : components)
+function availableComponentTypes(row) {
+  return componentTypes.value.filter(type => !draft.value.components.some(c =>
+    c !== row && c.type === type.value && (!classRule.value || !c.classMember || !row.classMember || c.classMember === row.classMember)))
+}
+function availableClassMembers(row) {
+  return classMembers.filter(member => !draft.value.components.some(c =>
+    c !== row && c.type === row.type && (!c.classMember || !member.value || c.classMember === member.value)))
+}
+const nextComponent = computed(() => {
+  if (drawer.value !== 'rule') return undefined
+  const members = classRule.value ? classMembers : classMembers.slice(0,1)
+  for (const type of componentTypes.value) {
+    for (const {value:classMember} of members) {
+      const row = {type:type.value,classMember,mode:'rate',amount:0}
+      if (availableComponentTypes(row).some(option => option.value === row.type)) return row
+    }
+  }
 })
 const enabledSources = computed(() => data.value.sources.filter(s => s.configured).length)
 const sourceLabel = key => sources.find(s => s.value === key)?.label.split(' · ')[0] || key
@@ -148,6 +166,7 @@ watch(() => draft.value.productId, (next, previous) => {
   if (drawer.value === 'rule' && next !== previous) {
     draft.value.periodId = undefined
     draft.value.effectiveFrom = undefined
+    if (previous != null) draft.value.components = [{type:'sales',classMember:'',mode:'rate',amount:0}]
   }
 })
 function resetOrders() { olderThan.value = ''; pageStack.value=[]; refresh() }
@@ -168,7 +187,7 @@ function open(kind, row) {
   drawer.value = kind
   draft.value = {
     periodMode:'class',cycleStartDay:25,source:row?.source || 'DCZD',stream:row?.source === 'DCAI' && String(row.domain).includes('HEALTH') ? 'HEALTH_IDENTITY_ORDERS' : 'VIP_ORDERS',
-    orderId:row?.orderId || '',scope:'default',components:[{type:'sales',mode:'rate',amount:0}],
+    orderId:row?.orderId || '',scope:'default',components:[{type:'sales',classMember:'',mode:'rate',amount:0}],
     productId:['mapping','period','rule'].includes(kind) ? productScope.value : undefined,
   }
 }
@@ -186,14 +205,14 @@ function bodyFor(kind,f) {
       const settlementMonth = must(f.settlementMonth)
       return {productId, settlementMonth, name:f.name?.trim() || settlementMonth+' 账期'}
     }
-    return {productId,name:must(f.name),ordinal:must(f.ordinal),startsOn:must(f.startsOn),endsOn:must(f.endsOn)}
+    return {productId,name:must(f.name),ordinal:must(f.ordinal),startsOn:must(f.startsOn),endsOn:must(f.endsOn),...(f.sourcePeriodKey?.trim() ? {sourcePeriodKey:f.sourcePeriodKey.trim()} : {})}
   }
   if (kind === 'rule') return {productId:must(f.productId),label:must(f.label),
     ...(f.scope === 'period' ? {periodId:must(f.periodId)} : {}),
     ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal)} : {}),
     ...(f.effectiveFrom ? {effectiveFrom:new Date(f.effectiveFrom+'+08:00').toISOString()} : {}),
     components:f.components.map(c => ({type:must(c.type),mode:c.mode,value:Math.round(Number(must(c.amount,'请填写每个组件的比例或金额'))*100),...(c.sourceRole?.trim() ? {sourceRole:c.sourceRole.trim().toUpperCase()} : {}),
-      ...(c.refundPolicy ? {refundPolicy:c.refundPolicy} : {})})),
+      ...(c.refundPolicy ? {refundPolicy:c.refundPolicy} : {}),...(c.classMember ? {classMember:c.classMember} : {})})),
   }
   if (kind === 'person') return {name:must(f.name)}
   if (kind === 'identity') return {personId:must(f.personId),source:f.source,externalId:must(f.externalId),validFrom:new Date(must(f.validFrom)+'T00:00:00+08:00').toISOString()}
@@ -271,7 +290,7 @@ async function save() {
         </template>
       </aside>
       <main class="workspace-content">
-        <DraftWorkbench v-if="current==='settlement'" :periods="calendarPeriods" :api="api" :format-money="formatMoney" :format-time="formatTime" />
+        <DraftWorkbench v-if="current==='settlement'" :periods="calculationPeriods" :api="api" :format-money="formatMoney" :format-time="formatTime" />
         <template v-else>
         <section class="heading">
           <div><h1>{{ active.title }}</h1><p>{{ active.description }}</p></div>
@@ -304,11 +323,11 @@ async function save() {
                 <template v-if="column.key==='name'||column.key==='label'"><strong class="primary-cell">{{ text }}</strong></template>
                 <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ text==='class'?'实际开班':'固定账期' }}</a-tag></template>
                 <template v-else-if="column.key==='mappingCount'">{{ data.mappings.filter(x=>x.productId===record.id).length }}</template>
-                <template v-else-if="column.key==='ruleVersion'"><a-tag v-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag><a-tag v-else color="orange">待配规则</a-tag></template>
+                <template v-else-if="column.key==='ruleVersion'"><a-tag v-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag><a-tag v-else color="orange">{{ record.periodMode==='class' && !record.classStartsAt ? '待签到名单' : '待配规则' }}</a-tag></template>
                 <template v-else-if="column.key==='version'"><a-tag color="green">v{{ text }}</a-tag></template>
                 <template v-else-if="column.key==='effectiveFrom'">{{ text ? formatTime(text) : '范围默认' }}</template>
                 <template v-else-if="column.key==='scope'">{{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}</template>
-                <template v-else-if="column.key==='components'"><a-tag v-for="c in text" :key="c.type">{{ components.find(x=>x.value===c.type)?.label }} {{ c.mode==='rate'?(c.value/100)+'%':formatMoney(c.value) }}</a-tag></template>
+                <template v-else-if="column.key==='components'"><a-tag v-for="c in text" :key="c.type+':'+(c.classMember || '')">{{ components.find(x=>x.value===c.type)?.label }}{{ c.classMember ? ' · '+classMembers.find(m=>m.value===c.classMember)?.label : '' }} {{ c.mode==='rate'?(c.value/100)+'%':formatMoney(c.value) }}</a-tag></template>
                 <template v-else-if="column.key==='source'">{{ sourceLabel(text) }}</template>
                 <template v-else-if="column.key==='orderNo'"><button class="order-link" type="button" @click="open('pull',record)" :title="'原订单 ID '+record.orderId">{{ text || record.orderId }}</button><small class="order-version">版本 {{ record.version }}</small></template>
                 <template v-else-if="column.key==='kind'"><a-tag>{{ labels[text] || text }}</a-tag></template>
@@ -351,24 +370,32 @@ async function save() {
           <a-form-item label="期次名称" required><a-input v-model:value="draft.name" aria-label="期次名称"/></a-form-item>
           <a-form-item label="期数" required><a-input-number v-model:value="draft.ordinal" aria-label="期数" :min="1" :precision="0"/></a-form-item>
           <div class="field-grid"><a-form-item label="开始日期" required><a-input v-model:value="draft.startsOn" aria-label="开始日期" type="date"/></a-form-item><a-form-item label="结束日期" required><a-input v-model:value="draft.endsOn" aria-label="结束日期" type="date"/></a-form-item></div>
+          <a-form-item label="来源期次标识" extra="填入子系统已确认签到名单的期次标识。">
+            <a-input v-model:value="draft.sourcePeriodKey" aria-label="来源期次标识" placeholder="PRACTICE:1:1:123" :maxlength="80"/>
+          </a-form-item>
         </template>
       </template>
       <template v-if="drawer==='rule'">
         <a-form-item label="规则名称" required><a-input v-model:value="draft.label" aria-label="规则名称"/></a-form-item>
-        <a-form-item label="适用范围"><a-select v-model:value="draft.scope" aria-label="适用范围" :options="[{value:'default',label:'产品默认'},{value:'ordinal',label:'从指定期数起'},{value:'period',label:'指定期次'}]"/></a-form-item>
-        <a-form-item v-if="draft.scope==='period'" label="指定期次" required><a-select v-model:value="draft.periodId" aria-label="指定期次" :options="periodOptions"/></a-form-item>
+        <a-form-item html-for="rule-scope" label="适用范围"><a-select id="rule-scope" v-model:value="draft.scope" :options="[{value:'default',label:'产品默认'},{value:'ordinal',label:'从指定期数起'},{value:'period',label:'指定期次'}]"/></a-form-item>
+        <a-form-item v-if="draft.scope==='period'" html-for="rule-period" label="指定期次" required><a-select id="rule-period" v-model:value="draft.periodId" :options="periodOptions"/></a-form-item>
         <a-form-item v-if="draft.scope==='ordinal'" label="起始期数" required><a-input-number v-model:value="draft.fromOrdinal" aria-label="起始期数" :min="1" :precision="0"/></a-form-item>
-        <a-form-item v-if="selectedProduct?.periodMode==='calendar'" label="生效时间" extra="按北京时间和原付款时间匹配。留空时作为该适用范围的默认规则。">
+        <a-form-item v-if="selectedProduct" label="生效时间" :extra="classRule ? '按北京时间的实际开班时点匹配。留空时作为该适用范围的默认规则。' : '按北京时间和原付款时间匹配。留空时作为该适用范围的默认规则。'">
           <a-input v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local"/>
         </a-form-item>
         <h3 class="form-subhead">分润组件</h3>
         <div v-for="(c,i) in draft.components" :key="i" class="component-editor">
           <div class="component-row">
-          <a-select v-model:value="c.type" :aria-label="'组件 '+(i+1)" :options="components.filter(x=>x.value===c.type||!draft.components.some(y=>y.type===x.value))"/>
-          <a-select v-model:value="c.mode" :aria-label="'计算方式 '+(i+1)" :options="[{value:'rate',label:'比例 %'},{value:'fixed',label:'金额 ¥'}]"/>
+          <label class="sr-only" :for="'rule-component-'+i">组件 {{ i+1 }}</label>
+          <a-select :id="'rule-component-'+i" v-model:value="c.type" :options="availableComponentTypes(c)"/>
+          <label class="sr-only" :for="'rule-mode-'+i">计算方式 {{ i+1 }}</label>
+          <a-select :id="'rule-mode-'+i" v-model:value="c.mode" :options="[{value:'rate',label:'比例 %'},{value:'fixed',label:'金额 ¥'}]"/>
           <a-input-number v-model:value="c.amount" :aria-label="'组件参数 '+(i+1)" :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
           <a-button v-if="draft.components.length>1" type="link" danger @click="draft.components.splice(i,1)">移除</a-button>
           </div>
+          <a-form-item v-if="classRule" :html-for="'rule-member-'+i" :label="'报名类型 '+(i+1)">
+            <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="availableClassMembers(c)"/>
+          </a-form-item>
           <a-form-item v-if="['sales','referral'].includes(c.type)" :label="'分项 '+(i+1)+' 的来源角色'">
             <a-input v-model:value="c.sourceRole" :aria-label="'来源角色 '+(i+1)" placeholder="如 LOCK_SALES_USER 或 DIRECT_REFERRER" :maxlength="64"/>
           </a-form-item>
@@ -376,7 +403,7 @@ async function save() {
             <a-select v-model:value="c.refundPolicy" :options="refundPolicies" allow-clear placeholder="选择退款处理"/>
           </a-form-item>
         </div>
-        <a-button v-if="draft.components.length<4" type="dashed" block @click="draft.components.push({type:components.find(x=>!draft.components.some(y=>x.value===y.type)).value,mode:'rate',amount:0})">添加组件</a-button>
+        <a-button v-if="nextComponent" type="dashed" block @click="draft.components.push(nextComponent)">添加组件</a-button>
       </template>
       <a-form-item v-if="drawer==='person'" label="人员名称" required><a-input v-model:value="draft.name" aria-label="人员名称"/></a-form-item>
       <template v-if="drawer==='identity'">

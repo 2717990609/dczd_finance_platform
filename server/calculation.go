@@ -36,26 +36,30 @@ type paymentRule struct {
 
 type draftLine struct {
 	FactID, PersonID, IdentityID, RuleID int64
+	EnrollmentID                         int64 `json:",omitempty"`
 	Component                            string
 	Base, Amount                         int64
 }
 
 type draftIssue struct {
-	FactID    int64  `json:"factId,omitempty"`
-	RuleID    int64  `json:"ruleId,omitempty"`
-	Component string `json:"component,omitempty"`
-	Code      string `json:"code"`
-	stableKey string
+	FactID       int64  `json:"factId,omitempty"`
+	RuleID       int64  `json:"ruleId,omitempty"`
+	Component    string `json:"component,omitempty"`
+	Code         string `json:"code"`
+	EnrollmentID int64  `json:"enrollmentId,omitempty"`
+	stableKey    string
 }
 
 type paymentDraft struct {
-	Lines           []draftLine
-	Issues          []draftIssue
-	Refunds         []refundLine
-	Corrections     []correctionLine
-	Total           int64
-	RefundTotal     int64
-	CorrectionTotal int64
+	PracticeStartsAt    time.Time
+	PracticeEnrollments []int64
+	Lines               []draftLine
+	Issues              []draftIssue
+	Refunds             []refundLine
+	Corrections         []correctionLine
+	Total               int64
+	RefundTotal         int64
+	CorrectionTotal     int64
 }
 
 func isPeriodPayment(window periodWindow, fact sourceFact) bool {

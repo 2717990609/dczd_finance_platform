@@ -85,6 +85,16 @@ func main() {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if len(os.Args) != 1 {
+		if len(os.Args) != 3 || os.Args[1] != "import-practice-roster" {
+			log.Fatal("usage: import-practice-roster <source-roster.json>")
+		}
+		if err := importPracticeFile(ctx, cfg, os.Args[2]); err != nil {
+			log.Print("practice roster import failed")
+			log.Fatal(err)
+		}
+		return
+	}
 	log.Printf("finance platform listening on %s", cfg.addr)
 	if err := run(ctx, cfg); err != nil {
 		log.Fatal(err)

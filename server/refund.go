@@ -33,10 +33,7 @@ func refundDelta(policy component, base, accrued, principal, alreadyDeducted int
 		if policy.Mode == "rate" {
 			remaining = calculatePaymentAmount(base-principal, policy)
 		} else {
-			var value big.Int
-			value.Mul(big.NewInt(accrued), big.NewInt(base-principal))
-			value.Add(&value, big.NewInt(base/2))
-			remaining = value.Quo(&value, big.NewInt(base)).Int64()
+			remaining = prorateMinor(accrued, base-principal, base)
 		}
 	default:
 		return 0, errRefundPolicy
@@ -45,4 +42,12 @@ func refundDelta(policy component, base, accrued, principal, alreadyDeducted int
 		return 0, errRefundAmount
 	}
 	return remaining - accrued + alreadyDeducted, nil
+}
+
+// prorateMinor rounds the cumulative share to cents before adjacent shares are subtracted.
+func prorateMinor(amount, part, whole int64) int64 {
+	var value big.Int
+	value.Mul(big.NewInt(amount), big.NewInt(part))
+	value.Add(&value, big.NewInt(whole/2))
+	return value.Quo(&value, big.NewInt(whole)).Int64()
 }

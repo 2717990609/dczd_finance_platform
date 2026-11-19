@@ -76,8 +76,16 @@ CREATE TABLE IF NOT EXISTS source_order_versions (
 CREATE INDEX IF NOT EXISTS source_order_versions_lookup
  ON source_order_versions(source, order_id, line_id, record_key, kind, updated_at DESC, id DESC);
 
-ALTER TABLE products ADD COLUMN IF NOT EXISTS cycle_start_day smallint
- CHECK (cycle_start_day BETWEEN 1 AND 28 AND period_mode = 'calendar');
+ALTER TABLE products ADD COLUMN IF NOT EXISTS cycle_start_day smallint;
+DO $$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='products'::regclass AND conname='products_cycle_start_day_check') THEN
+  ALTER TABLE products DROP CONSTRAINT IF EXISTS products_check,
+   ADD CONSTRAINT products_cycle_start_day_check
+   CHECK (cycle_start_day IS NULL OR (cycle_start_day BETWEEN 1 AND 28 AND period_mode='calendar'));
+ END IF;
+END
+$$;
 ALTER TABLE periods ADD COLUMN IF NOT EXISTS calendar_month date;
 CREATE UNIQUE INDEX IF NOT EXISTS periods_calendar_month
  ON periods(product_id, calendar_month) WHERE calendar_month IS NOT NULL;
@@ -271,3 +279,43 @@ CREATE TABLE IF NOT EXISTS correction_recovery_decisions (
  reviewed_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY(original_line_id,person_id)
 );
+
+ALTER TABLE periods ADD COLUMN IF NOT EXISTS source_period_key text;
+CREATE UNIQUE INDEX IF NOT EXISTS periods_source_period_key ON periods(source_period_key) WHERE source_period_key IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS practice_rosters (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ period_key text NOT NULL,
+ source_version bigint NOT NULL CHECK(source_version>0),
+ source_hash text NOT NULL,
+ starts_at timestamptz NOT NULL,
+ confirmed_at timestamptz NOT NULL,
+ attendance_count int NOT NULL CHECK(attendance_count>=0),
+ UNIQUE(period_key,source_version)
+);
+CREATE TABLE IF NOT EXISTS practice_enrollments (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ period_key text NOT NULL,
+ source_enrollment_id text NOT NULL,
+ participant_id text NOT NULL,
+ membership_type smallint NOT NULL CHECK(membership_type BETWEEN 1 AND 3),
+ commission_eligible boolean NOT NULL,
+ signed_at timestamptz NOT NULL,
+ paid_order_ids text[] NOT NULL,
+ hash bytea NOT NULL,
+ UNIQUE(period_key,source_enrollment_id,hash)
+);
+CREATE TABLE IF NOT EXISTS practice_roster_members (
+ roster_id bigint NOT NULL REFERENCES practice_rosters(id),
+ enrollment_id bigint NOT NULL REFERENCES practice_enrollments(id),
+ PRIMARY KEY(roster_id,enrollment_id)
+);
+CREATE INDEX IF NOT EXISTS practice_enrollments_source_id ON practice_enrollments(source_enrollment_id,participant_id);
+CREATE INDEX IF NOT EXISTS practice_roster_members_enrollment ON practice_roster_members(enrollment_id);
+ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS practice_roster_id bigint REFERENCES practice_rosters(id);
+ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS practice_enrollment_id bigint REFERENCES practice_enrollments(id);
+ALTER TABLE calculation_draft_issues ADD COLUMN IF NOT EXISTS practice_enrollment_id bigint REFERENCES practice_enrollments(id);
+
+CREATE INDEX IF NOT EXISTS source_order_versions_practice_refund_payment
+ ON source_order_versions USING gin ((fact->'refundsPayment') jsonb_path_ops)
+ WHERE source='DCZD' AND kind='REFUND_SUCCEEDED';

@@ -37,6 +37,13 @@ const reason = {
   CORRECTION_MISSING_FACT_OR_RULE: '缺少原推荐规则或有效的最新付款金额',
   CORRECTION_REFUND_CONFLICT: '最新付款与已登记退款无法按原规则对平',
   CORRECTION_RECOVERY_PENDING: '原受益人的扣回处理尚未确认',
+  PRACTICE_DUPLICATE_ENROLLMENT: '同一报名和付款仍在其他期次，请在来源名单核对延期',
+  PRACTICE_REFUND_PENDING: '对应付款已有退款，待核对实战班退款处理',
+  PRACTICE_MEMBER_RULE_MISSING: '规则缺少此报名类型的分润分项',
+  PRACTICE_DUPLICATE_PAYMENT: '同一付款出现多次，请在来源核对报名和商品行',
+  PRACTICE_MISSING_PAYMENT: '缺少对应付款，请在来源核对订单',
+  PRACTICE_INVALID_PAYMENT: '付款金额或发生时间不符合签到计提条件',
+  PRACTICE_ATTRIBUTION_CONFLICT: '订金与尾款的受益人归属不一致',
 }
 const lineColumns = [
   { title: '原订单', key: 'order', width: 190 },
@@ -62,7 +69,7 @@ const correctionColumns = [
   { title:'调整金额', key:'amount', width:140 },
 ]
 const issueColumns = [
-  { title: '原订单 ID', dataIndex: 'orderId', width: 160 },
+  { title: '原订单或报名', key: 'source', width: 160 },
   { title: '分项', key: 'component', width: 110 },
   { title: '待核原因', key: 'reason', width: 240 },
 ]
@@ -126,17 +133,18 @@ async function loadMore(section, cursorName) {
 
 <template>
   <section class="heading">
-    <div><h1>分润试算</h1><p>选择固定账期，查看应计金额、订单版本和待核项。</p></div>
+    <div><h1>分润试算</h1><p>选择核算期，查看应计金额、订单版本和待核项。</p></div>
   </section>
   <section class="records draft-controls">
     <div class="draft-toolbar">
-      <label for="draft-period">产品和账期</label>
-      <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和账期" :disabled="calculating" />
+      <label for="draft-period">产品和核算期</label>
+      <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和核算期" :disabled="calculating" />
       <a-button type="primary" :disabled="!selected || loading || !!draft?.settlement" :loading="calculating" @click="calculate">重新试算</a-button>
       <a-button :disabled="!selected || loading || calculating" @click="load()">刷新结果</a-button>
     </div>
     <p v-if="selectedPeriod" class="draft-context">
-      账期 {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
+      {{ selectedPeriod.periodMode === 'class' ? '期次' : '账期' }} {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
+      <span v-if="draft?.practiceRosterVersion"> · 签到名单 v{{ draft.practiceRosterVersion }} · 到课 {{ draft.attendanceCount }} 人</span>
       <span v-if="draft?.settlement"> · 已结算 · {{ formatTime(draft.settlement.confirmedAt) }}</span>
       <span v-else-if="draft"> · 草稿 v{{ draft.version }} · {{ formatTime(draft.calculatedAt) }}</span>
     </p>
@@ -153,13 +161,13 @@ async function loadMore(section, cursorName) {
     <div class="table-container">
       <a-table :columns="lineColumns" :data-source="draft.lines" :pagination="false" row-key="id" :scroll="{ x: 755 }">
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'order'">{{ record.orderNo || record.orderId }}<small class="order-version">来源版本 {{ record.sourceVersion }}</small></template>
+          <template v-if="column.key === 'order'">{{ record.orderNo || record.orderId }}<small class="order-version">来源版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ record.membershipType === 3 ? '新报' : '复训' }} {{ record.enrollmentId }}</template></small></template>
           <template v-else-if="column.key === 'component'">{{ components[record.component] }}</template>
           <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}</template>
           <template v-else-if="column.key === 'base'">{{ formatMoney(record.baseMinor) }}</template>
           <template v-else-if="column.key === 'amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
         </template>
-        <template #emptyText><a-empty description="当前账期没有可计提明细" /></template>
+        <template #emptyText><a-empty description="本期没有可计提明细" /></template>
       </a-table>
     </div>
     <div v-if="draft.lineCount > draft.lines.length" class="paging"><a-button :loading="loading" @click="loadMore('lines', 'afterLineId')">加载下一页</a-button></div>
@@ -199,7 +207,8 @@ async function loadMore(section, cursorName) {
     <div class="table-container">
       <a-table :columns="issueColumns" :data-source="draft.issues" :pagination="false" row-key="id" :scroll="{ x: 510 }">
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'component'">{{ components[record.component] || '—' }}</template>
+          <template v-if="column.key === 'source'">{{ record.orderId || '—' }}<small v-if="record.enrollmentId" class="order-version">报名 {{ record.enrollmentId }}</small></template>
+          <template v-else-if="column.key === 'component'">{{ components[record.component] || '—' }}</template>
           <template v-else-if="column.key === 'reason'">{{ reason[record.code] || record.code }}</template>
         </template>
       </a-table>
@@ -207,6 +216,6 @@ async function loadMore(section, cursorName) {
     <div v-if="draft.issueCount > draft.issues.length" class="paging"><a-button :loading="loading" @click="loadMore('issues', 'afterIssueId')">加载下一页</a-button></div>
   </section>
   <section v-if="!draft && !error" class="records empty">
-    <a-empty :description="loading ? '正在读取试算' : selected ? '此账期暂无草稿' : '请选择固定账期'" />
+    <a-empty :description="loading ? '正在读取试算' : selected ? '本期暂无草稿' : '请选择核算期'" />
   </section>
 </template>

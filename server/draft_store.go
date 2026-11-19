@@ -13,7 +13,6 @@ import (
 )
 
 var (
-	errDraftScope = errors.New("当前试算支持已配置规则的固定账期")
 	errDraftRule  = errors.New("请先发布此范围的规则")
 	errDraftLimit = errors.New("当前范围订单过多，无法完成试算")
 )
@@ -21,25 +20,28 @@ var (
 type calculateDraftInput struct{ PeriodID int64 }
 
 type draftSummary struct {
-	PeriodID        int64     `json:"periodId"`
-	RuleID          int64     `json:"ruleId"`
-	RuleVersion     int       `json:"ruleVersion"`
-	Version         int64     `json:"version"`
-	Total           int64     `json:"totalMinor"`
-	Accrued         int64     `json:"accruedMinor"`
-	RefundTotal     int64     `json:"refundMinor"`
-	RefundCount     int       `json:"refundCount"`
-	CorrectionTotal int64     `json:"correctionMinor"`
-	CorrectionCount int       `json:"correctionCount"`
-	LineCount       int       `json:"lineCount"`
-	IssueCount      int       `json:"issueCount"`
-	CalculatedAt    time.Time `json:"calculatedAt"`
+	PracticeRosterID      *int64    `json:"-"`
+	PracticeStartsAt      time.Time `json:"-"`
+	PracticeRosterVersion int64     `json:"practiceRosterVersion,omitempty"`
+	PeriodID              int64     `json:"periodId"`
+	RuleID                int64     `json:"ruleId"`
+	RuleVersion           int       `json:"ruleVersion"`
+	Version               int64     `json:"version"`
+	Total                 int64     `json:"totalMinor"`
+	Accrued               int64     `json:"accruedMinor"`
+	RefundTotal           int64     `json:"refundMinor"`
+	RefundCount           int       `json:"refundCount"`
+	CorrectionTotal       int64     `json:"correctionMinor"`
+	CorrectionCount       int       `json:"correctionCount"`
+	LineCount             int       `json:"lineCount"`
+	IssueCount            int       `json:"issueCount"`
+	CalculatedAt          time.Time `json:"calculatedAt"`
 }
 
 const maxDraftPayments = 100000
 
 const draftScopeSQL = `SELECT pro.period_mode, p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
- (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
+ (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',coalesce(p.source_period_key,'')
  FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1 FOR UPDATE OF p`
 
 const draftRulesSQL = `SELECT rv.id,rv.version,rv.effective_from,rv.components FROM periods p
@@ -86,6 +88,9 @@ func (s workspace) recalculateDraft(ctx context.Context, input calculateDraftInp
 }
 
 func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window periodWindow, rules []paymentRule) (paymentDraft, []byte, error) {
+	if summary.PracticeRosterID != nil {
+		return computePracticeDraft(ctx, tx, summary, rules[0])
+	}
 	facts, identities, err := readDraftInputs(ctx, tx, summary.PeriodID, window, rules)
 	if err != nil {
 		return paymentDraft{}, nil, err
@@ -106,13 +111,21 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 
 func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (periodWindow, []paymentRule, error) {
 	var window periodWindow
-	var mode string
-	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through)
+	var mode, sourceKey string
+	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey)
 	if err != nil {
 		return window, nil, err
 	}
-	if mode != "calendar" {
-		return window, nil, errDraftScope
+	var classStart time.Time
+	if mode == "class" {
+		classStart, err = readPracticeHeader(ctx, tx, sourceKey, summary)
+		if err != nil {
+			return window, nil, err
+		}
+		summary.PracticeStartsAt = classStart
+		if classStart.Before(window.Start) || !classStart.Before(window.Through) {
+			return window, nil, errPracticeStart
+		}
 	}
 	rows, err := tx.Query(ctx, draftRulesSQL, summary.PeriodID, window.Through)
 	if err != nil {
@@ -130,6 +143,13 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 	}
 	if len(rules) == 0 {
 		return window, nil, errDraftRule
+	}
+	if mode == "class" {
+		rule := selectPaymentRule(rules, classStart)
+		if rule == nil {
+			return window, nil, errDraftRule
+		}
+		rules = []paymentRule{*rule}
 	}
 	summary.RuleID, summary.RuleVersion = rules[0].ID, rules[0].Version
 	return window, rules, nil
@@ -255,23 +275,32 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 			return nil, err
 		}
 	}
+	if !result.PracticeStartsAt.IsZero() {
+		if err := encode.Encode(struct {
+			StartsAt      time.Time
+			EnrollmentIDs []int64
+		}{result.PracticeStartsAt.UTC(), result.PracticeEnrollments}); err != nil {
+			return nil, err
+		}
+	}
 	return hash.Sum(nil), nil
 }
 
 func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []byte, result paymentDraft) error {
-	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count)
-	  VALUES($1,$2,1,$3,$4,$5,$6,now(),$7,$8,$9,$10)
+	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id)
+	  VALUES($1,$2,1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11)
 	  ON CONFLICT(period_id) DO UPDATE SET rule_id=excluded.rule_id,version=calculation_drafts.version+1,
 	  input_digest=excluded.input_digest,total_minor=excluded.total_minor,line_count=excluded.line_count,issue_count=excluded.issue_count,
 	  calculated_at=excluded.calculated_at,refund_minor=excluded.refund_minor,refund_count=excluded.refund_count,
-	  correction_minor=excluded.correction_minor,correction_count=excluded.correction_count
-	  WHERE calculation_drafts.input_digest<>excluded.input_digest RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count`,
-		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections)).
-		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount)
+	  correction_minor=excluded.correction_minor,correction_count=excluded.correction_count,practice_roster_id=excluded.practice_roster_id
+	  WHERE calculation_drafts.input_digest<>excluded.input_digest RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
+		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections), summary.PracticeRosterID).
+		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount, &summary.PracticeRosterID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		err = tx.QueryRow(ctx, `SELECT version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count
-		 FROM calculation_drafts WHERE period_id=$1`, summary.PeriodID).
-			Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount)
+		err = tx.QueryRow(ctx, `SELECT d.version,d.total_minor,d.line_count,d.issue_count,d.calculated_at,d.refund_minor,d.refund_count,d.correction_minor,d.correction_count,
+		 d.practice_roster_id,coalesce(r.source_version,0) FROM calculation_drafts d
+		 LEFT JOIN practice_rosters r ON r.id=d.practice_roster_id WHERE d.period_id=$1`, summary.PeriodID).
+			Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount, &summary.PracticeRosterID, &summary.PracticeRosterVersion)
 		if err != nil {
 			return err
 		}
@@ -298,10 +327,14 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Lines) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_lines"},
-			[]string{"period_id", "source_version_id", "component_type", "rule_id", "identity_id", "person_id", "base_minor", "amount_minor"},
+			[]string{"period_id", "source_version_id", "component_type", "rule_id", "identity_id", "person_id", "base_minor", "amount_minor", "practice_enrollment_id"},
 			pgx.CopyFromSlice(len(result.Lines), func(i int) ([]any, error) {
 				l := result.Lines[i]
-				return []any{summary.PeriodID, l.FactID, l.Component, l.RuleID, l.IdentityID, l.PersonID, l.Base, l.Amount}, nil
+				var enrollment *int64
+				if l.EnrollmentID != 0 {
+					enrollment = &l.EnrollmentID
+				}
+				return []any{summary.PeriodID, l.FactID, l.Component, l.RuleID, l.IdentityID, l.PersonID, l.Base, l.Amount, enrollment}, nil
 			}))
 		if err != nil {
 			return err
@@ -309,14 +342,18 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Issues) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_issues"},
-			[]string{"period_id", "source_version_id", "component_type", "code"},
+			[]string{"period_id", "source_version_id", "component_type", "code", "practice_enrollment_id"},
 			pgx.CopyFromSlice(len(result.Issues), func(i int) ([]any, error) {
 				issue := result.Issues[i]
 				var factID *int64
 				if issue.FactID != 0 {
 					factID = &issue.FactID
 				}
-				return []any{summary.PeriodID, factID, issue.Component, issue.Code}, nil
+				var enrollment *int64
+				if issue.EnrollmentID != 0 {
+					enrollment = &issue.EnrollmentID
+				}
+				return []any{summary.PeriodID, factID, issue.Component, issue.Code, enrollment}, nil
 			}))
 	}
 	if err != nil {
@@ -385,13 +422,14 @@ const draftDetailSQL = `SELECT jsonb_build_object(
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
  'totalMinor',d.total_minor+d.refund_minor+d.correction_minor,'accruedMinor',d.total_minor,
  'refundMinor',d.refund_minor,'refundCount',d.refund_count,'correctionMinor',d.correction_minor,'correctionCount',d.correction_count,
- 'lineCount',d.line_count,'issueCount',d.issue_count,
+ 'lineCount',d.line_count,'issueCount',d.issue_count,'practiceRosterVersion',roster.source_version,
+ 'attendanceCount',roster.attendance_count,
  'settlement',CASE WHEN st.id IS NOT NULL THEN jsonb_build_object('id',st.id,'confirmedAt',st.confirmed_at,'draftVersion',st.draft_version) END,
  'lines',coalesce((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM (
   SELECT l.id,p.name AS "personName",l.component_type AS "component",l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",
-   o.source,o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",rv.version AS "ruleVersion"
+   o.source,o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",rv.version AS "ruleVersion",e.source_enrollment_id AS "enrollmentId",e.membership_type AS "membershipType"
   FROM calculation_draft_lines l JOIN people p ON p.id=l.person_id JOIN source_order_versions o ON o.id=l.source_version_id
-  JOIN rule_versions rv ON rv.id=l.rule_id
+  JOIN rule_versions rv ON rv.id=l.rule_id LEFT JOIN practice_enrollments e ON e.id=l.practice_enrollment_id
   WHERE l.period_id=d.period_id AND l.id>$2 ORDER BY l.id LIMIT 50
  ) l),'[]'),
  'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (
@@ -417,11 +455,11 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   WHERE c.period_id=d.period_id AND c.id>$6 ORDER BY c.id LIMIT 50
  ) c),'[]'),
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
-  SELECT i.id,i.component_type AS "component",i.code,o.source,o.order_id AS "orderId"
-  FROM calculation_draft_issues i LEFT JOIN source_order_versions o ON o.id=i.source_version_id
+  SELECT i.id,i.component_type AS "component",i.code,o.source,o.order_id AS "orderId",e.source_enrollment_id AS "enrollmentId"
+  FROM calculation_draft_issues i LEFT JOIN source_order_versions o ON o.id=i.source_version_id LEFT JOIN practice_enrollments e ON e.id=i.practice_enrollment_id
   WHERE i.period_id=d.period_id AND i.id>$3 ORDER BY i.id LIMIT 50
  ) i),'[]')
-) FROM calculation_drafts d JOIN rule_versions r ON r.id=d.rule_id LEFT JOIN settlements st ON st.period_id=d.period_id WHERE d.period_id=$1 AND ($4::bigint=0 OR d.version=$4)`
+) FROM calculation_drafts d JOIN rule_versions r ON r.id=d.rule_id LEFT JOIN settlements st ON st.period_id=d.period_id LEFT JOIN practice_rosters roster ON roster.id=d.practice_roster_id WHERE d.period_id=$1 AND ($4::bigint=0 OR d.version=$4)`
 
 func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()

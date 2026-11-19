@@ -62,9 +62,10 @@ func (s workspace) confirmSettlement(ctx context.Context, req confirmSettlementI
 
 func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, actor string) (settlement, error) {
 	var enabled, ended bool
+	var mode string
 	err := tx.QueryRow(ctx, `SELECT pro.settlement_enabled,
-		((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')<=CURRENT_TIMESTAMP
-		FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1 FOR UPDATE OF p`, req.PeriodID).Scan(&enabled, &ended)
+		((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')<=CURRENT_TIMESTAMP,pro.period_mode
+		FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1 FOR UPDATE OF p`, req.PeriodID).Scan(&enabled, &ended, &mode)
 	if err != nil {
 		return settlement{}, err
 	}
@@ -83,6 +84,9 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 	}
 	if !ended {
 		return settlement{}, errSettlementOpen
+	}
+	if mode == "class" {
+		return settlement{}, errPracticeSettlementUnavailable
 	}
 	var draftVersion int64
 	var storedDigest []byte

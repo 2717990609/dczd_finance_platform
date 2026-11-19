@@ -28,26 +28,38 @@ type component struct {
 	Value        int64  `json:"value"`
 	SourceRole   string `json:"sourceRole,omitempty"`
 	RefundPolicy string `json:"refundPolicy,omitempty"`
+	ClassMember  string `json:"classMember,omitempty"`
 }
 
 var invalid = errors.New("请核对名称、范围与必填配置")
 var conflict = errors.New("记录与现有配置冲突，请重新读取")
 
 func validateComponents(items []component) error {
-	if len(items) == 0 || len(items) > 4 {
+	if len(items) == 0 || len(items) > 8 {
 		return invalid
 	}
-	seen := make(map[string]bool)
+	seen := make(map[string]uint8)
 	for _, c := range items {
 		switch c.Type {
 		case "sales", "referral", "manager", "delivery":
 		default:
 			return invalid
 		}
-		if seen[c.Type] || c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) {
+		var members uint8
+		switch c.ClassMember {
+		case "":
+			members = 3
+		case "new":
+			members = 1
+		case "retrain":
+			members = 2
+		default:
 			return invalid
 		}
-		seen[c.Type] = true
+		if seen[c.Type]&members != 0 || c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) {
+			return invalid
+		}
+		seen[c.Type] |= members
 		switch c.Mode {
 		case "rate":
 			if c.Value > 10000 {
@@ -131,7 +143,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 	switch {
 	case errors.Is(err, invalid):
 		code, message = 400, err.Error()
-	case errors.Is(err, errDraftScope), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit),
+	case errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
 		errors.Is(err, errSettlementOpen), errors.Is(err, errSettlementDisabled):
 		code, message = http.StatusConflict, err.Error()
@@ -167,11 +179,17 @@ const mappingsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'
  (SELECT m.id,m.product_id AS "productId",p.name AS "productName",m.source,m.domain,m.source_key AS "sourceKey"
  FROM source_mappings m JOIN products p ON p.id=m.product_id ORDER BY m.id DESC LIMIT 500) p`
 const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
- (SELECT p.id,p.product_id AS "productId",pro.name AS "productName",p.name,p.ordinal,
- p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
- FROM periods p JOIN products pro ON pro.id=p.product_id LEFT JOIN LATERAL (
+ (SELECT p.id,p.product_id AS "productId",pro.name AS "productName",pro.period_mode AS "periodMode",p.name,p.ordinal,
+ p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",p.source_period_key AS "sourcePeriodKey",roster.starts_at AS "classStartsAt",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
+ FROM periods p JOIN products pro ON pro.id=p.product_id
+ LEFT JOIN LATERAL (
+  SELECT r.starts_at FROM practice_rosters r WHERE r.period_key=p.source_period_key ORDER BY r.source_version DESC LIMIT 1
+ ) roster ON pro.period_mode='class'
+ LEFT JOIN LATERAL (
   SELECT rv.version,rv.label FROM rule_versions rv WHERE ` + matchingRuleScope + `
-  AND (rv.effective_from IS NULL OR rv.effective_from < ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'))
+  AND CASE WHEN pro.period_mode='class'
+    THEN roster.starts_at IS NOT NULL AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
+    ELSE rv.effective_from IS NULL OR rv.effective_from < ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai') END
   ORDER BY ` + matchingRuleOrder + ` LIMIT 1
  ) rule ON true ORDER BY p.id DESC LIMIT 500) a`
 const matchingRuleScope = `rv.product_id=p.product_id AND
@@ -216,6 +234,7 @@ type createPeriodInput struct {
 	ProductID              int64
 	Name, StartsOn, EndsOn string
 	SettlementMonth        string
+	SourcePeriodKey        string
 	Ordinal                int
 }
 type publishRuleInput struct {
@@ -262,6 +281,9 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 		if err := tx.QueryRow(ctx, "SELECT period_mode,cycle_start_day FROM products WHERE id=$1 FOR UPDATE", p.ProductID).Scan(&mode, &day); err != nil {
 			return err
 		}
+		if p.SourcePeriodKey != "" && (mode != "class" || !validPracticeKey(p.SourcePeriodKey)) {
+			return invalid
+		}
 		var month, from, to string
 		ordinal := p.Ordinal
 		if p.SettlementMonth != "" {
@@ -298,9 +320,9 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 				return conflict
 			}
 		}
-		return tx.QueryRow(ctx, `INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month)
-			VALUES($1,$2,$3,$4::text::date,$5::text::date,nullif($6::text,'')::date) RETURNING id`,
-			p.ProductID, strings.TrimSpace(p.Name), ordinal, from, to, month).Scan(&id)
+		return tx.QueryRow(ctx, `INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month,source_period_key)
+			VALUES($1,$2,$3,$4::text::date,$5::text::date,nullif($6::text,'')::date,nullif($7,'')) RETURNING id`,
+			p.ProductID, strings.TrimSpace(p.Name), ordinal, from, to, month, p.SourcePeriodKey).Scan(&id)
 	})
 	return map[string]int64{"id": id}, err
 }
@@ -318,8 +340,13 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 		if e := tx.QueryRow(ctx, "SELECT period_mode FROM products WHERE id=$1 FOR UPDATE", p.ProductID).Scan(&mode); e != nil {
 			return e
 		}
-		if p.EffectiveFrom != nil && (mode != "calendar" || p.EffectiveFrom.IsZero()) {
+		if p.EffectiveFrom != nil && p.EffectiveFrom.IsZero() {
 			return invalid
+		}
+		for _, c := range p.Components {
+			if mode != "class" && c.ClassMember != "" {
+				return invalid
+			}
 		}
 		return tx.QueryRow(ctx, `INSERT INTO rule_versions(product_id,version,label,period_id,from_ordinal,effective_from,components)
    SELECT $1,coalesce(max(version),0)+1,$2,$3,$4,$5,$6 FROM rule_versions WHERE product_id=$1 RETURNING version`,
