@@ -149,6 +149,11 @@ func TestPracticeTierChangesWithPastRosterAndTimeBoundAccount(t *testing.T) {
 	publish(tiers)
 	check(4, 3100, 0) // A future reset leaves an already opened period on the default.
 	check(4, 3100, 0)
+	var priorCounts map[int64]int64
+	if err := service.db.QueryRow(ctx, `SELECT practice_replay_inputs->'priorCounts' FROM calculation_drafts WHERE period_id=$1`,
+		current).Scan(&priorCounts); err != nil || len(priorCounts) != 2 || priorCounts[former] != 1 || priorCounts[replacement] != 0 {
+		t.Fatalf("expected the selected cumulative counts for both salespeople, got %v (%v)", priorCounts, err)
+	}
 	exactFirstClass := time.Date(2026, 8, 1, 4, 0, 0, 0, time.UTC)
 	tiers.PersonCountStarts[0].practiceCountStart = practiceCountStart{FromAt: &exactFirstClass}
 	publish(tiers)

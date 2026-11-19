@@ -266,7 +266,8 @@ func readIdentityAssignments(ctx context.Context, tx pgx.Tx, window periodWindow
 	rows, err := tx.Query(ctx, `SELECT i.source,i.external_id,i.id,i.person_id,i.valid_from,i.valid_to
 		FROM unnest($1::text[],$2::text[]) AS wanted(source,external_id)
 		JOIN identity_mappings i USING(source,external_id)
-		WHERE i.valid_from<$3 AND (i.valid_to IS NULL OR i.valid_to>$4)`, sources, ids, window.Through, window.Start)
+		WHERE i.valid_from<$3 AND (i.valid_to IS NULL OR i.valid_to>$4)
+		ORDER BY i.source,i.external_id,i.valid_from,i.id`, sources, ids, window.Through, window.Start)
 	if err != nil {
 		return nil, err
 	}
@@ -366,22 +367,27 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 			return nil, err
 		}
 	}
+	if result.practiceReplay != nil {
+		if err := encode.Encode(result.practiceReplay); err != nil {
+			return nil, err
+		}
+	}
 	return hash.Sum(nil), nil
 }
 
 func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []byte, result paymentDraft) error {
-	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id,performance_ready,catalog_refunds_ready)
-	  VALUES($1,nullif($2::bigint,0),1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,true,$12)
+	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id,performance_ready,catalog_refunds_ready,practice_replay_inputs)
+	  VALUES($1,nullif($2::bigint,0),1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,true,$12,$13)
 	  ON CONFLICT(period_id) DO UPDATE SET rule_id=excluded.rule_id,version=calculation_drafts.version+1,
 	  input_digest=excluded.input_digest,total_minor=excluded.total_minor,line_count=excluded.line_count,issue_count=excluded.issue_count,
 	  performance_ready=true,calculated_at=excluded.calculated_at,refund_minor=excluded.refund_minor,refund_count=excluded.refund_count,
 	  correction_minor=excluded.correction_minor,correction_count=excluded.correction_count,practice_roster_id=excluded.practice_roster_id,
-	  catalog_refunds_ready=excluded.catalog_refunds_ready
+	  catalog_refunds_ready=excluded.catalog_refunds_ready,practice_replay_inputs=excluded.practice_replay_inputs
 	  WHERE NOT calculation_drafts.performance_ready OR calculation_drafts.input_digest<>excluded.input_digest
 	   OR calculation_drafts.catalog_refunds_ready<>excluded.catalog_refunds_ready
 	  RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
 		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections),
-		summary.PracticeRosterID, summary.Catalog).
+		summary.PracticeRosterID, summary.Catalog, result.practiceReplay).
 		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount, &summary.PracticeRosterID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT d.version,d.total_minor,d.line_count,d.issue_count,d.calculated_at,d.refund_minor,d.refund_count,d.correction_minor,d.correction_count,
@@ -575,6 +581,7 @@ const draftDetailSQL = `SELECT jsonb_build_object(
    coalesce(p.name,practice_pool.name,pool.name,beneficiary.name) AS "personName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",coalesce(r.version,cv.version_no) AS "ruleVersion",
+   CASE WHEN l.practice_enrollment_id IS NOT NULL AND rv.order_id<>o.order_id THEN rv.order_id END AS "replayTriggerOrderId",
    r.label AS "ruleLabel",
    original_period.name AS "originalPeriod",refund_period.name AS "refundPeriod",posting_period.name AS "postingPeriod"
   FROM calculation_draft_refunds a

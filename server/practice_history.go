@@ -13,10 +13,12 @@ type practiceHistoryPeriod struct {
 }
 
 type practiceTierHistory struct {
-	current practiceHistoryPeriod
-	periods []practiceHistoryPeriod
-	members []practiceEnrollment
-	opening *practiceCountOpening
+	current     practiceHistoryPeriod
+	periods     []practiceHistoryPeriod
+	members     []practiceEnrollment
+	opening     *practiceCountOpening
+	replaying   bool
+	frozenPrior map[int64]int64
 }
 
 func (h practiceTierHistory) defaultStart(config practiceSalesTiers) practiceCountStart {
@@ -60,7 +62,7 @@ func indexPracticePrior(history practiceTierHistory, role string, orders map[str
 		counts: make(map[int64]map[int64]int64), incomplete: make(map[int64]bool),
 		enrollmentFrom: make(map[string]int64), paymentFrom: make(map[string]int64),
 	}
-	past, err := preparePracticePurchases(history.members, orders, blocked, refunds)
+	past, err := preparePracticePurchases(history.members, orders, blocked, refunds, false)
 	if err != nil {
 		return index, err
 	}

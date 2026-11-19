@@ -327,6 +327,9 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	for _, member := range members {
 		result.PracticeEnrollments = append(result.PracticeEnrollments, member.ID)
 	}
+	if len(result.Issues) == 0 && hasPracticeReplayDependencies(rule, members) {
+		result.practiceReplay = capturePracticeReplayInputs(rule, result, facts, identities, runtime)
+	}
 	if err = attachReportOrganizations(ctx, tx, &result, facts); err != nil {
 		return paymentDraft{}, nil, err
 	}

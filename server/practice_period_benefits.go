@@ -142,7 +142,7 @@ func loadPracticeAppointments(ctx context.Context, tx pgx.Tx, rule paymentRule) 
 		return nil, nil
 	}
 	rows, err := tx.Query(ctx, `SELECT person_id,unit_id::text,kind,valid_from,valid_to FROM organization_assignments
-	 WHERE person_id=ANY($1::bigint[])`, people)
+	 WHERE person_id=ANY($1::bigint[]) ORDER BY valid_from,id`, people)
 	if err != nil {
 		return nil, err
 	}

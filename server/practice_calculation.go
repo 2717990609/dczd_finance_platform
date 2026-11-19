@@ -27,6 +27,7 @@ type practicePurchase struct {
 	lateRefunds         []paymentInput
 	companyAward        *practiceCompanyAward
 	companyRoutingIssue string
+	replaying           bool
 }
 
 type practiceDraftRuntime struct {
@@ -38,7 +39,7 @@ type practiceDraftRuntime struct {
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
-	refunds map[int64][]practiceRefundMatch) ([]practicePurchase, error) {
+	refunds map[int64][]practiceRefundMatch, replaying bool) ([]practicePurchase, error) {
 	counts := make(map[string]int)
 	for _, member := range members {
 		if member.CommissionEligible {
@@ -52,7 +53,7 @@ func preparePracticePurchases(members []practiceEnrollment, orders map[string][]
 		if !member.CommissionEligible {
 			continue
 		}
-		purchase := practicePurchase{member: member, issue: blocked[member.ID]}
+		purchase := practicePurchase{member: member, issue: blocked[member.ID], replaying: replaying}
 		if purchase.issue == "" {
 			var err error
 			purchase.payments, purchase.base, purchase.issue, err = practicePayments(member, orders, counts)
@@ -63,6 +64,9 @@ func preparePracticePurchases(members []practiceEnrollment, orders map[string][]
 		if purchase.issue == "" {
 			purchase.applyRefunds(refunds)
 		}
+		if replaying && purchase.issue == "" && len(purchase.payments) == 0 {
+			continue
+		}
 		purchases = append(purchases, purchase)
 	}
 	return purchases, nil
@@ -72,7 +76,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory,
 	refunds map[int64][]practiceRefundMatch, runtime practiceDraftRuntime) (paymentDraft, error) {
 	var draft paymentDraft
-	purchases, err := preparePracticePurchases(members, orders, blocked, refunds)
+	purchases, err := preparePracticePurchases(members, orders, blocked, refunds, history.replaying)
 	if err != nil {
 		return draft, err
 	}
@@ -98,6 +102,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 	if err != nil {
 		return draft, err
 	}
+	draft.practicePriorCounts = tierIssues.priorCounts
 	for _, purchase := range purchases {
 		member, payments, base := purchase.member, purchase.payments, purchase.base
 		if purchase.issue != "" {
@@ -228,6 +233,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 type practiceTierIssues struct {
 	people      map[int64]string
 	enrollments map[int64]string
+	priorCounts map[int64]int64
 }
 
 func (i practiceTierIssues) forPurchase(personID, enrollmentID int64) string {
@@ -314,6 +320,15 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		rows = append(rows, row)
 		purchases[member.ID] = purchase
 	}
+	if history.replaying {
+		for person := range needsCount {
+			if _, found := history.frozenPrior[person]; !found {
+				return nil, issues, errPracticeRefundReplay
+			}
+		}
+		awards, err := choosePracticeSalesTiers(*config, rows, history.frozenPrior)
+		return awards, issues, err
+	}
 	var index practicePriorIndex
 	if len(needsCount) != 0 {
 		var err error
@@ -376,6 +391,7 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		}
 	}
 	awards, err := choosePracticeSalesTiers(*config, ready, prior)
+	issues.priorCounts = prior
 	return awards, issues, err
 }
 

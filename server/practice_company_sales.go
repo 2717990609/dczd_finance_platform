@@ -213,7 +213,8 @@ func loadPracticeCompanySources(ctx context.Context, tx pgx.Tx, keys []string, a
 	}
 	rows, err := tx.Query(ctx, `SELECT c.source_company_id,c.company_id,c.valid_from,c.valid_to
 	 FROM organization_company_sources c JOIN organization_units u ON u.id=c.company_id AND u.kind='COMPANY'
-	 WHERE c.source='DCZD' AND c.source_company_id=ANY($1::text[]) AND (NOT $2 OR u.status='ACTIVE')`, keys, activeOnly)
+	 WHERE c.source='DCZD' AND c.source_company_id=ANY($1::text[]) AND (NOT $2 OR u.status='ACTIVE')
+	 ORDER BY c.valid_from,c.company_id`, keys, activeOnly)
 	if err != nil {
 		return nil, err
 	}

@@ -116,18 +116,32 @@ func enqueueDraftFactChanges(ctx context.Context, tx pgx.Tx, inserted, metadata 
 	return enqueueDraftPeriods(ctx, tx, draftRefreshFacts, inserted, metadata)
 }
 
-const draftRefreshAfterClose = `WITH paid AS (
- SELECT DISTINCT v.source,v.order_id FROM calculation_draft_performance post JOIN source_order_versions v ON v.id=post.source_version_id
- WHERE post.period_id=$1 AND post.payment_version_id IS NULL
+const draftRefreshAfterClose = `WITH closing AS (
+ SELECT p.*,product.period_mode FROM periods p JOIN products product ON product.id=p.product_id WHERE p.id=$1
+), affected_classes AS (
+ SELECT DISTINCT original.period_id FROM closing
+ JOIN calculation_draft_performance booked ON booked.period_id=closing.id AND booked.payment_version_id IS NOT NULL
+ JOIN calculation_draft_performance original ON original.source_version_id=booked.payment_version_id AND original.payment_version_id IS NULL
+ JOIN calculation_drafts class ON class.period_id=original.period_id AND class.practice_replay_inputs IS NOT NULL
+ JOIN periods original_period ON original_period.id=class.period_id AND original_period.product_id=closing.product_id
+ WHERE closing.period_mode='class'
+), payments AS MATERIALIZED (
+ SELECT post.source_version_id FROM calculation_draft_performance post
+ WHERE post.payment_version_id IS NULL AND (post.period_id=$1 OR post.period_id IN (SELECT period_id FROM affected_classes))
+), paid AS (
+ SELECT DISTINCT v.source,v.order_id FROM payments JOIN source_order_versions v ON v.id=payments.source_version_id
 ), related_refunds AS (
  SELECT DISTINCT v.occurred_at FROM paid JOIN source_order_versions v ON v.source=paid.source AND v.kind='REFUND_SUCCEEDED'
  AND (v.order_id=paid.order_id OR v.fact->'refundsPayment' @> jsonb_build_array(jsonb_build_object('orderId',paid.order_id)))
 )
-SELECT p.id FROM periods original JOIN periods p ON p.product_id=original.product_id AND p.ordinal>original.ordinal
-WHERE original.id=$1 AND (
+SELECT p.id FROM closing original JOIN periods p ON p.product_id=original.product_id AND p.id<>original.id
+WHERE (original.period_mode='class' AND p.calendar_month IS NOT NULL OR original.period_mode<>'class' AND p.ordinal>original.ordinal)
+ AND (
  (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
  OR EXISTS(SELECT 1 FROM related_refunds r WHERE r.occurred_at>=p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
-  AND r.occurred_at<(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'))`
+  AND r.occurred_at<(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
+ OR original.period_mode='class' AND EXISTS(SELECT 1 FROM calculation_draft_performance refund
+  JOIN payments paid ON paid.source_version_id=refund.payment_version_id WHERE refund.period_id=p.id))`
 
 const draftRefreshRoster = `WITH base AS (
  SELECT p.id,p.product_id,p.ordinal,p.source_period_key,split_part(p.source_period_key,':',3) AS series FROM periods p

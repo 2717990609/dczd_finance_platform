@@ -186,6 +186,204 @@ func TestPracticeRefundUsesFrozenSinglePaymentTerms(t *testing.T) {
 	}
 }
 
+func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_REPLAY", Name: "实战班", PeriodMode: "class"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "practice"}))
+	class := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "六月实战班", Ordinal: 1,
+		StartsOn: "2026-06-12", EndsOn: "2026-06-12", SourcePeriodKey: "PRACTICE:1:1:6"}))
+	july := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "七月退款", SettlementMonth: "2026-07"}))
+	august := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "八月退款", SettlementMonth: "2026-08"}))
+	at := time.Date(2026, 6, 10, 1, 0, 0, 0, time.UTC)
+	seller := id(s.createPerson(ctx, createPersonInput{Name: "结算销售"}))
+	later := id(s.createPerson(ctx, createPersonInput{Name: "接任销售"}))
+	const unit = "41000000-0000-4000-8000-000000000010"
+	const oldDept = "41000000-0000-4000-8000-000000000011"
+	const newDept = "41000000-0000-4000-8000-000000000012"
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_units(id,parent_id,kind,name,status)
+	 VALUES($1,NULL,'COMPANY','交付公司','ACTIVE'),($2,$1,'DEPARTMENT','结算部门','ACTIVE'),($3,$1,'DEPARTMENT','调动后部门','ACTIVE')`,
+		unit, oldDept, newDept); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from)
+	 VALUES('41000000-0000-4000-8000-000000000013',$1,$2,'PRIMARY',$3)`, seller, oldDept, at.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	pool := id(s.createPracticePool(ctx, createPracticePoolInput{ProductID: product, UnitID: unit, Name: "交付池"}))
+	id(s.assignIdentity(ctx, assignIdentityInput{Source: "DCZD", ExternalID: "seller", PersonID: seller, ValidFrom: at.Add(-time.Hour).Format(time.RFC3339)}))
+	publish := func(parts []component) {
+		t.Helper()
+		if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &class, Label: "实战班销售阶梯", Components: parts}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	through := int64(14999)
+	publish([]component{
+		{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
+			Tiers: &practiceSalesTiers{Performance: []practiceTier{{Mode: "rate", Value: 1000}, {From: 15000, Mode: "rate", Value: 2000}}}},
+		{Type: "delivery", Mode: "period_rate",
+			PeriodBenefit: &practicePeriodBenefit{Label: "全班交付", Pool: &practicePoolTarget{PoolID: pool, OwnerID: seller},
+				TierOnWholeClass: true, Tiers: []practicePeriodRate{{Through: &through, Value: 100000}, {From: 15000, Value: 200000}}}},
+	})
+	paid := func(order string, amount int64) sourceFact {
+		return sourceFact{Source: "DCZD", RecordKey: "payment:" + order, OrderID: order, PaymentID: order, Kind: "ORDER_PAID",
+			Version: "1", Domain: "PRACTICE", SourceKey: "practice", AmountMinor: &amount, OccurredAt: at, UpdatedAt: at, ReferrerID: "seller"}
+	}
+	refund := func(order, key string, amount int64, happened time.Time) sourceFact {
+		return sourceFact{Source: "DCZD", RecordKey: "refund:" + key, OrderID: order, RefundID: key, Kind: "REFUND_SUCCEEDED",
+			Version: "1", Domain: "PRACTICE", SourceKey: "practice", AmountMinor: &amount, OccurredAt: happened, UpdatedAt: happened,
+			RefundsPayment: []sourcePaymentReference{{OrderID: order, RecordID: order}}}
+	}
+	store := func(facts ...sourceFact) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { _, err := storeSourceFacts(ctx, tx, facts); return err }); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start := at.AddDate(0, 0, 2)
+	store(paid("10", 4000), paid("11", 6000), paid("12", 10000), refund("10", "1", 1000, at.Add(time.Hour)))
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: "PRACTICE:1:1:6", Hash: "replay", SourceVersion: 1, StartsAt: start,
+			ConfirmedAt: start.Add(time.Hour), Enrollments: []practiceEnrollment{
+				{SourceEnrollmentID: "1", ParticipantID: "1", MembershipType: 3, CommissionEligible: true,
+					SignedAt: start, PaidOrderIDs: []string{"10", "11"}, ContentHash: "aa"},
+				{SourceEnrollmentID: "2", ParticipantID: "2", MembershipType: 3, CommissionEligible: true,
+					SignedAt: start, PaidOrderIDs: []string{"12"}, ContentHash: "bb"},
+			}})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	calculate := func(period int64) draftSummary {
+		t.Helper()
+		raw, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw.(draftSummary)
+	}
+	freeze := func(d draftSummary) {
+		t.Helper()
+		if _, err := s.db.Exec(ctx, "INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')", d.PeriodID, d.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	original := calculate(class)
+	if original.Total != 7600 || original.IssueCount != 0 {
+		t.Fatalf("settled tier before refund: %+v", original)
+	}
+	freeze(original)
+	if _, err := s.db.Exec(ctx, "UPDATE organization_assignments SET unit_id=$2 WHERE person_id=$1", seller, newDept); err != nil {
+		t.Fatal(err)
+	}
+	id(s.assignIdentity(ctx, assignIdentityInput{Source: "DCZD", ExternalID: "seller", PersonID: later, ValidFrom: at.Format(time.RFC3339)}))
+	publish([]component{{Type: "sales", Mode: "rate", Value: 5000, ClassMember: "new", SourceRole: "DIRECT_REFERRER"}})
+	revised := paid("12", 9900)
+	revised.Version, revised.UpdatedAt = "2", at.Add(time.Hour)
+	julyDate := time.Date(2026, 7, 12, 1, 0, 0, 0, time.UTC)
+	store(revised, refund("10", "2", 3000, julyDate), refund("12", "3", 2000, julyDate.Add(time.Hour)))
+	draft := calculate(july)
+	if draft.Total != -4800 || draft.RefundCount != 6 || draft.IssueCount != 0 {
+		t.Fatalf("whole class must cross the tier using frozen inputs: %+v", draft)
+	}
+	var lines, related, principal int64
+	if err := s.db.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE p.order_id='11')
+	 FROM calculation_draft_refunds d JOIN calculation_draft_lines l ON l.id=d.original_line_id
+	 JOIN source_order_versions p ON p.id=l.source_version_id WHERE d.period_id=$1 AND l.person_id=$2`,
+		july, seller).Scan(&lines, &related); err != nil || lines != 3 || related != 1 {
+		t.Fatalf("deductions must use the original seller and include the unrefunded balance: %d %d %v", lines, related, err)
+	}
+	var poolDebit int64
+	if err := s.db.QueryRow(ctx, `SELECT coalesce(sum(d.amount_minor),0)::bigint
+	 FROM calculation_draft_refunds d JOIN calculation_draft_lines l ON l.id=d.original_line_id
+	 WHERE d.period_id=$1 AND l.practice_pool_id=$2 AND l.beneficiary_unit_id=$3`,
+		july, pool, unit).Scan(&poolDebit); err != nil || poolDebit != -2400 {
+		t.Fatalf("the original pool must absorb the whole-class delivery deduction: %d %v", poolDebit, err)
+	}
+	var detail struct {
+		Refunds []struct{ OriginalOrderID, ReplayTriggerOrderID string }
+	}
+	if err := s.db.QueryRow(ctx, draftDetailSQL, july, 0, 0, draft.Version, 0, 0).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	var linked int
+	for _, row := range detail.Refunds {
+		if row.OriginalOrderID == "11" && row.ReplayTriggerOrderID == "12" {
+			linked++
+		}
+	}
+	if linked != 2 {
+		t.Fatalf("affected balance must identify the triggering refund's order: %+v", detail)
+	}
+	if err := s.db.QueryRow(ctx, `SELECT sum((v.fact->>'amountMinor')::bigint) FROM calculation_draft_performance f
+	 JOIN source_order_versions v ON v.id=f.source_version_id WHERE f.period_id=$1 AND f.person_id=$2`,
+		july, seller).Scan(&principal); err != nil || principal != 5000 {
+		t.Fatalf("principal must only include the two actual refunds: %d %v", principal, err)
+	}
+	for dimension, originalID := range map[string]string{"person": fmt.Sprint(seller), "company": unit, "department": oldDept} {
+		var report struct {
+			PerformanceMinor int64
+			Items            []struct {
+				ID          string
+				RefundMinor int64
+			}
+		}
+		if err := s.db.QueryRow(ctx, draftReportSQL, july, draft.Version, dimension, 0).Scan(&report); err != nil {
+			t.Fatal(err)
+		}
+		var total, attributed int64
+		for _, row := range report.Items {
+			total += row.RefundMinor
+			if row.ID == originalID {
+				attributed = row.RefundMinor
+			}
+		}
+		want := int64(-2400)
+		if dimension == "company" {
+			want = -4800
+		}
+		if total != -4800 || attributed != want || report.PerformanceMinor != -5000 {
+			t.Fatalf("%s report must reconcile to the original attribution: %+v", dimension, report)
+		}
+	}
+	if repeat := calculate(july); repeat.Version != draft.Version {
+		t.Fatalf("repeat should reuse the same draft: %+v", repeat)
+	}
+	store(refund("12", "4", 1000, time.Date(2026, 8, 12, 1, 0, 0, 0, time.UTC)))
+	if open := calculate(august); open.Total != -400 || open.IssueCount != 0 {
+		t.Fatalf("August draft before July closes: %+v", open)
+	}
+	freeze(draft)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		return enqueueDraftPeriods(ctx, tx, draftRefreshAfterClose, july)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var queued bool
+	if err := s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)", august).Scan(&queued); err != nil || !queued {
+		t.Fatalf("closing July must refresh August's overlapping class: %t %v", queued, err)
+	}
+	if err := s.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var next draftSummary
+	if err := s.db.QueryRow(ctx, "SELECT refund_minor,refund_count,issue_count FROM calculation_drafts WHERE period_id=$1",
+		august).Scan(&next.Total, &next.RefundCount, &next.IssueCount); err != nil || next.Total != -200 || next.RefundCount != 2 || next.IssueCount != 0 {
+		t.Fatalf("August must debit only the incremental amount: %+v", next)
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE calculation_drafts SET practice_replay_inputs=NULL WHERE period_id=$1", class); err == nil {
+		t.Fatal("settled inputs must be immutable")
+	}
+}
+
 func TestClassProductConfigurationCanReimportAfterOpeningRefundMonth(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}

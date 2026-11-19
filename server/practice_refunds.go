@@ -106,11 +106,12 @@ func matchPracticeRefunds(events []practiceRefund, orders map[string][]paymentIn
 
 func (p *practicePurchase) applyRefunds(matches map[int64][]practiceRefundMatch) {
 	p.gross = p.base
+	active := p.payments[:0]
 	for _, payment := range p.payments {
 		net := *payment.Fact.AmountMinor
 		for _, match := range matches[payment.ID] {
 			f := match.event.Fact
-			if f.OccurredAt.After(p.member.ConfirmedAt) {
+			if !p.replaying && f.OccurredAt.After(p.member.ConfirmedAt) {
 				p.lateRefunds = append(p.lateRefunds, match.event)
 				continue
 			}
@@ -123,7 +124,7 @@ func (p *practicePurchase) applyRefunds(matches map[int64][]practiceRefundMatch)
 				p.issue = "PRACTICE_REFUND_PAYMENT_TIME"
 			case *f.AmountMinor > net:
 				p.issue = "REFUND_AMOUNT_EXCEEDS_PAYMENT"
-			case *f.AmountMinor == net:
+			case *f.AmountMinor == net && !p.replaying:
 				p.issue = "PRACTICE_REFUND_ROSTER_CHANGED"
 			}
 			if p.issue != "" {
@@ -139,7 +140,13 @@ func (p *practicePurchase) applyRefunds(matches map[int64][]practiceRefundMatch)
 			p.refunds[payment.ID] = append(p.refunds[payment.ID], match.event)
 			p.netPayments[payment.ID] = net
 		}
+		if p.replaying && net == 0 {
+			p.gross -= *payment.Fact.AmountMinor
+		} else {
+			active = append(active, payment)
+		}
 	}
+	p.payments = active
 }
 
 func (p practicePurchase) netAmount(payment paymentInput) int64 {

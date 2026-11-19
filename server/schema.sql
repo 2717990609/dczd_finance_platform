@@ -426,6 +426,7 @@ CREATE TABLE IF NOT EXISTS practice_roster_members (
 CREATE INDEX IF NOT EXISTS practice_enrollments_source_id ON practice_enrollments(source_enrollment_id,participant_id);
 CREATE INDEX IF NOT EXISTS practice_roster_members_enrollment ON practice_roster_members(enrollment_id);
 ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS practice_roster_id bigint REFERENCES practice_rosters(id);
+ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS practice_replay_inputs jsonb;
 ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS practice_enrollment_id bigint REFERENCES practice_enrollments(id);
 ALTER TABLE calculation_draft_issues ADD COLUMN IF NOT EXISTS practice_enrollment_id bigint REFERENCES practice_enrollments(id);
 

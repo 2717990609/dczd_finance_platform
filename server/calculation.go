@@ -60,6 +60,8 @@ type draftIssue struct {
 type paymentDraft struct {
 	PracticeStartsAt    time.Time
 	PracticeEnrollments []int64
+	practicePriorCounts map[int64]int64
+	practiceReplay      *practiceReplayInputs
 	Lines               []draftLine
 	Performance         []draftPerformance
 	Issues              []draftIssue

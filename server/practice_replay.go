@@ -1,0 +1,187 @@
+package main
+
+import (
+	"context"
+	"errors"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
+)
+
+// Orders, applied refunds, the roster and the rule are already referenced by
+// the class draft. Keep only calculation inputs that those versions cannot
+// supply when a later refund changes the outcome for the class.
+type practiceReplayInputs struct {
+	Version           int                                  `json:"version"`
+	PriorCounts       map[int64]int64                      `json:"priorCounts,omitempty"`
+	Identities        map[string][]identityAssignment      `json:"identities,omitempty"`
+	Appointments      map[int][]practiceAppointment        `json:"appointments,omitempty"`
+	Companies         map[string][]companySourceAssignment `json:"companies,omitempty"`
+	ReferrerCompanies map[string][]companySourceAssignment `json:"referrerCompanies,omitempty"`
+	Recommendations   map[string]pgtype.UUID               `json:"recommendations,omitempty"`
+	PaymentCompanies  map[string]practiceReplayCompany     `json:"paymentCompanies,omitempty"`
+	PoolUnits         map[int64]pgtype.UUID                `json:"poolUnits,omitempty"`
+}
+
+type practiceReplayCompany struct {
+	Sales    string `json:"sales,omitempty"`
+	Referrer string `json:"referrer,omitempty"`
+	Conflict bool   `json:"conflict,omitempty"`
+}
+
+func hasPracticeReplayDependencies(rule paymentRule, members []practiceEnrollment) bool {
+	for _, part := range rule.Components {
+		if part.Tiers != nil || part.PeriodBenefit != nil || len(part.retrainSplits()) != 0 {
+			return true
+		}
+	}
+	for _, member := range members {
+		if member.CommissionEligible && len(member.PaidOrderIDs) > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []paymentInput,
+	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) *practiceReplayInputs {
+	inputs := &practiceReplayInputs{
+		Version: 1, PriorCounts: draft.practicePriorCounts,
+		Identities: make(map[string][]identityAssignment), Appointments: make(map[int][]practiceAppointment),
+		PaymentCompanies: make(map[string]practiceReplayCompany), Recommendations: make(map[string]pgtype.UUID),
+		Companies: runtime.companyRecipients, ReferrerCompanies: runtime.recommendations.explicit, PoolUnits: runtime.poolUnits,
+	}
+	current := make(map[int64]bool, len(draft.Performance))
+	for _, posting := range draft.Performance {
+		if posting.PaymentVersionID == 0 {
+			current[posting.SourceVersionID] = true
+		}
+	}
+	for _, payment := range facts {
+		if !current[payment.ID] {
+			continue
+		}
+		f := payment.Fact
+		if company := (practiceReplayCompany{f.SalesCompanyID, f.ReferrerCompanyID, f.ReferrerConflict}); company != (practiceReplayCompany{}) {
+			inputs.PaymentCompanies[f.OrderID] = company
+		}
+		capture := func(user string) {
+			if known, ok := identities[identityKey{f.Source, user}]; ok {
+				inputs.Identities[user] = known
+			}
+		}
+		capture(f.ReferrerID)
+		for _, participant := range f.Participants {
+			capture(participant.UserID)
+		}
+	}
+	for index, part := range rule.Components {
+		if benefit := part.PeriodBenefit; benefit != nil {
+			if assignments := runtime.appointments[benefit.appointmentKey()]; len(assignments) != 0 {
+				inputs.Appointments[index] = assignments
+			}
+		}
+	}
+	for company, parent := range runtime.recommendations.directory {
+		inputs.Recommendations[company.String()] = parent
+	}
+	return inputs
+}
+
+type practiceReplay struct {
+	rule       paymentRule
+	members    []practiceEnrollment
+	payments   map[string][]paymentInput
+	refunds    map[int64][]practiceRefundMatch
+	identities map[identityKey][]identityAssignment
+	history    practiceTierHistory
+	runtime    practiceDraftRuntime
+	posted     map[int64]practiceReplayPosting
+}
+
+type practiceReplayPosting struct {
+	paymentID, personID, principal int64
+}
+
+func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practiceReplay, error) {
+	var replay practiceReplay
+	var values practiceReplayInputs
+	var rosterID int64
+	err := tx.QueryRow(ctx, `SELECT d.practice_roster_id,r.id,r.components,d.practice_replay_inputs
+	 FROM calculation_drafts d JOIN rule_versions r ON r.id=d.rule_id JOIN settlements s ON s.period_id=d.period_id
+	 WHERE d.period_id=$1 AND d.practice_replay_inputs IS NOT NULL`, periodID).
+		Scan(&rosterID, &replay.rule.ID, &replay.rule.Components, &values)
+	if err != nil {
+		return replay, err
+	}
+	if values.Version != 1 {
+		return replay, errPracticeRefundReplay
+	}
+	replay.members, err = readPracticeMembers(ctx, tx, []int64{rosterID}, false)
+	if err != nil {
+		return replay, err
+	}
+	replay.payments = make(map[string][]paymentInput)
+	replay.refunds = make(map[int64][]practiceRefundMatch)
+	replay.posted = make(map[int64]practiceReplayPosting)
+	rows, err := tx.Query(ctx, `SELECT v.id,v.fact,coalesce(p.payment_version_id,0),coalesce(p.person_id,0)
+	 FROM calculation_draft_performance p JOIN source_order_versions v ON v.id=p.source_version_id
+	 WHERE p.period_id=$1 ORDER BY v.occurred_at,v.id`, periodID)
+	if err != nil {
+		return replay, err
+	}
+	var original, person int64
+	var item paymentInput
+	_, err = pgx.ForEachRow(rows, []any{&item.ID, &item.Fact, &original, &person}, func() error {
+		if item.Fact.AmountMinor == nil || *item.Fact.AmountMinor <= 0 {
+			return errPracticeRefundReplay
+		}
+		replay.posted[item.ID] = practiceReplayPosting{original, person, *item.Fact.AmountMinor}
+		if original != 0 {
+			replay.refunds[original] = append(replay.refunds[original], practiceRefundMatch{event: item})
+		} else {
+			f := &item.Fact
+			company := values.PaymentCompanies[f.OrderID]
+			f.SalesCompanyID, f.ReferrerCompanyID, f.ReferrerConflict = company.Sales, company.Referrer, company.Conflict
+			replay.payments[f.OrderID] = append(replay.payments[f.OrderID], item)
+		}
+		return nil
+	})
+	if err != nil {
+		return replay, err
+	}
+	replay.identities = make(map[identityKey][]identityAssignment, len(values.Identities))
+	for user, assignments := range values.Identities {
+		replay.identities[identityKey{"DCZD", user}] = assignments
+	}
+	replay.history = practiceTierHistory{replaying: true, frozenPrior: values.PriorCounts}
+	replay.runtime = practiceDraftRuntime{
+		appointments: make(map[practiceAppointmentKey][]practiceAppointment), companyOffers: practiceCompanyStandards(replay.rule),
+		companyRecipients: values.Companies, poolUnits: values.PoolUnits,
+		recommendations: practiceCompanyRecommendations{
+			directory: make(map[pgtype.UUID]pgtype.UUID), explicit: values.ReferrerCompanies,
+		},
+	}
+	for index, assignments := range values.Appointments {
+		if index < 0 || index >= len(replay.rule.Components) || replay.rule.Components[index].PeriodBenefit == nil {
+			return replay, errPracticeRefundReplay
+		}
+		replay.runtime.appointments[replay.rule.Components[index].PeriodBenefit.appointmentKey()] = assignments
+	}
+	for company, parent := range values.Recommendations {
+		var id pgtype.UUID
+		if err := id.Scan(company); err != nil {
+			return replay, errPracticeRefundReplay
+		}
+		replay.runtime.recommendations.directory[id] = parent
+	}
+	return replay, nil
+}
+
+func (r practiceReplay) calculate() (paymentDraft, error) {
+	result, err := calculatePracticeDraft(r.members, r.rule, r.payments, r.identities, nil, r.history, r.refunds, r.runtime)
+	if err == nil && len(result.Issues) != 0 {
+		err = errors.Join(errPracticeRefundReplay, errors.New(result.Issues[0].Code))
+	}
+	return result, err
+}

@@ -128,12 +128,14 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
   AND (q.record_id='' OR substr(p.record_key,strpos(p.record_key,':')+1)=q.record_id AND strpos(p.record_key,':')>0)
  JOIN calculation_draft_lines l ON l.source_version_id=p.id
  JOIN settlements s ON s.period_id=l.period_id
+ JOIN calculation_drafts d ON d.period_id=l.period_id
  JOIN periods original ON original.id=l.period_id
  LEFT JOIN rule_versions r ON r.id=l.rule_id
  LEFT JOIN legacy_rule_versions cv ON cv.source_id=l.catalog_rule_id
  LEFT JOIN practice_enrollments enrollment ON enrollment.id=l.practice_enrollment_id
  LEFT JOIN source_payment_companies company ON company.source_version_id=p.id AND enrollment.id IS NOT NULL
- WHERE original.product_id=(SELECT product_id FROM periods WHERE id=$2) AND (NOT $3 OR enrollment.id IS NOT NULL)
+ WHERE original.product_id=(SELECT product_id FROM periods WHERE id=$2)
+  AND (NOT $3 OR enrollment.id IS NOT NULL AND d.practice_replay_inputs IS NULL)
  ORDER BY q.id,l.id`, requests, periodID, practiceMonth)
 	if err != nil {
 		return nil, err
@@ -314,6 +316,7 @@ func applyRefundEvents(ctx context.Context, tx pgx.Tx, periodID int64, window pe
 	if err != nil {
 		return err
 	}
+	var replayEvents []practiceReplayRefund
 	for _, event := range facts {
 		f := event.Fact
 		code := ""
@@ -331,8 +334,11 @@ func applyRefundEvents(ctx context.Context, tx pgx.Tx, periodID int64, window pe
 		case practiceMonth && f.OrderID != f.RefundsPayment[0].OrderID:
 			code = "REFUND_PAYMENT_AMBIGUOUS"
 		default:
-			performanceIssue := recordPerformanceRefund(draft, event, performanceOrigins[event.ID], performanceCredited)
-			if (catalogTerms == nil && !practiceMonth) || performanceIssue == "" {
+			origins := performanceOrigins[event.ID]
+			performanceIssue := recordPerformanceRefund(draft, event, origins, performanceCredited)
+			if practiceMonth && performanceIssue == "" && origins[0].PracticeReplay {
+				replayEvents = append(replayEvents, practiceReplayRefund{event, origins[0].PeriodID, origins[0].SourceVersionID})
+			} else if (catalogTerms == nil && !practiceMonth) || performanceIssue == "" {
 				code, err = applyHistoricalRefund(draft, event, obligations[event.ID], history)
 				if err != nil {
 					return err
@@ -346,7 +352,7 @@ func applyRefundEvents(ctx context.Context, tx pgx.Tx, periodID int64, window pe
 			draft.Issues = append(draft.Issues, draftIssue{FactID: event.ID, Code: code})
 		}
 	}
-	return nil
+	return applyPracticeReplayRefunds(ctx, tx, draft, replayEvents)
 }
 
 func applyHistoricalRefund(draft *paymentDraft, event refundInput, originals []refundObligation, history map[refundLineKey]*refundHistory) (string, error) {

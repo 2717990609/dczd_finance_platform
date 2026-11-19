@@ -91,7 +91,7 @@ const reason = {
   PRACTICE_RECOMMENDATION_ROUTE_MISSING: '推荐公司缺少适用的直收配置',
   PRACTICE_POOL_MISSING: '资金池或归集组织待核',
   PRACTICE_REFUND_MONTH_MISSING: '退款发生月份尚未建立退款账期',
-  PRACTICE_REFUND_REPLAY_REQUIRED: '此退款涉及原班次联动分润，待完成整期复算',
+  PRACTICE_REFUND_REPLAY_REQUIRED: '退款联动分润待核，请核对结算时的名单、付款和规则',
   PRACTICE_TIER_COMPANY_NOT_CONFIGURED: '该销售公司未配置阶梯',
   PRACTICE_TIER_OPENING_MISSING: '所选冻结期初中缺少该人员的期初人数',
   PRACTICE_TIER_HISTORY_MISSING: '累计起点或历史期次缺少已确认名单',
@@ -297,7 +297,10 @@ async function loadMore(section, cursorName) {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
             {{ record.originalOrderNo || record.originalOrderId }}
-            <small class="order-version">计提时规则 v{{ record.ruleVersion }}<template v-if="record.ruleLabel"> · {{ record.ruleLabel }}</template> · 退款 {{ record.refundId }}</small>
+            <small class="order-version">计提时规则 v{{ record.ruleVersion }}<template v-if="record.ruleLabel"> · {{ record.ruleLabel }}</template>
+              <template v-if="record.replayTriggerOrderId"> · 班次联动 · 订单 {{ record.replayTriggerOrderId }} 的退款 {{ record.refundId }}</template>
+              <template v-else> · 退款 {{ record.refundId }}</template>
+            </small>
           </template>
           <template v-else-if="column.key === 'beneficiary'">
             {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池</small>

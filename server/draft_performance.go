@@ -35,6 +35,8 @@ func performanceOwner(fact sourceFact, rule *paymentRule, member string, identit
 type performanceRefundOrigin struct {
 	draftPerformance
 	PreviouslyRefunded int64
+	PeriodID           int64
+	PracticeReplay     bool
 }
 
 const performanceRefundOriginsSQL = `SELECT q.id,a.source_version_id,coalesce(a.person_id,0),
@@ -42,13 +44,15 @@ const performanceRefundOriginsSQL = `SELECT q.id,a.source_version_id,coalesce(a.
  coalesce((SELECT sum((rv.fact->>'amountMinor')::bigint) FROM calculation_draft_performance prior
  JOIN settlements closed ON closed.period_id=prior.period_id
  JOIN source_order_versions rv ON rv.id=prior.source_version_id
- WHERE prior.payment_version_id=a.source_version_id),0)::bigint
+ WHERE prior.payment_version_id=a.source_version_id),0)::bigint,
+ a.period_id,d.practice_replay_inputs IS NOT NULL
  FROM jsonb_to_recordset($1::jsonb) AS q(id bigint,source text,order_id text,line_id text,record_id text)
  JOIN source_order_versions p ON p.source=q.source AND p.order_id=q.order_id AND p.kind='ORDER_PAID'
   AND (q.line_id='' OR p.line_id=q.line_id)
   AND (q.record_id='' OR substr(p.record_key,strpos(p.record_key,':')+1)=q.record_id AND strpos(p.record_key,':')>0)
  JOIN calculation_draft_performance a ON a.source_version_id=p.id AND a.payment_version_id IS NULL
  JOIN settlements closed ON closed.period_id=a.period_id
+ JOIN calculation_drafts d ON d.period_id=a.period_id
  JOIN periods original ON original.id=a.period_id
  WHERE original.product_id=(SELECT product_id FROM periods WHERE id=$2)`
 
@@ -65,7 +69,7 @@ func loadPerformanceRefundOrigins(ctx context.Context, tx pgx.Tx, periodID int64
 	var refundID int64
 	var origin performanceRefundOrigin
 	_, err = pgx.ForEachRow(rows, []any{&refundID, &origin.SourceVersionID, &origin.PersonID, &origin.Principal,
-		&origin.Organization.Company, &origin.Organization.Department, &origin.PreviouslyRefunded}, func() error {
+		&origin.Organization.Company, &origin.Organization.Department, &origin.PreviouslyRefunded, &origin.PeriodID, &origin.PracticeReplay}, func() error {
 		out[refundID] = append(out[refundID], origin)
 		return nil
 	})
