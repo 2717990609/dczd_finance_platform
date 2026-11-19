@@ -160,6 +160,52 @@ func TestPracticeTierChangesWithPastRosterAndTimeBoundAccount(t *testing.T) {
 	publish(tiers)
 	check(8, 2400, 0) // Existing default time-based rules still select the same history.
 
+	const formerLegacy = "f8bdd870-7f83-413b-ba52-4a97ab33d301"
+	const replacementLegacy = "f8bdd870-7f83-413b-ba52-4a97ab33d302"
+	if _, err := service.db.Exec(ctx, `UPDATE people SET legacy_party_id=CASE WHEN id=$1 THEN $3::uuid ELSE $4::uuid END WHERE id IN ($1,$2)`,
+		former, replacement, formerLegacy, replacementLegacy); err != nil {
+		t.Fatal(err)
+	}
+	one, zero := int64(1), int64(0)
+	historical := practiceCountOpeningFile{ProductID: product, ThroughAt: exactFirstClass,
+		SourceSettlementID: "f8bdd870-7f83-413b-ba52-4a97ab33d303",
+		People:             []practiceCountOpeningPerson{{LegacyPartyID: formerLegacy, NewCount: &one}, {LegacyPartyID: replacementLegacy, NewCount: &zero}},
+	}
+	addOpening := func(opening practiceCountOpeningFile) int64 {
+		t.Helper()
+		var id int64
+		err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
+			var err error
+			id, _, err = storePracticeCountOpening(ctx, tx, opening)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	tiers.OpeningID, tiers.CountFromAt = addOpening(historical), nil
+	publish(tiers)
+	check(9, 3100, 0) // Opening carries the first signup. History right at the cutoff is already included.
+	tiers.PersonCountStarts = []practicePersonCountStart{{PersonID: former, practiceCountStart: practiceCountStart{FromOrdinal: 2}}}
+	publish(tiers)
+	check(10, 2400, 0) // The reset excludes the imported count for this person.
+	historical.SourceSettlementID = "f8bdd870-7f83-413b-ba52-4a97ab33d304"
+	historical.People = historical.People[:1]
+	tiers.OpeningID, tiers.PersonCountStarts = addOpening(historical), nil
+	publish(tiers)
+	check(11, 1900, 1) // Missing opening is different from the explicit zero tested above.
+
+	writeRoster(10, 3, 1, member("11", "31", "32"))
+	historical.SourceSettlementID = "f8bdd870-7f83-413b-ba52-4a97ab33d305"
+	historical.ThroughAt = exactFirstClass.Add(-time.Second)
+	historical.People = append(historical.People, practiceCountOpeningPerson{LegacyPartyID: replacementLegacy, NewCount: &zero})
+	tiers.OpeningID = addOpening(historical)
+	tiers.Count = append(tiers.Count, practiceTier{From: 2, Mode: "rate", Value: 2500})
+	publish(tiers)
+	check(12, 3700, 0) // A later class is included on top of the frozen opening.
+
+	tiers.OpeningID, tiers.CountFromAt = 0, &afterFirstClass
 	tiers.PersonCountStarts = []practicePersonCountStart{{PersonID: 999999, practiceCountStart: practiceCountStart{FromOrdinal: 2}}}
 	_, err := service.publishRule(ctx, publishRuleInput{ProductID: product, Label: "Missing person", PeriodID: &current,
 		Components: []component{{Type: "sales", ClassMember: "new", Mode: "tiered", SourceRole: "DIRECT_REFERRER", Tiers: &tiers}}})

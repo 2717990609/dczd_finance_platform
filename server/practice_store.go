@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"time"
 
@@ -16,29 +17,36 @@ import (
 
 var errPracticeSettlementUnavailable = errors.New("实战班正式结算待核对来源和项目规则后开放")
 
-func importPracticeFile(ctx context.Context, cfg config, filename string) error {
-	if !strings.HasSuffix(cfg.database.ConnConfig.Database, "_dev") {
-		return errors.New("roster import requires the isolated development database")
-	}
+func readPracticeImportFile(filename string, target any) error {
 	file, err := os.Open(filename)
 	if err != nil {
-		return errors.New("could not open the roster file")
+		return errors.New("could not open the import file")
 	}
 	defer file.Close()
 	const limit = 8 << 20
 	info, err := file.Stat()
 	if err != nil || info.Size() > limit {
-		return errPracticeRoster
+		return errors.New("could not read the import file within its size limit")
 	}
 	decoder := json.NewDecoder(io.LimitReader(file, limit+1))
 	decoder.DisallowUnknownFields()
-	var wire practiceRosterWire
-	if err = decoder.Decode(&wire); err != nil {
-		return errPracticeRoster
+	if err := decoder.Decode(target); err != nil {
+		return errors.New("the import file does not match the expected fields")
 	}
 	var extra any
 	if !errors.Is(decoder.Decode(&extra), io.EOF) {
-		return errPracticeRoster
+		return errors.New("the import file must contain one JSON document")
+	}
+	return nil
+}
+
+func importPracticeFile(ctx context.Context, cfg config, filename string) error {
+	if !strings.HasSuffix(cfg.database.ConnConfig.Database, "_dev") {
+		return errors.New("roster import requires the isolated development database")
+	}
+	var wire practiceRosterWire
+	if err := readPracticeImportFile(filename, &wire); err != nil {
+		return err
 	}
 	roster, err := normalizePracticeRoster(wire)
 	if err != nil {
@@ -134,7 +142,14 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	history := practiceTierHistory{current: practiceHistoryPeriod{
 		rosterID: *summary.PracticeRosterID, ordinal: summary.PeriodOrdinal, startsAt: &summary.PracticeStartsAt,
 	}}
-	starts := []practiceCountStart{config.defaultCountStart()}
+	if config.OpeningID != 0 {
+		opening, err := readPracticeCountOpening(ctx, tx, config.OpeningID, summary.PeriodID)
+		if err != nil {
+			return history, err
+		}
+		history.opening = &opening
+	}
+	starts := []practiceCountStart{history.defaultStart(config)}
 	for _, personal := range config.PersonCountStarts {
 		starts = append(starts, personal.practiceCountStart)
 	}
@@ -171,6 +186,16 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 		err := row.Scan(&period.ordinal, &period.endsOn, &period.startsAt, &period.rosterID)
 		return period, err
 	})
+	if err == nil {
+		history.periods = slices.DeleteFunc(history.periods, func(period practiceHistoryPeriod) bool {
+			for _, start := range starts {
+				if start.includes(history.current) && start.includes(period) {
+					return false
+				}
+			}
+			return true
+		})
+	}
 	return history, err
 }
 

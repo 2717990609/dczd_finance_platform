@@ -13,6 +13,14 @@ type practiceTierHistory struct {
 	current practiceHistoryPeriod
 	periods []practiceHistoryPeriod
 	members []practiceEnrollment
+	opening *practiceCountOpening
+}
+
+func (h practiceTierHistory) defaultStart(config practiceSalesTiers) practiceCountStart {
+	if h.opening != nil {
+		return practiceCountStart{FromAt: &h.opening.throughAt, after: true}
+	}
+	return config.defaultCountStart()
 }
 
 func (h practiceTierHistory) window(start practiceCountStart) (map[int64]bool, bool) {

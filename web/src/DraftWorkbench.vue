@@ -45,6 +45,7 @@ const reason = {
   PRACTICE_MISSING_PAYMENT: '缺少对应付款，请在来源核对订单',
   PRACTICE_INVALID_PAYMENT: '付款金额或发生时间不符合签到计提条件',
   PRACTICE_ATTRIBUTION_CONFLICT: '订金与尾款的受益人归属不一致',
+  PRACTICE_TIER_OPENING_MISSING: '所选冻结期初中缺少该人员的期初人数',
   PRACTICE_TIER_HISTORY_MISSING: '累计起点或历史期次缺少已确认名单',
   PRACTICE_TIER_HISTORY_INCOMPLETE: '历史新报的付款或人员归属待核',
   PRACTICE_TIER_GROUP_INCOMPLETE: '本期新报的付款或人员归属待核，暂无法选档',

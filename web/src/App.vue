@@ -33,7 +33,7 @@ const legacyOrganizationURL = (() => {
     return ''
   }
 })()
-const data = ref({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[]})
+const data = ref({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[]})
 const loading = ref(false)
 const saving = ref(false)
 const globalError = ref('')
@@ -122,6 +122,17 @@ const actions = computed(() => {
 })
 const formatTime = value => value ? new Intl.DateTimeFormat('zh-CN',{dateStyle:'short',timeStyle:'short',timeZone:'Asia/Shanghai'}).format(new Date(value)) : '—'
 const formatMoney = minor => minor == null ? '—' : new Intl.NumberFormat('zh-CN',{style:'currency',currency:'CNY'}).format(minor/100)
+const practiceOpeningOptions = computed(() => data.value.practiceCountOpenings
+  .filter(row => row.productId===draft.value.productId)
+  .map(row => ({value:row.id,label:openingLabel(row)})))
+function openingLabel(row) {
+  return '冻结结算 '+row.sourceSettlementId.slice(0,8)+' · 截至 '+formatTime(row.throughAt)+' · '+row.personCount+' 人'
+}
+function savedOpeningLabel(id) {
+  const opening = data.value.practiceCountOpenings.find(row=>row.id===id)
+  return opening ? openingLabel(opening) : '冻结期初 '+id
+}
+
 const labels = {ORDER_PAID:'付款',ORDER_REFUNDED:'退款',REFUND_SUCCEEDED:'退款',REFUND_ADJUSTED:'退款更正',DELIVERY_COMPLETED:'已交付'}
 const mainRows = computed(() => {
   const key = tab.value === 'mapping' ? 'mappings' : tab.value === 'identity' ? 'identities' : current.value
@@ -165,8 +176,9 @@ async function refresh(reloadOptions = false) {
   if (sourceFilter.value) params.set('source',sourceFilter.value)
   if (filter.value.trim()) params.set('orderId',filter.value.trim())
   if (olderThan.value) params.set('beforeId',olderThan.value)
-  const sections = {settlement:['products','periods'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people'], orders:['orders','sources'], people:['people','identities']}
+  const sections = {settlement:['products','periods'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings'], orders:['orders','sources'], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
+  if (requests.practiceCountOpenings) requests.practiceCountOpenings = '/practice-count-openings'
   if (!configurationReady.value || reloadOptions) requests.configuration = '/configuration-options'
   const entries = Object.entries(requests)
   const results = await Promise.allSettled(entries.map(([,url]) => api(url)))
@@ -263,7 +275,8 @@ function ruleComponentBody(row) {
   component.tiers = {}
   if (form.metric !== 'performance') {
     component.tiers.count = serialize(form.count,Number)
-    Object.assign(component.tiers,countStartBody(form))
+    if (form.startMode === 'opening') component.tiers.openingId = must(form.openingId,'请选择冻结期初')
+    else Object.assign(component.tiers,countStartBody(form))
     if (form.personCountStarts.length) component.tiers.personCountStarts = form.personCountStarts.map(item => ({
       personId:must(item.personId,'请选择设置累计起点的人员'),
       ...countStartBody(item),
@@ -408,6 +421,7 @@ async function save() {
                 <template v-else-if="column.key==='components'">
                   <div v-for="c in text" :key="c.type+':'+(c.classMember || '')">
                     <a-tag>{{ optionLabel('component',c.type) }}{{ c.classMember ? ' · '+optionLabel('classMember',c.classMember) : '' }} {{ c.mode==='tiered' ? tierLabel(c.tiers) : c.mode==='rate' ? (c.value/100)+'%' : formatMoney(c.value) }}</a-tag>
+                    <small v-if="c.tiers?.openingId" class="order-version">{{ savedOpeningLabel(c.tiers.openingId) }}</small>
                     <details v-if="c.tiers?.personCountStarts?.length" class="rule-count-review">
                       <summary>个人累计起点（{{ c.tiers.personCountStarts.length }}）</summary>
                       <ul>
@@ -490,7 +504,7 @@ async function save() {
           <a-form-item v-if="['sales','referral'].includes(c.type)" :label="'分项 '+(i+1)+' 的来源角色'">
             <a-input v-model:value="c.sourceRole" :aria-label="'来源角色 '+(i+1)" placeholder="如 LOCK_SALES_USER 或 DIRECT_REFERRER" :maxlength="64"/>
           </a-form-item>
-          <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes" :people="peopleOptions"/>
+          <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes" :people="peopleOptions" :openings="practiceOpeningOptions"/>
           <a-form-item v-if="selectedProduct?.periodMode==='calendar'" :label="'分项 '+(i+1)+' 的退款处理'" extra="历史退款沿用付款时的规则版本。">
             <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>
           </a-form-item>

@@ -172,7 +172,7 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 			startsByPerson[person.PersonID] = person.practiceCountStart
 		}
 	}
-	defaultStart := config.defaultCountStart()
+	defaultStart := history.defaultStart(*config)
 	defaultWindow, defaultReady := history.window(defaultStart)
 	windows := make(map[int64]map[int64]bool)
 	prior := make(map[int64]int64)
@@ -182,7 +182,8 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 			continue
 		}
 		window, ready := defaultWindow, defaultReady
-		if start, personal := startsByPerson[person]; personal {
+		start, hasPersonalStart := startsByPerson[person]
+		if hasPersonalStart {
 			window, ready = history.window(start)
 		}
 		windows[person] = window
@@ -191,6 +192,16 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 			issues[person] = "PRACTICE_TIER_HISTORY_MISSING"
 		} else if !valid {
 			issues[person] = "PRACTICE_TIER_HISTORY_INCOMPLETE"
+		} else if history.opening != nil && !hasPersonalStart {
+			openingCount, found := history.opening.counts[person]
+			if !found {
+				issues[person] = "PRACTICE_TIER_OPENING_MISSING"
+				continue
+			}
+			prior[person], err = addMinor(openingCount, count)
+			if err != nil {
+				return nil, nil, err
+			}
 		} else {
 			prior[person] = count
 		}

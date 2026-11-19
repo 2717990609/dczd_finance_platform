@@ -86,11 +86,18 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if len(os.Args) != 1 {
-		if len(os.Args) != 3 || os.Args[1] != "import-practice-roster" {
-			log.Fatal("usage: import-practice-roster <source-roster.json>")
+		if len(os.Args) != 3 {
+			log.Fatal("usage: import-practice-roster|import-practice-count-opening <source.json>")
 		}
-		if err := importPracticeFile(ctx, cfg, os.Args[2]); err != nil {
-			log.Print("practice roster import failed")
+		switch os.Args[1] {
+		case "import-practice-roster":
+			err = importPracticeFile(ctx, cfg, os.Args[2])
+		case "import-practice-count-opening":
+			err = importPracticeCountOpening(ctx, cfg, os.Args[2])
+		default:
+			log.Fatal("usage: import-practice-roster|import-practice-count-opening <source.json>")
+		}
+		if err != nil {
 			log.Fatal(err)
 		}
 		return

@@ -360,3 +360,27 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('tierStartMode','ordinal','从期数开始',10,'{}'),
  ('tierStartMode','time','从开班时间开始',20,'{}')
 ON CONFLICT (group_key,option_key) DO NOTHING;
+
+ALTER TABLE people ADD COLUMN IF NOT EXISTS legacy_party_id uuid;
+CREATE UNIQUE INDEX IF NOT EXISTS people_legacy_party_id ON people(legacy_party_id);
+
+CREATE TABLE IF NOT EXISTS practice_count_openings (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ product_id bigint NOT NULL REFERENCES products(id),
+ source_settlement_id uuid NOT NULL UNIQUE,
+ through_at timestamptz NOT NULL,
+ source_digest bytea NOT NULL CHECK (octet_length(source_digest)=32),
+ imported_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS practice_count_openings_product ON practice_count_openings(product_id,through_at DESC,id DESC);
+
+CREATE TABLE IF NOT EXISTS practice_count_opening_people (
+ opening_id bigint NOT NULL REFERENCES practice_count_openings(id),
+ person_id bigint NOT NULL REFERENCES people(id),
+ new_count bigint NOT NULL CHECK (new_count>=0),
+ PRIMARY KEY(opening_id,person_id)
+);
+
+INSERT INTO configuration_options(group_key,option_key,label,display_order,applies_to)
+ VALUES ('tierStartMode','opening','沿用冻结期初',30,'{"countScopes":["default"]}')
+ ON CONFLICT(group_key,option_key) DO NOTHING;

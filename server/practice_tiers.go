@@ -7,6 +7,7 @@ import (
 )
 
 type practiceSalesTiers struct {
+	OpeningID         int64                      `json:"openingId,omitempty"`
 	CountFromOrdinal  int                        `json:"countFromOrdinal,omitempty"`
 	CountFromAt       *time.Time                 `json:"countFromAt,omitempty"`
 	Count             []practiceTier             `json:"count,omitempty"`
@@ -17,6 +18,7 @@ type practiceSalesTiers struct {
 type practiceCountStart struct {
 	FromOrdinal int        `json:"countFromOrdinal,omitempty"`
 	FromAt      *time.Time `json:"countFromAt,omitempty"`
+	after       bool
 }
 
 type practicePersonCountStart struct {
@@ -36,6 +38,9 @@ func (s practiceCountStart) includes(period practiceHistoryPeriod) bool {
 		return period.ordinal >= s.FromOrdinal
 	}
 	if period.rosterID != 0 {
+		if s.after {
+			return period.startsAt.After(*s.FromAt)
+		}
 		return !period.startsAt.Before(*s.FromAt)
 	}
 	return period.endsOn.Format(time.DateOnly) >= s.FromAt.In(shanghai).Format(time.DateOnly)
@@ -66,11 +71,18 @@ func validPracticeSalesTiers(part component) bool {
 		part.Value != 0 || part.RefundPolicy != "" || tiers == nil || len(tiers.Count)+len(tiers.Performance) == 0 {
 		return false
 	}
-	if len(tiers.Count) == 0 {
-		if tiers.CountFromOrdinal != 0 || tiers.CountFromAt != nil || len(tiers.PersonCountStarts) != 0 {
+	switch {
+	case tiers.OpeningID < 0:
+		return false
+	case len(tiers.Count) == 0:
+		if tiers.CountFromOrdinal != 0 || tiers.CountFromAt != nil || len(tiers.PersonCountStarts) != 0 || tiers.OpeningID != 0 {
 			return false
 		}
-	} else if !tiers.defaultCountStart().valid() {
+	case tiers.OpeningID != 0:
+		if tiers.CountFromOrdinal != 0 || tiers.CountFromAt != nil {
+			return false
+		}
+	case !tiers.defaultCountStart().valid():
 		return false
 	}
 	seen := make(map[int64]bool, len(tiers.PersonCountStarts))

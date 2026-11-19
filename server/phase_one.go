@@ -111,6 +111,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.list(periodsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createPeriod)},
 		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.list(rulesSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.list(practiceCountOpeningsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishRule)},
 		{Method: http.MethodGet, Path: "/api/v1/people", Handler: s.list(peopleSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/people", Handler: submit(s.createPerson)},
@@ -152,7 +153,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 	code, message := http.StatusInternalServerError, "处理失败，请稍后重试"
 	var dbErr *pgconn.PgError
 	switch {
-	case errors.Is(err, invalid), errors.Is(err, errPracticeCountPerson):
+	case errors.Is(err, invalid), errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope):
 		code, message = 400, err.Error()
 	case errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
@@ -360,6 +361,16 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 				return invalid
 			}
 			if c.Tiers != nil {
+				if c.Tiers.OpeningID != 0 {
+					var found bool
+					if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM practice_count_openings WHERE id=$1 AND product_id=$2)`,
+						c.Tiers.OpeningID, p.ProductID).Scan(&found); err != nil {
+						return err
+					}
+					if !found {
+						return errPracticeOpeningScope
+					}
+				}
 				for _, start := range c.Tiers.PersonCountStarts {
 					personIDs = append(personIDs, start.PersonID)
 				}

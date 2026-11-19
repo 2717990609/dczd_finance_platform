@@ -7,7 +7,10 @@ const props = defineProps({
   startModes: { type: Array, required: true },
   amounts: { type: Array, required: true },
   people: { type: Array, required: true },
+  openings: { type: Array, required: true },
 })
+const personalStartModes = computed(() => props.startModes.filter(option =>
+  !option.scope?.countScopes || option.scope.countScopes.includes('person')))
 const sections = computed(() => {
   const result = []
   if (props.config.metric !== 'performance') result.push({ key: 'count', title: '累计人数档', unit: '人', decimals: 0 })
@@ -32,6 +35,10 @@ function eligiblePeople(row) {
       <a-form-item v-if="config.startMode==='ordinal'" html-for="tier-start-ordinal" label="起始期数" required>
         <a-input-number id="tier-start-ordinal" v-model:value="config.countFromOrdinal" :min="1" :precision="0"/>
       </a-form-item>
+      <a-form-item v-else-if="config.startMode==='opening'" html-for="tier-opening" label="冻结期初"
+        :extra="openings.length ? '从冻结截止时刻之后开始追加新报。' : '当前产品暂无导入的冻结期初。'" required>
+        <a-select id="tier-opening" v-model:value="config.openingId" :options="openings" />
+      </a-form-item>
       <a-form-item v-else html-for="tier-start-time" label="起始开班时间" extra="使用北京时间。" required>
         <a-input id="tier-start-time" v-model:value="config.countFromAt" type="datetime-local"/>
       </a-form-item>
@@ -43,7 +50,7 @@ function eligiblePeople(row) {
             <a-select :id="'tier-person-'+index" v-model:value="row.personId" :options="eligiblePeople(row)" show-search option-filter-prop="label"/>
           </a-form-item>
           <a-form-item :html-for="'tier-person-start-mode-'+index" label="个人累计起点">
-            <a-select :id="'tier-person-start-mode-'+index" v-model:value="row.startMode" :options="startModes"/>
+            <a-select :id="'tier-person-start-mode-'+index" v-model:value="row.startMode" :options="personalStartModes"/>
           </a-form-item>
           <a-form-item v-if="row.startMode==='ordinal'" :html-for="'tier-person-start-ordinal-'+index" label="个人起始期数" required>
             <a-input-number :id="'tier-person-start-ordinal-'+index" v-model:value="row.countFromOrdinal" :min="1" :precision="0"/>
@@ -53,7 +60,7 @@ function eligiblePeople(row) {
           </a-form-item>
           <a-button type="link" danger @click="config.personCountStarts.splice(index,1)">移除个人起点</a-button>
         </div>
-        <a-button type="dashed" block @click="config.personCountStarts.push({startMode:startModes[0]?.value})">添加个人起点</a-button>
+        <a-button type="dashed" block @click="config.personCountStarts.push({startMode:personalStartModes[0]?.value})">添加个人起点</a-button>
       </details>
     </template>
     <fieldset v-for="section in sections" :key="section.key" class="tier-ranges">
