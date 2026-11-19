@@ -20,7 +20,7 @@ const navigation = [
   {key:'settlement', title:'分润试算', icon:CalculatorOutlined},
   {key:'monthly', title:'月度汇总', icon:BarChartOutlined},
   {key:'products', title:'产品目录', icon:AppstoreOutlined, description:'维护核算产品，绑定子系统的原始商品或业务标识。'},
-  {key:'periods', title:'核算期次', icon:CalendarOutlined, description:'设置实际开班或结算窗口，查看各期匹配的规则。'},
+  {key:'periods', title:'核算期次', icon:CalendarOutlined, description:'设置实际开班或结算窗口，查看适用规则。'},
   {key:'rules', title:'产品规则', icon:ProfileOutlined, description:'配置各产品的分润方式、适用范围和生效时间，查看规则版本。'},
   {key:'orders', title:'来源订单', icon:FileSearchOutlined, description:'按原订单 ID 从子系统重拉，查询财务目前收到的业务记录。'},
   {key:'organization', title:'组织与人员', icon:TeamOutlined},
@@ -238,7 +238,7 @@ const columns = computed(() => {
   const values = {
     product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['来源映射','mappingCount']],
     mapping:[['产品名称','productName'],['业务来源','source'],['业务域','domain'],['来源标识','sourceKey']],
-    period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],['报表月份','reportMonth',115],['匹配规则','ruleVersion',200]],
+    period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],['报表月份','reportMonth',115],['适用规则','ruleVersion',200]],
     rule:[['规则名称','label',200],['所属产品','productName',155],['版本','version',80],
       ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',195]],
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],

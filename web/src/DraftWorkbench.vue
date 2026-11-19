@@ -345,7 +345,7 @@ async function loadMore(section, cursorName) {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
             {{ record.orderNo || record.orderId }}
-            <small class="order-version">来源版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template><template v-if="record.salesCompany"> · {{ record.salesCompany }}</template></small>
+            <small class="order-version">订单版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template><template v-if="record.salesCompany"> · {{ record.salesCompany }}</template></small>
             <small v-if="record.completedAt" class="order-version">完成 {{ formatTime(record.completedAt) }}<template v-if="record.completionCarried"> · 补入本期</template></small>
           </template>
           <template v-else-if="column.key === 'beneficiary'">
