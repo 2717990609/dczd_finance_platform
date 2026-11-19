@@ -45,7 +45,7 @@ func importVIPSalesContext(ctx context.Context, cfg config, path string) error {
 	return storeVIPSalesContext(ctx, db, result)
 }
 
-func storeVIPSalesContext(ctx context.Context, db *pgxpool.Pool, raw json.RawMessage) error {
+func storeVIPSalesContext(ctx context.Context, db transactionBeginner, raw json.RawMessage) error {
 	var s vipSalesSnapshot
 	if err := json.Unmarshal(raw, &s); err != nil || s.Source != "DCAI" || s.CapturedAt.IsZero() {
 		return invalid

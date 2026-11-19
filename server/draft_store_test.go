@@ -18,6 +18,15 @@ import (
 
 func integrationDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	db := emptyIntegrationDB(t)
+	if err := migrate(context.Background(), db); err != nil {
+		t.Fatal(err)
+	}
+	return db
+}
+
+func emptyIntegrationDB(t *testing.T) *pgxpool.Pool {
+	t.Helper()
 	dsn := os.Getenv("FINANCE_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("FINANCE_TEST_DATABASE_URL is required for PostgreSQL integration tests")
@@ -48,9 +57,6 @@ func integrationDB(t *testing.T) *pgxpool.Pool {
 		t.Fatal(err)
 	}
 	t.Cleanup(db.Close)
-	if err = migrate(ctx, db); err != nil {
-		t.Fatal(err)
-	}
 	return db
 }
 

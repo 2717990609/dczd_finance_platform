@@ -22,6 +22,8 @@ import (
 //go:embed schema.sql
 var schema string
 
+const schemaLockSQL = "SELECT pg_advisory_xact_lock(637619238)"
+
 type component struct {
 	Type          string                  `json:"type"`
 	Mode          string                  `json:"mode"`
@@ -109,7 +111,7 @@ func validateComponents(items []component) error {
 
 func migrate(ctx context.Context, db *pgxpool.Pool) error {
 	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(637619238)"); err != nil {
+		if _, err := tx.Exec(ctx, schemaLockSQL); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, schema)

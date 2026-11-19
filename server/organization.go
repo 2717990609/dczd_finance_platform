@@ -108,7 +108,7 @@ func importOrganization(ctx context.Context, cfg config, path string) error {
 	return storeOrganizationSnapshot(ctx, db, raw)
 }
 
-func storeOrganizationSnapshot(ctx context.Context, db *pgxpool.Pool, raw json.RawMessage) error {
+func storeOrganizationSnapshot(ctx context.Context, db transactionBeginner, raw json.RawMessage) error {
 	var snapshot organizationSnapshot
 	if err := json.Unmarshal(raw, &snapshot); err != nil {
 		return err

@@ -1,3 +1,9 @@
+CREATE TABLE IF NOT EXISTS finance_initialization (
+ singleton boolean PRIMARY KEY DEFAULT true CHECK (singleton),
+ file_digest bytea NOT NULL CHECK (octet_length(file_digest)=32),
+ completed_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS products (
  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
  code text NOT NULL UNIQUE,

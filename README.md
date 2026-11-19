@@ -17,6 +17,30 @@
 - 核对承接范围内的历史结算及其订单、规则与归属引用，并确认实战班累计期初、团队池余额、待处理退款和差额。用确定的账期和同步水位核对首期的订单范围和金额，防止漏算或重复计提。
 - 以财务账号完成规则生效、主动拉取、草稿试算、正式结算及历史查询。分别验证固定账期和实战班签到期次，核对公司、部门和人员报表。来源数据更正后重新拉取，核对差额进入可办理账期及原正式结果的完整性。
 
+## 首次初始化
+
+在启动工作台前准备独立 PostgreSQL 数据库。使用实际目标库设置 `FINANCE_DATABASE_URL` 和 `FINANCE_EXPECTED_DATABASE`，并在连接中设置一个空应用 schema。空数据库通常使用默认的 `public`。正式环境使用 `FINANCE_ACCESS_MODE=managed`。
+
+初始化清单是一个 JSON 文件，包含以下字段。各配置对象使用「产品与数据配置」中的格式。
+
+| 字段 | 内容 |
+| --- | --- |
+| `database` | 目标库名，与实际连接的数据库相同 |
+| `schema` | 可选。默认为 `public`，指定其他名称时须与连接实际使用的应用 schema 相同 |
+| `productConfig` | 产品目录、来源场景和规则版本配置 |
+| `organization` | 人员、组织树、任职及可选的来源公司映射和推荐关系 |
+| `salesContext` | 可选。使用大春 AI 核算时附带所需的人员、公司、销售类别和计提任职配置 |
+| `practiceOpenings` | 可选。实战班冻结累计期初数组。每项用 `productCode` 指向本清单内的产品，其余字段为 `sourceSettlementId`、`throughAt` 和 `people` |
+
+```sh
+go -C server run . initialize-finance /secure/finance-initialization.json
+go -C server run . initialize-finance /secure/finance-initialization.json --apply
+```
+
+第一条命令验证完整导入并回滚。第二条在一个事务中提交，任一步失败都会回滚。在成功后重试同一文件会返回已初始化。已有业务数据的环境通过对应的日常维护或迁移流程更新。
+
+初始化后使用 `configure-finance-account` 登记账号和产品权限，按验收范围配置核算期次、班次规则和来源同步。产品结算默认关闭，按对账结果逐个启用。历史正式结算和团队池期初须单独核对及交接。
+
 ## 核算与报表
 
 规则版本保存分项、费率、适用范围及来源角色。订单修订各保存一次，试算明细引用订单、人员归属和规则版本。
