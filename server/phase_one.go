@@ -99,8 +99,9 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 }
 
 type workspace struct {
-	db      *pgxpool.Pool
-	sources map[string]sourceConfig
+	db       *pgxpool.Pool
+	sources  map[string]sourceConfig
+	ruleAuth catalogRuleAuth
 }
 
 func (s workspace) routes() []rest.Route {
@@ -114,6 +115,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createPeriod)},
 		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.list(rulesSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.list(catalogRulesSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-rates", Handler: s.getCatalogRuleRates},
+		{Method: http.MethodPost, Path: "/api/v1/catalog-rule-rates", Handler: s.postCatalogRuleRates},
 		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.list(practiceCountOpeningsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishRule)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-units", Handler: s.list(organizationUnitsSQL)},
@@ -141,6 +144,10 @@ func (s workspace) routes() []rest.Route {
 }
 
 func submit[T any](apply func(context.Context, T) (any, error)) http.HandlerFunc {
+	return submitJSON(32<<10, apply)
+}
+
+func submitJSON[T, R any](size int64, apply func(context.Context, T) (R, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input T
 		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -148,7 +155,7 @@ func submit[T any](apply func(context.Context, T) (any, error)) http.HandlerFunc
 			respond(w, nil, invalid)
 			return
 		}
-		r.Body = http.MaxBytesReader(w, r.Body, 32<<10)
+		r.Body = http.MaxBytesReader(w, r.Body, size)
 		decoder := json.NewDecoder(r.Body)
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&input); err != nil {
@@ -168,9 +175,14 @@ func respond(w http.ResponseWriter, result any, err error) {
 	code, message := http.StatusInternalServerError, "处理失败，请稍后重试"
 	var dbErr *pgconn.PgError
 	switch {
+	case errors.Is(err, errRuleLogin):
+		code, message = http.StatusUnauthorized, err.Error()
+	case errors.Is(err, errRulePermission):
+		code, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, invalid), errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany):
 		code, message = 400, err.Error()
 	case errors.Is(err, errLegacyRuleNotAdapted), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
+		errors.Is(err, errCatalogRateStale), errors.Is(err, errCatalogRateUnavailable), errors.Is(err, errCatalogRateDates), errors.Is(err, errCatalogTeamRate),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
 		errors.Is(err, errDraftChanged),
 		errors.Is(err, errSettlementPools), errors.Is(err, errSettlementPoolHistory),
@@ -519,7 +531,7 @@ func startHTTP(ctx context.Context, cfg config, db *pgxpool.Pool) error {
 	}
 	defer server.Stop()
 	health := newHandler(db.Ping)
-	api := workspace{db: db, sources: readSources()}
+	api := workspace{db: db, sources: readSources(), ruleAuth: cfg.ruleAuth}
 	stopSync := api.startDCAISyncWorkers(ctx, cfg.dcaiSyncInterval)
 	defer stopSync()
 	stopDraftRefresh := api.startDraftRefreshWorker(ctx, cfg.draftInterval)

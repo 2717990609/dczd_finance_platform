@@ -6,6 +6,7 @@ import {
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import DraftWorkbench from './DraftWorkbench.vue'
+import CatalogRuleRates from './CatalogRuleRates.vue'
 import OrganizationDirectory from './OrganizationDirectory.vue'
 import OrderSyncPanel from './OrderSyncPanel.vue'
 import PracticeTierEditor from './PracticeTierEditor.vue'
@@ -30,6 +31,7 @@ const usesProductScope = computed(() => productScopedPages.has(current.value))
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
 const organization = ref()
 const orderSync = ref()
+const rateRule = ref()
 const data = ref({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
 const loading = ref(false)
 const saving = ref(false)
@@ -148,6 +150,11 @@ function catalogRuleBadge(row) {
     return { text:'待生效', color:'blue' }
   }
   return row.draftSupported ? { text:'可试算', color:'green' } : { text:'待启用', color:'blue' }
+}
+function ratePublished(result) {
+  notice.value = result.id === rateRule.value?.id ? '费率无变化。' : '规则 v'+result.version+' 已发布。'
+  rateRule.value = undefined
+  refresh()
 }
 const mainRows = computed(() => {
   const key = tab.value === 'mapping' ? 'mappings' : tab.value === 'identity' ? 'identities' : current.value
@@ -472,6 +479,7 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='components' && record.catalogPending">
                   <a-tag :color="catalogRuleBadge(record).color">{{ catalogRuleBadge(record).text }}</a-tag>
+                  <a-button v-if="record.draftSupported && record.projectMatches" type="link" size="small" @click="rateRule=record">分润费率</a-button>
                 </template>
                 <template v-else-if="column.key==='components'">
                   <div v-for="c in text" :key="c.type+':'+(c.classMember || '')">
@@ -583,5 +591,6 @@ async function save() {
       <div class="form-actions"><a-button :disabled="saving" @click="close">取消</a-button><a-button html-type="submit" type="primary" :loading="saving">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':'保存' }}</a-button></div>
     </a-form>
   </a-drawer>
+  <CatalogRuleRates v-if="rateRule" :rule="rateRule" :api="api" :format-time="formatTime" @close="rateRule=undefined" @published="ratePublished"/>
 </a-config-provider>
 </template>

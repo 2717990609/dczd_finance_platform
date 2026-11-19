@@ -1,0 +1,251 @@
+package main
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+var (
+	errCatalogRateStale          = errors.New("所选生效时间的适用规则已变化，请重新选择版本")
+	errCatalogRateUnavailable    = errors.New("此规则未开放费率维护")
+	errCatalogRateDates          = errors.New("生效时间须晚于所选版本的起点")
+	errCatalogConfigurationOwned = errors.New("此产品已在本平台发布规则，请通过规则配置维护")
+	errCatalogTeamRate           = errors.New("此调整会改变内部销售的拆分总比例，请核对对应团队的拆分规则")
+)
+
+type catalogRateChange struct {
+	ItemKey string `json:"itemKey"`
+	Row     *int   `json:"row,omitempty"` // One-based within the selected version's rate table.
+	Rate    *int64 `json:"rateBps"`
+}
+
+type publishCatalogRatesInput struct {
+	BaseID        string              `json:"baseId"`
+	EffectiveFrom time.Time           `json:"effectiveFrom"`
+	Changes       []catalogRateChange `json:"changes"`
+}
+
+type catalogPublication struct {
+	ID      string `json:"id"`
+	Version int    `json:"version"`
+}
+
+const catalogScenarioRateCandidates = `SELECT v.source_id,v.effective_from,v.effective_to,v.published_at,p.resume_from,` + catalogRulePriority + ` AS priority
+ FROM legacy_catalog_products scope JOIN products pro ON pro.id=scope.product_id
+ JOIN legacy_rule_packages p ON p.product_id=scope.product_id AND p.project_code=scope.project_code
+ JOIN legacy_rule_versions v ON v.package_id=p.source_id AND ` + catalogVersionVisible + `
+ WHERE scope.product_id=$1 AND p.scope_id=$2 AND ` + catalogRuleEligible + `
+  AND v.definition->'settlement_policy'->>'cycle'=CASE pro.cycle_start_day WHEN 25 THEN 'MONTHLY_25_TO_24' WHEN 1 THEN 'MONTHLY' END
+  AND v.definition->'policy_scope'->'business_sku_codes' ? p.scope_id
+  AND v.definition->'policy_scope'->'sales_systems' ? scope.source_system`
+
+const catalogActiveRateVersionSQL = `WITH rules AS (` + catalogScenarioRateCandidates + `), winner AS (
+ SELECT source_id FROM rules WHERE effective_from<=$3 AND (effective_to IS NULL OR effective_to>$3)
+ AND (resume_from IS NULL OR resume_from<=$3)
+  ORDER BY ` + catalogRuleOrder + ` FETCH FIRST 1 ROW WITH TIES
+)
+SELECT count(*),min(source_id::text) FROM winner`
+
+const catalogRateDraftPeriodsSQL = `WITH rates AS MATERIALIZED (` + catalogScenarioRateCandidates + `), routes AS MATERIALIZED (
+ SELECT r.* FROM catalog_business_routes r JOIN legacy_catalog_products c ON c.product_id=r.product_id AND c.captured_at=r.observed_at
+ WHERE r.product_id=$1 AND r.sku_code=$2 AND r.source=c.source_system
+), windows AS (
+ SELECT p.id,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai' AS starts_at,
+ (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai' AS ends_at FROM periods p
+ WHERE p.product_id=$1 AND $3<((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
+ AND ($4::timestamptz IS NULL OR p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'<$4)
+ AND NOT EXISTS(SELECT 1 FROM settlements st WHERE st.period_id=p.id)
+)
+SELECT w.id FROM windows w
+WHERE EXISTS(
+ SELECT 1 FROM routes m JOIN source_order_versions f ON f.source=m.source AND f.fact->>'domain'=m.domain
+  AND split_part(f.record_key,':',1)=m.record_table AND f.kind='ORDER_PAID'
+ JOIN source_order_classifications c ON c.source_version_id=f.id
+  AND (c.entity_type,c.business_key,c.classifier)=(m.entity_type,m.business_key,m.classifier)
+ WHERE f.occurred_at>=greatest(w.starts_at,$3,m.effective_from)
+  AND f.occurred_at<least(w.ends_at,$4::timestamptz,m.effective_to)
+  AND NOT EXISTS(
+   SELECT 1 FROM source_order_versions newer
+   WHERE (newer.source,newer.order_id,newer.line_id,newer.record_key,newer.kind)=(f.source,f.order_id,f.line_id,f.record_key,f.kind)
+   AND (newer.updated_at,newer.id)>(f.updated_at,f.id)
+  )
+  AND (SELECT count(*)=1 AND bool_and(best.source_id=$5::uuid) FROM (
+   SELECT r.source_id FROM rates r WHERE r.effective_from<=f.occurred_at AND (r.effective_to IS NULL OR r.effective_to>f.occurred_at)
+   AND (r.resume_from IS NULL OR r.resume_from<=f.occurred_at)
+   ORDER BY ` + catalogRuleOrder + ` FETCH FIRST 1 ROW WITH TIES
+  ) best)
+)`
+
+const catalogDisplayedThrough = `least(v.effective_to,(SELECT min(later.effective_from) FROM legacy_rule_versions later
+ WHERE later.package_id=v.package_id AND later.published_at IS NOT NULL AND later.effective_from>v.effective_from))`
+
+func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalogRatesInput, actor string) (catalogPublication, error) {
+	published := catalogPublication{ID: input.BaseID}
+	id, valid := canonicalSourceUUID(input.BaseID)
+	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
+	if !valid || from.IsZero() || len(input.Changes) == 0 || !textOK(actor, 128) {
+		return published, invalid
+	}
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		var product int64
+		var scope, pack string
+		var fromBase time.Time
+		var throughBase *time.Time
+		var definition json.RawMessage
+		err := tx.QueryRow(ctx, `SELECT pro.id,p.scope_id,v.package_id::text,v.version_no,
+		 v.effective_from,v.effective_to,v.definition
+		 FROM legacy_rule_versions v JOIN legacy_rule_packages p ON p.source_id=v.package_id
+		 JOIN legacy_catalog_products c ON c.product_id=p.product_id JOIN products pro ON pro.id=c.product_id
+		 WHERE v.source_id=$1::uuid AND c.source_system='DCAI' AND pro.period_mode='calendar'
+		  AND p.scope_type='BUSINESS_SCENARIO' AND p.project_code=c.project_code FOR UPDATE OF pro`, id).
+			Scan(&product, &scope, &pack, &published.Version, &fromBase, &throughBase, &definition)
+		if err != nil {
+			return err
+		}
+		var count int
+		var active *string
+		if err := tx.QueryRow(ctx, catalogActiveRateVersionSQL, product, scope, from).Scan(&count, &active); err != nil {
+			return err
+		}
+		if count != 1 || active == nil || *active != id {
+			return errCatalogRateStale
+		}
+		if !from.After(fromBase) {
+			return errCatalogRateDates
+		}
+		body, changed, err := editCatalogRates(definition, input.Changes)
+		if err != nil || !changed {
+			return err
+		}
+		contentHash := sha256.Sum256(body)
+		if err := tx.QueryRow(ctx, `INSERT INTO legacy_rule_versions
+		 (source_id,package_id,version_no,source_status,effective_from,effective_to,content_hash,definition,observed_at,published_at,published_by,predecessor_id)
+		 SELECT gen_random_uuid(),$1::uuid,(SELECT max(version_no)+1 FROM legacy_rule_versions WHERE package_id=$1::uuid),
+		 'PUBLISHED',$2,$3,$4,$5,now(),now(),$6,$7::uuid RETURNING source_id::text,version_no`,
+			pack, from, throughBase, hex.EncodeToString(contentHash[:]), body, actor, id).Scan(&published.ID, &published.Version); err != nil {
+			return err
+		}
+		return enqueueDraftConfiguration(ctx, tx, catalogRateDraftPeriodsSQL, product, scope, from, throughBase, published.ID)
+	})
+	return published, err
+}
+
+func catalogRateActions(raw json.RawMessage) (map[string]json.RawMessage, []map[string]json.RawMessage, error) {
+	if _, ok := readVIPSalesPolicy(raw); !ok {
+		return nil, nil, errCatalogRateUnavailable
+	}
+	if _, ok := readVIPBenefits(raw); !ok {
+		return nil, nil, errCatalogRateUnavailable
+	}
+	var root map[string]json.RawMessage
+	var actions []map[string]json.RawMessage
+	if json.Unmarshal(raw, &root) != nil || json.Unmarshal(root["benefit_actions"], &actions) != nil {
+		return nil, nil, errCatalogRateUnavailable
+	}
+	return root, actions, nil
+}
+
+func editCatalogRates(raw json.RawMessage, changes []catalogRateChange) (json.RawMessage, bool, error) {
+	root, actions, err := catalogRateActions(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	items := make(map[string]map[string]json.RawMessage, len(actions))
+	for _, action := range actions {
+		var key string
+		if err := json.Unmarshal(action["item_key"], &key); err != nil {
+			return nil, false, err
+		}
+		items[key] = action
+	}
+	tables := make(map[string][]map[string]json.RawMessage)
+	type cell struct {
+		Item string
+		Row  int
+	}
+	seen := make(map[cell]bool, len(changes))
+	changed := false
+	for _, change := range changes {
+		action := items[change.ItemKey]
+		if action == nil || change.Rate == nil || *change.Rate < 0 || *change.Rate > 10000 {
+			return nil, false, invalid
+		}
+		rowNum := 0
+		fields := action
+		if change.Row != nil {
+			rowNum = *change.Row
+			rows, parsed := tables[change.ItemKey]
+			if !parsed {
+				if json.Unmarshal(action["rate_table"], &rows) != nil {
+					return nil, false, invalid
+				}
+				tables[change.ItemKey] = rows
+			}
+			if rowNum < 1 || rowNum > len(rows) {
+				return nil, false, invalid
+			}
+			fields = rows[rowNum-1]
+		}
+		target := cell{change.ItemKey, rowNum}
+		var existing int64
+		if seen[target] || json.Unmarshal(fields["rate_bps"], &existing) != nil {
+			return nil, false, invalid
+		}
+		seen[target] = true
+		if *change.Rate != existing {
+			fields["rate_bps"], _ = json.Marshal(*change.Rate)
+			changed = true
+		}
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	for key, rows := range tables {
+		items[key]["rate_table"], err = json.Marshal(rows)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	root["benefit_actions"], err = json.Marshal(actions)
+	if err != nil {
+		return nil, false, err
+	}
+	body, err := json.Marshal(root)
+	if err != nil {
+		return nil, false, err
+	}
+	before, _ := readVIPSalesPolicy(raw)
+	if len(before.Split.Teams) != 0 && len(tables[before.Split.Item]) != 0 {
+		after, ok := readVIPSalesPolicy(body)
+		if !ok || internalTeamRatesChanged(before, after) {
+			return nil, false, errCatalogTeamRate
+		}
+	}
+	return body, true, nil
+}
+
+func internalTeamRatesChanged(before, after vipSalesPolicy) bool {
+	// Valid category IDs are UUIDs. Include both missing and unmatched categories.
+	categories := map[string]bool{"": true, "unmatched": true}
+	for _, row := range before.Sales {
+		categories[row.Category] = true
+	}
+	for _, team := range before.Split.Teams {
+		for _, relationship := range []string{"", "DIRECT", "INDIRECT", "NONE"} {
+			for category := range categories {
+				oldRate, oldIssue := resolveVIPRate(before.Sales, team.Company, relationship, category)
+				newRate, newIssue := resolveVIPRate(after.Sales, team.Company, relationship, category)
+				if oldRate != newRate || oldIssue != newIssue {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}

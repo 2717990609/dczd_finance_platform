@@ -9,6 +9,19 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const catalogRulePriority = `CASE WHEN jsonb_typeof(v.definition->'policy_scope'->'priority')='number'
+ THEN (v.definition->'policy_scope'->>'priority')::numeric ELSE 0 END`
+
+const catalogRuleEligible = `p.policy_kind='LEGACY_BUNDLE' AND p.scope_type='BUSINESS_SCENARIO' AND NOT p.paused
+ AND v.source_status='PUBLISHED' AND v.definition->>'schema_version' IN ('1.1','1.2','1.3')
+ AND v.definition->>'recognition_trigger'='PAID'
+ AND v.definition->'policy_scope'->'financial_event_types' ? 'order.paid'`
+
+const catalogRuleOrder = `priority DESC, (published_at IS NOT NULL) DESC,
+ CASE WHEN published_at IS NOT NULL THEN effective_from END DESC NULLS LAST`
+
+const catalogVersionVisible = `(v.observed_at=scope.captured_at OR v.published_at IS NOT NULL)`
+
 const catalogMatchSQL = `WITH period AS (
  SELECT p.product_id,c.project_code,c.captured_at,
   p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai' AS after,
@@ -20,20 +33,15 @@ const catalogMatchSQL = `WITH period AS (
 ), routes AS MATERIALIZED (
  SELECT m.* FROM catalog_business_routes m JOIN period p USING(product_id) WHERE m.observed_at=p.captured_at
 ), rules AS MATERIALIZED (
- SELECT v.source_id,v.effective_from,v.effective_to,v.version_no,p.name,p.scope_id,p.resume_from,
+ SELECT v.source_id,v.effective_from,v.effective_to,v.version_no,v.published_at,p.name,p.scope_id,p.resume_from,
  v.definition->'policy_scope'->'sales_systems' AS sales_systems,
  v.definition->'policy_scope'->'business_sku_codes' AS skus,
- CASE WHEN jsonb_typeof(v.definition->'policy_scope'->'priority')='number'
-  THEN (v.definition->'policy_scope'->>'priority')::numeric ELSE 0 END AS priority
+ ` + catalogRulePriority + ` AS priority
  FROM period scope JOIN legacy_rule_packages p ON p.product_id=scope.product_id AND p.project_code=scope.project_code
- JOIN legacy_rule_versions v ON v.package_id=p.source_id AND v.observed_at=scope.captured_at
- WHERE p.policy_kind='LEGACY_BUNDLE' AND p.scope_type='BUSINESS_SCENARIO' AND NOT p.paused
-  AND v.source_status='PUBLISHED' AND v.effective_from<scope.before
+ JOIN legacy_rule_versions v ON v.package_id=p.source_id AND ` + catalogVersionVisible + `
+ WHERE ` + catalogRuleEligible + ` AND v.effective_from<scope.before
   AND (v.effective_to IS NULL OR scope.after<v.effective_to)
-  AND v.definition->>'schema_version' IN ('1.1','1.2','1.3')
-  AND v.definition->>'recognition_trigger'='PAID'
   AND v.definition->'settlement_policy'->>'cycle'=scope.cycle
-  AND v.definition->'policy_scope'->'financial_event_types' ? 'order.paid'
 ), payments AS (
  SELECT v.id,v.source,v.order_id,v.occurred_at,v.fact->>'orderNo' AS order_no,
   v.fact->>'transactionType' AS transaction_type,v.fact->>'domain' AS domain,
@@ -85,7 +93,7 @@ const catalogMatchSQL = `WITH period AS (
    WHERE m.n=1 AND r.scope_id=m.sku AND r.skus ? m.sku AND r.sales_systems ? f.source
     AND r.effective_from<=f.occurred_at AND (r.effective_to IS NULL OR f.occurred_at<r.effective_to)
     AND (r.resume_from IS NULL OR r.resume_from<=f.occurred_at)
-   ORDER BY r.priority DESC FETCH FIRST 1 ROW WITH TIES
+   ORDER BY ` + catalogRuleOrder + ` FETCH FIRST 1 ROW WITH TIES
   ) best
  ) r ON true
 ), page AS MATERIALIZED (

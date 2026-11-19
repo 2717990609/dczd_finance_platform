@@ -64,19 +64,21 @@ type legacyCatalogVersion struct {
 	Definition json.RawMessage `json:"definition"`
 }
 
-const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(v) ORDER BY v."effectiveFrom" DESC,v.id),'[]') FROM (
- SELECT r.source_id AS id,true AS "catalogPending",p.product_id AS "productId",pr.name AS "productName",p.code AS "packageCode",
+const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(result) ORDER BY result."effectiveFrom" DESC,result.id),'[]') FROM (
+ SELECT v.source_id AS id,true AS "catalogPending",p.product_id AS "productId",pr.name AS "productName",p.code AS "packageCode",
  p.name AS label,p.project_code AS project,
  CASE WHEN p.scope_type IN ('BUSINESS_SCENARIO','CROSS_SCENARIO_AGGREGATE') THEN p.scope_type END AS "scopeType",
  p.scope_id AS "scopeId",
- r.version_no AS version,r.source_status AS "sourceStatus",r.effective_from AS "effectiveFrom",r.effective_to AS "effectiveTo",
+ v.version_no AS version,v.source_status AS "sourceStatus",v.effective_from AS "effectiveFrom",
+ ` + catalogDisplayedThrough + ` AS "effectiveTo",
  p.paused,p.resume_from AS "resumeFrom",p.project_code=c.project_code AS "projectMatches",
- r.observed_at=c.captured_at AS "inLatestSnapshot",
+ (v.observed_at=c.captured_at OR v.published_at IS NOT NULL) AS "inLatestSnapshot",
+ v.published_at AS "publishedAt",
  coalesce(c.source_system='DCAI' AND p.scope_type='BUSINESS_SCENARIO'
-  AND r.definition->'internal_sales_direct_split'->>'mode'='DCAI_INTERNAL_DIRECT',false) AS "draftSupported"
- FROM legacy_rule_versions r JOIN legacy_rule_packages p ON p.source_id=r.package_id
+  AND v.definition->'internal_sales_direct_split'->>'mode'='DCAI_INTERNAL_DIRECT',false) AS "draftSupported"
+ FROM legacy_rule_versions v JOIN legacy_rule_packages p ON p.source_id=v.package_id
  JOIN legacy_catalog_products c ON c.product_id=p.product_id JOIN products pr ON pr.id=c.product_id
-) v`
+) result`
 
 func normalizeLegacyCatalog(input *legacyCatalogFile) error {
 	if !textOK(input.Environment, 80) || input.CapturedAt.IsZero() || len(input.Products) == 0 {
@@ -227,6 +229,14 @@ func storeLegacyProduct(ctx context.Context, tx pgx.Tx, environment string, capt
 				return 0, false, errLegacyCatalogConflict
 			}
 			return id, false, nil
+		}
+		var published bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM legacy_rule_versions v
+		 JOIN legacy_rule_packages p ON p.source_id=v.package_id WHERE p.product_id=$1 AND v.published_at IS NOT NULL)`, id).Scan(&published); err != nil {
+			return 0, false, err
+		}
+		if published {
+			return 0, false, errCatalogConfigurationOwned
 		}
 		if _, err = tx.Exec(ctx, "UPDATE products SET name=$2 WHERE id=$1", id, product.Name); err != nil {
 			return 0, false, err

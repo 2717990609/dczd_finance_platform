@@ -503,6 +503,17 @@ CREATE TABLE IF NOT EXISTS legacy_rule_versions (
  observed_at timestamptz NOT NULL,
  UNIQUE(package_id,version_no)
 );
+ALTER TABLE legacy_rule_versions
+ ADD COLUMN IF NOT EXISTS published_at timestamptz,
+ ADD COLUMN IF NOT EXISTS published_by text,
+ ADD COLUMN IF NOT EXISTS predecessor_id uuid REFERENCES legacy_rule_versions(source_id);
+
+INSERT INTO configuration_options(group_key,option_key,label,display_order) VALUES
+ ('catalogSalesRelationship','ANY','不限',10),
+ ('catalogSalesRelationship','DIRECT','直接',20),
+ ('catalogSalesRelationship','INDIRECT','间接',30),
+ ('catalogSalesRelationship','NONE','无关联',40)
+ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS organization_units (
  id uuid PRIMARY KEY,
@@ -774,7 +785,7 @@ CREATE OR REPLACE VIEW pool_account_activity AS
 CREATE OR REPLACE FUNCTION protect_confirmed_catalog_scope() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_TABLE_NAME='legacy_rule_versions' THEN
-  IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.catalog_rule_id=OLD.source_id) THEN
+  IF OLD.published_at IS NOT NULL OR EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.catalog_rule_id=OLD.source_id) THEN
    RAISE EXCEPTION 'confirmed rule version cannot be changed' USING ERRCODE='55000';
   END IF;
  ELSIF TG_TABLE_NAME='legacy_rule_packages' THEN
@@ -793,6 +804,11 @@ CREATE OR REPLACE TRIGGER protect_confirmed_catalog_version BEFORE UPDATE ON leg
  WHEN ((OLD.source_id,OLD.package_id,OLD.version_no,OLD.effective_from,OLD.content_hash,OLD.definition) IS DISTINCT FROM
        (NEW.source_id,NEW.package_id,NEW.version_no,NEW.effective_from,NEW.content_hash,NEW.definition))
  EXECUTE FUNCTION protect_confirmed_catalog_scope();
+CREATE OR REPLACE TRIGGER protect_published_catalog_version BEFORE UPDATE ON legacy_rule_versions FOR EACH ROW
+ WHEN (OLD.published_at IS NOT NULL AND OLD IS DISTINCT FROM NEW)
+ EXECUTE FUNCTION protect_confirmed_catalog_scope();
+CREATE OR REPLACE TRIGGER protect_published_catalog_version_delete BEFORE DELETE ON legacy_rule_versions FOR EACH ROW
+ WHEN (OLD.published_at IS NOT NULL) EXECUTE FUNCTION protect_confirmed_catalog_scope();
 CREATE OR REPLACE TRIGGER protect_confirmed_catalog_package BEFORE UPDATE ON legacy_rule_packages FOR EACH ROW
  WHEN ((OLD.source_id,OLD.product_id,OLD.code,OLD.project_code,OLD.policy_kind,OLD.scope_type,OLD.scope_id) IS DISTINCT FROM
        (NEW.source_id,NEW.product_id,NEW.code,NEW.project_code,NEW.policy_kind,NEW.scope_type,NEW.scope_id))

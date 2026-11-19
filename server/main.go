@@ -22,6 +22,7 @@ type config struct {
 	database         *pgxpool.Config
 	dcaiSyncInterval time.Duration
 	draftInterval    time.Duration
+	ruleAuth         catalogRuleAuth
 }
 
 func readConfig() (config, error) {
@@ -52,7 +53,11 @@ func readConfig() (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	return config{addr: addr, database: database, dcaiSyncInterval: interval, draftInterval: draftInterval}, nil
+	ruleAuth, err := readCatalogRuleAuth()
+	if err != nil {
+		return config{}, err
+	}
+	return config{addr: addr, database: database, dcaiSyncInterval: interval, draftInterval: draftInterval, ruleAuth: ruleAuth}, nil
 }
 
 func intervalSetting(name string) (time.Duration, error) {

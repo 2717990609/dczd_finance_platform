@@ -15,14 +15,15 @@ import (
 )
 
 type vipSalesSnapshot struct {
-	Source        string
-	CapturedAt    time.Time
-	People        json.RawMessage
-	PersonLinks   json.RawMessage
-	CompanyLinks  json.RawMessage
-	Categories    json.RawMessage
-	Appointments  json.RawMessage
-	Organizations json.RawMessage
+	Source          string
+	CapturedAt      time.Time
+	People          json.RawMessage
+	PersonLinks     json.RawMessage
+	CompanyLinks    json.RawMessage
+	Categories      json.RawMessage
+	CategoryOptions json.RawMessage
+	Appointments    json.RawMessage
+	Organizations   json.RawMessage
 }
 
 func importVIPSalesContext(ctx context.Context, cfg config, path string) error {
@@ -65,6 +66,9 @@ func storeVIPSalesContext(ctx context.Context, db *pgxpool.Pool, raw json.RawMes
 			rows         json.RawMessage
 		}{"beneficiary organizations", importVIPBenefitOrganizations, s.Organizations})
 	}
+	if len(s.CategoryOptions) != 0 && s.CategoryOptions[0] != '[' {
+		return invalid
+	}
 	for _, item := range statements {
 		if len(item.rows) == 0 || item.rows[0] != '[' {
 			return invalid
@@ -103,6 +107,14 @@ func storeVIPSalesContext(ctx context.Context, db *pgxpool.Pool, raw json.RawMes
 			}
 			if _, err = tx.Exec(ctx, item.query, args...); err != nil {
 				return fmt.Errorf("invalid sales context %s", item.label)
+			}
+		}
+		if len(s.CategoryOptions) != 0 {
+			if _, err := tx.Exec(ctx, `INSERT INTO configuration_options(group_key,option_key,label,display_order)
+			 SELECT 'catalogSalesCategory',id::text,name,coalesce("sortOrder",100)
+			 FROM jsonb_to_recordset($1) AS item(id uuid,name text,"sortOrder" int)
+			 ON CONFLICT(group_key,option_key) DO NOTHING`, s.CategoryOptions); err != nil {
+				return fmt.Errorf("invalid sales category options: %w", err)
 			}
 		}
 		return enqueueDraftConfiguration(ctx, tx, draftRefreshSalesContext, s.Source)

@@ -561,4 +561,63 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatalf("expected already-settled payment review, got %q: %v", issue, err)
 	}
 
+	next := createPeriod("2032-02", "费率调整验证")
+	newAt := time.Date(2032, 2, 5, 12, 0, 0, 0, shanghai)
+	save("before-new-rate", "1", 10000, newAt.Add(-time.Second), newAt, "VIP_ORDER")
+	save("new-rate", "1", 10000, newAt, newAt, "VIP_ORDER")
+	prior := draftAt(next)
+	newRate, newSalesRate, salesRow := int64(900), int64(1100), 1
+	inputRates := publishCatalogRatesInput{BaseID: id(4), EffectiveFrom: newAt, Changes: []catalogRateChange{
+		{ItemKey: "owner", Rate: &newRate}, {ItemKey: "sales", Row: &salesRow, Rate: &newSalesRate},
+	}}
+	published, err := s.publishCatalogRates(ctx, inputRates, "finance-fixture")
+	if err != nil || published.ID == id(4) || published.Version != 3 {
+		t.Fatalf("publication failed: %+v, %v", published, err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE legacy_rule_versions SET published_by='other' WHERE source_id=$1::uuid`, published.ID); err == nil {
+		t.Fatal("a published version accepted an audit change")
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM legacy_rule_versions WHERE source_id=$1::uuid`, published.ID); err == nil {
+		t.Fatal("a published version was removable before settlement")
+	}
+	if _, err := s.publishCatalogRates(ctx, inputRates, "finance-fixture"); !errors.Is(err, errCatalogRateStale) {
+		t.Fatalf("stale form should fail: %v", err)
+	}
+	if err := s.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var openVersion, openTotal int64
+	if err := s.db.QueryRow(ctx, `SELECT version,total_minor FROM calculation_drafts WHERE period_id=$1`, next).Scan(&openVersion, &openTotal); err != nil || openVersion != prior.Version+1 || openTotal != prior.Total+300 {
+		t.Fatalf("updated draft: %d %d; previous %+v; %v", openVersion, openTotal, prior, err)
+	}
+	if err := s.db.QueryRow(ctx, `SELECT total_minor+refund_minor FROM calculation_drafts WHERE period_id=$1`, periodID).Scan(&confirmedTotal); err != nil || confirmedTotal != finished.Total {
+		t.Fatalf("publish changed the confirmed period: %d %v", confirmedTotal, err)
+	}
+	var matched int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM calculation_draft_lines WHERE period_id=$1 AND catalog_rule_id=$2::uuid`, next, published.ID).Scan(&matched); err != nil || matched != 5 {
+		t.Fatalf("only payments at or after effective time should use the new rule: %d %v", matched, err)
+	}
+	march := createPeriod("2032-03", "后续规则验证")
+	marchAt := newAt.AddDate(0, 1, 0)
+	save("later-rule", "1", 10000, marchAt, marchAt, "VIP_ORDER")
+	if _, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{BaseID: published.ID, EffectiveFrom: marchAt,
+		Changes: []catalogRateChange{{ItemKey: "owner", Rate: &newSalesRate}}}, "finance-fixture"); err != nil {
+		t.Fatal(err)
+	}
+	marchDraft := draftAt(march)
+	inputRates.EffectiveFrom = newAt.AddDate(0, 0, -1)
+	if _, err := s.publishCatalogRates(ctx, inputRates, "finance-fixture"); err != nil {
+		t.Fatal(err)
+	}
+	var affected, untouched bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1),
+	 EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$2)`, next, march).Scan(&affected, &untouched); err != nil || !affected || untouched {
+		t.Fatalf("inserting before a scheduled successor queued the wrong periods: %t %t %v", affected, untouched, err)
+	}
+	if err := s.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if currentMarch := draftAt(march); currentMarch.Version != marchDraft.Version || currentMarch.Total != marchDraft.Total {
+		t.Fatalf("schedule and result of the next period changed: %+v -> %+v", marchDraft, currentMarch)
+	}
 }
