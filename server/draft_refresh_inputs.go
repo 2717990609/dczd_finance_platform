@@ -99,14 +99,13 @@ const draftRefreshFacts = `WITH keys AS (
  SELECT payment.id,NULL::bigint,b.completion_version_id
  FROM events v JOIN dcai_order_blockers b ON b.stream='HEALTH_IDENTITY_ORDERS' AND b.order_id=v.order_id
   AND b.source_row_id=split_part(v.record_key,':',2)
- JOIN source_order_versions completed ON completed.id=b.completion_version_id AND v.occurred_at<completed.occurred_at
  JOIN LATERAL (
   SELECT original.id FROM source_order_versions original WHERE original.source=v.source AND original.order_id=v.order_id
    AND original.line_id='' AND original.record_key=v.record_key AND original.kind='ORDER_PAID'
   ORDER BY original.updated_at DESC,original.id DESC LIMIT 1
  ) payment ON true
  WHERE v.source='DCAI' AND v.kind='REFUND_SUCCEEDED' AND v.fact->>'domain'='HEALTH_IDENTITY'
-  AND split_part(v.record_key,':',1)='ai_health_ambassador_order'
+  AND split_part(v.record_key,':',1)='ai_health_ambassador_order' AND b.completion_version_id IS NOT NULL
 )
 SELECT id FROM origin
 UNION ` + healthCompletionAffectedPeriodsSQL + `

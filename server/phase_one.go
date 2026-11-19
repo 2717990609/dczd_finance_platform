@@ -474,6 +474,9 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 			return enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods WHERE product_id=$1 AND calendar_month IS NOT NULL
 			 AND (id=$2 OR (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN starts_on AND ends_on)`, p.ProductID, id)
 		}
+		if mode == "calendar" {
+			return enqueueDraftConfiguration(ctx, tx, `SELECT $1::bigint UNION SELECT period_id FROM health_completion_open_periods($1)`, id)
+		}
 		return enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods WHERE id=$1`, id)
 	})
 	return map[string]int64{"id": id}, err

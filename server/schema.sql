@@ -377,6 +377,7 @@ BEGIN
  AND period_id<>OLD.period_id;
  INSERT INTO draft_refresh_queue(period_id)
  SELECT p.id FROM periods p WHERE (p.id=OLD.period_id AND p.source_period_key IS NOT NULL)
+ OR p.id IN (SELECT period_id FROM health_completion_open_periods(OLD.period_id))
  OR ((p.id=ANY(refund_dependents) OR p.id=ANY(correction_dependents) OR p.id IN (SELECT period_id FROM practice_payment_dependents(OLD.period_id)))
   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id))
  ORDER BY p.id ON CONFLICT(period_id) DO UPDATE
@@ -929,6 +930,27 @@ CREATE TABLE IF NOT EXISTS catalog_sales_appointments (
 );
 CREATE INDEX IF NOT EXISTS catalog_sales_appointment_lookup ON catalog_sales_appointments(source,scope,scope_key,observed_at);
 CREATE INDEX IF NOT EXISTS catalog_sales_appointment_person ON catalog_sales_appointments(person_id,source,observed_at,role);
+
+CREATE OR REPLACE FUNCTION health_completion_open_periods(opening_id bigint)
+RETURNS TABLE(period_id bigint) LANGUAGE sql STABLE AS $$
+ WITH opening AS (
+  SELECT p.id,p.product_id,p.starts_on FROM periods p
+  JOIN products pro ON pro.id=p.product_id AND pro.period_mode='calendar'
+  JOIN product_catalog_settings c ON c.product_id=p.product_id
+  WHERE p.id=opening_id AND EXISTS (
+   SELECT 1 FROM catalog_business_routes r WHERE r.product_id=c.product_id AND r.observed_at=c.captured_at
+    AND r.source='DCAI' AND r.domain='HEALTH_IDENTITY'
+  )
+ )
+ SELECT id FROM opening
+ UNION ALL
+ SELECT next_period.id FROM opening o JOIN LATERAL (
+  SELECT p.id FROM periods p WHERE p.product_id=o.product_id AND p.starts_on>o.starts_on
+   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id)
+  ORDER BY p.starts_on LIMIT 1
+ ) next_period ON true
+ WHERE EXISTS(SELECT 1 FROM calculation_drafts d WHERE d.period_id=next_period.id)
+$$;
 
 ALTER TABLE catalog_sales_context ADD COLUMN IF NOT EXISTS benefit_ready boolean NOT NULL DEFAULT false;
 ALTER TABLE catalog_sales_context ADD COLUMN IF NOT EXISTS appointments_at timestamptz;

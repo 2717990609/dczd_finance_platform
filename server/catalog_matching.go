@@ -30,7 +30,8 @@ const catalogHealthRecognitionPlan = `v.definition->>'schema_version' IN ('1.2',
  AND v.definition->'policy_scope'->'financial_event_types' ? 'order.completed'`
 
 const catalogMatchSQL = `WITH period AS (
- SELECT p.product_id,c.project_code,c.captured_at,
+ SELECT p.product_id,p.starts_on,c.project_code,c.captured_at,
+  NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id) AS is_open,
   p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai' AS after,
   (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai' AS before,
   CASE pro.cycle_start_day WHEN 25 THEN 'MONTHLY_25_TO_24' WHEN 1 THEN 'MONTHLY' END AS cycle
@@ -53,25 +54,46 @@ const catalogMatchSQL = `WITH period AS (
    SELECT 1 FROM routes m WHERE m.source='DCAI' AND m.domain='HEALTH_IDENTITY'
   ))
   AND v.definition->'settlement_policy'->>'cycle'=scope.cycle
-), candidate_ids AS (
- SELECT v.id FROM period scope JOIN source_order_versions v ON v.kind='ORDER_PAID'
+), completion_windows AS (
+ SELECT after,before,false AS carried FROM period
+ UNION ALL
+ SELECT origin.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
+  (origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',true
+ FROM period scope JOIN periods origin ON origin.product_id=scope.product_id AND origin.ends_on<scope.starts_on
+ JOIN settlements closed ON closed.period_id=origin.id
+ WHERE scope.is_open AND NOT EXISTS (
+  SELECT 1 FROM periods earlier WHERE earlier.product_id=scope.product_id
+   AND earlier.starts_on>origin.ends_on AND earlier.starts_on<scope.starts_on
+   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=earlier.id)
+ )
+), completion_targets AS MATERIALIZED (
+ SELECT b.order_id,b.source_row_id,w.carried FROM completion_windows w
+ JOIN source_order_versions completed ON completed.source='DCAI' AND completed.kind='ORDER_COMPLETED'
+  AND completed.occurred_at>=w.after AND completed.occurred_at<w.before
+ JOIN dcai_order_blockers b ON b.stream='HEALTH_IDENTITY_ORDERS' AND b.completion_version_id=completed.id
+ WHERE EXISTS (SELECT 1 FROM rules WHERE health_recognition)
+  AND (NOT w.carried OR NOT EXISTS (
+   SELECT 1 FROM calculation_draft_performance booked JOIN settlements final ON final.period_id=booked.period_id
+   WHERE booked.completion_version_id=completed.id
+  ))
+), candidates AS (
+ SELECT v.id,false AS completion_due FROM period scope JOIN source_order_versions v ON v.kind='ORDER_PAID'
   AND v.occurred_at>=scope.after AND v.occurred_at<scope.before
  WHERE EXISTS (SELECT 1 FROM routes m WHERE ` + catalogRouteFactSQL + `)
- UNION
- SELECT v.id FROM period scope
- JOIN source_order_versions completed ON completed.source='DCAI' AND completed.kind='ORDER_COMPLETED'
-  AND completed.occurred_at>=scope.after AND completed.occurred_at<scope.before
- JOIN dcai_order_blockers b ON b.stream='HEALTH_IDENTITY_ORDERS' AND b.completion_version_id=completed.id
- JOIN source_order_versions v ON v.source=completed.source AND v.order_id=b.order_id AND v.kind='ORDER_PAID'
-  AND v.line_id='' AND v.record_key='ai_health_ambassador_order:'||b.source_row_id AND v.occurred_at<scope.before
+ UNION ALL
+ SELECT v.id,true FROM period scope CROSS JOIN completion_targets target
+ JOIN source_order_versions v ON v.source='DCAI' AND v.order_id=target.order_id AND v.kind='ORDER_PAID'
+  AND v.line_id='' AND v.record_key='ai_health_ambassador_order:'||target.source_row_id AND v.occurred_at<scope.before
  WHERE EXISTS (SELECT 1 FROM routes m WHERE m.source='DCAI' AND m.domain='HEALTH_IDENTITY' AND ` + catalogRouteFactSQL + `)
-   AND EXISTS (SELECT 1 FROM rules WHERE health_recognition)
+  AND (NOT target.carried OR v.fact->'amountMinor' IS DISTINCT FROM '0'::jsonb)
+), candidate_ids AS (
+ SELECT id,bool_or(completion_due) AS completion_due FROM candidates GROUP BY id
 ), payments AS (
  SELECT v.id,v.source,v.order_id,v.occurred_at,v.fact->>'orderNo' AS order_no,
   v.fact->>'transactionType' AS transaction_type,v.fact->>'domain' AS domain,
   v.fact->>'paymentId' AS payment_id,v.line_id,v.record_key,v.fact->>'sourceKey' AS source_product_code,
   CASE WHEN jsonb_typeof(v.fact->'amountMinor')='number' THEN (v.fact->>'amountMinor')::bigint END AS paid,
-  split_part(v.record_key,':',1) AS record_table,
+  split_part(v.record_key,':',1) AS record_table,selected.completion_due,
   count(*) OVER (PARTITION BY v.source,v.fact->>'paymentId') AS payment_count
  FROM candidate_ids selected JOIN source_order_versions v USING(id)
  WHERE NOT EXISTS (
@@ -84,6 +106,7 @@ const catalogMatchSQL = `WITH period AS (
  f.transaction_type AS "sourceTransactionType",f.paid AS "paidMinor",f.occurred_at>=scope.after AS "paidInWindow",
  CASE WHEN r.health_recognition OR f.occurred_at<scope.after THEN completed.id END AS "completionVersionId",
  CASE WHEN r.health_recognition OR f.occurred_at<scope.after THEN completed.occurred_at END AS "completedAt",
+ coalesce(f.completion_due AND completed.occurred_at<scope.after,false) AS "completionCarried",
  CASE WHEN prior.refund_valid AND prior.refund_minor<=f.paid THEN f.paid-prior.refund_minor END AS "recognizedMinor",
  CASE WHEN prior.refund_valid AND prior.refund_minor BETWEEN 1 AND f.paid THEN prior.id END AS "priorRefundVersionId",
  CASE WHEN m.n=1 THEN m.label END AS "scenarioLabel",
@@ -97,15 +120,8 @@ const catalogMatchSQL = `WITH period AS (
   WHEN r.n=1 AND r.health_recognition AND f.source='DCAI' AND f.domain='HEALTH_IDENTITY' AND completed.id IS NULL
    THEN 'COMPOUND_COMPLETION_PENDING'
   WHEN r.n=1 AND r.health_recognition AND f.source='DCAI' AND f.domain='HEALTH_IDENTITY'
-   AND (completed.occurred_at<scope.after OR completed.occurred_at>=scope.before) THEN 'COMPOUND_COMPLETED_IN_OTHER_PERIOD'
-  WHEN EXISTS (
-   SELECT 1 FROM source_order_versions booked
-   JOIN calculation_draft_performance a ON a.source_version_id=booked.id AND a.payment_version_id IS NULL
-   JOIN settlements st ON st.period_id=a.period_id
-   WHERE booked.kind='ORDER_PAID' AND booked.source=f.source AND a.period_id<>$1
-    AND ((booked.order_id,booked.line_id,booked.record_key)=(f.order_id,f.line_id,f.record_key)
-     OR ((booked.fact->>'domain'),(booked.fact->>'paymentId'))=(f.domain,f.payment_id))
-  ) THEN 'PAYMENT_ALREADY_SETTLED'
+   AND NOT f.completion_due THEN 'COMPOUND_COMPLETED_IN_OTHER_PERIOD'
+  WHEN booked.other_period THEN 'PAYMENT_ALREADY_SETTLED'
   WHEN c.source_version_id IS NULL THEN 'UNCLASSIFIED'
   WHEN m.n=0 THEN 'MAPPING_MISSING'
   WHEN m.n>1 THEN 'MAPPING_CONFLICT'
@@ -122,6 +138,14 @@ const catalogMatchSQL = `WITH period AS (
  LEFT JOIN source_order_versions completed ON completed.id=b.completion_version_id AND completed.source=f.source
   AND completed.order_id=f.order_id AND completed.kind='ORDER_COMPLETED'
   AND completed.fact->>'sourceKey'=f.source_product_code AND completed.occurred_at>=f.occurred_at
+ CROSS JOIN LATERAL (SELECT EXISTS(
+  SELECT 1 FROM source_order_versions booked
+  JOIN calculation_draft_performance a ON a.source_version_id=booked.id AND a.payment_version_id IS NULL
+  JOIN settlements st ON st.period_id=a.period_id
+  WHERE booked.kind='ORDER_PAID' AND booked.source=f.source AND a.period_id<>$1
+   AND ((booked.order_id,booked.line_id,booked.record_key)=(f.order_id,f.line_id,f.record_key)
+    OR ((booked.fact->>'domain'),(booked.fact->>'paymentId'))=(f.domain,f.payment_id))
+ ) AS other_period) booked
  LEFT JOIN LATERAL (
   SELECT count(*) n,min(sku_code) sku,min(sku_label) label,min(mapping_version) version FROM routes m
   WHERE (m.source,m.domain,m.record_table,m.entity_type,m.business_key,m.classifier)=(f.source,f.domain,f.record_table,c.entity_type,c.business_key,c.classifier)
@@ -146,13 +170,19 @@ const catalogMatchSQL = `WITH period AS (
       jsonb_build_object('orderId',f.order_id,'lineId',nullif(f.line_id,''),'recordId',split_part(f.record_key,':',2)))) AS refund_valid
   FROM (
    SELECT v.id,v.fact,v.occurred_at FROM source_order_versions v
-   WHERE r.health_recognition AND completed.occurred_at>=scope.after AND completed.occurred_at<scope.before
+   WHERE r.health_recognition AND f.completion_due AND NOT booked.other_period
     AND (v.source,v.order_id,v.line_id,v.record_key,v.kind)=(f.source,f.order_id,f.line_id,f.record_key,'REFUND_SUCCEEDED')
    ORDER BY v.updated_at DESC,v.id DESC LIMIT 1
-  ) refund WHERE refund.occurred_at<completed.occurred_at
+  ) refund WHERE refund.occurred_at<completed.occurred_at OR (
+   completed.occurred_at<scope.after AND refund.occurred_at<scope.after AND EXISTS (
+    SELECT 1 FROM periods refund_period JOIN settlements closed ON closed.period_id=refund_period.id
+    WHERE refund_period.product_id=scope.product_id
+     AND (refund.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN refund_period.starts_on AND refund_period.ends_on
+   )
+  )
  ) prior ON true
- WHERE f.occurred_at>=scope.after OR ((r.n<>1 OR r.compound_recognition)
-  AND completed.occurred_at>=scope.after AND completed.occurred_at<scope.before)
+ WHERE f.occurred_at>=scope.after OR ((r.n<>1 OR r.compound_recognition) AND completed.id IS NOT NULL
+  AND f.completion_due AND (completed.occurred_at>=scope.after OR NOT booked.other_period))
 ), page AS MATERIALIZED (
  SELECT * FROM matches ORDER BY "paidAt" DESC,"sourceVersionId" DESC LIMIT $3 OFFSET $2
 ), fixed_actions AS MATERIALIZED (

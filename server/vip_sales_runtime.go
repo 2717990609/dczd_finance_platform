@@ -17,6 +17,7 @@ type catalogPaymentMatch struct {
 	PaidInWindow          bool       `json:"paidInWindow"`
 	CompletionVersionID   int64      `json:"completionVersionId,omitempty"`
 	CompletedAt           *time.Time `json:"completedAt,omitempty"`
+	CompletionCarried     bool       `json:"completionCarried,omitempty"`
 	RecognizedMinor       *int64     `json:"recognizedMinor,omitempty"`
 	PriorRefundVersionID  int64      `json:"priorRefundVersionId,omitempty"`
 	SourceTransactionType string     `json:"sourceTransactionType"`

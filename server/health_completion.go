@@ -61,7 +61,7 @@ const healthCompletionRefreshSQL = `WITH changed AS MATERIALIZED (
 )
 ` + healthCompletionAffectedPeriodsSQL
 
-const healthCompletionAffectedPeriodsSQL = `SELECT boundary.id FROM health_changes x
+const healthCompletionAffectedPeriodsSQL = `SELECT target.id FROM health_changes x
  JOIN source_order_versions v ON v.id=x.payment_version_id
  JOIN catalog_business_routes m ON ` + catalogRouteFactSQL + `
  JOIN product_catalog_settings c ON c.product_id=m.product_id AND c.captured_at=m.observed_at
@@ -75,6 +75,13 @@ const healthCompletionAffectedPeriodsSQL = `SELECT boundary.id FROM health_chang
  ) dates
  JOIN periods boundary ON boundary.product_id=m.product_id
   AND (dates.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN boundary.starts_on AND boundary.ends_on
+ JOIN LATERAL (
+  SELECT candidate.id FROM periods candidate
+  WHERE candidate.product_id=boundary.product_id AND candidate.starts_on>=boundary.starts_on
+   AND (dates.completion OR candidate.id=boundary.id)
+   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=candidate.id)
+  ORDER BY candidate.starts_on LIMIT 1
+ ) target ON true
  CROSS JOIN LATERAL (SELECT cl.source_version_id IS NOT NULL AND m.effective_from<=payment.paid_at
   AND (m.effective_to IS NULL OR payment.paid_at<m.effective_to) AS mapped) route
  WHERE (route.mapped AND EXISTS (` + healthRuleForPaymentSQL + `))

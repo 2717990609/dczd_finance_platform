@@ -571,6 +571,7 @@ const draftDetailSQL = `SELECT jsonb_build_object(
    l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",o.source,o.order_id AS "orderId",
    o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",coalesce(rv.version,cv.version_no) AS "ruleVersion",
    completed.occurred_at AS "completedAt",
+   (completed.occurred_at AT TIME ZONE 'Asia/Shanghai')::date<period.starts_on AS "completionCarried",
    coalesce(l.catalog_rule_id::text,l.rule_id::text) AS "ruleId",coalesce(package.name,rv.label) AS "ruleLabel",
    e.source_enrollment_id AS "enrollmentId",e.membership_type AS "membershipType",coalesce(company_label.label,company.company_id) AS "salesCompany",
    CASE WHEN e.id IS NOT NULL THEN (o.fact->>'amountMinor')::bigint-l.base_minor END AS "classRefundMinor"

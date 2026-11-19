@@ -152,4 +152,93 @@ func TestHealthRecognitionUsesPaymentRuleInTheCompletionWindow(t *testing.T) {
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM calculation_draft_performance WHERE period_id=$1`, september).Scan(&creditCount); err != nil || creditCount != 0 {
 		t.Fatalf("unresolved recognition should not credit performance: %d, %v", creditCount, err)
 	}
+	// The completion was withdrawn before finance closed two empty periods.
+	if _, err := s.db.Exec(ctx, `UPDATE product_rule_versions SET effective_from=$2 WHERE source_id=$1`,
+		product.Packages[0].Versions[0].SourceID, at.AddDate(0, -2, 0)); err != nil {
+		t.Fatal(err)
+	}
+	save(at.Add(5*time.Hour), time.Time{}, paid/2)
+	closePeriod := func(period int64) {
+		t.Helper()
+		d, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err = s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`,
+			period, d.(draftSummary).Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closePeriod(august)
+	closePeriod(september)
+	november := create("2026-11")
+	if _, err := s.db.Exec(ctx, `DELETE FROM draft_refresh_queue`); err != nil {
+		t.Fatal(err)
+	}
+	save(at.AddDate(0, 2, 0), end.Add(13*time.Hour), paid/2)
+	// The earlier closed refund happened after completion but before the first credit.
+	match(november, "MATCHED", 1, paid/2, 0)
+	var queuedPeriods []int64
+	if err := s.db.QueryRow(ctx, `SELECT coalesce(array_agg(period_id ORDER BY period_id),'{}') FROM draft_refresh_queue`).Scan(&queuedPeriods); err != nil ||
+		len(queuedPeriods) != 1 || queuedPeriods[0] != november {
+		t.Fatalf("late completion should only refresh its open target: %v, %v", queuedPeriods, err)
+	}
+	if _, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: november}); err != nil {
+		t.Fatal(err)
+	}
+	october := create("2026-10")
+	match(october, "MATCHED", 1, paid/2, 0)
+	empty := func(period int64) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			report, err := readCatalogMatches(ctx, tx, period, 0, 25)
+			if err == nil && report.OrderCount != 0 {
+				t.Fatalf("period %d should have no completion candidate: %+v", period, report)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	empty(november)
+	if err := s.db.QueryRow(ctx, `SELECT coalesce(array_agg(period_id ORDER BY period_id),'{}') FROM draft_refresh_queue`).Scan(&queuedPeriods); err != nil ||
+		len(queuedPeriods) != 2 || queuedPeriods[0] != november || queuedPeriods[1] != october {
+		t.Fatalf("a newly registered earlier period should refresh the new and former targets: %v, %v", queuedPeriods, err)
+	}
+	if _, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: october}); err != nil {
+		t.Fatal(err)
+	}
+	var refund sourceFact
+	if err := s.db.QueryRow(ctx, `SELECT fact FROM source_order_versions WHERE kind='REFUND_SUCCEEDED'`).Scan(&refund); err != nil {
+		t.Fatal(err)
+	}
+	corrected := int64(paid / 4)
+	refund.AmountMinor, refund.Version, refund.UpdatedAt = &corrected, "refund-corrected", at.AddDate(0, 2, 1)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{refund})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	match(october, "MATCHED", 1, paid-corrected, 0)
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, october).Scan(&queued); err != nil || !queued {
+		t.Fatalf("a revised closed refund should refresh its open carry target: %t, %v", queued, err)
+	}
+	closePeriod(october)
+	empty(november)
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM calculation_draft_performance WHERE period_id IN ($1,$2)`, august, september).Scan(&creditCount); err != nil || creditCount != 0 {
+		t.Fatalf("frozen original periods changed: %d, %v", creditCount, err)
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM draft_refresh_queue`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM settlements WHERE period_id=$1`, october); err != nil {
+		t.Fatal(err)
+	}
+	match(october, "MATCHED", 1, paid-corrected, 0)
+	empty(november)
+	if err := s.db.QueryRow(ctx, `SELECT coalesce(array_agg(period_id ORDER BY period_id),'{}') FROM draft_refresh_queue`).Scan(&queuedPeriods); err != nil ||
+		len(queuedPeriods) != 2 || queuedPeriods[0] != november || queuedPeriods[1] != october {
+		t.Fatalf("reopening should refresh the reopened month and its open successor: %v, %v", queuedPeriods, err)
+	}
 }

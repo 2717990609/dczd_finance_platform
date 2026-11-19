@@ -114,7 +114,7 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
         </template>
         <template v-else-if="column.key==='paidAt'">
           {{ formatTime(record.paidAt) }}
-          <small v-if="record.completedAt" class="order-version">完成 {{ formatTime(record.completedAt) }}</small>
+          <small v-if="record.completedAt" class="order-version">完成 {{ formatTime(record.completedAt) }}<template v-if="record.completionCarried"> · 补入本期</template></small>
         </template>
         <template v-else-if="column.key==='paidMinor'">{{ formatMoney(record.paidMinor) }}</template>
         <template v-else-if="column.key==='scenario'">{{ record.scenarioLabel || '—' }}</template>

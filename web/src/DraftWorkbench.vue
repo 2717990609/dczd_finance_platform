@@ -34,7 +34,7 @@ const options = computed(() => props.periods.map(period => ({
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
 const canPullRoster = computed(() => selectedPeriod.value?.periodMode === 'class' && selectedPeriod.value.sourcePeriodKey && !draft.value?.settlement)
 const canReviewRecovery = computed(() => !draft.value?.settlement && props.recoveryOptions?.length && props.settlementProducts?.includes(selectedPeriod.value?.productId))
-const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable)
+const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable && !draft.value?.settlement)
 const hasSettlementReview = computed(() => draft.value?.settlementReviewAvailable ?? (draft.value?.catalog && draft.value?.refundsReady))
 const matchingOnly = computed(() => hasMatching.value && !selectedPeriod.value?.catalogDraftAvailable)
 const newerDraft = computed(() => refreshStatus.value?.version > (draft.value?.version || 0))
@@ -158,7 +158,10 @@ async function load(replace = false) {
   loading.value = true
   try {
     const result = await props.api('/drafts?periodId=' + selected.value)
-    if (request === sequence) draft.value = result
+    if (request === sequence) {
+      draft.value = result
+      if (result.settlement && view.value === 'matching') view.value = 'detail'
+    }
   } catch (err) {
     if (request === sequence && err.status !== 404) error.value = err.message
   } finally {
@@ -343,7 +346,7 @@ async function loadMore(section, cursorName) {
           <template v-if="column.key === 'order'">
             {{ record.orderNo || record.orderId }}
             <small class="order-version">来源版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template><template v-if="record.salesCompany"> · {{ record.salesCompany }}</template></small>
-            <small v-if="record.completedAt" class="order-version">完成 {{ formatTime(record.completedAt) }}</small>
+            <small v-if="record.completedAt" class="order-version">完成 {{ formatTime(record.completedAt) }}<template v-if="record.completionCarried"> · 补入本期</template></small>
           </template>
           <template v-else-if="column.key === 'beneficiary'">
             {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池 · 待分配</small>
