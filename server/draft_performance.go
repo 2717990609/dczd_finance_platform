@@ -21,6 +21,10 @@ type draftPerformance struct {
 	PriorRefundVersionID                                   int64                 `json:",omitempty"`
 }
 
+const performancePostingMinorSQL = `CASE WHEN a.payment_version_id IS NULL
+ THEN (v.fact->>'amountMinor')::bigint-coalesce((prior.fact->>'amountMinor')::bigint,0)
+ ELSE -(v.fact->>'amountMinor')::bigint END`
+
 func performanceOwner(fact sourceFact, rule *paymentRule, member string, identities map[identityKey][]identityAssignment) int64 {
 	if rule == nil {
 		return 0

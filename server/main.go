@@ -142,6 +142,19 @@ func main() {
 		}
 		return
 	}
+	if len(os.Args) > 1 && os.Args[1] == "adopt-finance-history" {
+		mode := ""
+		if len(os.Args) == 4 {
+			mode = os.Args[3]
+		}
+		if len(os.Args) != 3 && (len(os.Args) != 4 || mode != "--apply" && mode != "--rows") {
+			log.Fatal("usage: adopt-finance-history <file.json> [--rows|--apply]")
+		}
+		if err := adoptFinanceHistoryFromFile(ctx, cfg, os.Args[2], mode); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "sync-dcai-orders" {
 		if err := syncOrdersCLI(ctx, cfg, "DCAI", os.Args[2:]); err != nil {
 			log.Fatal(err)

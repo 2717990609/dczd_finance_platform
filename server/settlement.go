@@ -202,13 +202,18 @@ func (s workspace) confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSett
 	if err := verifySettlementSourceDeadline(ctx, tx, sources, s.settlementSyncMaxAge); err != nil {
 		return settlement{}, err
 	}
-	result := settlement{PeriodID: req.PeriodID, DraftVersion: req.ExpectedVersion, ConfirmedBy: actor, reviewToken: req.ReviewToken}
-	err = tx.QueryRow(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by,review_token) VALUES($1,$2,$3,$4)
-		RETURNING id,confirmed_at`, result.PeriodID, result.DraftVersion, result.ConfirmedBy, result.reviewToken).Scan(&result.ID, &result.ConfirmedAt)
+	return insertSettlement(ctx, tx, req.PeriodID, req.ExpectedVersion, actor, req.ReviewToken, nil)
+}
+
+func insertSettlement(ctx context.Context, tx pgx.Tx, periodID, version int64, actor, token string, confirmedAt *time.Time) (settlement, error) {
+	result := settlement{PeriodID: periodID, DraftVersion: version, ConfirmedBy: actor, reviewToken: token}
+	err := tx.QueryRow(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by,review_token,confirmed_at)
+		VALUES($1,$2,$3,$4,coalesce($5::timestamptz,now())) RETURNING id,confirmed_at`, periodID, version, actor, token, confirmedAt).
+		Scan(&result.ID, &result.ConfirmedAt)
 	if err != nil {
 		return settlement{}, err
 	}
-	return result, enqueueDraftPeriods(ctx, tx, draftRefreshAfterClose, req.PeriodID)
+	return result, enqueueDraftPeriods(ctx, tx, draftRefreshAfterClose, periodID)
 }
 
 func verifySettlementDraft(ctx context.Context, tx pgx.Tx, periodID int64, scope settlementReview) error {

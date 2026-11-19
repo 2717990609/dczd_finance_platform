@@ -44,7 +44,25 @@ go -C server run . initialize-finance /secure/finance-initialization.json --appl
 
 第一条命令验证完整导入并回滚。第二条在一个事务中提交，任一步失败都会回滚。在成功后重试同一文件会返回已初始化。已有业务数据的环境通过对应的日常维护或迁移流程更新。
 
-初始化后使用 `configure-finance-account` 登记账号和产品权限，按验收范围配置核算期次、班次规则和来源同步。产品结算默认关闭，按对账结果逐个启用。历史正式结算和团队池期初须单独核对及交接。
+初始化后使用 `configure-finance-account` 登记账号和产品权限，按验收范围配置核算期次、班次规则和来源同步。产品结算默认关闭，按对账结果逐个启用。历史正式结算及其中的资金池余额按下文承接。
+
+## 历史结算承接
+
+用目标产品已确认的归档资料回放历史期次。核对归档订单和退款版本、当时的规则、组织归属、实战班名单及团队池实际分配。日常结算开放前，按同产品原确认时间依次承接，资金池余额由已承接流水结转。历史承接适用于能在目标库逐笔对平的期次。
+
+`adopt-finance-history` 读取一个期次的 JSON 清单，填写 `database`、`schema`、`productCode`、`periodId`、带时区的原 `confirmedAt` 和 `expected`。`expected` 包含净业绩 `performanceMinor`、计提 `accruedMinor`、退款 `refundMinor`、更正 `correctionMinor` 和各自的 `performanceCount`、`accrualCount`、`refundCount`、`correctionCount`。金额单位为分，退款扣减填负数，计数为保存的明细行数。
+
+1. 运行 `--rows` 输出对账明细。逐项核对原始订单、规则、金额、归属、受益人及资金池分配。核对通过后，将该文件的 SHA-256 写入清单的 `postingsSha256`。
+2. 运行只读试跑，核对返回的金额、笔数和草稿版本，将返回的 `reviewToken` 写入清单。标识绑定当前数据库实例、草稿、名单和分配。
+3. 带 `--apply` 提交。系统复验并按原确认时间冻结，使用新连接回读结果。同一清单重试返回同一结算。财务可在「月度汇总」按已结算查询，后续退款引用原计提和受益人。
+
+```sh
+umask 077
+go -C server run . adopt-finance-history /secure/history.json --rows > /secure/history.ndjson
+shasum -a 256 /secure/history.ndjson
+go -C server run . adopt-finance-history /secure/history.json
+go -C server run . adopt-finance-history /secure/history.json --apply
+```
 
 ## 核算与报表
 
