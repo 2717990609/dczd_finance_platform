@@ -58,15 +58,15 @@ func TestDCAISyncJobDeduplicatesAndResumesDurably(t *testing.T) {
 	}))
 	t.Cleanup(provider.Close)
 	s := workspace{db: integrationDB(t), sources: map[string]sourceConfig{"DCAI": {BaseURL: provider.URL, Token: "fixture"}}}
-	input := dcaiSyncRequest{Stream: dcaiVIPStream, FromDate: "2026-08-01"}
-	queued, err := s.enqueueDCAISync(ctx, input)
+	input := orderSyncRequest{Stream: dcaiVIPStream, FromDate: "2026-08-01"}
+	queued, err := s.enqueueOrderSync(ctx, input)
 	if err != nil || queued.ID == 0 || queued.Status != "QUEUED" || reads.Load() != 0 {
 		t.Fatalf("request must be saved before contacting the provider: %+v %v", queued, err)
 	}
 	var requesters sync.WaitGroup
 	for range 4 {
 		requesters.Go(func() {
-			again, err := s.enqueueDCAISync(ctx, input)
+			again, err := s.enqueueOrderSync(ctx, input)
 			if err != nil || again.ID != queued.ID {
 				t.Errorf("same pending stream must return one task: %+v %v", again, err)
 			}
@@ -76,23 +76,23 @@ func TestDCAISyncJobDeduplicatesAndResumesDurably(t *testing.T) {
 	attempt, cancel := context.WithCancel(ctx)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- s.runDCAISyncJob(attempt, dcaiVIPStream, 0, 0) }()
+	go func() { done <- s.runOrderSyncJob(attempt, dcaiVIPStream, 0, 0) }()
 	select {
 	case <-blocked:
 	case <-time.After(6 * time.Second):
 		t.Fatal("worker never requested the first page")
 	}
-	if err := s.runDCAISyncJob(ctx, dcaiVIPStream, 0, 0); err != nil || reads.Load() != 1 {
+	if err := s.runOrderSyncJob(ctx, dcaiVIPStream, 0, 0); err != nil || reads.Load() != 1 {
 		t.Fatalf("second worker must skip the running stream: %v, source reads %d", err, reads.Load())
 	}
-	if _, err := s.enqueueDCAISync(ctx, dcaiSyncRequest{Stream: dcaiVIPStream, FromDate: "2026-07-01"}); !errors.Is(err, errSyncInProgress) {
+	if _, err := s.enqueueOrderSync(ctx, orderSyncRequest{Stream: dcaiVIPStream, FromDate: "2026-07-01"}); !errors.Is(err, errSyncInProgress) {
 		t.Fatalf("an earlier backfill cannot be silently swallowed by a running task: %v", err)
 	}
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("worker should leave a canceled job recoverable: %v", err)
 	}
-	if err := s.runDCAISyncJob(ctx, dcaiVIPStream, 0, 0); err != nil {
+	if err := s.runOrderSyncJob(ctx, dcaiVIPStream, 0, 0); err != nil {
 		t.Fatal(err)
 	}
 	var id int64
@@ -102,10 +102,10 @@ func TestDCAISyncJobDeduplicatesAndResumesDurably(t *testing.T) {
 	 WHERE stream=$1`, dcaiVIPStream).Scan(&id, &state, &through); err != nil || id != queued.ID || state != "SUCCEEDED" || through == nil {
 		t.Fatalf("resumed job and completed watermark should agree: %d %s %v %v", id, state, through, err)
 	}
-	if err := s.runDCAISyncJob(ctx, dcaiVIPStream, time.Hour, 0); err != nil || reads.Load() != 2 {
+	if err := s.runOrderSyncJob(ctx, dcaiVIPStream, time.Hour, 0); err != nil || reads.Load() != 2 {
 		t.Fatalf("recent completion must prevent redundant automatic work: %v, reads=%d", err, reads.Load())
 	}
-	if err := s.runDCAISyncJob(ctx, dcaiHealthStream, time.Hour, 0); err != nil || reads.Load() != 2 {
+	if err := s.runOrderSyncJob(ctx, dcaiHealthStream, time.Hour, 0); err != nil || reads.Load() != 2 {
 		t.Fatalf("automatic scheduling must not choose a first historical start: %v, reads=%d", err, reads.Load())
 	}
 	if _, err := s.db.Exec(ctx, `UPDATE dcai_sync_jobs SET finished_at=clock_timestamp()-interval '2 hours' WHERE id=$1`, id); err != nil {
@@ -115,41 +115,41 @@ func TestDCAISyncJobDeduplicatesAndResumesDurably(t *testing.T) {
 		t.Fatal(err)
 	}
 	failNext.Store(true)
-	if err := s.runDCAISyncJob(ctx, dcaiVIPStream, time.Hour, 0); err != nil {
+	if err := s.runOrderSyncJob(ctx, dcaiVIPStream, time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
-	failed, err := readDCAISyncJob(ctx, s.db, dcaiVIPStream)
+	failed, err := readOrderSyncJob(ctx, s.db, dcaiVIPStream)
 	if err != nil || failed.ID == id || failed.Status != "FAILED" || reads.Load() != 3 {
 		t.Fatalf("scheduled job should record the failure: %+v %v", failed, err)
 	}
-	if err := s.runDCAISyncJob(ctx, dcaiVIPStream, time.Hour, 0); err != nil || reads.Load() != 3 {
+	if err := s.runOrderSyncJob(ctx, dcaiVIPStream, time.Hour, 0); err != nil || reads.Load() != 3 {
 		t.Fatalf("automatic retries should wait for the interval: %v, reads=%d", err, reads.Load())
 	}
-	retry, err := s.enqueueDCAISync(ctx, dcaiSyncRequest{Stream: dcaiVIPStream})
+	retry, err := s.enqueueOrderSync(ctx, orderSyncRequest{Stream: dcaiVIPStream})
 	if err != nil || retry.ID == failed.ID {
 		t.Fatalf("manual retry must enqueue immediately: %+v %v", retry, err)
 	}
-	if err := s.runDCAISyncJob(ctx, dcaiVIPStream, 0, failed.ID); !errors.Is(err, errSyncJobReplaced) || reads.Load() != 3 {
+	if err := s.runOrderSyncJob(ctx, dcaiVIPStream, 0, failed.ID); !errors.Is(err, errSyncJobReplaced) || reads.Load() != 3 {
 		t.Fatalf("a replaced CLI request must not run its successor: %v, reads=%d", err, reads.Load())
 	}
-	if _, err := s.syncDCAIOrders(ctx, dcaiVIPStream, nil); err != nil {
+	if _, err := s.syncOrders(ctx, dcaiVIPStream, nil); err != nil {
 		t.Fatal(err)
 	}
-	completed, err := readDCAISyncJob(ctx, s.db, dcaiVIPStream)
+	completed, err := readOrderSyncJob(ctx, s.db, dcaiVIPStream)
 	if err != nil || completed.ID != retry.ID || completed.Status != "SUCCEEDED" || reads.Load() != 4 {
 		t.Fatalf("manual retry did not resume the paused sync: %+v %v", completed, err)
 	}
 
 	backfillDate := "2026-07-01"
-	backfill, err := s.enqueueDCAISync(ctx, dcaiSyncRequest{Stream: dcaiVIPStream, FromDate: backfillDate})
+	backfill, err := s.enqueueOrderSync(ctx, orderSyncRequest{Stream: dcaiVIPStream, FromDate: backfillDate})
 	if err != nil {
 		t.Fatal(err)
 	}
 	failReadiness.Store(true)
-	if err := s.runDCAISyncJob(ctx, dcaiVIPStream, 0, backfill.ID); err != nil {
+	if err := s.runOrderSyncJob(ctx, dcaiVIPStream, 0, backfill.ID); err != nil {
 		t.Fatal(err)
 	}
-	stateBefore, err := readDCAISync(ctx, s.db, dcaiVIPStream)
+	stateBefore, err := readOrderSync(ctx, s.db, dcaiVIPStream)
 	if err != nil || stateBefore.Target != nil || stateBefore.From.In(shanghai).Format(time.DateOnly) != input.FromDate {
 		t.Fatalf("preflight failure must leave the previous watermark intact: %+v %v", stateBefore, err)
 	}
@@ -159,10 +159,10 @@ func TestDCAISyncJobDeduplicatesAndResumesDurably(t *testing.T) {
 	if _, err := s.db.Exec(ctx, `UPDATE dcai_order_sync SET last_success_at=clock_timestamp()-interval '2 hours' WHERE stream=$1`, dcaiVIPStream); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.runDCAISyncJob(ctx, dcaiVIPStream, time.Hour, 0); err != nil {
+	if err := s.runOrderSyncJob(ctx, dcaiVIPStream, time.Hour, 0); err != nil {
 		t.Fatal(err)
 	}
-	stateAfter, err := readDCAISync(ctx, s.db, dcaiVIPStream)
+	stateAfter, err := readOrderSync(ctx, s.db, dcaiVIPStream)
 	if err != nil || stateAfter.Target != nil || stateAfter.From.In(shanghai).Format(time.DateOnly) != backfillDate {
 		t.Fatalf("scheduled retry must preserve the failed backfill date: %+v %v", stateAfter, err)
 	}

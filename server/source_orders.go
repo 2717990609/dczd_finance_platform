@@ -19,6 +19,7 @@ import (
 
 var errSourceDisabled = errors.New("source configuration is missing")
 var errSourceRead = errors.New("source request failed")
+var errSourceLookupTimeout = errors.New("子系统单笔查询超时，可稍后重拉或使用订单同步")
 
 const sourceSchema = "source.order-fact/1.0"
 
@@ -234,9 +235,11 @@ func readSources() map[string]sourceConfig {
 
 var pullClient = &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
+var dczdLookupClient = &http.Client{Timeout: 12 * time.Second, CheckRedirect: pullClient.CheckRedirect}
+
 type sourceOrderLookup struct {
 	Facts []sourceFact
-	DCAI  *dcaiOrderPageRow
+	DCAI  *orderPageRow
 }
 
 func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) (sourceOrderLookup, error) {
@@ -270,8 +273,15 @@ func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) (sourceOr
 	request.Header.Set("Authorization", "Bearer "+cfg.Token)
 	request.Header.Set("X-"+req.Source+"-Finance-Contract", version)
 	request.Header.Set("Content-Type", "application/json")
-	response, err := pullClient.Do(request)
+	client := pullClient
+	if req.Source == "DCZD" {
+		client = dczdLookupClient
+	}
+	response, err := client.Do(request)
 	if err != nil {
+		if req.Source == "DCZD" && errors.Is(err, context.DeadlineExceeded) {
+			return lookup, errSourceLookupTimeout
+		}
 		return lookup, errSourceRead
 	}
 	defer response.Body.Close()
@@ -284,7 +294,7 @@ func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) (sourceOr
 		OrderID string            `json:"source_order_id"`
 		Stream  string            `json:"stream"`
 		Items   []json.RawMessage `json:"items"`
-		Item    *dcaiOrderWireRow `json:"item"`
+		Item    *orderWireRow     `json:"item"`
 	}
 	wire, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
 	if err != nil || len(wire) > 1<<20 || json.Unmarshal(wire, &result) != nil || result.Version != version || result.Schema != sourceSchema || result.OrderID != req.OrderID {
@@ -309,6 +319,10 @@ func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) (sourceOr
 			return lookup, errSourceRead
 		}
 		return sourceOrderLookup{Facts: row.Facts, DCAI: &row}, nil
+	}
+	if req.Source == "DCZD" && (result.Stream != req.Stream || positiveSourceID(result.Item.Cursor.ID) == 0 ||
+		!validOrderWatermark(result.Item.Cursor.UpdatedAt) || result.Item.Gates == nil || len(result.Item.Gates) != 0) {
+		return lookup, errSourceRead
 	}
 	if len(items) == 0 {
 		return lookup, pgx.ErrNoRows
@@ -337,17 +351,35 @@ func (s workspace) pullOrder(ctx context.Context, p pullInput) (any, error) {
 			return nil, invalid
 		}
 	} else {
-		p.Stream = "ORDER_FACTS"
+		p.Stream = dczdOrderStream
+	}
+	if p.Source == "DCZD" {
+		// Leave time for the workspace's HTTP deadline to deliver a useful error.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 13*time.Second)
+		defer cancel()
 	}
 	lookup, err := lookupOrder(ctx, s.sources[p.Source], p)
+	if p.Source == "DCZD" && (err == nil || errors.Is(err, pgx.ErrNoRows)) {
+		client, err := newOrderFeedClient(p.Source, s.sources[p.Source])
+		if err != nil {
+			return nil, err
+		}
+		if _, err := client.readiness(ctx, p.Stream); err != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return nil, errSourceLookupTimeout
+			}
+			return nil, err
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
 	var inserted int64
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		sourceKey := ""
-		if lookup.DCAI != nil {
-			sourceKey = s.dcaiSourceKey()
+		if p.Source != "DCJK" {
+			sourceKey = s.orderSourceKey(p.Source)
 		}
 		var writeErr error
 		inserted, writeErr = storeSourceFactsFrom(ctx, tx, lookup.Facts, sourceKey)
@@ -355,11 +387,11 @@ func (s workspace) pullOrder(ctx context.Context, p pullInput) (any, error) {
 			return writeErr
 		}
 		if len(lookup.Facts) == 0 {
-			if err := lockDCAIProvider(ctx, tx, sourceKey); err != nil {
+			if err := lockOrderProvider(ctx, tx, p.Source, sourceKey); err != nil {
 				return err
 			}
 		}
-		return storeDCAIBlockers(ctx, tx, p.Stream, []dcaiOrderPageRow{*lookup.DCAI})
+		return storeDCAIBlockers(ctx, tx, p.Stream, []orderPageRow{*lookup.DCAI})
 	})
 	return map[string]any{"facts": len(lookup.Facts), "newVersions": inserted}, err
 }
@@ -381,9 +413,11 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 		if err := touchSourceWrites(ctx, tx, keys); err != nil {
 			return 0, err
 		}
-		if sources["DCAI"] {
-			if err := verifyDCAIProvider(ctx, tx, sourceKey); err != nil {
-				return 0, err
+		for _, source := range []string{"DCAI", "DCZD"} {
+			if sources[source] {
+				if err := checkOrderProvider(ctx, tx, source, sourceKey, true); err != nil {
+					return 0, err
+				}
 			}
 		}
 	}
@@ -533,7 +567,7 @@ func (s workspace) sourceStatuses(w http.ResponseWriter, r *http.Request) {
 	err = s.db.QueryRow(ctx, `SELECT coalesce(jsonb_agg(jsonb_build_object(
 	 'stream',s.stream,'initialFrom',s.initial_from,'completedThrough',s.completed_through,'targetThrough',s.target_through,
 	 'scannedOrders',s.scanned,'newVersions',s.versions,'failed',s.failed,'sourceMatches',s.source_key=$1) ORDER BY s.stream),'[]')
-	 FROM dcai_order_sync s`, s.dcaiSourceKey()).Scan(&syncStatus)
+	 FROM dcai_order_sync s WHERE s.stream=ANY($2::text[])`, s.dcaiSourceKey(), []string{dcaiVIPStream, dcaiHealthStream}).Scan(&syncStatus)
 	if err != nil {
 		respond(w, nil, err)
 		return

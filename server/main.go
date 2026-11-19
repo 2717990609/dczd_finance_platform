@@ -21,6 +21,7 @@ type config struct {
 	addr                 string
 	database             *pgxpool.Config
 	dcaiSyncInterval     time.Duration
+	dczdSyncInterval     time.Duration
 	draftInterval        time.Duration
 	settlementSyncMaxAge time.Duration
 	ruleAuth             catalogRuleAuth
@@ -40,7 +41,9 @@ func readConfig() (config, error) {
 	if database.ConnConfig.Database != expectedDatabase {
 		return config{}, errWrongDatabase
 	}
-	database.MaxConns = 4
+	// Three order workers may hold advisory locks while reading upstream.
+	// Keep three additional connections available for drafts and HTTP requests.
+	database.MaxConns = 6
 	database.ConnConfig.ConnectTimeout = 5 * time.Second
 
 	addr := strings.TrimSpace(os.Getenv("FINANCE_HTTP_ADDR"))
@@ -48,6 +51,10 @@ func readConfig() (config, error) {
 		addr = "127.0.0.1:8096"
 	}
 	interval, err := intervalSetting("FINANCE_DCAI_SYNC_INTERVAL")
+	if err != nil {
+		return config{}, err
+	}
+	dczdInterval, err := intervalSetting("FINANCE_DCZD_SYNC_INTERVAL")
 	if err != nil {
 		return config{}, err
 	}
@@ -70,7 +77,7 @@ func readConfig() (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	return config{addr: addr, database: database, dcaiSyncInterval: interval, draftInterval: draftInterval,
+	return config{addr: addr, database: database, dcaiSyncInterval: interval, dczdSyncInterval: dczdInterval, draftInterval: draftInterval,
 		settlementSyncMaxAge: settlementAge, ruleAuth: ruleAuth, development: development}, nil
 }
 
@@ -127,7 +134,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if len(os.Args) > 1 && os.Args[1] == "sync-dcai-orders" {
-		if err := syncDCAIOrdersCLI(ctx, cfg, os.Args[2:]); err != nil {
+		if err := syncOrdersCLI(ctx, cfg, "DCAI", os.Args[2:]); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
+	if len(os.Args) > 1 && os.Args[1] == "sync-dczd-orders" {
+		if err := syncOrdersCLI(ctx, cfg, "DCZD", os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
 		return

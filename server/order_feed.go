@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -18,15 +19,17 @@ const (
 	dcaiPageSchemaHash    = "5dfe80ac6c41077fa7912c38eb9892d542b1627b4e57f4aae4fdbbfec2752277"
 	dcaiVIPStream         = "VIP_ORDERS"
 	dcaiHealthStream      = "HEALTH_IDENTITY_ORDERS"
-	dcaiPageSize          = 200
+	dczdOrderStream       = "ORDER_FACTS"
+	dczdOrderPageContract = "dczd.finance-order-pull-page/1.0"
+	orderPageSize         = 200
 )
 
-type dcaiCursor struct {
+type orderCursor struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	ID        string    `json:"id"`
 }
 
-func (c dcaiCursor) atOrBefore(other dcaiCursor) bool {
+func (c orderCursor) atOrBefore(other orderCursor) bool {
 	if c.UpdatedAt.Equal(other.UpdatedAt) {
 		// Canonical unsigned decimal strings compare numerically by length first.
 		return len(c.ID) < len(other.ID) || len(c.ID) == len(other.ID) && c.ID <= other.ID
@@ -34,12 +37,12 @@ func (c dcaiCursor) atOrBefore(other dcaiCursor) bool {
 	return c.UpdatedAt.Before(other.UpdatedAt)
 }
 
-func (c dcaiCursor) valid() bool {
+func (c orderCursor) valid() bool {
 	number, err := strconv.ParseUint(c.ID, 10, 64)
-	return err == nil && c.ID == strconv.FormatUint(number, 10) && validDCAIWatermark(c.UpdatedAt)
+	return err == nil && c.ID == strconv.FormatUint(number, 10) && validOrderWatermark(c.UpdatedAt)
 }
 
-func validDCAIWatermark(value time.Time) bool {
+func validOrderWatermark(value time.Time) bool {
 	return !value.IsZero() && value.Equal(value.Truncate(time.Microsecond))
 }
 
@@ -51,40 +54,48 @@ type dcaiGate struct {
 	EffectiveAt time.Time `json:"effective_at"`
 }
 
-type dcaiOrderPageRow struct {
-	Cursor   dcaiCursor
+type orderPageRow struct {
+	Cursor   orderCursor
 	OrderID  string
 	Facts    []sourceFact
 	Blockers []string
 }
 
-type dcaiOrderPage struct {
-	Rows    []dcaiOrderPageRow
-	Next    dcaiCursor
+type orderPage struct {
+	Rows    []orderPageRow
+	Next    orderCursor
 	HasMore bool
 }
 
-type dcaiOrderClient struct {
+type orderFeedClient struct {
 	endpoint *url.URL
 	token    string
+	source   string
 }
 
-func newDCAIOrderClient(cfg sourceConfig) (dcaiOrderClient, error) {
+func newOrderFeedClient(source string, cfg sourceConfig) (orderFeedClient, error) {
 	if cfg.BaseURL == "" || cfg.Token == "" {
-		return dcaiOrderClient{}, errSourceDisabled
+		return orderFeedClient{}, errSourceDisabled
 	}
 	base, err := url.Parse(cfg.BaseURL)
 	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
-		return dcaiOrderClient{}, errSourceRead
+		return orderFeedClient{}, errSourceRead
 	}
-	return dcaiOrderClient{endpoint: base.JoinPath("/internal/v1/finance/source-orders"), token: cfg.Token}, nil
+	return orderFeedClient{endpoint: base.JoinPath("/internal/v1/finance/source-orders"), token: cfg.Token, source: source}, nil
 }
 
-func (c dcaiOrderClient) sourceKey() string {
+func (c orderFeedClient) contract() string {
+	if c.source == "DCZD" {
+		return dczdOrderPageContract
+	}
+	return dcaiOrderPageContract
+}
+
+func (c orderFeedClient) sourceKey() string {
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(c.endpoint.String())))
 }
 
-func (c dcaiOrderClient) get(ctx context.Context, action string, query url.Values, result any) error {
+func (c orderFeedClient) get(ctx context.Context, action string, query url.Values, result any) error {
 	endpoint := *c.endpoint
 	if action != "" {
 		endpoint = *endpoint.JoinPath(action)
@@ -97,7 +108,7 @@ func (c dcaiOrderClient) get(ctx context.Context, action string, query url.Value
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
 	if action != "readiness" {
-		req.Header.Set("X-DCAI-Finance-Contract", dcaiOrderPageContract)
+		req.Header.Set("X-"+c.source+"-Finance-Contract", c.contract())
 	}
 	res, err := pullClient.Do(req)
 	if err != nil {
@@ -115,83 +126,113 @@ func (c dcaiOrderClient) get(ctx context.Context, action string, query url.Value
 	return nil
 }
 
-func (c dcaiOrderClient) readiness(ctx context.Context, stream string) error {
+func (c orderFeedClient) readiness(ctx context.Context, stream string) (int, error) {
 	var body struct {
-		Status   string            `json:"status"`
-		Version  string            `json:"contract_version"`
-		Schema   string            `json:"source_fact_schema_version"`
-		FactHash string            `json:"source_fact_schema_sha256"`
-		PageHash string            `json:"pull_page_schema_sha256"`
-		Streams  map[string]string `json:"streams"`
+		Status    string            `json:"status"`
+		Version   string            `json:"contract_version"`
+		Schema    string            `json:"source_fact_schema_version"`
+		FactHash  string            `json:"source_fact_schema_sha256"`
+		PageHash  string            `json:"pull_page_schema_sha256"`
+		Streams   map[string]string `json:"streams"`
+		PageSize  int               `json:"max_page_size"`
+		Conflicts *int64            `json:"conflict_count"`
 	}
 	if err := c.get(ctx, "readiness", nil, &body); err != nil {
-		return err
+		return 0, err
 	}
-	if body.Status != "READY" || body.Streams[stream] != "READY" || body.Version != dcaiOrderPageContract ||
-		body.Schema != sourceSchema || body.FactHash != dcaiFactSchemaHash || body.PageHash != dcaiPageSchemaHash {
-		return errSourceRead
+	if body.Status != "READY" || body.Streams[stream] != "READY" || body.Version != c.contract() || body.Schema != sourceSchema {
+		return 0, errSourceRead
 	}
-	return nil
+	if c.source == "DCZD" {
+		if body.PageSize < 1 || body.Conflicts == nil || *body.Conflicts != 0 {
+			return 0, errSourceRead
+		}
+		return min(orderPageSize, body.PageSize), nil
+	}
+	if body.FactHash != dcaiFactSchemaHash || body.PageHash != dcaiPageSchemaHash {
+		return 0, errSourceRead
+	}
+	return orderPageSize, nil
 }
 
-func (c dcaiOrderClient) cutoff(ctx context.Context) (time.Time, error) {
+func (c orderFeedClient) cutoff(ctx context.Context) (time.Time, error) {
 	var body struct {
 		Version string    `json:"contract_version"`
 		Through time.Time `json:"through"`
 	}
 	err := c.get(ctx, "cutoff", nil, &body)
-	if err != nil || body.Version != dcaiOrderPageContract || !validDCAIWatermark(body.Through) {
+	if err != nil || body.Version != c.contract() || !validOrderWatermark(body.Through) {
 		return time.Time{}, errSourceRead
 	}
 	return body.Through, nil
 }
 
-type dcaiOrderWireRow struct {
-	Cursor dcaiCursor        `json:"cursor"`
+type orderWireRow struct {
+	Cursor orderCursor       `json:"cursor"`
 	Facts  []json.RawMessage `json:"facts"`
 	Gates  []dcaiGate        `json:"gates"`
 }
 
-func (c dcaiOrderClient) page(ctx context.Context, stream string, after dcaiCursor, through time.Time) (dcaiOrderPage, error) {
+func (c orderFeedClient) page(ctx context.Context, stream string, after orderCursor, through time.Time, limit int) (orderPage, error) {
 	query := url.Values{
 		"stream": {stream}, "after_updated_at": {after.UpdatedAt.UTC().Format(time.RFC3339Nano)},
-		"after_id": {after.ID}, "through": {through.UTC().Format(time.RFC3339Nano)}, "limit": {strconv.Itoa(dcaiPageSize)},
+		"after_id": {after.ID}, "through": {through.UTC().Format(time.RFC3339Nano)}, "limit": {strconv.Itoa(limit)},
 	}
 	var body struct {
-		Version string             `json:"contract_version"`
-		Schema  string             `json:"source_fact_schema_version"`
-		Stream  string             `json:"stream"`
-		Through time.Time          `json:"through"`
-		Rows    []dcaiOrderWireRow `json:"items"`
-		Next    dcaiCursor         `json:"next_cursor"`
-		HasMore *bool              `json:"has_more"`
+		Version string         `json:"contract_version"`
+		Schema  string         `json:"source_fact_schema_version"`
+		Stream  string         `json:"stream"`
+		Through time.Time      `json:"through"`
+		Rows    []orderWireRow `json:"items"`
+		Next    orderCursor    `json:"next_cursor"`
+		HasMore *bool          `json:"has_more"`
 	}
 	err := c.get(ctx, "", query, &body)
-	if err != nil || body.Version != dcaiOrderPageContract || body.Schema != sourceSchema || body.Stream != stream ||
-		!body.Through.Equal(through) || body.Rows == nil || body.HasMore == nil || len(body.Rows) > dcaiPageSize ||
+	if err != nil || body.Version != c.contract() || body.Schema != sourceSchema || body.Stream != stream ||
+		!body.Through.Equal(through) || body.Rows == nil || body.HasMore == nil || len(body.Rows) > limit ||
 		*body.HasMore && len(body.Rows) == 0 {
-		return dcaiOrderPage{}, errSourceRead
+		return orderPage{}, errSourceRead
 	}
-	page := dcaiOrderPage{Next: after, HasMore: *body.HasMore}
+	page := orderPage{Next: after, HasMore: *body.HasMore}
 	for _, wire := range body.Rows {
 		if !wire.Cursor.valid() || wire.Cursor.ID == "0" || wire.Cursor.atOrBefore(page.Next) || wire.Cursor.UpdatedAt.After(through) {
-			return dcaiOrderPage{}, errSourceRead
+			return orderPage{}, errSourceRead
 		}
-		row, err := normalizeDCAIOrderRow(stream, through, wire)
+		row, err := c.normalizeRow(stream, through, wire)
 		if err != nil {
-			return dcaiOrderPage{}, err
+			return orderPage{}, err
 		}
 		page.Rows = append(page.Rows, row)
 		page.Next = wire.Cursor
 	}
 	if body.Next.ID != page.Next.ID || !body.Next.UpdatedAt.Equal(page.Next.UpdatedAt) {
-		return dcaiOrderPage{}, errSourceRead
+		return orderPage{}, errSourceRead
 	}
 	return page, nil
 }
 
-func normalizeDCAIOrderRow(stream string, through time.Time, wire dcaiOrderWireRow) (dcaiOrderPageRow, error) {
-	row := dcaiOrderPageRow{Cursor: wire.Cursor, Blockers: []string{}}
+func (c orderFeedClient) normalizeRow(stream string, through time.Time, wire orderWireRow) (orderPageRow, error) {
+	if c.source == "DCAI" {
+		return normalizeDCAIOrderRow(stream, through, wire)
+	}
+	if positiveSourceID(wire.Cursor.ID) == 0 || len(wire.Facts) != 1 || wire.Gates == nil || len(wire.Gates) != 0 {
+		return orderPageRow{}, errSourceRead
+	}
+	var doc sourceDocument
+	if json.Unmarshal(wire.Facts[0], &doc) != nil || !textOK(doc.Order.ID, 128) || strings.TrimSpace(doc.Order.ID) != doc.Order.ID {
+		return orderPageRow{}, errSourceRead
+	}
+	fact, err := normalizeFact(c.source, doc.Order.ID, wire.Facts[0])
+	if err != nil {
+		return orderPageRow{}, err
+	}
+	// The source paginates on its materialized row's creation time. The business
+	// event and source record version retain their independent timestamps.
+	return orderPageRow{Cursor: wire.Cursor, OrderID: fact.OrderID, Facts: []sourceFact{fact}}, nil
+}
+
+func normalizeDCAIOrderRow(stream string, through time.Time, wire orderWireRow) (orderPageRow, error) {
+	row := orderPageRow{Cursor: wire.Cursor, Blockers: []string{}}
 	if wire.Facts == nil || wire.Gates == nil || len(wire.Facts) > 3 || len(wire.Gates) > 2 {
 		return row, errSourceRead
 	}

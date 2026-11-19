@@ -463,6 +463,7 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('refundPolicy','non_refundable','退款时不扣回',30,'{}'),
  ('dcaiOrderStream','VIP_ORDERS','AI 会员',10,'{}'),
  ('dcaiOrderStream','HEALTH_IDENTITY_ORDERS','健康大使或创客',20,'{}'),
+ ('dczdOrderStream','ORDER_FACTS','大春之道订单与退款',10,'{}'),
  ('tierMetric','performance','本期新报实付',10,'{}'),
  ('tierMetric','count','累计新报人数',20,'{}'),
  ('tierMetric','fallback','人数优先，未命中按实付',30,'{}'),

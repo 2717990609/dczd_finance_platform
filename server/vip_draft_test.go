@@ -256,7 +256,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if _, err := s.db.Exec(ctx, `UPDATE dcai_order_sync SET completed_through=now(),last_success_at=now()`); err != nil {
 		t.Fatal(err)
 	}
-	job, err := s.enqueueDCAISync(ctx, dcaiSyncRequest{Stream: dcaiVIPStream})
+	job, err := s.enqueueOrderSync(ctx, orderSyncRequest{Stream: dcaiVIPStream})
 	if err != nil {
 		t.Fatal(err)
 	}

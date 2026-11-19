@@ -52,7 +52,7 @@ func TestDCAISyncResumesTheSameWatermarkAndCommitsOnlyCompleteCoverage(t *testin
 			gate := map[string]any{"code": "REFUND_FINALITY", "status": status, "reason_code": reason, "source_order_id": order, "effective_at": lookupAt}
 			write(map[string]any{"contract_version": "dcai.finance-order-lookup/1.0", "source_fact_schema_version": "source.order-fact/1.0",
 				"source_order_id": order, "stream": "VIP_ORDERS",
-				"item": map[string]any{"cursor": dcaiCursor{UpdatedAt: lookupAt, ID: id}, "facts": []any{}, "gates": []any{gate}}})
+				"item": map[string]any{"cursor": orderCursor{UpdatedAt: lookupAt, ID: id}, "facts": []any{}, "gates": []any{gate}}})
 		case "/internal/v1/finance/source-orders":
 			q := r.URL.Query()
 			if q.Get("through") != through.Format(time.RFC3339) || q.Get("stream") != "VIP_ORDERS" {
@@ -91,17 +91,17 @@ func TestDCAISyncResumesTheSameWatermarkAndCommitsOnlyCompleteCoverage(t *testin
 	}))
 	t.Cleanup(provider.Close)
 	service := workspace{db: db, sources: map[string]sourceConfig{"DCAI": {BaseURL: provider.URL, Token: "synthetic-service-token"}}}
-	pageSync := func(from *time.Time) (dcaiSyncState, error) {
-		client, err := newDCAIOrderClient(service.sources["DCAI"])
+	pageSync := func(from *time.Time) (orderSyncState, error) {
+		client, err := newOrderFeedClient("DCAI", service.sources["DCAI"])
 		if err != nil {
-			return dcaiSyncState{}, err
+			return orderSyncState{}, err
 		}
-		conn, release, err := acquireDCAISyncLock(ctx, db, dcaiVIPStream)
+		conn, release, err := acquireOrderSyncLock(ctx, db, dcaiVIPStream)
 		if err != nil {
-			return dcaiSyncState{}, err
+			return orderSyncState{}, err
 		}
 		defer release()
-		return syncDCAIOrdersLocked(ctx, conn, client, dcaiVIPStream, from, 0)
+		return syncOrdersLocked(ctx, conn, client, dcaiVIPStream, from, 0)
 	}
 	if _, err := service.pullOrder(ctx, pullInput{Source: "DCAI", Stream: "VIP_ORDERS", OrderID: "VIP-8"}); err != nil {
 		t.Fatalf("single-order gate before the first sync: %v", err)
@@ -150,7 +150,7 @@ func TestDCAISyncResumesTheSameWatermarkAndCommitsOnlyCompleteCoverage(t *testin
 	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
 		_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCAI"}})
 		return err
-	}); !errors.Is(err, errDCAIFileImport) {
+	}); !errors.Is(err, errBoundSourceImport) {
 		t.Fatalf("a local file must not mix into a bound provider: %v", err)
 	}
 	if _, err := pageSync(nil); err != nil {

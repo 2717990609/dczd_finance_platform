@@ -1,5 +1,5 @@
 <script setup>
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
 const props = defineProps({api:Function, streams:Array, formatTime:Function})
 const emit = defineEmits(['updated'])
@@ -15,6 +15,7 @@ let closed = false
 
 const busy = row => row.status === 'QUEUED' || row.status === 'RUNNING'
 const label = stream => props.streams.find(item => item.value === stream)?.label || stream
+const visibleRows = computed(() => rows.value.filter(row => props.streams.some(option => option.value === row.stream)))
 const badge = row => {
   if (!row.sourceMatches) return ['来源连接待核对', 'orange']
   if (row.unverifiedSource) return ['存在未绑定的订单数据', 'orange']
@@ -83,13 +84,13 @@ defineExpose({reload})
   <section class="records order-sync" aria-label="订单同步">
     <div class="records-head"><h2>订单同步</h2></div>
     <a-alert v-if="loadError" type="error" :message="loadError" show-icon/>
-    <ul v-if="rows.length" class="sync-streams">
-      <li v-for="row in rows" :key="row.stream">
+    <ul v-if="visibleRows.length" class="sync-streams">
+      <li v-for="row in visibleRows" :key="row.stream">
         <div class="sync-detail">
           <strong>{{ label(row.stream) }}</strong>
           <a-tag :color="badge(row)[1]" aria-live="polite">{{ badge(row)[0] }}</a-tag>
           <small v-if="row.completedThrough">同步至 {{ formatTime(row.completedThrough) }}</small>
-          <small v-if="row.targetThrough && row.scannedOrders" >已扫描 {{ row.scannedOrders }} 笔</small>
+          <small v-if="row.targetThrough && row.scannedOrders">已读取 {{ row.scannedOrders }} {{ row.source==='DCZD' ? '条业务记录' : '笔订单' }}</small>
           <small v-if="row.status === 'SUCCEEDED' && row.sourceMatches">{{ row.newVersions ? '新增 '+row.newVersions+' 个版本' : '订单版本无变化' }}</small>
           <small v-if="row.message" class="sync-message">{{ row.message }}</small>
         </div>
@@ -105,7 +106,7 @@ defineExpose({reload})
       <a-form :model="form" layout="vertical" @finish="submit">
         <p class="form-subhead">{{ label(selected.stream) }}</p>
         <a-form-item v-if="!selected.targetThrough" name="fromDate" label="历史起点" html-for="sync-date" :required="!selected.initialFrom"
-          :extra="selected.initialFrom ? '填写更早日期可补拉历史。留空按已有进度同步。' : '按北京时间从当天零点开始读取。'">
+          :extra="selected.initialFrom ? '填写更早日期可补拉历史。留空按已有进度同步。' : selected.source==='DCZD' ? '从北京时间当天零点起，读取进入来源接口的业务记录。' : '按北京时间从当天零点开始读取。'">
           <a-input type="date" id="sync-date" v-model:value="form.fromDate" :disabled="submitting"/>
         </a-form-item>
         <p v-else>继续读取上次同步范围。</p>

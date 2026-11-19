@@ -132,8 +132,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/identities", Handler: submit(s.assignIdentity)},
 		{Method: http.MethodGet, Path: "/api/v1/orders", Handler: s.orders},
 		{Method: http.MethodPost, Path: "/api/v1/orders/pull", Handler: submit(s.pullOrder)},
-		{Method: http.MethodGet, Path: "/api/v1/orders/sync", Handler: s.getDCAISyncJobs},
-		{Method: http.MethodPost, Path: "/api/v1/orders/sync", Handler: submit(s.requestDCAISync)},
+		{Method: http.MethodGet, Path: "/api/v1/orders/sync", Handler: s.getOrderSyncJobs},
+		{Method: http.MethodPost, Path: "/api/v1/orders/sync", Handler: submit(s.requestOrderSync)},
 		{Method: http.MethodGet, Path: "/api/v1/sources", Handler: s.sourceStatuses},
 		{Method: http.MethodGet, Path: "/api/v1/drafts", Handler: s.getDraft},
 		{Method: http.MethodGet, Path: "/api/v1/drafts/status", Handler: s.draftRefreshStatus},
@@ -201,7 +201,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errSettlementPools), errors.Is(err, errSettlementPoolHistory),
 		errors.Is(err, errSettlementSourceCoverage), errors.Is(err, errSettlementSourceRefund), errors.Is(err, errSettlementSourceStale),
 		errors.Is(err, errSettlementSourceClock),
-		errors.Is(err, errSyncOrigin), errors.Is(err, errDCAIUnverified), errors.Is(err, errDCAIFileImport),
+		errors.Is(err, errSyncOrigin), errors.Is(err, errUnverifiedSource), errors.Is(err, errBoundSourceImport),
 		errors.Is(err, errSyncInitialFrom), errors.Is(err, errSyncLaterStart), errors.Is(err, errSyncInProgress),
 		errors.Is(err, errSettlementOpen), errors.Is(err, errSettlementDisabled), errors.Is(err, errPoolStale),
 		errors.Is(err, errPoolAmount), errors.Is(err, errPoolEligibility):
@@ -214,6 +214,8 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = 404, "找不到对应记录"
 	case errors.Is(err, errSourceDisabled):
 		code, message = 409, "来源接口尚未配置"
+	case errors.Is(err, errSourceLookupTimeout):
+		code, message = http.StatusGatewayTimeout, err.Error()
 	case errors.Is(err, errSourceRead):
 		code, message = 502, "来源读取失败，请核对接口或订单号"
 	case errors.As(err, &dbErr) && (dbErr.Code == "23505" || dbErr.Code == "40001"):
@@ -550,7 +552,7 @@ func startHTTP(ctx context.Context, cfg config, db *pgxpool.Pool) error {
 	health := newHandler(db.Ping)
 	api := workspace{db: db, sources: readSources(), ruleAuth: cfg.ruleAuth, development: cfg.development,
 		settlementSyncMaxAge: cfg.settlementSyncMaxAge}
-	stopSync := api.startDCAISyncWorkers(ctx, cfg.dcaiSyncInterval)
+	stopSync := api.startOrderSyncWorkers(ctx, cfg.dcaiSyncInterval, cfg.dczdSyncInterval)
 	defer stopSync()
 	stopDraftRefresh := api.startDraftRefreshWorker(ctx, cfg.draftInterval)
 	defer stopDraftRefresh()

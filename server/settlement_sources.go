@@ -25,7 +25,11 @@ type settlementSource struct {
 }
 
 func (s workspace) dcaiSourceKey() string {
-	client, err := newDCAIOrderClient(s.sources["DCAI"])
+	return s.orderSourceKey("DCAI")
+}
+
+func (s workspace) orderSourceKey(source string) string {
+	client, err := newOrderFeedClient(source, s.sources[source])
 	if err != nil {
 		return ""
 	}

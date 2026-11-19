@@ -137,6 +137,9 @@ const nextComponent = computed(() => {
   }
 })
 const enabledSources = computed(() => data.value.sources.filter(s => s.configured && sources.value.some(option => option.value===s.source)).length)
+const syncStreams = computed(() => data.value.sources
+  .filter(entry => entry.configured && (!sourceFilter.value || sourceFilter.value===entry.source))
+  .flatMap(entry => options(entry.source.toLowerCase()+'OrderStream')))
 const sourceLabel = key => optionLabel('source',key)?.split(' · ')[0]
 const titles = {product:'新增产品',mapping:'添加来源映射',period:'新建期次',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
 const actions = computed(() => {
@@ -551,8 +554,8 @@ async function save() {
             </div>
           </article>
         </div>
-        <OrderSyncPanel v-if="current==='orders' && configurationReady && (!sourceFilter || sourceFilter==='DCAI') && data.sources.some(entry => entry.source==='DCAI' && entry.configured)"
-          ref="orderSync" :api="api" :streams="options('dcaiOrderStream')" :format-time="formatTime" @updated="refresh()"/>
+        <OrderSyncPanel v-if="current==='orders' && configurationReady && syncStreams.length"
+          ref="orderSync" :api="api" :streams="syncStreams" :format-time="formatTime" @updated="refresh()"/>
         <section class="records">
           <div class="records-head">
             <a-tabs v-if="current==='products'||current==='people'" v-model:active-key="tab" @change="filter=''">
