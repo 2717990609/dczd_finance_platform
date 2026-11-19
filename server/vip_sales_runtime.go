@@ -70,7 +70,7 @@ const vipRuntimeSQL = `WITH scope AS (
  SELECT DISTINCT line->>'user' AS person,line->>'company' AS company
  FROM claims CROSS JOIN LATERAL jsonb_array_elements(sales_claims) line
 ), users AS MATERIALIZED (
- SELECT u.external_id AS key,p.legacy_party_id AS value,p.id,u.valid_from AS "from",u.valid_to AS "to"
+ SELECT u.external_id AS key,` + vipPersonKey + ` AS value,p.id,u.valid_from AS "from",u.valid_to AS "to"
  FROM catalog_sales_people_sources u JOIN scope s ON u.source='DCAI' AND s.captured_at=u.observed_at
  JOIN people p ON p.id=u.person_id WHERE u.external_id IN (SELECT person FROM keys)
 ), companies AS MATERIALIZED (
@@ -78,10 +78,12 @@ const vipRuntimeSQL = `WITH scope AS (
  FROM catalog_sales_company_aliases a JOIN scope s ON a.source='DCAI' AND a.observed_at=s.captured_at
  WHERE a.external_id IN (SELECT company FROM keys)
 ), roles AS (
- SELECT p.legacy_party_id AS person,a.role,a.scope,a.scope_key AS key,a.valid_from AS "from",a.valid_to AS "to"
- FROM catalog_sales_appointments a JOIN scope s ON a.source='DCAI' AND a.observed_at=s.captured_at
- JOIN people p ON p.id=a.person_id
- WHERE a.scope='ORGANIZATION_UNIT' OR a.scope='PRODUCT' AND a.scope_key=s.code OR a.scope='PROJECT' AND a.scope_key=s.project_code
+ SELECT ` + vipPersonKey + ` AS person,p.id,a.role,a.scope,a.scope_key AS key,a.valid_from AS "from",a.valid_to AS "to"
+ FROM catalog_current_sales_appointments a JOIN people p ON p.id=a.person_id CROSS JOIN scope s
+ WHERE a.source='DCAI' AND (a.scope='ORGANIZATION_UNIT' OR a.scope='PRODUCT' AND a.scope_key=s.code OR a.scope='PROJECT' AND a.scope_key=s.project_code)
+), persons AS MATERIALIZED (
+ SELECT p.id,p.name,` + vipPersonKey + ` AS key FROM people p
+ WHERE p.legacy_party_id IS NOT NULL OR p.id IN (SELECT id FROM users UNION SELECT id FROM roles)
 ), definitions AS MATERIALIZED (
  SELECT v.source_id,v.definition FROM unnest($3::text[]) r(id) JOIN product_rule_versions v ON v.source_id=r.id::uuid
 )
@@ -99,12 +101,16 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
  'companies',(SELECT jsonb_agg(to_jsonb(companies)) FROM companies),
  'categories',(SELECT jsonb_agg(jsonb_build_object('key',h.company_uuid,'value',h.category_uuid,'from',h.valid_from,'to',h.valid_to))
   FROM catalog_sales_categories h WHERE h.source='DCAI' AND h.observed_at=s.captured_at AND h.company_uuid IN (SELECT value FROM companies)),
- 'roles',(SELECT jsonb_agg(to_jsonb(roles)) FROM roles),
- 'memberships',(SELECT jsonb_agg(jsonb_build_object('person',p.legacy_party_id,'unit',a.unit_id,'from',a.valid_from,'to',a.valid_to))
+ 'roles',(SELECT jsonb_agg(to_jsonb(roles)-'id') FROM roles),
+ 'memberships',(SELECT jsonb_agg(jsonb_build_object('person',` + vipPersonKey + `,'unit',a.unit_id,'from',a.valid_from,'to',a.valid_to))
   FROM organization_assignments a JOIN people p ON p.id=a.person_id WHERE p.id IN (SELECT id FROM users)),
- 'people',(SELECT jsonb_object_agg(p.legacy_party_id::text,p.name) FROM people p WHERE p.legacy_party_id IS NOT NULL),
- 'personIds',(SELECT jsonb_object_agg(p.legacy_party_id::text,p.id) FROM people p WHERE p.legacy_party_id IS NOT NULL))
+ 'people',(SELECT jsonb_object_agg(key,name) FROM persons),
+ 'personIds',(SELECT jsonb_object_agg(key,id) FROM persons))
 FROM scope s`
+
+// Published definitions include configured UUIDs. Direct account references
+// also allow local staff to hold roles without an external identity.
+const vipPersonKey = `coalesce(p.legacy_party_id::text,'person:'||p.id)`
 
 func loadVIPRuntimeData(ctx context.Context, tx pgx.Tx, periodID int64, matched []catalogPaymentMatch) (vipRuntimeData, error) {
 	ids := make([]int64, 0, len(matched))

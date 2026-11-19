@@ -94,13 +94,17 @@ func storeVIPSalesContext(ctx context.Context, db *pgxpool.Pool, raw json.RawMes
 			}
 			return nil
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO catalog_sales_context(source,captured_at,snapshot_digest,benefit_ready) VALUES($1,$2,$3,$4)
-		 ON CONFLICT(source) DO UPDATE SET captured_at=excluded.captured_at,snapshot_digest=excluded.snapshot_digest,benefit_ready=excluded.benefit_ready`,
-			s.Source, s.CapturedAt, sum[:], len(s.Organizations) != 0)
+		var appointmentsManaged bool
+		err = tx.QueryRow(ctx, `INSERT INTO catalog_sales_context(source,captured_at,snapshot_digest,benefit_ready) VALUES($1,$2,$3,$4)
+		 ON CONFLICT(source) DO UPDATE SET captured_at=excluded.captured_at,snapshot_digest=excluded.snapshot_digest,benefit_ready=excluded.benefit_ready
+		 RETURNING appointments_at IS NOT NULL`, s.Source, s.CapturedAt, sum[:], len(s.Organizations) != 0).Scan(&appointmentsManaged)
 		if err != nil {
 			return err
 		}
 		for i, item := range statements {
+			if appointmentsManaged && item.label == "appointments" {
+				continue
+			}
 			args := []any{item.rows}
 			if i != 0 {
 				args = append(args, s.Source, s.CapturedAt)

@@ -2,8 +2,10 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Checkbox, TreeSelect } from 'ant-design-vue'
 import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
+import CatalogAppointments from './CatalogAppointments.vue'
 
-const props = defineProps({api:Function, optionLabel:Function, formatTime:Function, canWrite:Boolean, appointmentKinds:Array})
+const props = defineProps({api:Function, optionLabel:Function, formatTime:Function, canWrite:Boolean, appointmentKinds:Array,
+  catalogRoles:Array,catalogScopes:Array})
 const units = ref([])
 const unitId = ref()
 const name = ref('')
@@ -17,6 +19,8 @@ const entriesError = ref('')
 const loading = ref(false)
 const editor = ref()
 const notice = ref('')
+const panel = ref('organization')
+const catalog = ref()
 let request = 0
 let unitRequest = 0
 
@@ -81,7 +85,9 @@ async function loadEntries() {
   }
 }
 
-function refresh() { return Promise.all([loadUnits(),loadEntries()]) }
+function refresh() {
+  return panel.value==='catalog' ? catalog.value?.refresh() : Promise.all([loadUnits(),loadEntries()])
+}
 function filterEntries() {
   page.value = 1
   loadEntries()
@@ -110,9 +116,16 @@ defineExpose({refresh})
 
 <template>
   <section class="heading">
-    <div><h1>组织与人员</h1><p>查看公司的部门、小组和人员任职。</p></div>
-    <a-button v-if="canWrite" type="primary" @click="openEditor('add')">登记任职</a-button>
+    <h1>组织与人员</h1>
+    <a-button v-if="canWrite && panel==='organization'" type="primary" @click="openEditor('add')">登记任职</a-button>
   </section>
+  <a-tabs v-model:active-key="panel">
+    <a-tab-pane key="organization" tab="组织任职"/>
+    <a-tab-pane key="catalog" tab="计提任职"/>
+  </a-tabs>
+  <CatalogAppointments v-if="panel==='catalog'" ref="catalog" :api="api" :can-write="canWrite"
+    :format-time="formatTime" :scopes="catalogScopes" :roles="catalogRoles"/>
+  <template v-else>
   <a-alert v-if="unitsError || entriesError" class="feedback" type="error" :message="unitsError || entriesError" show-icon/>
   <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
   <section class="records organization-directory">
@@ -153,4 +166,5 @@ defineExpose({refresh})
   <OrganizationAppointmentForm v-if="canWrite && editor" :api="api" :mode="editor.mode" :record="editor.record"
     :tree="appointmentTree" :kinds="appointmentKinds" :unit-id="units.some(unit=>unit.id===unitId && unit.status==='ACTIVE')?unitId:undefined"
     @saved="saved" @close="editor=undefined"/>
+  </template>
 </template>

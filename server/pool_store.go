@@ -59,16 +59,33 @@ const poolAllocationBasisSQL = `SELECT md5(concat_ws('|',
  FROM pool_period_order target LEFT JOIN product_catalog_settings config ON config.product_id=target.product_id
  LEFT JOIN catalog_sales_context c ON c.source=config.source_system WHERE target.id=`
 
+// In addition to organization membership, a catalog-funded share requires the
+// component's role at the original payment time. Both draft reads and close
+// review use this predicate, including allocations from earlier periods.
+const poolCatalogRoleSQL = `EXISTS (
+ SELECT 1 FROM periods period JOIN products prod ON prod.id=period.product_id
+ JOIN product_catalog_settings cfg ON cfg.product_id=prod.id
+ JOIN product_rule_versions policy ON policy.source_id=l.catalog_rule_id
+ CROSS JOIN LATERAL jsonb_array_elements(policy.definition->'benefit_actions') action
+ JOIN catalog_current_sales_appointments r ON r.person_id=m.person_id AND r.source=cfg.source_system
+  AND r.role=action->>'role' AND r.valid_from<=v.occurred_at AND (r.valid_to IS NULL OR r.valid_to>v.occurred_at)
+ WHERE period.id=l.period_id AND action->>'item_key'=l.component_type AND action->>'beneficiary_mode'='TEAM_POOL' AND (
+  (r.role='SALES' AND ((r.scope='PRODUCT' AND r.scope_key=prod.code) OR (r.scope='PROJECT' AND r.scope_key=cfg.project_code)))
+  OR (r.role<>'SALES' AND r.scope='ORGANIZATION_UNIT' AND r.scope_key=l.beneficiary_unit_id::text)
+ )
+)`
+
 const poolAllocationCurrentSQL = `(a.draft_version=d.version AND
  (EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=a.period_id) OR (
   a.basis_token=(` + poolAllocationBasisSQL + `a.period_id) AND NOT EXISTS(
    SELECT 1 FROM monthly_pool_allocation_shares s
    JOIN monthly_pool_allocation_funding f ON f.share_id=s.id
    JOIN calculation_draft_lines l ON l.id=f.source_line_id
-   JOIN source_order_versions paid ON paid.id=l.source_version_id
+   JOIN source_order_versions v ON v.id=l.source_version_id
    WHERE s.allocation_id=a.id AND s.person_id IS NOT NULL AND NOT EXISTS(
     SELECT 1 FROM organization_assignments m WHERE m.person_id=s.person_id AND m.unit_id=l.beneficiary_unit_id
-     AND m.valid_from<=paid.occurred_at AND (m.valid_to IS NULL OR paid.occurred_at<m.valid_to)
+     AND m.valid_from<=v.occurred_at AND (m.valid_to IS NULL OR v.occurred_at<m.valid_to)
+     AND (l.practice_pool_id IS NOT NULL OR ` + poolCatalogRoleSQL + `)
    )
   )
  ))
@@ -132,29 +149,10 @@ ORDER BY seq,kind,occurred_at,sort_id,source_id`
 const poolEligibilitySQL = `SELECT DISTINCT l.id,m.person_id,person.name FROM unnest($1::bigint[]) source(id)
  JOIN calculation_draft_lines l ON l.id=source.id
  JOIN source_order_versions v ON v.id=l.source_version_id
- JOIN periods period ON period.id=l.period_id JOIN products prod ON prod.id=period.product_id
- JOIN product_catalog_settings cfg ON cfg.product_id=prod.id JOIN catalog_sales_context c ON c.source=cfg.source_system
- JOIN product_rule_versions policy ON policy.source_id=l.catalog_rule_id
- JOIN LATERAL (
-  SELECT a->>'role' AS role FROM jsonb_array_elements(policy.definition->'benefit_actions') a
-  WHERE a->>'item_key'=l.component_type AND a->>'beneficiary_mode'='TEAM_POOL'
- ) component ON true
  JOIN organization_assignments m ON m.unit_id=l.beneficiary_unit_id
   AND m.valid_from<=v.occurred_at AND (m.valid_to IS NULL OR m.valid_to>v.occurred_at)
  JOIN people person ON person.id=m.person_id
- JOIN catalog_sales_appointments r ON r.person_id=m.person_id AND r.role=component.role
-  AND r.source=c.source AND r.observed_at=c.captured_at
-  AND r.valid_from<=v.occurred_at AND (r.valid_to IS NULL OR r.valid_to>v.occurred_at)
- WHERE (component.role='SALES' AND (
-  (r.scope='PRODUCT' AND r.scope_key=prod.code) OR (r.scope='PROJECT' AND r.scope_key=cfg.project_code)
- )) OR (component.role<>'SALES' AND r.scope='ORGANIZATION_UNIT' AND r.scope_key=l.beneficiary_unit_id::text)
- UNION
- SELECT l.id,m.person_id,person.name FROM unnest($1::bigint[]) source(id)
- JOIN calculation_draft_lines l ON l.id=source.id AND l.practice_pool_id IS NOT NULL
- JOIN source_order_versions v ON v.id=l.source_version_id
- JOIN organization_assignments m ON m.unit_id=l.beneficiary_unit_id
-  AND m.valid_from<=v.occurred_at AND (m.valid_to IS NULL OR m.valid_to>v.occurred_at)
- JOIN people person ON person.id=m.person_id
+ WHERE l.practice_pool_id IS NOT NULL OR ` + poolCatalogRoleSQL + `
  ORDER BY 1,2`
 
 func readPoolDraftVersion(ctx context.Context, tx pgx.Tx, periodID int64) (int64, bool, error) {

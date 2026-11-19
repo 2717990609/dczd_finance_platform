@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -42,20 +43,28 @@ func (s workspace) organizationAssignments(w http.ResponseWriter, r *http.Reques
 		respond(w, nil, invalid)
 		return
 	}
+	offset, at, name, err := organizationAssignmentFilters(params)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	var result json.RawMessage
+	err = s.db.QueryRow(r.Context(), organizationAssignmentsSQL, unitID, at, name, offset).Scan(&result)
+	respond(w, result, err)
+}
+
+func organizationAssignmentFilters(params url.Values) (offset int, at *time.Time, name string, err error) {
 	page := 1
 	if value := params.Get("page"); value != "" {
 		var err error
 		page, err = strconv.Atoi(value)
 		if err != nil || page < 1 || page > 100000 {
-			respond(w, nil, invalid)
-			return
+			return 0, nil, "", invalid
 		}
 	}
-	var at *time.Time
 	history, on := params.Get("history"), params.Get("on")
 	if history != "" && (history != "true" || on != "") {
-		respond(w, nil, invalid)
-		return
+		return 0, nil, "", invalid
 	}
 	if history == "" {
 		date := time.Now()
@@ -63,16 +72,12 @@ func (s workspace) organizationAssignments(w http.ResponseWriter, r *http.Reques
 			var err error
 			date, err = time.ParseInLocation(time.DateOnly, on, shanghai)
 			if err != nil {
-				respond(w, nil, invalid)
-				return
+				return 0, nil, "", invalid
 			}
 		}
 		at = &date
 	}
-	var result json.RawMessage
-	err := s.db.QueryRow(r.Context(), organizationAssignmentsSQL, unitID, at,
-		strings.TrimSpace(params.Get("name")), (page-1)*25).Scan(&result)
-	respond(w, result, err)
+	return (page - 1) * 25, at, strings.TrimSpace(params.Get("name")), nil
 }
 
 type organizationSnapshot struct {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -218,6 +219,22 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 				t.Fatalf("allocation should reclassify but not increase %s: %+v", dimension, body)
 			}
 		}
+	}
+	assertAllocationReport(350)
+	editor := s
+	editor.development = true
+	if _, err := editor.endCatalogAppointment(ctx, endAppointmentInput{AssignmentID: id(26), At: start.Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	if stale := readPools(got).Items[0]; stale.PlanCurrent || len(stale.Shares) != 2 {
+		t.Fatalf("expired delivery appointment must invalidate the open pool plan: %+v", stale)
+	}
+	assertAllocationReport(0)
+	if _, err := s.db.Exec(ctx, `UPDATE catalog_sales_appointments SET valid_to=NULL WHERE id=$1::uuid`, id(26)); err != nil {
+		t.Fatal(err)
+	}
+	if restored := recalc(); restored.Version != got.Version {
+		t.Fatalf("restored appointment changed the draft: %+v", restored)
 	}
 	assertAllocationReport(350)
 	if _, err := s.db.Exec(ctx, "INSERT INTO organization_import_state(singleton,captured_at,digest) VALUES(true,now(),decode(repeat('aa',32),'hex'))"); err != nil {
@@ -439,6 +456,18 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	closed := verifySettlementHTTP(t, ctx, s, alice.ID, productID, finished, secondReview.Token)
 	if after := review(finished); after.Settlement == nil || after.Settlement.ID != closed.ID || after.Token != "" {
 		t.Fatalf("closed review should reference the existing settlement: %+v", after)
+	}
+	if _, err := editor.endCatalogAppointment(ctx, endAppointmentInput{AssignmentID: id(26), At: start.Add(-time.Second)}); err != nil {
+		t.Fatal(err)
+	}
+	postedPool := readPools(finished).Items[0]
+	if !postedPool.PlanCurrent || !slices.ContainsFunc(postedPool.Shares, func(share poolAllocationShare) bool {
+		return share.PersonID == alice.ID && share.Amount == 599
+	}) {
+		t.Fatalf("later appointment changes rewrote a confirmed pool allocation: %+v", postedPool)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE catalog_sales_appointments SET valid_to=NULL WHERE id=$1::uuid`, id(26)); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := s.confirmSettlement(ctx, request, "fixture"); !errors.Is(err, errSettlementClosed) {
 		t.Fatalf("a different review cannot replace the finalized result: %v", err)

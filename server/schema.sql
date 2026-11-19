@@ -912,8 +912,38 @@ CREATE TABLE IF NOT EXISTS catalog_sales_appointments (
  observed_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS catalog_sales_appointment_lookup ON catalog_sales_appointments(source,scope,scope_key,observed_at);
+CREATE INDEX IF NOT EXISTS catalog_sales_appointment_person ON catalog_sales_appointments(person_id,source,observed_at,role);
 
 ALTER TABLE catalog_sales_context ADD COLUMN IF NOT EXISTS benefit_ready boolean NOT NULL DEFAULT false;
+ALTER TABLE catalog_sales_context ADD COLUMN IF NOT EXISTS appointments_at timestamptz;
+ALTER TABLE catalog_sales_appointments
+ ADD COLUMN IF NOT EXISTS changed_at timestamptz,
+ ADD COLUMN IF NOT EXISTS changed_by uuid REFERENCES finance_accounts(id);
+
+CREATE OR REPLACE VIEW catalog_current_sales_appointments AS
+ SELECT a.* FROM catalog_sales_appointments a JOIN catalog_sales_context c USING(source)
+ WHERE a.observed_at=coalesce(c.appointments_at,c.captured_at);
+
+INSERT INTO configuration_options(group_key,option_key,label,display_order,applies_to) VALUES
+ ('catalogAppointmentScope','PROJECT','项目',10,'{}'),
+ ('catalogAppointmentScope','PRODUCT','产品',20,'{}'),
+ ('catalogAppointmentScope','ORGANIZATION_UNIT','组织',30,'{}'),
+ ('catalogAppointmentRole','SALES','销售',10,'{"scopes":["PRODUCT","PROJECT"]}'),
+ ('catalogAppointmentRole','PROJECT_OWNER','项目负责人',20,'{}'),
+ ('catalogAppointmentRole','TEAM_LEAD','团队负责人',30,'{}'),
+ ('catalogAppointmentRole','GROUP_LEAD','小组负责人',40,'{"scopes":["ORGANIZATION_UNIT"]}'),
+ ('catalogAppointmentRole','DELIVERY_TEAM','交付团队',50,'{}'),
+ ('catalogAppointmentRole','PROJECT_MANAGEMENT','项目管理',60,'{}'),
+ ('catalogAppointmentRole','AI_RND_GENERAL_MANAGER','AI 研发总经理',70,'{}'),
+ ('catalogAppointmentRole','CHAIRMAN','董事长',80,'{}'),
+ ('catalogAppointmentRole','OPERATIONS_POOL','运营池负责人',90,'{}'),
+ ('catalogAppointmentRole','SERVICE_DELIVERY','服务交付负责人',100,'{}'),
+ ('catalogAppointmentRole','DELIVERY','交付',110,'{}'),
+ ('catalogAppointmentRole','TEAM_DIRECTOR','团队总监',120,'{}'),
+ ('catalogAppointmentRole','INTERNAL_SERVICE_MANAGEMENT','内部服务管理',130,'{}'),
+ ('catalogAppointmentRole','OFFLINE_TEACHING','线下教学',140,'{}'),
+ ('catalogAppointmentRole','PROJECT_TEACHING_TEAM','项目教学团队',150,'{}')
+ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS catalog_benefit_organizations (
  source text NOT NULL REFERENCES catalog_sales_context(source),

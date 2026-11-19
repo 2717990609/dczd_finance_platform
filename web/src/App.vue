@@ -665,7 +665,8 @@ async function save() {
         <template v-else-if="current==='organization'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <OrganizationDirectory ref="organization" :api="api" :option-label="optionLabel" :format-time="formatTime"
-            :can-write="session.user ? session.user.organizationWrite : session.development" :appointment-kinds="options('appointmentKind')"/>
+            :can-write="session.user ? session.user.organizationWrite : session.development" :appointment-kinds="options('appointmentKind')"
+            :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"/>
         </template>
         <template v-else>
         <section class="heading">
