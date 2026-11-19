@@ -8,6 +8,7 @@ import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import DraftWorkbench from './DraftWorkbench.vue'
 import CatalogRuleRates from './CatalogRuleRates.vue'
 import PracticePeriodBenefitEditor from './PracticePeriodBenefitEditor.vue'
+import PracticeCompanySalesEditor from './PracticeCompanySalesEditor.vue'
 import FinanceLogin from './FinanceLogin.vue'
 import OrganizationDirectory from './OrganizationDirectory.vue'
 import OrderSyncPanel from './OrderSyncPanel.vue'
@@ -98,13 +99,22 @@ const calculationPeriods = computed(() => data.value.periods.filter(p => !produc
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
 const periodBenefitMode = computed(() => options('amountMode').find(option=>option.value==='period_rate'))
 const isPeriodBenefit = type => classRule.value && ['manager','delivery'].includes(type)
-const amountModes = row => options('amountMode').filter(option =>
-  matchesOption(option, selectedProduct.value?.periodMode, row.type, row.classMember) &&
-  isPeriodBenefit(row.type)===(option.value==='period_rate'))
+const companySalesMode = computed(() => options('amountMode').find(option=>option.value==='company_sales'))
+const componentMode = type => isPeriodBenefit(type) ? 'period_rate' : type==='company_sales' ? 'company_sales' : undefined
+const amountModes = row => {
+  const expected = componentMode(row.type)
+  return options('amountMode').filter(option =>
+    matchesOption(option, selectedProduct.value?.periodMode, row.type, row.classMember) &&
+    (expected ? option.value===expected : !['period_rate','company_sales'].includes(option.value)))
+}
 function updateAmountMode(row, mode) {
   row.mode = mode
   if (mode==='period_rate' && !row.periodBenefit) {
     row.periodBenefit = {recipient:firstOption('practicePeriodRecipient'),tiers:[{from:0}],useTiers:false}
+  }
+  if (mode==='company_sales' && !row.companySales) {
+    row.sourceRole = row.sourceRole || firstOption('practicePeriodSourceRole')
+    row.companySales = {internalCompanies:[],categories:[{mode:baseModes.value[0]?.value,companies:[],overrides:[]}]}
   }
   if (mode === 'tiered' && !row.tierConfig) {
     row.tierConfig = {
@@ -119,6 +129,9 @@ function updateAmountMode(row, mode) {
   }
 }
 function resetAmountMode(row) {
+  if (row.type==='company_sales' && !availableClassMembers(row).some(member=>member.value===row.classMember)) {
+    row.classMember = availableClassMembers(row)[0]?.value
+  }
   const modes = amountModes(row)
   if (!modes.some(option => option.value === row.mode)) updateAmountMode(row,modes[0]?.value)
 }
@@ -129,15 +142,20 @@ function tierLabel(tiers) {
 }
 const componentTypes = computed(() => options('component').filter(option=>
   matchesOption(option,selectedProduct.value?.periodMode) &&
-  (!isPeriodBenefit(option.value) || !!periodBenefitMode.value?.scope?.componentTypes?.includes(option.value))))
+  (!isPeriodBenefit(option.value) || !!periodBenefitMode.value?.scope?.componentTypes?.includes(option.value)) &&
+  (option.value!=='company_sales' || !!companySalesMode.value)))
 function availableComponentTypes(row) {
-  return componentTypes.value.filter(type => isPeriodBenefit(type.value) || !draft.value.components.some(c =>
-    c !== row && c.type === type.value && (!classRule.value || !c.classMember || !row.classMember || c.classMember === row.classMember)))
+  return componentTypes.value.filter(type => isPeriodBenefit(type.value) ||
+    (type.value==='company_sales' ? availableClassMembers(row,type.value).length :
+      !draft.value.components.some(c => c !== row && c.type === type.value &&
+        (!classRule.value || !c.classMember || !row.classMember || c.classMember === row.classMember))))
 }
-function availableClassMembers(row) {
-  if (isPeriodBenefit(row.type)) return classMembers.value
-  return classMembers.value.filter(member => !draft.value.components.some(c =>
-    c !== row && c.type === row.type && (!c.classMember || !member.value || c.classMember === member.value)))
+function availableClassMembers(row,type = row.type) {
+  if (isPeriodBenefit(type)) return classMembers.value
+  return classMembers.value.filter(member =>
+    (type!=='company_sales' || companySalesMode.value?.scope?.classMembers?.includes(member.value)) &&
+    !draft.value.components.some(c =>
+      c !== row && c.type === type && (!c.classMember || !member.value || c.classMember === member.value)))
 }
 const nextComponent = computed(() => {
   if (drawer.value !== 'rule') return undefined
@@ -410,8 +428,25 @@ function countStartBody(form) {
 function ruleComponentBody(row) {
   const sourceRole = row.sourceRole?.trim().toUpperCase()
   const component = {type:must(row.type),mode:must(row.mode,'请选择计提方式'),value:0,
-    ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy && (!classRule.value || !['rate','period_rate'].includes(row.mode)) ? {refundPolicy:row.refundPolicy} : {}),
+    ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy && (!classRule.value || !['rate','period_rate','company_sales'].includes(row.mode)) ? {refundPolicy:row.refundPolicy} : {}),
     ...(row.classMember ? {classMember:row.classMember} : {})}
+  if (row.mode==='company_sales') {
+    must(sourceRole,'请选择销售来源角色')
+    const value = item => {
+      const mode = must(item.mode,'请选择外部公司计算方式')
+      return {mode,value:mode==='rate' ? periodRate(item.value) : minor(must(item.value,'请填写计提金额'))}
+    }
+    component.companySales = {internalCompanies:row.companySales.internalCompanies,categories:row.companySales.categories.map(category=>({
+      label:must(category.label?.trim(),'请填写类别名称'),
+      companies:category.companies,
+      ...value(category),
+      ...(category.overrides.length ? {overrides:category.overrides.map(override=>({
+        companyId:must(override.companyId,'请选择采用单独标准的公司'), ...value(override),
+      }))} : {}),
+    }))}
+    if (component.companySales.categories.some(category=>!category.companies.length)) throw new Error('请选择每个类别适用的公司')
+    return component
+  }
   if (row.mode === 'period_rate') {
     const b = row.periodBenefit
     component.value = b.useTiers ? 0 : periodRate(row.amount)
@@ -644,7 +679,7 @@ async function save() {
                 <template v-else-if="column.key==='components'">
                   <div v-for="(c,index) in text" :key="index">
                     <a-tag>{{ c.periodBenefit?.label || optionLabel('component',c.type) }}{{ c.classMember ? ' · '+optionLabel('classMember',c.classMember) : '' }}
-                      {{ c.mode==='period_rate' ? c.periodBenefit.tiers?.length ? '班次阶梯' : (c.value/10000)+'%' : c.mode==='tiered' ? tierLabel(c.tiers) : c.mode==='rate' ? (c.value/100)+'%' : formatMoney(c.value) }}</a-tag>
+                      {{ c.mode==='company_sales' ? c.companySales.categories.length+' 个类别' : c.mode==='period_rate' ? c.periodBenefit.tiers?.length ? '班次阶梯' : (c.value/10000)+'%' : c.mode==='tiered' ? tierLabel(c.tiers) : c.mode==='rate' ? (c.value/100)+'%' : formatMoney(c.value) }}</a-tag>
                     <small v-if="c.tiers?.companySchedules?.length" class="order-version">
                       {{ c.tiers.companySchedules.map(company=>optionLabel('practiceSalesCompany',company.companyId)).join('、') }}
                     </small>
@@ -722,7 +757,7 @@ async function save() {
           <a-select :id="'rule-component-'+i" v-model:value="c.type" :options="availableComponentTypes(c)" @change="resetAmountMode(c)"/>
           <label class="sr-only" :for="'rule-mode-'+i">计算方式 {{ i+1 }}</label>
           <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
-          <a-input-number v-if="!['tiered','period_rate'].includes(c.mode)" v-model:value="c.amount" :aria-label="'组件参数 '+(i+1)" :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
+          <a-input-number v-if="!['tiered','period_rate','company_sales'].includes(c.mode)" v-model:value="c.amount" :aria-label="'组件参数 '+(i+1)" :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
           <a-button v-if="draft.components.length>1" type="link" danger @click="draft.components.splice(i,1)">移除</a-button>
           </div>
           <a-form-item v-if="classRule" :html-for="'rule-member-'+i" :label="'报名类型 '+(i+1)">
@@ -735,7 +770,9 @@ async function save() {
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
             :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')"/>
-          <a-form-item v-if="selectedProduct && (!classRule || !['rate','period_rate'].includes(c.mode))" :label="'分项 '+(i+1)+' 的退款处理'"
+          <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
+            :amounts="baseModes" :source-roles="options('practicePeriodSourceRole')"/>
+          <a-form-item v-if="selectedProduct && (!classRule || !['rate','period_rate','company_sales'].includes(c.mode))" :label="'分项 '+(i+1)+' 的退款处理'"
             :extra="classRule ? '适用于确认名单前的固定金额分项或固定金额档位。' : '历史退款沿用付款时的规则版本。'">
             <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>
           </a-form-item>

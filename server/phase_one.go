@@ -31,9 +31,10 @@ type component struct {
 	ClassMember   string                 `json:"classMember,omitempty"`
 	Tiers         *practiceSalesTiers    `json:"tiers,omitempty"`
 	PeriodBenefit *practicePeriodBenefit `json:"periodBenefit,omitempty"`
+	CompanySales  *practiceCompanySales  `json:"companySales,omitempty"`
 }
 
-var errPracticeTierCompany = errors.New("公司阶梯引用的销售公司未配置或已停用")
+var errPracticeTierCompany = errors.New("规则引用的销售公司未配置或已停用")
 
 var errPracticeCountPerson = errors.New("个人累计起点引用的人员不存在")
 
@@ -41,13 +42,13 @@ var invalid = errors.New("请核对名称、范围与必填配置")
 var conflict = errors.New("记录与现有配置冲突，请重新读取")
 
 func validateComponents(items []component) error {
-	if len(items) == 0 {
+	if len(items) == 0 || !validPracticeCompanyScopes(items) {
 		return invalid
 	}
 	seen := make(map[string]uint8)
 	for _, c := range items {
 		switch c.Type {
-		case "sales", "referral", "manager", "delivery":
+		case "sales", "referral", "manager", "delivery", "company_sales":
 		default:
 			return invalid
 		}
@@ -64,6 +65,13 @@ func validateComponents(items []component) error {
 		}
 		if c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) {
 			return invalid
+		}
+		if c.Type == "company_sales" || c.CompanySales != nil {
+			if seen[c.Type]&members != 0 || !validPracticeCompanySales(c) {
+				return invalid
+			}
+			seen[c.Type] |= members
+			continue
 		}
 		if c.Mode == "period_rate" {
 			if c.Tiers != nil || !validPracticePeriodBenefit(c) {
@@ -447,6 +455,12 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil) {
 				return invalid
 			}
+			if c.CompanySales != nil {
+				companyIDs = append(companyIDs, c.CompanySales.InternalCompanies...)
+				for _, category := range c.CompanySales.Categories {
+					companyIDs = append(companyIDs, category.Companies...)
+				}
+			}
 			if mode == "class" && (c.Type == "manager" || c.Type == "delivery") && c.PeriodBenefit == nil {
 				return invalid
 			}
@@ -526,7 +540,11 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 			p.ProductID, strings.TrimSpace(p.Label), p.PeriodID, p.FromOrdinal, p.EffectiveFrom, raw, publisher).Scan(&version); err != nil {
 			return err
 		}
-		return enqueueDraftConfiguration(ctx, tx, draftRefreshRule, p.ProductID, p.PeriodID, p.FromOrdinal, p.EffectiveFrom)
+		refresh := draftRefreshRule
+		if mode == "class" {
+			refresh = draftRefreshClassRule
+		}
+		return enqueueDraftConfiguration(ctx, tx, refresh, p.ProductID, p.PeriodID, p.FromOrdinal, p.EffectiveFrom)
 	})
 	return map[string]int{"version": version}, err
 }

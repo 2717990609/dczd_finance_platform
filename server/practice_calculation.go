@@ -15,14 +15,22 @@ func practiceIssue(code string, member practiceEnrollment, rule paymentRule, par
 }
 
 type practicePurchase struct {
-	member      practiceEnrollment
-	payments    []paymentInput
-	gross, base int64
-	issue       string
-	issueFactID int64
-	netPayments map[int64]int64
-	refunds     map[int64][]paymentInput
-	lateRefunds []paymentInput
+	member              practiceEnrollment
+	payments            []paymentInput
+	gross, base         int64
+	issue               string
+	issueFactID         int64
+	netPayments         map[int64]int64
+	refunds             map[int64][]paymentInput
+	lateRefunds         []paymentInput
+	companyAward        *practiceCompanyAward
+	companyRoutingIssue string
+}
+
+type practiceDraftRuntime struct {
+	appointments      map[practiceAppointmentKey][]practiceAppointment
+	companyOffers     practiceCompanyOffers
+	companyRecipients map[string][]companySourceAssignment
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -58,21 +66,33 @@ func preparePracticePurchases(members []practiceEnrollment, orders map[string][]
 
 func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orders map[string][]paymentInput,
 	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory,
-	refunds map[int64][]practiceRefundMatch, appointments map[practiceAppointmentKey][]practiceAppointment) (paymentDraft, error) {
+	refunds map[int64][]practiceRefundMatch, runtime practiceDraftRuntime) (paymentDraft, error) {
 	var draft paymentDraft
 	purchases, err := preparePracticePurchases(members, orders, blocked, refunds)
 	if err != nil {
 		return draft, err
 	}
-	awards, tierIssues, err := practiceTierAwards(rule, purchases, orders, identities, blocked, history, refunds)
-	if err != nil {
-		return draft, err
+	for i := range purchases {
+		purchases[i].classifyCompany(runtime.companyOffers)
 	}
 	performancePayments := make(map[paymentKey]int)
 	for _, purchase := range purchases {
 		for _, payment := range purchase.payments {
 			performancePayments[paymentKey{payment.Fact.Source, payment.Fact.PaymentID}]++
 		}
+	}
+	for i := range purchases {
+		p := &purchases[i]
+		for _, payment := range p.payments {
+			if performancePayments[paymentKey{payment.Fact.Source, payment.Fact.PaymentID}] > 1 {
+				p.issue, p.issueFactID = "PRACTICE_DUPLICATE_PERFORMANCE_PAYMENT", payment.ID
+				break
+			}
+		}
+	}
+	awards, tierIssues, err := practiceTierAwards(rule, purchases, orders, identities, blocked, history, refunds, runtime.companyOffers != nil)
+	if err != nil {
+		return draft, err
 	}
 	for _, purchase := range purchases {
 		member, payments, base := purchase.member, purchase.payments, purchase.base
@@ -89,11 +109,11 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		}
 		for _, payment := range payments {
 			fact := payment.Fact
-			if performancePayments[paymentKey{fact.Source, fact.PaymentID}] > 1 {
-				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_DUPLICATE_PERFORMANCE_PAYMENT", member, rule, ""))
-				continue
-			}
 			owner := performanceOwner(fact, &rule, classMember(member.MembershipType), identities)
+			if purchase.companyAward != nil {
+				seller, _ := paymentBeneficiary(fact, purchase.companyAward.role, identities)
+				owner = seller.PersonID
+			}
 			draft.Performance = append(draft.Performance, draftPerformance{SourceVersionID: payment.ID, Principal: *fact.AmountMinor, PersonID: owner})
 			for _, refund := range purchase.refunds[payment.ID] {
 				f := refund.Fact
@@ -103,13 +123,28 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				})
 			}
 		}
+		if purchase.companyRoutingIssue != "" {
+			draft.Issues = append(draft.Issues, practiceIssue(purchase.companyRoutingIssue, member, rule, "company_sales"))
+		}
+		if purchase.companyAward != nil {
+			if err := appendPracticeCompanySale(&draft, rule, purchase, runtime.companyRecipients, identities); err != nil {
+				return paymentDraft{}, err
+			}
+		}
 		var matched bool
 		for _, part := range rule.Components {
 			if part.ClassMember != "" && part.ClassMember != classMember(member.MembershipType) {
 				continue
 			}
+			if part.CompanySales != nil {
+				matched = matched || purchase.companyAward != nil || purchase.companyRoutingIssue != ""
+				continue
+			}
 			matched = true
 			if part.PeriodBenefit != nil {
+				continue
+			}
+			if part.Type == "sales" && (purchase.companyAward != nil || purchase.companyRoutingIssue != "") {
 				continue
 			}
 			if (part.Type != "sales" && part.Type != "referral") || part.SourceRole == "" {
@@ -164,7 +199,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_MEMBER_RULE_MISSING", member, rule, ""))
 		}
 	}
-	if err := appendPracticePeriodBenefits(&draft, rule, purchases, appointments, identities, performancePayments); err != nil {
+	if err := appendPracticePeriodBenefits(&draft, rule, purchases, runtime.appointments, identities, performancePayments); err != nil {
 		return paymentDraft{}, err
 	}
 	return draft, nil
@@ -202,7 +237,7 @@ func practicePurchaseCompany(payments []paymentInput) (string, string) {
 
 func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map[string][]paymentInput,
 	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory,
-	refunds map[int64][]practiceRefundMatch) (map[int64]practiceTier, practiceTierIssues, error) {
+	refunds map[int64][]practiceRefundMatch, strictCompanyScope bool) (map[int64]practiceTier, practiceTierIssues, error) {
 	part := practiceTierComponent(rule)
 	if part == nil {
 		return nil, practiceTierIssues{}, nil
@@ -217,6 +252,13 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 	for _, purchase := range current {
 		member := purchase.member
 		if classMember(member.MembershipType) != "new" {
+			continue
+		}
+		if purchase.companyAward != nil {
+			continue
+		}
+		if purchase.companyRoutingIssue != "" {
+			issues.people[practicePurchaseOwner(purchase, part.SourceRole, identities)] = "PRACTICE_TIER_GROUP_INCOMPLETE"
 			continue
 		}
 		var company, companyIssue string
@@ -255,7 +297,7 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 	var index practicePriorIndex
 	if len(needsCount) != 0 {
 		var err error
-		index, err = indexPracticePrior(history, part.SourceRole, orders, identities, blocked, refunds)
+		index, err = indexPracticePrior(history, part.SourceRole, orders, identities, blocked, refunds, strictCompanyScope)
 		if err != nil {
 			return nil, issues, err
 		}

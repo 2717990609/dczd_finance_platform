@@ -49,6 +49,13 @@ const draftRefreshRule = `SELECT id FROM periods WHERE product_id=$1
  AND ($2::bigint IS NULL OR id=$2) AND ($3::integer IS NULL OR ordinal>=$3)
  AND ($4::timestamptz IS NULL OR $4<((ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'))`
 
+const draftRefreshClassRule = `WITH changed AS (` + draftRefreshRule + `)
+ SELECT id FROM changed
+ UNION SELECT p.id FROM changed c JOIN periods prior ON prior.id=c.id
+ JOIN periods p ON p.product_id=prior.product_id AND p.ordinal>prior.ordinal
+  AND split_part(p.source_period_key,':',3)=split_part(prior.source_period_key,':',3)
+ WHERE EXISTS(SELECT 1 FROM rule_versions rv WHERE ` + matchingRuleScope + ` AND rv.components @>'[{"mode":"tiered"}]')`
+
 func (s workspace) refreshPendingDrafts(ctx context.Context) error {
 	rows, err := s.db.Query(ctx, `SELECT period_id,generation FROM draft_refresh_queue WHERE retry_on_scan ORDER BY requested_at,period_id`)
 	if err != nil {

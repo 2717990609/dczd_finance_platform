@@ -27,7 +27,10 @@ const selectedPeriod = computed(() => props.periods.find(period => period.id ===
 const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable)
 const matchingOnly = computed(() => hasMatching.value && !selectedPeriod.value?.catalogDraftAvailable)
 const newerDraft = computed(() => refreshStatus.value?.version > (draft.value?.version || 0))
-const componentLabel = code => props.componentOptions.find(option=>option.value===code)?.label || code
+const componentLabel = code => {
+  const type = code?.startsWith('period:') ? code.split(':')[1] : code
+  return props.componentOptions.find(option=>option.value===type)?.label || type
+}
 const memberLabel = type => props.memberOptions.find(option=>option.value===(type===3 ? 'new' : 'retrain'))?.label
 const reason = {
   ...salesStatus,
@@ -75,6 +78,10 @@ const reason = {
   PRACTICE_ATTRIBUTION_CONFLICT: '订金与尾款的受益人归属不一致',
   PRACTICE_TIER_COMPANY_MISSING: '付款记录缺少销售公司',
   PRACTICE_TIER_COMPANY_CONFLICT: '订金和尾款的销售公司不一致',
+  PRACTICE_COMPANY_RECIPIENT_MISSING: '付款时的收款公司映射缺失',
+  PRACTICE_COMPANY_RECIPIENT_CONFLICT: '付款时的收款公司映射有冲突',
+  PRACTICE_COMPANY_SCOPE_MISSING: '销售公司在本报名类型下没有适用标准',
+  PRACTICE_COMPANY_AWARD_EXCEEDS_PAYMENT: '外部公司固定提成超过报名净实收',
   PRACTICE_TIER_COMPANY_NOT_CONFIGURED: '该销售公司未配置阶梯',
   PRACTICE_TIER_OPENING_MISSING: '所选冻结期初中缺少该人员的期初人数',
   PRACTICE_TIER_HISTORY_MISSING: '累计起点或历史期次缺少已确认名单',

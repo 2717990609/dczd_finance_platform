@@ -3,10 +3,13 @@ package main
 import "time"
 
 type practiceHistoryPeriod struct {
-	rosterID int64
-	ordinal  int
-	startsAt *time.Time
-	endsOn   time.Time
+	rosterID      int64
+	ordinal       int
+	startsAt      *time.Time
+	endsOn        time.Time
+	companyOffers practiceCompanyOffers
+	personalRole  string
+	ruleKnown     bool
 }
 
 type practiceTierHistory struct {
@@ -51,7 +54,8 @@ type practicePriorIndex struct {
 }
 
 func indexPracticePrior(history practiceTierHistory, role string, orders map[string][]paymentInput,
-	identities map[identityKey][]identityAssignment, blocked map[int64]string, refunds map[int64][]practiceRefundMatch) (practicePriorIndex, error) {
+	identities map[identityKey][]identityAssignment, blocked map[int64]string, refunds map[int64][]practiceRefundMatch,
+	strictCompanyScope bool) (practicePriorIndex, error) {
 	index := practicePriorIndex{
 		counts: make(map[int64]map[int64]int64), incomplete: make(map[int64]bool),
 		enrollmentFrom: make(map[string]int64), paymentFrom: make(map[string]int64),
@@ -60,14 +64,31 @@ func indexPracticePrior(history practiceTierHistory, role string, orders map[str
 	if err != nil {
 		return index, err
 	}
+	historical := make(map[int64]practiceHistoryPeriod, len(history.periods))
+	for _, period := range history.periods {
+		historical[period.rosterID] = period
+	}
 	for _, purchase := range past {
 		member := purchase.member
 		if classMember(member.MembershipType) != "new" {
 			continue
 		}
 		roster := member.RosterID
-		person := practicePurchaseOwner(purchase, role, identities)
-		if person == 0 {
+		period := historical[roster]
+		purchase.classifyCompany(period.companyOffers)
+		if purchase.companyAward != nil {
+			continue
+		}
+		periodRole := period.personalRole
+		if periodRole == "" {
+			if strictCompanyScope && (!period.ruleKnown || period.companyOffers != nil) {
+				index.incomplete[roster] = true
+				continue
+			}
+			periodRole = role
+		}
+		person := practicePurchaseOwner(purchase, periodRole, identities)
+		if person == 0 || purchase.companyRoutingIssue != "" {
 			index.incomplete[roster] = true
 			continue
 		}

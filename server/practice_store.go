@@ -160,10 +160,17 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	rows, err := tx.Query(ctx, `SELECT p.ordinal,p.ends_on,roster.starts_at,
 	 CASE WHEN roster.starts_at<$4
 	  AND split_part(p.source_period_key,':',3)=split_part(current.source_period_key,':',3)
-	  THEN roster.id ELSE 0 END
+	  THEN roster.id ELSE 0 END, selected.components
 	 FROM periods current JOIN periods p ON p.product_id=current.product_id AND p.ordinal<current.ordinal
+	 LEFT JOIN settlements settlement ON settlement.period_id=p.id
+	 LEFT JOIN calculation_drafts closed ON closed.period_id=settlement.period_id
 	 LEFT JOIN LATERAL (SELECT r.id,r.starts_at FROM practice_rosters r
-	  WHERE r.period_key=p.source_period_key ORDER BY r.source_version DESC LIMIT 1) roster ON true
+	  WHERE r.period_key=p.source_period_key AND (closed.practice_roster_id IS NULL OR r.id=closed.practice_roster_id)
+	  ORDER BY r.source_version DESC LIMIT 1) roster ON true
+	 LEFT JOIN LATERAL (SELECT rv.components FROM rule_versions rv
+	  WHERE CASE WHEN closed.rule_id IS NOT NULL THEN rv.id=closed.rule_id
+	   ELSE `+matchingRuleScope+` AND roster.starts_at IS NOT NULL AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at) END
+	  ORDER BY `+matchingRuleOrder+` LIMIT 1) selected ON true
 	 WHERE current.id=$1 AND (($2>0 AND p.ordinal>=$2)
 	  OR ($3::timestamptz IS NOT NULL AND (roster.starts_at>=$3 OR p.ends_on>=($3 AT TIME ZONE 'Asia/Shanghai')::date)))
 	 ORDER BY p.ordinal`, summary.PeriodID, firstOrdinal, firstTime, summary.PracticeStartsAt)
@@ -172,7 +179,16 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	}
 	history.periods, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (practiceHistoryPeriod, error) {
 		var period practiceHistoryPeriod
-		err := row.Scan(&period.ordinal, &period.endsOn, &period.startsAt, &period.rosterID)
+		var components []component
+		err := row.Scan(&period.ordinal, &period.endsOn, &period.startsAt, &period.rosterID, &components)
+		period.ruleKnown = len(components) != 0
+		period.companyOffers = practiceCompanyStandards(paymentRule{Components: components})
+		for _, part := range components {
+			if part.Type == "sales" && (part.ClassMember == "" || part.ClassMember == "new") {
+				period.personalRole = part.SourceRole
+				break
+			}
+		}
 		return period, err
 	})
 	if err == nil {
@@ -287,7 +303,13 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	result, err := calculatePracticeDraft(members, rule, orders, identities, blocked, history, matchPracticeRefunds(refunds, orders), appointments)
+	companyOffers := practiceCompanyStandards(rule)
+	companyRecipients, err := loadPracticeCompanyRecipients(ctx, tx, companyOffers)
+	if err != nil {
+		return paymentDraft{}, nil, err
+	}
+	runtime := practiceDraftRuntime{appointments: appointments, companyOffers: companyOffers, companyRecipients: companyRecipients}
+	result, err := calculatePracticeDraft(members, rule, orders, identities, blocked, history, matchPracticeRefunds(refunds, orders), runtime)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
