@@ -78,28 +78,40 @@ func readVIPSalesPolicy(raw json.RawMessage) (vipSalesPolicy, bool) {
 			action.Designated != "" || len(action.Rates) == 0 {
 			return vipSalesPolicy{}, false
 		}
-		match = make([]vipRateRow, 0, len(action.Rates))
-		for _, rawRow := range action.Rates {
-			var row vipRateRow
-			var fields map[string]json.RawMessage
-			if json.Unmarshal(rawRow, &row) != nil || json.Unmarshal(rawRow, &fields) != nil ||
-				len(fields["rate_bps"]) == 0 || string(fields["rate_bps"]) == "null" ||
-				row.Company == "" || row.Rate < 0 || row.Rate > 10000 ||
-				!slices.Contains([]string{"ANY", "DIRECT", "INDIRECT", "NONE"}, row.Relationship) {
-				return vipSalesPolicy{}, false
-			}
-			for key := range fields {
-				switch key {
-				case "id", "rate_bps", "sales_relationship", "sales_organization_party_id",
-					"sales_category_id", "sales_category_snapshot_default":
-				default:
-					return vipSalesPolicy{}, false
-				}
-			}
-			match = append(match, row)
+		var ok bool
+		match, ok = parseVIPRateTable(action.Rates)
+		if !ok {
+			return vipSalesPolicy{}, false
 		}
 	}
 	return vipSalesPolicy{Sales: match, Split: def.Split}, match != nil
+}
+
+func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
+	if len(rawRows) == 0 {
+		return nil, false
+	}
+	rows := make([]vipRateRow, 0, len(rawRows))
+	for _, raw := range rawRows {
+		var row vipRateRow
+		var fields map[string]json.RawMessage
+		if json.Unmarshal(raw, &row) != nil || json.Unmarshal(raw, &fields) != nil ||
+			len(fields["rate_bps"]) == 0 || string(fields["rate_bps"]) == "null" ||
+			row.Company == "" || row.Rate < 0 || row.Rate > 10000 ||
+			!slices.Contains([]string{"ANY", "DIRECT", "INDIRECT", "NONE"}, row.Relationship) {
+			return nil, false
+		}
+		for key := range fields {
+			switch key {
+			case "id", "rate_bps", "sales_relationship", "sales_organization_party_id",
+				"sales_category_id", "sales_category_snapshot_default":
+			default:
+				return nil, false
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows, true
 }
 
 func resolveVIPRate(rows []vipRateRow, company, relationship, category string) (int64, string) {

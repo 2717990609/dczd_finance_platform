@@ -15,13 +15,14 @@ import (
 )
 
 type vipSalesSnapshot struct {
-	Source       string
-	CapturedAt   time.Time
-	People       json.RawMessage
-	PersonLinks  json.RawMessage
-	CompanyLinks json.RawMessage
-	Categories   json.RawMessage
-	Appointments json.RawMessage
+	Source        string
+	CapturedAt    time.Time
+	People        json.RawMessage
+	PersonLinks   json.RawMessage
+	CompanyLinks  json.RawMessage
+	Categories    json.RawMessage
+	Appointments  json.RawMessage
+	Organizations json.RawMessage
 }
 
 func importVIPSalesContext(ctx context.Context, cfg config, path string) error {
@@ -58,6 +59,12 @@ func storeVIPSalesContext(ctx context.Context, db *pgxpool.Pool, raw json.RawMes
 		{"categories", importVIPSalesCategories, s.Categories},
 		{"appointments", importVIPSalesAppointments, s.Appointments},
 	}
+	if len(s.Organizations) != 0 {
+		statements = append(statements, struct {
+			label, query string
+			rows         json.RawMessage
+		}{"beneficiary organizations", importVIPBenefitOrganizations, s.Organizations})
+	}
 	for _, item := range statements {
 		if len(item.rows) == 0 || item.rows[0] != '[' {
 			return invalid
@@ -83,8 +90,9 @@ func storeVIPSalesContext(ctx context.Context, db *pgxpool.Pool, raw json.RawMes
 			}
 			return nil
 		}
-		_, err = tx.Exec(ctx, `INSERT INTO catalog_sales_context(source,captured_at,snapshot_digest) VALUES($1,$2,$3)
-		 ON CONFLICT(source) DO UPDATE SET captured_at=excluded.captured_at,snapshot_digest=excluded.snapshot_digest`, s.Source, s.CapturedAt, sum[:])
+		_, err = tx.Exec(ctx, `INSERT INTO catalog_sales_context(source,captured_at,snapshot_digest,benefit_ready) VALUES($1,$2,$3,$4)
+		 ON CONFLICT(source) DO UPDATE SET captured_at=excluded.captured_at,snapshot_digest=excluded.snapshot_digest,benefit_ready=excluded.benefit_ready`,
+			s.Source, s.CapturedAt, sum[:], len(s.Organizations) != 0)
 		if err != nil {
 			return err
 		}
@@ -125,3 +133,8 @@ const importVIPSalesAppointments = `INSERT INTO catalog_sales_appointments(id,so
  LEFT JOIN people p ON p.legacy_party_id=i."partyId"
  ON CONFLICT(id) DO UPDATE SET person_id=excluded.person_id,role=excluded.role,scope=excluded.scope,scope_key=excluded.scope_key,
  valid_from=excluded.valid_from,valid_to=excluded.valid_to,observed_at=excluded.observed_at`
+
+const importVIPBenefitOrganizations = `INSERT INTO catalog_benefit_organizations(source,party_uuid,unit_id,observed_at)
+ SELECT $2,"partyId","unitId",$3
+ FROM jsonb_to_recordset($1) AS i("partyId" uuid,"unitId" uuid)
+ ON CONFLICT(source,party_uuid,unit_id) DO UPDATE SET observed_at=excluded.observed_at`

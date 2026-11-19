@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -80,7 +81,7 @@ const catalogMatchSQL = `WITH period AS (
   ) best
  ) r ON true
 ), page AS MATERIALIZED (
- SELECT * FROM matches ORDER BY "paidAt" DESC,"sourceVersionId" DESC LIMIT 25 OFFSET $2
+ SELECT * FROM matches ORDER BY "paidAt" DESC,"sourceVersionId" DESC LIMIT $3 OFFSET $2
 ), fixed_actions AS MATERIALIZED (
  SELECT v.source_id::text AS rule_id,a->>'item_key' AS item_key,a->>'label' AS label,
   CASE WHEN a->>'rate_bps' ~ '^[0-9]{1,5}$' THEN (a->>'rate_bps')::integer END AS rate_bps
@@ -89,6 +90,7 @@ const catalogMatchSQL = `WITH period AS (
  CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(v.definition->'benefit_actions')='array'
   THEN v.definition->'benefit_actions' ELSE '[]'::jsonb END) a
  WHERE v.definition->>'amount_basis'='ACTUAL_RECEIVED' AND v.definition->>'stacking_policy'='SUM'
+  AND v.definition->'internal_sales_direct_split' IS NULL
   AND v.definition->'rounding_policy'='{"mode":"HALF_UP","scale":2}'::jsonb
   AND a->>'type'='RATE' AND a->>'beneficiary_mode'='PARTY' AND a->>'role' IN ('AI_RND_GENERAL_MANAGER','CHAIRMAN')
   AND nullif(a->>'designated_party_id','') IS NOT NULL
@@ -126,19 +128,27 @@ func (s workspace) catalogMatches(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	var report catalogMatchReport
 	err = pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		var raw json.RawMessage
-		if err := tx.QueryRow(ctx, catalogMatchSQL, periodID, (page-1)*25).Scan(&raw); err != nil {
-			return err
-		}
-		if err := json.Unmarshal(raw, &report); err != nil {
+		var err error
+		report, err = readCatalogMatches(ctx, tx, periodID, (page-1)*25, 25)
+		if err != nil {
 			return err
 		}
 		data, err := loadVIPRuntimeData(ctx, tx, periodID, report.Items)
 		if err != nil {
 			return err
 		}
-		applyVIPSalesQuotes(report.Items, data)
+		applyVIPQuotes(report.Items, data)
 		return nil
 	})
 	respond(w, report, err)
+}
+
+func readCatalogMatches(ctx context.Context, tx pgx.Tx, periodID int64, offset, limit int) (catalogMatchReport, error) {
+	var report catalogMatchReport
+	var raw json.RawMessage
+	if err := tx.QueryRow(ctx, catalogMatchSQL, periodID, offset, limit).Scan(&raw); err != nil {
+		return report, err
+	}
+	err := json.Unmarshal(raw, &report)
+	return report, err
 }

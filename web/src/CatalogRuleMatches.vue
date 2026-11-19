@@ -6,7 +6,12 @@ const report = ref()
 const error = ref('')
 const loading = ref(false)
 const page = ref(1)
+const poolOpen = ref(false)
+const poolReport = ref()
+const poolError = ref('')
+const poolLoading = ref(false)
 let sequence = 0
+let poolSequence = 0
 const columns = [
   {title:'原订单',key:'order',width:210},
   {title:'付款时间',key:'paidAt',width:155},
@@ -43,6 +48,21 @@ const salesStatus = {
   SALES_GROUP_PENDING:'成交时的销售小组待核',
 }
 const salesRoles = {SALES:'成交人',DCAI_GROUP_LEAD:'小组组长',DCAI_SERVICE:'服务岗',DCAI_TEAM_HEAD:'团队负责人'}
+const benefitStatus = {
+  INACTIVE:'付款时未任职',
+  BENEFIT_CONTEXT_MISSING:'核算所需的组织任职待补',
+  BENEFIT_PERSON_MISSING:'受益人待核',
+  BENEFIT_ORG_MISSING:'受益组织待核',
+  BENEFIT_ORG_CONFLICT:'受益组织有冲突',
+  BENEFIT_POOL_OWNER_MISSING:'付款时的分配负责人待核',
+  BENEFIT_POOL_OWNER_CONFLICT:'付款时的分配负责人有冲突',
+  BENEFIT_RULE_UNSUPPORTED:'分润组件待启用',
+}
+const poolColumns = [
+  {title:'团队池',dataIndex:'name'},
+  {title:'归集付款笔数',dataIndex:'paymentCount',align:'right'},
+  {title:'付款归集金额',key:'amount',align:'right'},
+]
 const pagination = computed(() => ({current:page.value,pageSize:25,total:report.value?.orderCount || 0,showSizeChanger:false}))
 
 async function refresh() {
@@ -66,19 +86,39 @@ function changePage(next) {
   page.value=next.current
   refresh()
 }
+async function openPools() {
+  const request = ++poolSequence
+  poolOpen.value = true
+  poolLoading.value = true
+  poolReport.value = undefined
+  poolError.value = ''
+  try {
+    const result = await props.api('/period-pool-contributions?'+new URLSearchParams({periodId:props.periodId}))
+    if (request===poolSequence) poolReport.value=result
+  } catch (err) {
+    if (request===poolSequence) poolError.value=err.message
+  } finally {
+    if (request===poolSequence) poolLoading.value=false
+  }
+}
 watch(() => props.periodId, () => {
+  poolSequence++
+  poolOpen.value=false
   page.value=1
   report.value=undefined
   refresh()
 }, {immediate:true})
-onBeforeUnmount(() => { sequence++ })
+onBeforeUnmount(() => { sequence++; poolSequence++ })
 </script>
 
 <template>
   <section class="records catalog-match">
     <div class="records-head">
       <h2>订单规则匹配</h2>
-      <a-button :loading="loading" @click="refresh">刷新匹配</a-button>
+      <div class="topbar-actions">
+        <a-button @click="openPools">团队池归集</a-button>
+        <a-button :loading="loading" @click="refresh">刷新匹配</a-button>
+      </div>
     </div>
     <p class="draft-report-note">按付款时间核对场景和规则版本。该产品的分润待启用。</p>
     <a-alert v-if="error" type="error" :message="error" show-icon/>
@@ -103,6 +143,19 @@ onBeforeUnmount(() => { sequence++ })
             <summary>查看已核对固定分项</summary>
             <div v-for="part in record.fixedParts" :key="part.itemKey" class="order-version">{{ part.label }} {{ formatMoney(part.amountMinor) }}</div>
           </details>
+          <details v-if="record.benefitParts?.length" class="rule-count-review">
+            <summary>查看负责人、公司与团队池</summary>
+            <div v-for="part in record.benefitParts" :key="part.itemKey" class="order-version">
+              {{ part.label }} ·
+              <template v-if="part.status==='CALCULATED'">
+                {{ part.beneficiaryName }} · {{ formatMoney(part.amountMinor) }}
+                <template v-if="part.kind==='pool'"> · 待分配（{{ part.ownerName }}）</template>
+              </template>
+              <template v-else-if="part.status==='ZERO'">{{ formatMoney(0) }}</template>
+              <template v-else>{{ benefitStatus[part.status] || salesStatus[part.status] || '分润分项待核' }}</template>
+            </div>
+          </details>
+          <small v-else-if="record.benefitStatus" class="order-version">{{ benefitStatus[record.benefitStatus] }}</small>
           <details v-if="record.salesStatus==='CALCULATED'" class="rule-count-review">
             <summary>查看销售分项</summary>
             <div v-for="part in record.salesParts" :key="part.role" class="order-version">
@@ -115,5 +168,19 @@ onBeforeUnmount(() => { sequence++ })
       </template>
       <template #emptyText>本期暂无付款记录</template>
     </a-table>
+    <a-drawer :open="poolOpen" title="本期团队池归集"
+      :width="'min(650px, 100vw)'" @close="poolOpen=false">
+      <p class="draft-report-note">按本期付款归集。退款扣减和月度分配待接入。</p>
+      <a-alert v-if="poolError" type="error" :message="poolError" show-icon/>
+      <a-alert v-if="poolReport?.pendingPaymentCount" type="warning" show-icon
+        :message="`${poolReport.pendingPaymentCount} / ${poolReport.paymentCount} 笔付款存在待核归集分项`"/>
+      <a-table :columns="poolColumns" :data-source="poolReport?.pools || []" :loading="poolLoading" row-key="key"
+        size="small" :pagination="false" :scroll="{x:430}">
+        <template #bodyCell="{column,record}">
+          <template v-if="column.key==='amount'">{{ formatMoney(record.amountMinor) }}</template>
+        </template>
+        <template #emptyText>本期暂无可归集金额</template>
+      </a-table>
+    </a-drawer>
   </section>
 </template>

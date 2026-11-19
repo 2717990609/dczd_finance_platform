@@ -1,0 +1,98 @@
+package main
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+)
+
+const testVIPBenefits = `{
+ "amount_basis":"ACTUAL_RECEIVED","stacking_policy":"SUM","rounding_policy":{"mode":"HALF_UP","scale":2},
+ "internal_sales_direct_split":{"mode":"DCAI_INTERNAL_DIRECT","sales_item_key":"sales"},
+ "benefit_actions":[
+  {"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY"},
+  {"item_key":"owner","label":"负责人","type":"RATE","beneficiary_mode":"PARTY","role":"PROJECT_OWNER","designated_party_id":"alice","rate_bps":500},
+  {"item_key":"company","label":"技术","type":"RATE","beneficiary_mode":"PARTY","role":"TECHNOLOGY","company_beneficiary_party_id":"tech","rate_bps":200},
+  {"item_key":"delivery","label":"交付","type":"RATE","beneficiary_mode":"TEAM_POOL","role":"DELIVERY","pool_code":"delivery","pool_name":"交付池","pool_party_id":"team","pool_organization_unit_id":"dept","allocation_owner_role":"TEAM_LEAD","rate_bps":300},
+  {"item_key":"corp","label":"企业","type":"RATE_TABLE","beneficiary_mode":"PARTY","role":"PROJECT_OWNER","designated_party_id":"alice","rate_table":[
+    {"sales_organization_party_id":"company","sales_relationship":"ANY","rate_bps":100},
+    {"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":0}
+  ]}
+ ]
+}`
+
+func TestVIPBenefitsUseHistoricalRecipientsAndKeepPoolSeparate(t *testing.T) {
+	policy, ok := readVIPBenefits(json.RawMessage(testVIPBenefits))
+	if !ok {
+		t.Fatal("configured benefits should be recognized")
+	}
+	start := time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC)
+	data := vipRuntimeData{
+		Product: "VIP", Project: "AI", BenefitReady: true,
+		Claims:        map[int64][]vipClaim{1: {{Role: "PID_USER", Company: "source-company"}}},
+		Companies:     []vipLink{{Key: "source-company", Value: "company"}},
+		Organizations: []vipBenefitOrganization{{Party: "tech", Unit: "company", Name: "技术公司"}, {Party: "team", Unit: "dept", Name: "交付部"}},
+		vipSalesData: vipSalesData{
+			People: map[string]string{"alice": "负责人甲", "bob": "分配负责人", "other": "其他负责人"},
+			Roles: []vipRole{
+				{Person: "alice", Role: "PROJECT_OWNER", Scope: "PROJECT", Key: "AI", vipInterval: vipInterval{From: start}},
+				{Person: "other", Role: "TEAM_LEAD", Scope: "PROJECT", Key: "AI"},
+				{Person: "bob", Role: "TEAM_LEAD", Scope: "ORGANIZATION_UNIT", Key: "dept", vipInterval: vipInterval{From: start}},
+			},
+		},
+	}
+	amount := int64(10010)
+	before := quoteVIPBenefits(catalogPaymentMatch{SourceVersionID: 1, PaidAt: start.Add(-time.Nanosecond), PaidMinor: &amount}, policy, data)
+	if len(before) != 4 || before[0].Status != "INACTIVE" || before[3].Status != "INACTIVE" || before[2].Owner != "other" {
+		t.Fatalf("before appointment: %+v", before)
+	}
+	row := catalogPaymentMatch{SourceVersionID: 1, PaidAt: start, PaidMinor: &amount}
+	got := quoteVIPBenefits(row, policy, data)
+	if got[0].Party != "alice" || got[0].Amount != 501 || got[1].Kind != "company" || got[1].Unit != "company" ||
+		got[2].Kind != "pool" || got[2].Party != "team" || got[2].Owner != "bob" || got[2].Amount != 300 ||
+		got[3].Amount != 100 {
+		t.Fatalf("results at appointment start: %+v", got)
+	}
+	data.Roles = append(data.Roles, vipRole{Person: "other", Role: "TEAM_LEAD", Scope: "ORGANIZATION_UNIT", Key: "dept"})
+	got = quoteVIPBenefits(row, policy, data)
+	if got[2].Status != "BENEFIT_POOL_OWNER_CONFLICT" || got[2].Amount != 0 || got[0].Amount != 501 {
+		t.Fatalf("a pool conflict should affect only that benefit: %+v", got)
+	}
+	data.Claims = nil
+	got = quoteVIPBenefits(row, policy, data)
+	if got[3].Status != "SALES_SOURCE_MISSING" || got[0].Amount != 501 {
+		t.Fatalf("only company-specific selection depends on the order's sales attribution: %+v", got)
+	}
+	amount = 0
+	for _, line := range quoteVIPBenefits(row, policy, data) {
+		if line.Status != "ZERO" {
+			t.Fatalf("no accrual or review is needed for zero paid: %+v", line)
+		}
+	}
+}
+
+func TestVIPPoolSummaryCountsEachPaymentOncePerPool(t *testing.T) {
+	amount := int64(1000)
+	payment := func(parts ...vipBenefitPart) catalogPaymentMatch {
+		return catalogPaymentMatch{PaidMinor: &amount, Status: "MATCHED", BenefitParts: parts}
+	}
+	rows := []catalogPaymentMatch{
+		payment(
+			vipBenefitPart{Kind: "pool", Pool: "delivery", Unit: "team", Name: "交付池", Amount: 15, Status: "CALCULATED"},
+			vipBenefitPart{Kind: "pool", Pool: "delivery", Unit: "team", Name: "交付池", Amount: 25, Status: "CALCULATED"},
+			vipBenefitPart{Kind: "person", Amount: 500, Status: "CALCULATED"},
+		),
+		payment(
+			vipBenefitPart{Kind: "pool", Pool: "delivery", Unit: "team", Name: "交付池", Amount: 35, Status: "CALCULATED"},
+			vipBenefitPart{Kind: "pool", Status: "BENEFIT_POOL_OWNER_MISSING"},
+			vipBenefitPart{Kind: "pool", Status: "SALES_CATEGORY_MISSING"},
+		),
+		payment(vipBenefitPart{Kind: "pool", Status: "ZERO"}),
+		{PaidMinor: &amount, Status: "RULE_MISSING"},
+	}
+	got, err := summarizeVIPPools(rows)
+	if err != nil || got.PendingPaymentCount != 2 || got.PaymentCount != 4 || len(got.Pools) != 1 ||
+		got.Pools[0].Amount != 75 || got.Pools[0].PaymentCount != 2 {
+		t.Fatalf("pool report includes gross configured pool inputs only: %+v, %v", got, err)
+	}
+}

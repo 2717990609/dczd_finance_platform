@@ -594,3 +594,13 @@ CREATE TABLE IF NOT EXISTS catalog_sales_appointments (
  observed_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS catalog_sales_appointment_lookup ON catalog_sales_appointments(source,scope,scope_key,observed_at);
+
+ALTER TABLE catalog_sales_context ADD COLUMN IF NOT EXISTS benefit_ready boolean NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS catalog_benefit_organizations (
+ source text NOT NULL REFERENCES catalog_sales_context(source),
+ party_uuid uuid NOT NULL,
+ unit_id uuid NOT NULL REFERENCES organization_units(id),
+ observed_at timestamptz NOT NULL,
+ PRIMARY KEY(source,party_uuid,unit_id)
+);
