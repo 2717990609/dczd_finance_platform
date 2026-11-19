@@ -8,6 +8,7 @@ import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import DraftWorkbench from './DraftWorkbench.vue'
 import CatalogRuleRates from './CatalogRuleRates.vue'
 import PracticePeriodBenefitEditor from './PracticePeriodBenefitEditor.vue'
+import PracticeRetrainSplitEditor from './PracticeRetrainSplitEditor.vue'
 import PracticeCompanySalesEditor from './PracticeCompanySalesEditor.vue'
 import FinanceLogin from './FinanceLogin.vue'
 import OrganizationDirectory from './OrganizationDirectory.vue'
@@ -93,6 +94,7 @@ const peopleOptions = computed(() => data.value.people.map(p => ({value:p.id,lab
 const classRuleDirectory = ref()
 const classPeopleOptions = computed(() => classRuleDirectory.value?.people.map(person=>({value:person.id,label:person.name})) || peopleOptions.value)
 const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({value:unit.id,label:unit.name})) || [])
+const practicePoolOptions = computed(() => classRuleDirectory.value?.pools?.map(pool=>({value:pool.id,label:pool.name+' · '+pool.unitName})) || [])
 const companyRecipientOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>unit.kind==='COMPANY')
   .map(unit=>({value:unit.id,label:unit.name})) || [])
 const periodOptions = computed(() => data.value.periods.filter(p => p.productId === draft.value.productId).map(p => ({value:p.id,label:p.name})))
@@ -112,7 +114,7 @@ const amountModes = row => {
 function updateAmountMode(row, mode) {
   row.mode = mode
   if (mode==='period_rate' && !row.periodBenefit) {
-    row.periodBenefit = {recipient:firstOption('practicePeriodRecipient'),tiers:[{from:0}],useTiers:false}
+    row.periodBenefit = {recipient:firstOption('practicePeriodRecipient'),pool:{},tiers:[{from:0}],useTiers:false}
   }
   if (mode==='company_sales' && !row.companySales) {
     row.sourceRole = row.sourceRole || firstOption('practicePeriodSourceRole')
@@ -385,6 +387,14 @@ watch(() => drawer.value==='rule' && classRule.value ? draft.value.productId : u
   }
 })
 function resetOrders() { olderThan.value = ''; pageStack.value=[]; refresh() }
+async function createPracticePool(name, unitId) {
+  const productId = draft.value.productId
+  const result = await api('/practice-pools', {method:'POST',body:JSON.stringify({productId,name,unitId})})
+  if (classRuleDirectory.value && draft.value.productId===productId && !classRuleDirectory.value.pools.some(pool=>pool.id===result.id)) {
+    classRuleDirectory.value.pools.push({id:result.id,name,unitName:unitOptions.value.find(unit=>unit.value===unitId)?.label})
+  }
+  return result.id
+}
 function selectSource(source) {
   sourceFilter.value = source
   resetOrders()
@@ -421,6 +431,9 @@ function must(value, msg = '请补齐必填内容') {
 }
 const minor = value => Math.round(Number(value)*100)
 const periodRate = value => Math.round(Number(must(value,'请填写班次计提比例'))*10000)
+function practicePoolBody(pool) {
+  return {poolId:must(pool.poolId,'请选择资金池'),ownerId:must(pool.ownerId,'请选择分配负责人')}
+}
 function countStartBody(form) {
   must(form.startMode,'请选择累计起点')
   if (form.startMode === 'ordinal') return {countFromOrdinal:must(form.countFromOrdinal,'请填写累计起始期数')}
@@ -460,7 +473,8 @@ function ruleComponentBody(row) {
     component.value = b.useTiers ? 0 : periodRate(row.amount)
     component.periodBenefit = {
       label:must(b.label?.trim(),'请填写分项名称'),
-      ...(b.recipient==='unit' ? {unitId:must(b.unitId,'请选择收款组织')} : {personId:must(b.personId,'请选择收款人员')}),
+      ...(b.recipient==='pool' ? {pool:practicePoolBody(b.pool)} : b.recipient==='unit'
+        ? {unitId:must(b.unitId,'请选择收款组织')} : {personId:must(b.personId,'请选择收款人员')}),
       ...(b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
       ...(b.salesPeople?.length ? {salesPeople:b.salesPeople} : {}),
       ...(b.recipient==='person' && b.appointmentUnitId ? {
@@ -477,6 +491,17 @@ function ruleComponentBody(row) {
   }
   if (row.mode !== 'tiered') {
     component.value = minor(must(row.amount,'请填写每个组件的比例或金额'))
+    if (classRule.value && row.type==='sales' && row.mode==='fixed' && row.classMember==='retrain' && row.retrainSplits?.length) {
+      must(sourceRole,'请选择销售来源角色')
+      component.retrainSplits = row.retrainSplits.map(split=>({
+        companyId:must(split.companyId,'请选择拆分销售公司'),pool:practicePoolBody(split.pool),
+        personalMinor:minor(must(split.personal,'请填写销售份额')),
+        ...(split.servicePersonId ? {servicePersonId:split.servicePersonId,serviceMinor:minor(must(split.service,'请填写服务份额'))} : {}),
+      }))
+      if (component.retrainSplits.some(split=>split.personalMinor+(split.serviceMinor || 0)>component.value)) {
+        throw new Error('销售份额与服务份额合计不能超过固定提成。')
+      }
+    }
     return component
   }
   const form = row.tierConfig
@@ -690,6 +715,7 @@ async function save() {
                       {{ c.mode==='company_sales' ? c.companySales.categories.length+' 个类别' : c.mode==='period_rate' ? c.periodBenefit.tiers?.length ? '班次阶梯' : (c.value/10000)+'%' : c.mode==='tiered' ? tierLabel(c.tiers) : c.mode==='rate' ? (c.value/100)+'%' : formatMoney(c.value) }}</a-tag>
                     <small v-if="c.companySales?.categories.some(category=>category.recommendationRate>0 || category.overrides?.some(override=>override.recommendationRate>0))"
                       class="order-version">含公司推荐分润</small>
+                    <small v-if="c.periodBenefit?.pool || c.retrainSplits?.length" class="order-version">含资金池归集</small>
                     <small v-if="c.tiers?.companySchedules?.length" class="order-version">
                       {{ c.tiers.companySchedules.map(company=>optionLabel('practiceSalesCompany',company.companyId)).join('、') }}
                     </small>
@@ -779,11 +805,15 @@ async function save() {
           <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes" :people="classPeopleOptions" :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"/>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
-            :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')"/>
+            :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')"
+            :pools="practicePoolOptions" :create-pool="createPracticePool"/>
+          <PracticeRetrainSplitEditor v-if="classRule && c.type==='sales' && c.mode==='fixed' && c.classMember==='retrain'"
+            :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"
+            :pools="practicePoolOptions" :create-pool="createPracticePool"/>
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
             :recipients="companyRecipientOptions" :amounts="baseModes" :source-roles="options('practicePeriodSourceRole')"/>
           <a-form-item v-if="selectedProduct && (!classRule || !['rate','period_rate','company_sales'].includes(c.mode))" :label="'分项 '+(i+1)+' 的退款处理'"
-            :extra="classRule ? '适用于确认名单前的固定金额分项或固定金额档位。' : '历史退款沿用付款时的规则版本。'">
+            :extra="classRule ? (c.retrainSplits?.length ? '仅适用于未设置公司拆分的固定提成。' : '适用于确认名单前的固定金额分项或固定金额档位。') : '历史退款沿用付款时的规则版本。'">
             <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>
           </a-form-item>
         </div>

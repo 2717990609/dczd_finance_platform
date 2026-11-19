@@ -407,11 +407,12 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Lines) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_lines"},
-			[]string{"period_id", "source_version_id", "component_type", "rule_id", "identity_id", "person_id", "base_minor", "amount_minor", "practice_enrollment_id", "company_id", "department_id", "catalog_rule_id", "beneficiary_unit_id", "allocation_owner_id", "applied_rate_bps"},
+			[]string{"period_id", "source_version_id", "component_type", "rule_id", "identity_id", "person_id", "base_minor", "amount_minor", "practice_enrollment_id", "company_id", "department_id", "catalog_rule_id", "beneficiary_unit_id", "allocation_owner_id", "applied_rate_bps", "practice_pool_id"},
 			pgx.CopyFromSlice(len(result.Lines), func(i int) ([]any, error) {
 				l := result.Lines[i]
 				var benefit catalogDraftBenefit
 				var appliedRate *int64
+				var practicePoolID int64
 				if l.Catalog != nil {
 					benefit = *l.Catalog
 					appliedRate = &benefit.Rate
@@ -419,9 +420,12 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 				if l.BeneficiaryUnit != nil {
 					benefit.Unit = *l.BeneficiaryUnit
 				}
+				if l.PracticePool != nil {
+					practicePoolID, benefit.AllocationOwnerID = l.PracticePool.PoolID, l.PracticePool.OwnerID
+				}
 				return []any{summary.PeriodID, l.FactID, l.Component, optionalDraftID(l.RuleID), optionalDraftID(l.IdentityID),
 					optionalDraftID(l.PersonID), l.Base, l.Amount, optionalDraftID(l.EnrollmentID), l.organization.Company, l.organization.Department,
-					benefit.Rule, benefit.Unit, optionalDraftID(benefit.AllocationOwnerID), appliedRate}, nil
+					benefit.Rule, benefit.Unit, optionalDraftID(benefit.AllocationOwnerID), appliedRate, optionalDraftID(practicePoolID)}, nil
 			}))
 		if err != nil {
 			return err
@@ -515,13 +519,19 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 const draftDetailSQL = `SELECT jsonb_build_object(
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,'catalog',d.rule_id IS NULL,
  'refundsReady',d.rule_id IS NOT NULL OR d.catalog_refunds_ready,
+ 'poolAllocationAvailable',(d.rule_id IS NULL AND d.catalog_refunds_ready OR d.practice_roster_id IS NOT NULL AND (EXISTS(
+  SELECT 1 FROM pool_account_activity movement JOIN periods origin ON origin.id=movement.period_id JOIN periods target ON target.id=d.period_id
+  WHERE origin.product_id=target.product_id AND (origin.id=target.id OR origin.ordinal<target.ordinal
+   AND EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=origin.id)))
+  OR EXISTS(SELECT 1 FROM monthly_pool_allocations a JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
+   WHERE a.period_id=d.period_id))),
  'totalMinor',d.total_minor+d.refund_minor+d.correction_minor,'accruedMinor',d.total_minor,
  'refundMinor',d.refund_minor,'refundCount',d.refund_count,'correctionMinor',d.correction_minor,'correctionCount',d.correction_count,
  'lineCount',d.line_count,'issueCount',d.issue_count,'practiceRosterVersion',roster.source_version,
  'attendanceCount',roster.attendance_count,
  'settlement',CASE WHEN st.id IS NOT NULL THEN jsonb_build_object('id',st.id,'confirmedAt',st.confirmed_at,'draftVersion',st.draft_version) END,
  'lines',coalesce((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM (
-  SELECT l.id,coalesce(p.name,action.definition->>'pool_name',beneficiary.name) AS "personName",
+  SELECT l.id,coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name) AS "personName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    l.component_type AS "component", beneficiary.kind AS "beneficiaryUnitKind",
    CASE WHEN rv.id IS NOT NULL AND starts_with(l.component_type,'period:')
@@ -534,6 +544,7 @@ const draftDetailSQL = `SELECT jsonb_build_object(
    CASE WHEN e.id IS NOT NULL THEN (o.fact->>'amountMinor')::bigint-l.base_minor END AS "classRefundMinor"
   FROM calculation_draft_lines l JOIN source_order_versions o ON o.id=l.source_version_id
   LEFT JOIN people p ON p.id=l.person_id LEFT JOIN organization_units beneficiary ON beneficiary.id=l.beneficiary_unit_id
+  LEFT JOIN practice_pools practice_pool ON practice_pool.id=l.practice_pool_id
   LEFT JOIN rule_versions rv ON rv.id=l.rule_id LEFT JOIN legacy_rule_versions cv ON cv.source_id=l.catalog_rule_id
   LEFT JOIN legacy_rule_packages package ON package.source_id=cv.package_id
   LEFT JOIN LATERAL (

@@ -1,9 +1,10 @@
 <script setup>
 import { computed } from 'vue'
+import PracticePoolFields from './PracticePoolFields.vue'
 
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array,
-  recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array,
+  recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array, pools:Array, createPool:Function,
 })
 const config = computed(() => props.component.periodBenefit)
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
@@ -21,10 +22,12 @@ const field = name => 'practice-benefit-'+props.index+'-'+name
     <a-form-item v-if="config.recipient==='unit'" label="收款组织" :html-for="field('unit')" required>
       <a-select :id="field('unit')" v-model:value="config.unitId" :options="units" show-search :filter-option="byName"/>
     </a-form-item>
-    <a-form-item v-else label="收款人员" :html-for="field('person')" required>
+    <a-form-item v-if="config.recipient==='person'" label="收款人员" :html-for="field('person')" required>
       <a-select :id="field('person')" v-model:value="config.personId" :options="people" show-search :filter-option="byName"/>
     </a-form-item>
   </div>
+  <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
+    :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <a-form-item>
     <a-checkbox v-model:checked="config.useTiers">按净实收阶梯选比例</a-checkbox>
   </a-form-item>

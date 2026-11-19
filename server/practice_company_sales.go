@@ -97,6 +97,9 @@ func validPracticeCompanySales(c component) bool {
 func validPracticeCompanyScopes(items []component) bool {
 	var internal, external []string
 	for _, part := range items {
+		for _, split := range part.retrainSplits() {
+			internal = append(internal, split.CompanyID)
+		}
 		if s := part.CompanySales; s != nil {
 			internal = append(internal, s.InternalCompanies...)
 			for _, category := range s.Categories {
@@ -159,6 +162,15 @@ func practiceCompanyStandards(rule paymentRule) practiceCompanyOffers {
 					custom.recommendationRate = *override.RecommendationRate
 				}
 				standards[override.CompanyID] = custom
+			}
+		}
+	}
+	if offers != nil {
+		for _, part := range rule.Components {
+			for _, split := range part.retrainSplits() {
+				for _, standards := range offers {
+					standards[split.CompanyID] = practiceCompanyAward{internal: true}
+				}
 			}
 		}
 	}

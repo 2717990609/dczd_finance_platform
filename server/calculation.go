@@ -45,6 +45,7 @@ type draftLine struct {
 	Base, Amount                         int64
 	Catalog                              *catalogDraftBenefit `json:",omitempty"`
 	BeneficiaryUnit                      *pgtype.UUID         `json:",omitempty"`
+	PracticePool                         *practicePoolTarget  `json:",omitempty"`
 }
 
 type draftIssue struct {

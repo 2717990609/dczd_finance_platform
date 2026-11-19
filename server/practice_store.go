@@ -313,7 +313,11 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	runtime := practiceDraftRuntime{appointments: appointments, companyOffers: companyOffers, companyRecipients: companyRecipients, recommendations: recommendations}
+	pools, err := readPracticePoolUnits(ctx, tx, summary.PeriodID, rule.Components)
+	if err != nil {
+		return paymentDraft{}, nil, err
+	}
+	runtime := practiceDraftRuntime{appointments: appointments, companyOffers: companyOffers, companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
 	result, err := calculatePracticeDraft(members, rule, orders, identities, blocked, history, matchPracticeRefunds(refunds, orders), runtime)
 	if err != nil {
 		return paymentDraft{}, nil, err

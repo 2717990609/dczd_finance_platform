@@ -23,15 +23,16 @@ import (
 var schema string
 
 type component struct {
-	Type          string                 `json:"type"`
-	Mode          string                 `json:"mode"`
-	Value         int64                  `json:"value"`
-	SourceRole    string                 `json:"sourceRole,omitempty"`
-	RefundPolicy  string                 `json:"refundPolicy,omitempty"`
-	ClassMember   string                 `json:"classMember,omitempty"`
-	Tiers         *practiceSalesTiers    `json:"tiers,omitempty"`
-	PeriodBenefit *practicePeriodBenefit `json:"periodBenefit,omitempty"`
-	CompanySales  *practiceCompanySales  `json:"companySales,omitempty"`
+	Type          string                  `json:"type"`
+	Mode          string                  `json:"mode"`
+	Value         int64                   `json:"value"`
+	SourceRole    string                  `json:"sourceRole,omitempty"`
+	RefundPolicy  string                  `json:"refundPolicy,omitempty"`
+	ClassMember   string                  `json:"classMember,omitempty"`
+	Tiers         *practiceSalesTiers     `json:"tiers,omitempty"`
+	PeriodBenefit *practicePeriodBenefit  `json:"periodBenefit,omitempty"`
+	CompanySales  *practiceCompanySales   `json:"companySales,omitempty"`
+	RetrainSplits *[]practiceRetrainSplit `json:"retrainSplits,omitempty"`
 }
 
 var errPracticeTierCompany = errors.New("规则引用的销售公司未配置或已停用")
@@ -63,7 +64,7 @@ func validateComponents(items []component) error {
 		default:
 			return invalid
 		}
-		if c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) {
+		if c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) || !validPracticeRetrainSplits(c) {
 			return invalid
 		}
 		if c.Type == "company_sales" || c.CompanySales != nil {
@@ -142,6 +143,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/catalog-rule-rates", Handler: s.postCatalogRuleRates},
 		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.listForAuthorizedProducts(practiceCountOpeningsSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-rule-recipients", Handler: s.practiceRuleRecipients},
+		{Method: http.MethodPost, Path: "/api/v1/practice-pools", Handler: submit(s.createPracticePool)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-units", Handler: s.list(organizationUnitsSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-assignments", Handler: s.organizationAssignments},
@@ -451,6 +453,28 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 		var personIDs []int64
 		var companyIDs []string
 		var unitIDs, appointmentKinds, recommendationRecipients []string
+		poolIDs := make(map[int64]int64)
+		for _, target := range practicePoolTargets(p.Components) {
+			if owner := poolIDs[target.PoolID]; owner != 0 && owner != target.OwnerID {
+				return invalid
+			}
+			poolIDs[target.PoolID] = target.OwnerID
+			personIDs = append(personIDs, target.OwnerID)
+		}
+		if len(poolIDs) != 0 {
+			ids := make([]int64, 0, len(poolIDs))
+			for id := range poolIDs {
+				ids = append(ids, id)
+			}
+			var count int
+			if err := tx.QueryRow(ctx, `SELECT count(*) FROM practice_pools pool JOIN organization_units u ON u.id=pool.unit_id
+			 WHERE pool.product_id=$1 AND pool.id=ANY($2::bigint[]) AND u.status='ACTIVE'`, p.ProductID, ids).Scan(&count); err != nil {
+				return err
+			}
+			if count != len(ids) {
+				return invalid
+			}
+		}
 		for _, c := range p.Components {
 			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil) {
 				return invalid
@@ -460,6 +484,12 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 				recommendationRecipients = append(recommendationRecipients, c.CompanySales.RecommendationRecipients...)
 				for _, category := range c.CompanySales.Categories {
 					companyIDs = append(companyIDs, category.Companies...)
+				}
+			}
+			for _, split := range c.retrainSplits() {
+				companyIDs = append(companyIDs, split.CompanyID)
+				if split.ServicePersonID != 0 {
+					personIDs = append(personIDs, split.ServicePersonID)
 				}
 			}
 			if mode == "class" && (c.Type == "manager" || c.Type == "delivery") && c.PeriodBenefit == nil {

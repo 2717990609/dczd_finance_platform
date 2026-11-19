@@ -30,6 +30,8 @@ const newerDraft = computed(() => refreshStatus.value?.version > (draft.value?.v
 const componentLabel = code => {
   const type = code?.startsWith('period:') ? code.split(':')[1] : code
   if (type==='company_referral') return '公司推荐分润'
+  if (type==='retrain_service') return '复训服务分润'
+  if (type==='retrain_pool') return '复训销售归集'
   return props.componentOptions.find(option=>option.value===type)?.label || type
 }
 const memberLabel = type => props.memberOptions.find(option=>option.value===(type===3 ? 'new' : 'retrain'))?.label
@@ -87,6 +89,7 @@ const reason = {
   PRACTICE_RECOMMENDATION_COMPANY_MISSING: '付款时的推荐公司映射缺失或公司已停用',
   PRACTICE_RECOMMENDATION_CONFLICT: '推荐公司归属冲突，请核对订金、尾款和公司关系',
   PRACTICE_RECOMMENDATION_ROUTE_MISSING: '推荐公司缺少适用的直收配置',
+  PRACTICE_POOL_MISSING: '资金池或归集组织待核',
   PRACTICE_TIER_COMPANY_NOT_CONFIGURED: '该销售公司未配置阶梯',
   PRACTICE_TIER_OPENING_MISSING: '所选冻结期初中缺少该人员的期初人数',
   PRACTICE_TIER_HISTORY_MISSING: '累计起点或历史期次缺少已确认名单',
@@ -254,12 +257,12 @@ async function loadMore(section, cursorName) {
   <a-tabs v-if="draft" v-model:active-key="view">
     <a-tab-pane key="detail" tab="明细"/>
     <a-tab-pane v-if="reportDimensions.length" key="report" tab="业绩与分润"/>
-    <a-tab-pane v-if="draft.catalog && draft.refundsReady" key="pools" tab="团队池分配"/>
+    <a-tab-pane v-if="draft.poolAllocationAvailable" key="pools" tab="团队池分配"/>
     <a-tab-pane v-if="draft.catalog && draft.refundsReady" key="review" tab="结算核对"/>
     <a-tab-pane v-if="hasMatching" key="matching" tab="订单规则匹配"/>
   </a-tabs>
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney"/>
-  <DraftPoolAllocations v-if="draft?.catalog && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
+  <DraftPoolAllocations v-if="draft?.poolAllocationAvailable && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
   <DraftSettlementReview v-if="draft?.catalog && view==='review'" :draft="draft" :period="selectedPeriod" :api="api" :format-money="formatMoney"
     :format-time="formatTime" :source-streams="sourceStreams" @show-pools="view='pools'" @show-issues="view='detail'" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">

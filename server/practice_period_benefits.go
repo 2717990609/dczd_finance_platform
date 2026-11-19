@@ -29,6 +29,8 @@ func (s workspace) practiceRuleRecipients(w http.ResponseWriter, r *http.Request
 	var result json.RawMessage
 	err = s.db.QueryRow(r.Context(), `SELECT jsonb_build_object(
 	 'people',(`+peopleSQL+`),
+	 'pools',coalesce((SELECT jsonb_agg(jsonb_build_object('id',pool.id,'name',pool.name,'unitName',u.name) ORDER BY pool.name,pool.id)
+	  FROM practice_pools pool JOIN organization_units u ON u.id=pool.unit_id WHERE pool.product_id=$1 AND u.status='ACTIVE'),'[]'),
 	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name,'kind',kind) ORDER BY name,id)
 	  FROM organization_units WHERE status='ACTIVE'),'[]'))
 	 FROM products WHERE id=$1 AND period_mode='class'`, product).Scan(&result)
@@ -45,6 +47,7 @@ type practicePeriodBenefit struct {
 	AppointmentKind   string               `json:"appointmentKind,omitempty"`
 	TierOnWholeClass  bool                 `json:"tierOnWholeClass,omitempty"`
 	Tiers             []practicePeriodRate `json:"tiers,omitempty"`
+	Pool              *practicePoolTarget  `json:"pool,omitempty"`
 }
 
 type practicePeriodRate struct {
@@ -58,7 +61,20 @@ func validPracticePeriodBenefit(c component) bool {
 	if (c.Type != "manager" && c.Type != "delivery") || b == nil || c.Value > periodRateScale || c.RefundPolicy != "" {
 		return false
 	}
-	if !textOK(b.Label, 80) || b.PersonID < 0 || (b.PersonID > 0) == (b.UnitID != "") ||
+	recipients := 0
+	if b.PersonID > 0 {
+		recipients++
+	}
+	if b.UnitID != "" {
+		recipients++
+	}
+	if b.Pool != nil {
+		if !b.Pool.valid() {
+			return false
+		}
+		recipients++
+	}
+	if !textOK(b.Label, 80) || b.PersonID < 0 || recipients != 1 ||
 		(b.AppointmentUnitID == "") != (b.AppointmentKind == "") || b.AppointmentUnitID != "" && b.PersonID == 0 ||
 		len(b.SalesPeople) != 0 && !validSourceRole(c.SourceRole) {
 		return false
@@ -289,13 +305,22 @@ func practicePeriodComponentKey(part component, index int) string {
 
 func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchases []practicePurchase,
 	appointments map[practiceAppointmentKey][]practiceAppointment, identities map[identityKey][]identityAssignment,
-	paymentCounts map[paymentKey]int) error {
+	paymentCounts map[paymentKey]int, poolUnits map[int64]pgtype.UUID) error {
 	for index, part := range rule.Components {
 		b := part.PeriodBenefit
 		if b == nil {
 			continue
 		}
 		key := practicePeriodComponentKey(part, index)
+		var unit *pgtype.UUID
+		if b.Pool != nil {
+			sink := poolUnits[b.Pool.PoolID]
+			if !sink.Valid {
+				draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, Component: key, Code: "PRACTICE_POOL_MISSING"})
+				continue
+			}
+			unit = &sink
+		}
 		validAppointments := appointments[b.appointmentKey()]
 		if b.AppointmentUnitID != "" && len(validAppointments) == 0 {
 			draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, Component: key, Code: "PRACTICE_PERIOD_APPOINTMENT_MISSING"})
@@ -328,7 +353,6 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		if total == 0 {
 			continue
 		}
-		var unit *pgtype.UUID
 		if b.UnitID != "" {
 			unit = new(pgtype.UUID)
 			if err := unit.Scan(b.UnitID); err != nil {
@@ -343,7 +367,7 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		}
 		for _, share := range shares {
 			base := draftLine{PersonID: b.PersonID, RuleID: rule.ID, EnrollmentID: share.purchase.member.ID,
-				Component: key, BeneficiaryUnit: unit, reportUnit: reportUnit}
+				Component: key, BeneficiaryUnit: unit, reportUnit: reportUnit, PracticePool: b.Pool}
 			appendPracticePeriodShare(draft, base, share)
 		}
 	}
@@ -351,20 +375,24 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 }
 
 func appendPracticePeriodShare(draft *paymentDraft, line draftLine, share practiceBenefitShare) {
-	first := share.payments[0]
-	line.FactID, line.Base, line.Amount = first.ID, share.purchase.netAmount(first), share.amount
-	if len(share.payments) == 1 {
+	amounts := practiceGrossShares(share.purchase, share.payments, share.amount)
+	for i, payment := range share.payments {
+		if line.PracticePool != nil && amounts[i] == 0 {
+			continue
+		}
+		line.FactID, line.Base, line.Amount = payment.ID, share.purchase.netAmount(payment), amounts[i]
 		draft.Lines = append(draft.Lines, line)
-		return
+	}
+}
+
+func practiceGrossShares(p practicePurchase, payments []paymentInput, amount int64) [2]int64 {
+	if len(payments) == 1 {
+		return [2]int64{amount, 0}
 	}
 	// Preserve the split used for a credited entitlement. The balance receives
 	// its floor share of the original gross payment and the deposit the rest.
-	second := share.payments[1]
 	var tail big.Int
-	tail.Mul(big.NewInt(share.amount), big.NewInt(*second.Fact.AmountMinor))
-	tail.Quo(&tail, big.NewInt(share.purchase.gross))
-	line.Amount -= tail.Int64()
-	draft.Lines = append(draft.Lines, line)
-	line.FactID, line.Base, line.Amount = second.ID, share.purchase.netAmount(second), tail.Int64()
-	draft.Lines = append(draft.Lines, line)
+	tail.Mul(big.NewInt(amount), big.NewInt(*payments[1].Fact.AmountMinor))
+	tail.Quo(&tail, big.NewInt(p.gross))
+	return [2]int64{amount - tail.Int64(), tail.Int64()}
 }

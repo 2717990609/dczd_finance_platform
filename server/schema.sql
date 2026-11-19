@@ -470,6 +470,7 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('amountMode','company_sales','按公司类别配置',50,'{"periodModes":["class"],"componentTypes":["company_sales"],"classMembers":["new","retrain"]}'),
  ('practicePeriodRecipient','person','人员',10,'{}'),
  ('practicePeriodRecipient','unit','组织',20,'{}'),
+ ('practicePeriodRecipient','pool','资金池',30,'{}'),
  ('practicePeriodSourceRole','DIRECT_REFERRER','推荐销售',10,'{}'),
  ('practicePeriodSourceRole','LOCK_SALES_USER','锁定销售',20,'{}'),
  ('refundPolicy','proportional','按实际退款比例扣回',10,'{}'),
@@ -748,6 +749,15 @@ CREATE TABLE IF NOT EXISTS catalog_benefit_organizations (
 
 ALTER TABLE calculation_drafts ALTER COLUMN rule_id DROP NOT NULL;
 ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS catalog_refunds_ready boolean NOT NULL DEFAULT false;
+
+CREATE TABLE IF NOT EXISTS practice_pools (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ product_id bigint NOT NULL REFERENCES products(id),
+ unit_id uuid NOT NULL REFERENCES organization_units(id),
+ name text NOT NULL CHECK (length(btrim(name))>0),
+ UNIQUE(product_id,unit_id,name)
+);
+
 ALTER TABLE calculation_draft_lines
  ALTER COLUMN rule_id DROP NOT NULL,
  ALTER COLUMN identity_id DROP NOT NULL,
@@ -755,28 +765,34 @@ ALTER TABLE calculation_draft_lines
  ADD COLUMN IF NOT EXISTS catalog_rule_id uuid REFERENCES legacy_rule_versions(source_id),
  ADD COLUMN IF NOT EXISTS beneficiary_unit_id uuid REFERENCES organization_units(id),
  ADD COLUMN IF NOT EXISTS allocation_owner_id bigint REFERENCES people(id),
+ ADD COLUMN IF NOT EXISTS practice_pool_id bigint REFERENCES practice_pools(id),
  ADD COLUMN IF NOT EXISTS applied_rate_bps integer
   CHECK (applied_rate_bps IS NULL OR (applied_rate_bps BETWEEN 0 AND 10000 AND catalog_rule_id IS NOT NULL));
 
 DO $$
 BEGIN
  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass
-   AND conname='draft_line_rule_and_recipient_check' AND strpos(pg_get_constraintdef(oid),'period:')>0) THEN
+   AND conname='draft_line_rule_and_recipient_check' AND strpos(pg_get_constraintdef(oid),'practice_pool_id')>0) THEN
   ALTER TABLE calculation_draft_lines DROP CONSTRAINT IF EXISTS draft_line_rule_and_recipient_check;
   ALTER TABLE calculation_draft_lines ADD CONSTRAINT draft_line_rule_and_recipient_check CHECK (
    (catalog_rule_id IS NULL AND rule_id IS NOT NULL AND identity_id IS NOT NULL AND person_id IS NOT NULL
-     AND beneficiary_unit_id IS NULL AND allocation_owner_id IS NULL)
+     AND beneficiary_unit_id IS NULL AND allocation_owner_id IS NULL AND practice_pool_id IS NULL)
    OR
    (catalog_rule_id IS NULL AND rule_id IS NOT NULL AND identity_id IS NULL AND practice_enrollment_id IS NOT NULL
-     AND starts_with(component_type,'period:') AND allocation_owner_id IS NULL
-     AND ((person_id IS NOT NULL) <> (beneficiary_unit_id IS NOT NULL)))
+     AND starts_with(component_type,'period:') AND ((person_id IS NOT NULL) <> (beneficiary_unit_id IS NOT NULL))
+     AND ((practice_pool_id IS NULL AND allocation_owner_id IS NULL)
+      OR (practice_pool_id IS NOT NULL AND allocation_owner_id IS NOT NULL AND beneficiary_unit_id IS NOT NULL)))
    OR
    (catalog_rule_id IS NOT NULL AND rule_id IS NULL AND identity_id IS NULL AND practice_enrollment_id IS NULL
+     AND practice_pool_id IS NULL
      AND ((person_id IS NOT NULL AND beneficiary_unit_id IS NULL AND allocation_owner_id IS NULL)
        OR (person_id IS NULL AND beneficiary_unit_id IS NOT NULL)))
   );
  END IF;
 END $$;
+
+CREATE INDEX IF NOT EXISTS calculation_pool_lines_period ON calculation_draft_lines(period_id)
+ WHERE allocation_owner_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS monthly_pool_allocations (
  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -834,16 +850,20 @@ CREATE OR REPLACE TRIGGER protect_confirmed_pool_shares BEFORE INSERT OR UPDATE 
 CREATE OR REPLACE TRIGGER protect_confirmed_pool_funding BEFORE INSERT OR UPDATE OR DELETE ON monthly_pool_allocation_funding
  FOR EACH ROW EXECUTE FUNCTION protect_confirmed_pool_children();
 
+CREATE OR REPLACE VIEW pool_line_accounts AS
+ SELECT l.id AS line_id,l.period_id,l.beneficiary_unit_id AS unit_id,
+  coalesce(l.practice_pool_id::text,l.component_type) AS item_key,
+  CASE WHEN l.practice_pool_id IS NOT NULL THEN 'class' ELSE p.scope_id END AS scenario_key
+ FROM calculation_draft_lines l LEFT JOIN legacy_rule_versions v ON v.source_id=l.catalog_rule_id
+ LEFT JOIN legacy_rule_packages p ON p.source_id=v.package_id
+ WHERE l.allocation_owner_id IS NOT NULL;
+
 CREATE OR REPLACE VIEW pool_account_activity AS
- SELECT l.period_id,l.beneficiary_unit_id AS unit_id,l.component_type AS item_key,p.scope_id AS scenario_key
- FROM calculation_draft_lines l JOIN legacy_rule_versions v ON v.source_id=l.catalog_rule_id
- JOIN legacy_rule_packages p ON p.source_id=v.package_id
- WHERE l.allocation_owner_id IS NOT NULL
+ SELECT period_id,unit_id,item_key,scenario_key FROM pool_line_accounts
  UNION ALL
- SELECT r.period_id,l.beneficiary_unit_id,l.component_type,p.scope_id
- FROM calculation_draft_refunds r JOIN calculation_draft_lines l ON l.id=r.original_line_id
- JOIN legacy_rule_versions v ON v.source_id=l.catalog_rule_id JOIN legacy_rule_packages p ON p.source_id=v.package_id
- WHERE l.allocation_owner_id IS NOT NULL AND r.amount_minor<0
+ SELECT r.period_id,a.unit_id,a.item_key,a.scenario_key
+ FROM calculation_draft_refunds r JOIN pool_line_accounts a ON a.line_id=r.original_line_id
+ WHERE r.amount_minor<0
  UNION ALL
  SELECT a.period_id,a.unit_id,a.item_key,a.scenario_key FROM monthly_pool_allocations a
  JOIN calculation_drafts d ON d.period_id=a.period_id AND d.version=a.draft_version

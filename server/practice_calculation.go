@@ -1,5 +1,7 @@
 package main
 
+import "github.com/jackc/pgx/v5/pgtype"
+
 func classMember(kind int) string {
 	if kind == 3 {
 		return "new"
@@ -32,6 +34,7 @@ type practiceDraftRuntime struct {
 	companyOffers     practiceCompanyOffers
 	companyRecipients map[string][]companySourceAssignment
 	recommendations   practiceCompanyRecommendations
+	poolUnits         map[int64]pgtype.UUID
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -133,7 +136,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 		}
 		var matched bool
-		for _, part := range rule.Components {
+		for index, part := range rule.Components {
 			if part.ClassMember != "" && part.ClassMember != classMember(member.MembershipType) {
 				continue
 			}
@@ -155,6 +158,22 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			assignments, issue := practiceBeneficiaries(payments, part.SourceRole, identities)
 			if issue != "" {
 				draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+				continue
+			}
+			split, issue := purchase.retrainSplit(part.retrainSplits())
+			if issue != "" {
+				draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+				continue
+			}
+			if split != nil {
+				unit := runtime.poolUnits[split.Pool.PoolID]
+				if !unit.Valid {
+					draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_POOL_MISSING", member, rule, part.Type))
+					continue
+				}
+				if err := appendPracticeRetrainSplit(&draft, purchase, rule, index, part.Value, assignments, *split, unit); err != nil {
+					return paymentDraft{}, err
+				}
 				continue
 			}
 			isTiered := part.Mode == "tiered"
@@ -200,7 +219,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_MEMBER_RULE_MISSING", member, rule, ""))
 		}
 	}
-	if err := appendPracticePeriodBenefits(&draft, rule, purchases, runtime.appointments, identities, performancePayments); err != nil {
+	if err := appendPracticePeriodBenefits(&draft, rule, purchases, runtime.appointments, identities, performancePayments, runtime.poolUnits); err != nil {
 		return paymentDraft{}, err
 	}
 	return draft, nil

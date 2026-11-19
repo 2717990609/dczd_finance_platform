@@ -55,7 +55,7 @@ const poolAllocationBasisSQL = `SELECT md5(concat_ws('|',
  (SELECT coalesce(string_agg(st.id::text,',' ORDER BY st.id),'') FROM settlements st
   JOIN periods prior ON prior.id=st.period_id
   WHERE prior.product_id=target.product_id AND prior.ordinal<target.ordinal)))
- FROM periods target JOIN legacy_catalog_products config ON config.product_id=target.product_id
+ FROM periods target LEFT JOIN legacy_catalog_products config ON config.product_id=target.product_id
  LEFT JOIN catalog_sales_context c ON c.source=config.source_system WHERE target.id=`
 
 const poolAllocationCurrentSQL = `(a.draft_version=d.version AND
@@ -74,11 +74,12 @@ const poolEntriesSQL = `WITH scope AS (
  JOIN calculation_drafts d ON d.period_id=p.id
  WHERE target.id=$1 AND (p.id=target.id OR EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id))
 ), lines AS MATERIALIZED (
- SELECT l.id,l.beneficiary_unit_id::text AS unit,l.component_type AS item,p.scope_id AS scenario,
-  coalesce(a.name,l.component_type) AS name,l.period_id,l.amount_minor,scope.ordinal,v.occurred_at
- FROM scope JOIN calculation_draft_lines l ON l.period_id=scope.id AND l.allocation_owner_id IS NOT NULL
- JOIN legacy_rule_versions r ON r.source_id=l.catalog_rule_id
- JOIN legacy_rule_packages p ON p.source_id=r.package_id
+ SELECT l.id,account.unit_id::text AS unit,account.item_key AS item,account.scenario_key AS scenario,
+  coalesce(pool.name,a.name,l.component_type) AS name,l.period_id,l.amount_minor,scope.ordinal,v.occurred_at
+ FROM scope JOIN pool_line_accounts account ON account.period_id=scope.id
+ JOIN calculation_draft_lines l ON l.id=account.line_id
+ LEFT JOIN legacy_rule_versions r ON r.source_id=l.catalog_rule_id
+ LEFT JOIN practice_pools pool ON pool.id=l.practice_pool_id
  JOIN source_order_versions v ON v.id=l.source_version_id
  LEFT JOIN LATERAL (
   SELECT b->>'pool_name' AS name FROM jsonb_array_elements(r.definition->'benefit_actions') b
@@ -119,13 +120,20 @@ const poolEligibilitySQL = `SELECT DISTINCT l.id,m.person_id,person.name FROM un
  WHERE (component.role='SALES' AND (
   (r.scope='PRODUCT' AND r.scope_key=prod.code) OR (r.scope='PROJECT' AND r.scope_key=cfg.project_code)
  )) OR (component.role<>'SALES' AND r.scope='ORGANIZATION_UNIT' AND r.scope_key=l.beneficiary_unit_id::text)
- ORDER BY l.id,m.person_id`
+ UNION
+ SELECT l.id,m.person_id,person.name FROM unnest($1::bigint[]) source(id)
+ JOIN calculation_draft_lines l ON l.id=source.id AND l.practice_pool_id IS NOT NULL
+ JOIN source_order_versions v ON v.id=l.source_version_id
+ JOIN organization_assignments m ON m.unit_id=l.beneficiary_unit_id
+  AND m.valid_from<=v.occurred_at AND (m.valid_to IS NULL OR m.valid_to>v.occurred_at)
+ JOIN people person ON person.id=m.person_id
+ ORDER BY 1,2`
 
 func readPoolDraftVersion(ctx context.Context, tx pgx.Tx, periodID int64) (int64, bool, error) {
 	var version int64
 	var closed bool
 	err := tx.QueryRow(ctx, `SELECT d.version,EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=d.period_id)
-	 FROM calculation_drafts d WHERE d.period_id=$1 AND d.rule_id IS NULL AND d.catalog_refunds_ready`, periodID).Scan(&version, &closed)
+	 FROM calculation_drafts d WHERE d.period_id=$1 AND (d.rule_id IS NULL AND d.catalog_refunds_ready OR d.practice_roster_id IS NOT NULL)`, periodID).Scan(&version, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = errPoolStale
 	}
@@ -243,9 +251,12 @@ func poolStageMembers(ctx context.Context, tx pgx.Tx, states map[poolScope]*pool
 
 func readPoolSavedPlans(ctx context.Context, tx pgx.Tx, periodID int64, states map[poolScope]*poolStage) error {
 	rows, err := tx.Query(ctx, `SELECT a.unit_id::text,a.item_key,a.scenario_key,a.revision,`+poolAllocationCurrentSQL+`,
-	 coalesce(s.person_id,0),coalesce(s.amount_minor,0),coalesce(p.name,''),u.name
+	 coalesce(s.person_id,0),coalesce(s.amount_minor,0),coalesce(p.name,''),coalesce(pool.name,u.name || ' · ' || a.item_key)
 	 FROM monthly_pool_allocations a JOIN calculation_drafts d USING(period_id)
 	 JOIN organization_units u ON u.id=a.unit_id
+	 JOIN periods target ON target.id=a.period_id
+	 LEFT JOIN practice_pools pool ON a.scenario_key='class' AND pool.id::text=a.item_key AND pool.product_id=target.product_id
+	  AND pool.unit_id=a.unit_id
 	 LEFT JOIN monthly_pool_allocation_shares s ON s.allocation_id=a.id LEFT JOIN people p ON p.id=s.person_id
 	 WHERE a.period_id=$1 ORDER BY a.id,s.person_id`, periodID)
 	if err != nil {
@@ -254,12 +265,12 @@ func readPoolSavedPlans(ctx context.Context, tx pgx.Tx, periodID int64, states m
 	var scope poolScope
 	var rev int64
 	var current bool
-	var name, unit string
+	var name, poolName string
 	var share poolAllocationShare
-	_, err = pgx.ForEachRow(rows, []any{&scope.Unit, &scope.Item, &scope.Scenario, &rev, &current, &share.PersonID, &share.Amount, &name, &unit}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&scope.Unit, &scope.Item, &scope.Scenario, &rev, &current, &share.PersonID, &share.Amount, &name, &poolName}, func() error {
 		stage := states[scope]
 		if stage == nil {
-			stage = &poolStage{poolDraftItem: poolDraftItem{poolScope: scope, Name: unit + " · " + scope.Item,
+			stage = &poolStage{poolDraftItem: poolDraftItem{poolScope: scope, Name: poolName,
 				Shares: []poolAllocationShare{}, Members: []poolMember{}}}
 			states[scope] = stage
 		}
