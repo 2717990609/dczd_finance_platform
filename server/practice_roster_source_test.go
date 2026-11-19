@@ -29,6 +29,7 @@ func TestPracticeRosterPullAndSettlementUseCurrentSourceVersion(t *testing.T) {
 	latest := first
 	latest.RosterVersion, latest.ConfirmedAt = 2, start.Add(2*time.Hour).Format(time.RFC3339Nano)
 	var upstreamVersion atomic.Int32
+	var upstreamHTTPStatus atomic.Int32
 	upstreamVersion.Store(1)
 	var changed, tampered, overlap atomic.Bool
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -36,6 +37,10 @@ func TestPracticeRosterPullAndSettlementUseCurrentSourceVersion(t *testing.T) {
 			r.URL.Query().Get("period_key") != periodKey || r.Header.Get("Authorization") != "Bearer "+serviceToken ||
 			r.Header.Get("X-DCZD-Finance-Contract") != contract {
 			http.Error(w, "unexpected authenticated endpoint", http.StatusBadRequest)
+			return
+		}
+		if status := upstreamHTTPStatus.Load(); status != 0 {
+			w.WriteHeader(int(status))
 			return
 		}
 		selected := first
@@ -157,6 +162,22 @@ func TestPracticeRosterPullAndSettlementUseCurrentSourceVersion(t *testing.T) {
 		t.Helper()
 		return call(http.MethodPost, "/api/v1/settlements", confirmSettlementInput{PeriodID: period, ExpectedVersion: draft.Version, ReviewToken: token}, status)
 	}
+	for _, failure := range []struct {
+		status int
+		state  string
+	}{
+		{http.StatusNotFound, "ROUTE_MISSING"}, {http.StatusMethodNotAllowed, "ROUTE_MISSING"}, {http.StatusNotImplemented, "ROUTE_MISSING"},
+		{http.StatusUnauthorized, "ACCESS_DENIED"}, {http.StatusForbidden, "ACCESS_DENIED"}, {http.StatusBadGateway, "UNAVAILABLE"},
+	} {
+		upstreamHTTPStatus.Store(int32(failure.status))
+		if r := view(); r.CanConfirm || r.Token != "" || r.PracticeRoster.SourceStatus != failure.state ||
+			len(r.Sources) != 1 || r.Sources[0].Status != "READY" {
+			t.Fatalf("order feed can be ready while roster HTTP %d blocks confirmation: %+v", failure.status, r)
+		}
+		post(approved.Token, http.StatusConflict)
+		pull(http.StatusConflict)
+	}
+	upstreamHTTPStatus.Store(0)
 	changed.Store(true)
 	post(approved.Token, http.StatusConflict)
 	if r := view(); r.CanConfirm || r.Token != "" {

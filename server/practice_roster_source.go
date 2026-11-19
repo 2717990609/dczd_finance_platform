@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/hex"
 	"errors"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
@@ -15,6 +16,8 @@ const practiceRosterReadContract = "dczd.finance-practice-roster-read/1.0"
 
 var (
 	errPracticeRosterSource      = errors.New("暂时无法核验签到名单，请检查大春之道名单接口")
+	errPracticeRosterRoute       = errors.New("签到名单读取接口未接通，请核对大春之道的接口部署或网关路由")
+	errPracticeRosterAccess      = errors.New("签到名单读取未通过授权，请核对大春之道服务凭证和权限")
 	errPracticeRosterUnconfirmed = errors.New("签到名单尚未确认或已有变更，请在大春之道确认后重新拉取")
 	errPracticeRosterNeedsPull   = errors.New("签到名单版本已变化，请重新拉取并试算")
 	errPracticeRosterOverlap     = errors.New("报名付款同时出现在多个期次，请在大春之道核对延期")
@@ -53,8 +56,19 @@ func (s workspace) fetchPracticeRoster(ctx context.Context, key string, includeV
 	}
 	ctx, cancel := context.WithTimeout(ctx, deadline)
 	defer cancel()
-	if err := client.getWithContract(ctx, "practice-rosters", practiceRosterReadContract, query, &snapshot); err != nil ||
-		snapshot.Contract != practiceRosterReadContract || snapshot.Key != key || snapshot.Current == nil {
+	if err := client.getWithContract(ctx, "practice-rosters", practiceRosterReadContract, query, &snapshot); err != nil {
+		var status orderFeedHTTPStatus
+		if errors.As(err, &status) {
+			switch int(status) {
+			case http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+				return snapshot, errPracticeRosterRoute
+			case http.StatusUnauthorized, http.StatusForbidden:
+				return snapshot, errPracticeRosterAccess
+			}
+		}
+		return snapshot, errPracticeRosterSource
+	}
+	if snapshot.Contract != practiceRosterReadContract || snapshot.Key != key || snapshot.Current == nil {
 		return snapshot, errPracticeRosterSource
 	}
 	if !*snapshot.Current {

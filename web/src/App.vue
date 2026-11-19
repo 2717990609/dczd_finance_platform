@@ -717,6 +717,7 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='ruleVersion'">
                   <a-tag v-if="record.practiceRefundMonth" color="blue">按结算时规则</a-tag>
+                  <a-tag v-else-if="record.classStartOutsidePeriod" color="orange" :title="formatTime(record.classStartsAt)">开班时间超出本期</a-tag>
                   <a-tag v-else-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag>
                   <a-tag v-else color="orange">{{ record.ruleMatchingAvailable ? '按订单匹配' : record.periodMode==='class' && !record.classStartsAt ? '待签到名单' : '待配规则' }}</a-tag>
                 </template>

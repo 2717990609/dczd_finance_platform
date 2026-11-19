@@ -231,7 +231,8 @@ func respond(w http.ResponseWriter, result any, err error) {
 	case errors.Is(err, invalid), errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
-		errors.Is(err, errPracticeRosterSource), errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap),
+		errors.Is(err, errPracticeRosterSource), errors.Is(err, errPracticeRosterRoute), errors.Is(err, errPracticeRosterAccess),
+		errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap),
 		errors.Is(err, errPracticeMonthSettlementDependency),
 		errors.Is(err, errCatalogRateStale), errors.Is(err, errCatalogRateUnavailable), errors.Is(err, errCatalogRateDates), errors.Is(err, errCatalogTeamRate),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
@@ -290,17 +291,22 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
  ` + catalogDraftAvailableSQL + ` AS "catalogDraftAvailable",
  p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",
  to_char(` + periodReportMonthSQL + `,'YYYY-MM') AS "reportMonth",to_char(p.report_month,'YYYY-MM') AS "reportMonthOverride",
- (pro.period_mode='class' AND p.calendar_month IS NULL AND NOT EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=p.id)) AS "reportMonthEditable",
+ (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL) AS "reportMonthEditable",
  (pro.period_mode='class' AND p.calendar_month IS NOT NULL) AS "practiceRefundMonth",
- p.source_period_key AS "sourcePeriodKey",roster.starts_at AS "classStartsAt",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
+ p.source_period_key AS "sourcePeriodKey",roster.starts_at AS "classStartsAt",
+ coalesce(NOT roster.in_period,false) AS "classStartOutsidePeriod",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
  FROM periods p JOIN products pro ON pro.id=p.product_id
+ LEFT JOIN settlements final ON final.period_id=p.id
+ LEFT JOIN calculation_drafts frozen ON frozen.period_id=final.period_id AND pro.period_mode='class'
  LEFT JOIN LATERAL (
-  SELECT r.starts_at FROM practice_rosters r WHERE r.period_key=p.source_period_key ORDER BY r.source_version DESC LIMIT 1
+  SELECT r.starts_at,(r.starts_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on AS in_period
+  FROM practice_rosters r WHERE r.period_key=p.source_period_key AND (final.period_id IS NULL OR r.id=frozen.practice_roster_id)
+  ORDER BY r.source_version DESC LIMIT 1
  ) roster ON pro.period_mode='class'
  LEFT JOIN LATERAL (
   SELECT rv.version,rv.label FROM rule_versions rv WHERE ` + matchingRuleScope + `
-  AND CASE WHEN pro.period_mode='class'
-    THEN roster.starts_at IS NOT NULL AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
+  AND CASE WHEN pro.period_mode='class' AND final.period_id IS NOT NULL THEN rv.id=frozen.rule_id
+    WHEN pro.period_mode='class' THEN roster.in_period AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
     ELSE rv.effective_from IS NULL OR rv.effective_from < ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai') END
   ORDER BY ` + matchingRuleOrder + ` LIMIT 1
  ) rule ON true WHERE ($1::bigint[] IS NULL OR p.product_id=ANY($1)) ORDER BY p.id DESC LIMIT 500) a`

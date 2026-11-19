@@ -55,6 +55,10 @@ func (s workspace) checkPracticeClassRoster(ctx context.Context, r *practiceClas
 		switch {
 		case errors.Is(err, errPracticeSettlementUnavailable):
 			r.SourceStatus = "NOT_CONFIGURED"
+		case errors.Is(err, errPracticeRosterRoute):
+			r.SourceStatus = "ROUTE_MISSING"
+		case errors.Is(err, errPracticeRosterAccess):
+			r.SourceStatus = "ACCESS_DENIED"
 		case errors.Is(err, errPracticeRosterUnconfirmed):
 			r.SourceStatus = "UNCONFIRMED"
 		default:

@@ -75,6 +75,14 @@ type orderFeedClient struct {
 	source   string
 }
 
+type orderFeedHTTPStatus int
+
+func (status orderFeedHTTPStatus) Error() string {
+	return fmt.Sprintf("source request failed (HTTP %d)", status)
+}
+
+func (orderFeedHTTPStatus) Unwrap() error { return errSourceRead }
+
 func newOrderFeedClient(source string, cfg sourceConfig) (orderFeedClient, error) {
 	if cfg.BaseURL == "" || cfg.Token == "" {
 		return orderFeedClient{}, errSourceDisabled
@@ -130,7 +138,7 @@ func (c orderFeedClient) getWithContract(ctx context.Context, action, contract s
 	defer res.Body.Close()
 	const limit = 8 << 20
 	if res.StatusCode != http.StatusOK {
-		return errSourceRead
+		return orderFeedHTTPStatus(res.StatusCode)
 	}
 	wire, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
 	if err != nil || len(wire) > limit || json.Unmarshal(wire, result) != nil {

@@ -1,8 +1,12 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 func TestRuleAppliesFromPaymentInstantWithinPeriod(t *testing.T) {
@@ -38,5 +42,82 @@ func TestEmptyDraftStillReportsUnsupportedComponent(t *testing.T) {
 	got, err := calculatePaymentDraft(window, rules, nil, nil)
 	if err != nil || len(got.Issues) != 1 || got.Issues[0].RuleID != 12 || got.Issues[0].Code != "UNCONFIGURED_COMPONENT" {
 		t.Fatalf("draft=%+v, error=%v", got, err)
+	}
+}
+
+func TestPracticePeriodListUsesValidAndConfirmedRule(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	createID := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	product := createID(s.createProduct(ctx, createProductInput{Code: "CLASS_RULE_LIST", Name: "实战班", PeriodMode: "class"}))
+	const key = "PRACTICE:2:1:157"
+	period := createID(s.createPeriod(ctx, createPeriodInput{ProductID: product, Ordinal: 157, Name: "157 期",
+		StartsOn: "2026-11-08", EndsOn: "2026-11-09", SourcePeriodKey: key}))
+	cut := time.Date(2026, 11, 8, 14, 30, 0, 0, shanghai)
+	publish := func(label string, at *time.Time) {
+		t.Helper()
+		if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, Label: label, EffectiveFrom: at, Components: []component{
+			{Type: "sales", Mode: "rate", Value: 1000, ClassMember: "new", SourceRole: "DIRECT_REFERRER"},
+		}}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	publish("默认规则", nil)
+	publish("本班确认规则", &cut)
+	store := func(version int64, startsAt time.Time) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: key, SourceVersion: version, Hash: "test-roster",
+				StartsAt: startsAt, ConfirmedAt: cut.Add(time.Duration(version) * time.Hour), Enrollments: []practiceEnrollment{}})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	type periodRule struct {
+		RuleVersion             *int
+		RuleLabel               string
+		ClassStartsAt           time.Time
+		ClassStartOutsidePeriod bool
+	}
+	read := func() periodRule {
+		t.Helper()
+		var records []periodRule
+		if err := s.db.QueryRow(ctx, periodsSQL, []int64{product}).Scan(&records); err != nil || len(records) != 1 {
+			t.Fatalf("period list: %+v %v", records, err)
+		}
+		return records[0]
+	}
+	store(1, cut.AddDate(0, 0, -18))
+	if got := read(); !got.ClassStartOutsidePeriod || got.RuleVersion != nil {
+		t.Fatalf("an out-of-period roster should display a warning without selecting a rule: %+v", got)
+	}
+	if _, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period}); !errors.Is(err, errPracticeStart) {
+		t.Fatalf("out-of-period roster was not blocked in calculation: %v", err)
+	}
+	store(2, cut)
+	if got := read(); got.ClassStartOutsidePeriod || got.RuleVersion == nil || *got.RuleVersion != 2 || got.RuleLabel != "本班确认规则" {
+		t.Fatalf("the actual class time should select rule v2: %+v", got)
+	}
+	d, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`,
+		period, d.(draftSummary).Version); err != nil {
+		t.Fatal(err)
+	}
+	updated := cut.Add(30 * time.Minute)
+	publish("后续生效规则", &updated)
+	store(3, updated)
+	if got := read(); got.ClassStartOutsidePeriod || !got.ClassStartsAt.Equal(cut) || got.RuleVersion == nil ||
+		*got.RuleVersion != 2 || got.RuleLabel != "本班确认规则" {
+		t.Fatalf("confirmed listing should keep the frozen roster and rule: %+v", got)
 	}
 }

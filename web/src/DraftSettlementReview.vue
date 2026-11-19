@@ -26,6 +26,8 @@ const coverageStatus = {
 const streamLabel = stream => props.sourceStreams?.find(option => option.value === stream)?.label || '订单来源'
 const rosterStatus = {
   NOT_CONFIGURED:'班次结算待核验子系统的签到名单版本',
+  ROUTE_MISSING:'签到名单读取接口未接通，请核对大春之道的接口部署或网关路由',
+  ACCESS_DENIED:'签到名单读取未通过授权，请核对大春之道服务凭证和权限',
   UNAVAILABLE:'暂时无法核验大春之道的签到名单',
   UNCONFIRMED:'签到名单尚未确认或已有变更，请在大春之道确认后重新拉取',
   PAYMENT_CONFLICT:'报名付款同时出现在多个期次，请在大春之道核对延期',
