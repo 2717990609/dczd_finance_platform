@@ -62,6 +62,8 @@ type vipLink struct {
 
 type vipRuntimeData struct {
 	Product, Project             string
+	ConfigurationRevision        int64
+	DirectoryFingerprint         string
 	Claims                       map[int64][]vipClaim
 	Definitions                  map[string]json.RawMessage
 	Users, Companies, Categories []vipLink
@@ -71,6 +73,8 @@ type vipRuntimeData struct {
 	vipSalesData
 }
 
+// The directory fingerprint is independent of which people are needed by the
+// current payments. Only reusable draft quotes require this fingerprint.
 const vipRuntimeSQL = `WITH scope AS (
  SELECT c.captured_at,c.benefit_ready,pro.code,cfg.project_code FROM periods p JOIN products pro ON pro.id=p.product_id
  JOIN product_catalog_settings cfg ON cfg.product_id=pro.id
@@ -109,7 +113,10 @@ const vipRuntimeSQL = `WITH scope AS (
   OR ('person:'||p.id) IN (SELECT key FROM named_people)
 )
 SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitReady',coalesce(s.benefit_ready,false),
- 'organizations',(SELECT jsonb_agg(jsonb_build_object('party',b.party_uuid,'unit',o.id,'name',o.name))
+ 'configurationRevision',CASE WHEN $4 THEN coalesce((SELECT revision FROM source_write_state WHERE source='CONFIG'),0) END,
+ 'directoryFingerprint',CASE WHEN $4 THEN (SELECT encode(sha256(convert_to(
+  coalesce(jsonb_agg(jsonb_build_array(` + vipPersonKey + `,p.name) ORDER BY p.id)::text,'[]'),'UTF8')),'hex') FROM people p) END,
+ 'organizations',(SELECT jsonb_agg(jsonb_build_object('party',b.party_uuid,'unit',o.id,'name',o.name) ORDER BY b.party_uuid,o.id)
   FROM catalog_benefit_organizations b JOIN organization_units o ON o.id=b.unit_id AND o.status='ACTIVE'
   WHERE b.source='DCAI' AND b.observed_at=s.captured_at),
  'claims',(SELECT jsonb_object_agg(source_version_id::text,sales_claims) FROM claims),
@@ -122,8 +129,9 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
  'companies',(SELECT jsonb_agg(to_jsonb(companies)) FROM companies),
  'categories',(SELECT jsonb_agg(jsonb_build_object('key',h.company_uuid,'value',h.category_uuid,'from',h.valid_from,'to',h.valid_to))
   FROM catalog_sales_categories h WHERE h.source='DCAI' AND h.observed_at=s.captured_at AND h.company_uuid IN (SELECT value FROM companies)),
- 'roles',(SELECT jsonb_agg(to_jsonb(roles)-'id') FROM roles),
- 'memberships',(SELECT jsonb_agg(jsonb_build_object('person',` + vipPersonKey + `,'unit',a.unit_id,'from',a.valid_from,'to',a.valid_to))
+ 'roles',(SELECT jsonb_agg(to_jsonb(roles)-'id' ORDER BY person,role,scope,key,"from","to") FROM roles),
+ 'memberships',(SELECT jsonb_agg(jsonb_build_object('person',` + vipPersonKey + `,'unit',a.unit_id,'from',a.valid_from,'to',a.valid_to)
+   ORDER BY p.id,a.unit_id,a.valid_from,a.valid_to)
   FROM organization_assignments a JOIN people p ON p.id=a.person_id WHERE p.id IN (SELECT id FROM users)),
  'people',(SELECT jsonb_object_agg(key,name) FROM persons),
  'personIds',(SELECT jsonb_object_agg(key,id) FROM persons))
@@ -133,7 +141,7 @@ FROM scope s`
 // also allow local staff to hold roles without an external identity.
 const vipPersonKey = `coalesce(p.legacy_party_id::text,'person:'||p.id)`
 
-func loadVIPRuntimeData(ctx context.Context, tx pgx.Tx, periodID int64, matched []catalogPaymentMatch) (vipRuntimeData, error) {
+func loadVIPRuntimeData(ctx context.Context, tx pgx.Tx, periodID int64, matched []catalogPaymentMatch, quoteContext bool) (vipRuntimeData, error) {
 	ids := make([]int64, 0, len(matched))
 	var rules []string
 	seen := make(map[string]bool)
@@ -153,7 +161,7 @@ func loadVIPRuntimeData(ctx context.Context, tx pgx.Tx, periodID int64, matched 
 		return vipRuntimeData{}, nil
 	}
 	var raw json.RawMessage
-	if err := tx.QueryRow(ctx, vipRuntimeSQL, periodID, ids, rules).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, vipRuntimeSQL, periodID, ids, rules, quoteContext).Scan(&raw); err != nil {
 		if err == pgx.ErrNoRows {
 			return vipRuntimeData{}, nil
 		}
@@ -181,14 +189,6 @@ func resolveVIPLinkRecord(values []vipLink, key string, at time.Time) (selected 
 		selected, found = row, true
 	}
 	return selected, false
-}
-
-func quoteVIPPaid(sale catalogPaymentMatch, policy vipSalesPolicy, d vipRuntimeData) ([]vipSalesPart, string) {
-	req, issue := vipPaymentInputs(sale, d)
-	if issue != "" {
-		return nil, issue
-	}
-	return calculateVIPSales(policy, req, d.vipSalesData)
 }
 
 func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesRequest, string) {
@@ -223,45 +223,71 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 }
 
 func applyVIPQuotes(items []catalogPaymentMatch, data vipRuntimeData) {
-	policies := make(map[string]vipSalesPolicy, len(data.Definitions))
-	for id, definition := range data.Definitions {
-		if policy, ok := readVIPSalesPolicy(definition); ok {
-			policies[id] = policy
-		}
-	}
+	policies := readVIPQuotePolicies(data.Definitions)
 	for i := range items {
 		row := &items[i]
-		if row.Status != "MATCHED" || row.PaidMinor == nil {
-			continue
-		}
-		if policy, ok := policies[row.RuleID]; ok {
-			row.SalesItem = policy.Item
-			row.SalesParts, row.SalesStatus = quoteVIPPaid(*row, policy, data)
-			if row.SalesStatus == "" {
-				row.SalesStatus = "CALCULATED"
-			}
+		if row.Status == "MATCHED" && row.PaidMinor != nil {
+			req, issue := vipPaymentInputs(*row, data)
+			policies.apply(row, data, req, issue)
 		}
 	}
-	applyVIPBenefitQuotes(items, data)
 }
 
-func applyVIPBenefitQuotes(items []catalogPaymentMatch, data vipRuntimeData) {
-	benefits := make(map[string]vipBenefitPolicy, len(data.Definitions))
-	for id, definition := range data.Definitions {
+type vipQuotePolicies struct {
+	sales    map[string]vipSalesPolicy
+	benefits map[string]vipBenefitPolicy
+}
+
+func readVIPQuotePolicies(definitions map[string]json.RawMessage) vipQuotePolicies {
+	sales := make(map[string]vipSalesPolicy, len(definitions))
+	for id, definition := range definitions {
+		if policy, ok := readVIPSalesPolicy(definition); ok {
+			sales[id] = policy
+		}
+	}
+	return vipQuotePolicies{sales: sales, benefits: readVIPBenefitPolicies(definitions)}
+}
+
+func (p vipQuotePolicies) apply(row *catalogPaymentMatch, data vipRuntimeData, req vipSalesRequest, issue string) {
+	if policy, ok := p.sales[row.RuleID]; ok {
+		row.SalesItem = policy.Item
+		row.SalesParts, row.SalesStatus = nil, issue
+		if issue == "" {
+			row.SalesParts, row.SalesStatus = calculateVIPSales(policy, req, data.vipSalesData)
+		}
+		if row.SalesStatus == "" {
+			row.SalesStatus = "CALCULATED"
+		}
+	}
+	applyVIPBenefitQuote(row, data, p.benefits, req, issue)
+}
+
+func readVIPBenefitPolicies(definitions map[string]json.RawMessage) map[string]vipBenefitPolicy {
+	benefits := make(map[string]vipBenefitPolicy, len(definitions))
+	for id, definition := range definitions {
 		if policy, ok := readVIPBenefits(definition); ok {
 			benefits[id] = policy
 		}
 	}
+	return benefits
+}
+
+func applyVIPBenefitQuotes(items []catalogPaymentMatch, data vipRuntimeData) {
+	benefits := readVIPBenefitPolicies(data.Definitions)
 	for i := range items {
 		row := &items[i]
-		if row.Status != "MATCHED" || row.PaidMinor == nil {
-			continue
+		if row.Status == "MATCHED" && row.PaidMinor != nil {
+			req, issue := vipPaymentInputs(*row, data)
+			applyVIPBenefitQuote(row, data, benefits, req, issue)
 		}
-		if policy, ok := benefits[row.RuleID]; ok {
-			row.FixedParts = row.FixedParts[:0]
-			row.BenefitParts = quoteVIPBenefits(*row, policy, data)
-		} else if data.Product == "DCAI_VIP" {
-			row.BenefitStatus = "BENEFIT_RULE_UNSUPPORTED"
-		}
+	}
+}
+
+func applyVIPBenefitQuote(row *catalogPaymentMatch, data vipRuntimeData, benefits map[string]vipBenefitPolicy, req vipSalesRequest, issue string) {
+	if policy, ok := benefits[row.RuleID]; ok {
+		row.FixedParts = row.FixedParts[:0]
+		row.BenefitParts = quoteVIPBenefits(req, issue, policy, data)
+	} else if data.Product == "DCAI_VIP" {
+		row.BenefitStatus = "BENEFIT_RULE_UNSUPPORTED"
 	}
 }

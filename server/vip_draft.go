@@ -29,7 +29,7 @@ type catalogDraftBenefit struct {
 	Rate              int64
 }
 
-func computeVIPDraft(ctx context.Context, tx pgx.Tx, periodID int64, window periodWindow) (paymentDraft, []byte, error) {
+func computeVIPDraft(ctx context.Context, tx pgx.Tx, periodID int64, window periodWindow, quotes *vipDraftQuoteCache) (paymentDraft, []byte, error) {
 	matches, err := readCatalogMatches(ctx, tx, periodID, 0, maxDraftPayments)
 	if err != nil {
 		return paymentDraft{}, nil, err
@@ -37,11 +37,14 @@ func computeVIPDraft(ctx context.Context, tx pgx.Tx, periodID int64, window peri
 	if len(matches.Items) != matches.OrderCount {
 		return paymentDraft{}, nil, errDraftLimit
 	}
-	data, err := loadVIPRuntimeData(ctx, tx, periodID, matches.Items)
+	if len(matches.Items) > maxVIPCachedRows {
+		quotes = nil
+	}
+	data, err := loadVIPRuntimeData(ctx, tx, periodID, matches.Items, quotes != nil)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	applyVIPQuotes(matches.Items, data)
+	quotes.apply(periodID, matches.Items, data)
 	payments, byID, err := readVIPDraftFacts(ctx, tx, matches.Items)
 	if err != nil {
 		return paymentDraft{}, nil, err

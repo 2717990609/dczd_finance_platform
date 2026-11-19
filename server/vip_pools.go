@@ -38,7 +38,7 @@ func (s workspace) periodPoolContributions(w http.ResponseWriter, r *http.Reques
 		if matches.OrderCount != len(matches.Items) {
 			return errDraftLimit
 		}
-		data, err := loadVIPRuntimeData(ctx, tx, periodID, matches.Items)
+		data, err := loadVIPRuntimeData(ctx, tx, periodID, matches.Items, false)
 		if err != nil {
 			return err
 		}

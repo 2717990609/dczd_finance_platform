@@ -42,29 +42,33 @@ func TestVIPBenefitsUseHistoricalRecipientsAndKeepPoolSeparate(t *testing.T) {
 		},
 	}
 	amount := int64(10010)
-	before := quoteVIPBenefits(catalogPaymentMatch{SourceVersionID: 1, PaidAt: start.Add(-time.Nanosecond), PaidMinor: &amount}, policy, data)
+	quote := func(row catalogPaymentMatch) []vipBenefitPart {
+		req, issue := vipPaymentInputs(row, data)
+		return quoteVIPBenefits(req, issue, policy, data)
+	}
+	before := quote(catalogPaymentMatch{SourceVersionID: 1, PaidAt: start.Add(-time.Nanosecond), PaidMinor: &amount})
 	if len(before) != 4 || before[0].Status != "INACTIVE" || before[3].Status != "INACTIVE" || before[2].Owner != "other" {
 		t.Fatalf("before appointment: %+v", before)
 	}
 	row := catalogPaymentMatch{SourceVersionID: 1, PaidAt: start, PaidMinor: &amount}
-	got := quoteVIPBenefits(row, policy, data)
+	got := quote(row)
 	if got[0].Party != "alice" || got[0].Amount != 501 || got[1].Kind != "company" || got[1].Unit != "company" ||
 		got[2].Kind != "pool" || got[2].Party != "team" || got[2].Owner != "bob" || got[2].Amount != 300 ||
 		got[3].Amount != 100 {
 		t.Fatalf("results at appointment start: %+v", got)
 	}
 	data.Roles = append(data.Roles, vipRole{Person: "other", Role: "TEAM_LEAD", Scope: "ORGANIZATION_UNIT", Key: "dept"})
-	got = quoteVIPBenefits(row, policy, data)
+	got = quote(row)
 	if got[2].Status != "BENEFIT_POOL_OWNER_CONFLICT" || got[2].Amount != 0 || got[0].Amount != 501 {
 		t.Fatalf("a pool conflict should affect only that benefit: %+v", got)
 	}
 	data.Claims = nil
-	got = quoteVIPBenefits(row, policy, data)
+	got = quote(row)
 	if got[3].Status != "SALES_SOURCE_MISSING" || got[0].Amount != 501 {
 		t.Fatalf("only company-specific selection depends on the order's sales attribution: %+v", got)
 	}
 	amount = 0
-	for _, line := range quoteVIPBenefits(row, policy, data) {
+	for _, line := range quote(row) {
 		if line.Status != "ZERO" {
 			t.Fatalf("no accrual or review is needed for zero paid: %+v", line)
 		}

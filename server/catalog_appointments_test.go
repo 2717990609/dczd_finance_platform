@@ -110,9 +110,13 @@ func TestCatalogAppointmentsTransferAndPreserveLocalMaintenance(t *testing.T) {
 	}
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		paid := int64(10000)
-		data, err := loadVIPRuntimeData(ctx, tx, 2, []catalogPaymentMatch{{SourceVersionID: 1, PaidMinor: &paid}})
+		items := []catalogPaymentMatch{{SourceVersionID: 1, PaidMinor: &paid}}
+		data, err := loadVIPRuntimeData(ctx, tx, 2, items, true)
 		if err != nil {
 			return err
+		}
+		if len(data.DirectoryFingerprint) != 64 {
+			t.Fatal("draft quotes require a fingerprint of the current person directory")
 		}
 		start := time.Date(2026, 9, 25, 0, 0, 0, 0, shanghai)
 		old, _ := vipRoleHolder(data.Roles, "PROJECT_OWNER", "PROJECT", "AI", start.Add(-time.Second))
@@ -128,8 +132,10 @@ func TestCatalogAppointmentsTransferAndPreserveLocalMaintenance(t *testing.T) {
 				OwnerRole: "PROJECT_OWNER", Rate: &rate},
 			{Item: "fixed", Role: "PROJECT_OWNER", Mode: "PARTY", Designated: old, Rate: &rate},
 		}}
-		before := quoteVIPBenefits(catalogPaymentMatch{PaidAt: start.Add(-time.Second), PaidMinor: &paid}, policy, data)
-		after := quoteVIPBenefits(catalogPaymentMatch{PaidAt: start, PaidMinor: &paid}, policy, data)
+		request := vipSalesRequest{At: start.Add(-time.Second), Paid: paid, Project: data.Project, Product: data.Product}
+		before := quoteVIPBenefits(request, "", policy, data)
+		request.At = start
+		after := quoteVIPBenefits(request, "", policy, data)
 		if before[0].Owner != old || before[1].Party != old || after[0].Owner != newHolder || after[0].Amount != 500 ||
 			after[1].Status != "INACTIVE" || after[1].Party != "" {
 			t.Fatalf("handover should change the pool owner and respect the named payee: before=%+v after=%+v", before, after)

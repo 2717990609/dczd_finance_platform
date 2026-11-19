@@ -231,7 +231,7 @@ func readUnchangedDraft(ctx context.Context, tx pgx.Tx, periodID int64, scope se
 	if summary.Catalog != scope.catalog || summary.PracticeRefundMonth != scope.practiceRefundMonth {
 		return paymentDraft{}, errSettlementStale
 	}
-	current, digest, err := computeDraft(ctx, tx, summary, window, rules)
+	current, digest, err := computeDraft(ctx, tx, summary, window, rules, nil)
 	if err != nil {
 		return paymentDraft{}, err
 	}

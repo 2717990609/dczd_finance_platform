@@ -236,7 +236,7 @@ func (s workspace) catalogMatches(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		data, err := loadVIPRuntimeData(ctx, tx, periodID, report.Items)
+		data, err := loadVIPRuntimeData(ctx, tx, periodID, report.Items, false)
 		if err != nil {
 			return err
 		}

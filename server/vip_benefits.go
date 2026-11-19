@@ -117,8 +117,7 @@ func (a vipBenefitAction) validTarget() bool {
 	}
 }
 
-func quoteVIPBenefits(row catalogPaymentMatch, policy vipBenefitPolicy, data vipRuntimeData) []vipBenefitPart {
-	req, sourceIssue := vipPaymentInputs(row, data)
+func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefitPolicy, data vipRuntimeData) []vipBenefitPart {
 	for _, review := range policy.split.Reviews {
 		if req.Order == review.Order && (req.Company != review.Company || req.Seller != review.Seller) {
 			sourceIssue = "SALES_COMPANY_REVIEW"

@@ -115,7 +115,7 @@ func (s workspace) calculateCurrentDraft(ctx context.Context, periodID, wantedGe
 		if err != nil {
 			return err
 		}
-		result, digest, err := computeDraft(ctx, tx, summary, window, rules)
+		result, digest, err := computeDraft(ctx, tx, summary, window, rules, s.vipDraftQuotes)
 		if err != nil {
 			return err
 		}
@@ -130,12 +130,12 @@ func (s workspace) calculateCurrentDraft(ctx context.Context, periodID, wantedGe
 	return summary, err
 }
 
-func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window periodWindow, rules []paymentRule) (paymentDraft, []byte, error) {
+func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window periodWindow, rules []paymentRule, quotes *vipDraftQuoteCache) (paymentDraft, []byte, error) {
 	if summary.PracticeRefundMonth {
 		return computePracticeRefundMonth(ctx, tx, summary.PeriodID, window)
 	}
 	if summary.Catalog {
-		return computeVIPDraft(ctx, tx, summary.PeriodID, window)
+		return computeVIPDraft(ctx, tx, summary.PeriodID, window, quotes)
 	}
 	if summary.PracticeRosterID != nil {
 		return computePracticeDraft(ctx, tx, summary, rules[0])

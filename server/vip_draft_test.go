@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,7 +18,8 @@ import (
 
 func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	ctx := context.Background()
-	s := workspace{db: integrationDB(t), sources: map[string]sourceConfig{"DCAI": {BaseURL: "https://fixture.invalid", Token: "fixture"}}}
+	s := workspace{db: integrationDB(t), vipDraftQuotes: &vipDraftQuoteCache{},
+		sources: map[string]sourceConfig{"DCAI": {BaseURL: "https://fixture.invalid", Token: "fixture"}}}
 	id := func(n int) string { return fmt.Sprintf("60000000-0000-4000-8000-%012d", n) }
 	start := time.Date(2026, 7, 25, 0, 0, 0, 0, shanghai)
 	previousStart := start.AddDate(0, -1, 0)
@@ -95,6 +97,27 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Helper()
 		result, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: periodID})
 		if err != nil {
+			t.Fatal(err)
+		}
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			scope := draftSummary{PeriodID: periodID}
+			window, rules, err := readDraftScope(ctx, tx, &scope)
+			if err != nil {
+				return err
+			}
+			_, full, err := computeDraft(ctx, tx, scope, window, rules, nil)
+			if err != nil {
+				return err
+			}
+			var saved []byte
+			if err := tx.QueryRow(ctx, `SELECT input_digest FROM calculation_drafts WHERE period_id=$1`, periodID).Scan(&saved); err != nil {
+				return err
+			}
+			if !bytes.Equal(saved, full) {
+				return errors.New("saved trial differs from an independent full computation")
+			}
+			return nil
+		}); err != nil {
 			t.Fatal(err)
 		}
 		return result.(draftSummary)
