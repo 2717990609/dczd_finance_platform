@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const catalogMatchSQL = `WITH period AS (
@@ -121,7 +123,22 @@ func (s workspace) catalogMatches(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), catalogMatchSQL, periodID, (page-1)*25).Scan(&result)
-	respond(w, result, err)
+	ctx := r.Context()
+	var report catalogMatchReport
+	err = pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var raw json.RawMessage
+		if err := tx.QueryRow(ctx, catalogMatchSQL, periodID, (page-1)*25).Scan(&raw); err != nil {
+			return err
+		}
+		if err := json.Unmarshal(raw, &report); err != nil {
+			return err
+		}
+		data, err := loadVIPRuntimeData(ctx, tx, periodID, report.Items)
+		if err != nil {
+			return err
+		}
+		applyVIPSalesQuotes(report.Items, data)
+		return nil
+	})
+	respond(w, report, err)
 }

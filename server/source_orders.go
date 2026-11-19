@@ -45,6 +45,7 @@ type sourceFact struct {
 	Participants    []sourceParticipant      `json:"participants,omitempty"`
 	SalesCompanyID  string                   `json:"-"`
 	Classification  sourceClassification     `json:"-"`
+	VIPClaims       []vipClaim               `json:"-"`
 	AmountMinor     *int64                   `json:"amountMinor"`
 	OccurredAt      time.Time                `json:"occurredAt"`
 	UpdatedAt       time.Time                `json:"updatedAt"`
@@ -61,6 +62,7 @@ type sourceAttributionParticipant struct {
 	UserID         string `json:"source_user_id"`
 	CompanyID      string `json:"source_company_id"`
 	OrganizationID string `json:"source_organization_id"`
+	Relationship   string `json:"source_sales_relationship_code"`
 }
 
 type sourceDocument struct {
@@ -204,12 +206,17 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 			}
 		}
 	}
+	classification := classifySourcePayment(source, wire.Business.Domain, wire.Business.Entity, wire.Record.Table)
+	var vipClaims []vipClaim
+	if classification.Key != "" && wire.Kind == "ORDER_PAID" {
+		vipClaims = vipSourceClaims(wire.Attribution.Participants)
+	}
 	return sourceFact{Source: source, OrderID: orderID, OrderNo: wire.Order.No, LineID: wire.Order.Line,
 		RecordKey: wire.Record.Table + ":" + wire.Record.ID, Version: wire.Record.Version, Kind: wire.Kind, Domain: wire.Business.Domain,
 		SourceKey: wire.Business.Code, TransactionType: wire.Business.TransactionType, SourceStatus: wire.Order.Status.Code,
 		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, RefundsPayment: refundTargets, ReferrerID: referrer, Participants: participants, SalesCompanyID: company, AmountMinor: amount,
 		OccurredAt: occurredAt, UpdatedAt: wire.Record.UpdatedAt,
-		Classification: classifySourcePayment(source, wire.Business.Domain, wire.Business.Entity, wire.Record.Table)}, nil
+		Classification: classification, VIPClaims: vipClaims}, nil
 }
 
 var sourcesList = []string{"DCAI", "DCZD", "DCJK"}
@@ -355,7 +362,7 @@ func storeSourceFacts(ctx context.Context, tx pgx.Tx, facts []sourceFact) (int64
 			inserted++
 		}
 		if f.Classification.Key != "" {
-			if e := storeSourceClassification(ctx, tx, sourceVersion, f.Classification); e != nil {
+			if e := storeSourceClassification(ctx, tx, sourceVersion, f.Classification, f.VIPClaims); e != nil {
 				return 0, e
 			}
 		}

@@ -87,13 +87,15 @@ func main() {
 	defer cancel()
 	if len(os.Args) != 1 {
 		if len(os.Args) != 3 {
-			log.Fatal("usage: import-practice-roster|import-practice-count-opening|import-legacy-catalog|import-organization|import-order-facts <source.json>")
+			log.Fatal("usage: import-practice-roster|import-practice-count-opening|import-legacy-catalog|import-organization|import-order-facts|import-sales-context <source.json>")
 		}
 		switch os.Args[1] {
 		case "import-practice-roster":
 			err = importPracticeFile(ctx, cfg, os.Args[2])
 		case "import-practice-count-opening":
 			err = importPracticeCountOpening(ctx, cfg, os.Args[2])
+		case "import-sales-context":
+			err = importVIPSalesContext(ctx, cfg, os.Args[2])
 		case "import-order-facts":
 			err = importSourceFactFile(ctx, cfg, os.Args[2])
 		case "import-organization":
@@ -101,7 +103,7 @@ func main() {
 		case "import-legacy-catalog":
 			err = importLegacyCatalog(ctx, cfg, os.Args[2])
 		default:
-			log.Fatal("usage: import-practice-roster|import-practice-count-opening|import-legacy-catalog|import-organization|import-order-facts <source.json>")
+			log.Fatal("usage: import-practice-roster|import-practice-count-opening|import-legacy-catalog|import-organization|import-order-facts|import-sales-context <source.json>")
 		}
 		if err != nil {
 			log.Fatal(err)

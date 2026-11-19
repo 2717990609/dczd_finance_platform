@@ -12,27 +12,6 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-type catalogPaymentMatch struct {
-	SourceVersionID       int64  `json:"sourceVersionId"`
-	OrderID               string `json:"orderId"`
-	SourceTransactionType string `json:"sourceTransactionType"`
-	MappingVersion        int    `json:"mappingVersion"`
-	RuleVersion           int    `json:"ruleVersion"`
-	Status                string `json:"status"`
-	FixedParts            []struct {
-		Label       string `json:"label"`
-		AmountMinor int64  `json:"amountMinor"`
-	} `json:"fixedParts"`
-}
-
-type catalogMatchReport struct {
-	OrderCount   int                   `json:"orderCount"`
-	MatchedCount int                   `json:"matchedCount"`
-	MatchedMinor int64                 `json:"matchedMinor"`
-	PaidMinor    int64                 `json:"paidMinor"`
-	Items        []catalogPaymentMatch `json:"items"`
-}
-
 func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 	ctx := context.Background()
 	db := integrationDB(t)

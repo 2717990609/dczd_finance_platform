@@ -25,6 +25,24 @@ const statuses = {
   RULE_MISSING:'未匹配规则',
   RULE_CONFLICT:'规则冲突',
 }
+const salesStatus = {
+  SALES_SOURCE_MISSING:'需重拉订单销售数据',
+  SALES_SOURCE_CONFLICT:'成交人或锁粉归属冲突',
+  SALES_PERSON_MISSING:'成交人待核',
+  SALES_PERSON_CONFLICT:'成交人标识冲突',
+  SALES_COMPANY_MISSING:'成交时的销售公司待核',
+  SALES_COMPANY_CONFLICT:'成交时的销售公司有冲突',
+  SALES_APPOINTMENT_MISSING:'成交时的销售任职待核',
+  SALES_CATEGORY_MISSING:'成交时的销售类别待核',
+  SALES_CATEGORY_CONFLICT:'成交时的销售类别有冲突',
+  SALES_RELATIONSHIP_MISSING:'直销或间销待核',
+  SALES_RATE_MISSING:'缺少适用费率',
+  SALES_RATE_CONFLICT:'适用费率冲突',
+  SALES_COMPANY_REVIEW:'销售公司更正待核',
+  SALES_TEAM_PENDING:'成交时的团队任职待核',
+  SALES_GROUP_PENDING:'成交时的销售小组待核',
+}
+const salesRoles = {SALES:'成交人',DCAI_GROUP_LEAD:'小组组长',DCAI_SERVICE:'服务岗',DCAI_TEAM_HEAD:'团队负责人'}
 const pagination = computed(() => ({current:page.value,pageSize:25,total:report.value?.orderCount || 0,showSizeChanger:false}))
 
 async function refresh() {
@@ -85,6 +103,13 @@ onBeforeUnmount(() => { sequence++ })
             <summary>查看已核对固定分项</summary>
             <div v-for="part in record.fixedParts" :key="part.itemKey" class="order-version">{{ part.label }} {{ formatMoney(part.amountMinor) }}</div>
           </details>
+          <details v-if="record.salesStatus==='CALCULATED'" class="rule-count-review">
+            <summary>查看销售分项</summary>
+            <div v-for="part in record.salesParts" :key="part.role" class="order-version">
+              {{ salesRoles[part.role] }} · {{ part.personName }} · {{ formatMoney(part.amountMinor) }}
+            </div>
+          </details>
+          <small v-else-if="record.salesStatus" class="order-version">{{ salesStatus[record.salesStatus] || '销售分项待核' }}</small>
         </template>
         <a-tag v-else-if="column.key==='status'" :color="record.status==='MATCHED'?'green':'orange'">{{ statuses[record.status] || record.status }}</a-tag>
       </template>

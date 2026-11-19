@@ -540,3 +540,57 @@ CREATE TABLE IF NOT EXISTS source_order_classifications (
 CREATE INDEX IF NOT EXISTS catalog_payment_record_scope
  ON source_order_versions(source,(fact->>'domain'),(split_part(record_key,':',1)),occurred_at)
  WHERE kind='ORDER_PAID';
+
+ALTER TABLE source_order_classifications ADD COLUMN IF NOT EXISTS sales_claims jsonb;
+
+CREATE TABLE IF NOT EXISTS catalog_sales_context (
+ source text PRIMARY KEY,
+ captured_at timestamptz NOT NULL,
+ snapshot_digest bytea NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS catalog_sales_people_sources (
+ id uuid PRIMARY KEY,
+ source text NOT NULL REFERENCES catalog_sales_context(source),
+ external_id text NOT NULL CHECK (external_id<>''),
+ person_id bigint NOT NULL REFERENCES people(id),
+ valid_from timestamptz NOT NULL,
+ valid_to timestamptz CHECK (valid_to>valid_from),
+ observed_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS catalog_sales_person_lookup ON catalog_sales_people_sources(source,external_id,observed_at);
+
+CREATE TABLE IF NOT EXISTS catalog_sales_company_aliases (
+ id uuid PRIMARY KEY,
+ source text NOT NULL REFERENCES catalog_sales_context(source),
+ external_id text NOT NULL CHECK (external_id<>''),
+ company_uuid uuid NOT NULL,
+ company_unit_id uuid NOT NULL REFERENCES organization_units(id),
+ valid_from timestamptz NOT NULL,
+ valid_to timestamptz CHECK (valid_to>valid_from),
+ observed_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS catalog_sales_company_lookup ON catalog_sales_company_aliases(source,external_id,observed_at);
+
+CREATE TABLE IF NOT EXISTS catalog_sales_categories (
+ source text NOT NULL REFERENCES catalog_sales_context(source),
+ company_uuid uuid NOT NULL,
+ category_uuid uuid,
+ valid_from timestamptz NOT NULL,
+ valid_to timestamptz CHECK (valid_to>valid_from),
+ observed_at timestamptz NOT NULL,
+ PRIMARY KEY(source,company_uuid,valid_from)
+);
+
+CREATE TABLE IF NOT EXISTS catalog_sales_appointments (
+ id uuid PRIMARY KEY,
+ source text NOT NULL REFERENCES catalog_sales_context(source),
+ person_id bigint NOT NULL REFERENCES people(id),
+ role text NOT NULL CHECK (role<>''),
+ scope text NOT NULL CHECK (scope IN ('PRODUCT','PROJECT','ORGANIZATION_UNIT')),
+ scope_key text NOT NULL CHECK (scope_key<>''),
+ valid_from timestamptz NOT NULL,
+ valid_to timestamptz CHECK (valid_to>valid_from),
+ observed_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS catalog_sales_appointment_lookup ON catalog_sales_appointments(source,scope,scope_key,observed_at);

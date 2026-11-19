@@ -35,11 +35,13 @@ func classifySourcePayment(source, domain, entity, table string) sourceClassific
 	return sourceClassification{}
 }
 
-func storeSourceClassification(ctx context.Context, tx pgx.Tx, version int64, classification sourceClassification) error {
-	tag, err := tx.Exec(ctx, `INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier)
-	 VALUES($1,$2,$3,$4) ON CONFLICT(source_version_id) DO UPDATE SET classifier=excluded.classifier
-	 WHERE (source_order_classifications.entity_type,source_order_classifications.business_key,source_order_classifications.classifier)
-	 =(excluded.entity_type,excluded.business_key,excluded.classifier)`, version, classification.Entity, classification.Key, classification.Classifier)
+func storeSourceClassification(ctx context.Context, tx pgx.Tx, version int64, classification sourceClassification, claims []vipClaim) error {
+	tag, err := tx.Exec(ctx, `INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier,sales_claims)
+	 VALUES($1,$2,$3,$4,$5) ON CONFLICT(source_version_id) DO UPDATE
+	  SET sales_claims=coalesce(source_order_classifications.sales_claims,excluded.sales_claims)
+	 WHERE (source_order_classifications.sales_claims IS NULL OR excluded.sales_claims IS NULL
+	  OR source_order_classifications.sales_claims=excluded.sales_claims) AND (source_order_classifications.entity_type,source_order_classifications.business_key,source_order_classifications.classifier)
+	 =(excluded.entity_type,excluded.business_key,excluded.classifier)`, version, classification.Entity, classification.Key, classification.Classifier, claims)
 	if err == nil && tag.RowsAffected() == 0 {
 		return conflict
 	}

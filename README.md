@@ -64,7 +64,9 @@ go -C server run . import-organization /path/to/organization.json
 go -C server run . import-legacy-catalog /path/to/catalog.json
 ```
 
-固定账期配置包含场景映射时，试算页的「订单规则匹配」按实际付款时间查看来源场景及规则版本。同优先级规则重叠时列为冲突。展示的固定分项用于核对，正式计提待整套规则与实际业务验证后开放。
+固定账期配置包含场景映射时，试算页的「订单规则匹配」按实际付款时间查看来源场景及规则版本。同优先级规则重叠时列为冲突。大春 AI 499 的「查看销售分项」根据成交时有效的来源人员、销售公司、费率类别、销售任职和小组归属计算。符合内部拆分条件时，各岗位金额合计与销售总额一致。缺少归属或任职时显示具体待核原因。展示的分项用于核对，正式计提待整套规则与实际业务验证后开放。
+
+可将销售计算主资料通过 `import-sales-context` 导入专用开发库。文件包含 `source`、`capturedAt`、`people`、`personLinks`、`companyLinks`、`categories` 和 `appointments`，其中人员链接使用已合并的正式人员主键，类别与任职保留起止时间。公司链接的 `unitId` 对应已导入的公司组织主键。
 
 开发验证可使用测试来源接口选取样本。可将 `source` 和 `facts` 写入同一个 JSON 文件，`facts` 为来源接口返回的 `source.order-fact/1.0` 记录数组。在专用开发库可重复导入同一文件。已配置单笔接口的环境可按原订单 ID 查看来源更新。
 
