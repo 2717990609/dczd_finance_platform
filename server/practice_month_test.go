@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -114,6 +116,20 @@ func TestPracticeRefundUsesFinancialMonthAndKeepsFrozenClass(t *testing.T) {
 	if late.Total != -150 || late.RefundCount != 1 || late.IssueCount != 0 {
 		t.Fatalf("late August refund should go in current month: %+v", late)
 	}
+	freeze(late)
+	if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", august); err == nil {
+		t.Fatal("a prior monthly debit cannot be removed while a later debit for the same payment is settled")
+	}
+	if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", november); err != nil {
+		t.Fatalf("technical correction must allow deleting the latest monthly debit: %v", err)
+	}
+	if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", august); err != nil {
+		t.Fatalf("the earlier debit should reopen after its dependent settlement is removed: %v", err)
+	}
+	if err := s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)", november).Scan(&queued); err != nil || !queued {
+		t.Fatalf("reopening August must refresh November's still-readable draft: %t %v", queued, err)
+	}
+	freeze(open)
 	var detail json.RawMessage
 	if err := s.db.QueryRow(ctx, draftDetailSQL, november, 0, 0, late.Version, 0, 0).Scan(&detail); err != nil {
 		t.Fatal(err)
@@ -202,7 +218,7 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 		StartsOn: "2026-06-12", EndsOn: "2026-06-12", SourcePeriodKey: "PRACTICE:1:1:6"}))
 	july := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "七月退款", SettlementMonth: "2026-07"}))
 	august := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "八月退款", SettlementMonth: "2026-08"}))
-	at := time.Date(2026, 6, 10, 1, 0, 0, 0, time.UTC)
+	at := time.Date(2026, 5, 10, 1, 0, 0, 0, time.UTC)
 	seller := id(s.createPerson(ctx, createPersonInput{Name: "结算销售"}))
 	later := id(s.createPerson(ctx, createPersonInput{Name: "接任销售"}))
 	const unit = "41000000-0000-4000-8000-000000000010"
@@ -248,7 +264,7 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 			t.Fatal(err)
 		}
 	}
-	start := at.AddDate(0, 0, 2)
+	start := time.Date(2026, 6, 12, 1, 0, 0, 0, time.UTC)
 	store(paid("10", 4000), paid("11", 6000), paid("12", 10000), refund("10", "1", 1000, at.Add(time.Hour)))
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: "PRACTICE:1:1:6", Hash: "replay", SourceVersion: 1, StartsAt: start,
@@ -281,6 +297,33 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 		t.Fatalf("settled tier before refund: %+v", original)
 	}
 	freeze(original)
+	future := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "九月实战班", Ordinal: 2,
+		StartsOn: "2026-09-10", EndsOn: "2026-09-10", SourcePeriodKey: "PRACTICE:1:1:9"}))
+	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &future, Label: "交付分润", Components: []component{
+		{Type: "delivery", Mode: "period_rate", Value: 100000,
+			PeriodBenefit: &practicePeriodBenefit{Label: "交付", Pool: &practicePoolTarget{PoolID: pool, OwnerID: seller}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	futureAt := time.Date(2026, 9, 10, 1, 0, 0, 0, time.UTC)
+	futurePayment := paid("13", 2000)
+	futurePayment.OccurredAt, futurePayment.UpdatedAt = futureAt.Add(-time.Hour), futureAt.Add(-time.Hour)
+	store(futurePayment)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storePracticeRoster(ctx, tx, practiceRoster{
+			Key: "PRACTICE:1:1:9", Hash: "future", SourceVersion: 1, StartsAt: futureAt, ConfirmedAt: futureAt.Add(time.Hour),
+			Enrollments: []practiceEnrollment{{SourceEnrollmentID: "3", ParticipantID: "3", MembershipType: 3,
+				CommissionEligible: true, SignedAt: futureAt, PaidOrderIDs: []string{"13"}, ContentHash: "cc"}},
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	futureDraft := calculate(future)
+	if futureDraft.Total != 200 || futureDraft.IssueCount != 0 {
+		t.Fatalf("unexpected later pool credit: %+v", futureDraft)
+	}
+	freeze(futureDraft)
 	if _, err := s.db.Exec(ctx, "UPDATE organization_assignments SET unit_id=$2 WHERE person_id=$1", seller, newDept); err != nil {
 		t.Fatal(err)
 	}
@@ -293,6 +336,24 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 	draft := calculate(july)
 	if draft.Total != -4800 || draft.RefundCount != 6 || draft.IssueCount != 0 {
 		t.Fatalf("whole class must cross the tier using frozen inputs: %+v", draft)
+	}
+	readPool := func(period, version int64) poolDraftItem {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.draftPools(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/draft-pools?periodId=%d&version=%d", period, version), nil))
+		var report poolDraftReport
+		if err := json.Unmarshal(w.Body.Bytes(), &report); w.Code != http.StatusOK || err != nil || len(report.Items) != 1 {
+			t.Fatalf("expected one team pool: %d %s", w.Code, w.Body.String())
+		}
+		return report.Items[0]
+	}
+	if julyPool := readPool(july, draft.Version); julyPool.Opening != 3800 || julyPool.Refund != -2400 || julyPool.Balance != 1400 {
+		t.Fatalf("July pool must exclude the September class despite its small ordinal: %+v", julyPool)
+	}
+	var laterActivity bool
+	scope := []poolScope{{Unit: unit, Scenario: "class", Item: fmt.Sprint(pool)}}
+	if err := s.db.QueryRow(ctx, laterSettlementPoolSQL, july, scope).Scan(&laterActivity); err != nil || !laterActivity {
+		t.Fatalf("September's confirmed pool must be visible as later activity: %t %v", laterActivity, err)
 	}
 	var lines, related, principal int64
 	if err := s.db.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE p.order_id='11')
@@ -309,7 +370,8 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 		t.Fatalf("the original pool must absorb the whole-class delivery deduction: %d %v", poolDebit, err)
 	}
 	var detail struct {
-		Refunds []struct{ OriginalOrderID, ReplayTriggerOrderID string }
+		Refunds                 []struct{ OriginalOrderID, ReplayTriggerOrderID string }
+		PoolAllocationAvailable bool
 	}
 	if err := s.db.QueryRow(ctx, draftDetailSQL, july, 0, 0, draft.Version, 0, 0).Scan(&detail); err != nil {
 		t.Fatal(err)
@@ -320,7 +382,7 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 			linked++
 		}
 	}
-	if linked != 2 {
+	if linked != 2 || !detail.PoolAllocationAvailable {
 		t.Fatalf("affected balance must identify the triggering refund's order: %+v", detail)
 	}
 	if err := s.db.QueryRow(ctx, `SELECT sum((v.fact->>'amountMinor')::bigint) FROM calculation_draft_performance f
@@ -362,6 +424,9 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 		t.Fatalf("August draft before July closes: %+v", open)
 	}
 	freeze(draft)
+	if septemberPool := readPool(future, futureDraft.Version); septemberPool.Opening != 3800 || septemberPool.Balance != 4000 {
+		t.Fatalf("later backfill must not change an already confirmed class's pool balance: %+v", septemberPool)
+	}
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		return enqueueDraftPeriods(ctx, tx, draftRefreshAfterClose, july)
 	}); err != nil {
@@ -375,9 +440,34 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 		t.Fatal(err)
 	}
 	var next draftSummary
-	if err := s.db.QueryRow(ctx, "SELECT refund_minor,refund_count,issue_count FROM calculation_drafts WHERE period_id=$1",
-		august).Scan(&next.Total, &next.RefundCount, &next.IssueCount); err != nil || next.Total != -200 || next.RefundCount != 2 || next.IssueCount != 0 {
+	if err := s.db.QueryRow(ctx, "SELECT version,refund_minor,refund_count,issue_count FROM calculation_drafts WHERE period_id=$1",
+		august).Scan(&next.Version, &next.Total, &next.RefundCount, &next.IssueCount); err != nil || next.Total != -200 || next.RefundCount != 2 || next.IssueCount != 0 {
 		t.Fatalf("August must debit only the incremental amount: %+v", next)
+	}
+	earlier := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "五月退款", SettlementMonth: "2026-05"}))
+	store(refund("12", "5", 500, at.AddDate(0, 0, 5)))
+	early := calculate(earlier)
+	if early.Total != -100 || early.IssueCount != 0 {
+		t.Fatalf("late-synced refund still belongs to May: %+v", early)
+	}
+	if mayPool := readPool(earlier, early.Version); mayPool.Opening != 0 || mayPool.Refund != -50 || mayPool.Balance != -50 {
+		t.Fatalf("the class credit has not entered the May pool: %+v", mayPool)
+	}
+	freeze(early)
+	if augustPool := readPool(august, calculate(august).Version); augustPool.Opening != 1350 || augustPool.Refund != -100 || augustPool.Balance != 1250 {
+		t.Fatalf("the June class must offset the deficit before the following months: %+v", augustPool)
+	}
+	if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", earlier); err != nil {
+		t.Fatalf("an already frozen pool report that never used May must not prevent removing May: %v", err)
+	}
+	empty := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "十月退款", SettlementMonth: "2026-10"}))
+	emptyDraft := calculate(empty)
+	freeze(emptyDraft)
+	if item := readPool(empty, emptyDraft.Version); item.Refund != 0 || item.Income != 0 || item.Opening != 1600 || item.Balance != 1600 {
+		t.Fatalf("an empty refund month still carries the confirmed pool balance: %+v", item)
+	}
+	if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", future); err == nil {
+		t.Fatal("removing September would change the confirmed October carry-in")
 	}
 	if _, err := s.db.Exec(ctx, "UPDATE calculation_drafts SET practice_replay_inputs=NULL WHERE period_id=$1", class); err == nil {
 		t.Fatal("settled inputs must be immutable")

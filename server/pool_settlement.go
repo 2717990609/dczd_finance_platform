@@ -50,7 +50,7 @@ func readSettlementScope(ctx context.Context, tx pgx.Tx, periodID int64, lock bo
 	 FROM periods p JOIN products pro ON pro.id=p.product_id LEFT JOIN calculation_drafts d ON d.period_id=p.id
 	 WHERE p.id=$1`
 	if lock {
-		query += ` FOR NO KEY UPDATE OF p FOR SHARE OF pro`
+		query += ` FOR NO KEY UPDATE OF p,pro`
 	}
 	review := settlementReview{Pools: []settlementPoolGap{}}
 	err := tx.QueryRow(ctx, query, periodID).Scan(&review.product, &review.Enabled, &review.Ended, &review.mode,
@@ -122,8 +122,9 @@ const settlementPoolFundingSQL = `SELECT a.id,a.revision,a.unit_id::text,a.item_
 // A historical close can only affect later periods on an account whose movements
 // it changes. Unrelated products and pools can still settle independently.
 const laterSettlementPoolSQL = `SELECT EXISTS (
- SELECT 1 FROM periods target
- JOIN periods later ON later.product_id=target.product_id AND later.ordinal>target.ordinal
+ SELECT 1 FROM pool_period_order target
+ JOIN pool_period_order later ON later.product_id=target.product_id
+  AND (later.book_date,later.book_stage,later.ordinal)>(target.book_date,target.book_stage,target.ordinal)
  JOIN settlements s ON s.period_id=later.id
  JOIN pool_account_activity a ON a.period_id=later.id
  JOIN jsonb_to_recordset($2::jsonb) q("unitId" uuid,"itemKey" text,scenario text)

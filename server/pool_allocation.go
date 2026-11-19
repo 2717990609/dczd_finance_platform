@@ -47,7 +47,9 @@ func (a *poolAccount) credit(id, amount int64) error {
 
 func (a *poolAccount) refund(original, amount int64) error {
 	index, found := a.indices[original]
-	if !found || amount <= 0 {
+	// A late-synced refund may belong to a month before the originating
+	// class was booked. Its debit starts before that income is available.
+	if (!found && original != 0) || amount <= 0 {
 		return conflict
 	}
 	next, err := addMinor(a.balance, -amount)
@@ -55,9 +57,12 @@ func (a *poolAccount) refund(original, amount int64) error {
 		return err
 	}
 	a.balance = next
-	used := min(amount, a.lots[index].Remaining)
-	a.lots[index].Remaining -= used
-	left := amount - used
+	left := amount
+	if found {
+		used := min(left, a.lots[index].Remaining)
+		a.lots[index].Remaining -= used
+		left -= used
+	}
 	for i := range a.lots {
 		if left == 0 {
 			break

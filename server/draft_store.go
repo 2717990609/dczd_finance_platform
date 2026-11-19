@@ -537,10 +537,12 @@ const draftDetailSQL = `SELECT jsonb_build_object(
  'catalog',d.rule_id IS NULL AND NOT (` + practiceRefundMonthScope + `),
  'practiceRefundMonth',(` + practiceRefundMonthScope + `),
  'refundsReady',d.rule_id IS NOT NULL OR d.catalog_refunds_ready OR (` + practiceRefundMonthScope + `),
- 'poolAllocationAvailable',(d.rule_id IS NULL AND d.catalog_refunds_ready OR d.practice_roster_id IS NOT NULL AND (EXISTS(
-  SELECT 1 FROM pool_account_activity movement JOIN periods origin ON origin.id=movement.period_id JOIN periods target ON target.id=d.period_id
-  WHERE origin.product_id=target.product_id AND (origin.id=target.id OR origin.ordinal<target.ordinal
-   AND EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=origin.id)))
+ 'poolAllocationAvailable',(d.rule_id IS NULL AND d.catalog_refunds_ready OR (d.practice_roster_id IS NOT NULL OR (` + practiceRefundMonthScope + `)) AND (EXISTS(
+  SELECT 1 FROM pool_account_activity movement JOIN pool_period_order origin ON origin.id=movement.period_id
+  JOIN pool_period_order target ON target.id=d.period_id
+  WHERE origin.product_id=target.product_id AND (origin.id=target.id OR
+   (origin.book_date,origin.book_stage,origin.ordinal)<(target.book_date,target.book_stage,target.ordinal)
+   AND EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=origin.id AND (st.id IS NULL OR s.id<st.id))))
   OR EXISTS(SELECT 1 FROM monthly_pool_allocations a JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
    WHERE a.period_id=d.period_id))),
  'totalMinor',d.total_minor+d.refund_minor+d.correction_minor,'accruedMinor',d.total_minor,

@@ -53,9 +53,10 @@ const poolAllocationBasisSQL = `SELECT md5(concat_ws('|',
  coalesce(extract(epoch FROM (SELECT captured_at FROM organization_import_state WHERE singleton))::text,''),
  coalesce(extract(epoch FROM c.captured_at)::text,''),
  (SELECT coalesce(string_agg(st.id::text,',' ORDER BY st.id),'') FROM settlements st
-  JOIN periods prior ON prior.id=st.period_id
-  WHERE prior.product_id=target.product_id AND prior.ordinal<target.ordinal)))
- FROM periods target LEFT JOIN legacy_catalog_products config ON config.product_id=target.product_id
+  JOIN pool_period_order prior ON prior.id=st.period_id
+  WHERE prior.product_id=target.product_id
+   AND (prior.book_date,prior.book_stage,prior.ordinal)<(target.book_date,target.book_stage,target.ordinal))))
+ FROM pool_period_order target LEFT JOIN legacy_catalog_products config ON config.product_id=target.product_id
  LEFT JOIN catalog_sales_context c ON c.source=config.source_system WHERE target.id=`
 
 const poolAllocationCurrentSQL = `(a.draft_version=d.version AND
@@ -69,15 +70,30 @@ const poolAllocationCurrentSQL = `(a.draft_version=d.version AND
 ))`
 
 const poolEntriesSQL = `WITH scope AS (
- SELECT p.id,p.ordinal FROM periods target
- JOIN periods p ON p.product_id=target.product_id AND p.ordinal<=target.ordinal
+ SELECT p.id,p.book_date<>'-infinity'::date AS practice,row_number() OVER (ORDER BY p.book_date,p.book_stage,p.ordinal) AS seq
+ FROM pool_period_order target
+ JOIN pool_period_order p ON p.product_id=target.product_id
+  AND (p.book_date,p.book_stage,p.ordinal)<=(target.book_date,target.book_stage,target.ordinal)
  JOIN calculation_drafts d ON d.period_id=p.id
- WHERE target.id=$1 AND (p.id=target.id OR EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id))
+ LEFT JOIN settlements final ON final.period_id=target.id
+ LEFT JOIN settlements posted ON posted.period_id=p.id
+ WHERE target.id=$1 AND (p.id=target.id OR posted.id IS NOT NULL
+  AND (final.id IS NULL OR target.book_date='-infinity'::date OR posted.id<final.id))
+), refunds AS MATERIALIZED (
+ SELECT r.original_line_id,r.period_id,r.amount_minor,r.refund_source_version_id,r.id,p.seq,p.practice
+ FROM scope p JOIN calculation_draft_refunds r ON r.period_id=p.id AND r.amount_minor<0
+ JOIN pool_line_accounts account ON account.line_id=r.original_line_id
+ LEFT JOIN scope origin ON origin.id=account.period_id
+ WHERE p.practice OR origin.id IS NOT NULL
+), required_lines AS (
+ SELECT account.line_id FROM scope JOIN pool_line_accounts account ON account.period_id=scope.id
+ UNION SELECT original_line_id FROM refunds
 ), lines AS MATERIALIZED (
  SELECT l.id,account.unit_id::text AS unit,account.item_key AS item,account.scenario_key AS scenario,
-  coalesce(pool.name,a.name,l.component_type) AS name,l.period_id,l.amount_minor,scope.ordinal,v.occurred_at
- FROM scope JOIN pool_line_accounts account ON account.period_id=scope.id
+  coalesce(pool.name,a.name,l.component_type) AS name,l.period_id,l.amount_minor,scope.seq,v.occurred_at
+ FROM required_lines needed JOIN pool_line_accounts account ON account.line_id=needed.line_id
  JOIN calculation_draft_lines l ON l.id=account.line_id
+ LEFT JOIN scope ON scope.id=l.period_id
  LEFT JOIN legacy_rule_versions r ON r.source_id=l.catalog_rule_id
  LEFT JOIN practice_pools pool ON pool.id=l.practice_pool_id
  JOIN source_order_versions v ON v.id=l.source_version_id
@@ -86,20 +102,21 @@ const poolEntriesSQL = `WITH scope AS (
   WHERE b->>'item_key'=l.component_type LIMIT 1
  ) a ON true
 ), entries AS (
- SELECT l.unit,l.item,l.scenario,l.name,l.period_id,l.ordinal,l.id AS source_id,l.amount_minor,
-  0 AS kind,l.occurred_at,l.id AS sort_id FROM lines l
+ SELECT l.unit,l.item,l.scenario,l.name,l.period_id,l.seq,l.id AS source_id,l.amount_minor,
+  0 AS kind,l.occurred_at,l.id AS sort_id FROM lines l WHERE l.seq IS NOT NULL
  UNION ALL
- SELECT l.unit,l.item,l.scenario,l.name,r.period_id,p.ordinal,l.id,r.amount_minor,1,v.occurred_at,r.id
- FROM scope p JOIN calculation_draft_refunds r ON r.period_id=p.id AND r.amount_minor<0
+ SELECT l.unit,l.item,l.scenario,l.name,r.period_id,r.seq,
+  CASE WHEN r.practice AND (l.seq IS NULL OR l.seq>r.seq) THEN 0 ELSE l.id END,r.amount_minor,1,v.occurred_at,r.id
+ FROM refunds r
  JOIN lines l ON l.id=r.original_line_id JOIN source_order_versions v ON v.id=r.refund_source_version_id
  UNION ALL
- SELECT l.unit,l.item,l.scenario,l.name,a.period_id,p.ordinal,l.id,-f.amount_minor,2,s.confirmed_at,sh.id
+ SELECT l.unit,l.item,l.scenario,l.name,a.period_id,p.seq,l.id,-f.amount_minor,2,s.confirmed_at,sh.id
  FROM scope p JOIN settlements s ON s.period_id=p.id JOIN monthly_pool_allocations a ON a.period_id=p.id AND a.draft_version=s.draft_version
  JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
  JOIN monthly_pool_allocation_funding f ON f.share_id=sh.id JOIN lines l ON l.id=f.source_line_id
 )
 SELECT unit,item,scenario,name,period_id,source_id,amount_minor,kind FROM entries
-ORDER BY ordinal,kind,occurred_at,sort_id,source_id`
+ORDER BY seq,kind,occurred_at,sort_id,source_id`
 
 const poolEligibilitySQL = `SELECT DISTINCT l.id,m.person_id,person.name FROM unnest($1::bigint[]) source(id)
  JOIN calculation_draft_lines l ON l.id=source.id
@@ -133,7 +150,9 @@ func readPoolDraftVersion(ctx context.Context, tx pgx.Tx, periodID int64) (int64
 	var version int64
 	var closed bool
 	err := tx.QueryRow(ctx, `SELECT d.version,EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=d.period_id)
-	 FROM calculation_drafts d WHERE d.period_id=$1 AND (d.rule_id IS NULL AND d.catalog_refunds_ready OR d.practice_roster_id IS NOT NULL)`, periodID).Scan(&version, &closed)
+	 FROM calculation_drafts d JOIN periods period ON period.id=d.period_id JOIN products product ON product.id=period.product_id
+	 WHERE d.period_id=$1 AND (d.rule_id IS NULL AND d.catalog_refunds_ready OR d.practice_roster_id IS NOT NULL
+	  OR (`+practiceRefundMonthScope+`))`, periodID).Scan(&version, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = errPoolStale
 	}

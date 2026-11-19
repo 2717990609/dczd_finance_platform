@@ -127,6 +127,12 @@ ALTER TABLE periods DROP CONSTRAINT IF EXISTS periods_product_id_ordinal_key;
 CREATE UNIQUE INDEX IF NOT EXISTS periods_calendar_month
  ON periods(product_id, calendar_month) WHERE calendar_month IS NOT NULL;
 
+CREATE OR REPLACE VIEW pool_period_order AS
+ SELECT p.id,p.product_id,p.ordinal,
+  CASE WHEN product.period_mode='class' THEN p.ends_on ELSE '-infinity'::date END AS book_date,
+  CASE WHEN product.period_mode='class' AND p.calendar_month IS NOT NULL THEN 1 ELSE 0 END AS book_stage
+ FROM periods p JOIN products product ON product.id=p.product_id;
+
 ALTER TABLE source_order_versions ADD COLUMN IF NOT EXISTS occurred_at timestamptz;
 UPDATE source_order_versions SET occurred_at = (fact->>'occurredAt')::timestamptz WHERE occurred_at IS NULL;
 ALTER TABLE source_order_versions ALTER COLUMN occurred_at SET NOT NULL;
@@ -248,6 +254,21 @@ CREATE TABLE IF NOT EXISTS settlement_removals (
 );
 CREATE INDEX IF NOT EXISTS settlement_removals_period ON settlement_removals(period_id,settlement_id DESC);
 
+-- Serialize confirmation and technical removal for the same product. Writing
+-- the row also rejects a concurrent settlement with an older snapshot.
+CREATE OR REPLACE FUNCTION lock_settlement_product() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE scope_id bigint;
+BEGIN
+ scope_id := CASE WHEN TG_OP='INSERT' THEN NEW.period_id ELSE OLD.period_id END;
+ UPDATE products SET settlement_enabled=settlement_enabled
+ WHERE id=(SELECT product_id FROM periods WHERE id=scope_id);
+ IF TG_OP='INSERT' THEN RETURN NEW; END IF;
+ RETURN OLD;
+END
+$$;
+CREATE OR REPLACE TRIGGER lock_settlement_product BEFORE INSERT OR DELETE ON settlements
+ FOR EACH ROW EXECUTE FUNCTION lock_settlement_product();
+
 CREATE OR REPLACE FUNCTION protect_final_calculation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_OP <> 'INSERT' AND EXISTS (SELECT 1 FROM settlements WHERE period_id=OLD.period_id) THEN
@@ -269,10 +290,12 @@ CREATE OR REPLACE TRIGGER protect_confirmed_issues BEFORE INSERT OR UPDATE OR DE
  FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
 
 CREATE OR REPLACE FUNCTION protect_settlement_record() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE refund_dependents bigint[];
 BEGIN
  IF TG_OP='UPDATE' THEN
   RAISE EXCEPTION 'confirmed settlement cannot be changed' USING ERRCODE='55000';
  END IF;
+ SELECT array_agg(period_id) INTO refund_dependents FROM practice_refund_dependents(OLD.period_id);
  IF EXISTS(
     SELECT 1 FROM calculation_draft_lines l
     JOIN calculation_draft_refunds a ON a.original_line_id=l.id
@@ -282,12 +305,24 @@ BEGIN
     JOIN calculation_draft_corrections a ON a.original_line_id=l.id
     JOIN settlements s ON s.period_id=a.period_id WHERE l.period_id=OLD.period_id AND s.id<>OLD.id
  ) OR EXISTS(
-    SELECT 1 FROM periods original
+    SELECT 1 FROM pool_period_order original
     JOIN pool_account_activity a ON a.period_id=original.id
-    JOIN periods later ON later.product_id=original.product_id AND later.ordinal>original.ordinal
+    JOIN pool_period_order later ON later.product_id=original.product_id
+     AND (later.book_date,later.book_stage,later.ordinal)>(original.book_date,original.book_stage,original.ordinal)
     JOIN pool_account_activity b ON b.period_id=later.id
       AND (a.unit_id,a.item_key,a.scenario_key)=(b.unit_id,b.item_key,b.scenario_key)
-    JOIN settlements s ON s.period_id=later.id WHERE original.id=OLD.period_id
+    JOIN settlements s ON s.period_id=later.id
+     AND (original.book_date='-infinity'::date OR s.id>OLD.id)
+    WHERE original.id=OLD.period_id
+ ) OR EXISTS(
+    SELECT 1 FROM pool_period_order original
+    JOIN pool_period_order later ON later.product_id=original.product_id
+     AND (later.book_date,later.book_stage,later.ordinal)>(original.book_date,original.book_stage,original.ordinal)
+    JOIN settlements s ON s.period_id=later.id AND s.id>OLD.id
+    WHERE original.id=OLD.period_id AND original.book_date<>'-infinity'::date
+     AND settlement_changes_pool_carry(OLD.period_id,OLD.draft_version)
+ ) OR EXISTS(
+    SELECT 1 FROM settlements s WHERE s.period_id=ANY(refund_dependents) AND s.id>OLD.id
  ) OR EXISTS(
     SELECT 1 FROM calculation_draft_performance o
     JOIN calculation_draft_performance a ON a.payment_version_id=o.source_version_id
@@ -309,6 +344,11 @@ BEGIN
    UNION SELECT a.period_id FROM calculation_draft_performance a
    JOIN calculation_draft_performance o ON o.source_version_id=a.payment_version_id WHERE o.period_id=OLD.period_id)
  AND period_id<>OLD.period_id;
+ INSERT INTO draft_refresh_queue(period_id)
+ SELECT p.id FROM periods p WHERE p.id=ANY(refund_dependents)
+ AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id)
+ ORDER BY p.id ON CONFLICT(period_id) DO UPDATE
+ SET generation=excluded.generation,requested_at=excluded.requested_at,retry_on_scan=true,message='';
  INSERT INTO settlement_removals(settlement_id,period_id,draft_version,removed_by)
  VALUES(OLD.id,OLD.period_id,OLD.draft_version,session_user);
  RETURN OLD;
@@ -657,6 +697,24 @@ CREATE INDEX IF NOT EXISTS calculation_performance_payment ON calculation_draft_
 CREATE OR REPLACE TRIGGER protect_confirmed_performance BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_performance
  FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
 
+-- A monthly refund changes future deductions for its payment. A whole-class
+-- replay can also change future deductions on other payments in that class.
+CREATE OR REPLACE FUNCTION practice_refund_dependents(scope_id bigint)
+RETURNS TABLE(period_id bigint) LANGUAGE sql STABLE AS $$
+ SELECT DISTINCT candidate.period_id
+ FROM periods removed JOIN products product ON product.id=removed.product_id
+ JOIN calculation_draft_performance refund ON refund.period_id=removed.id AND refund.payment_version_id IS NOT NULL
+ JOIN calculation_draft_performance origin ON origin.source_version_id=refund.payment_version_id AND origin.payment_version_id IS NULL
+ JOIN calculation_drafts class ON class.period_id=origin.period_id AND class.practice_roster_id IS NOT NULL
+ JOIN periods class_period ON class_period.id=class.period_id AND class_period.product_id=removed.product_id
+ JOIN calculation_draft_performance related ON related.period_id=class.period_id AND related.payment_version_id IS NULL
+  AND (class.practice_replay_inputs IS NOT NULL OR related.source_version_id=origin.source_version_id)
+ JOIN calculation_draft_performance candidate ON candidate.payment_version_id=related.source_version_id
+ JOIN periods candidate_period ON candidate_period.id=candidate.period_id AND candidate_period.product_id=removed.product_id
+ WHERE removed.id=scope_id AND product.period_mode='class' AND removed.calendar_month IS NOT NULL
+  AND candidate.period_id<>removed.id AND candidate_period.calendar_month IS NOT NULL
+$$;
+
 INSERT INTO configuration_options(group_key,option_key,label,display_order) VALUES
  ('draftReportDimension','person','人员',10),
  ('draftReportDimension','company','公司',20),
@@ -877,6 +935,28 @@ CREATE OR REPLACE VIEW pool_account_activity AS
  SELECT a.period_id,a.unit_id,a.item_key,a.scenario_key FROM monthly_pool_allocations a
  JOIN calculation_drafts d ON d.period_id=a.period_id AND d.version=a.draft_version
  WHERE EXISTS(SELECT 1 FROM monthly_pool_allocation_shares s WHERE s.allocation_id=a.id);
+
+-- The next confirmed period can display an opening balance even when it has
+-- no movement on that account. A net posting changes that carry-in.
+CREATE OR REPLACE FUNCTION settlement_changes_pool_carry(scope_id bigint, scope_version bigint)
+RETURNS boolean LANGUAGE sql STABLE AS $$
+ SELECT EXISTS(
+  SELECT 1 FROM (
+   SELECT account.unit_id,account.item_key,account.scenario_key,l.amount_minor AS amount
+   FROM pool_line_accounts account JOIN calculation_draft_lines l ON l.id=account.line_id
+   WHERE account.period_id=scope_id
+   UNION ALL
+   SELECT account.unit_id,account.item_key,account.scenario_key,r.amount_minor
+   FROM calculation_draft_refunds r JOIN pool_line_accounts account ON account.line_id=r.original_line_id
+   WHERE r.period_id=scope_id AND r.amount_minor<0
+   UNION ALL
+   SELECT a.unit_id,a.item_key,a.scenario_key,-f.amount_minor
+   FROM monthly_pool_allocations a JOIN monthly_pool_allocation_shares s ON s.allocation_id=a.id
+   JOIN monthly_pool_allocation_funding f ON f.share_id=s.id
+   WHERE a.period_id=scope_id AND a.draft_version=scope_version
+  ) movement GROUP BY unit_id,item_key,scenario_key HAVING sum(amount)<>0
+ )
+$$;
 
 CREATE OR REPLACE FUNCTION protect_confirmed_catalog_scope() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
