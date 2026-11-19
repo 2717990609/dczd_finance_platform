@@ -159,3 +159,12 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 
 .catalog-match-totals { display: flex; flex-wrap: wrap; gap: 8px 22px; padding: 4px 15px 14px; }
 .catalog-match .ant-table-pagination { padding-inline: 12px; }
+
+.pool-form { display: grid; gap: 12px; padding: 14px; }
+.pool-control { display: grid; grid-template-columns: 80px minmax(0, 340px); align-items: center; gap: 8px; }
+.pool-balances { display: flex; gap: 10px 26px; flex-wrap: wrap; margin: 0; }
+.pool-balances dt, .pool-form .form-actions span { color: var(--muted); font-size: 13px; }
+.pool-balances dd { margin: 3px 0 0; font-variant-numeric: tabular-nums; font-weight: 650; }
+.pool-share { display: grid; grid-template-columns: minmax(0, 252px) minmax(80px, 125px) auto; gap: 8px; width: fit-content; max-width: 100%; }
+.pool-share .ant-input-number { width: 100%; }
+.pool-form .form-actions { align-items: center; }

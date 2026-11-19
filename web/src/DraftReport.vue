@@ -20,6 +20,7 @@ const columns = computed(() => [
   ...(props.draft.refundsReady ? [
     {title:'退款扣减',dataIndex:'refundMinor',key:'refundMinor',width:125,align:'right'},
     ...(props.draft.catalog ? [] : [{title:'推荐人更正',dataIndex:'correctionMinor',key:'correctionMinor',width:125,align:'right'}]),
+    ...(props.draft.catalog ? [{title:props.draft.settlement ? '团队池分配' : '团队池拟分配',dataIndex:'allocationMinor',key:'allocationMinor',width:135,align:'right'}] : []),
     {title:'本期净分润',dataIndex:'totalMinor',key:'totalMinor',width:125,align:'right'},
   ] : []),
 ])

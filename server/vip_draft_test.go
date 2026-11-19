@@ -63,9 +63,11 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	 "companyLinks":[{"id":%q,"externalId":"seller-company","companyId":%q,"unitId":%q,"from":"2026-01-01T00:00:00Z"}],"categories":[],
 	 "appointments":[{"id":%q,"partyId":%q,"role":"PROJECT_OWNER","scope":"PROJECT","key":"AI","from":"2026-01-01T00:00:00Z"},
 	 {"id":%q,"partyId":%q,"role":"SALES","scope":"PROJECT","key":"AI","from":"2026-01-01T00:00:00Z"},
-	 {"id":%q,"partyId":%q,"role":"TEAM_LEAD","scope":"ORGANIZATION_UNIT","key":%q,"from":"2026-01-01T00:00:00Z"}],
+	 {"id":%q,"partyId":%q,"role":"TEAM_LEAD","scope":"ORGANIZATION_UNIT","key":%q,"from":"2026-01-01T00:00:00Z"},
+	 {"id":%q,"partyId":%q,"role":"DELIVERY","scope":"ORGANIZATION_UNIT","key":%q,"from":"2026-01-01T00:00:00Z"},
+	 {"id":%q,"partyId":%q,"role":"DELIVERY","scope":"ORGANIZATION_UNIT","key":%q,"from":%q}],
 	 "organizations":[{"partyId":%q,"unitId":%q},{"partyId":%q,"unitId":%q}]}`,
-		id(21), id(12), id(22), id(14), id(17), id(23), id(11), id(24), id(12), id(25), id(13), id(18), id(15), id(17), id(16), id(18))
+		id(21), id(12), id(22), id(14), id(17), id(23), id(11), id(24), id(12), id(25), id(13), id(18), id(26), id(11), id(18), id(27), id(12), id(18), boundary.Format(time.RFC3339), id(15), id(17), id(16), id(18))
 	if err := storeVIPSalesContext(ctx, s.db, json.RawMessage(raw)); err != nil {
 		t.Fatal(err)
 	}
@@ -146,6 +148,79 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 			t.Fatalf("company and pool should have their own rows: %+v", report.Items)
 		}
 	}
+	readPools := func(summary draftSummary) poolDraftReport {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.draftPools(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/draft-pools?periodId=%d&version=%d", summary.PeriodID, summary.Version), nil))
+		var out poolDraftReport
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || w.Code != 200 {
+			t.Fatalf("pool summary %d: %v %s", w.Code, err, w.Body)
+		}
+		return out
+	}
+	firstPools := readPools(got)
+	if len(firstPools.Items) != 1 || firstPools.Items[0].Balance != 600 || len(firstPools.Items[0].Members) != 2 {
+		t.Fatalf("qualified pool snapshot = %+v", firstPools)
+	}
+	people := map[string]poolMember{}
+	for _, p := range firstPools.Items[0].Members {
+		people[p.Name] = p
+	}
+	alice, seller := people["负责人甲"], people["销售乙"]
+	if alice.Available != 600 || seller.Available != 300 {
+		t.Fatalf("payment-time member limits: %+v", people)
+	}
+	plan := savePoolAllocationInput{PeriodID: periodID, Version: got.Version, Basis: firstPools.Basis, poolScope: firstPools.Items[0].poolScope}
+	plan.Shares = []poolAllocationShare{{PersonID: seller.ID, Amount: 301}}
+	if _, err := s.savePoolAllocation(ctx, plan); !errors.Is(err, errPoolAmount) {
+		t.Fatalf("seller cannot use the earlier lot: %v", err)
+	}
+	plan.Shares = []poolAllocationShare{{PersonID: alice.ID, Amount: 350}}
+	plan.Retained = 100
+	if _, err := s.savePoolAllocation(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.savePoolAllocation(ctx, plan); !errors.Is(err, errPoolStale) {
+		t.Fatalf("same revision must avoid overwrite: %v", err)
+	}
+	if saved := readPools(got); !saved.Items[0].PlanCurrent || saved.Items[0].Revision != 1 || saved.Items[0].Balance != 600 {
+		t.Fatalf("saved pool draft = %+v", saved)
+	}
+	assertAllocationReport := func(expected int64) {
+		t.Helper()
+		for _, dimension := range []string{"person", "company", "department"} {
+			w := httptest.NewRecorder()
+			s.draftReport(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/draft-report?periodId=%d&version=%d&dimension=%s", periodID, got.Version, dimension), nil))
+			var body struct {
+				Items []struct {
+					Name                        string
+					TotalMinor, AllocationMinor int64
+				}
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != 200 {
+				t.Fatalf("report: %d %v %s", w.Code, err, w.Body)
+			}
+			var total, allocated int64
+			for _, row := range body.Items {
+				total += row.TotalMinor
+				if row.Name == "负责人甲" {
+					allocated = row.AllocationMinor
+				}
+			}
+			if total != 4400 || dimension == "person" && allocated != expected {
+				t.Fatalf("allocation should reclassify but not increase %s: %+v", dimension, body)
+			}
+		}
+	}
+	assertAllocationReport(350)
+	if _, err := s.db.Exec(ctx, "INSERT INTO organization_import_state(singleton,captured_at,digest) VALUES(true,now(),decode(repeat('aa',32),'hex'))"); err != nil {
+		t.Fatal(err)
+	}
+	if stale := readPools(got).Items[0]; stale.PlanCurrent || len(stale.Shares) != 2 {
+		t.Fatalf("org revision should preserve and invalidate entered amounts: %+v", stale)
+	}
+	assertAllocationReport(0)
+
 	if _, err := s.db.Exec(ctx, "UPDATE products SET settlement_enabled=true WHERE id=$1", productID); err != nil {
 		t.Fatal(err)
 	}
@@ -242,7 +317,22 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		}
 		return out.(draftSummary)
 	}
+	plan.Version, plan.Revision = finished.Version, 1
+	plan.Basis = readPools(finished).Basis
+	plan.Shares = []poolAllocationShare{{PersonID: alice.ID, Amount: 600}}
+	plan.Retained = 0
+	if _, err := s.savePoolAllocation(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+
 	closeFixture(finished)
+	if _, err := s.db.Exec(ctx, "UPDATE monthly_pool_allocation_shares SET amount_minor=400"); err == nil {
+		t.Fatal("confirmed recipient amount can change")
+	}
+	if _, err := s.savePoolAllocation(ctx, plan); !errors.Is(err, errSettlementClosed) {
+		t.Fatalf("closed pool plan accepted writes: %v", err)
+	}
+
 	sept := createPeriod("2026-09", "9 月")
 	lateAt := start.AddDate(0, 1, 2)
 	now := time.Now().In(shanghai)
@@ -266,6 +356,10 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if late.RefundTotal != -3440 || late.Total != -3440 || late.RefundCount != 5 || late.IssueCount != 0 {
 		t.Fatalf("the current period should take only the unbooked remainder: %+v", late)
 	}
+	if latePool := readPools(late).Items[0]; latePool.Opening != 122 || latePool.Refund != -449 || latePool.Balance != -327 {
+		t.Fatalf("refund after distribution must leave original distribution fixed and charge the pool: %+v", latePool)
+	}
+
 	saveRefund("one", "in-september", "2", 2100, lateAt.Add(time.Minute))
 	bookedChanged := draftAt(current)
 	if bookedChanged.RefundTotal != -3440 || bookedChanged.IssueCount != 1 {

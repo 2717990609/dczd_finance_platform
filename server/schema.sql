@@ -188,9 +188,33 @@ BEGIN
     JOIN calculation_draft_corrections a ON a.original_line_id=l.id
     JOIN settlements s ON s.period_id=a.period_id WHERE l.period_id=OLD.period_id AND s.id<>OLD.id
  ) OR EXISTS(
+    SELECT 1 FROM periods original
+    JOIN periods later ON later.product_id=original.product_id AND later.ordinal>original.ordinal
+    JOIN settlements s ON s.period_id=later.id
+    JOIN monthly_pool_allocations a ON a.period_id=later.id AND a.draft_version=s.draft_version
+    JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
+    WHERE original.id=OLD.period_id AND (
+     EXISTS(SELECT 1 FROM calculation_draft_lines l
+      JOIN legacy_rule_versions cv ON cv.source_id=l.catalog_rule_id
+      JOIN legacy_rule_packages pk ON pk.source_id=cv.package_id
+      WHERE l.allocation_owner_id IS NOT NULL
+       AND (l.beneficiary_unit_id,l.component_type,pk.scope_id)=(a.unit_id,a.item_key,a.scenario_key)
+       AND (l.period_id=original.id OR EXISTS(SELECT 1 FROM calculation_draft_refunds r
+        WHERE r.period_id=original.id AND r.original_line_id=l.id)))
+     OR EXISTS(SELECT 1 FROM monthly_pool_allocations earlier
+      JOIN monthly_pool_allocation_shares es ON es.allocation_id=earlier.id
+      WHERE earlier.period_id=original.id AND earlier.draft_version=OLD.draft_version
+       AND (earlier.unit_id,earlier.item_key,earlier.scenario_key)=(a.unit_id,a.item_key,a.scenario_key)))
+ ) OR EXISTS(
     SELECT 1 FROM calculation_draft_performance o
     JOIN calculation_draft_performance a ON a.payment_version_id=o.source_version_id
     JOIN settlements s ON s.period_id=a.period_id WHERE o.period_id=OLD.period_id AND s.id<>OLD.id
+ ) OR EXISTS(
+    SELECT 1 FROM calculation_draft_lines l
+    JOIN monthly_pool_allocation_funding f ON f.source_line_id=l.id
+    JOIN monthly_pool_allocation_shares sh ON sh.id=f.share_id
+    JOIN monthly_pool_allocations a ON a.id=sh.allocation_id
+    JOIN settlements s ON s.period_id=a.period_id WHERE l.period_id=OLD.period_id AND s.id<>OLD.id
  ) THEN
   RAISE EXCEPTION 'settlement has booked adjustments' USING ERRCODE='55000';
  END IF;
@@ -629,3 +653,59 @@ BEGIN
   );
  END IF;
 END $$;
+
+CREATE TABLE IF NOT EXISTS monthly_pool_allocations (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ period_id bigint NOT NULL REFERENCES calculation_drafts(period_id) ON DELETE CASCADE,
+ unit_id uuid NOT NULL REFERENCES organization_units(id),
+ item_key text NOT NULL,
+ scenario_key text NOT NULL,
+ draft_version bigint NOT NULL CHECK (draft_version>0),
+ basis_token text NOT NULL,
+ revision bigint NOT NULL CHECK (revision>0),
+ UNIQUE(period_id,unit_id,item_key,scenario_key)
+);
+
+CREATE TABLE IF NOT EXISTS monthly_pool_allocation_shares (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ allocation_id bigint NOT NULL REFERENCES monthly_pool_allocations(id) ON DELETE CASCADE,
+ person_id bigint REFERENCES people(id),
+ amount_minor bigint NOT NULL CHECK (amount_minor>0),
+ UNIQUE NULLS NOT DISTINCT(allocation_id,person_id)
+);
+
+CREATE TABLE IF NOT EXISTS monthly_pool_allocation_funding (
+ share_id bigint NOT NULL REFERENCES monthly_pool_allocation_shares(id) ON DELETE CASCADE,
+ source_line_id bigint NOT NULL REFERENCES calculation_draft_lines(id) ON DELETE CASCADE,
+ amount_minor bigint NOT NULL CHECK (amount_minor>0),
+ PRIMARY KEY(share_id,source_line_id)
+);
+CREATE INDEX IF NOT EXISTS monthly_pool_funding_source ON monthly_pool_allocation_funding(source_line_id);
+
+CREATE OR REPLACE TRIGGER protect_confirmed_pool_allocations BEFORE INSERT OR UPDATE OR DELETE ON monthly_pool_allocations
+ FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+
+CREATE OR REPLACE FUNCTION protect_confirmed_pool_children() RETURNS trigger LANGUAGE plpgsql AS $$
+DECLARE
+ allocation_ids bigint[];
+ share_ids bigint[];
+BEGIN
+ IF TG_TABLE_NAME='monthly_pool_allocation_shares' THEN
+  IF TG_OP<>'INSERT' THEN allocation_ids=array_append(allocation_ids,OLD.allocation_id); END IF;
+  IF TG_OP<>'DELETE' THEN allocation_ids=array_append(allocation_ids,NEW.allocation_id); END IF;
+ ELSE
+  IF TG_OP<>'INSERT' THEN share_ids=array_append(share_ids,OLD.share_id); END IF;
+  IF TG_OP<>'DELETE' THEN share_ids=array_append(share_ids,NEW.share_id); END IF;
+  SELECT array_agg(allocation_id) INTO allocation_ids FROM monthly_pool_allocation_shares WHERE id=ANY(share_ids);
+ END IF;
+ IF EXISTS(SELECT 1 FROM monthly_pool_allocations a JOIN settlements s USING(period_id) WHERE a.id=ANY(allocation_ids)) THEN
+  RAISE EXCEPTION 'confirmed pool allocation cannot be changed' USING ERRCODE='55000';
+ END IF;
+ IF TG_OP='DELETE' THEN RETURN OLD; END IF;
+ RETURN NEW;
+END $$;
+
+CREATE OR REPLACE TRIGGER protect_confirmed_pool_shares BEFORE INSERT OR UPDATE OR DELETE ON monthly_pool_allocation_shares
+ FOR EACH ROW EXECUTE FUNCTION protect_confirmed_pool_children();
+CREATE OR REPLACE TRIGGER protect_confirmed_pool_funding BEFORE INSERT OR UPDATE OR DELETE ON monthly_pool_allocation_funding
+ FOR EACH ROW EXECUTE FUNCTION protect_confirmed_pool_children();

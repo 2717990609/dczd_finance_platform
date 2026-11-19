@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import CatalogRuleMatches from './CatalogRuleMatches.vue'
 import DraftReport from './DraftReport.vue'
+import DraftPoolAllocations from './DraftPoolAllocations.vue'
 import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, api: Function, formatMoney: Function, formatTime: Function })
@@ -186,9 +187,11 @@ async function loadMore(section, cursorName) {
   <a-tabs v-if="draft" v-model:active-key="view">
     <a-tab-pane key="detail" tab="明细"/>
     <a-tab-pane v-if="reportDimensions.length" key="report" tab="业绩与分润"/>
+    <a-tab-pane v-if="draft.catalog && draft.refundsReady" key="pools" tab="团队池分配"/>
     <a-tab-pane v-if="hasMatching" key="matching" tab="订单规则匹配"/>
   </a-tabs>
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney"/>
+  <DraftPoolAllocations v-if="draft?.catalog && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
   <template v-if="draft && view==='detail'">
   <section class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>
