@@ -109,28 +109,91 @@ const practiceBlocksSQL = `SELECT e.id, CASE
  ) THEN 'PRACTICE_REFUND_PENDING'
  END AS issue
  FROM practice_roster_members member JOIN practice_enrollments e ON e.id=member.enrollment_id
- WHERE member.roster_id=$1 AND e.commission_eligible`
+ WHERE member.roster_id=ANY($1::bigint[]) AND e.commission_eligible`
 
-func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, rule paymentRule) (paymentDraft, []byte, error) {
+func readPracticeMembers(ctx context.Context, tx pgx.Tx, rosterIDs []int64, eligibleOnly bool) ([]practiceEnrollment, error) {
 	rows, err := tx.Query(ctx, `SELECT e.id,e.source_enrollment_id,e.participant_id,e.membership_type,e.commission_eligible,e.signed_at,e.paid_order_ids
-	 FROM practice_roster_members m JOIN practice_enrollments e ON e.id=m.enrollment_id WHERE m.roster_id=$1
-	 ORDER BY e.source_enrollment_id::bigint`, *summary.PracticeRosterID)
+	 FROM practice_roster_members m JOIN practice_enrollments e ON e.id=m.enrollment_id
+	 WHERE m.roster_id=ANY($1::bigint[]) AND (NOT $2 OR e.commission_eligible)
+	 ORDER BY m.roster_id,e.source_enrollment_id::bigint LIMIT $3`, rosterIDs, eligibleOnly, maxDraftPayments+1)
 	if err != nil {
-		return paymentDraft{}, nil, err
+		return nil, err
 	}
 	members, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (practiceEnrollment, error) {
 		var e practiceEnrollment
 		err := row.Scan(&e.ID, &e.SourceEnrollmentID, &e.ParticipantID, &e.MembershipType, &e.CommissionEligible, &e.SignedAt, &e.PaidOrderIDs)
 		return e, err
 	})
+	if len(members) > maxDraftPayments {
+		return nil, errDraftLimit
+	}
+	return members, err
+}
+
+func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, periodID int64, config practiceSalesTiers, startsAt time.Time) ([]int64, bool, error) {
+	var ordinal int
+	var rosterIDs []int64
+	err := tx.QueryRow(ctx, `SELECT current.ordinal, ARRAY(
+	 SELECT CASE WHEN roster.starts_at<$3 AND split_part(p.source_period_key,':',3)=split_part(current.source_period_key,':',3)
+	  THEN roster.id ELSE 0 END FROM periods p
+	 LEFT JOIN LATERAL (
+	  SELECT r.id,r.starts_at FROM practice_rosters r
+	  WHERE r.period_key=p.source_period_key ORDER BY r.source_version DESC LIMIT 1
+	 ) roster ON true
+	 WHERE p.product_id=current.product_id AND p.ordinal<current.ordinal AND CASE WHEN $4::timestamptz IS NULL THEN p.ordinal>=$2
+	  WHEN roster.starts_at IS NOT NULL THEN roster.starts_at>=$4
+	  ELSE p.ends_on>=($4 AT TIME ZONE 'Asia/Shanghai')::date END
+	 ORDER BY p.ordinal
+	 )
+	 FROM periods current WHERE current.id=$1`, periodID, config.CountFromOrdinal, startsAt, config.CountFromAt).Scan(&ordinal, &rosterIDs)
+	if err != nil {
+		return nil, false, err
+	}
+	if config.CountFromAt != nil {
+		if config.CountFromAt.After(startsAt) {
+			return nil, false, nil
+		}
+	} else if config.CountFromOrdinal > ordinal || len(rosterIDs) != ordinal-config.CountFromOrdinal {
+		return nil, false, nil
+	}
+	for _, rosterID := range rosterIDs {
+		if rosterID == 0 {
+			return nil, false, nil
+		}
+	}
+	return rosterIDs, true, nil
+}
+
+func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, rule paymentRule) (paymentDraft, []byte, error) {
+	rosterIDs := []int64{*summary.PracticeRosterID}
+	members, err := readPracticeMembers(ctx, tx, rosterIDs, false)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	orderIDs := make([]string, 0, len(members))
-	for _, member := range members {
-		orderIDs = append(orderIDs, member.PaidOrderIDs...)
+	var history practiceTierHistory
+	part := practiceTierComponent(rule)
+	if part != nil && len(part.Tiers.Count) != 0 {
+		past, complete, err := readPracticeTierHistory(ctx, tx, summary.PeriodID, *part.Tiers, summary.PracticeStartsAt)
+		if err != nil {
+			return paymentDraft{}, nil, err
+		}
+		history.complete = complete
+		if len(past) != 0 {
+			history.members, err = readPracticeMembers(ctx, tx, past, true)
+			if err != nil {
+				return paymentDraft{}, nil, err
+			}
+			rosterIDs = append(rosterIDs, past...)
+		}
 	}
-	rows, err = tx.Query(ctx, practicePaymentsSQL, summary.PeriodID, orderIDs, maxDraftPayments+1)
+
+	orderIDs := make([]string, 0, len(members)+len(history.members))
+	for _, entries := range [][]practiceEnrollment{members, history.members} {
+		for _, member := range entries {
+			orderIDs = append(orderIDs, member.PaidOrderIDs...)
+		}
+	}
+	rows, err := tx.Query(ctx, practicePaymentsSQL, summary.PeriodID, orderIDs, maxDraftPayments+1)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
@@ -173,7 +236,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 		}
 	}
 
-	rows, err = tx.Query(ctx, `SELECT result.id,result.issue FROM (`+practiceBlocksSQL+`) result WHERE result.issue IS NOT NULL`, *summary.PracticeRosterID)
+	rows, err = tx.Query(ctx, `SELECT result.id,result.issue FROM (`+practiceBlocksSQL+`) result WHERE result.issue IS NOT NULL`, rosterIDs)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
@@ -190,7 +253,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err = rows.Err(); err != nil {
 		return paymentDraft{}, nil, err
 	}
-	result, err := calculatePracticeDraft(members, rule, orders, identities, blocked)
+	result, err := calculatePracticeDraft(members, rule, orders, identities, blocked, history)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}

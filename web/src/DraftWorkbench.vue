@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 
-const props = defineProps({ periods: Array, api: Function, formatMoney: Function, formatTime: Function })
+const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, api: Function, formatMoney: Function, formatTime: Function })
 const selected = ref()
 const draft = ref()
 const loading = ref(false)
@@ -14,7 +14,8 @@ const options = computed(() => props.periods.map(period => ({
   label: `${period.productName} · ${period.name}`,
 })))
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
-const components = { sales: '销售提成', referral: '推荐提成', manager: '负责人提成', delivery: '交付提成' }
+const componentLabel = code => props.componentOptions.find(option=>option.value===code)?.label || code
+const memberLabel = type => props.memberOptions.find(option=>option.value===(type===3 ? 'new' : 'retrain'))?.label
 const reason = {
   UNCONFIGURED_COMPONENT: '此分项尚未配置可用的来源角色或计算方式',
   MISSING_PAYMENT_ID: '缺少原付款 ID',
@@ -44,6 +45,11 @@ const reason = {
   PRACTICE_MISSING_PAYMENT: '缺少对应付款，请在来源核对订单',
   PRACTICE_INVALID_PAYMENT: '付款金额或发生时间不符合签到计提条件',
   PRACTICE_ATTRIBUTION_CONFLICT: '订金与尾款的受益人归属不一致',
+  PRACTICE_TIER_HISTORY_MISSING: '累计起点或历史期次缺少已确认名单',
+  PRACTICE_TIER_HISTORY_INCOMPLETE: '历史新报的付款或人员归属待核',
+  PRACTICE_TIER_GROUP_INCOMPLETE: '本期新报的付款或人员归属待核，暂无法选档',
+  PRACTICE_TIER_NOT_MATCHED: '本笔没有匹配的累计人数档或实付档',
+  PRACTICE_TIER_EXCEEDS_PAYMENT: '命中的档位计提超过实付金额',
 }
 const lineColumns = [
   { title: '原订单', key: 'order', width: 190 },
@@ -161,8 +167,8 @@ async function loadMore(section, cursorName) {
     <div class="table-container">
       <a-table :columns="lineColumns" :data-source="draft.lines" :pagination="false" row-key="id" :scroll="{ x: 755 }">
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'order'">{{ record.orderNo || record.orderId }}<small class="order-version">来源版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ record.membershipType === 3 ? '新报' : '复训' }} {{ record.enrollmentId }}</template></small></template>
-          <template v-else-if="column.key === 'component'">{{ components[record.component] }}</template>
+          <template v-if="column.key === 'order'">{{ record.orderNo || record.orderId }}<small class="order-version">来源版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template></small></template>
+          <template v-else-if="column.key === 'component'">{{ componentLabel(record.component) }}</template>
           <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}</template>
           <template v-else-if="column.key === 'base'">{{ formatMoney(record.baseMinor) }}</template>
           <template v-else-if="column.key === 'amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
@@ -208,7 +214,7 @@ async function loadMore(section, cursorName) {
       <a-table :columns="issueColumns" :data-source="draft.issues" :pagination="false" row-key="id" :scroll="{ x: 510 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'source'">{{ record.orderId || '—' }}<small v-if="record.enrollmentId" class="order-version">报名 {{ record.enrollmentId }}</small></template>
-          <template v-else-if="column.key === 'component'">{{ components[record.component] || '—' }}</template>
+          <template v-else-if="column.key === 'component'">{{ componentLabel(record.component) || '—' }}</template>
           <template v-else-if="column.key === 'reason'">{{ reason[record.code] || record.code }}</template>
         </template>
       </a-table>

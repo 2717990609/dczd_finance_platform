@@ -23,12 +23,13 @@ import (
 var schema string
 
 type component struct {
-	Type         string `json:"type"`
-	Mode         string `json:"mode"`
-	Value        int64  `json:"value"`
-	SourceRole   string `json:"sourceRole,omitempty"`
-	RefundPolicy string `json:"refundPolicy,omitempty"`
-	ClassMember  string `json:"classMember,omitempty"`
+	Type         string              `json:"type"`
+	Mode         string              `json:"mode"`
+	Value        int64               `json:"value"`
+	SourceRole   string              `json:"sourceRole,omitempty"`
+	RefundPolicy string              `json:"refundPolicy,omitempty"`
+	ClassMember  string              `json:"classMember,omitempty"`
+	Tiers        *practiceSalesTiers `json:"tiers,omitempty"`
 }
 
 var invalid = errors.New("请核对名称、范围与必填配置")
@@ -60,7 +61,14 @@ func validateComponents(items []component) error {
 			return invalid
 		}
 		seen[c.Type] |= members
+		if c.Mode != "tiered" && c.Tiers != nil {
+			return invalid
+		}
 		switch c.Mode {
+		case "tiered":
+			if !validPracticeSalesTiers(c) {
+				return invalid
+			}
 		case "rate":
 			if c.Value > 10000 {
 				return invalid
@@ -93,6 +101,7 @@ type workspace struct {
 
 func (s workspace) routes() []rest.Route {
 	return []rest.Route{
+		{Method: http.MethodGet, Path: "/api/v1/configuration-options", Handler: s.list(configurationOptionsSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/products", Handler: s.list(productsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/products", Handler: submit(s.createProduct)},
 		{Method: http.MethodGet, Path: "/api/v1/mappings", Handler: s.list(mappingsSQL)},

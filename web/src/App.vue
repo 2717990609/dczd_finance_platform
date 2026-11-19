@@ -6,6 +6,7 @@ import {
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import DraftWorkbench from './DraftWorkbench.vue'
+import PracticeTierEditor from './PracticeTierEditor.vue'
 
 const navigation = [
   {key:'settlement', title:'分润试算', icon:CalculatorOutlined},
@@ -46,16 +47,20 @@ const sourceFilter = ref('')
 const olderThan = ref('')
 const pageStack = ref([])
 let requestVersion = 0
-const sources = [{value:'DCZD',label:'大春之道 · DCZD'}, {value:'DCAI',label:'大春 AI · DCAI'}, {value:'DCJK',label:'大春见康 · DCJK'}]
-const components = [
-  {value:'sales',label:'销售提成'}, {value:'referral',label:'推荐提成'},
-  {value:'manager',label:'负责人提成'}, {value:'delivery',label:'交付提成'},
-]
-const refundPolicies = [
-  { value: 'proportional', label: '按实际退款比例扣回' },
-  { value: 'full_reversal', label: '有退款即整笔冲回' },
-  { value: 'non_refundable', label: '退款时不扣回' },
-]
+const configuration = ref({})
+const configurationReady = ref(false)
+const options = group => configuration.value[group] || []
+const firstOption = group => options(group)[0]?.value
+const optionLabel = (group, value) => options(group).find(option => option.value === value)?.label || value
+const sources = computed(() => options('source'))
+const classMembers = computed(() => options('classMember'))
+const baseModes = computed(() => options('amountMode').filter(option => !option.scope?.componentTypes))
+function matchesOption(option, periodMode, type, member) {
+  const scope = option.scope || {}
+  return (!scope.periodModes || scope.periodModes.includes(periodMode)) &&
+    (!scope.componentTypes || scope.componentTypes.includes(type)) &&
+    (!scope.classMembers || scope.classMembers.includes(member))
+}
 const productOptions = computed(() => data.value.products.map(p => ({value:p.id,label:p.name})))
 const visibleProducts = computed(() => {
   const term = scopeSearch.value.trim().toLowerCase()
@@ -66,28 +71,48 @@ const periodOptions = computed(() => data.value.periods.filter(p => p.productId 
 const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
 const calculationPeriods = computed(() => data.value.periods.filter(p => !productScope.value || p.productId === productScope.value))
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
-const classMembers = [{value:'',label:'全部'},{value:'new',label:'新报'},{value:'retrain',label:'复训'}]
-const componentTypes = computed(() => classRule.value ? components.filter(c => ['sales','referral'].includes(c.value)) : components)
+const amountModes = row => options('amountMode').filter(option =>
+  matchesOption(option, selectedProduct.value?.periodMode, row.type, row.classMember))
+function updateAmountMode(row, mode) {
+  row.mode = mode
+  if (mode === 'tiered' && !row.tierConfig) {
+    row.tierConfig = {
+      metric:firstOption('tierMetric'),
+      startMode:firstOption('tierStartMode'),
+      count:[{mode:baseModes.value[0]?.value}],
+      performance:[{from:0,mode:baseModes.value[0]?.value}],
+    }
+  }
+}
+function resetAmountMode(row) {
+  const modes = amountModes(row)
+  if (!modes.some(option => option.value === row.mode)) row.mode = modes[0]?.value
+}
+function tierLabel(tiers) {
+  if (tiers.count?.length && tiers.performance?.length) return '人数优先阶梯'
+  return tiers.count?.length ? '累计人数阶梯' : '本期实付阶梯'
+}
+const componentTypes = computed(() => options('component').filter(option => matchesOption(option,selectedProduct.value?.periodMode)))
 function availableComponentTypes(row) {
   return componentTypes.value.filter(type => !draft.value.components.some(c =>
     c !== row && c.type === type.value && (!classRule.value || !c.classMember || !row.classMember || c.classMember === row.classMember)))
 }
 function availableClassMembers(row) {
-  return classMembers.filter(member => !draft.value.components.some(c =>
+  return classMembers.value.filter(member => !draft.value.components.some(c =>
     c !== row && c.type === row.type && (!c.classMember || !member.value || c.classMember === member.value)))
 }
 const nextComponent = computed(() => {
   if (drawer.value !== 'rule') return undefined
-  const members = classRule.value ? classMembers : classMembers.slice(0,1)
+  const members = classRule.value ? classMembers.value : [{value:undefined}]
   for (const type of componentTypes.value) {
     for (const {value:classMember} of members) {
-      const row = {type:type.value,classMember,mode:'rate',amount:0}
+      const row = {type:type.value,classMember,mode:baseModes.value[0]?.value,amount:0}
       if (availableComponentTypes(row).some(option => option.value === row.type)) return row
     }
   }
 })
-const enabledSources = computed(() => data.value.sources.filter(s => s.configured).length)
-const sourceLabel = key => sources.find(s => s.value === key)?.label.split(' · ')[0] || key
+const enabledSources = computed(() => data.value.sources.filter(s => s.configured && sources.value.some(option => option.value===s.source)).length)
+const sourceLabel = key => optionLabel('source',key)?.split(' · ')[0]
 const titles = {product:'新增产品',mapping:'添加来源映射',period:'新建期次',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
 const actions = computed(() => {
   if (current.value === 'products') return tab.value === 'mapping' ? 'mapping' : 'product'
@@ -131,7 +156,7 @@ async function api(path, options) {
   }
   return body
 }
-async function refresh() {
+async function refresh(reloadOptions = false) {
   const version = ++requestVersion
   loading.value = true
   globalError.value = ''
@@ -141,12 +166,18 @@ async function refresh() {
   if (olderThan.value) params.set('beforeId',olderThan.value)
   const sections = {settlement:['products','periods'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules'], orders:['orders','sources'], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
+  if (!configurationReady.value || reloadOptions) requests.configuration = '/configuration-options'
   const entries = Object.entries(requests)
   const results = await Promise.allSettled(entries.map(([,url]) => api(url)))
   if (version !== requestVersion) return
   results.forEach((result,index) => {
-    if (result.status === 'fulfilled') data.value[entries[index][0]] = result.value
-    else globalError.value ||= result.reason.message
+    const key = entries[index][0]
+    if (result.status === 'fulfilled') {
+      if (key === 'configuration') {
+        configuration.value = result.value
+        configurationReady.value = true
+      } else data.value[key] = result.value
+    } else globalError.value ||= result.reason.message
   })
   loading.value = false
 }
@@ -166,7 +197,7 @@ watch(() => draft.value.productId, (next, previous) => {
   if (drawer.value === 'rule' && next !== previous) {
     draft.value.periodId = undefined
     draft.value.effectiveFrom = undefined
-    if (previous != null) draft.value.components = [{type:'sales',classMember:'',mode:'rate',amount:0}]
+    if (previous != null) draft.value.components = [newRuleComponent()]
   }
 })
 function resetOrders() { olderThan.value = ''; pageStack.value=[]; refresh() }
@@ -181,20 +212,56 @@ function nextOrders() {
 }
 function prevOrders() { olderThan.value = pageStack.value.pop() || ''; refresh() }
 
+function newRuleComponent() {
+  return {type:componentTypes.value[0]?.value, classMember:classRule.value ? firstOption('classMember') : undefined,
+    mode:baseModes.value[0]?.value, amount:0}
+}
 function open(kind, row) {
+  if (!configurationReady.value) return
   formError.value = ''
   notice.value = ''
   drawer.value = kind
   draft.value = {
-    periodMode:'class',cycleStartDay:25,source:row?.source || 'DCZD',stream:row?.source === 'DCAI' && String(row.domain).includes('HEALTH') ? 'HEALTH_IDENTITY_ORDERS' : 'VIP_ORDERS',
-    orderId:row?.orderId || '',scope:'default',components:[{type:'sales',classMember:'',mode:'rate',amount:0}],
+    periodMode:firstOption('periodMode'),source:row?.source || firstOption('source'),
+    stream:row?.source==='DCAI' && String(row.domain).includes('HEALTH') && options('dcaiOrderStream').some(option => option.value==='HEALTH_IDENTITY_ORDERS')
+      ? 'HEALTH_IDENTITY_ORDERS' : firstOption('dcaiOrderStream'),
+    orderId:row?.orderId || '',scope:firstOption('ruleScope'),
     productId:['mapping','period','rule'].includes(kind) ? productScope.value : undefined,
   }
+  if (kind === 'rule') draft.value.components = [newRuleComponent()]
 }
 function close() { if (!saving.value) drawer.value = '' }
 function must(value, msg = '请补齐必填内容') {
   if (value === undefined || value === null || String(value).trim() === '') throw new Error(msg)
   return value
+}
+const minor = value => Math.round(Number(value)*100)
+function ruleComponentBody(row) {
+  const sourceRole = row.sourceRole?.trim().toUpperCase()
+  const component = {type:must(row.type),mode:must(row.mode,'请选择计提方式'),value:0,
+    ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy ? {refundPolicy:row.refundPolicy} : {}),
+    ...(row.classMember ? {classMember:row.classMember} : {})}
+  if (row.mode !== 'tiered') {
+    component.value = minor(must(row.amount,'请填写每个组件的比例或金额'))
+    return component
+  }
+  const form = row.tierConfig
+  must(form.metric,'请选择阶梯指标')
+  if (form.metric !== 'performance') must(form.startMode,'请选择累计起点')
+  const serialize = (rows, convert) => rows.map(tier => ({
+    from:convert(must(tier.from,'请填写各档位下限')),
+    ...(tier.through != null ? {through:convert(tier.through)} : {}),
+    mode:must(tier.mode,'请选择各档位计提方式'),
+    value:minor(must(tier.value,'请填写各档位计提值')),
+  })).sort((a,b) => a.from-b.from)
+  component.tiers = {}
+  if (form.metric !== 'performance') {
+    component.tiers.count = serialize(form.count,Number)
+    if (form.startMode === 'ordinal') component.tiers.countFromOrdinal = must(form.countFromOrdinal,'请填写累计起始期数')
+    else component.tiers.countFromAt = new Date(must(form.countFromAt,'请填写累计起始时间')+'+08:00').toISOString()
+  }
+  if (form.metric !== 'count') component.tiers.performance = serialize(form.performance,minor)
+  return component
 }
 function bodyFor(kind,f) {
   if (kind === 'product') return {code:must(f.code),name:must(f.name),periodMode:f.periodMode,...(f.periodMode==='calendar' ? {cycleStartDay:must(f.cycleStartDay)} : {})}
@@ -211,8 +278,7 @@ function bodyFor(kind,f) {
     ...(f.scope === 'period' ? {periodId:must(f.periodId)} : {}),
     ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal)} : {}),
     ...(f.effectiveFrom ? {effectiveFrom:new Date(f.effectiveFrom+'+08:00').toISOString()} : {}),
-    components:f.components.map(c => ({type:must(c.type),mode:c.mode,value:Math.round(Number(must(c.amount,'请填写每个组件的比例或金额'))*100),...(c.sourceRole?.trim() ? {sourceRole:c.sourceRole.trim().toUpperCase()} : {}),
-      ...(c.refundPolicy ? {refundPolicy:c.refundPolicy} : {}),...(c.classMember ? {classMember:c.classMember} : {})})),
+    components:f.components.map(ruleComponentBody),
   }
   if (kind === 'person') return {name:must(f.name)}
   if (kind === 'identity') return {personId:must(f.personId),source:f.source,externalId:must(f.externalId),validFrom:new Date(must(f.validFrom)+'T00:00:00+08:00').toISOString()}
@@ -253,7 +319,7 @@ async function save() {
       </div>
       <div class="topbar-actions">
         <a-button v-if="legacyOrganizationURL" :href="legacyOrganizationURL" target="_blank" rel="noopener noreferrer">组织与人员</a-button>
-        <a-button v-if="current!=='settlement'" :loading="loading" @click="refresh"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新数据</a-button>
+        <a-button v-if="current!=='settlement'" :loading="loading" @click="refresh(true)"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新数据</a-button>
       </div>
     </header>
     <nav class="workspace-nav" aria-label="主导航">
@@ -290,18 +356,21 @@ async function save() {
         </template>
       </aside>
       <main class="workspace-content">
-        <DraftWorkbench v-if="current==='settlement'" :periods="calculationPeriods" :api="api" :format-money="formatMoney" :format-time="formatTime" />
+        <template v-if="current==='settlement'">
+          <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
+          <DraftWorkbench :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :api="api" :format-money="formatMoney" :format-time="formatTime" />
+        </template>
         <template v-else>
         <section class="heading">
           <div><h1>{{ active.title }}</h1><p>{{ active.description }}</p></div>
-          <a-button type="primary" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
+          <a-button type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
         </section>
         <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
         <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
         <div v-if="current==='products'" class="summary-grid">
           <article><span class="metric-icon"><AppstoreOutlined/></span><div><small>目录产品</small><strong>{{ data.products.length }}</strong></div></article>
           <article><span class="metric-icon blue"><LinkOutlined/></span><div><small>来源映射</small><strong>{{ data.mappings.length }}</strong></div></article>
-          <article><span class="metric-icon gold"><CloudSyncOutlined/></span><div><small>已配置来源</small><strong>{{ enabledSources }}<em> / 3</em></strong></div></article>
+          <article><span class="metric-icon gold"><CloudSyncOutlined/></span><div><small>已配置来源</small><strong>{{ enabledSources }}<em> / {{ sources.length }}</em></strong></div></article>
         </div>
         <div v-if="current==='orders'" class="summary-grid">
           <article v-for="entry in data.sources" :key="entry.source"><span class="metric-icon"><CloudSyncOutlined/></span><div><small>{{ sourceLabel(entry.source) }}</small><strong class="source-state">{{ entry.configured ? '已配置' : '未配置' }}</strong><small v-if="entry.lastUpdate">最近入库 {{ formatTime(entry.lastUpdate) }}</small></div></article>
@@ -321,13 +390,13 @@ async function save() {
             <a-table :columns="columns" :data-source="mainRows" :loading="loading" row-key="id" :pagination="current==='orders'?false:{pageSize:12,showSizeChanger:false}" :scroll="{x:tableWidth}">
               <template #bodyCell="{ column, record, text }">
                 <template v-if="column.key==='name'||column.key==='label'"><strong class="primary-cell">{{ text }}</strong></template>
-                <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ text==='class'?'实际开班':'固定账期' }}</a-tag></template>
+                <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ optionLabel('periodMode',text) }}</a-tag></template>
                 <template v-else-if="column.key==='mappingCount'">{{ data.mappings.filter(x=>x.productId===record.id).length }}</template>
                 <template v-else-if="column.key==='ruleVersion'"><a-tag v-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag><a-tag v-else color="orange">{{ record.periodMode==='class' && !record.classStartsAt ? '待签到名单' : '待配规则' }}</a-tag></template>
                 <template v-else-if="column.key==='version'"><a-tag color="green">v{{ text }}</a-tag></template>
                 <template v-else-if="column.key==='effectiveFrom'">{{ text ? formatTime(text) : '范围默认' }}</template>
                 <template v-else-if="column.key==='scope'">{{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}</template>
-                <template v-else-if="column.key==='components'"><a-tag v-for="c in text" :key="c.type+':'+(c.classMember || '')">{{ components.find(x=>x.value===c.type)?.label }}{{ c.classMember ? ' · '+classMembers.find(m=>m.value===c.classMember)?.label : '' }} {{ c.mode==='rate'?(c.value/100)+'%':formatMoney(c.value) }}</a-tag></template>
+                <template v-else-if="column.key==='components'"><a-tag v-for="c in text" :key="c.type+':'+(c.classMember || '')">{{ optionLabel('component',c.type) }}{{ c.classMember ? ' · '+optionLabel('classMember',c.classMember) : '' }} {{ c.mode==='tiered' ? tierLabel(c.tiers) : c.mode==='rate' ? (c.value/100)+'%' : formatMoney(c.value) }}</a-tag></template>
                 <template v-else-if="column.key==='source'">{{ sourceLabel(text) }}</template>
                 <template v-else-if="column.key==='orderNo'"><button class="order-link" type="button" @click="open('pull',record)" :title="'原订单 ID '+record.orderId">{{ text || record.orderId }}</button><small class="order-version">版本 {{ record.version }}</small></template>
                 <template v-else-if="column.key==='kind'"><a-tag>{{ labels[text] || text }}</a-tag></template>
@@ -336,7 +405,7 @@ async function save() {
                 <template v-else-if="['occurredAt','validFrom','validTo'].includes(column.key)">{{ formatTime(text) }}</template>
               </template>
               <template #emptyText>
-                <div class="empty"><a-empty :image="undefined" :description="filter ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter" @click="open(actions)">{{ titles[actions] }}</a-button></div>
+                <div class="empty"><a-empty :image="undefined" :description="filter ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter && configurationReady" @click="open(actions)">{{ titles[actions] }}</a-button></div>
               </template>
             </a-table>
           </div>
@@ -352,7 +421,7 @@ async function save() {
       <template v-if="drawer==='product'">
         <a-form-item label="产品名称" required><a-input v-model:value="draft.name" aria-label="产品名称" :maxlength="80"/></a-form-item>
         <a-form-item label="产品编码" required><a-input v-model:value="draft.code" aria-label="产品编码" :maxlength="48"/></a-form-item>
-        <a-form-item label="核算方式"><a-select v-model:value="draft.periodMode" aria-label="核算方式" :options="[{value:'class',label:'实际开班'},{value:'calendar',label:'固定账期'}]"/></a-form-item>
+        <a-form-item label="核算方式"><a-select v-model:value="draft.periodMode" aria-label="核算方式" :options="options('periodMode')"/></a-form-item>
         <a-form-item v-if="draft.periodMode==='calendar'" label="每月开始日" extra="填 1 表示自然月。填 25 表示上月 25 日至本月 24 日。" required><a-input-number v-model:value="draft.cycleStartDay" aria-label="每月开始日" :min="1" :max="28" :precision="0"/></a-form-item>
       </template>
       <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="productOptions"/></a-form-item>
@@ -377,7 +446,7 @@ async function save() {
       </template>
       <template v-if="drawer==='rule'">
         <a-form-item label="规则名称" required><a-input v-model:value="draft.label" aria-label="规则名称"/></a-form-item>
-        <a-form-item html-for="rule-scope" label="适用范围"><a-select id="rule-scope" v-model:value="draft.scope" :options="[{value:'default',label:'产品默认'},{value:'ordinal',label:'从指定期数起'},{value:'period',label:'指定期次'}]"/></a-form-item>
+        <a-form-item html-for="rule-scope" label="适用范围"><a-select id="rule-scope" v-model:value="draft.scope" :options="options('ruleScope')"/></a-form-item>
         <a-form-item v-if="draft.scope==='period'" html-for="rule-period" label="指定期次" required><a-select id="rule-period" v-model:value="draft.periodId" :options="periodOptions"/></a-form-item>
         <a-form-item v-if="draft.scope==='ordinal'" label="起始期数" required><a-input-number v-model:value="draft.fromOrdinal" aria-label="起始期数" :min="1" :precision="0"/></a-form-item>
         <a-form-item v-if="selectedProduct" label="生效时间" :extra="classRule ? '按北京时间的实际开班时点匹配。留空时作为该适用范围的默认规则。' : '按北京时间和原付款时间匹配。留空时作为该适用范围的默认规则。'">
@@ -387,20 +456,21 @@ async function save() {
         <div v-for="(c,i) in draft.components" :key="i" class="component-editor">
           <div class="component-row">
           <label class="sr-only" :for="'rule-component-'+i">组件 {{ i+1 }}</label>
-          <a-select :id="'rule-component-'+i" v-model:value="c.type" :options="availableComponentTypes(c)"/>
+          <a-select :id="'rule-component-'+i" v-model:value="c.type" :options="availableComponentTypes(c)" @change="resetAmountMode(c)"/>
           <label class="sr-only" :for="'rule-mode-'+i">计算方式 {{ i+1 }}</label>
-          <a-select :id="'rule-mode-'+i" v-model:value="c.mode" :options="[{value:'rate',label:'比例 %'},{value:'fixed',label:'金额 ¥'}]"/>
-          <a-input-number v-model:value="c.amount" :aria-label="'组件参数 '+(i+1)" :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
+          <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
+          <a-input-number v-if="c.mode!=='tiered'" v-model:value="c.amount" :aria-label="'组件参数 '+(i+1)" :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
           <a-button v-if="draft.components.length>1" type="link" danger @click="draft.components.splice(i,1)">移除</a-button>
           </div>
           <a-form-item v-if="classRule" :html-for="'rule-member-'+i" :label="'报名类型 '+(i+1)">
-            <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="availableClassMembers(c)"/>
+            <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="availableClassMembers(c)" @change="resetAmountMode(c)"/>
           </a-form-item>
           <a-form-item v-if="['sales','referral'].includes(c.type)" :label="'分项 '+(i+1)+' 的来源角色'">
             <a-input v-model:value="c.sourceRole" :aria-label="'来源角色 '+(i+1)" placeholder="如 LOCK_SALES_USER 或 DIRECT_REFERRER" :maxlength="64"/>
           </a-form-item>
+          <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes"/>
           <a-form-item v-if="selectedProduct?.periodMode==='calendar'" :label="'分项 '+(i+1)+' 的退款处理'" extra="历史退款沿用付款时的规则版本。">
-            <a-select v-model:value="c.refundPolicy" :options="refundPolicies" allow-clear placeholder="选择退款处理"/>
+            <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>
           </a-form-item>
         </div>
         <a-button v-if="nextComponent" type="dashed" block @click="draft.components.push(nextComponent)">添加组件</a-button>
@@ -413,7 +483,7 @@ async function save() {
       </template>
       <template v-if="drawer==='pull'">
         <a-alert v-if="!data.sources.find(x=>x.source===draft.source)?.configured" class="feedback" type="info" message="此来源尚未配置接口，请先在本机服务配置连接。" show-icon/>
-        <a-form-item v-if="draft.source==='DCAI'" label="订单类型"><a-select v-model:value="draft.stream" aria-label="订单类型" :options="[{value:'VIP_ORDERS',label:'AI 会员'},{value:'HEALTH_IDENTITY_ORDERS',label:'健康大使或创客'}]"/></a-form-item>
+        <a-form-item v-if="draft.source==='DCAI'" label="订单类型"><a-select v-model:value="draft.stream" aria-label="订单类型" :options="options('dcaiOrderStream')"/></a-form-item>
         <a-form-item label="原订单 ID" required><a-input v-model:value="draft.orderId" aria-label="原订单 ID"/></a-form-item>
       </template>
       <div class="form-actions"><a-button :disabled="saving" @click="close">取消</a-button><a-button html-type="submit" type="primary" :loading="saving">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':'保存' }}</a-button></div>

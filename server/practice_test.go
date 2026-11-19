@@ -29,7 +29,7 @@ func TestPracticeEnrollmentAmountsTreatDepositAndBalanceAsOneEntitlement(t *test
 	}
 	orders := map[string][]paymentInput{"31": {{ID: 1, Fact: makeOrder("31", &amount1)}}, "32": {{ID: 2, Fact: makeOrder("32", &amount2)}}, "33": {{ID: 3, Fact: makeOrder("33", &amount2)}}}
 	identities := map[identityKey][]identityAssignment{{Source: "DCZD", ExternalID: "sales"}: {{ID: 17, PersonID: 24, ValidFrom: at.Add(-time.Hour)}}}
-	result, err := calculatePracticeDraft(members, rule, orders, identities, nil)
+	result, err := calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{})
 	if err != nil || result.Total != 600 || len(result.Issues) != 0 || len(result.Lines) != 3 ||
 		result.Lines[0].Amount != 200 || result.Lines[1].Amount != 301 || result.Lines[2].Amount != 99 || result.Lines[1].EnrollmentID != 11 {
 		t.Fatalf("draft=%+v error=%v", result, err)

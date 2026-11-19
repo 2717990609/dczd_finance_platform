@@ -319,3 +319,44 @@ ALTER TABLE calculation_draft_issues ADD COLUMN IF NOT EXISTS practice_enrollmen
 CREATE INDEX IF NOT EXISTS source_order_versions_practice_refund_payment
  ON source_order_versions USING gin ((fact->'refundsPayment') jsonb_path_ops)
  WHERE source='DCZD' AND kind='REFUND_SUCCEEDED';
+
+CREATE TABLE IF NOT EXISTS configuration_options (
+ group_key text NOT NULL,
+ option_key text NOT NULL,
+ label text NOT NULL CHECK (btrim(label)<>''),
+ display_order integer NOT NULL,
+ enabled boolean NOT NULL DEFAULT true,
+ applies_to jsonb NOT NULL DEFAULT '{}' CHECK (jsonb_typeof(applies_to)='object'),
+ PRIMARY KEY (group_key,option_key)
+);
+
+INSERT INTO configuration_options(group_key,option_key,label,display_order,applies_to) VALUES
+ ('source','DCZD','大春之道 · DCZD',10,'{}'),
+ ('source','DCAI','大春 AI · DCAI',20,'{}'),
+ ('source','DCJK','大春见康 · DCJK',30,'{}'),
+ ('periodMode','class','实际开班',10,'{}'),
+ ('periodMode','calendar','固定账期',20,'{}'),
+ ('ruleScope','default','产品默认',10,'{}'),
+ ('ruleScope','ordinal','从指定期数起',20,'{}'),
+ ('ruleScope','period','指定期次',30,'{}'),
+ ('component','sales','销售提成',10,'{}'),
+ ('component','referral','推荐提成',20,'{}'),
+ ('component','manager','负责人提成',30,'{"periodModes":["calendar"]}'),
+ ('component','delivery','交付提成',40,'{"periodModes":["calendar"]}'),
+ ('classMember','','全部',10,'{}'),
+ ('classMember','new','新报',20,'{}'),
+ ('classMember','retrain','复训',30,'{}'),
+ ('amountMode','rate','比例 %',10,'{}'),
+ ('amountMode','fixed','金额 ¥',20,'{}'),
+ ('amountMode','tiered','阶梯',30,'{"periodModes":["class"],"componentTypes":["sales"],"classMembers":["new"]}'),
+ ('refundPolicy','proportional','按实际退款比例扣回',10,'{}'),
+ ('refundPolicy','full_reversal','有退款即整笔冲回',20,'{}'),
+ ('refundPolicy','non_refundable','退款时不扣回',30,'{}'),
+ ('dcaiOrderStream','VIP_ORDERS','AI 会员',10,'{}'),
+ ('dcaiOrderStream','HEALTH_IDENTITY_ORDERS','健康大使或创客',20,'{}'),
+ ('tierMetric','performance','本期新报实付',10,'{}'),
+ ('tierMetric','count','累计新报人数',20,'{}'),
+ ('tierMetric','fallback','人数优先，未命中按实付',30,'{}'),
+ ('tierStartMode','ordinal','从期数开始',10,'{}'),
+ ('tierStartMode','time','从开班时间开始',20,'{}')
+ON CONFLICT (group_key,option_key) DO NOTHING;
