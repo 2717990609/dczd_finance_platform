@@ -99,10 +99,11 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 }
 
 type workspace struct {
-	db          *pgxpool.Pool
-	sources     map[string]sourceConfig
-	ruleAuth    catalogRuleAuth
-	development bool
+	db                   *pgxpool.Pool
+	sources              map[string]sourceConfig
+	ruleAuth             catalogRuleAuth
+	development          bool
+	settlementSyncMaxAge time.Duration
 }
 
 func (s workspace) routes() []rest.Route {
@@ -142,6 +143,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/period-pool-contributions", Handler: s.periodPoolContributions},
 		{Method: http.MethodGet, Path: "/api/v1/draft-pools", Handler: s.draftPools},
 		{Method: http.MethodGet, Path: "/api/v1/settlement-review", Handler: s.getSettlementReview},
+		{Method: http.MethodPost, Path: "/api/v1/settlements", Handler: submitJSON(32<<10, s.confirmAuthorizedSettlement)},
 		{Method: http.MethodPost, Path: "/api/v1/draft-pool-allocations", Handler: submit(s.savePoolAllocation)},
 		{Method: http.MethodPost, Path: "/api/v1/drafts", Handler: submit(s.recalculateDraft)},
 	}
@@ -194,9 +196,11 @@ func respond(w http.ResponseWriter, result any, err error) {
 	case errors.Is(err, errLegacyRuleNotAdapted), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errCatalogRateStale), errors.Is(err, errCatalogRateUnavailable), errors.Is(err, errCatalogRateDates), errors.Is(err, errCatalogTeamRate),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
+		errors.Is(err, errSettlementUnsupported),
 		errors.Is(err, errDraftChanged),
 		errors.Is(err, errSettlementPools), errors.Is(err, errSettlementPoolHistory),
-		errors.Is(err, errSettlementSourceCoverage), errors.Is(err, errSettlementSourceRefund),
+		errors.Is(err, errSettlementSourceCoverage), errors.Is(err, errSettlementSourceRefund), errors.Is(err, errSettlementSourceStale),
+		errors.Is(err, errSettlementSourceClock),
 		errors.Is(err, errSyncOrigin), errors.Is(err, errDCAIUnverified), errors.Is(err, errDCAIFileImport),
 		errors.Is(err, errSyncInitialFrom), errors.Is(err, errSyncLaterStart), errors.Is(err, errSyncInProgress),
 		errors.Is(err, errSettlementOpen), errors.Is(err, errSettlementDisabled), errors.Is(err, errPoolStale),
@@ -544,7 +548,8 @@ func startHTTP(ctx context.Context, cfg config, db *pgxpool.Pool) error {
 	}
 	defer server.Stop()
 	health := newHandler(db.Ping)
-	api := workspace{db: db, sources: readSources(), ruleAuth: cfg.ruleAuth, development: cfg.development}
+	api := workspace{db: db, sources: readSources(), ruleAuth: cfg.ruleAuth, development: cfg.development,
+		settlementSyncMaxAge: cfg.settlementSyncMaxAge}
 	stopSync := api.startDCAISyncWorkers(ctx, cfg.dcaiSyncInterval)
 	defer stopSync()
 	stopDraftRefresh := api.startDraftRefreshWorker(ctx, cfg.draftInterval)

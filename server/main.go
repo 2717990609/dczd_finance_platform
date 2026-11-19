@@ -18,12 +18,13 @@ import (
 var errWrongDatabase = errors.New("database URL does not match FINANCE_EXPECTED_DATABASE")
 
 type config struct {
-	addr             string
-	database         *pgxpool.Config
-	dcaiSyncInterval time.Duration
-	draftInterval    time.Duration
-	ruleAuth         catalogRuleAuth
-	development      bool
+	addr                 string
+	database             *pgxpool.Config
+	dcaiSyncInterval     time.Duration
+	draftInterval        time.Duration
+	settlementSyncMaxAge time.Duration
+	ruleAuth             catalogRuleAuth
+	development          bool
 }
 
 func readConfig() (config, error) {
@@ -54,6 +55,13 @@ func readConfig() (config, error) {
 	if err != nil {
 		return config{}, err
 	}
+	settlementAge := max(defaultSettlementSyncMaxAge, interval)
+	if value := strings.TrimSpace(os.Getenv("FINANCE_SETTLEMENT_SYNC_MAX_AGE")); value != "" {
+		settlementAge, err = time.ParseDuration(value)
+		if err != nil || settlementAge < time.Second {
+			return config{}, errors.New("FINANCE_SETTLEMENT_SYNC_MAX_AGE must be a duration of at least one second")
+		}
+	}
 	ruleAuth, err := readCatalogRuleAuth()
 	if err != nil {
 		return config{}, err
@@ -62,7 +70,8 @@ func readConfig() (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	return config{addr: addr, database: database, dcaiSyncInterval: interval, draftInterval: draftInterval, ruleAuth: ruleAuth, development: development}, nil
+	return config{addr: addr, database: database, dcaiSyncInterval: interval, draftInterval: draftInterval,
+		settlementSyncMaxAge: settlementAge, ruleAuth: ruleAuth, development: development}, nil
 }
 
 func intervalSetting(name string) (time.Duration, error) {

@@ -1,11 +1,15 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { onBeforeUnmount, ref, watch } from 'vue'
+import { Modal } from 'ant-design-vue'
 
-const props = defineProps({draft:Object, api:Function, formatMoney:Function, formatTime:Function, sourceStreams:Array})
-const emit = defineEmits(['show-pools', 'show-issues'])
+const props = defineProps({draft:Object, period:Object, api:Function, formatMoney:Function, formatTime:Function, sourceStreams:Array})
+const emit = defineEmits(['show-pools', 'show-issues', 'confirmed'])
 const review = ref()
 const loading = ref(false)
 const error = ref('')
+const confirmation = ref()
+const confirming = ref(false)
+const confirmationError = ref('')
 let sequence = 0
 const coverageStatus = {
   UNSUPPORTED:'该订单来源待接入',
@@ -15,6 +19,8 @@ const coverageStatus = {
   FAILED:'同步失败，请继续同步',
   INCOMPLETE:'本轮同步未完成',
   OUTSIDE_RANGE:'同步数据尚未覆盖本账期',
+  STALE:'同步时间已超过关账时效',
+  CLOCK_GAP:'来源水位晚于同步完成时间',
   READY:'已覆盖本账期',
 }
 const streamLabel = stream => props.sourceStreams?.find(option => option.value === stream)?.label || '订单来源'
@@ -23,6 +29,7 @@ async function load() {
   const request = ++sequence
   const params = new URLSearchParams({periodId:props.draft.periodId, version:props.draft.version})
   loading.value = true
+  confirmation.value = undefined
   review.value = undefined
   error.value = ''
   try {
@@ -34,14 +41,45 @@ async function load() {
     if (request === sequence) loading.value = false
   }
 }
+function confirmReview() {
+  if (!review.value?.canConfirm || confirming.value) return
+  confirmationError.value = ''
+  confirmation.value = {
+    periodId:props.draft.periodId,
+    expectedVersion:review.value.version,
+    reviewToken:review.value.reviewToken,
+  }
+}
+async function closePeriod() {
+  const request = sequence
+  const input = confirmation.value
+  if (!input || confirming.value) return
+  confirming.value = true
+  confirmationError.value = ''
+  try {
+    const result = await props.api('/settlements',{method:'POST',body:JSON.stringify(input)})
+    if (request !== sequence) return
+    confirmation.value = undefined
+    review.value = {...review.value,settlement:result,canConfirm:false}
+    emit('confirmed')
+  } catch (err) {
+    if (request === sequence) confirmationError.value = err.message
+  } finally {
+    confirming.value = false
+  }
+}
 watch(() => props.draft, load, {immediate:true})
+onBeforeUnmount(() => { sequence++ })
 </script>
 
 <template>
   <section class="records">
     <div class="records-head">
       <h2>结算核对</h2>
-      <a-button :loading="loading" @click="load">刷新核对</a-button>
+      <div class="topbar-actions">
+        <a-button :loading="loading" :disabled="confirming" @click="load">刷新核对</a-button>
+        <a-button v-if="review?.canConfirm" type="primary" :disabled="confirming" @click="confirmReview">确认结算</a-button>
+      </div>
     </div>
     <div class="settlement-review">
       <a-alert v-if="error" type="error" :message="error" show-icon/>
@@ -58,6 +96,7 @@ watch(() => props.draft, load, {immediate:true})
           <li v-for="source in review.sources" :key="source.stream">
             <span>{{ streamLabel(source.stream) }} · {{ coverageStatus[source.status] }}</span>
             <span v-if="source.completedThrough">同步至 {{ formatTime(source.completedThrough) }}</span>
+            <span v-if="source.lastSuccessAt">同步完成于 {{ formatTime(source.lastSuccessAt) }}</span>
             <span v-if="source.refundGap">{{ source.refundGap }} 笔退款缺少金额或时间</span>
           </li>
         </ul>
@@ -78,6 +117,14 @@ watch(() => props.draft, load, {immediate:true})
       </template>
     </div>
   </section>
+  <Modal :open="!!confirmation" title="确认本期结算" :confirm-loading="confirming" :closable="!confirming"
+    :mask-closable="!confirming" :keyboard="!confirming" ok-text="确认结算" cancel-text="返回核对"
+    :cancel-button-props="{disabled:confirming}" @ok="closePeriod" @cancel="confirmation=undefined">
+    <p>{{ period?.productName }} · {{ period?.name }}</p>
+    <p>草稿 v{{ confirmation?.expectedVersion }} · 合计 <strong>{{ formatMoney(review?.totalMinor) }}</strong></p>
+    <p>确认后锁定本期结算与分配结果。</p>
+    <a-alert v-if="confirmationError" :message="confirmationError" type="error" show-icon/>
+  </Modal>
 </template>
 
 <style scoped>

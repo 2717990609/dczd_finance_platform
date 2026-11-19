@@ -10,12 +10,17 @@ import (
 
 var errSettlementSourceCoverage = errors.New("来源数据尚未覆盖本账期，请完成同步后重新核对")
 var errSettlementSourceRefund = errors.New("本账期有来源退款缺少金额或时间，请在子系统核对")
+var errSettlementSourceStale = errors.New("来源同步已超过关账时效，请同步后重新核对")
+var errSettlementSourceClock = errors.New("来源水位晚于同步完成时间，请核对来源时钟后重新同步")
+
+const defaultSettlementSyncMaxAge = time.Hour
 
 type settlementSource struct {
 	Stream    string     `json:"stream"`
 	Status    string     `json:"status"`
 	From      *time.Time `json:"initialFrom"`
 	Through   *time.Time `json:"completedThrough"`
+	LastSync  *time.Time `json:"lastSuccessAt"`
 	RefundGap int        `json:"refundGap"`
 }
 
@@ -58,27 +63,43 @@ SELECT r.stream,CASE
  WHEN s.failed THEN 'FAILED'
  WHEN s.target_through IS NOT NULL THEN 'INCOMPLETE'
  WHEN s.initial_from>p.from_time OR s.completed_through IS NULL OR s.completed_through<p.through_time THEN 'OUTSIDE_RANGE'
+ WHEN s.completed_through>s.last_success_at THEN 'CLOCK_GAP'
+ WHEN s.last_success_at IS NULL OR least(s.last_success_at,s.completed_through)<clock_timestamp()-$3::interval THEN 'STALE'
  ELSE 'READY' END,
- s.initial_from,s.completed_through,
- CASE WHEN r.stream='VIP_ORDERS' THEN (SELECT count(DISTINCT b.order_id) FROM dcai_order_blockers b
-  JOIN source_order_versions v ON v.source='DCAI' AND v.order_id=b.order_id AND v.kind='ORDER_PAID'
-  JOIN calculation_draft_performance perf ON perf.source_version_id=v.id AND perf.payment_version_id IS NULL
-  JOIN periods original ON original.id=perf.period_id
+ s.initial_from,s.completed_through,s.last_success_at,
+ CASE WHEN r.stream='VIP_ORDERS' THEN (
+  SELECT count(DISTINCT b.order_id) FROM dcai_order_blockers b
   WHERE b.stream=r.stream AND cardinality(b.reasons)>0 AND 'REFUND_EVIDENCE_MISSING'=ANY(b.reasons)
-   AND original.product_id=p.product_id AND (perf.period_id=$1 OR original.ordinal<p.ordinal
-    AND EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=original.id))) ELSE 0 END
+   AND (
+    EXISTS(
+     SELECT 1 FROM source_order_versions v
+     JOIN calculation_draft_performance perf ON perf.source_version_id=v.id AND perf.payment_version_id IS NULL
+     JOIN periods original ON original.id=perf.period_id
+     WHERE v.source='DCAI' AND v.order_id=b.order_id AND v.kind='ORDER_PAID' AND v.fact->>'domain'='VIP'
+      AND original.product_id=p.product_id AND (perf.period_id=$1 OR original.ordinal<p.ordinal
+       AND EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=original.id))
+    )
+    OR b.cursor_updated_at<p.through_time AND NOT EXISTS(
+     SELECT 1 FROM source_order_versions v
+     WHERE v.source='DCAI' AND v.order_id=b.order_id AND v.kind='ORDER_PAID' AND v.fact->>'domain'='VIP'
+    )
+   )
+ ) ELSE 0 END
 FROM scope p CROSS JOIN required r JOIN source_write_state ws ON ws.source='DCAI'
 LEFT JOIN dcai_order_sync s ON s.stream=r.stream
 LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream ORDER BY r.stream`
 
-func readSettlementSourceCoverage(ctx context.Context, tx pgx.Tx, periodID int64, provider string) ([]settlementSource, error) {
-	rows, err := tx.Query(ctx, settlementSourceCoverageSQL, periodID, provider)
+func readSettlementSourceCoverage(ctx context.Context, tx pgx.Tx, periodID int64, provider string, maxAge time.Duration) ([]settlementSource, error) {
+	if maxAge == 0 {
+		maxAge = defaultSettlementSyncMaxAge
+	}
+	rows, err := tx.Query(ctx, settlementSourceCoverageSQL, periodID, provider, maxAge)
 	if err != nil {
 		return nil, err
 	}
 	var source settlementSource
 	var result []settlementSource
-	_, err = pgx.ForEachRow(rows, []any{&source.Stream, &source.Status, &source.From, &source.Through, &source.RefundGap}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&source.Stream, &source.Status, &source.From, &source.Through, &source.LastSync, &source.RefundGap}, func() error {
 		result = append(result, source)
 		return nil
 	})
@@ -93,12 +114,50 @@ func readSettlementSourceCoverage(ctx context.Context, tx pgx.Tx, periodID int64
 
 func settlementCoverageError(sources []settlementSource) error {
 	for _, source := range sources {
+		if source.Status == "STALE" {
+			return errSettlementSourceStale
+		}
+		if source.Status == "CLOCK_GAP" {
+			return errSettlementSourceClock
+		}
 		if source.Status != "READY" {
 			return errSettlementSourceCoverage
 		}
 		if source.RefundGap != 0 {
 			return errSettlementSourceRefund
 		}
+	}
+	return nil
+}
+
+func verifySettlementSourceDeadline(ctx context.Context, tx pgx.Tx, sources []settlementSource, maxAge time.Duration) error {
+	if len(sources) == 0 {
+		return nil
+	}
+	if maxAge == 0 {
+		maxAge = defaultSettlementSyncMaxAge
+	}
+	var deadline time.Time
+	for _, source := range sources {
+		if source.Through == nil || source.LastSync == nil {
+			return errSettlementSourceStale
+		}
+		syncAt := *source.Through
+		if source.LastSync.Before(syncAt) {
+			syncAt = *source.LastSync
+		}
+		end := syncAt.Add(maxAge)
+		if deadline.IsZero() || end.Before(deadline) {
+			deadline = end
+		}
+	}
+	// Source/checkpoint writes are locked while confirming. Only elapsed time can change this check.
+	var valid bool
+	if err := tx.QueryRow(ctx, `SELECT clock_timestamp()<=$1`, deadline).Scan(&valid); err != nil {
+		return err
+	}
+	if !valid {
+		return errSettlementSourceStale
 	}
 	return nil
 }

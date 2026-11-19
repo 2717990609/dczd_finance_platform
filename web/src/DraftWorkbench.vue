@@ -242,8 +242,8 @@ async function loadMore(section, cursorName) {
   </a-tabs>
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney"/>
   <DraftPoolAllocations v-if="draft?.catalog && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
-  <DraftSettlementReview v-if="draft?.catalog && view==='review'" :draft="draft" :api="api" :format-money="formatMoney"
-    :format-time="formatTime" :source-streams="sourceStreams" @show-pools="view='pools'" @show-issues="view='detail'"/>
+  <DraftSettlementReview v-if="draft?.catalog && view==='review'" :draft="draft" :period="selectedPeriod" :api="api" :format-money="formatMoney"
+    :format-time="formatTime" :source-streams="sourceStreams" @show-pools="view='pools'" @show-issues="view='detail'" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">
   <section class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>

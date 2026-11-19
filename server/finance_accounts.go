@@ -20,11 +20,12 @@ type financeRuleGrant struct {
 }
 
 type financeAccountConfig struct {
-	Login     string             `json:"login"`
-	PersonID  int64              `json:"personId"`
-	Enabled   bool               `json:"enabled"`
-	Workspace bool               `json:"workspace"`
-	Rules     []financeRuleGrant `json:"rules"`
+	Login       string             `json:"login"`
+	PersonID    int64              `json:"personId"`
+	Enabled     bool               `json:"enabled"`
+	Workspace   bool               `json:"workspace"`
+	Rules       []financeRuleGrant `json:"rules"`
+	Settlements []int64            `json:"settlements"`
 }
 
 var financeLoginPattern = regexp.MustCompile(`^[a-z0-9._@+-]{1,80}$`)
@@ -57,6 +58,16 @@ func (s workspace) saveFinanceAccount(ctx context.Context, input financeAccountC
 		}
 		seen[grant.ProductID] = true
 	}
+	if !input.Workspace && len(input.Settlements) != 0 {
+		return invalid
+	}
+	clear(seen)
+	for _, product := range input.Settlements {
+		if product < 1 || seen[product] {
+			return invalid
+		}
+		seen[product] = true
+	}
 	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var accountID string
 		if hash != nil {
@@ -86,6 +97,13 @@ func (s workspace) saveFinanceAccount(ctx context.Context, input financeAccountC
 			 VALUES($1::uuid,$2,$3)`, accountID, grant.ProductID, grant.Publish); err != nil {
 				return err
 			}
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM finance_account_settlement_grants WHERE account_id=$1::uuid`, accountID); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO finance_account_settlement_grants(account_id,product_id)
+		 SELECT $1::uuid,product_id FROM unnest($2::bigint[]) AS scope(product_id)`, accountID, input.Settlements); err != nil {
+			return err
 		}
 		_, err := tx.Exec(ctx, `DELETE FROM finance_account_sessions WHERE account_id=$1::uuid`, accountID)
 		return err

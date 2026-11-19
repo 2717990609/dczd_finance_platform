@@ -241,7 +241,19 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: periodID, ExpectedVersion: got.Version}, "fixture"); !errors.Is(err, errSettlementSourceCoverage) {
 		t.Fatalf("a partial sync must not provide coverage: %v", err)
 	}
-	if _, err := s.db.Exec(ctx, `UPDATE dcai_order_sync SET completed_through=target_through,target_through=NULL`); err != nil {
+	if _, err := s.db.Exec(ctx, `UPDATE dcai_order_sync SET completed_through=target_through-interval '2 hours',target_through=NULL,last_success_at=now()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: periodID, ExpectedVersion: got.Version}, "fixture"); !errors.Is(err, errSettlementSourceStale) {
+		t.Fatalf("a recently completed job with an old source watermark must not authorize a close: %v", err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE dcai_order_sync SET completed_through=now()+interval '2 hours',last_success_at=now()`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: periodID, ExpectedVersion: got.Version}, "fixture"); !errors.Is(err, errSettlementSourceClock) {
+		t.Fatalf("an untrustworthy future watermark cannot cover a close: %v", err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE dcai_order_sync SET completed_through=now(),last_success_at=now()`); err != nil {
 		t.Fatal(err)
 	}
 	job, err := s.enqueueDCAISync(ctx, dcaiSyncRequest{Stream: dcaiVIPStream})
@@ -252,6 +264,16 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatalf("a newly queued sync must block confirmation before it even obtains a target watermark: %v", err)
 	}
 	if _, err := s.db.Exec(ctx, `UPDATE dcai_sync_jobs SET status='SUCCEEDED',finished_at=now() WHERE id=$1`, job.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO dcai_order_blockers(stream,source_row_id,order_id,cursor_updated_at,reasons)
+	 VALUES('VIP_ORDERS','unlinked','no-local-payment',$1,ARRAY['REFUND_EVIDENCE_MISSING'])`, start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: periodID, ExpectedVersion: got.Version}, "fixture"); !errors.Is(err, errSettlementSourceRefund) {
+		t.Fatalf("a refund with no locally linked payment must prevent a close: %v", err)
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM dcai_order_blockers WHERE source_row_id='unlinked'`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO dcai_order_blockers(stream,source_row_id,order_id,cursor_updated_at,reasons)
@@ -414,7 +436,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatalf("a different allocation must invalidate a reviewed draft even when the total is unchanged: %v", err)
 	}
 	secondReview := review(finished)
-	closed := closeReviewed(finished, secondReview.Token)
+	closed := verifyVIPSettlementHTTP(t, ctx, s, alice.ID, productID, finished, secondReview.Token)
 	if after := review(finished); after.Settlement == nil || after.Settlement.ID != closed.ID || after.Token != "" {
 		t.Fatalf("closed review should reference the existing settlement: %+v", after)
 	}

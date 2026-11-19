@@ -31,10 +31,12 @@ var (
 )
 
 type financePrincipal struct {
-	ID        string             `json:"-"`
-	Name      string             `json:"name"`
-	Workspace bool               `json:"workspace"`
-	Rules     []financeRuleGrant `json:"rules"`
+	ID          string             `json:"-"`
+	Name        string             `json:"name"`
+	Workspace   bool               `json:"workspace"`
+	Rules       []financeRuleGrant `json:"rules"`
+	settlements []int64
+	sessionHash []byte
 }
 
 type financeSessionView struct {
@@ -86,15 +88,17 @@ func (s workspace) accountSession(r *http.Request) (*financePrincipal, error) {
 	var p financePrincipal
 	err := s.db.QueryRow(r.Context(), `SELECT a.id::text,p.name,a.workspace_access,
 	 coalesce((SELECT jsonb_agg(jsonb_build_object('productId',g.product_id,'publish',g.can_publish) ORDER BY g.product_id)
-	  FROM finance_account_rule_grants g WHERE g.account_id=a.id),'[]')
+	  FROM finance_account_rule_grants g WHERE g.account_id=a.id),'[]'),
+	 ARRAY(SELECT g.product_id FROM finance_account_settlement_grants g WHERE g.account_id=a.id)
 	 FROM finance_account_sessions s JOIN finance_accounts a ON a.id=s.account_id JOIN people p ON p.id=a.person_id
-	 WHERE s.token_hash=$1 AND s.expires_at>now() AND a.enabled`, hash).Scan(&p.ID, &p.Name, &p.Workspace, &p.Rules)
+	 WHERE s.token_hash=$1 AND s.expires_at>now() AND a.enabled`, hash).Scan(&p.ID, &p.Name, &p.Workspace, &p.Rules, &p.settlements)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	p.sessionHash = hash
 	return &p, nil
 }
 

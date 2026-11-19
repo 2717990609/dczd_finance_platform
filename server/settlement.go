@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -19,12 +20,47 @@ var (
 	errSettlementClosed      = errors.New("本账期已确认结算")
 	errSettlementPools       = errors.New("团队池还有正余额未分配，或分配草稿需要重新核对")
 	errSettlementPoolHistory = errors.New("后续账期已结算此团队池，请核对跨期处理")
+	errSettlementUnsupported = errors.New("该产品的来源核验尚未接通结算")
 )
 
 type confirmSettlementInput struct {
 	PeriodID        int64  `json:"periodId"`
 	ExpectedVersion int64  `json:"expectedVersion"`
 	ReviewToken     string `json:"reviewToken,omitempty"`
+}
+
+func (p *financePrincipal) permitsSettlement(product int64) bool {
+	return p != nil && p.Workspace && slices.Contains(p.settlements, product)
+}
+
+func (s workspace) confirmAuthorizedSettlement(ctx context.Context, req confirmSettlementInput) (settlement, error) {
+	operator := financeUser(ctx)
+	if operator == nil {
+		return settlement{}, errFinanceLogin
+	}
+	return s.confirmSettlement(ctx, req, operator.ID)
+}
+
+func lockSettlementOperator(ctx context.Context, tx pgx.Tx, operator *financePrincipal, product int64) error {
+	if !operator.permitsSettlement(product) {
+		return errFinanceForbidden
+	}
+	var authorized int
+	err := tx.QueryRow(ctx, `SELECT 1 FROM finance_accounts a WHERE a.id=$1::uuid AND a.enabled AND a.workspace_access
+	 AND EXISTS(SELECT 1 FROM finance_account_settlement_grants g WHERE g.account_id=a.id AND g.product_id=$2)
+	 FOR SHARE OF a`, operator.ID, product).Scan(&authorized)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errFinanceForbidden
+	}
+	if err != nil {
+		return err
+	}
+	err = tx.QueryRow(ctx, `SELECT 1 FROM finance_account_sessions WHERE token_hash=$1 AND account_id=$2::uuid
+	 AND expires_at>now() FOR SHARE`, operator.sessionHash, operator.ID).Scan(&authorized)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errFinanceLogin
+	}
+	return err
 }
 
 type settlement struct {
@@ -54,7 +90,7 @@ func (s workspace) confirmSettlement(ctx context.Context, req confirmSettlementI
 	for attempt := 0; attempt < 3; attempt++ {
 		err = pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
 			var applyErr error
-			result, applyErr = confirmPeriod(ctx, tx, req, strings.TrimSpace(actor), sourceKey)
+			result, applyErr = confirmPeriod(ctx, tx, req, strings.TrimSpace(actor), sourceKey, s.settlementSyncMaxAge)
 			return applyErr
 		})
 		var dbErr *pgconn.PgError
@@ -65,10 +101,19 @@ func (s workspace) confirmSettlement(ctx context.Context, req confirmSettlementI
 	return settlement{}, conflict
 }
 
-func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, actor, sourceKey string) (settlement, error) {
+func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, actor, sourceKey string, maxSyncAge time.Duration) (settlement, error) {
 	scope, err := readSettlementScope(ctx, tx, req.PeriodID, true)
 	if err != nil {
 		return settlement{}, err
+	}
+	if operator := financeUser(ctx); operator != nil {
+		if err := lockSettlementOperator(ctx, tx, operator, scope.product); err != nil {
+			return settlement{}, err
+		}
+		// The workbench can only confirm scopes with a supported provider coverage check.
+		if !scope.catalog {
+			return settlement{}, errSettlementUnsupported
+		}
 	}
 	existing, err := readSettlement(ctx, tx, req.PeriodID)
 	if err == nil {
@@ -101,8 +146,9 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 	if err := lockDraftInputs(ctx, tx, req.PeriodID); err != nil {
 		return settlement{}, err
 	}
+	var sources []settlementSource
 	if scope.catalog {
-		sources, err := readSettlementSourceCoverage(ctx, tx, req.PeriodID, sourceKey)
+		sources, err = readSettlementSourceCoverage(ctx, tx, req.PeriodID, sourceKey, maxSyncAge)
 		if err != nil {
 			return settlement{}, err
 		}
@@ -132,6 +178,9 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 		if req.ReviewToken == "" || req.ReviewToken != review.Token {
 			return settlement{}, errSettlementStale
 		}
+	}
+	if err := verifySettlementSourceDeadline(ctx, tx, sources, maxSyncAge); err != nil {
+		return settlement{}, err
 	}
 	result := settlement{PeriodID: req.PeriodID, DraftVersion: req.ExpectedVersion, ConfirmedBy: actor, reviewToken: req.ReviewToken}
 	err = tx.QueryRow(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by,review_token) VALUES($1,$2,$3,$4)

@@ -30,25 +30,31 @@ type settlementReview struct {
 	Pools             []settlementPoolGap `json:"pools"`
 	Sources           []settlementSource  `json:"sources,omitempty"`
 	Token             string              `json:"reviewToken,omitempty"`
+	CanConfirm        bool                `json:"canConfirm"`
+	Total             int64               `json:"totalMinor"`
 	Settlement        *settlement         `json:"settlement,omitempty"`
 	mode              string
+	product           int64
+	lastRemoval       int64
 	catalog           bool
 	digest            []byte
 }
 
 func readSettlementScope(ctx context.Context, tx pgx.Tx, periodID int64, lock bool) (settlementReview, error) {
-	query := `SELECT pro.settlement_enabled,
+	query := `SELECT pro.id,pro.settlement_enabled,
 	 ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')<=CURRENT_TIMESTAMP,pro.period_mode,
 	 coalesce(d.version,0),coalesce(d.input_digest,''::bytea),coalesce(d.issue_count,0),
-	 coalesce(d.rule_id IS NULL AND d.catalog_refunds_ready,false)
+	 coalesce(d.rule_id IS NULL AND d.catalog_refunds_ready,false),
+	 coalesce(d.total_minor+d.refund_minor+d.correction_minor,0),
+	 coalesce((SELECT max(r.settlement_id) FROM settlement_removals r WHERE r.period_id=p.id),0)
 	 FROM periods p JOIN products pro ON pro.id=p.product_id LEFT JOIN calculation_drafts d ON d.period_id=p.id
 	 WHERE p.id=$1`
 	if lock {
-		query += ` FOR NO KEY UPDATE OF p`
+		query += ` FOR NO KEY UPDATE OF p FOR SHARE OF pro`
 	}
 	review := settlementReview{Pools: []settlementPoolGap{}}
-	err := tx.QueryRow(ctx, query, periodID).Scan(&review.Enabled, &review.Ended, &review.mode,
-		&review.Version, &review.digest, &review.IssueCount, &review.catalog)
+	err := tx.QueryRow(ctx, query, periodID).Scan(&review.product, &review.Enabled, &review.Ended, &review.mode,
+		&review.Version, &review.digest, &review.IssueCount, &review.catalog, &review.Total, &review.lastRemoval)
 	return review, err
 }
 
@@ -77,7 +83,7 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		review.Sources, err = readSettlementSourceCoverage(ctx, tx, periodID, s.dcaiSourceKey())
+		review.Sources, err = readSettlementSourceCoverage(ctx, tx, periodID, s.dcaiSourceKey(), s.settlementSyncMaxAge)
 		if err != nil {
 			return err
 		}
@@ -99,6 +105,11 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		}
 		return err
 	})
+	operator := financeUser(ctx)
+	review.CanConfirm = err == nil && review.Token != "" && operator.permitsSettlement(review.product)
+	if operator != nil && !review.CanConfirm {
+		review.Token = ""
+	}
 	respond(w, review, err)
 }
 
@@ -148,7 +159,7 @@ func reviewPoolSettlement(ctx context.Context, tx pgx.Tx, periodID int64, review
 		return review, err
 	}
 	hash := sha256.New()
-	fmt.Fprintf(hash, "%d:%d:%x:%s\n", periodID, review.Version, review.digest, basis)
+	fmt.Fprintf(hash, "%d:%d:%x:%s:%d\n", periodID, review.Version, review.digest, basis, review.lastRemoval)
 	rows, err := tx.Query(ctx, settlementPoolFundingSQL, periodID)
 	if err != nil {
 		return review, err

@@ -64,6 +64,12 @@ CREATE TABLE IF NOT EXISTS finance_account_rule_grants (
  PRIMARY KEY(account_id,product_id)
 );
 
+CREATE TABLE IF NOT EXISTS finance_account_settlement_grants (
+ account_id uuid NOT NULL REFERENCES finance_accounts(id) ON DELETE CASCADE,
+ product_id bigint NOT NULL REFERENCES products(id),
+ PRIMARY KEY(account_id,product_id)
+);
+
 CREATE TABLE IF NOT EXISTS finance_account_sessions (
  token_hash bytea PRIMARY KEY CHECK (octet_length(token_hash)=32),
  account_id uuid NOT NULL REFERENCES finance_accounts(id) ON DELETE CASCADE,
@@ -235,6 +241,7 @@ CREATE TABLE IF NOT EXISTS settlement_removals (
  removed_by text NOT NULL,
  removed_at timestamptz NOT NULL DEFAULT now()
 );
+CREATE INDEX IF NOT EXISTS settlement_removals_period ON settlement_removals(period_id,settlement_id DESC);
 
 CREATE OR REPLACE FUNCTION protect_final_calculation() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
