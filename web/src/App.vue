@@ -733,7 +733,7 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='components' && record.catalogPending">
                   <a-tag :color="catalogRuleBadge(record).color">{{ catalogRuleBadge(record).text }}</a-tag>
-                  <a-button v-if="record.draftSupported && record.projectMatches && (!session.user || session.user.rules.some(grant=>grant.productId===record.productId))"
+                  <a-button v-if="record.rateConfigAvailable && record.projectMatches && (!session.user || session.user.rules.some(grant=>grant.productId===record.productId))"
                     type="link" size="small" @click="rateRule=record">分润配置</a-button>
                 </template>
                 <template v-else-if="column.key==='components'">

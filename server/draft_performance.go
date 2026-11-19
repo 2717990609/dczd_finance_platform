@@ -17,6 +17,8 @@ type draftPerformance struct {
 	SourceVersionID, PaymentVersionID, PersonID, Principal int64
 	Organization                                           reportOrganization
 	Refund                                                 *performanceRefundKey `json:",omitempty"`
+	CompletionVersionID                                    int64                 `json:",omitempty"`
+	PriorRefundVersionID                                   int64                 `json:",omitempty"`
 }
 
 func performanceOwner(fact sourceFact, rule *paymentRule, member string, identities map[identityKey][]identityAssignment) int64 {
@@ -40,7 +42,7 @@ type performanceRefundOrigin struct {
 }
 
 const performanceRefundOriginsSQL = `SELECT q.id,a.source_version_id,coalesce(a.person_id,0),
- (p.fact->>'amountMinor')::bigint,a.company_id,a.department_id,
+ (p.fact->>'amountMinor')::bigint-coalesce((previous_refund.fact->>'amountMinor')::bigint,0),a.company_id,a.department_id,
  coalesce((SELECT sum((rv.fact->>'amountMinor')::bigint) FROM calculation_draft_performance prior
  JOIN settlements closed ON closed.period_id=prior.period_id
  JOIN source_order_versions rv ON rv.id=prior.source_version_id
@@ -51,6 +53,7 @@ const performanceRefundOriginsSQL = `SELECT q.id,a.source_version_id,coalesce(a.
   AND (q.line_id='' OR p.line_id=q.line_id)
   AND (q.record_id='' OR substr(p.record_key,strpos(p.record_key,':')+1)=q.record_id AND strpos(p.record_key,':')>0)
  JOIN calculation_draft_performance a ON a.source_version_id=p.id AND a.payment_version_id IS NULL
+ LEFT JOIN source_order_versions previous_refund ON previous_refund.id=a.prior_refund_version_id
  JOIN settlements closed ON closed.period_id=a.period_id
  JOIN calculation_drafts d ON d.period_id=a.period_id
  JOIN periods original ON original.id=a.period_id
@@ -135,17 +138,23 @@ func storeDraftPerformance(ctx context.Context, tx pgx.Tx, periodID int64, posti
 		return nil
 	}
 	_, err := tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_performance"},
-		[]string{"period_id", "source_version_id", "payment_version_id", "person_id", "company_id", "department_id"},
+		[]string{"period_id", "source_version_id", "payment_version_id", "person_id", "company_id", "department_id", "completion_version_id", "prior_refund_version_id"},
 		pgx.CopyFromSlice(len(postings), func(i int) ([]any, error) {
 			p := postings[i]
-			var payment, person *int64
+			var payment, person, completion, priorRefund *int64
 			if p.PaymentVersionID != 0 {
 				payment = &p.PaymentVersionID
 			}
 			if p.PersonID != 0 {
 				person = &p.PersonID
 			}
-			return []any{periodID, p.SourceVersionID, payment, person, p.Organization.Company, p.Organization.Department}, nil
+			if p.CompletionVersionID != 0 {
+				completion = &p.CompletionVersionID
+			}
+			if p.PriorRefundVersionID != 0 {
+				priorRefund = &p.PriorRefundVersionID
+			}
+			return []any{periodID, p.SourceVersionID, payment, person, p.Organization.Company, p.Organization.Department, completion, priorRefund}, nil
 		}))
 	return err
 }

@@ -169,7 +169,9 @@ const draftRefreshAppointment = `SELECT p.id FROM periods p JOIN products pro ON
  JOIN calculation_draft_lines l ON l.id=c.original_line_id
  JOIN source_order_versions original ON original.id=l.source_version_id
  WHERE c.person_id=$3 AND c.person_id<>l.person_id
-  AND original.occurred_at>=$1 AND ($2 IS NULL OR original.occurred_at<$2)`
+  AND original.occurred_at>=$1 AND ($2 IS NULL OR original.occurred_at<$2)
+ UNION SELECT a.period_id FROM calculation_draft_performance a JOIN source_order_versions paid ON paid.id=a.source_version_id
+ WHERE a.completion_version_id IS NOT NULL AND paid.occurred_at>=$1 AND ($2 IS NULL OR paid.occurred_at<$2)`
 
 func (s workspace) addOrganizationAssignment(ctx context.Context, input addAppointmentInput) (appointmentResult, error) {
 	var result appointmentResult

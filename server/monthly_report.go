@@ -40,9 +40,11 @@ const monthlyReportSQL = `WITH scopes AS MATERIALIZED (
  SELECT v.source,v.fact->>'domain' AS domain,v.kind,v.line_id,
   coalesce(nullif(CASE WHEN a.payment_version_id IS NULL THEN v.fact->>'paymentId' ELSE v.fact->>'refundId' END,''),'') AS financial_id,
   v.order_id,v.record_key,a.person_id,a.company_id,a.department_id,
-  CASE WHEN a.payment_version_id IS NULL THEN 1 ELSE -1 END * (v.fact->>'amountMinor')::bigint AS principal
+  CASE WHEN a.payment_version_id IS NULL THEN (v.fact->>'amountMinor')::bigint-coalesce((prior.fact->>'amountMinor')::bigint,0)
+   ELSE -(v.fact->>'amountMinor')::bigint END AS principal
  FROM calculation_draft_performance a JOIN selected_draft d USING(period_id)
  JOIN source_order_versions v ON v.id=a.source_version_id
+ LEFT JOIN source_order_versions prior ON prior.id=a.prior_refund_version_id
 ), performance_groups AS MATERIALIZED (
  SELECT min(person_id) AS person_id,min(company_id::text)::uuid AS company_id,min(department_id::text)::uuid AS department_id,
   min(principal) AS performance,count(*) AS entries,count(DISTINCT (person_id,company_id,department_id,principal)) AS choices

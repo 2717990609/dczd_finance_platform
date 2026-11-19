@@ -41,9 +41,11 @@ const draftReportSQL = `WITH selected_draft AS (
 ), postings AS (` + commissionReportPostingsSQL + `
  UNION ALL
  SELECT a.person_id,a.company_id,a.department_id,
-  CASE WHEN a.payment_version_id IS NULL THEN 1 ELSE -1 END * (v.fact->>'amountMinor')::bigint,0,0,0,0,'person'
+  CASE WHEN a.payment_version_id IS NULL THEN (v.fact->>'amountMinor')::bigint-coalesce((prior.fact->>'amountMinor')::bigint,0)
+   ELSE -(v.fact->>'amountMinor')::bigint END,0,0,0,0,'person'
  FROM calculation_draft_performance a JOIN selected_draft d USING(period_id)
  JOIN source_order_versions v ON v.id=a.source_version_id
+ LEFT JOIN source_order_versions prior ON prior.id=a.prior_refund_version_id
 ), matching AS (
  SELECT CASE $3::text WHEN 'person' THEN coalesce(person_id::text,nullif(beneficiary_kind,'person')) WHEN 'company' THEN company_id::text
   WHEN 'department' THEN coalesce(department_id::text,CASE

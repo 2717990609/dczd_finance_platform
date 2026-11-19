@@ -66,19 +66,32 @@ const healthCompletionAffectedPeriodsSQL = `SELECT boundary.id FROM health_chang
  JOIN catalog_business_routes m ON ` + catalogRouteFactSQL + `
  JOIN product_catalog_settings c ON c.product_id=m.product_id AND c.captured_at=m.observed_at
  JOIN products pro ON pro.id=m.product_id AND pro.period_mode='calendar'
- JOIN source_order_classifications cl ON cl.source_version_id=v.id AND (cl.entity_type,cl.business_key,cl.classifier)=
+ LEFT JOIN source_order_classifications cl ON cl.source_version_id=v.id AND (cl.entity_type,cl.business_key,cl.classifier)=
   (m.entity_type,m.business_key,m.classifier)
  CROSS JOIN LATERAL (SELECT v.occurred_at AS paid_at,v.source AS source) payment
  CROSS JOIN LATERAL (
-  SELECT payment.paid_at AS occurred_at
-  UNION SELECT occurred_at FROM source_order_versions WHERE id IN(x.previous_id,x.current_id)
+  SELECT payment.paid_at AS occurred_at,false AS completion
+  UNION SELECT occurred_at,true FROM source_order_versions WHERE id IN(x.previous_id,x.current_id)
  ) dates
  JOIN periods boundary ON boundary.product_id=m.product_id
   AND (dates.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN boundary.starts_on AND boundary.ends_on
- WHERE m.effective_from<=payment.paid_at AND (m.effective_to IS NULL OR payment.paid_at<m.effective_to)
- AND EXISTS (
-  SELECT 1 FROM (
-   SELECT v.definition->>'recognition_plan' IS NOT NULL AS is_compound,` + catalogRulePriority + ` AS priority,v.published_at,v.effective_from
+ CROSS JOIN LATERAL (SELECT cl.source_version_id IS NOT NULL AND m.effective_from<=payment.paid_at
+  AND (m.effective_to IS NULL OR payment.paid_at<m.effective_to) AS mapped) route
+ WHERE (route.mapped AND EXISTS (` + healthRuleForPaymentSQL + `))
+ OR (dates.completion AND NOT (route.mapped AND EXISTS (SELECT 1 FROM (` + healthRulesAtPaymentSQL + `) selected
+   HAVING count(*)=1 AND NOT bool_or(has_plan))) AND EXISTS (
+    SELECT 1 FROM product_rule_packages p JOIN product_rule_versions v ON v.package_id=p.source_id
+    WHERE p.product_id=m.product_id AND p.project_code=c.project_code
+     AND (v.observed_at=c.captured_at OR v.published_at IS NOT NULL) AND ` + catalogRuleEligible + `
+     AND ` + catalogHealthRecognitionPlan + `
+ ))`
+
+const healthRuleForPaymentSQL = `SELECT 1 FROM (` + healthRulesAtPaymentSQL + `) selected
+ HAVING count(*)=1 AND bool_or(is_compound)`
+
+const healthRulesAtPaymentSQL = `
+   SELECT coalesce((` + catalogHealthRecognitionPlan + `),false) AS is_compound,v.definition->>'recognition_plan' IS NOT NULL AS has_plan,
+    ` + catalogRulePriority + ` AS priority,v.published_at,v.effective_from
    FROM product_rule_packages p JOIN product_rule_versions v ON v.package_id=p.source_id
    WHERE p.product_id=m.product_id AND p.project_code=c.project_code AND p.scope_id=m.sku_code
     AND (v.observed_at=c.captured_at OR v.published_at IS NOT NULL) AND ` + catalogRuleEligible + `
@@ -86,9 +99,7 @@ const healthCompletionAffectedPeriodsSQL = `SELECT boundary.id FROM health_chang
     AND v.definition->'policy_scope'->'sales_systems' ? payment.source AND v.definition->'policy_scope'->'business_sku_codes' ? m.sku_code
     AND v.effective_from<=payment.paid_at AND (v.effective_to IS NULL OR payment.paid_at<v.effective_to)
     AND (p.resume_from IS NULL OR p.resume_from<=payment.paid_at)
-   ORDER BY ` + catalogRuleOrder + ` FETCH FIRST 1 ROW WITH TIES
-  ) selected HAVING count(*)=1 AND bool_or(is_compound)
- )`
+   ORDER BY ` + catalogRuleOrder + ` FETCH FIRST 1 ROW WITH TIES`
 
 func storeHealthCompletionState(ctx context.Context, tx pgx.Tx, rows []orderPageRow) error {
 	observations := make([]healthContractObservation, 0, len(rows))

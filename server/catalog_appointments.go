@@ -82,8 +82,10 @@ type catalogAppointmentChange struct {
 const catalogAppointmentRefreshSQL = `SELECT p.id FROM periods p JOIN products pro ON pro.id=p.product_id
  JOIN product_catalog_settings c ON c.product_id=pro.id AND c.source_system='DCAI'
  WHERE ($3='ORGANIZATION_UNIT' OR ($3='PROJECT' AND c.project_code=$4) OR ($3='PRODUCT' AND pro.code=$4))
- AND $1<((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
- AND ($2::timestamptz IS NULL OR (p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')<$2)`
+ AND (($1<((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
+  AND ($2::timestamptz IS NULL OR (p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')<$2))
+ OR EXISTS(SELECT 1 FROM calculation_draft_performance a JOIN source_order_versions paid ON paid.id=a.source_version_id
+  WHERE a.period_id=p.id AND a.completion_version_id IS NOT NULL AND paid.occurred_at>=$1 AND ($2 IS NULL OR paid.occurred_at<$2)))`
 
 func (s workspace) writeCatalogAppointment(ctx context.Context, apply func(pgx.Tx, *string, time.Time) (catalogAppointmentChange, error)) (appointmentResult, error) {
 	var result appointmentResult

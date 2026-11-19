@@ -186,6 +186,9 @@ CREATE TABLE IF NOT EXISTS dcai_order_blockers (
 CREATE INDEX IF NOT EXISTS dcai_active_order_blockers ON dcai_order_blockers(stream,order_id) WHERE cardinality(reasons)>0;
 ALTER TABLE dcai_order_blockers ADD COLUMN IF NOT EXISTS completion_version_id bigint REFERENCES source_order_versions(id);
 ALTER TABLE dcai_order_blockers ADD COLUMN IF NOT EXISTS completion_observed boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS dcai_current_completion ON dcai_order_blockers(completion_version_id) WHERE completion_version_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS dcai_completed_order_dates ON source_order_versions(occurred_at,id)
+ WHERE source='DCAI' AND kind='ORDER_COMPLETED';
 
 CREATE TABLE IF NOT EXISTS dcai_sync_jobs (
  stream text PRIMARY KEY,
@@ -391,7 +394,8 @@ CREATE OR REPLACE FUNCTION protect_settlement_input() RETURNS trigger LANGUAGE p
 BEGIN
  IF TG_TABLE_NAME='source_order_versions' THEN
   IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.source_version_id=OLD.id)
-     OR EXISTS(SELECT 1 FROM calculation_draft_performance a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id OR a.payment_version_id=OLD.id)
+     OR EXISTS(SELECT 1 FROM calculation_draft_performance a JOIN settlements s USING(period_id)
+       WHERE a.source_version_id=OLD.id OR a.payment_version_id=OLD.id OR a.completion_version_id=OLD.id OR a.prior_refund_version_id=OLD.id)
      OR EXISTS(SELECT 1 FROM calculation_draft_refunds a JOIN settlements s USING(period_id) WHERE a.refund_source_version_id=OLD.id)
      OR EXISTS(SELECT 1 FROM calculation_draft_corrections a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id) THEN
    RAISE EXCEPTION 'source version is referenced by a confirmed calculation' USING ERRCODE='55000';
@@ -754,6 +758,11 @@ CREATE TABLE IF NOT EXISTS calculation_draft_performance (
  CHECK (source_version_id<>payment_version_id)
 );
 CREATE INDEX IF NOT EXISTS calculation_performance_source ON calculation_draft_performance(source_version_id);
+ALTER TABLE calculation_draft_performance ADD COLUMN IF NOT EXISTS completion_version_id bigint REFERENCES source_order_versions(id);
+ALTER TABLE calculation_draft_performance ADD COLUMN IF NOT EXISTS prior_refund_version_id bigint REFERENCES source_order_versions(id)
+ CHECK(prior_refund_version_id IS NULL OR completion_version_id IS NOT NULL);
+CREATE INDEX IF NOT EXISTS calculation_performance_completion ON calculation_draft_performance(completion_version_id) WHERE completion_version_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS calculation_performance_prior_refund ON calculation_draft_performance(prior_refund_version_id) WHERE prior_refund_version_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS calculation_performance_payment ON calculation_draft_performance(payment_version_id);
 CREATE OR REPLACE TRIGGER protect_confirmed_performance BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_performance
  FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();

@@ -32,6 +32,9 @@ const statuses = {
   RULE_MISSING:'未匹配规则',
   RULE_CONFLICT:'规则冲突',
   COMPOUND_RECOGNITION_UNSUPPORTED:'组合确认待启用',
+  COMPOUND_COMPLETION_PENDING:'待完成确认',
+  COMPOUND_COMPLETED_IN_OTHER_PERIOD:'分润归入完成账期',
+  COMPOUND_PRIOR_REFUND_INVALID:'完成前退款待核',
 }
 const poolColumns = [
   {title:'团队池',dataIndex:'name'},
@@ -100,7 +103,7 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
     <div v-if="report" class="catalog-match-totals">
       <span>已匹配 <strong>{{ report.matchedCount }} / {{ report.orderCount }}</strong> 笔</span>
       <span>账期实收 <strong>{{ formatMoney(report.paidMinor) }}</strong></span>
-      <span>已匹配实收 <strong>{{ formatMoney(report.matchedMinor) }}</strong></span>
+      <span>已匹配基数 <strong>{{ formatMoney(report.matchedMinor) }}</strong></span>
     </div>
     <a-table :columns="columns" :data-source="report?.items || []" :loading="loading" row-key="sourceVersionId"
       :pagination="pagination" :scroll="{x:970}" @change="changePage">
@@ -109,7 +112,10 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
           {{ record.orderNo || record.orderId }}
           <small v-if="record.sourceTransactionType" class="order-version">原交易类型 {{ record.sourceTransactionType }}</small>
         </template>
-        <template v-else-if="column.key==='paidAt'">{{ formatTime(record.paidAt) }}</template>
+        <template v-else-if="column.key==='paidAt'">
+          {{ formatTime(record.paidAt) }}
+          <small v-if="record.completedAt" class="order-version">完成 {{ formatTime(record.completedAt) }}</small>
+        </template>
         <template v-else-if="column.key==='paidMinor'">{{ formatMoney(record.paidMinor) }}</template>
         <template v-else-if="column.key==='scenario'">{{ record.scenarioLabel || '—' }}</template>
         <template v-else-if="column.key==='rule'">

@@ -63,7 +63,10 @@ const settlementSourceStatusSQL = `CASE
  ELSE 'READY' END`
 
 const settlementSourceCoverageSQL = `WITH scope AS (
- SELECT p.product_id,p.ordinal,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai' AS from_time,
+ SELECT p.product_id,p.ordinal,least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',(
+  SELECT min(v.occurred_at) FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id
+  WHERE a.period_id=p.id AND a.completion_version_id IS NOT NULL
+ )) AS from_time,
   (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai' AS through_time
  FROM periods p WHERE p.id=$1
 ), required AS (

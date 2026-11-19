@@ -87,6 +87,8 @@ const refundPostingHistorySQL = ` LEFT JOIN LATERAL (
    SELECT period_id FROM calculation_draft_refunds WHERE refund_source_version_id=rv.id
    UNION
    SELECT period_id FROM calculation_draft_performance WHERE source_version_id=rv.id AND payment_version_id IS NOT NULL
+   UNION
+   SELECT period_id FROM calculation_draft_performance WHERE prior_refund_version_id=rv.id
   ) a ON true
   LEFT JOIN settlements s ON s.period_id=a.period_id
   WHERE rv.kind='REFUND_SUCCEEDED' AND rv.source=v.source
@@ -219,16 +221,16 @@ func loadRefundHistory(ctx context.Context, tx pgx.Tx, obligations map[int64][]r
 func includeCurrentObligations(window periodWindow, refs []refundReference, obligations map[int64][]refundObligation,
 	rules []paymentRule, facts []paymentInput, lines []draftLine, catalogTerms map[pgtype.UUID]vipRefundTerms) {
 	type orderKey struct{ source, id string }
-	payments := make(map[orderKey][]paymentInput)
-	for _, item := range facts {
-		if isPeriodPayment(window, item.Fact) {
-			key := orderKey{item.Fact.Source, item.Fact.OrderID}
-			payments[key] = append(payments[key], item)
-		}
-	}
 	byVersion := make(map[int64][]draftLine)
 	for _, line := range lines {
 		byVersion[line.FactID] = append(byVersion[line.FactID], line)
+	}
+	payments := make(map[orderKey][]paymentInput)
+	for _, item := range facts {
+		if isPeriodPayment(window, item.Fact) || catalogTerms != nil && len(byVersion[item.ID]) != 0 {
+			key := orderKey{item.Fact.Source, item.Fact.OrderID}
+			payments[key] = append(payments[key], item)
+		}
 	}
 	byRule := make(map[int64][]component)
 	for _, rule := range rules {
@@ -291,6 +293,7 @@ func applyRefundEvents(ctx context.Context, tx pgx.Tx, periodID int64, window pe
 		return nil
 	}
 	refs := make([]refundReference, 0, len(facts))
+	var healthRefs []refundReference
 	type refundKey struct{ source, domain, refund string }
 	counts := make(map[refundKey]int)
 	for _, event := range facts {
@@ -299,10 +302,18 @@ func applyRefundEvents(ctx context.Context, tx pgx.Tx, periodID int64, window pe
 		if !event.BookedChanged && event.RefundPeriodID != 0 && len(f.RefundsPayment) == 1 &&
 			f.RefundsPayment[0].OrderID != "" && (!practiceMonth || f.OrderID == f.RefundsPayment[0].OrderID) {
 			link := f.RefundsPayment[0]
-			refs = append(refs, refundReference{event.ID, f.Source, link.OrderID, link.LineID, link.RecordID})
+			ref := refundReference{event.ID, f.Source, link.OrderID, link.LineID, link.RecordID}
+			refs = append(refs, ref)
+			if catalogTerms != nil && f.Source == "DCAI" && f.Domain == "HEALTH_IDENTITY" {
+				healthRefs = append(healthRefs, ref)
+			}
 		}
 	}
 	performanceOrigins, err := loadPerformanceRefundOrigins(ctx, tx, periodID, refs, payments, draft.Performance)
+	if err != nil {
+		return err
+	}
+	pending, err := healthRefundsAwaitingRecognition(ctx, tx, periodID, healthRefs)
 	if err != nil {
 		return err
 	}
@@ -315,6 +326,12 @@ func applyRefundEvents(ctx context.Context, tx pgx.Tx, periodID int64, window pe
 	history, err := loadRefundHistory(ctx, tx, obligations)
 	if err != nil {
 		return err
+	}
+	netted := make(map[int64]bool)
+	for _, performance := range draft.Performance {
+		if performance.PriorRefundVersionID != 0 {
+			netted[performance.PriorRefundVersionID] = true
+		}
 	}
 	var replayEvents []practiceReplayRefund
 	for _, event := range facts {
@@ -333,8 +350,14 @@ func applyRefundEvents(ctx context.Context, tx pgx.Tx, periodID int64, window pe
 			code = "REFUND_MISSING_PAYMENT_REFERENCE"
 		case practiceMonth && f.OrderID != f.RefundsPayment[0].OrderID:
 			code = "REFUND_PAYMENT_AMBIGUOUS"
+		case netted[event.ID]:
+			// This refund already reduced the recognized principal and every benefit base.
+			continue
 		default:
 			origins := performanceOrigins[event.ID]
+			if len(origins) == 0 && pending[event.ID] {
+				continue
+			}
 			performanceIssue := recordPerformanceRefund(draft, event, origins, performanceCredited)
 			if practiceMonth && performanceIssue == "" && origins[0].PracticeReplay {
 				replayEvents = append(replayEvents, practiceReplayRefund{event, origins[0].PeriodID, origins[0].SourceVersionID})

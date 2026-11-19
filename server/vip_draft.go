@@ -9,14 +9,18 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const catalogSplitDraftRule = `(v.definition->>'recognition_plan' IS NULL
+ AND v.definition->'internal_sales_direct_split'->>'mode'='DCAI_INTERNAL_DIRECT')`
+
 const catalogDraftAvailableSQL = `(pro.period_mode='calendar' AND EXISTS(
  SELECT 1 FROM product_catalog_settings c
  JOIN product_rule_packages k ON k.product_id=c.product_id AND k.project_code=c.project_code
  JOIN product_rule_versions v ON v.package_id=k.source_id AND v.observed_at=c.captured_at
  WHERE c.product_id=pro.id AND c.source_system='DCAI'
-   AND k.scope_type='BUSINESS_SCENARIO' AND v.definition->'internal_sales_direct_split'->>'mode'='DCAI_INTERNAL_DIRECT'
-   AND v.definition->>'recognition_plan' IS NULL
-   AND EXISTS(SELECT 1 FROM catalog_business_routes m WHERE m.product_id=c.product_id AND m.observed_at=c.captured_at)
+   AND k.scope_type='BUSINESS_SCENARIO'
+   AND EXISTS(SELECT 1 FROM catalog_business_routes m WHERE m.product_id=c.product_id AND m.observed_at=c.captured_at
+    AND (` + catalogSplitDraftRule + ` OR (m.source='DCAI' AND m.domain='HEALTH_IDENTITY' AND m.sku_code=k.scope_id
+     AND ` + catalogHealthRecognitionPlan + `)))
 ))`
 
 type catalogDraftBenefit struct {
@@ -120,10 +124,13 @@ func vipDraftPeople(rows []catalogPaymentMatch, data vipRuntimeData) []int64 {
 }
 
 func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipRuntimeData, organizations reportAttribution) error {
+	if row.Status == "COMPOUND_COMPLETION_PENDING" || row.Status == "COMPOUND_COMPLETED_IN_OTHER_PERIOD" {
+		return nil
+	}
 	issue := func(component, code string) {
 		result.Issues = append(result.Issues, draftIssue{FactID: row.SourceVersionID, Component: component, Code: code})
 	}
-	if row.PaidMinor == nil || excludedVIPPayment(row.Status) {
+	if row.PaidMinor == nil || excludedVIPPayment(row.Status) || !row.PaidInWindow && row.Status != "MATCHED" {
 		issue("", row.Status)
 		return nil
 	}
@@ -146,10 +153,13 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 			}
 		}
 	}
-	result.Performance = append(result.Performance, draftPerformance{SourceVersionID: row.SourceVersionID, Principal: *row.PaidMinor,
-		PersonID: person, Organization: org})
+	result.Performance = append(result.Performance, draftPerformance{SourceVersionID: row.SourceVersionID, Principal: row.commissionBasis(),
+		PersonID: person, Organization: org, CompletionVersionID: row.CompletionVersionID, PriorRefundVersionID: row.PriorRefundVersionID})
 	if row.Status != "MATCHED" {
 		issue("", row.Status)
+		return nil
+	}
+	if row.commissionBasis() == 0 {
 		return nil
 	}
 	var rule pgtype.UUID
@@ -192,8 +202,13 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 }
 
 func excludedVIPPayment(status string) bool {
-	return status == "INVALID_PAYMENT" || status == "DUPLICATE_PAYMENT" || status == "PAYMENT_ALREADY_SETTLED" ||
-		status == "COMPOUND_RECOGNITION_UNSUPPORTED"
+	switch status {
+	case "INVALID_PAYMENT", "DUPLICATE_PAYMENT", "PAYMENT_ALREADY_SETTLED", "COMPOUND_RECOGNITION_UNSUPPORTED",
+		"COMPOUND_COMPLETION_PENDING", "COMPOUND_COMPLETED_IN_OTHER_PERIOD", "COMPOUND_PRIOR_REFUND_INVALID":
+		return true
+	default:
+		return false
+	}
 }
 
 func appendVIPDraftLine(result *paymentDraft, row catalogPaymentMatch, rule pgtype.UUID, key, party, unit, owner string, amount, rate int64,
@@ -225,6 +240,6 @@ func appendVIPDraftLine(result *paymentDraft, row catalogPaymentMatch, rule pgty
 	}
 	result.Total = total
 	result.Lines = append(result.Lines, draftLine{FactID: row.SourceVersionID, PersonID: person, Component: key,
-		Base: *row.PaidMinor, Amount: amount, Catalog: &benefit, organization: org})
+		Base: row.commissionBasis(), Amount: amount, Catalog: &benefit, organization: org})
 	return nil
 }

@@ -56,6 +56,7 @@ const reason = {
   RULE_MISSING: '付款时点没有适用规则',
   RULE_CONFLICT: '同一付款命中多份规则',
   COMPOUND_RECOGNITION_UNSUPPORTED: '组合确认待启用',
+  COMPOUND_PRIOR_REFUND_INVALID: '请在子系统核对完成前的退款金额及原付款，再重新拉取',
   VIP_SALES_RULE_UNSUPPORTED: '销售分项待启用',
   UNCONFIGURED_COMPONENT: '此分项尚未配置可用的来源角色或计算方式',
   MISSING_PAYMENT_ID: '缺少原付款 ID',
@@ -339,7 +340,11 @@ async function loadMore(section, cursorName) {
     <div class="table-container">
       <a-table :columns="lineColumns" :data-source="draft.lines" :pagination="false" row-key="id" :scroll="{ x: 755 }">
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'order'">{{ record.orderNo || record.orderId }}<small class="order-version">来源版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template><template v-if="record.salesCompany"> · {{ record.salesCompany }}</template></small></template>
+          <template v-if="column.key === 'order'">
+            {{ record.orderNo || record.orderId }}
+            <small class="order-version">来源版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template><template v-if="record.salesCompany"> · {{ record.salesCompany }}</template></small>
+            <small v-if="record.completedAt" class="order-version">完成 {{ formatTime(record.completedAt) }}</small>
+          </template>
           <template v-else-if="column.key === 'beneficiary'">
             {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池 · 待分配</small>
             <small v-else-if="record.beneficiaryKind==='company'" class="order-version">{{ record.beneficiaryUnitKind==='DEPARTMENT' ? '部门分润' : '公司分润' }}</small>

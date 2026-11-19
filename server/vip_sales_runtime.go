@@ -9,19 +9,24 @@ import (
 )
 
 type catalogPaymentMatch struct {
-	SourceVersionID       int64     `json:"sourceVersionId"`
-	OrderID               string    `json:"orderId"`
-	OrderNo               string    `json:"orderNo"`
-	PaidAt                time.Time `json:"paidAt"`
-	PaidMinor             *int64    `json:"paidMinor"`
-	SourceTransactionType string    `json:"sourceTransactionType"`
-	Scenario              string    `json:"scenario"`
-	ScenarioLabel         string    `json:"scenarioLabel"`
-	MappingVersion        int       `json:"mappingVersion"`
-	RuleID                string    `json:"ruleId"`
-	RuleVersion           int       `json:"ruleVersion"`
-	RuleLabel             string    `json:"ruleLabel"`
-	Status                string    `json:"status"`
+	SourceVersionID       int64      `json:"sourceVersionId"`
+	OrderID               string     `json:"orderId"`
+	OrderNo               string     `json:"orderNo"`
+	PaidAt                time.Time  `json:"paidAt"`
+	PaidMinor             *int64     `json:"paidMinor"`
+	PaidInWindow          bool       `json:"paidInWindow"`
+	CompletionVersionID   int64      `json:"completionVersionId,omitempty"`
+	CompletedAt           *time.Time `json:"completedAt,omitempty"`
+	RecognizedMinor       *int64     `json:"recognizedMinor,omitempty"`
+	PriorRefundVersionID  int64      `json:"priorRefundVersionId,omitempty"`
+	SourceTransactionType string     `json:"sourceTransactionType"`
+	Scenario              string     `json:"scenario"`
+	ScenarioLabel         string     `json:"scenarioLabel"`
+	MappingVersion        int        `json:"mappingVersion"`
+	RuleID                string     `json:"ruleId"`
+	RuleVersion           int        `json:"ruleVersion"`
+	RuleLabel             string     `json:"ruleLabel"`
+	Status                string     `json:"status"`
 	FixedParts            []struct {
 		ItemKey     string `json:"itemKey"`
 		Label       string `json:"label"`
@@ -32,6 +37,13 @@ type catalogPaymentMatch struct {
 	SalesParts    []vipSalesPart   `json:"salesParts,omitempty"`
 	BenefitStatus string           `json:"benefitStatus,omitempty"`
 	BenefitParts  []vipBenefitPart `json:"benefitParts,omitempty"`
+}
+
+func (row catalogPaymentMatch) commissionBasis() int64 {
+	if row.RecognizedMinor != nil {
+		return *row.RecognizedMinor
+	}
+	return *row.PaidMinor
 }
 
 type catalogMatchReport struct {
@@ -179,7 +191,7 @@ func quoteVIPPaid(sale catalogPaymentMatch, policy vipSalesPolicy, d vipRuntimeD
 }
 
 func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesRequest, string) {
-	req := vipSalesRequest{Order: sale.OrderID, At: sale.PaidAt, Paid: *sale.PaidMinor, Product: d.Product, Project: d.Project}
+	req := vipSalesRequest{Order: sale.OrderID, At: sale.PaidAt, Paid: sale.commissionBasis(), Product: d.Product, Project: d.Project}
 	src, ok := d.Claims[sale.SourceVersionID]
 	if !ok {
 		return req, "SALES_SOURCE_MISSING"

@@ -264,7 +264,7 @@ func normalizeDCAIOrderRow(stream string, through time.Time, wire orderWireRow) 
 		// The page position and the fact revision clock are distinct fields in
 		// this contract. Only the cursor controls pagination.
 		if err != nil || fact.Domain != domain || !through.IsZero() && fact.UpdatedAt.After(through) ||
-			stream == dcaiHealthStream && previousRank > 0 && productCode != fact.SourceKey {
+			stream == dcaiHealthStream && (fact.LineID != "" || previousRank > 0 && productCode != fact.SourceKey) {
 			return row, errSourceRead
 		}
 		rank := 0
