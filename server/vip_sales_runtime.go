@@ -27,6 +27,7 @@ type catalogPaymentMatch struct {
 		Label       string `json:"label"`
 		AmountMinor int64  `json:"amountMinor"`
 	} `json:"fixedParts"`
+	SalesItem     string           `json:"-"`
 	SalesStatus   string           `json:"salesStatus,omitempty"`
 	SalesParts    []vipSalesPart   `json:"salesParts,omitempty"`
 	BenefitStatus string           `json:"benefitStatus,omitempty"`
@@ -42,7 +43,7 @@ type catalogMatchReport struct {
 }
 
 type vipLink struct {
-	Key, Value string
+	Key, Value, Unit string
 	vipInterval
 }
 
@@ -53,6 +54,7 @@ type vipRuntimeData struct {
 	Users, Companies, Categories []vipLink
 	BenefitReady                 bool
 	Organizations                []vipBenefitOrganization
+	PersonIDs                    map[string]int64
 	vipSalesData
 }
 
@@ -72,7 +74,7 @@ const vipRuntimeSQL = `WITH scope AS (
  FROM catalog_sales_people_sources u JOIN scope s ON u.source='DCAI' AND s.captured_at=u.observed_at
  JOIN people p ON p.id=u.person_id WHERE u.external_id IN (SELECT person FROM keys)
 ), companies AS MATERIALIZED (
- SELECT a.external_id AS key,a.company_uuid AS value,a.valid_from AS "from",a.valid_to AS "to"
+ SELECT a.external_id AS key,a.company_uuid AS value,a.company_unit_id AS unit,a.valid_from AS "from",a.valid_to AS "to"
  FROM catalog_sales_company_aliases a JOIN scope s ON a.source='DCAI' AND a.observed_at=s.captured_at
  WHERE a.external_id IN (SELECT company FROM keys)
 ), roles AS (
@@ -99,7 +101,8 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
  'roles',(SELECT jsonb_agg(to_jsonb(roles)) FROM roles),
  'memberships',(SELECT jsonb_agg(jsonb_build_object('person',p.legacy_party_id,'unit',a.unit_id,'from',a.valid_from,'to',a.valid_to))
   FROM organization_assignments a JOIN people p ON p.id=a.person_id WHERE p.id IN (SELECT id FROM users)),
- 'people',(SELECT jsonb_object_agg(p.legacy_party_id::text,p.name) FROM people p WHERE p.legacy_party_id IS NOT NULL))
+ 'people',(SELECT jsonb_object_agg(p.legacy_party_id::text,p.name) FROM people p WHERE p.legacy_party_id IS NOT NULL),
+ 'personIds',(SELECT jsonb_object_agg(p.legacy_party_id::text,p.id) FROM people p WHERE p.legacy_party_id IS NOT NULL))
 FROM scope s`
 
 func loadVIPRuntimeData(ctx context.Context, tx pgx.Tx, periodID int64, matched []catalogPaymentMatch) (vipRuntimeData, error) {
@@ -107,10 +110,12 @@ func loadVIPRuntimeData(ctx context.Context, tx pgx.Tx, periodID int64, matched 
 	var rules []string
 	seen := make(map[string]bool)
 	for _, item := range matched {
+		if item.PaidMinor != nil && item.Status != "INVALID_PAYMENT" && item.Status != "DUPLICATE_PAYMENT" {
+			ids = append(ids, item.SourceVersionID)
+		}
 		if item.Status != "MATCHED" || item.RuleID == "" {
 			continue
 		}
-		ids = append(ids, item.SourceVersionID)
 		if !seen[item.RuleID] {
 			seen[item.RuleID] = true
 			rules = append(rules, item.RuleID)
@@ -132,17 +137,22 @@ func loadVIPRuntimeData(ctx context.Context, tx pgx.Tx, periodID int64, matched 
 }
 
 func resolveVIPLink(values []vipLink, key string, at time.Time) (value string, conflict bool) {
+	row, conflict := resolveVIPLinkRecord(values, key, at)
+	return row.Value, conflict
+}
+
+func resolveVIPLinkRecord(values []vipLink, key string, at time.Time) (selected vipLink, conflict bool) {
 	found := false
 	for _, row := range values {
 		if row.Key != key || !row.contains(at) {
 			continue
 		}
-		if found && value != row.Value {
-			return "", true
+		if found && (selected.Value != row.Value || selected.Unit != row.Unit) {
+			return vipLink{}, true
 		}
-		value, found = row.Value, true
+		selected, found = row, true
 	}
-	return value, false
+	return selected, false
 }
 
 func quoteVIPPaid(sale catalogPaymentMatch, policy vipSalesPolicy, d vipRuntimeData) ([]vipSalesPart, string) {
@@ -169,10 +179,11 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 	if conflict {
 		return req, "SALES_PERSON_CONFLICT"
 	}
-	req.Company, conflict = resolveVIPLink(d.Companies, claim.Company, sale.PaidAt)
+	company, conflict := resolveVIPLinkRecord(d.Companies, claim.Company, sale.PaidAt)
 	if conflict {
 		return req, "SALES_COMPANY_CONFLICT"
 	}
+	req.Company, req.CompanyUnit = company.Value, company.Unit
 	req.Category, conflict = resolveVIPLink(d.Categories, req.Company, sale.PaidAt)
 	if conflict {
 		return req, "SALES_CATEGORY_CONFLICT"
@@ -193,6 +204,7 @@ func applyVIPQuotes(items []catalogPaymentMatch, data vipRuntimeData) {
 			continue
 		}
 		if policy, ok := policies[row.RuleID]; ok {
+			row.SalesItem = policy.Split.Item
 			row.SalesParts, row.SalesStatus = quoteVIPPaid(*row, policy, data)
 			if row.SalesStatus == "" {
 				row.SalesStatus = "CALCULATED"

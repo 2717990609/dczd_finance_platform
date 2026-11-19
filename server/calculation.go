@@ -40,6 +40,7 @@ type draftLine struct {
 	Component                            string
 	organization                         reportOrganization
 	Base, Amount                         int64
+	Catalog                              *catalogDraftBenefit `json:",omitempty"`
 }
 
 type draftIssue struct {

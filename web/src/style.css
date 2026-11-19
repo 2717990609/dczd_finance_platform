@@ -40,6 +40,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .heading .ant-btn { flex-shrink: 0; }
 .summary-grid { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 11px; margin-bottom: 16px; }
 .summary-grid.summary-with-corrections { grid-template-columns: repeat(4,minmax(0,1fr)); }
+.summary-grid.summary-collection { grid-template-columns: repeat(2,minmax(0,1fr)); }
 .summary-grid article { min-height: 74px; padding: 12px 15px; display: flex; align-items: center; gap: 11px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; }
 .metric-icon { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border-radius: 6px; background: var(--accent-soft); color: var(--accent); font-size: 17px; }
 .summary-grid small { display: block; margin-bottom: 3px; color: var(--muted); font-size: 12px; }

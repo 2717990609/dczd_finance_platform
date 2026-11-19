@@ -14,7 +14,7 @@ const draftPersonnelSQL = `WITH selected_draft AS (
 ), totals AS (
  SELECT person_id,sum(amount_minor) AS accrued_minor,sum(refund) AS refund_minor,sum(correction) AS correction_minor,
   sum(amount_minor)+sum(refund)+sum(correction) AS net_minor
- FROM postings GROUP BY person_id
+ FROM postings WHERE person_id IS NOT NULL GROUP BY person_id
 ), page AS (
  SELECT p.id AS "personId",p.name AS "personName",t.accrued_minor AS "accruedMinor",t.refund_minor AS "refundMinor",
   t.correction_minor AS "correctionMinor",t.net_minor AS "totalMinor"

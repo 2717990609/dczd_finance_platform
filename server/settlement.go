@@ -107,6 +107,9 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 	if err != nil {
 		return settlement{}, err
 	}
+	if summary.Catalog {
+		return settlement{}, errSettlementDisabled
+	}
 	current, digest, err := computeDraft(ctx, tx, summary, window, rules)
 	if err != nil {
 		return settlement{}, err

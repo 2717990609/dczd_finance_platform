@@ -15,11 +15,13 @@ let sequence = 0
 const dimensionLabel = computed(() => props.dimensions.find(item=>item.value===dimension.value)?.label)
 const columns = computed(() => [
   {title:dimensionLabel.value,dataIndex:'name',key:'name',width:150},
-  {title:'本期净业绩',dataIndex:'performanceMinor',key:'performanceMinor',width:135,align:'right'},
+  {title:props.draft.catalog ? '本期实收业绩' : '本期净业绩',dataIndex:'performanceMinor',key:'performanceMinor',width:135,align:'right'},
   {title:'正向计提',dataIndex:'accruedMinor',key:'accruedMinor',width:125,align:'right'},
-  {title:'退款扣减',dataIndex:'refundMinor',key:'refundMinor',width:125,align:'right'},
-  {title:'推荐人更正',dataIndex:'correctionMinor',key:'correctionMinor',width:125,align:'right'},
-  {title:'本期净分润',dataIndex:'totalMinor',key:'totalMinor',width:125,align:'right'},
+  ...(props.draft.catalog ? [] : [
+    {title:'退款扣减',dataIndex:'refundMinor',key:'refundMinor',width:125,align:'right'},
+    {title:'推荐人更正',dataIndex:'correctionMinor',key:'correctionMinor',width:125,align:'right'},
+    {title:'本期净分润',dataIndex:'totalMinor',key:'totalMinor',width:125,align:'right'},
+  ]),
 ])
 const pagination = computed(() => ({current:page.value,pageSize:25,total:total.value,showSizeChanger:false}))
 
@@ -70,11 +72,11 @@ onBeforeUnmount(() => { sequence++ })
       </div>
     </div>
     <p v-if="!loading && !error" class="draft-report-note">
-      <template v-if="performanceReady">全期净业绩 <strong>{{ formatMoney(periodPerformance) }}</strong></template>
+      <template v-if="performanceReady">{{ draft.catalog ? '全期实收业绩' : '全期净业绩' }} <strong>{{ formatMoney(periodPerformance) }}</strong></template>
       <template v-else>该版本尚无业绩统计。</template>
     </p>
     <a-alert v-if="error" type="error" :message="error" show-icon/>
-    <a-table :columns="columns" :data-source="rows" :loading="loading" row-key="id" :pagination="pagination" :scroll="{x:785}" @change="changePage">
+    <a-table :columns="columns" :data-source="rows" :loading="loading" row-key="id" :pagination="pagination" :scroll="{x:draft.catalog ? 410 : 785}" @change="changePage">
       <template #bodyCell="{column,text}">
         <strong v-if="column.key==='totalMinor'" class="numeric">{{ formatMoney(text) }}</strong>
         <span v-else-if="column.key!=='name'" class="numeric">{{ formatMoney(text) }}</span>

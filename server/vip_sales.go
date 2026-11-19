@@ -206,6 +206,7 @@ type vipSalesData struct {
 
 type vipSalesRequest struct {
 	Order, Product, Project, Seller, Company, Relationship, Category string
+	CompanyUnit                                                      string
 	Paid                                                             int64
 	At                                                               time.Time
 }

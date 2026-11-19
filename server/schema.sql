@@ -132,8 +132,7 @@ CREATE INDEX IF NOT EXISTS calculation_draft_issues_page ON calculation_draft_is
 ALTER TABLE rule_versions ADD COLUMN IF NOT EXISTS effective_from timestamptz;
 ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS rule_id bigint REFERENCES rule_versions(id);
 UPDATE calculation_draft_lines AS line SET rule_id=draft.rule_id
- FROM calculation_drafts AS draft WHERE line.period_id=draft.period_id AND line.rule_id IS NULL;
-ALTER TABLE calculation_draft_lines ALTER COLUMN rule_id SET NOT NULL;
+ FROM calculation_drafts AS draft WHERE line.period_id=draft.period_id AND line.rule_id IS NULL AND draft.rule_id IS NOT NULL;
 
 ALTER TABLE products ADD COLUMN IF NOT EXISTS settlement_enabled boolean NOT NULL DEFAULT false;
 CREATE UNIQUE INDEX IF NOT EXISTS calculation_drafts_period_version ON calculation_drafts(period_id, version);
@@ -604,3 +603,26 @@ CREATE TABLE IF NOT EXISTS catalog_benefit_organizations (
  observed_at timestamptz NOT NULL,
  PRIMARY KEY(source,party_uuid,unit_id)
 );
+
+ALTER TABLE calculation_drafts ALTER COLUMN rule_id DROP NOT NULL;
+ALTER TABLE calculation_draft_lines
+ ALTER COLUMN rule_id DROP NOT NULL,
+ ALTER COLUMN identity_id DROP NOT NULL,
+ ALTER COLUMN person_id DROP NOT NULL,
+ ADD COLUMN IF NOT EXISTS catalog_rule_id uuid REFERENCES legacy_rule_versions(source_id),
+ ADD COLUMN IF NOT EXISTS beneficiary_unit_id uuid REFERENCES organization_units(id),
+ ADD COLUMN IF NOT EXISTS allocation_owner_id bigint REFERENCES people(id);
+
+DO $$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass AND conname='draft_line_rule_and_recipient_check') THEN
+  ALTER TABLE calculation_draft_lines ADD CONSTRAINT draft_line_rule_and_recipient_check CHECK (
+   (catalog_rule_id IS NULL AND rule_id IS NOT NULL AND identity_id IS NOT NULL AND person_id IS NOT NULL
+     AND beneficiary_unit_id IS NULL AND allocation_owner_id IS NULL)
+   OR
+   (catalog_rule_id IS NOT NULL AND rule_id IS NULL AND identity_id IS NULL AND practice_enrollment_id IS NULL
+     AND ((person_id IS NOT NULL AND beneficiary_unit_id IS NULL AND allocation_owner_id IS NULL)
+       OR (person_id IS NULL AND beneficiary_unit_id IS NOT NULL)))
+  );
+ END IF;
+END $$;

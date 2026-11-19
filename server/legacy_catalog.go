@@ -69,7 +69,9 @@ const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(v) ORDER BY v."effec
  p.name AS label,p.project_code AS project,p.policy_kind AS "policyKind",p.scope_type AS "scopeType",p.scope_id AS "scopeId",
  r.version_no AS version,r.source_status AS "sourceStatus",r.effective_from AS "effectiveFrom",r.effective_to AS "effectiveTo",
  p.paused,p.resume_from AS "resumeFrom",p.project_code=c.project_code AS "projectMatches",
- r.observed_at=c.captured_at AS "inLatestSnapshot"
+ r.observed_at=c.captured_at AS "inLatestSnapshot",
+ coalesce(c.source_system='DCAI' AND p.scope_type='BUSINESS_SCENARIO'
+  AND r.definition->'internal_sales_direct_split'->>'mode'='DCAI_INTERNAL_DIRECT',false) AS "draftSupported"
  FROM legacy_rule_versions r JOIN legacy_rule_packages p ON p.source_id=r.package_id
  JOIN legacy_catalog_products c ON c.product_id=p.product_id JOIN products pr ON pr.id=c.product_id
 ) v`

@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import CatalogRuleMatches from './CatalogRuleMatches.vue'
 import DraftReport from './DraftReport.vue'
+import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, api: Function, formatMoney: Function, formatTime: Function })
 const selected = ref()
@@ -17,10 +18,20 @@ const options = computed(() => props.periods.map(period => ({
   label: `${period.productName} · ${period.name}`,
 })))
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
-const matchingOnly = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable && !draft.value)
+const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable)
+const matchingOnly = computed(() => hasMatching.value && !selectedPeriod.value?.catalogDraftAvailable)
 const componentLabel = code => props.componentOptions.find(option=>option.value===code)?.label || code
 const memberLabel = type => props.memberOptions.find(option=>option.value===(type===3 ? 'new' : 'retrain'))?.label
 const reason = {
+  ...salesStatus,
+  ...benefitStatus,
+  INVALID_PAYMENT: '付款金额或付款编号待核',
+  UNCLASSIFIED: '订单场景分类待核',
+  MAPPING_MISSING: '订单没有匹配的场景映射',
+  MAPPING_CONFLICT: '订单同时命中多条场景映射',
+  RULE_MISSING: '付款时点没有适用规则',
+  RULE_CONFLICT: '同一付款命中多份规则',
+  VIP_SALES_RULE_UNSUPPORTED: '销售分项待启用',
   UNCONFIGURED_COMPONENT: '此分项尚未配置可用的来源角色或计算方式',
   MISSING_PAYMENT_ID: '缺少原付款 ID',
   DUPLICATE_PAYMENT: '同一付款出现多条记录，需核对商品行及金额分摊',
@@ -63,7 +74,7 @@ const reason = {
 }
 const lineColumns = [
   { title: '原订单', key: 'order', width: 190 },
-  { title: '受益人', dataIndex: 'personName', width: 120 },
+  { title: '受益对象', key: 'beneficiary', width: 135 },
   { title: '分项', key: 'component', width: 115 },
   { title: '规则版本', key: 'rule', width: 100 },
   { title: '实付基数', key: 'base', width: 115 },
@@ -166,26 +177,31 @@ async function loadMore(section, cursorName) {
     </p>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
-  <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount }">
+  <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount, 'summary-collection':draft.catalog }">
     <article><div><small>正向计提</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
-    <article><div><small>退款扣减</small><strong>{{ formatMoney(draft.refundMinor) }}</strong></div></article>
+    <article><div><small>退款扣减</small><strong>{{ draft.catalog ? '待接入' : formatMoney(draft.refundMinor) }}</strong></div></article>
     <article v-if="draft.correctionCount"><div><small>推荐人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div></article>
-    <article><div><small>本期合计</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
+    <article v-if="!draft.catalog"><div><small>本期合计</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
   </div>
   <a-tabs v-if="draft" v-model:active-key="view">
     <a-tab-pane key="detail" tab="明细"/>
     <a-tab-pane v-if="reportDimensions.length" key="report" tab="业绩与分润"/>
+    <a-tab-pane v-if="hasMatching" key="matching" tab="订单规则匹配"/>
   </a-tabs>
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney"/>
-  <template v-if="draft && (view==='detail' || !reportDimensions.length)">
+  <template v-if="draft && view==='detail'">
   <section class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>
     <div class="table-container">
       <a-table :columns="lineColumns" :data-source="draft.lines" :pagination="false" row-key="id" :scroll="{ x: 755 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">{{ record.orderNo || record.orderId }}<small class="order-version">来源版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template><template v-if="record.salesCompany"> · {{ record.salesCompany }}</template></small></template>
-          <template v-else-if="column.key === 'component'">{{ componentLabel(record.component) }}</template>
-          <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}</template>
+          <template v-else-if="column.key === 'beneficiary'">
+            {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池 · 待分配</small>
+            <small v-else-if="record.beneficiaryKind==='company'" class="order-version">公司分润</small>
+          </template>
+          <template v-else-if="column.key === 'component'">{{ salesRoles[record.componentRole] || record.componentLabel || componentLabel(record.component) }}</template>
+          <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}<small v-if="draft.catalog && record.ruleLabel" class="order-version">{{ record.ruleLabel }}</small></template>
           <template v-else-if="column.key === 'base'">{{ formatMoney(record.baseMinor) }}</template>
           <template v-else-if="column.key === 'amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
         </template>
@@ -238,8 +254,9 @@ async function loadMore(section, cursorName) {
     <div v-if="draft.issueCount > draft.issues.length" class="paging"><a-button :loading="loading" @click="loadMore('issues', 'afterIssueId')">加载下一页</a-button></div>
   </section>
   </template>
-  <CatalogRuleMatches v-if="matchingOnly" :period-id="selected" :api="api" :format-money="formatMoney" :format-time="formatTime"/>
-  <section v-if="!draft && !error && !matchingOnly" class="records empty">
+  <CatalogRuleMatches v-if="hasMatching && (!draft || view==='matching')" :period-id="selected" :draft-available="selectedPeriod.catalogDraftAvailable"
+    :api="api" :format-money="formatMoney" :format-time="formatTime"/>
+  <section v-if="!draft && !error && !hasMatching" class="records empty">
     <a-empty :description="loading ? '正在读取试算' : selected ? '本期暂无草稿' : '请选择核算期'" />
   </section>
 </template>

@@ -144,7 +144,7 @@ function catalogRuleBadge(row) {
   if (new Date(row.effectiveFrom).getTime()>now || row.resumeFrom && new Date(row.resumeFrom).getTime()>now) {
     return { text:'待生效', color:'blue' }
   }
-  return { text:'待启用', color:'blue' }
+  return row.draftSupported ? { text:'可试算', color:'green' } : { text:'待启用', color:'blue' }
 }
 const mainRows = computed(() => {
   const key = tab.value === 'mapping' ? 'mappings' : tab.value === 'identity' ? 'identities' : current.value
