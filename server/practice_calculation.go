@@ -278,7 +278,7 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 	purchases := make(map[int64]practicePurchase)
 	for _, purchase := range current {
 		member := purchase.member
-		if classMember(member.MembershipType) != "new" {
+		if classMember(member.MembershipType) != "new" || purchase.issue == practicePaymentAlreadySettled {
 			continue
 		}
 		if purchase.companyAward != nil {

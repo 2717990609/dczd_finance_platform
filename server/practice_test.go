@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 func TestPracticeEnrollmentAmountsTreatDepositAndBalanceAsOneEntitlement(t *testing.T) {
@@ -222,6 +223,175 @@ func TestPracticeDraftFollowsLatestRosterForDeferredEnrollment(t *testing.T) {
 	_, err = service.confirmSettlement(ctx, confirmSettlementInput{PeriodID: target, ExpectedVersion: 2}, "test")
 	if !errors.Is(err, errPracticeSettlementUnavailable) {
 		t.Fatalf("class settlement returned %v", err)
+	}
+}
+
+func TestPracticeDeferredEnrollmentKeepsBookedPaymentInOriginalClass(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(result any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.(map[string]int64)["id"]
+	}
+	product := id(s.createProduct(ctx, createProductInput{Code: "DEFERRED", Name: "Practice", PeriodMode: "class"}))
+	original := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "Original", Ordinal: 1,
+		StartsOn: "2020-08-01", EndsOn: "2020-08-02", SourcePeriodKey: "PRACTICE:1:1:10"}))
+	target := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "Target", Ordinal: 2,
+		StartsOn: "2020-08-08", EndsOn: "2020-08-09", SourcePeriodKey: "PRACTICE:1:1:11"}))
+	person := id(s.createPerson(ctx, createPersonInput{Name: "Sales"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "practice"}))
+	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: person, Source: "DCZD", ExternalID: "sales", ValidFrom: "2020-01-01T00:00:00+08:00"}))
+	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, Label: "Sales rule",
+		Components: []component{{Type: "sales", Mode: "fixed", Value: 300, ClassMember: "new", SourceRole: "DIRECT_REFERRER"}}}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2020, 8, 1, 1, 0, 0, 0, time.UTC)
+	paidAt, amount := start.Add(-time.Hour), int64(1000)
+	paid := sourceFact{Source: "DCZD", Kind: "ORDER_PAID", OrderID: "31", PaymentID: "31", Domain: "PRACTICE", SourceKey: "practice",
+		RecordKey: "payment:31", Version: "1", AmountMinor: &amount, OccurredAt: paidAt, UpdatedAt: paidAt, ReferrerID: "sales"}
+	storeFact := func(fact sourceFact) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFacts(ctx, tx, []sourceFact{fact})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	storeFact(paid)
+	for _, order := range []string{"32", "33"} {
+		other := paid
+		other.OrderID, other.PaymentID, other.RecordKey = order, order, "payment:"+order
+		storeFact(other)
+	}
+	member := practiceEnrollment{SourceEnrollmentID: "1", ParticipantID: "21", MembershipType: 3,
+		CommissionEligible: true, PaidOrderIDs: []string{"31"}, SignedAt: start, ContentHash: "a1"}
+	first := practiceRoster{Key: "PRACTICE:1:1:10", SourceVersion: 1, Hash: "first", StartsAt: start,
+		ConfirmedAt: start.Add(time.Hour), Enrollments: []practiceEnrollment{member}}
+	importRoster := func(roster practiceRoster) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storePracticeRoster(ctx, tx, roster)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	importRoster(first)
+	value, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: original})
+	if err != nil || value.(draftSummary).Total != 300 {
+		t.Fatalf("original draft: %+v, %v", value, err)
+	}
+	originalVersion := value.(draftSummary).Version
+	gift := practiceEnrollment{SourceEnrollmentID: "2", ParticipantID: "22", MembershipType: 1, SignedAt: start,
+		PaidOrderIDs: []string{}, ContentHash: "a2"}
+	first.SourceVersion, first.Hash, first.Enrollments = 2, "deferred", []practiceEnrollment{gift}
+	importRoster(first)
+	member.SignedAt = start.AddDate(0, 0, 7)
+	member.PaidOrderIDs, member.ContentHash = []string{"31", "32"}, "a3"
+	independent := practiceEnrollment{SourceEnrollmentID: "3", ParticipantID: "23", MembershipType: 3,
+		CommissionEligible: true, PaidOrderIDs: []string{"33"}, SignedAt: member.SignedAt, ContentHash: "a4"}
+	importRoster(practiceRoster{Key: "PRACTICE:1:1:11", SourceVersion: 1, Hash: "target", StartsAt: member.SignedAt,
+		ConfirmedAt: member.SignedAt.Add(time.Hour), Enrollments: []practiceEnrollment{member, independent}})
+	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &target, Label: "Tiered sales and delivery",
+		Components: []component{
+			{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER", Tiers: &practiceSalesTiers{
+				CountFromOrdinal: 1, Count: []practiceTier{{From: 1, Mode: "fixed", Value: 300}}, Performance: []practiceTier{{Mode: "fixed", Value: 200}}}},
+			{Type: "delivery", Mode: "period_rate", Value: 100000, PeriodBenefit: &practicePeriodBenefit{Label: "Class delivery", PersonID: person}},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	paid.Version, paid.UpdatedAt = "2", paidAt.Add(time.Minute)
+	storeFact(paid)
+	value, err = s.recalculateDraft(ctx, calculateDraftInput{PeriodID: target})
+	if err != nil || value.(draftSummary).Total != 800 || value.(draftSummary).IssueCount != 0 {
+		t.Fatalf("open target should calculate both enrollments before seeding the existing settlement: %+v, %v", value, err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, original, originalVersion); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `DROP FUNCTION practice_payment_dependents(bigint)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrate(ctx, s.db); err != nil {
+		t.Fatal(err)
+	}
+	var queued bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, target).Scan(&queued); err != nil || !queued {
+		t.Fatalf("upgrade must queue an existing duplicate draft: %v, %v", queued, err)
+	}
+	if err := s.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var total int64
+	var issueCount int
+	if err := s.db.QueryRow(ctx, `SELECT total_minor,issue_count FROM calculation_drafts WHERE period_id=$1`, target).Scan(&total, &issueCount); err != nil || total != 400 || issueCount != 1 {
+		t.Fatalf("class must hold the whole deferred enrollment and still calculate unrelated sales and delivery: total=%d issues=%d %v", total, issueCount, err)
+	}
+	var issues []string
+	err = s.db.QueryRow(ctx, `SELECT array(SELECT code FROM calculation_draft_issues WHERE period_id=$1)`, target).Scan(&issues)
+	if err != nil || len(issues) != 1 || issues[0] != "PRACTICE_PAYMENT_ALREADY_SETTLED" {
+		t.Fatalf("class must report the booked payment: %v, %v", issues, err)
+	}
+	var booked int
+	var targetPayments []string
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FILTER (WHERE a.period_id=$1),
+	 array_agg(v.order_id ORDER BY v.order_id) FILTER (WHERE a.period_id=$2)
+	 FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id`, original, target).
+		Scan(&booked, &targetPayments); err != nil || booked != 1 || len(targetPayments) != 1 || targetPayments[0] != "33" {
+		t.Fatalf("performance duplicated or changed: original=%d target=%v, %v", booked, targetPayments, err)
+	}
+	month := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "August refunds", SettlementMonth: "2020-08"}))
+	refundAt, refundAmount := start.AddDate(0, 0, 10), int64(100)
+	storeFact(sourceFact{Source: "DCZD", Kind: "REFUND_SUCCEEDED", OrderID: "31", RefundID: "1", Domain: "PRACTICE", SourceKey: "practice",
+		RecordKey: "refund:1", Version: "1", OccurredAt: refundAt, UpdatedAt: refundAt, AmountMinor: &refundAmount,
+		RefundsPayment: []sourcePaymentReference{{OrderID: "31", RecordID: "31"}}})
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		dependencies, err := readPracticeMonthSettlementDependencies(ctx, tx, month)
+		if err == nil && len(dependencies) != 0 {
+			return fmt.Errorf("the refund of a booked payment must not wait for the target class: %+v", dependencies)
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	configWriter, err := s.db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer configWriter.Rollback(ctx)
+	if err := touchSourceWrites(ctx, configWriter, []string{"CONFIG"}); err != nil {
+		t.Fatal(err)
+	}
+	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SET LOCAL lock_timeout='100ms'`); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `DELETE FROM settlements WHERE period_id=$1`, original)
+		return err
+	})
+	var lockError *pgconn.PgError
+	if !errors.As(err, &lockError) || lockError.Code != "55P03" {
+		t.Fatalf("class reopening must wait for in-flight roster changes: %v", err)
+	}
+	if err := configWriter.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM settlements WHERE period_id=$1`, original); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var originalTotal, targetTotal int64
+	if err := s.db.QueryRow(ctx, `SELECT original.total_minor,target.total_minor,
+	 array(SELECT code FROM calculation_draft_issues WHERE period_id=target.period_id)
+	 FROM calculation_drafts original JOIN calculation_drafts target ON target.period_id=$2 WHERE original.period_id=$1`, original, target).
+		Scan(&originalTotal, &targetTotal, &issues); err != nil || originalTotal != 0 || targetTotal != 800 {
+		t.Fatalf("deleting the incorrect settlement must refresh both open drafts: original=%d target=%d issues=%v, %v", originalTotal, targetTotal, issues, err)
 	}
 }
 

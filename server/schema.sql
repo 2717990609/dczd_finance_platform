@@ -307,6 +307,8 @@ BEGIN
  IF TG_OP='UPDATE' THEN
   RAISE EXCEPTION 'confirmed settlement cannot be changed' USING ERRCODE='55000';
  END IF;
+ -- Keep roster imports and their draft queues ordered with a technical reopening.
+ PERFORM source FROM source_write_state WHERE source='CONFIG' FOR SHARE;
  SELECT array_agg(period_id) INTO refund_dependents FROM practice_refund_dependents(OLD.period_id);
  IF EXISTS(
     SELECT 1 FROM calculation_draft_lines l
@@ -357,8 +359,9 @@ BEGIN
    JOIN calculation_draft_performance o ON o.source_version_id=a.payment_version_id WHERE o.period_id=OLD.period_id)
  AND period_id<>OLD.period_id;
  INSERT INTO draft_refresh_queue(period_id)
- SELECT p.id FROM periods p WHERE p.id=ANY(refund_dependents)
- AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id)
+ SELECT p.id FROM periods p WHERE (p.id=OLD.period_id AND p.source_period_key IS NOT NULL)
+ OR ((p.id=ANY(refund_dependents) OR p.id IN (SELECT period_id FROM practice_payment_dependents(OLD.period_id)))
+  AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id))
  ORDER BY p.id ON CONFLICT(period_id) DO UPDATE
  SET generation=excluded.generation,requested_at=excluded.requested_at,retry_on_scan=true,message='';
  INSERT INTO settlement_removals(settlement_id,period_id,draft_version,removed_by)
@@ -708,6 +711,58 @@ CREATE INDEX IF NOT EXISTS calculation_performance_source ON calculation_draft_p
 CREATE INDEX IF NOT EXISTS calculation_performance_payment ON calculation_draft_performance(payment_version_id);
 CREATE OR REPLACE TRIGGER protect_confirmed_performance BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_performance
  FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+
+DO $$
+BEGIN
+ IF to_regprocedure('practice_payment_dependents(bigint)') IS NULL THEN
+  INSERT INTO draft_refresh_queue(period_id)
+  SELECT DISTINCT a.period_id FROM settlements final
+  JOIN calculation_draft_performance booked ON booked.period_id=final.period_id AND booked.payment_version_id IS NULL
+  JOIN source_order_versions prior ON prior.id=booked.source_version_id
+  JOIN source_order_versions current ON current.source=prior.source AND current.order_id=prior.order_id
+   AND current.kind=prior.kind AND current.fact->>'domain'='PRACTICE'
+  JOIN calculation_draft_performance a ON a.source_version_id=current.id AND a.payment_version_id IS NULL
+  JOIN calculation_drafts draft ON draft.period_id=a.period_id AND draft.practice_roster_id IS NOT NULL
+  WHERE prior.source='DCZD' AND prior.kind='ORDER_PAID' AND prior.fact->>'domain'='PRACTICE' AND a.period_id<>final.period_id
+   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=a.period_id)
+  ON CONFLICT DO NOTHING;
+ END IF;
+END
+$$;
+
+-- Closing or reopening a class changes which rosters may claim its payments.
+CREATE OR REPLACE FUNCTION practice_payment_dependents(scope_id bigint)
+RETURNS TABLE(period_id bigint) LANGUAGE sql STABLE AS $$
+ WITH order_ids AS (
+  SELECT v.order_id
+  FROM calculation_draft_performance booked JOIN source_order_versions v ON v.id=booked.source_version_id
+  WHERE booked.period_id=scope_id AND booked.payment_version_id IS NULL
+   AND v.source='DCZD' AND v.kind='ORDER_PAID' AND v.fact->>'domain'='PRACTICE'
+  UNION
+  SELECT unnest(e.paid_order_ids) FROM periods p
+  JOIN LATERAL (SELECT r.id FROM practice_rosters r WHERE r.period_key=p.source_period_key ORDER BY r.source_version DESC LIMIT 1) latest ON true
+  JOIN practice_roster_members m ON m.roster_id=latest.id
+  JOIN practice_enrollments e ON e.id=m.enrollment_id AND e.commission_eligible
+  WHERE p.id=scope_id
+ ), affected AS (
+  SELECT p.id,p.product_id,p.ordinal,p.source_period_key
+  FROM order_ids paid
+  JOIN practice_enrollments e ON e.paid_order_ids @> ARRAY[paid.order_id] AND e.commission_eligible
+  JOIN periods p ON p.source_period_key=e.period_key
+  JOIN LATERAL (SELECT r.id FROM practice_rosters r WHERE r.period_key=e.period_key ORDER BY r.source_version DESC LIMIT 1) latest ON true
+  JOIN practice_roster_members m ON m.roster_id=latest.id AND m.enrollment_id=e.id
+  WHERE p.id<>scope_id
+  UNION
+  SELECT p.id,p.product_id,p.ordinal,p.source_period_key FROM periods p WHERE p.id=scope_id AND p.source_period_key IS NOT NULL
+ )
+ SELECT id FROM affected WHERE id<>scope_id
+ UNION
+ SELECT p.id FROM affected a JOIN periods p ON p.product_id=a.product_id AND p.ordinal>a.ordinal
+  AND split_part(p.source_period_key,':',3)=split_part(a.source_period_key,':',3)
+ WHERE p.id<>scope_id AND EXISTS(SELECT 1 FROM rule_versions rv WHERE rv.product_id=p.product_id
+  AND (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal)))
+  AND rv.components @>'[{"mode":"tiered"}]')
+$$;
 
 -- A monthly refund changes future deductions for its payment. A whole-class
 -- replay can also change future deductions on other payments in that class.

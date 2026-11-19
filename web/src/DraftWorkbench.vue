@@ -71,6 +71,7 @@ const reason = {
   CORRECTION_REFUND_CONFLICT: '最新付款与已登记退款无法按结算时规则对平',
   CORRECTION_RECOVERY_PENDING: '原受益人的扣回处理尚未确认',
   PRACTICE_DUPLICATE_ENROLLMENT: '同一报名和付款仍在其他期次，请在来源名单核对延期',
+  PRACTICE_PAYMENT_ALREADY_SETTLED: '报名中的付款已结算，请核对原班次和延期记录',
   PRACTICE_REFUND_PENDING: '对应付款已有退款，请重新试算',
   PRACTICE_REFUND_AFTER_ROSTER: '名单确认后发生退款，按退款账期办理',
   PRACTICE_REFUND_PRODUCT_MISMATCH: '退款与原付款的产品归属不一致，请在子系统核对',

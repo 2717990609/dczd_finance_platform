@@ -57,6 +57,14 @@ JOIN LATERAL (SELECT id FROM practice_rosters r WHERE r.period_key=e.period_key 
 JOIN practice_roster_members m ON m.roster_id=roster.id AND m.enrollment_id=e.id
 WHERE v.month_id=$1 AND (p.id IS NULL OR p.product_id=v.product_id) AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id)
  AND v.occurred_at>(SELECT confirmed_at FROM practice_rosters first WHERE first.period_key=e.period_key ORDER BY source_version LIMIT 1)
+ AND NOT EXISTS (
+  SELECT 1 FROM source_order_versions paid
+  JOIN calculation_draft_performance a ON a.source_version_id=paid.id AND a.payment_version_id IS NULL
+  JOIN settlements final ON final.period_id=a.period_id
+  JOIN periods booked_period ON booked_period.id=a.period_id AND booked_period.product_id=v.product_id
+  JOIN calculation_drafts booked ON booked.period_id=a.period_id AND booked.practice_roster_id IS NOT NULL
+  WHERE paid.source='DCZD' AND paid.kind='ORDER_PAID' AND paid.fact->>'domain'='PRACTICE' AND paid.order_id=v.order_id
+ )
 UNION
 SELECT DISTINCT p.id,p.name,'refund_month'
 FROM candidate_refunds v JOIN periods p ON p.id=v.month_id WHERE p.id<>$1

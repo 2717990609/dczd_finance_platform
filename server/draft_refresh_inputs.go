@@ -141,7 +141,8 @@ WHERE (original.period_mode='class' AND p.calendar_month IS NOT NULL OR original
  OR EXISTS(SELECT 1 FROM related_refunds r WHERE r.occurred_at>=p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
   AND r.occurred_at<(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
  OR original.period_mode='class' AND EXISTS(SELECT 1 FROM calculation_draft_performance refund
-  JOIN payments paid ON paid.source_version_id=refund.payment_version_id WHERE refund.period_id=p.id))`
+  JOIN payments paid ON paid.source_version_id=refund.payment_version_id WHERE refund.period_id=p.id))
+UNION SELECT period_id FROM practice_payment_dependents($1)`
 
 const draftRefreshRoster = `WITH base AS (
  SELECT p.id,p.product_id,p.ordinal,p.source_period_key,split_part(p.source_period_key,':',3) AS series FROM periods p

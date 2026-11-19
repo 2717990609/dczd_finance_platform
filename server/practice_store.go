@@ -98,14 +98,30 @@ const practicePaymentsSQL = `SELECT v.id,v.fact,coalesce(company.company_id,''),
    )
  ORDER BY v.order_id,v.id LIMIT $3`
 
-const practiceDuplicatesSQL = `SELECT e.id
+const practicePaymentAlreadySettled = "PRACTICE_PAYMENT_ALREADY_SETTLED"
+
+const practiceDuplicatesSQL = `WITH candidates AS MATERIALIZED (
+ SELECT e.id,e.period_key,e.paid_order_ids
  FROM practice_roster_members member JOIN practice_enrollments e ON e.id=member.enrollment_id
- WHERE member.roster_id=ANY($1::bigint[]) AND e.commission_eligible AND EXISTS(
+ WHERE member.roster_id=ANY($1::bigint[]) AND e.commission_eligible AND NOT EXISTS(
+  SELECT 1 FROM periods p JOIN settlements s ON s.period_id=p.id WHERE p.source_period_key=e.period_key
+ )
+), booked AS (
+ SELECT DISTINCT e.id FROM candidates e
+ JOIN source_order_versions v ON v.order_id=ANY(e.paid_order_ids)
+  AND v.source='DCZD' AND v.kind='ORDER_PAID' AND v.fact->>'domain'='PRACTICE'
+ JOIN calculation_draft_performance a ON a.source_version_id=v.id AND a.payment_version_id IS NULL
+ JOIN settlements s ON s.period_id=a.period_id
+)
+SELECT e.id,CASE WHEN booked.id IS NOT NULL THEN '` + practicePaymentAlreadySettled + `' ELSE 'PRACTICE_DUPLICATE_ENROLLMENT' END
+ FROM candidates e LEFT JOIN booked USING(id)
+ WHERE booked.id IS NOT NULL OR EXISTS(
   SELECT 1 FROM practice_enrollments other JOIN practice_roster_members link ON link.enrollment_id=other.id
   JOIN practice_rosters r ON r.id=link.roster_id
   WHERE split_part(other.period_key,':',3)=split_part(e.period_key,':',3) AND other.period_key<>e.period_key
     AND other.commission_eligible AND other.paid_order_ids&&e.paid_order_ids
     AND NOT EXISTS(SELECT 1 FROM practice_rosters newer WHERE newer.period_key=r.period_key AND newer.source_version>r.source_version)
+    AND NOT EXISTS(SELECT 1 FROM periods p JOIN settlements s ON s.period_id=p.id WHERE p.source_period_key=r.period_key)
  )`
 
 func readPracticeMembers(ctx context.Context, tx pgx.Tx, rosterIDs []int64, eligibleOnly bool) ([]practiceEnrollment, error) {
@@ -287,11 +303,12 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	blocked := make(map[int64]string)
 	for rows.Next() {
 		var id int64
-		if err = rows.Scan(&id); err != nil {
+		var issue string
+		if err = rows.Scan(&id, &issue); err != nil {
 			rows.Close()
 			return paymentDraft{}, nil, err
 		}
-		blocked[id] = "PRACTICE_DUPLICATE_ENROLLMENT"
+		blocked[id] = issue
 	}
 	if err = rows.Err(); err != nil {
 		return paymentDraft{}, nil, err

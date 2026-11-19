@@ -72,7 +72,7 @@ func indexPracticePrior(history practiceTierHistory, role string, orders map[str
 	}
 	for _, purchase := range past {
 		member := purchase.member
-		if classMember(member.MembershipType) != "new" {
+		if classMember(member.MembershipType) != "new" || purchase.issue == practicePaymentAlreadySettled {
 			continue
 		}
 		roster := member.RosterID

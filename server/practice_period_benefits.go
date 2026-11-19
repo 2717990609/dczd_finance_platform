@@ -193,6 +193,9 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 	var eligible []practiceBenefitShare
 	var tierBase int64
 	for _, p := range purchases {
+		if p.issue == practicePaymentAlreadySettled {
+			continue
+		}
 		memberMatches := part.ClassMember == "" || part.ClassMember == classMember(p.member.MembershipType)
 		repeatedPayment := slices.ContainsFunc(p.payments, func(payment paymentInput) bool {
 			return paymentCounts[paymentKey{payment.Fact.Source, payment.Fact.PaymentID}] > 1
