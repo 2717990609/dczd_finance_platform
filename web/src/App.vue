@@ -696,7 +696,7 @@ async function save() {
                 <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ optionLabel('periodMode',text) }}</a-tag></template>
                 <template v-else-if="column.key==='mappingCount'">{{ data.mappings.filter(x=>x.productId===record.id).length }}</template>
                 <template v-else-if="column.key==='ruleVersion'">
-                  <a-tag v-if="record.practiceRefundMonth" color="blue">按原班次规则</a-tag>
+                  <a-tag v-if="record.practiceRefundMonth" color="blue">按结算时规则</a-tag>
                   <a-tag v-else-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag>
                   <a-tag v-else color="orange">{{ record.ruleMatchingAvailable ? '按订单匹配' : record.periodMode==='class' && !record.classStartsAt ? '待签到名单' : '待配规则' }}</a-tag>
                 </template>
