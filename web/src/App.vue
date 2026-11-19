@@ -33,7 +33,7 @@ const legacyOrganizationURL = (() => {
     return ''
   }
 })()
-const data = ref({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[]})
+const data = ref({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
 const loading = ref(false)
 const saving = ref(false)
 const globalError = ref('')
@@ -137,9 +137,23 @@ function savedOpeningLabel(id) {
 }
 
 const labels = {ORDER_PAID:'付款',ORDER_REFUNDED:'退款',REFUND_SUCCEEDED:'退款',REFUND_ADJUSTED:'退款更正',DELIVERY_COMPLETED:'已交付'}
+const canOpenAction = computed(() => current.value!=='rules' ||
+  !data.value.products.some(product => product.id===productScope.value && product.catalogPending))
+function catalogRuleBadge(row) {
+  const now = Date.now()
+  if (!row.inLatestSnapshot) return { text:'历史版本', color:'default' }
+  if (!row.projectMatches) return { text:'其他项目范围', color:'default' }
+  if (row.sourceStatus!=='PUBLISHED') return { text:'已停用', color:'default' }
+  if (row.effectiveTo && new Date(row.effectiveTo).getTime()<=now) return { text:'已截止', color:'default' }
+  if (row.paused) return { text:'暂停执行', color:'orange' }
+  if (new Date(row.effectiveFrom).getTime()>now || row.resumeFrom && new Date(row.resumeFrom).getTime()>now) {
+    return { text:'待生效', color:'blue' }
+  }
+  return { text:'待启用', color:'blue' }
+}
 const mainRows = computed(() => {
   const key = tab.value === 'mapping' ? 'mappings' : tab.value === 'identity' ? 'identities' : current.value
-  const result = data.value[key]
+  const result = key === 'rules' ? [...data.value.rules,...data.value.catalogRules] : data.value[key]
   const rows = usesProductScope.value && productScope.value
     ? result.filter(row => (key === 'products' ? row.id : row.productId) === productScope.value)
     : result
@@ -152,7 +166,8 @@ const columns = computed(() => {
     product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['来源映射','mappingCount']],
     mapping:[['产品名称','productName'],['来源系统','source'],['业务域','domain'],['来源标识','sourceKey']],
     period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],['匹配规则','ruleVersion',200]],
-    rule:[['规则名称','label'],['所属产品','productName'],['版本','version'],['适用范围','scope'],['生效时间','effectiveFrom'],['分润组件','components']],
+    rule:[['规则名称','label',200],['所属产品','productName',155],['版本','version',80],
+      ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',195]],
     pull:[['原订单','orderNo',250],['来源系统','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
     person:[['人员名称','name'],['人员 ID','id']],
     identity:[['归属人员','personName'],['来源系统','source'],['来源人员 ID','externalId'],['生效时间','validFrom'],['结束时间','validTo']],
@@ -179,8 +194,9 @@ async function refresh(reloadOptions = false) {
   if (sourceFilter.value) params.set('source',sourceFilter.value)
   if (filter.value.trim()) params.set('orderId',filter.value.trim())
   if (olderThan.value) params.set('beforeId',olderThan.value)
-  const sections = {settlement:['products','periods'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings'], orders:['orders','sources'], people:['people','identities']}
+  const sections = {settlement:['products','periods'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
+  if (requests.catalogRules) requests.catalogRules = '/rule-catalog'
   if (requests.practiceCountOpenings) requests.practiceCountOpenings = '/practice-count-openings'
   if (!configurationReady.value || reloadOptions) requests.configuration = '/configuration-options'
   const entries = Object.entries(requests)
@@ -394,7 +410,7 @@ async function save() {
         <template v-else>
         <section class="heading">
           <div><h1>{{ active.title }}</h1><p>{{ active.description }}</p></div>
-          <a-button type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
+          <a-button v-if="canOpenAction" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
         </section>
         <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
         <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
@@ -412,7 +428,7 @@ async function save() {
               <a-tab-pane key="main" :tab="current==='products'?'产品列表':'人员列表'"/>
               <a-tab-pane :key="current==='products'?'mapping':'identity'" :tab="current==='products'?'来源映射':'映射历史'"/>
             </a-tabs>
-            <h2 v-else>{{ {periods:'期次列表',rules:'已生效规则',orders:'订单业务记录'}[current] }}</h2>
+            <h2 v-else>{{ {periods:'期次列表',rules:'规则列表',orders:'订单业务记录'}[current] }}</h2>
             <div class="search">
               <a-input-search v-model:value="filter" :placeholder="current==='orders'?'输入原订单 ID':'在当前列表中搜索'" :aria-label="current==='orders'?'原订单 ID':'搜索列表'" allow-clear @search="current==='orders'&&resetOrders()"/>
             </div>
@@ -420,13 +436,27 @@ async function save() {
           <div class="table-container">
             <a-table :columns="columns" :data-source="mainRows" :loading="loading" row-key="id" :pagination="current==='orders'?false:{pageSize:12,showSizeChanger:false}" :scroll="{x:tableWidth}">
               <template #bodyCell="{ column, record, text }">
-                <template v-if="column.key==='name'||column.key==='label'"><strong class="primary-cell">{{ text }}</strong></template>
+                <template v-if="column.key==='name'||column.key==='label'">
+                  <strong class="primary-cell">{{ text }}</strong>
+                  <small v-if="record.catalogPending && record.packageCode" class="order-version">{{ record.packageCode }}</small>
+                </template>
                 <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ optionLabel('periodMode',text) }}</a-tag></template>
                 <template v-else-if="column.key==='mappingCount'">{{ data.mappings.filter(x=>x.productId===record.id).length }}</template>
                 <template v-else-if="column.key==='ruleVersion'"><a-tag v-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag><a-tag v-else color="orange">{{ record.periodMode==='class' && !record.classStartsAt ? '待签到名单' : '待配规则' }}</a-tag></template>
                 <template v-else-if="column.key==='version'"><a-tag color="green">v{{ text }}</a-tag></template>
-                <template v-else-if="column.key==='effectiveFrom'">{{ text ? formatTime(text) : '范围默认' }}</template>
-                <template v-else-if="column.key==='scope'">{{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}</template>
+                <template v-else-if="column.key==='effectiveFrom'">
+                  {{ text ? formatTime(text) : '范围默认' }}
+                  <small v-if="record.effectiveTo" class="order-version">截止 {{ formatTime(record.effectiveTo) }}</small>
+                </template>
+                <template v-else-if="column.key==='scope'">
+                  <template v-if="record.catalogPending">
+                    {{ record.scopeId || record.scopeType }}<small class="order-version">{{ record.project }} · {{ record.scopeType }}</small>
+                  </template>
+                  <template v-else>{{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}</template>
+                </template>
+                <template v-else-if="column.key==='components' && record.catalogPending">
+                  <a-tag :color="catalogRuleBadge(record).color">{{ catalogRuleBadge(record).text }}</a-tag>
+                </template>
                 <template v-else-if="column.key==='components'">
                   <div v-for="c in text" :key="c.type+':'+(c.classMember || '')">
                     <a-tag>{{ optionLabel('component',c.type) }}{{ c.classMember ? ' · '+optionLabel('classMember',c.classMember) : '' }} {{ c.mode==='tiered' ? tierLabel(c.tiers) : c.mode==='rate' ? (c.value/100)+'%' : formatMoney(c.value) }}</a-tag>
@@ -453,7 +483,7 @@ async function save() {
                 <template v-else-if="['occurredAt','validFrom','validTo'].includes(column.key)">{{ formatTime(text) }}</template>
               </template>
               <template #emptyText>
-                <div class="empty"><a-empty :image="undefined" :description="filter ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter && configurationReady" @click="open(actions)">{{ titles[actions] }}</a-button></div>
+                <div class="empty"><a-empty :image="undefined" :description="filter ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter && configurationReady && canOpenAction" @click="open(actions)">{{ titles[actions] }}</a-button></div>
               </template>
             </a-table>
           </div>

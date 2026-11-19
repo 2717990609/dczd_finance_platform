@@ -45,7 +45,7 @@ const practiceCountOpeningsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY
  FROM practice_count_openings o ORDER BY o.through_at DESC,o.id DESC
 ) a`
 
-func openingUUID(raw string) (string, bool) {
+func canonicalSourceUUID(raw string) (string, bool) {
 	var id pgtype.UUID
 	if err := id.Scan(raw); err != nil || !id.Valid || id.Bytes == [16]byte{} {
 		return "", false
@@ -54,7 +54,7 @@ func openingUUID(raw string) (string, bool) {
 }
 
 func openingContent(input *practiceCountOpeningFile) ([]byte, error) {
-	id, valid := openingUUID(input.SourceSettlementID)
+	id, valid := canonicalSourceUUID(input.SourceSettlementID)
 	if !valid || input.ProductID < 1 || input.ThroughAt.IsZero() || len(input.People) == 0 {
 		return nil, errPracticeOpening
 	}
@@ -64,7 +64,7 @@ func openingContent(input *practiceCountOpeningFile) ([]byte, error) {
 	counts := make(map[string]int64, len(input.People))
 	for i := range input.People {
 		row := &input.People[i]
-		key, valid := openingUUID(row.LegacyPartyID)
+		key, valid := canonicalSourceUUID(row.LegacyPartyID)
 		row.DisplayName = strings.TrimSpace(row.DisplayName)
 		_, duplicate := counts[key]
 		if !valid || duplicate || row.NewCount == nil || *row.NewCount < 0 ||
@@ -146,7 +146,7 @@ func importPracticeCountOpening(ctx context.Context, cfg config, filename string
 		return errors.New("opening import requires the isolated development database")
 	}
 	var input practiceCountOpeningFile
-	if err := readPracticeImportFile(filename, &input); err != nil {
+	if err := readImportFile(filename, &input, 8<<20); err != nil {
 		return err
 	}
 	db, err := pgxpool.NewWithConfig(ctx, cfg.database)

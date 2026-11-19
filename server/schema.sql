@@ -389,3 +389,41 @@ CREATE TABLE IF NOT EXISTS source_payment_companies (
  source_version_id bigint PRIMARY KEY REFERENCES source_order_versions(id),
  company_id text NOT NULL CHECK (length(company_id)>0)
 );
+
+CREATE TABLE IF NOT EXISTS legacy_catalog_products (
+ product_id bigint PRIMARY KEY REFERENCES products(id),
+ source_id uuid NOT NULL UNIQUE,
+ source_environment text NOT NULL,
+ project_code text NOT NULL,
+ source_system text NOT NULL,
+ source_key text NOT NULL,
+ captured_at timestamptz NOT NULL,
+ snapshot_digest bytea NOT NULL CHECK (octet_length(snapshot_digest)=32)
+);
+
+CREATE TABLE IF NOT EXISTS legacy_rule_packages (
+ source_id uuid PRIMARY KEY,
+ product_id bigint NOT NULL REFERENCES legacy_catalog_products(product_id),
+ code text NOT NULL,
+ name text NOT NULL,
+ project_code text NOT NULL,
+ policy_kind text NOT NULL,
+ scope_type text NOT NULL,
+ scope_id text NOT NULL,
+ paused boolean NOT NULL,
+ resume_from timestamptz
+);
+CREATE INDEX IF NOT EXISTS legacy_rule_packages_product ON legacy_rule_packages(product_id);
+
+CREATE TABLE IF NOT EXISTS legacy_rule_versions (
+ source_id uuid PRIMARY KEY,
+ package_id uuid NOT NULL REFERENCES legacy_rule_packages(source_id),
+ version_no integer NOT NULL CHECK(version_no>0),
+ source_status text NOT NULL,
+ effective_from timestamptz NOT NULL,
+ effective_to timestamptz CHECK(effective_to>effective_from),
+ content_hash text NOT NULL,
+ definition jsonb NOT NULL CHECK(jsonb_typeof(definition)='object'),
+ observed_at timestamptz NOT NULL,
+ UNIQUE(package_id,version_no)
+);

@@ -113,6 +113,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.list(periodsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createPeriod)},
 		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.list(rulesSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.list(catalogRulesSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.list(practiceCountOpeningsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishRule)},
 		{Method: http.MethodGet, Path: "/api/v1/people", Handler: s.list(peopleSQL)},
@@ -157,7 +158,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 	switch {
 	case errors.Is(err, invalid), errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany):
 		code, message = 400, err.Error()
-	case errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
+	case errors.Is(err, errLegacyRuleNotAdapted), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
 		errors.Is(err, errSettlementOpen), errors.Is(err, errSettlementDisabled):
 		code, message = http.StatusConflict, err.Error()
@@ -188,7 +189,9 @@ func (s workspace) list(query string) http.HandlerFunc {
 }
 
 const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
- (SELECT id,code,name,period_mode AS "periodMode",cycle_start_day AS "cycleStartDay" FROM products ORDER BY id DESC LIMIT 500) p`
+ (SELECT p.id,p.code,p.name,p.period_mode AS "periodMode",p.cycle_start_day AS "cycleStartDay",
+ (l.product_id IS NOT NULL) AS "catalogPending"
+ FROM products p LEFT JOIN legacy_catalog_products l ON l.product_id=p.id ORDER BY p.id DESC LIMIT 500) p`
 const mappingsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT m.id,m.product_id AS "productId",p.name AS "productName",m.source,m.domain,m.source_key AS "sourceKey"
  FROM source_mappings m JOIN products p ON p.id=m.product_id ORDER BY m.id DESC LIMIT 500) p`
@@ -351,8 +354,13 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 	var version int
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var mode string
-		if e := tx.QueryRow(ctx, "SELECT period_mode FROM products WHERE id=$1 FOR UPDATE", p.ProductID).Scan(&mode); e != nil {
+		var legacy bool
+		if e := tx.QueryRow(ctx, `SELECT period_mode,EXISTS(SELECT 1 FROM legacy_catalog_products WHERE product_id=p.id)
+		 FROM products p WHERE id=$1 FOR UPDATE`, p.ProductID).Scan(&mode, &legacy); e != nil {
 			return e
+		}
+		if legacy {
+			return errLegacyRuleNotAdapted
 		}
 		if p.EffectiveFrom != nil && p.EffectiveFrom.IsZero() {
 			return invalid

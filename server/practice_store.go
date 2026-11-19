@@ -17,13 +17,12 @@ import (
 
 var errPracticeSettlementUnavailable = errors.New("实战班正式结算待核对来源和项目规则后开放")
 
-func readPracticeImportFile(filename string, target any) error {
+func readImportFile(filename string, target any, limit int64) error {
 	file, err := os.Open(filename)
 	if err != nil {
 		return errors.New("could not open the import file")
 	}
 	defer file.Close()
-	const limit = 8 << 20
 	info, err := file.Stat()
 	if err != nil || info.Size() > limit {
 		return errors.New("could not read the import file within its size limit")
@@ -45,7 +44,7 @@ func importPracticeFile(ctx context.Context, cfg config, filename string) error 
 		return errors.New("roster import requires the isolated development database")
 	}
 	var wire practiceRosterWire
-	if err := readPracticeImportFile(filename, &wire); err != nil {
+	if err := readImportFile(filename, &wire, 8<<20); err != nil {
 		return err
 	}
 	roster, err := normalizePracticeRoster(wire)
