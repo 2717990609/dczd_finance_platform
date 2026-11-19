@@ -1,0 +1,8 @@
+{
+  "name": "finance-platform-web",
+  "private": true,
+  "type": "module",
+  "scripts": {"dev":"vite --host 127.0.0.1 --port 5176 --strictPort","build":"vite build"},
+  "dependencies": {"vue":"3.5.13","ant-design-vue":"4.2.6","@ant-design/icons-vue":"7.0.1"},
+  "devDependencies": {"vite":"6.0.6","@vitejs/plugin-vue":"5.2.1"}
+}
