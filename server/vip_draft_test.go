@@ -16,7 +16,7 @@ import (
 
 func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	ctx := context.Background()
-	s := workspace{db: integrationDB(t)}
+	s := workspace{db: integrationDB(t), sources: map[string]sourceConfig{"DCAI": {BaseURL: "https://fixture.invalid", Token: "fixture"}}}
 	id := func(n int) string { return fmt.Sprintf("60000000-0000-4000-8000-%012d", n) }
 	start := time.Date(2026, 7, 25, 0, 0, 0, 0, shanghai)
 	previousStart := start.AddDate(0, -1, 0)
@@ -81,7 +81,10 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		if len(line) != 0 {
 			f.LineID = line[0]
 		}
-		err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { _, err := storeSourceFacts(ctx, tx, []sourceFact{f}); return err })
+		err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFactsFrom(ctx, tx, []sourceFact{f}, s.dcaiSourceKey())
+			return err
+		})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -228,6 +231,29 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if _, err := s.db.Exec(ctx, "UPDATE products SET settlement_enabled=true WHERE id=$1", productID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: periodID, ExpectedVersion: got.Version}, "fixture"); !errors.Is(err, errSettlementSourceCoverage) {
+		t.Fatalf("a draft alone must not prove complete source coverage: %v", err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO dcai_order_sync(stream,source_key,initial_from,target_through,next_updated_at,next_id)
+	 VALUES('VIP_ORDERS',$1,$2,now(),$2,'0')`, s.dcaiSourceKey(), previousStart); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: periodID, ExpectedVersion: got.Version}, "fixture"); !errors.Is(err, errSettlementSourceCoverage) {
+		t.Fatalf("a partial sync must not provide coverage: %v", err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE dcai_order_sync SET completed_through=target_through,target_through=NULL`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO dcai_order_blockers(stream,source_row_id,order_id,cursor_updated_at,reasons)
+	 VALUES('VIP_ORDERS','1','one',$1,ARRAY['REFUND_EVIDENCE_MISSING'])`, start); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: periodID, ExpectedVersion: got.Version}, "fixture"); !errors.Is(err, errSettlementSourceRefund) {
+		t.Fatalf("unresolved completion of a source refund must remain visible: %v", err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE dcai_order_blockers SET reasons=ARRAY['REFUND_PROCESSING']`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: periodID, ExpectedVersion: got.Version}, "fixture"); err == nil || !strings.Contains(err.Error(), "团队池") {
 		t.Fatalf("unallocated pool balance must prevent confirmation: %v", err)
 	}
@@ -257,7 +283,10 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 			RecordKey: "ai_vip_order:" + id, Version: version, OrderID: order, RefundID: id,
 			AmountMinor: &amount, OccurredAt: occurred, UpdatedAt: occurred,
 			RefundsPayment: []sourcePaymentReference{{OrderID: order, RecordID: order}}}
-		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { _, err := storeSourceFacts(ctx, tx, []sourceFact{refund}); return err }); err != nil {
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFactsFrom(ctx, tx, []sourceFact{refund}, s.dcaiSourceKey())
+			return err
+		}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -411,6 +440,18 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	september := draftAt(sept)
 	if september.Total != -420 || september.RefundCount != 5 || september.IssueCount != 0 {
 		t.Fatalf("September refund = %+v", september)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE dcai_order_blockers SET reasons=ARRAY['REFUND_EVIDENCE_MISSING'],cursor_updated_at=$1`, lateAt); err != nil {
+		t.Fatal(err)
+	}
+	if gap := review(september); len(gap.Sources) != 1 || gap.Sources[0].RefundGap != 1 || gap.Token != "" {
+		t.Fatalf("source refund of a historically posted order must appear in the next settlement review: %+v", gap)
+	}
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: sept, ExpectedVersion: september.Version}, "fixture"); !errors.Is(err, errSettlementSourceRefund) {
+		t.Fatalf("a historical missing refund cannot be bypassed: %v", err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE dcai_order_blockers SET reasons='{}'`); err != nil {
+		t.Fatal(err)
 	}
 	closeReviewed(september, review(september).Token)
 

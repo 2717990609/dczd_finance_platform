@@ -404,7 +404,7 @@ async function save() {
       <main class="workspace-content">
         <template v-if="current==='settlement'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
-          <DraftWorkbench :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :api="api" :format-money="formatMoney" :format-time="formatTime" />
+          <DraftWorkbench :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="options('dcaiOrderStream')" :api="api" :format-money="formatMoney" :format-time="formatTime" />
         </template>
         <template v-else-if="current==='organization'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
@@ -423,7 +423,18 @@ async function save() {
           <article><span class="metric-icon gold"><CloudSyncOutlined/></span><div><small>已配置来源</small><strong>{{ enabledSources }}<em> / {{ sources.length }}</em></strong></div></article>
         </div>
         <div v-if="current==='orders'" class="summary-grid">
-          <article v-for="entry in data.sources" :key="entry.source"><span class="metric-icon"><CloudSyncOutlined/></span><div><small>{{ sourceLabel(entry.source) }}</small><strong class="source-state">{{ entry.configured ? '已配置' : '未配置' }}</strong><small v-if="entry.lastUpdate">最近入库 {{ formatTime(entry.lastUpdate) }}</small></div></article>
+          <article v-for="entry in data.sources" :key="entry.source">
+            <span class="metric-icon"><CloudSyncOutlined/></span>
+            <div>
+              <small>{{ sourceLabel(entry.source) }}</small>
+              <strong class="source-state">{{ entry.configured ? '已配置' : '未配置' }}</strong>
+              <small v-if="entry.lastUpdate">最近入库 {{ formatTime(entry.lastUpdate) }}</small>
+              <small v-for="sync in entry.syncs" :key="sync.stream">
+                {{ optionLabel('dcaiOrderStream',sync.stream) }} ·
+                {{ !sync.sourceMatches ? '来源连接待核对' : sync.failed ? '同步失败' : sync.targetThrough ? '同步未完成' : '同步至 '+formatTime(sync.completedThrough) }}
+              </small>
+            </div>
+          </article>
         </div>
         <section class="records">
           <div class="records-head">

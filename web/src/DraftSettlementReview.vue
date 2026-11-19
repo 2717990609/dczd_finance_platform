@@ -1,12 +1,23 @@
 <script setup>
 import { ref, watch } from 'vue'
 
-const props = defineProps({draft:Object, api:Function, formatMoney:Function, formatTime:Function})
+const props = defineProps({draft:Object, api:Function, formatMoney:Function, formatTime:Function, sourceStreams:Array})
 const emit = defineEmits(['show-pools', 'show-issues'])
 const review = ref()
 const loading = ref(false)
 const error = ref('')
 let sequence = 0
+const coverageStatus = {
+  UNSUPPORTED:'该订单来源待接入',
+  NOT_CONFIGURED:'来源接口未配置',
+  NOT_STARTED:'尚未开始同步',
+  SOURCE_CHANGED:'来源连接已变化，请核对同步配置',
+  FAILED:'同步失败，请继续同步',
+  INCOMPLETE:'本轮同步未完成',
+  OUTSIDE_RANGE:'同步数据尚未覆盖本账期',
+  READY:'已覆盖本账期',
+}
+const streamLabel = stream => props.sourceStreams?.find(option => option.value === stream)?.label || '订单来源'
 
 async function load() {
   const request = ++sequence
@@ -43,6 +54,13 @@ watch(() => props.draft, load, {immediate:true})
         <a-alert v-if="!review.ended" type="info" message="账期尚未结束" show-icon/>
         <a-alert v-if="review.draftStale" type="warning" message="试算数据已变化，请重新试算并核对" show-icon/>
         <a-alert v-if="review.laterPoolActivity" type="warning" message="后续账期已结算此团队池，请核对跨期处理" show-icon/>
+        <ul v-if="review.sources?.length" class="review-pools" aria-label="来源同步">
+          <li v-for="source in review.sources" :key="source.stream">
+            <span>{{ streamLabel(source.stream) }} · {{ coverageStatus[source.status] }}</span>
+            <span v-if="source.completedThrough">同步至 {{ formatTime(source.completedThrough) }}</span>
+            <span v-if="source.refundGap">{{ source.refundGap }} 笔退款缺少金额或时间</span>
+          </li>
+        </ul>
         <div v-if="review.issueCount">
           <a-button type="link" @click="emit('show-issues')">查看 {{ review.issueCount }} 条待核项</a-button>
         </div>

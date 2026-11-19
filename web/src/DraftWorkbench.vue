@@ -6,7 +6,7 @@ import DraftPoolAllocations from './DraftPoolAllocations.vue'
 import DraftSettlementReview from './DraftSettlementReview.vue'
 import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
-const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, api: Function, formatMoney: Function, formatTime: Function })
+const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array, api: Function, formatMoney: Function, formatTime: Function })
 const selected = ref()
 const view = ref('detail')
 const draft = ref()
@@ -196,7 +196,7 @@ async function loadMore(section, cursorName) {
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney"/>
   <DraftPoolAllocations v-if="draft?.catalog && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
   <DraftSettlementReview v-if="draft?.catalog && view==='review'" :draft="draft" :api="api" :format-money="formatMoney"
-    :format-time="formatTime" @show-pools="view='pools'" @show-issues="view='detail'"/>
+    :format-time="formatTime" :source-streams="sourceStreams" @show-pools="view='pools'" @show-issues="view='detail'"/>
   <template v-if="draft && view==='detail'">
   <section class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>

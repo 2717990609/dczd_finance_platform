@@ -49,11 +49,12 @@ func (s workspace) confirmSettlement(ctx context.Context, req confirmSettlementI
 	}
 	var result settlement
 	var err error
+	sourceKey := s.dcaiSourceKey()
 	// A competing confirmation may win after this transaction obtains its snapshot.
 	for attempt := 0; attempt < 3; attempt++ {
 		err = pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
 			var applyErr error
-			result, applyErr = confirmPeriod(ctx, tx, req, strings.TrimSpace(actor))
+			result, applyErr = confirmPeriod(ctx, tx, req, strings.TrimSpace(actor), sourceKey)
 			return applyErr
 		})
 		var dbErr *pgconn.PgError
@@ -64,7 +65,7 @@ func (s workspace) confirmSettlement(ctx context.Context, req confirmSettlementI
 	return settlement{}, conflict
 }
 
-func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, actor string) (settlement, error) {
+func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, actor, sourceKey string) (settlement, error) {
 	scope, err := readSettlementScope(ctx, tx, req.PeriodID, true)
 	if err != nil {
 		return settlement{}, err
@@ -96,6 +97,18 @@ func confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSettlementInput, a
 	}
 	if !scope.catalog && req.ReviewToken != "" {
 		return settlement{}, errSettlementStale
+	}
+	if err := lockSettlementSources(ctx, tx, req.PeriodID); err != nil {
+		return settlement{}, err
+	}
+	if scope.catalog {
+		sources, err := readSettlementSourceCoverage(ctx, tx, req.PeriodID, sourceKey)
+		if err != nil {
+			return settlement{}, err
+		}
+		if err := settlementCoverageError(sources); err != nil {
+			return settlement{}, err
+		}
 	}
 	if err := verifySettlementDraft(ctx, tx, req.PeriodID, scope); err != nil {
 		return settlement{}, err

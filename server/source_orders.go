@@ -234,14 +234,20 @@ func readSources() map[string]sourceConfig {
 
 var pullClient = &http.Client{Timeout: 8 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 
-func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) ([]sourceFact, error) {
+type sourceOrderLookup struct {
+	Facts []sourceFact
+	DCAI  *dcaiOrderPageRow
+}
+
+func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) (sourceOrderLookup, error) {
+	var lookup sourceOrderLookup
 	if cfg.BaseURL == "" || cfg.Token == "" {
-		return nil, errSourceDisabled
+		return lookup, errSourceDisabled
 	}
 	endpoint, err := url.Parse(cfg.BaseURL)
 	if err != nil || endpoint.Host == "" || (endpoint.Scheme != "https" && endpoint.Scheme != "http") || endpoint.User != nil ||
 		endpoint.RawQuery != "" || endpoint.Fragment != "" {
-		return nil, errSourceRead
+		return lookup, errSourceRead
 	}
 	endpoint = endpoint.JoinPath("/internal/v1/finance/source-orders/lookup")
 	method := http.MethodGet
@@ -258,7 +264,7 @@ func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) ([]source
 	}
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
 	if err != nil {
-		return nil, errSourceRead
+		return lookup, errSourceRead
 	}
 	version := strings.ToLower(req.Source) + ".finance-order-lookup/1.0"
 	request.Header.Set("Authorization", "Bearer "+cfg.Token)
@@ -266,47 +272,59 @@ func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) ([]source
 	request.Header.Set("Content-Type", "application/json")
 	response, err := pullClient.Do(request)
 	if err != nil {
-		return nil, errSourceRead
+		return lookup, errSourceRead
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return nil, errSourceRead
+		return lookup, errSourceRead
 	}
 	var result struct {
 		Version string            `json:"contract_version"`
 		Schema  string            `json:"source_fact_schema_version"`
 		OrderID string            `json:"source_order_id"`
+		Stream  string            `json:"stream"`
 		Items   []json.RawMessage `json:"items"`
-		Item    *struct {
-			Facts []json.RawMessage `json:"facts"`
-		} `json:"item"`
+		Item    *dcaiOrderWireRow `json:"item"`
 	}
 	wire, err := io.ReadAll(io.LimitReader(response.Body, (1<<20)+1))
 	if err != nil || len(wire) > 1<<20 || json.Unmarshal(wire, &result) != nil || result.Version != version || result.Schema != sourceSchema || result.OrderID != req.OrderID {
-		return nil, errSourceRead
+		return lookup, errSourceRead
 	}
 	items := result.Items
 	if req.Source != "DCJK" {
 		if result.Item == nil {
-			return nil, pgx.ErrNoRows
+			return lookup, pgx.ErrNoRows
 		}
 		items = result.Item.Facts
 	}
+	if req.Source == "DCAI" {
+		if result.Stream != req.Stream || !result.Item.Cursor.valid() || result.Item.Cursor.ID == "0" {
+			return lookup, errSourceRead
+		}
+		row, err := normalizeDCAIOrderRow(req.Stream, time.Time{}, *result.Item)
+		if err == nil && row.OrderID == "" {
+			return lookup, pgx.ErrNoRows
+		}
+		if err != nil || row.OrderID != req.OrderID {
+			return lookup, errSourceRead
+		}
+		return sourceOrderLookup{Facts: row.Facts, DCAI: &row}, nil
+	}
 	if len(items) == 0 {
-		return nil, pgx.ErrNoRows
+		return lookup, pgx.ErrNoRows
 	}
 	if len(items) > 100 {
-		return nil, errSourceRead
+		return lookup, errSourceRead
 	}
 	facts := make([]sourceFact, 0, len(items))
 	for _, raw := range items {
 		fact, e := normalizeFact(req.Source, req.OrderID, raw)
 		if e != nil {
-			return nil, e
+			return lookup, e
 		}
 		facts = append(facts, fact)
 	}
-	return facts, nil
+	return sourceOrderLookup{Facts: facts}, nil
 }
 
 func (s workspace) pullOrder(ctx context.Context, p pullInput) (any, error) {
@@ -315,26 +333,60 @@ func (s workspace) pullOrder(ctx context.Context, p pullInput) (any, error) {
 		return nil, invalid
 	}
 	if p.Source == "DCAI" {
-		if p.Stream != "VIP_ORDERS" && p.Stream != "HEALTH_IDENTITY_ORDERS" {
+		if p.Stream != dcaiVIPStream && p.Stream != dcaiHealthStream {
 			return nil, invalid
 		}
 	} else {
 		p.Stream = "ORDER_FACTS"
 	}
-	facts, err := lookupOrder(ctx, s.sources[p.Source], p)
+	lookup, err := lookupOrder(ctx, s.sources[p.Source], p)
 	if err != nil {
 		return nil, err
 	}
 	var inserted int64
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		sourceKey := ""
+		if lookup.DCAI != nil {
+			sourceKey = s.dcaiSourceKey()
+		}
 		var writeErr error
-		inserted, writeErr = storeSourceFacts(ctx, tx, facts)
-		return writeErr
+		inserted, writeErr = storeSourceFactsFrom(ctx, tx, lookup.Facts, sourceKey)
+		if writeErr != nil || lookup.DCAI == nil {
+			return writeErr
+		}
+		if len(lookup.Facts) == 0 {
+			if err := lockDCAIProvider(ctx, tx, sourceKey); err != nil {
+				return err
+			}
+		}
+		return storeDCAIBlockers(ctx, tx, p.Stream, []dcaiOrderPageRow{*lookup.DCAI})
 	})
-	return map[string]any{"facts": len(facts), "newVersions": inserted}, err
+	return map[string]any{"facts": len(lookup.Facts), "newVersions": inserted}, err
 }
 
 func storeSourceFacts(ctx context.Context, tx pgx.Tx, facts []sourceFact) (int64, error) {
+	return storeSourceFactsFrom(ctx, tx, facts, "")
+}
+
+func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, sourceKey string) (int64, error) {
+	if len(facts) != 0 {
+		sources := make(map[string]bool)
+		for _, fact := range facts {
+			sources[fact.Source] = true
+		}
+		keys := make([]string, 0, len(sources))
+		for source := range sources {
+			keys = append(keys, source)
+		}
+		if err := touchSourceWrites(ctx, tx, keys); err != nil {
+			return 0, err
+		}
+		if sources["DCAI"] {
+			if err := verifyDCAIProvider(ctx, tx, sourceKey); err != nil {
+				return 0, err
+			}
+		}
+	}
 	var inserted int64
 	for _, f := range facts {
 		raw, e := json.Marshal(f)
@@ -373,6 +425,13 @@ func storeSourceFacts(ctx context.Context, tx pgx.Tx, facts []sourceFact) (int64
 		}
 	}
 	return inserted, nil
+}
+
+func touchSourceWrites(ctx context.Context, tx pgx.Tx, sources []string) error {
+	_, err := tx.Exec(ctx, `INSERT INTO source_write_state(source,revision)
+	 SELECT source,1 FROM unnest($1::text[]) AS input(source) ORDER BY source
+	 ON CONFLICT(source) DO UPDATE SET revision=source_write_state.revision+1`, sources)
+	return err
 }
 
 func storeSourcePaymentCompany(ctx context.Context, tx pgx.Tx, version int64, company string) error {
@@ -436,7 +495,8 @@ func (s workspace) orders(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s workspace) sourceStatuses(w http.ResponseWriter, r *http.Request) {
-	rows, err := s.db.Query(r.Context(), "SELECT source,max(received_at) FROM source_order_versions GROUP BY source")
+	ctx := r.Context()
+	rows, err := s.db.Query(ctx, "SELECT source,max(received_at) FROM source_order_versions GROUP BY source")
 	if err != nil {
 		respond(w, nil, err)
 		return
@@ -456,12 +516,24 @@ func (s workspace) sourceStatuses(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
+	var syncStatus json.RawMessage
+	err = s.db.QueryRow(ctx, `SELECT coalesce(jsonb_agg(jsonb_build_object(
+	 'stream',s.stream,'initialFrom',s.initial_from,'completedThrough',s.completed_through,'targetThrough',s.target_through,
+	 'scannedOrders',s.scanned,'newVersions',s.versions,'failed',s.failed,'sourceMatches',s.source_key=$1) ORDER BY s.stream),'[]')
+	 FROM dcai_order_sync s`, s.dcaiSourceKey()).Scan(&syncStatus)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
 	status := make([]map[string]any, 0, len(sourcesList))
 	for _, name := range sourcesList {
 		_, configured := s.sources[name]
 		row := map[string]any{"source": name, "configured": configured, "lastUpdate": nil}
 		if t, ok := updates[name]; ok {
 			row["lastUpdate"] = t
+		}
+		if name == "DCAI" {
+			row["syncs"] = syncStatus
 		}
 		status = append(status, row)
 	}

@@ -98,6 +98,39 @@ CREATE INDEX IF NOT EXISTS source_order_versions_payment_date
 CREATE INDEX IF NOT EXISTS source_order_versions_payment_identity
  ON source_order_versions(source, (fact->>'domain'), (fact->>'paymentId'), line_id) WHERE kind = 'ORDER_PAID';
 
+CREATE TABLE IF NOT EXISTS source_write_state (
+ source text PRIMARY KEY,
+ revision bigint NOT NULL
+);
+ALTER TABLE source_write_state ADD COLUMN IF NOT EXISTS provider_key text;
+INSERT INTO source_write_state(source,revision) VALUES ('DCAI',0),('DCZD',0),('DCJK',0) ON CONFLICT DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS dcai_order_sync (
+ stream text PRIMARY KEY,
+ source_key text NOT NULL,
+ initial_from timestamptz NOT NULL,
+ completed_through timestamptz,
+ target_through timestamptz,
+ next_updated_at timestamptz NOT NULL,
+ next_id text NOT NULL,
+ pages bigint NOT NULL DEFAULT 0,
+ scanned bigint NOT NULL DEFAULT 0,
+ versions bigint NOT NULL DEFAULT 0,
+ failed boolean NOT NULL DEFAULT false,
+ CHECK (completed_through IS NULL OR completed_through>=initial_from),
+ CHECK (target_through IS NULL OR target_through>=coalesce(completed_through,initial_from))
+);
+
+CREATE TABLE IF NOT EXISTS dcai_order_blockers (
+ stream text NOT NULL,
+ source_row_id text NOT NULL,
+ order_id text NOT NULL,
+ cursor_updated_at timestamptz NOT NULL,
+ reasons text[] NOT NULL,
+ PRIMARY KEY(stream,source_row_id)
+);
+CREATE INDEX IF NOT EXISTS dcai_active_order_blockers ON dcai_order_blockers(stream,order_id) WHERE cardinality(reasons)>0;
+
 CREATE TABLE IF NOT EXISTS calculation_drafts (
  period_id bigint PRIMARY KEY REFERENCES periods(id),
  rule_id bigint NOT NULL REFERENCES rule_versions(id),

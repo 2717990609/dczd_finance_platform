@@ -28,6 +28,7 @@ type settlementReview struct {
 	DraftStale        bool                `json:"draftStale"`
 	LaterPoolActivity bool                `json:"laterPoolActivity"`
 	Pools             []settlementPoolGap `json:"pools"`
+	Sources           []settlementSource  `json:"sources,omitempty"`
 	Token             string              `json:"reviewToken,omitempty"`
 	Settlement        *settlement         `json:"settlement,omitempty"`
 	mode              string
@@ -76,7 +77,14 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
+		review.Sources, err = readSettlementSourceCoverage(ctx, tx, periodID, s.dcaiSourceKey())
+		if err != nil {
+			return err
+		}
 		review, err = reviewPoolSettlement(ctx, tx, periodID, review)
+		if settlementCoverageError(review.Sources) != nil {
+			review.Token = ""
+		}
 		if err != nil || review.Token == "" {
 			return err
 		}

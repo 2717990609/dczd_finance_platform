@@ -170,6 +170,8 @@ func respond(w http.ResponseWriter, result any, err error) {
 	case errors.Is(err, errLegacyRuleNotAdapted), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
 		errors.Is(err, errSettlementPools), errors.Is(err, errSettlementPoolHistory),
+		errors.Is(err, errSettlementSourceCoverage), errors.Is(err, errSettlementSourceRefund),
+		errors.Is(err, errSyncOrigin), errors.Is(err, errDCAIUnverified), errors.Is(err, errDCAIFileImport),
 		errors.Is(err, errSettlementOpen), errors.Is(err, errSettlementDisabled), errors.Is(err, errPoolStale),
 		errors.Is(err, errPoolAmount), errors.Is(err, errPoolEligibility):
 		code, message = http.StatusConflict, err.Error()
