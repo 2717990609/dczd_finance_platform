@@ -91,6 +91,18 @@ func TestDCAISyncResumesTheSameWatermarkAndCommitsOnlyCompleteCoverage(t *testin
 	}))
 	t.Cleanup(provider.Close)
 	service := workspace{db: db, sources: map[string]sourceConfig{"DCAI": {BaseURL: provider.URL, Token: "synthetic-service-token"}}}
+	pageSync := func(from *time.Time) (dcaiSyncState, error) {
+		client, err := newDCAIOrderClient(service.sources["DCAI"])
+		if err != nil {
+			return dcaiSyncState{}, err
+		}
+		conn, release, err := acquireDCAISyncLock(ctx, db, dcaiVIPStream)
+		if err != nil {
+			return dcaiSyncState{}, err
+		}
+		defer release()
+		return syncDCAIOrdersLocked(ctx, conn, client, dcaiVIPStream, from, 0)
+	}
 	if _, err := service.pullOrder(ctx, pullInput{Source: "DCAI", Stream: "VIP_ORDERS", OrderID: "VIP-8"}); err != nil {
 		t.Fatalf("single-order gate before the first sync: %v", err)
 	}
@@ -109,14 +121,14 @@ func TestDCAISyncResumesTheSameWatermarkAndCommitsOnlyCompleteCoverage(t *testin
 		}
 		return cursor, complete, versions
 	}
-	if _, err := service.syncDCAIOrders(ctx, "VIP_ORDERS", &from); !errors.Is(err, errSourceRead) {
+	if _, err := pageSync(&from); !errors.Is(err, errSourceRead) {
 		t.Fatalf("fault should fail the run: %v", err)
 	}
 	if cursor, complete, versions := read(); cursor != "9" || complete || versions != 1 {
 		t.Fatalf("partial state = cursor %s, complete %t, versions %d", cursor, complete, versions)
 	}
 	failSecondPage.Store(false)
-	if _, err := service.syncDCAIOrders(ctx, "VIP_ORDERS", nil); err != nil {
+	if _, err := pageSync(nil); err != nil {
 		t.Fatal(err)
 	}
 	if cursor, complete, versions := read(); cursor != "10" || !complete || versions != 2 || cutoffs.Load() != 1 {
@@ -141,7 +153,7 @@ func TestDCAISyncResumesTheSameWatermarkAndCommitsOnlyCompleteCoverage(t *testin
 	}); !errors.Is(err, errDCAIFileImport) {
 		t.Fatalf("a local file must not mix into a bound provider: %v", err)
 	}
-	if _, err := service.syncDCAIOrders(ctx, "VIP_ORDERS", nil); err != nil {
+	if _, err := pageSync(nil); err != nil {
 		t.Fatalf("24-hour replay failed: %v", err)
 	}
 	if _, _, versions := read(); versions != 2 {
@@ -152,7 +164,7 @@ func TestDCAISyncResumesTheSameWatermarkAndCommitsOnlyCompleteCoverage(t *testin
 		t.Fatalf("the older page replay must not overwrite the single-order update: %d %v", blocked, err)
 	}
 	earlier := from.AddDate(0, 0, -3)
-	backfill, err := service.syncDCAIOrders(ctx, "VIP_ORDERS", &earlier)
+	backfill, err := pageSync(&earlier)
 	if err != nil || !backfill.From.Equal(earlier) || scanStart.Load() != earlier.Format(time.RFC3339) || backfill.Versions != 0 {
 		t.Fatalf("explicit earlier backfill ran at the wrong cursor: %+v %v", backfill, err)
 	}

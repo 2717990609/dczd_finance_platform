@@ -18,8 +18,9 @@ import (
 var errWrongDatabase = errors.New("database URL does not match FINANCE_EXPECTED_DATABASE")
 
 type config struct {
-	addr     string
-	database *pgxpool.Config
+	addr             string
+	database         *pgxpool.Config
+	dcaiSyncInterval time.Duration
 }
 
 func readConfig() (config, error) {
@@ -42,7 +43,14 @@ func readConfig() (config, error) {
 	if addr == "" {
 		addr = "127.0.0.1:8096"
 	}
-	return config{addr: addr, database: database}, nil
+	interval := 30 * time.Minute
+	if value := strings.TrimSpace(os.Getenv("FINANCE_DCAI_SYNC_INTERVAL")); value != "" {
+		interval, err = time.ParseDuration(value)
+		if err != nil || interval < 0 || interval > 0 && interval < time.Second {
+			return config{}, errors.New("FINANCE_DCAI_SYNC_INTERVAL must be 0 or a duration of at least one second")
+		}
+	}
+	return config{addr: addr, database: database, dcaiSyncInterval: interval}, nil
 }
 
 func newHandler(ping func(context.Context) error) http.Handler {

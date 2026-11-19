@@ -16,6 +16,7 @@ var (
 	errSyncOrigin      = errors.New("已保存的同步记录与当前来源不一致")
 	errSyncLaterStart  = errors.New("已开始同步，历史起点可以往前补拉")
 	errSyncInProgress  = errors.New("该订单流正在同步")
+	errSyncJobReplaced = errors.New("同步任务已被后续请求替换，请查看当前进度")
 	errDCAIUnverified  = errors.New("库中已有未绑定来源的订单数据，请在独立库初始化同步")
 	errDCAIFileImport  = errors.New("此库已绑定大春 AI 接口，请通过该来源拉取订单")
 )
@@ -36,7 +37,11 @@ type dcaiSyncState struct {
 const readDCAISyncSQL = `SELECT stream,initial_from,completed_through,target_through,pages,scanned,versions,failed,
  source_key,next_updated_at,next_id FROM dcai_order_sync WHERE stream=$1`
 
-func readDCAISync(ctx context.Context, conn *pgxpool.Conn, stream string) (dcaiSyncState, error) {
+type syncQueryer interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+func readDCAISync(ctx context.Context, conn syncQueryer, stream string) (dcaiSyncState, error) {
 	var state dcaiSyncState
 	err := conn.QueryRow(ctx, readDCAISyncSQL, stream).Scan(&state.Stream, &state.From, &state.Completed, &state.Target,
 		&state.Pages, &state.Scanned, &state.Versions, &state.Failed, &state.origin, &state.next.UpdatedAt, &state.next.ID)
@@ -44,36 +49,78 @@ func readDCAISync(ctx context.Context, conn *pgxpool.Conn, stream string) (dcaiS
 }
 
 func (s workspace) syncDCAIOrders(ctx context.Context, stream string, from *time.Time) (dcaiSyncState, error) {
-	if stream != dcaiVIPStream && stream != dcaiHealthStream || from != nil && !validDCAIWatermark(*from) {
-		return dcaiSyncState{}, invalid
-	}
-	client, err := newDCAIOrderClient(s.sources["DCAI"])
+	job, err := s.enqueueDCAISyncAt(ctx, stream, from)
 	if err != nil {
 		return dcaiSyncState{}, err
 	}
-	conn, err := s.db.Acquire(ctx)
-	if err != nil {
-		return dcaiSyncState{}, err
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		if err := s.runDCAISyncJob(ctx, stream, 0, job.ID); err != nil {
+			return dcaiSyncState{}, err
+		}
+		var current dcaiSyncJob
+		var completed dcaiSyncState
+		err := pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			var err error
+			current, err = readDCAISyncJob(ctx, tx, stream)
+			if err != nil {
+				return err
+			}
+			if current.ID != job.ID {
+				return errSyncJobReplaced
+			}
+			if current.Status == "SUCCEEDED" {
+				completed, err = readDCAISync(ctx, tx, stream)
+			}
+			return err
+		})
+		if err != nil {
+			return dcaiSyncState{}, err
+		}
+		switch current.Status {
+		case "SUCCEEDED":
+			return completed, nil
+		case "FAILED":
+			return dcaiSyncState{}, errors.New(current.Message)
+		}
+		select {
+		case <-ctx.Done():
+			return dcaiSyncState{}, ctx.Err()
+		case <-ticker.C:
+		}
 	}
-	defer conn.Release()
+}
+
+func acquireDCAISyncLock(ctx context.Context, db *pgxpool.Pool, stream string) (*pgxpool.Conn, func(), error) {
+	conn, err := db.Acquire(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
 	lockKey := "finance:dcai-order-sync:" + stream
 	var acquired bool
 	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock(hashtextextended($1,0))", lockKey).Scan(&acquired); err != nil {
 		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		_ = conn.Hijack().Close(cleanup)
-		return dcaiSyncState{}, err
+		return nil, nil, err
 	}
 	if !acquired {
-		return dcaiSyncState{}, errSyncInProgress
+		conn.Release()
+		return nil, nil, errSyncInProgress
 	}
-	defer func() {
+	return conn, func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		if _, err := conn.Exec(cleanup, "SELECT pg_advisory_unlock(hashtextextended($1,0))", lockKey); err != nil {
 			_ = conn.Hijack().Close(cleanup)
+			return
 		}
-	}()
+		conn.Release()
+	}, nil
+}
+
+func syncDCAIOrdersLocked(ctx context.Context, conn *pgxpool.Conn, client dcaiOrderClient, stream string, from *time.Time, jobID int64) (dcaiSyncState, error) {
 	state, err := readDCAISync(ctx, conn, stream)
 	if errors.Is(err, pgx.ErrNoRows) {
 		if from == nil {
@@ -95,7 +142,10 @@ func (s workspace) syncDCAIOrders(ctx context.Context, stream string, from *time
 	if backfill {
 		state.From = from.UTC()
 	}
-	if err := runDCAISync(ctx, conn, client, &state, backfill); err != nil {
+	if err := runDCAISync(ctx, conn, client, &state, backfill, jobID); err != nil {
+		if ctx.Err() != nil {
+			return state, ctx.Err()
+		}
 		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		if markErr := pgx.BeginFunc(cleanup, conn, func(tx pgx.Tx) error {
@@ -108,7 +158,7 @@ func (s workspace) syncDCAIOrders(ctx context.Context, stream string, from *time
 	return state, nil
 }
 
-func runDCAISync(ctx context.Context, conn *pgxpool.Conn, client dcaiOrderClient, state *dcaiSyncState, backfill bool) error {
+func runDCAISync(ctx context.Context, conn *pgxpool.Conn, client dcaiOrderClient, state *dcaiSyncState, backfill bool, jobID int64) error {
 	if err := client.readiness(ctx, state.Stream); err != nil {
 		return err
 	}
@@ -168,8 +218,12 @@ func runDCAISync(ctx context.Context, conn *pgxpool.Conn, client dcaiOrderClient
 			}
 			updated.Versions += inserted
 			_, err = tx.Exec(ctx, `UPDATE dcai_order_sync SET next_updated_at=$2,next_id=$3,pages=$4,scanned=$5,versions=$6,
-			 completed_through=$7,target_through=$8,failed=false WHERE stream=$1`, state.Stream, updated.next.UpdatedAt,
+			 completed_through=$7,target_through=$8,failed=false,
+			 last_success_at=CASE WHEN $8::timestamptz IS NULL THEN clock_timestamp() ELSE last_success_at END WHERE stream=$1`, state.Stream, updated.next.UpdatedAt,
 				updated.next.ID, updated.Pages, updated.Scanned, updated.Versions, updated.Completed, updated.Target)
+			if err == nil && !page.HasMore && jobID != 0 {
+				return finishDCAISyncJob(ctx, tx, jobID, "SUCCEEDED", "")
+			}
 			return err
 		})
 		if err != nil {
@@ -198,6 +252,10 @@ func lockDCAIProvider(ctx context.Context, tx pgx.Tx, key string) error {
 }
 
 func verifyDCAIProvider(ctx context.Context, tx pgx.Tx, key string) error {
+	return checkDCAIProvider(ctx, tx, key, true)
+}
+
+func checkDCAIProvider(ctx context.Context, tx pgx.Tx, key string, bind bool) error {
 	var bound *string
 	if err := tx.QueryRow(ctx, `SELECT provider_key FROM source_write_state WHERE source='DCAI'`).Scan(&bound); err != nil {
 		return err
@@ -220,6 +278,9 @@ func verifyDCAIProvider(ctx context.Context, tx pgx.Tx, key string) error {
 	}
 	if existing {
 		return errDCAIUnverified
+	}
+	if !bind {
+		return nil
 	}
 	_, err := tx.Exec(ctx, `UPDATE source_write_state SET provider_key=$1 WHERE source='DCAI'`, key)
 	return err

@@ -7,6 +7,7 @@ import {
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import DraftWorkbench from './DraftWorkbench.vue'
 import OrganizationDirectory from './OrganizationDirectory.vue'
+import OrderSyncPanel from './OrderSyncPanel.vue'
 import PracticeTierEditor from './PracticeTierEditor.vue'
 
 const navigation = [
@@ -28,6 +29,7 @@ const productScopedPages = new Set(['products','periods','rules','settlement'])
 const usesProductScope = computed(() => productScopedPages.has(current.value))
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
 const organization = ref()
+const orderSync = ref()
 const data = ref({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
 const loading = ref(false)
 const saving = ref(false)
@@ -212,6 +214,7 @@ async function refresh(reloadOptions = false) {
 function refreshWorkspace() {
   refresh(true)
   organization.value?.refresh()
+  orderSync.value?.reload()
 }
 function changeRoute() {
   current.value = getRoute()
@@ -429,13 +432,11 @@ async function save() {
               <small>{{ sourceLabel(entry.source) }}</small>
               <strong class="source-state">{{ entry.configured ? '已配置' : '未配置' }}</strong>
               <small v-if="entry.lastUpdate">最近入库 {{ formatTime(entry.lastUpdate) }}</small>
-              <small v-for="sync in entry.syncs" :key="sync.stream">
-                {{ optionLabel('dcaiOrderStream',sync.stream) }} ·
-                {{ !sync.sourceMatches ? '来源连接待核对' : sync.failed ? '同步失败' : sync.targetThrough ? '同步未完成' : '同步至 '+formatTime(sync.completedThrough) }}
-              </small>
             </div>
           </article>
         </div>
+        <OrderSyncPanel v-if="current==='orders' && configurationReady && (!sourceFilter || sourceFilter==='DCAI') && data.sources.some(entry => entry.source==='DCAI' && entry.configured)"
+          ref="orderSync" :api="api" :streams="options('dcaiOrderStream')" :format-time="formatTime" @updated="refresh()"/>
         <section class="records">
           <div class="records-head">
             <a-tabs v-if="current==='products'||current==='people'" v-model:active-key="tab" @change="filter=''">

@@ -52,6 +52,7 @@ const settlementSourceCoverageSQL = `WITH scope AS (
 SELECT r.stream,CASE
  WHEN r.stream='' THEN 'UNSUPPORTED'
  WHEN $2='' THEN 'NOT_CONFIGURED'
+ WHEN j.source_key=$2 AND j.status IN ('QUEUED','RUNNING') THEN 'INCOMPLETE'
  WHEN s.stream IS NULL THEN 'NOT_STARTED'
  WHEN s.source_key<>$2 OR ws.provider_key IS DISTINCT FROM $2 THEN 'SOURCE_CHANGED'
  WHEN s.failed THEN 'FAILED'
@@ -67,7 +68,8 @@ SELECT r.stream,CASE
    AND original.product_id=p.product_id AND (perf.period_id=$1 OR original.ordinal<p.ordinal
     AND EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=original.id))) ELSE 0 END
 FROM scope p CROSS JOIN required r JOIN source_write_state ws ON ws.source='DCAI'
-LEFT JOIN dcai_order_sync s ON s.stream=r.stream ORDER BY r.stream`
+LEFT JOIN dcai_order_sync s ON s.stream=r.stream
+LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream ORDER BY r.stream`
 
 func readSettlementSourceCoverage(ctx context.Context, tx pgx.Tx, periodID int64, provider string) ([]settlementSource, error) {
 	rows, err := tx.Query(ctx, settlementSourceCoverageSQL, periodID, provider)

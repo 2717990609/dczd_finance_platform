@@ -124,6 +124,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/identities", Handler: submit(s.assignIdentity)},
 		{Method: http.MethodGet, Path: "/api/v1/orders", Handler: s.orders},
 		{Method: http.MethodPost, Path: "/api/v1/orders/pull", Handler: submit(s.pullOrder)},
+		{Method: http.MethodGet, Path: "/api/v1/orders/sync", Handler: s.getDCAISyncJobs},
+		{Method: http.MethodPost, Path: "/api/v1/orders/sync", Handler: submit(s.requestDCAISync)},
 		{Method: http.MethodGet, Path: "/api/v1/sources", Handler: s.sourceStatuses},
 		{Method: http.MethodGet, Path: "/api/v1/drafts", Handler: s.getDraft},
 		{Method: http.MethodGet, Path: "/api/v1/draft-personnel", Handler: s.draftPersonnel},
@@ -172,6 +174,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errSettlementPools), errors.Is(err, errSettlementPoolHistory),
 		errors.Is(err, errSettlementSourceCoverage), errors.Is(err, errSettlementSourceRefund),
 		errors.Is(err, errSyncOrigin), errors.Is(err, errDCAIUnverified), errors.Is(err, errDCAIFileImport),
+		errors.Is(err, errSyncInitialFrom), errors.Is(err, errSyncLaterStart), errors.Is(err, errSyncInProgress),
 		errors.Is(err, errSettlementOpen), errors.Is(err, errSettlementDisabled), errors.Is(err, errPoolStale),
 		errors.Is(err, errPoolAmount), errors.Is(err, errPoolEligibility):
 		code, message = http.StatusConflict, err.Error()
@@ -496,6 +499,8 @@ func startHTTP(ctx context.Context, cfg config, db *pgxpool.Pool) error {
 	defer server.Stop()
 	health := newHandler(db.Ping)
 	api := workspace{db: db, sources: readSources()}
+	stopSync := api.startDCAISyncWorkers(ctx, cfg.dcaiSyncInterval)
+	defer stopSync()
 	server.AddRoutes(append([]rest.Route{{Method: http.MethodGet, Path: "/healthz", Handler: health.ServeHTTP}, {Method: http.MethodGet, Path: "/readyz", Handler: health.ServeHTTP}}, api.routes()...))
 	server.Start()
 	return nil

@@ -244,6 +244,16 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if _, err := s.db.Exec(ctx, `UPDATE dcai_order_sync SET completed_through=target_through,target_through=NULL`); err != nil {
 		t.Fatal(err)
 	}
+	job, err := s.enqueueDCAISync(ctx, dcaiSyncRequest{Stream: dcaiVIPStream})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: periodID, ExpectedVersion: got.Version}, "fixture"); !errors.Is(err, errSettlementSourceCoverage) {
+		t.Fatalf("a newly queued sync must block confirmation before it even obtains a target watermark: %v", err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE dcai_sync_jobs SET status='SUCCEEDED',finished_at=now() WHERE id=$1`, job.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO dcai_order_blockers(stream,source_row_id,order_id,cursor_updated_at,reasons)
 	 VALUES('VIP_ORDERS','1','one',$1,ARRAY['REFUND_EVIDENCE_MISSING'])`, start); err != nil {
 		t.Fatal(err)
