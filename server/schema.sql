@@ -336,16 +336,14 @@ BEGIN
      AND (later.book_date,later.book_stage,later.ordinal)>(original.book_date,original.book_stage,original.ordinal)
     JOIN pool_account_activity b ON b.period_id=later.id
       AND (a.unit_id,a.item_key,a.scenario_key)=(b.unit_id,b.item_key,b.scenario_key)
-    JOIN settlements s ON s.period_id=later.id
-     AND (original.book_date='-infinity'::date OR s.id>OLD.id)
+    JOIN settlements s ON s.period_id=later.id AND s.id>OLD.id
     WHERE original.id=OLD.period_id
  ) OR EXISTS(
     SELECT 1 FROM pool_period_order original
     JOIN pool_period_order later ON later.product_id=original.product_id
      AND (later.book_date,later.book_stage,later.ordinal)>(original.book_date,original.book_stage,original.ordinal)
     JOIN settlements s ON s.period_id=later.id AND s.id>OLD.id
-    WHERE original.id=OLD.period_id AND original.book_date<>'-infinity'::date
-     AND settlement_changes_pool_carry(OLD.period_id,OLD.draft_version)
+    WHERE original.id=OLD.period_id AND settlement_changes_pool_carry(OLD.period_id,OLD.draft_version)
  ) OR EXISTS(
     SELECT 1 FROM settlements s WHERE s.period_id=ANY(refund_dependents) AND s.id>OLD.id
  ) OR EXISTS(

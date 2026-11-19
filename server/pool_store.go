@@ -55,8 +55,10 @@ const poolAllocationBasisSQL = `SELECT md5(concat_ws('|',
  (SELECT coalesce(string_agg(st.id::text,',' ORDER BY st.id),'') FROM settlements st
   JOIN pool_period_order prior ON prior.id=st.period_id
   WHERE prior.product_id=target.product_id
-   AND (prior.book_date,prior.book_stage,prior.ordinal)<(target.book_date,target.book_stage,target.ordinal))))
+   AND (prior.book_date,prior.book_stage,prior.ordinal)<(target.book_date,target.book_stage,target.ordinal)
+   AND (closed.id IS NULL OR st.id<closed.id))))
  FROM pool_period_order target LEFT JOIN product_catalog_settings config ON config.product_id=target.product_id
+ LEFT JOIN settlements closed ON closed.period_id=target.id
  LEFT JOIN catalog_sales_context c ON c.source=config.source_system WHERE target.id=`
 
 // In addition to organization membership, a catalog-funded share requires the
@@ -97,6 +99,7 @@ const poolAllocationCurrentSQL = `(a.draft_version=d.version AND
  )
 ))`
 
+// Closed views use the postings already confirmed when the target was closed.
 const poolEntriesSQL = `WITH scope AS (
  SELECT p.id,p.book_date<>'-infinity'::date AS practice,row_number() OVER (ORDER BY p.book_date,p.book_stage,p.ordinal) AS seq
  FROM pool_period_order target
@@ -106,7 +109,7 @@ const poolEntriesSQL = `WITH scope AS (
  LEFT JOIN settlements final ON final.period_id=target.id
  LEFT JOIN settlements posted ON posted.period_id=p.id
  WHERE target.id=$1 AND (p.id=target.id OR posted.id IS NOT NULL
-  AND (final.id IS NULL OR target.book_date='-infinity'::date OR posted.id<final.id))
+  AND (final.id IS NULL OR posted.id<final.id))
 ), refunds AS MATERIALIZED (
  SELECT r.original_line_id,r.period_id,r.amount_minor,r.refund_source_version_id,r.id,p.seq,p.practice
  FROM scope p JOIN calculation_draft_refunds r ON r.period_id=p.id AND r.amount_minor<0

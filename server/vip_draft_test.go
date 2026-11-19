@@ -490,6 +490,14 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatalf("closed pool plan accepted writes: %v", err)
 	}
 
+	october := createPeriod("2026-10", "10 月")
+	emptyOctober := draftAt(october)
+	closeReviewed(emptyOctober, review(emptyOctober).Token)
+	beforeBackfill := readPools(emptyOctober)
+	if !beforeBackfill.Closed || len(beforeBackfill.Items) != 0 {
+		t.Fatalf("empty confirmed October should have no carried pool balance: %+v", beforeBackfill)
+	}
+
 	sept := createPeriod("2026-09", "9 月")
 	lateAt := start.AddDate(0, 1, 2)
 	now := time.Now().In(shanghai)
@@ -519,6 +527,22 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeReviewed(september, review(september).Token)
+	if got := readPools(emptyOctober); !got.Closed || len(got.Items) != 0 || got.Basis != beforeBackfill.Basis {
+		t.Fatalf("confirming an earlier refund must not rewrite October's confirmed carry: %+v", got)
+	}
+	if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", october); err != nil {
+		t.Fatal(err)
+	}
+	if got := readPools(emptyOctober); got.Closed || len(got.Items) != 1 || got.Items[0].Opening != -60 {
+		t.Fatalf("a reopened October must see the newly confirmed September refund: %+v", got)
+	}
+	closeReviewed(emptyOctober, review(emptyOctober).Token)
+	if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", sept); err == nil || !strings.Contains(err.Error(), "booked adjustments") {
+		t.Fatalf("September removal would change the now-confirmed October opening, even with no October movement: %v", err)
+	}
+	if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", october); err != nil {
+		t.Fatal(err)
+	}
 
 	saveRefund("two", "after-close", "1", 14950, lateAt.Add(time.Hour))
 	late := draftAt(current)
@@ -572,7 +596,6 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatalf("closed payment period changed: %d %v", confirmedTotal, err)
 	}
 
-	october := createPeriod("2026-10", "10 月")
 	octoberPayment := lateAt.AddDate(0, 1, 0)
 	save("offset-pool-deficit", "1", 2000, octoberPayment, octoberPayment, "VIP_ORDER")
 	octoberDraft := draftAt(october)
