@@ -90,6 +90,8 @@ const reason = {
   PRACTICE_RECOMMENDATION_CONFLICT: '推荐公司归属冲突，请核对订金、尾款和公司关系',
   PRACTICE_RECOMMENDATION_ROUTE_MISSING: '推荐公司缺少适用的直收配置',
   PRACTICE_POOL_MISSING: '资金池或归集组织待核',
+  PRACTICE_REFUND_MONTH_MISSING: '退款发生月份尚未建立退款账期',
+  PRACTICE_REFUND_REPLAY_REQUIRED: '此退款涉及原班次联动分润，待完成整期复算',
   PRACTICE_TIER_COMPANY_NOT_CONFIGURED: '该销售公司未配置阶梯',
   PRACTICE_TIER_OPENING_MISSING: '所选冻结期初中缺少该人员的期初人数',
   PRACTICE_TIER_HISTORY_MISSING: '累计起点或历史期次缺少已确认名单',
@@ -238,7 +240,7 @@ async function loadMore(section, cursorName) {
       <a-button v-if="!matchingOnly" :disabled="!selected || loading || calculating" @click="load()">刷新结果</a-button>
     </div>
     <p v-if="selectedPeriod" class="draft-context">
-      {{ selectedPeriod.periodMode === 'class' ? '期次' : '账期' }} {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
+      {{ selectedPeriod.practiceRefundMonth ? '退款账期' : selectedPeriod.periodMode === 'class' ? '期次' : '账期' }} {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
       <span v-if="draft?.practiceRosterVersion"> · 签到名单 v{{ draft.practiceRosterVersion }} · 到课 {{ draft.attendanceCount }} 人</span>
       <span v-if="draft?.settlement"> · 已结算 · {{ formatTime(draft.settlement.confirmedAt) }}</span>
       <span v-else-if="draft"> · 草稿 v{{ draft.version }} · {{ formatTime(draft.calculatedAt) }}</span>
@@ -249,7 +251,7 @@ async function loadMore(section, cursorName) {
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
   <a-alert v-if="!draft?.settlement && refreshStatus?.message" class="feedback" type="warning" :message="refreshStatus.message" show-icon/>
   <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount, 'summary-collection':!draft.refundsReady }">
-    <article><div><small>{{ draft.practiceRosterVersion ? '本班计提（含名单确认前退款）' : '正向计提' }}</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
+    <article v-if="!draft.practiceRefundMonth"><div><small>{{ draft.practiceRosterVersion ? '本班计提（含名单确认前退款）' : '正向计提' }}</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
     <article v-if="!draft.practiceRosterVersion"><div><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div></article>
     <article v-if="draft.correctionCount"><div><small>推荐人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div></article>
     <article v-if="draft.refundsReady"><div><small>本期合计</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
@@ -266,7 +268,7 @@ async function loadMore(section, cursorName) {
   <DraftSettlementReview v-if="draft?.catalog && view==='review'" :draft="draft" :period="selectedPeriod" :api="api" :format-money="formatMoney"
     :format-time="formatTime" :source-streams="sourceStreams" @show-pools="view='pools'" @show-issues="view='detail'" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">
-  <section class="records">
+  <section v-if="!draft.practiceRefundMonth" class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>
     <div class="table-container">
       <a-table :columns="lineColumns" :data-source="draft.lines" :pagination="false" row-key="id" :scroll="{ x: 755 }">
@@ -295,7 +297,7 @@ async function loadMore(section, cursorName) {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
             {{ record.originalOrderNo || record.originalOrderId }}
-            <small class="order-version">计提时规则 v{{ record.ruleVersion }} · 退款 {{ record.refundId }}</small>
+            <small class="order-version">计提时规则 v{{ record.ruleVersion }}<template v-if="record.ruleLabel"> · {{ record.ruleLabel }}</template> · 退款 {{ record.refundId }}</small>
           </template>
           <template v-else-if="column.key === 'beneficiary'">
             {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池</small>

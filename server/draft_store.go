@@ -21,6 +21,7 @@ type calculateDraftInput struct{ PeriodID int64 }
 
 type draftSummary struct {
 	Catalog               bool      `json:"catalog,omitempty"`
+	PracticeRefundMonth   bool      `json:"practiceRefundMonth,omitempty"`
 	PracticeRosterID      *int64    `json:"-"`
 	PracticeStartsAt      time.Time `json:"-"`
 	PeriodOrdinal         int       `json:"-"`
@@ -44,7 +45,8 @@ const maxDraftPayments = 100000
 
 const draftScopeSQL = `SELECT pro.period_mode, p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
  (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',coalesce(p.source_period_key,''),p.ordinal,
- EXISTS(SELECT 1 FROM legacy_catalog_products l WHERE l.product_id=pro.id),` + catalogDraftAvailableSQL + `
+ EXISTS(SELECT 1 FROM legacy_catalog_products l WHERE l.product_id=pro.id),` + catalogDraftAvailableSQL + `,
+ (pro.period_mode='class' AND p.calendar_month IS NOT NULL)
  FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1`
 
 const draftRulesSQL = `SELECT rv.id,rv.version,rv.effective_from,rv.components FROM periods p
@@ -129,6 +131,9 @@ func (s workspace) calculateCurrentDraft(ctx context.Context, periodID, wantedGe
 }
 
 func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window periodWindow, rules []paymentRule) (paymentDraft, []byte, error) {
+	if summary.PracticeRefundMonth {
+		return computePracticeRefundMonth(ctx, tx, summary.PeriodID, window)
+	}
 	if summary.Catalog {
 		return computeVIPDraft(ctx, tx, summary.PeriodID, window)
 	}
@@ -160,9 +165,13 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 	var window periodWindow
 	var mode, sourceKey string
 	var legacy bool
-	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &legacy, &summary.Catalog)
+	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &legacy, &summary.Catalog, &summary.PracticeRefundMonth)
 	if err != nil {
 		return window, nil, err
+	}
+	if summary.PracticeRefundMonth {
+		summary.Catalog = false
+		return window, nil, nil
 	}
 	if summary.Catalog {
 		return window, nil, nil
@@ -371,7 +380,8 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	  WHERE NOT calculation_drafts.performance_ready OR calculation_drafts.input_digest<>excluded.input_digest
 	   OR calculation_drafts.catalog_refunds_ready<>excluded.catalog_refunds_ready
 	  RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
-		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections), summary.PracticeRosterID, summary.Catalog).
+		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), len(result.Issues), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections),
+		summary.PracticeRosterID, summary.Catalog).
 		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount, &summary.PracticeRosterID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = tx.QueryRow(ctx, `SELECT d.version,d.total_minor,d.line_count,d.issue_count,d.calculated_at,d.refund_minor,d.refund_count,d.correction_minor,d.correction_count,
@@ -517,8 +527,10 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 }
 
 const draftDetailSQL = `SELECT jsonb_build_object(
- 'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,'catalog',d.rule_id IS NULL,
- 'refundsReady',d.rule_id IS NOT NULL OR d.catalog_refunds_ready,
+ 'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
+ 'catalog',d.rule_id IS NULL AND NOT (` + practiceRefundMonthScope + `),
+ 'practiceRefundMonth',(` + practiceRefundMonthScope + `),
+ 'refundsReady',d.rule_id IS NOT NULL OR d.catalog_refunds_ready OR (` + practiceRefundMonthScope + `),
  'poolAllocationAvailable',(d.rule_id IS NULL AND d.catalog_refunds_ready OR d.practice_roster_id IS NOT NULL AND (EXISTS(
   SELECT 1 FROM pool_account_activity movement JOIN periods origin ON origin.id=movement.period_id JOIN periods target ON target.id=d.period_id
   WHERE origin.product_id=target.product_id AND (origin.id=target.id OR origin.ordinal<target.ordinal
@@ -560,14 +572,16 @@ const draftDetailSQL = `SELECT jsonb_build_object(
  ) l),'[]'),
  'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (
   SELECT a.id,a.amount_minor AS "amountMinor",rv.fact->>'refundId' AS "refundId",rv.version AS "refundVersion",
-   coalesce(p.name,pool.name,beneficiary.name) AS "personName",
+   coalesce(p.name,practice_pool.name,pool.name,beneficiary.name) AS "personName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",coalesce(r.version,cv.version_no) AS "ruleVersion",
+   r.label AS "ruleLabel",
    original_period.name AS "originalPeriod",refund_period.name AS "refundPeriod",posting_period.name AS "postingPeriod"
   FROM calculation_draft_refunds a
   JOIN source_order_versions rv ON rv.id=a.refund_source_version_id
   JOIN calculation_draft_lines l ON l.id=a.original_line_id JOIN source_order_versions o ON o.id=l.source_version_id
   LEFT JOIN people p ON p.id=l.person_id LEFT JOIN organization_units beneficiary ON beneficiary.id=l.beneficiary_unit_id
+  LEFT JOIN practice_pools practice_pool ON practice_pool.id=l.practice_pool_id
   LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN legacy_rule_versions cv ON cv.source_id=l.catalog_rule_id
   LEFT JOIN LATERAL (
    SELECT b->>'pool_name' AS name FROM jsonb_array_elements(cv.definition->'benefit_actions') b
@@ -594,7 +608,9 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   FROM calculation_draft_issues i LEFT JOIN source_order_versions o ON o.id=i.source_version_id LEFT JOIN practice_enrollments e ON e.id=i.practice_enrollment_id
   WHERE i.period_id=d.period_id AND i.id>$3 ORDER BY i.id LIMIT 50
  ) i),'[]')
-) FROM calculation_drafts d LEFT JOIN rule_versions r ON r.id=d.rule_id LEFT JOIN settlements st ON st.period_id=d.period_id LEFT JOIN practice_rosters roster ON roster.id=d.practice_roster_id WHERE d.period_id=$1 AND ($4::bigint=0 OR d.version=$4)`
+) FROM calculation_drafts d JOIN periods period ON period.id=d.period_id JOIN products product ON product.id=period.product_id
+ LEFT JOIN rule_versions r ON r.id=d.rule_id LEFT JOIN settlements st ON st.period_id=d.period_id
+ LEFT JOIN practice_rosters roster ON roster.id=d.practice_roster_id WHERE d.period_id=$1 AND ($4::bigint=0 OR d.version=$4)`
 
 func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()

@@ -162,7 +162,7 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	 CASE WHEN roster.starts_at<$4
 	  AND split_part(p.source_period_key,':',3)=split_part(current.source_period_key,':',3)
 	  THEN roster.id ELSE 0 END, selected.components
-	 FROM periods current JOIN periods p ON p.product_id=current.product_id AND p.ordinal<current.ordinal
+	 FROM periods current JOIN periods p ON p.product_id=current.product_id AND p.ordinal<current.ordinal AND p.calendar_month IS NULL
 	 LEFT JOIN settlements settlement ON settlement.period_id=p.id
 	 LEFT JOIN calculation_drafts closed ON closed.period_id=settlement.period_id
 	 LEFT JOIN LATERAL (SELECT r.id,r.starts_at FROM practice_rosters r

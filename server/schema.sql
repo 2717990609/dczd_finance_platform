@@ -111,14 +111,19 @@ CREATE INDEX IF NOT EXISTS source_order_versions_lookup
 ALTER TABLE products ADD COLUMN IF NOT EXISTS cycle_start_day smallint;
 DO $$
 BEGIN
- IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='products'::regclass AND conname='products_cycle_start_day_check') THEN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='products'::regclass AND conname='products_cycle_start_day_check'
+  AND strpos(pg_get_constraintdef(oid),'period_mode')=0) THEN
   ALTER TABLE products DROP CONSTRAINT IF EXISTS products_check,
+   DROP CONSTRAINT IF EXISTS products_cycle_start_day_check,
    ADD CONSTRAINT products_cycle_start_day_check
-   CHECK (cycle_start_day IS NULL OR (cycle_start_day BETWEEN 1 AND 28 AND period_mode='calendar'));
+   CHECK (cycle_start_day IS NULL OR cycle_start_day BETWEEN 1 AND 28);
  END IF;
 END
 $$;
 ALTER TABLE periods ADD COLUMN IF NOT EXISTS calendar_month date;
+CREATE UNIQUE INDEX IF NOT EXISTS periods_ordinal_without_month
+ ON periods(product_id,ordinal) WHERE calendar_month IS NULL;
+ALTER TABLE periods DROP CONSTRAINT IF EXISTS periods_product_id_ordinal_key;
 CREATE UNIQUE INDEX IF NOT EXISTS periods_calendar_month
  ON periods(product_id, calendar_month) WHERE calendar_month IS NOT NULL;
 
@@ -452,6 +457,9 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('source','DCJK','大春见康 · DCJK',30,'{}'),
  ('periodMode','class','实际开班',10,'{}'),
  ('periodMode','calendar','固定账期',20,'{}'),
+ ('practicePeriodKind','class','开班期次',10,'{}'),
+ ('practicePeriodKind','refund_month','退款账期',20,'{}'),
+ ('practiceRefundCalendar','25','每月25日开始',10,'{}'),
  ('ruleScope','default','产品默认',10,'{}'),
  ('ruleScope','ordinal','从指定期数起',20,'{}'),
  ('ruleScope','period','指定期次',30,'{}'),
@@ -901,6 +909,6 @@ CREATE OR REPLACE TRIGGER protect_confirmed_catalog_package BEFORE UPDATE ON leg
        (NEW.source_id,NEW.product_id,NEW.code,NEW.project_code,NEW.policy_kind,NEW.scope_type,NEW.scope_id))
  EXECUTE FUNCTION protect_confirmed_catalog_scope();
 CREATE OR REPLACE TRIGGER protect_confirmed_period_scope BEFORE UPDATE ON periods FOR EACH ROW
- WHEN ((OLD.id,OLD.product_id,OLD.ordinal,OLD.starts_on,OLD.ends_on,OLD.source_period_key) IS DISTINCT FROM
-       (NEW.id,NEW.product_id,NEW.ordinal,NEW.starts_on,NEW.ends_on,NEW.source_period_key))
+ WHEN ((OLD.id,OLD.product_id,OLD.ordinal,OLD.starts_on,OLD.ends_on,OLD.source_period_key,OLD.calendar_month) IS DISTINCT FROM
+       (NEW.id,NEW.product_id,NEW.ordinal,NEW.starts_on,NEW.ends_on,NEW.source_period_key,NEW.calendar_month))
  EXECUTE FUNCTION protect_confirmed_catalog_scope();

@@ -56,6 +56,17 @@ const draftRefreshFacts = `WITH keys AS (
  SELECT order_id,fact FROM events WHERE source='DCZD' AND fact->>'domain'='PRACTICE' AND kind='ORDER_PAID'
  UNION ALL SELECT v.order_id,v.fact FROM source_order_versions v JOIN refund_versions changed USING(id)
  WHERE v.source='DCZD' AND v.fact->>'domain'='PRACTICE'
+), practice_refund_months AS (
+ SELECT DISTINCT p.id FROM refund_versions changed JOIN source_order_versions v USING(id)
+ JOIN source_mappings m ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'
+ JOIN products pro ON pro.id=m.product_id AND pro.period_mode='class'
+ JOIN periods p ON p.product_id=pro.id AND p.calendar_month IS NOT NULL
+ LEFT JOIN periods origin ON origin.product_id=pro.id AND origin.calendar_month IS NOT NULL
+  AND (v.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN origin.starts_on AND origin.ends_on
+ WHERE v.source='DCZD' AND m.domain='PRACTICE' AND (
+  p.id=origin.id OR ((origin.id IS NULL AND v.occurred_at<p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
+   OR EXISTS(SELECT 1 FROM settlements st WHERE st.period_id=origin.id))
+   AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on))
 ), practice_order AS (
  SELECT order_id FROM practice_events
  UNION SELECT a->>'orderId' FROM practice_events v JOIN LATERAL jsonb_array_elements(v.fact->'refundsPayment') a ON true
@@ -86,6 +97,7 @@ UNION SELECT posted.period_id FROM refund_versions v JOIN calculation_draft_perf
  WHERE posted.payment_version_id IS NOT NULL
 UNION SELECT posted.period_id FROM corrected_originals o JOIN calculation_draft_corrections posted ON posted.original_line_id=o.id
 UNION SELECT id FROM classes
+UNION SELECT id FROM practice_refund_months
 UNION SELECT p.id FROM classes c JOIN periods p ON p.product_id=c.product_id AND p.ordinal>c.ordinal
   AND split_part(p.source_period_key,':',3)=c.series
  WHERE EXISTS(SELECT 1 FROM rule_versions rv WHERE ` + matchingRuleScope + ` AND rv.components @>'[{"mode":"tiered"}]')`

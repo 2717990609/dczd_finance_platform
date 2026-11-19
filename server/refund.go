@@ -24,12 +24,23 @@ func refundDelta(policy component, base, accrued, principal, alreadyDeducted int
 		return 0, errRefundAmount
 	}
 	var remaining int64
-	switch policy.RefundPolicy {
-	case "non_refundable":
+	switch {
+	case policy.Mode == "practice_replay":
+		return 0, errPracticeRefundReplay
+	case policy.Mode == "practice_rate":
+		remaining = practiceCompanyRate(base-principal, policy.Value)
+	case policy.Mode == "practice_fixed" || policy.Mode == "practice_company_fixed":
+		if principal < base {
+			if policy.Mode == "practice_company_fixed" && base-principal < accrued {
+				return 0, errPracticeRefundReplay
+			}
+			remaining = accrued
+		}
+	case policy.RefundPolicy == "non_refundable":
 		remaining = accrued
-	case "full_reversal":
+	case policy.RefundPolicy == "full_reversal":
 		remaining = 0
-	case "proportional":
+	case policy.RefundPolicy == "proportional":
 		if policy.Mode == "rate" {
 			remaining = calculatePaymentAmount(base-principal, policy)
 		} else {

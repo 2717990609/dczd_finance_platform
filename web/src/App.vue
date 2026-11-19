@@ -97,10 +97,12 @@ const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({v
 const practicePoolOptions = computed(() => classRuleDirectory.value?.pools?.map(pool=>({value:pool.id,label:pool.name+' · '+pool.unitName})) || [])
 const companyRecipientOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>unit.kind==='COMPANY')
   .map(unit=>({value:unit.id,label:unit.name})) || [])
-const periodOptions = computed(() => data.value.periods.filter(p => p.productId === draft.value.productId).map(p => ({value:p.id,label:p.name})))
+const periodOptions = computed(() => data.value.periods.filter(p => p.productId === draft.value.productId && !p.practiceRefundMonth)
+  .map(p => ({value:p.id,label:p.name})))
 const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
 const calculationPeriods = computed(() => data.value.periods.filter(p => !productScope.value || p.productId === productScope.value))
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
+const classRefundMonth = computed(() => classRule.value && draft.value.practicePeriodKind === 'refund_month')
 const periodBenefitMode = computed(() => options('amountMode').find(option=>option.value==='period_rate'))
 const isPeriodBenefit = type => classRule.value && ['manager','delivery'].includes(type)
 const companySalesMode = computed(() => options('amountMode').find(option=>option.value==='company_sales'))
@@ -416,7 +418,7 @@ function open(kind, row) {
   notice.value = ''
   drawer.value = kind
   draft.value = {
-    periodMode:firstOption('periodMode'),source:row?.source || firstOption('source'),
+    periodMode:firstOption('periodMode'),practicePeriodKind:firstOption('practicePeriodKind'),source:row?.source || firstOption('source'),
     stream:row?.source==='DCAI' && String(row.domain).includes('HEALTH') && options('dcaiOrderStream').some(option => option.value==='HEALTH_IDENTITY_ORDERS')
       ? 'HEALTH_IDENTITY_ORDERS' : firstOption('dcaiOrderStream'),
     orderId:row?.orderId || '',scope:firstOption('ruleScope'),
@@ -532,13 +534,14 @@ function ruleComponentBody(row) {
   return component
 }
 function bodyFor(kind,f) {
-  if (kind === 'product') return {code:must(f.code),name:must(f.name),periodMode:f.periodMode,...(f.periodMode==='calendar' ? {cycleStartDay:must(f.cycleStartDay)} : {})}
+  if (kind === 'product') return {code:must(f.code),name:must(f.name),periodMode:f.periodMode,
+    ...(f.periodMode==='calendar' ? {cycleStartDay:must(f.cycleStartDay)} : f.cycleStartDay!=null ? {cycleStartDay:f.cycleStartDay} : {})}
   if (kind === 'mapping') return {productId:must(f.productId),source:f.source,domain:must(f.domain),sourceKey:must(f.sourceKey)}
   if (kind === 'period') {
     const productId = must(f.productId)
-    if (selectedProduct.value?.cycleStartDay) {
+    if (classRefundMonth.value || (!classRule.value && selectedProduct.value?.cycleStartDay)) {
       const settlementMonth = must(f.settlementMonth)
-      return {productId, settlementMonth, name:f.name?.trim() || settlementMonth+' 账期'}
+      return {productId, settlementMonth, name:f.name?.trim() || settlementMonth+(classRefundMonth.value ? ' 退款账期' : ' 账期')}
     }
     return {productId,name:must(f.name),ordinal:must(f.ordinal),startsOn:must(f.startsOn),endsOn:must(f.endsOn),...(f.sourcePeriodKey?.trim() ? {sourcePeriodKey:f.sourcePeriodKey.trim()} : {})}
   }
@@ -692,7 +695,11 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ optionLabel('periodMode',text) }}</a-tag></template>
                 <template v-else-if="column.key==='mappingCount'">{{ data.mappings.filter(x=>x.productId===record.id).length }}</template>
-                <template v-else-if="column.key==='ruleVersion'"><a-tag v-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag><a-tag v-else color="orange">{{ record.ruleMatchingAvailable ? '按订单匹配' : record.periodMode==='class' && !record.classStartsAt ? '待签到名单' : '待配规则' }}</a-tag></template>
+                <template v-else-if="column.key==='ruleVersion'">
+                  <a-tag v-if="record.practiceRefundMonth" color="blue">按原班次规则</a-tag>
+                  <a-tag v-else-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag>
+                  <a-tag v-else color="orange">{{ record.ruleMatchingAvailable ? '按订单匹配' : record.periodMode==='class' && !record.classStartsAt ? '待签到名单' : '待配规则' }}</a-tag>
+                </template>
                 <template v-else-if="column.key==='version'"><a-tag color="green">v{{ text }}</a-tag></template>
                 <template v-else-if="column.key==='effectiveFrom'">
                   {{ text ? formatTime(text) : '范围默认' }}
@@ -757,6 +764,9 @@ async function save() {
         <a-form-item label="产品编码" required><a-input v-model:value="draft.code" aria-label="产品编码" :maxlength="48"/></a-form-item>
         <a-form-item label="核算方式"><a-select v-model:value="draft.periodMode" aria-label="核算方式" :options="options('periodMode')"/></a-form-item>
         <a-form-item v-if="draft.periodMode==='calendar'" label="每月开始日" extra="填 1 表示自然月。填 25 表示上月 25 日至本月 24 日。" required><a-input-number v-model:value="draft.cycleStartDay" aria-label="每月开始日" :min="1" :max="28" :precision="0"/></a-form-item>
+        <a-form-item v-if="draft.periodMode==='class'" label="退款账期每月开始日" :extra="firstOption('practiceRefundCalendar') ? '留空使用每月 '+firstOption('practiceRefundCalendar')+' 日开始。' : ''">
+          <a-input-number v-model:value="draft.cycleStartDay" aria-label="退款账期每月开始日" :min="1" :max="28" :precision="0"/>
+        </a-form-item>
       </template>
       <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='rule' ? ruleProductOptions : productOptions"/></a-form-item>
       <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" label="来源系统"><a-select v-model:value="draft.source" aria-label="来源系统" :options="sources"/></a-form-item>
@@ -765,7 +775,10 @@ async function save() {
         <a-form-item label="源产品标识" required><a-input v-model:value="draft.sourceKey" aria-label="源产品标识"/></a-form-item>
       </template>
       <template v-if="drawer==='period'">
-        <template v-if="selectedProduct?.cycleStartDay">
+        <a-form-item v-if="classRule" label="核算类型" html-for="practice-period-kind">
+          <a-select id="practice-period-kind" v-model:value="draft.practicePeriodKind" :options="options('practicePeriodKind')"/>
+        </a-form-item>
+        <template v-if="classRefundMonth || (!classRule && selectedProduct?.cycleStartDay)">
           <a-form-item label="结算月份" required><a-input v-model:value="draft.settlementMonth" aria-label="结算月份" type="month"/></a-form-item>
           <a-form-item label="账期名称"><a-input v-model:value="draft.name" aria-label="账期名称" placeholder="默认使用结算月份"/></a-form-item>
         </template>

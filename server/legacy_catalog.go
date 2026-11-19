@@ -222,7 +222,7 @@ func storeLegacyProduct(ctx context.Context, tx pgx.Tx, environment string, capt
 	var stored []byte
 	var same bool
 	err = tx.QueryRow(ctx, `SELECT l.product_id,l.source_environment,l.captured_at,l.snapshot_digest,
-	 (p.code=$2 AND p.period_mode=$3 AND p.cycle_start_day IS NOT DISTINCT FROM $4::smallint)
+	 (p.code=$2 AND p.period_mode=$3 AND (p.period_mode='class' OR p.cycle_start_day IS NOT DISTINCT FROM $4::smallint))
 	 FROM legacy_catalog_products l JOIN products p ON p.id=l.product_id WHERE l.source_id=$1::uuid FOR UPDATE OF p,l`,
 		product.SourceID, product.Code, product.PeriodMode, product.CycleStartDay).Scan(&id, &storedEnvironment, &storedAt, &stored, &same)
 	if err == nil {

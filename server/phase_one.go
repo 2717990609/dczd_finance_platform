@@ -265,10 +265,12 @@ const mappingsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'
  FROM source_mappings m JOIN products p ON p.id=m.product_id ORDER BY m.id DESC LIMIT 500) p`
 const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
  (SELECT p.id,p.product_id AS "productId",pro.name AS "productName",pro.period_mode AS "periodMode",p.name,p.ordinal,
- EXISTS(SELECT 1 FROM catalog_business_routes m JOIN legacy_catalog_products c USING(product_id)
-  WHERE m.product_id=p.product_id AND m.observed_at=c.captured_at) AS "ruleMatchingAvailable",
+ (pro.period_mode='calendar' AND EXISTS(SELECT 1 FROM catalog_business_routes m JOIN legacy_catalog_products c USING(product_id)
+  WHERE m.product_id=p.product_id AND m.observed_at=c.captured_at)) AS "ruleMatchingAvailable",
  ` + catalogDraftAvailableSQL + ` AS "catalogDraftAvailable",
- p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",p.source_period_key AS "sourcePeriodKey",roster.starts_at AS "classStartsAt",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
+ p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",
+ (pro.period_mode='class' AND p.calendar_month IS NOT NULL) AS "practiceRefundMonth",
+ p.source_period_key AS "sourcePeriodKey",roster.starts_at AS "classStartsAt",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
  FROM periods p JOIN products pro ON pro.id=p.product_id
  LEFT JOIN LATERAL (
   SELECT r.starts_at FROM practice_rosters r WHERE r.period_key=p.source_period_key ORDER BY r.source_version DESC LIMIT 1
@@ -348,7 +350,7 @@ func (s workspace) insert(ctx context.Context, stmt string, args ...any) (any, e
 
 func (s workspace) createProduct(ctx context.Context, p createProductInput) (any, error) {
 	if !textOK(p.Code, 48) || !textOK(p.Name, 80) || (p.PeriodMode != "class" && p.PeriodMode != "calendar") ||
-		(p.CycleStartDay != nil && (p.PeriodMode != "calendar" || *p.CycleStartDay < 1 || *p.CycleStartDay > 28)) {
+		(p.CycleStartDay != nil && (*p.CycleStartDay < 1 || *p.CycleStartDay > 28)) {
 		return nil, invalid
 	}
 	return s.insert(ctx, "INSERT INTO products(code,name,period_mode,cycle_start_day) VALUES($1,$2,$3,$4) RETURNING id", strings.ToUpper(strings.TrimSpace(p.Code)), strings.TrimSpace(p.Name), p.PeriodMode, p.CycleStartDay)
@@ -377,12 +379,24 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 		if err := tx.QueryRow(ctx, "SELECT period_mode,cycle_start_day FROM products WHERE id=$1 FOR UPDATE", p.ProductID).Scan(&mode, &day); err != nil {
 			return err
 		}
-		if p.SourcePeriodKey != "" && (mode != "class" || !validPracticeKey(p.SourcePeriodKey)) {
+		if p.SourcePeriodKey != "" && (mode != "class" || p.SettlementMonth != "" || !validPracticeKey(p.SourcePeriodKey)) {
 			return invalid
 		}
 		var month, from, to string
 		ordinal := p.Ordinal
 		if p.SettlementMonth != "" {
+			if day == nil && mode == "class" {
+				if err := tx.QueryRow(ctx, `SELECT (SELECT option_key::integer FROM configuration_options
+				 WHERE group_key='practiceRefundCalendar' AND enabled AND option_key ~ '^([1-9]|1[0-9]|2[0-8])$'
+				 ORDER BY display_order,option_key LIMIT 1)`).Scan(&day); err != nil {
+					return err
+				}
+				if day != nil {
+					if _, err := tx.Exec(ctx, `UPDATE products SET cycle_start_day=$2 WHERE id=$1`, p.ProductID, day); err != nil {
+						return err
+					}
+				}
+			}
 			if day == nil || p.StartsOn != "" || p.EndsOn != "" || p.Ordinal != 0 {
 				return invalid
 			}
@@ -400,15 +414,16 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 		} else {
 			start, e1 := time.Parse(time.DateOnly, p.StartsOn)
 			end, e2 := time.Parse(time.DateOnly, p.EndsOn)
-			if day != nil || ordinal < 1 || e1 != nil || e2 != nil || end.Before(start) {
+			if mode == "calendar" && day != nil || ordinal < 1 || e1 != nil || e2 != nil || end.Before(start) {
 				return invalid
 			}
 			from, to = p.StartsOn, p.EndsOn
 		}
-		if mode == "calendar" {
+		if mode == "calendar" || month != "" {
 			var overlaps bool
 			err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM periods WHERE product_id=$1
-				AND starts_on<=$3::text::date AND ends_on>=$2::text::date)`, p.ProductID, from, to).Scan(&overlaps)
+				AND starts_on<=$3::text::date AND ends_on>=$2::text::date AND ($4='calendar' OR calendar_month IS NOT NULL))`,
+				p.ProductID, from, to, mode).Scan(&overlaps)
 			if err != nil {
 				return err
 			}
@@ -423,6 +438,10 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 		}
 		if p.SourcePeriodKey != "" {
 			return enqueueDraftConfiguration(ctx, tx, draftRefreshRoster, p.SourcePeriodKey, nil)
+		}
+		if mode == "class" && month != "" {
+			return enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods WHERE product_id=$1 AND calendar_month IS NOT NULL
+			 AND (id=$2 OR (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN starts_on AND ends_on)`, p.ProductID, id)
 		}
 		return enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods WHERE id=$1`, id)
 	})
@@ -446,6 +465,16 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 		}
 		if legacy && mode != "class" {
 			return errLegacyRuleNotAdapted
+		}
+		if p.PeriodID != nil && mode == "class" {
+			var month bool
+			if err := tx.QueryRow(ctx, `SELECT calendar_month IS NOT NULL FROM periods WHERE id=$1 AND product_id=$2`,
+				*p.PeriodID, p.ProductID).Scan(&month); err != nil {
+				return err
+			}
+			if month {
+				return invalid
+			}
 		}
 		if p.EffectiveFrom != nil && p.EffectiveFrom.IsZero() {
 			return invalid
