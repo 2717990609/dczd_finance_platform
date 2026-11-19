@@ -95,7 +95,7 @@ func readVIPDraftFacts(ctx context.Context, tx pgx.Tx, items []catalogPaymentMat
 func vipDraftPeople(rows []catalogPaymentMatch, data vipRuntimeData) []int64 {
 	ids := make(map[int64]bool)
 	for _, row := range rows {
-		if row.PaidMinor == nil || *row.PaidMinor <= 0 || row.Status == "DUPLICATE_PAYMENT" || row.Status == "INVALID_PAYMENT" {
+		if row.PaidMinor == nil || *row.PaidMinor <= 0 || excludedVIPPayment(row.Status) {
 			continue
 		}
 		req, _ := vipPaymentInputs(row, data)
@@ -122,7 +122,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	issue := func(component, code string) {
 		result.Issues = append(result.Issues, draftIssue{FactID: row.SourceVersionID, Component: component, Code: code})
 	}
-	if row.PaidMinor == nil || row.Status == "INVALID_PAYMENT" || row.Status == "DUPLICATE_PAYMENT" {
+	if row.PaidMinor == nil || excludedVIPPayment(row.Status) {
 		issue("", row.Status)
 		return nil
 	}
@@ -188,6 +188,10 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 		}
 	}
 	return nil
+}
+
+func excludedVIPPayment(status string) bool {
+	return status == "INVALID_PAYMENT" || status == "DUPLICATE_PAYMENT" || status == "PAYMENT_ALREADY_SETTLED"
 }
 
 func appendVIPDraftLine(result *paymentDraft, row catalogPaymentMatch, rule pgtype.UUID, key, party, unit, owner string, amount, rate int64,

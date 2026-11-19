@@ -37,7 +37,7 @@ const catalogMatchSQL = `WITH period AS (
 ), payments AS (
  SELECT v.id,v.source,v.order_id,v.occurred_at,v.fact->>'orderNo' AS order_no,
   v.fact->>'transactionType' AS transaction_type,v.fact->>'domain' AS domain,
-  v.fact->>'paymentId' AS payment_id,
+  v.fact->>'paymentId' AS payment_id,v.line_id,v.record_key,
   CASE WHEN jsonb_typeof(v.fact->'amountMinor')='number' THEN (v.fact->>'amountMinor')::bigint END AS paid,
   split_part(v.record_key,':',1) AS record_table,
   count(*) OVER (PARTITION BY v.source,v.fact->>'paymentId') AS payment_count
@@ -59,6 +59,14 @@ const catalogMatchSQL = `WITH period AS (
  CASE WHEN r.n=1 THEN r.version END AS "ruleVersion",
  CASE WHEN f.paid IS NULL OR f.paid<0 OR coalesce(f.payment_id,'')='' THEN 'INVALID_PAYMENT'
   WHEN f.payment_count>1 THEN 'DUPLICATE_PAYMENT'
+  WHEN EXISTS (
+   SELECT 1 FROM source_order_versions booked
+   JOIN calculation_draft_performance a ON a.source_version_id=booked.id AND a.payment_version_id IS NULL
+   JOIN settlements st ON st.period_id=a.period_id
+   WHERE booked.kind='ORDER_PAID' AND booked.source=f.source AND a.period_id<>$1
+    AND ((booked.order_id,booked.line_id,booked.record_key)=(f.order_id,f.line_id,f.record_key)
+     OR ((booked.fact->>'domain'),(booked.fact->>'paymentId'))=(f.domain,f.payment_id))
+  ) THEN 'PAYMENT_ALREADY_SETTLED'
   WHEN c.source_version_id IS NULL THEN 'UNCLASSIFIED'
   WHEN m.n=0 THEN 'MAPPING_MISSING'
   WHEN m.n>1 THEN 'MAPPING_CONFLICT'
@@ -105,7 +113,7 @@ const catalogMatchSQL = `WITH period AS (
 SELECT jsonb_build_object(
  'orderCount',(SELECT count(*) FROM matches),
  'matchedCount',(SELECT count(*) FROM matches WHERE status='MATCHED'),
- 'paidMinor',(SELECT coalesce(sum("paidMinor"),0) FROM matches WHERE status NOT IN ('INVALID_PAYMENT','DUPLICATE_PAYMENT')),
+ 'paidMinor',(SELECT coalesce(sum("paidMinor"),0) FROM matches WHERE status NOT IN ('INVALID_PAYMENT','DUPLICATE_PAYMENT','PAYMENT_ALREADY_SETTLED')),
  'matchedMinor',(SELECT coalesce(sum("paidMinor"),0) FROM matches WHERE status='MATCHED'),
  'items',coalesce((SELECT jsonb_agg(to_jsonb(output) ORDER BY "paidAt" DESC,"sourceVersionId" DESC) FROM output),'[]'))
 FROM period WHERE EXISTS(SELECT 1 FROM routes)`

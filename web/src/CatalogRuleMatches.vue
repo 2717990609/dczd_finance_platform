@@ -25,6 +25,7 @@ const statuses = {
   MATCHED:'已匹配',
   INVALID_PAYMENT:'付款待核',
   DUPLICATE_PAYMENT:'重复付款',
+  PAYMENT_ALREADY_SETTLED:'此付款已在其他账期结算',
   UNCLASSIFIED:'分类待核',
   MAPPING_MISSING:'未匹配场景',
   MAPPING_CONFLICT:'场景冲突',

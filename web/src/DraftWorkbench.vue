@@ -3,6 +3,7 @@ import { computed, ref, watch } from 'vue'
 import CatalogRuleMatches from './CatalogRuleMatches.vue'
 import DraftReport from './DraftReport.vue'
 import DraftPoolAllocations from './DraftPoolAllocations.vue'
+import DraftSettlementReview from './DraftSettlementReview.vue'
 import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, api: Function, formatMoney: Function, formatTime: Function })
@@ -36,6 +37,7 @@ const reason = {
   UNCONFIGURED_COMPONENT: '此分项尚未配置可用的来源角色或计算方式',
   MISSING_PAYMENT_ID: '缺少原付款 ID',
   DUPLICATE_PAYMENT: '同一付款出现多条记录，需核对商品行及金额分摊',
+  PAYMENT_ALREADY_SETTLED: '此付款已在其他账期结算，请核对原账与来源变更',
   MISSING_PAID_AMOUNT: '缺少有效的实付金额',
   MISSING_EFFECTIVE_RULE: '付款时点没有有效规则',
   AMBIGUOUS_PARTICIPANT: '同一来源角色有多名受益人',
@@ -188,10 +190,13 @@ async function loadMore(section, cursorName) {
     <a-tab-pane key="detail" tab="明细"/>
     <a-tab-pane v-if="reportDimensions.length" key="report" tab="业绩与分润"/>
     <a-tab-pane v-if="draft.catalog && draft.refundsReady" key="pools" tab="团队池分配"/>
+    <a-tab-pane v-if="draft.catalog && draft.refundsReady" key="review" tab="结算核对"/>
     <a-tab-pane v-if="hasMatching" key="matching" tab="订单规则匹配"/>
   </a-tabs>
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney"/>
   <DraftPoolAllocations v-if="draft?.catalog && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
+  <DraftSettlementReview v-if="draft?.catalog && view==='review'" :draft="draft" :api="api" :format-money="formatMoney"
+    :format-time="formatTime" @show-pools="view='pools'" @show-issues="view='detail'"/>
   <template v-if="draft && view==='detail'">
   <section class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>

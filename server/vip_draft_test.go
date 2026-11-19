@@ -19,6 +19,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	s := workspace{db: integrationDB(t)}
 	id := func(n int) string { return fmt.Sprintf("60000000-0000-4000-8000-%012d", n) }
 	start := time.Date(2026, 7, 25, 0, 0, 0, 0, shanghai)
+	previousStart := start.AddDate(0, -1, 0)
 	boundary := start.AddDate(0, 0, 5)
 	policy := func(ownerRate string) json.RawMessage {
 		return json.RawMessage(strings.NewReplacer(
@@ -32,11 +33,11 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	input := legacyCatalogFile{Environment: "test", CapturedAt: start, Products: []legacyCatalogProduct{{
 		SourceID: id(1), Code: "VIP_TEST", Name: "会员样本", Project: "AI", Source: "DCAI", SourceKey: "vip-test", PeriodMode: "calendar", CycleStartDay: &day,
 		Packages: []legacyCatalogPackage{{SourceID: id(2), Code: "test", Name: "规则样本", Project: "AI", Kind: "LEGACY_BUNDLE", ScopeType: "BUSINESS_SCENARIO", ScopeID: "test",
-			Versions: []legacyCatalogVersion{{SourceID: id(3), Number: 1, Status: "PUBLISHED", From: start, Through: &boundary, Hash: "first", Definition: policy("500")},
+			Versions: []legacyCatalogVersion{{SourceID: id(3), Number: 1, Status: "PUBLISHED", From: previousStart, Through: &boundary, Hash: "first", Definition: policy("500")},
 				{SourceID: id(4), Number: 2, Status: "PUBLISHED", From: boundary, Hash: "second", Definition: policy("700")}},
 		}},
 		BusinessRoutes: []catalogBusinessRoute{{SourceID: id(5), Source: "DCAI", Domain: "VIP", Entity: "VIP_ORDER", RecordTable: "ai_vip_order",
-			BusinessKey: "dcai:vip:new", Classifier: "dcai.vip-lifecycle.v1", SKU: "test", Label: "会员下单", Version: 1, From: start}},
+			BusinessKey: "dcai:vip:new", Classifier: "dcai.vip-lifecycle.v1", SKU: "test", Label: "会员下单", Version: 1, From: previousStart}},
 	}}}
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { return storeLegacyCatalog(ctx, tx, input) }); err != nil {
 		t.Fatal(err)
@@ -71,12 +72,15 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if err := storeVIPSalesContext(ctx, s.db, json.RawMessage(raw)); err != nil {
 		t.Fatal(err)
 	}
-	save := func(order, version string, amount int64, at, updated time.Time, entity string) {
+	save := func(order, version string, amount int64, at, updated time.Time, entity string, line ...string) {
 		t.Helper()
 		f := sourceFact{Source: "DCAI", Kind: "ORDER_PAID", OrderID: order, OrderNo: version, PaymentID: order, RecordKey: "ai_vip_order:" + order,
 			Domain: "VIP", SourceKey: "vip-test", Version: version, AmountMinor: &amount, OccurredAt: at, UpdatedAt: updated,
 			Classification: classifySourcePayment("DCAI", "VIP", entity, "ai_vip_order"),
 			VIPClaims:      []vipClaim{{Role: "PID_USER", User: "seller", Company: "seller-company", Relationship: "DIRECT"}}}
+		if len(line) != 0 {
+			f.LineID = line[0]
+		}
 		err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { _, err := storeSourceFacts(ctx, tx, []sourceFact{f}); return err })
 		if err != nil {
 			t.Fatal(err)
@@ -224,8 +228,8 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if _, err := s.db.Exec(ctx, "UPDATE products SET settlement_enabled=true WHERE id=$1", productID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: periodID, ExpectedVersion: got.Version}, "fixture"); !errors.Is(err, errSettlementDisabled) {
-		t.Fatalf("unfinished refund and pool settlement should remain disabled: %v", err)
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: periodID, ExpectedVersion: got.Version}, "fixture"); err == nil || !strings.Contains(err.Error(), "团队池") {
+		t.Fatalf("unallocated pool balance must prevent confirmation: %v", err)
 	}
 	save("two", "display", 10000, boundary, boundary.Add(time.Minute), "VIP_ORDER")
 	if recalc().Version != got.Version {
@@ -288,18 +292,32 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatalf("refund recipients=%+v", counts)
 	}
 
-	// Seed finalized test periods to exercise cross-period behavior while
-	// the operational confirmation entry for this product remains closed.
 	save("unclassified", "classified", 1100, boundary, boundary.Add(3*time.Minute), "VIP_ORDER")
 	finished := recalc()
 	if finished.IssueCount != 0 {
 		t.Fatalf("expected review to be resolved before closing: %+v", finished)
 	}
-	closeFixture := func(result draftSummary) {
+	review := func(result draftSummary) settlementReview {
 		t.Helper()
-		if _, err := s.db.Exec(ctx, "INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')", result.PeriodID, result.Version); err != nil {
-			t.Fatal(err)
+		w := httptest.NewRecorder()
+		s.getSettlementReview(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/settlement-review?periodId=%d&version=%d", result.PeriodID, result.Version), nil))
+		var out settlementReview
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("settlement review: %d %v %s", w.Code, err, w.Body)
 		}
+		return out
+	}
+	closeReviewed := func(result draftSummary, token string) settlement {
+		t.Helper()
+		request := confirmSettlementInput{PeriodID: result.PeriodID, ExpectedVersion: result.Version, ReviewToken: token}
+		closed, err := s.confirmSettlement(ctx, request, "fixture")
+		if err != nil || closed.ID == 0 {
+			t.Fatalf("confirmation: %+v %v", closed, err)
+		}
+		if repeated, err := s.confirmSettlement(ctx, request, "fixture retry"); err != nil || repeated != closed {
+			t.Fatalf("same review must return the original confirmation: %+v %v", repeated, err)
+		}
+		return closed
 	}
 	createPeriod := func(month, label string) int64 {
 		t.Helper()
@@ -318,16 +336,61 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		return out.(draftSummary)
 	}
 	plan.Version, plan.Revision = finished.Version, 1
-	plan.Basis = readPools(finished).Basis
+	readyPools := readPools(finished)
+	plan.Basis = readyPools.Basis
 	plan.Shares = []poolAllocationShare{{PersonID: alice.ID, Amount: 600}}
 	plan.Retained = 0
 	if _, err := s.savePoolAllocation(ctx, plan); err != nil {
 		t.Fatal(err)
 	}
+	if partialReview := review(finished); partialReview.Token != "" || len(partialReview.Pools) != 1 || partialReview.Pools[0].Unallocated != 182 {
+		t.Fatalf("review should expose the unallocated portion: %+v", partialReview)
+	}
+	plan.Revision, plan.Retained = 2, 182
+	if _, err := s.savePoolAllocation(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	firstReview := review(finished)
+	if firstReview.Token == "" || len(firstReview.Pools) != 0 {
+		t.Fatalf("fully funded review: %+v", firstReview)
+	}
+	request := confirmSettlementInput{PeriodID: periodID, ExpectedVersion: finished.Version, ReviewToken: firstReview.Token}
+	save("one", "changed-after-review", 10100, boundary.Add(-time.Second), boundary.Add(3*time.Minute), "VIP_ORDER")
+	if revised := review(finished); !revised.DraftStale || revised.Token != "" {
+		t.Fatalf("review should detect the changed payment before confirmation: %+v", revised)
+	}
+	if _, err := s.confirmSettlement(ctx, request, "fixture"); !errors.Is(err, errSettlementStale) {
+		t.Fatalf("changed payment must invalidate confirmation: %v", err)
+	}
+	save("one", "restored-after-review", 10000, boundary.Add(-time.Second), boundary.Add(4*time.Minute), "VIP_ORDER")
+	plan.Revision, plan.Retained = 3, 183
+	plan.Shares[0].Amount = 599
+	if _, err := s.savePoolAllocation(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.confirmSettlement(ctx, request, "fixture"); !errors.Is(err, errSettlementStale) {
+		t.Fatalf("a different allocation must invalidate a reviewed draft even when the total is unchanged: %v", err)
+	}
+	secondReview := review(finished)
+	closed := closeReviewed(finished, secondReview.Token)
+	if after := review(finished); after.Settlement == nil || after.Settlement.ID != closed.ID || after.Token != "" {
+		t.Fatalf("closed review should reference the existing settlement: %+v", after)
+	}
+	if _, err := s.confirmSettlement(ctx, request, "fixture"); !errors.Is(err, errSettlementClosed) {
+		t.Fatalf("a different review cannot replace the finalized result: %v", err)
+	}
 
-	closeFixture(finished)
 	if _, err := s.db.Exec(ctx, "UPDATE monthly_pool_allocation_shares SET amount_minor=400"); err == nil {
 		t.Fatal("confirmed recipient amount can change")
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE legacy_rule_versions SET definition='{}'::jsonb WHERE source_id=$1", id(4)); err == nil {
+		t.Fatal("confirmed rule content can change")
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE legacy_rule_packages SET scope_id='other' WHERE source_id=$1", id(2)); err == nil {
+		t.Fatal("confirmed rule scope can change")
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE periods SET ordinal=ordinal+1 WHERE id=$1", periodID); err == nil {
+		t.Fatal("confirmed period ordering can change")
 	}
 	if _, err := s.savePoolAllocation(ctx, plan); !errors.Is(err, errSettlementClosed) {
 		t.Fatalf("closed pool plan accepted writes: %v", err)
@@ -349,14 +412,14 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if september.Total != -420 || september.RefundCount != 5 || september.IssueCount != 0 {
 		t.Fatalf("September refund = %+v", september)
 	}
-	closeFixture(september)
+	closeReviewed(september, review(september).Token)
 
 	saveRefund("two", "after-close", "1", 14950, lateAt.Add(time.Hour))
 	late := draftAt(current)
 	if late.RefundTotal != -3440 || late.Total != -3440 || late.RefundCount != 5 || late.IssueCount != 0 {
 		t.Fatalf("the current period should take only the unbooked remainder: %+v", late)
 	}
-	if latePool := readPools(late).Items[0]; latePool.Opening != 122 || latePool.Refund != -449 || latePool.Balance != -327 {
+	if latePool := readPools(late).Items[0]; latePool.Opening != -60 || latePool.Refund != -449 || latePool.Balance != -509 {
 		t.Fatalf("refund after distribution must leave original distribution fixed and charge the pool: %+v", latePool)
 	}
 
@@ -401,6 +464,47 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	var confirmedTotal int64
 	if err := s.db.QueryRow(ctx, "SELECT total_minor+refund_minor FROM calculation_drafts WHERE period_id=$1", periodID).Scan(&confirmedTotal); err != nil || confirmedTotal != finished.Total {
 		t.Fatalf("closed payment period changed: %d %v", confirmedTotal, err)
+	}
+
+	october := createPeriod("2026-10", "10 月")
+	octoberPayment := lateAt.AddDate(0, 1, 0)
+	save("offset-pool-deficit", "1", 2000, octoberPayment, octoberPayment, "VIP_ORDER")
+	octoberDraft := draftAt(october)
+	closeReviewed(octoberDraft, review(octoberDraft).Token)
+	if balance := readPools(octoberDraft).Items[0]; balance.Opening != -60 || balance.Income != 60 || balance.Balance != 0 {
+		t.Fatalf("October payment should only offset prior deficit: %+v", balance)
+	}
+	if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", sept); err == nil || !strings.Contains(err.Error(), "booked adjustments") {
+		t.Fatalf("September removal would change the confirmed October pool: %v", err)
+	}
+
+	july := createPeriod("2026-07", "7 月")
+	before := start.AddDate(0, 0, -1)
+	save("backdated-payment", "1", 10000, before, before, "VIP_ORDER")
+	earlier := draftAt(july)
+	earlierPools := readPools(earlier)
+	if earlier.IssueCount != 0 || len(earlierPools.Items) != 1 || earlierPools.Items[0].Balance != 300 {
+		t.Fatalf("backdated payment: %+v %+v", earlier, earlierPools)
+	}
+	if _, err := s.savePoolAllocation(ctx, savePoolAllocationInput{PeriodID: july, Version: earlier.Version,
+		Basis: earlierPools.Basis, poolScope: earlierPools.Items[0].poolScope, Retained: 300}); err != nil {
+		t.Fatal(err)
+	}
+	if blocked := review(earlier); blocked.Token != "" || !blocked.LaterPoolActivity {
+		t.Fatalf("later confirmation should block changing the same pool history: %+v", blocked)
+	}
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: july, ExpectedVersion: earlier.Version}, "fixture"); !errors.Is(err, errSettlementPoolHistory) {
+		t.Fatalf("backdated confirmation changed an account with later postings: %v", err)
+	}
+
+	save("one", "moved-after-settlement", 10000, before, boundary.Add(5*time.Minute), "VIP_ORDER", "line-backfilled")
+	moved := draftAt(july)
+	if moved.Total != earlier.Total || moved.IssueCount != 1 {
+		t.Fatalf("a date correction cannot post a settled payment again: before %+v after %+v", earlier, moved)
+	}
+	var issue string
+	if err := s.db.QueryRow(ctx, "SELECT code FROM calculation_draft_issues WHERE period_id=$1", july).Scan(&issue); err != nil || issue != "PAYMENT_ALREADY_SETTLED" {
+		t.Fatalf("expected already-settled payment review, got %q: %v", issue, err)
 	}
 
 }

@@ -45,7 +45,7 @@ const maxDraftPayments = 100000
 const draftScopeSQL = `SELECT pro.period_mode, p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
  (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',coalesce(p.source_period_key,''),p.ordinal,
  EXISTS(SELECT 1 FROM legacy_catalog_products l WHERE l.product_id=pro.id),` + catalogDraftAvailableSQL + `
- FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1 FOR UPDATE OF p`
+ FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1`
 
 const draftRulesSQL = `SELECT rv.id,rv.version,rv.effective_from,rv.components FROM periods p
  JOIN rule_versions rv ON ` + matchingRuleScope + `
@@ -72,7 +72,7 @@ func (s workspace) recalculateDraft(ctx context.Context, input calculateDraftInp
 	}
 	summary := draftSummary{PeriodID: input.PeriodID}
 	err := pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
-		window, rules, err := readDraftScope(ctx, tx, &summary)
+		window, rules, err := readDraftScope(ctx, tx, &summary, true)
 		if err != nil {
 			return err
 		}
@@ -120,11 +120,15 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 	return result, digest, err
 }
 
-func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (periodWindow, []paymentRule, error) {
+func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary, lockPeriod bool) (periodWindow, []paymentRule, error) {
 	var window periodWindow
 	var mode, sourceKey string
 	var legacy bool
-	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &legacy, &summary.Catalog)
+	query := draftScopeSQL
+	if lockPeriod {
+		query += ` FOR UPDATE OF p`
+	}
+	err := tx.QueryRow(ctx, query, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &legacy, &summary.Catalog)
 	if err != nil {
 		return window, nil, err
 	}

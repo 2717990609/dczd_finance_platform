@@ -95,6 +95,8 @@ UPDATE source_order_versions SET occurred_at = (fact->>'occurredAt')::timestampt
 ALTER TABLE source_order_versions ALTER COLUMN occurred_at SET NOT NULL;
 CREATE INDEX IF NOT EXISTS source_order_versions_payment_date
  ON source_order_versions(source, (fact->>'domain'), (fact->>'sourceKey'), occurred_at) WHERE kind = 'ORDER_PAID';
+CREATE INDEX IF NOT EXISTS source_order_versions_payment_identity
+ ON source_order_versions(source, (fact->>'domain'), (fact->>'paymentId'), line_id) WHERE kind = 'ORDER_PAID';
 
 CREATE TABLE IF NOT EXISTS calculation_drafts (
  period_id bigint PRIMARY KEY REFERENCES periods(id),
@@ -145,6 +147,7 @@ CREATE TABLE IF NOT EXISTS settlements (
  confirmed_by text NOT NULL CHECK (char_length(confirmed_by) BETWEEN 1 AND 128),
  FOREIGN KEY (period_id, draft_version) REFERENCES calculation_drafts(period_id, version)
 );
+ALTER TABLE settlements ADD COLUMN IF NOT EXISTS review_token text NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS settlement_removals (
  settlement_id bigint PRIMARY KEY,
@@ -189,22 +192,11 @@ BEGIN
     JOIN settlements s ON s.period_id=a.period_id WHERE l.period_id=OLD.period_id AND s.id<>OLD.id
  ) OR EXISTS(
     SELECT 1 FROM periods original
+    JOIN pool_account_activity a ON a.period_id=original.id
     JOIN periods later ON later.product_id=original.product_id AND later.ordinal>original.ordinal
-    JOIN settlements s ON s.period_id=later.id
-    JOIN monthly_pool_allocations a ON a.period_id=later.id AND a.draft_version=s.draft_version
-    JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
-    WHERE original.id=OLD.period_id AND (
-     EXISTS(SELECT 1 FROM calculation_draft_lines l
-      JOIN legacy_rule_versions cv ON cv.source_id=l.catalog_rule_id
-      JOIN legacy_rule_packages pk ON pk.source_id=cv.package_id
-      WHERE l.allocation_owner_id IS NOT NULL
-       AND (l.beneficiary_unit_id,l.component_type,pk.scope_id)=(a.unit_id,a.item_key,a.scenario_key)
-       AND (l.period_id=original.id OR EXISTS(SELECT 1 FROM calculation_draft_refunds r
-        WHERE r.period_id=original.id AND r.original_line_id=l.id)))
-     OR EXISTS(SELECT 1 FROM monthly_pool_allocations earlier
-      JOIN monthly_pool_allocation_shares es ON es.allocation_id=earlier.id
-      WHERE earlier.period_id=original.id AND earlier.draft_version=OLD.draft_version
-       AND (earlier.unit_id,earlier.item_key,earlier.scenario_key)=(a.unit_id,a.item_key,a.scenario_key)))
+    JOIN pool_account_activity b ON b.period_id=later.id
+      AND (a.unit_id,a.item_key,a.scenario_key)=(b.unit_id,b.item_key,b.scenario_key)
+    JOIN settlements s ON s.period_id=later.id WHERE original.id=OLD.period_id
  ) OR EXISTS(
     SELECT 1 FROM calculation_draft_performance o
     JOIN calculation_draft_performance a ON a.payment_version_id=o.source_version_id
@@ -709,3 +701,49 @@ CREATE OR REPLACE TRIGGER protect_confirmed_pool_shares BEFORE INSERT OR UPDATE 
  FOR EACH ROW EXECUTE FUNCTION protect_confirmed_pool_children();
 CREATE OR REPLACE TRIGGER protect_confirmed_pool_funding BEFORE INSERT OR UPDATE OR DELETE ON monthly_pool_allocation_funding
  FOR EACH ROW EXECUTE FUNCTION protect_confirmed_pool_children();
+
+CREATE OR REPLACE VIEW pool_account_activity AS
+ SELECT l.period_id,l.beneficiary_unit_id AS unit_id,l.component_type AS item_key,p.scope_id AS scenario_key
+ FROM calculation_draft_lines l JOIN legacy_rule_versions v ON v.source_id=l.catalog_rule_id
+ JOIN legacy_rule_packages p ON p.source_id=v.package_id
+ WHERE l.allocation_owner_id IS NOT NULL
+ UNION ALL
+ SELECT r.period_id,l.beneficiary_unit_id,l.component_type,p.scope_id
+ FROM calculation_draft_refunds r JOIN calculation_draft_lines l ON l.id=r.original_line_id
+ JOIN legacy_rule_versions v ON v.source_id=l.catalog_rule_id JOIN legacy_rule_packages p ON p.source_id=v.package_id
+ WHERE l.allocation_owner_id IS NOT NULL AND r.amount_minor<0
+ UNION ALL
+ SELECT a.period_id,a.unit_id,a.item_key,a.scenario_key FROM monthly_pool_allocations a
+ JOIN calculation_drafts d ON d.period_id=a.period_id AND d.version=a.draft_version
+ WHERE EXISTS(SELECT 1 FROM monthly_pool_allocation_shares s WHERE s.allocation_id=a.id);
+
+CREATE OR REPLACE FUNCTION protect_confirmed_catalog_scope() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_TABLE_NAME='legacy_rule_versions' THEN
+  IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.catalog_rule_id=OLD.source_id) THEN
+   RAISE EXCEPTION 'confirmed rule version cannot be changed' USING ERRCODE='55000';
+  END IF;
+ ELSIF TG_TABLE_NAME='legacy_rule_packages' THEN
+  IF EXISTS(SELECT 1 FROM legacy_rule_versions v JOIN calculation_draft_lines l ON l.catalog_rule_id=v.source_id
+   JOIN settlements s USING(period_id) WHERE v.package_id=OLD.source_id) THEN
+   RAISE EXCEPTION 'confirmed rule scope cannot be changed' USING ERRCODE='55000';
+  END IF;
+ ELSIF EXISTS(SELECT 1 FROM settlements WHERE period_id=OLD.id) THEN
+  RAISE EXCEPTION 'confirmed period scope cannot be changed' USING ERRCODE='55000';
+ END IF;
+ RETURN NEW;
+END $$;
+
+CREATE INDEX IF NOT EXISTS calculation_draft_catalog_rules ON calculation_draft_lines(catalog_rule_id) WHERE catalog_rule_id IS NOT NULL;
+CREATE OR REPLACE TRIGGER protect_confirmed_catalog_version BEFORE UPDATE ON legacy_rule_versions FOR EACH ROW
+ WHEN ((OLD.source_id,OLD.package_id,OLD.version_no,OLD.effective_from,OLD.content_hash,OLD.definition) IS DISTINCT FROM
+       (NEW.source_id,NEW.package_id,NEW.version_no,NEW.effective_from,NEW.content_hash,NEW.definition))
+ EXECUTE FUNCTION protect_confirmed_catalog_scope();
+CREATE OR REPLACE TRIGGER protect_confirmed_catalog_package BEFORE UPDATE ON legacy_rule_packages FOR EACH ROW
+ WHEN ((OLD.source_id,OLD.product_id,OLD.code,OLD.project_code,OLD.policy_kind,OLD.scope_type,OLD.scope_id) IS DISTINCT FROM
+       (NEW.source_id,NEW.product_id,NEW.code,NEW.project_code,NEW.policy_kind,NEW.scope_type,NEW.scope_id))
+ EXECUTE FUNCTION protect_confirmed_catalog_scope();
+CREATE OR REPLACE TRIGGER protect_confirmed_period_scope BEFORE UPDATE ON periods FOR EACH ROW
+ WHEN ((OLD.id,OLD.product_id,OLD.ordinal,OLD.starts_on,OLD.ends_on,OLD.source_period_key) IS DISTINCT FROM
+       (NEW.id,NEW.product_id,NEW.ordinal,NEW.starts_on,NEW.ends_on,NEW.source_period_key))
+ EXECUTE FUNCTION protect_confirmed_catalog_scope();

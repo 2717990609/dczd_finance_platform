@@ -131,6 +131,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/period-rule-matches", Handler: s.catalogMatches},
 		{Method: http.MethodGet, Path: "/api/v1/period-pool-contributions", Handler: s.periodPoolContributions},
 		{Method: http.MethodGet, Path: "/api/v1/draft-pools", Handler: s.draftPools},
+		{Method: http.MethodGet, Path: "/api/v1/settlement-review", Handler: s.getSettlementReview},
 		{Method: http.MethodPost, Path: "/api/v1/draft-pool-allocations", Handler: submit(s.savePoolAllocation)},
 		{Method: http.MethodPost, Path: "/api/v1/drafts", Handler: submit(s.recalculateDraft)},
 	}
@@ -168,6 +169,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = 400, err.Error()
 	case errors.Is(err, errLegacyRuleNotAdapted), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
+		errors.Is(err, errSettlementPools), errors.Is(err, errSettlementPoolHistory),
 		errors.Is(err, errSettlementOpen), errors.Is(err, errSettlementDisabled), errors.Is(err, errPoolStale),
 		errors.Is(err, errPoolAmount), errors.Is(err, errPoolEligibility):
 		code, message = http.StatusConflict, err.Error()
