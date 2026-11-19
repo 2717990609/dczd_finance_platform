@@ -75,6 +75,7 @@ const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(result) ORDER BY res
  (v.observed_at=c.captured_at OR v.published_at IS NOT NULL) AS "inLatestSnapshot",
  v.published_at AS "publishedAt",
  coalesce(c.source_system='DCAI' AND p.scope_type='BUSINESS_SCENARIO'
+  AND v.definition->>'recognition_plan' IS NULL
   AND v.definition->'internal_sales_direct_split'->>'mode'='DCAI_INTERNAL_DIRECT',false) AS "draftSupported"
  FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
  JOIN product_catalog_settings c ON c.product_id=p.product_id JOIN products pr ON pr.id=c.product_id

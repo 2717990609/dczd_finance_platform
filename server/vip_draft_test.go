@@ -78,7 +78,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Helper()
 		f := sourceFact{Source: "DCAI", Kind: "ORDER_PAID", OrderID: order, OrderNo: version, PaymentID: order, RecordKey: "ai_vip_order:" + order,
 			Domain: "VIP", SourceKey: "vip-test", Version: version, AmountMinor: &amount, OccurredAt: at, UpdatedAt: updated,
-			Classification: classifySourcePayment("DCAI", "VIP", entity, "ai_vip_order"),
+			Classification: classifySourcePayment("DCAI", "VIP", entity, "ai_vip_order", "vip-test"),
 			VIPClaims:      []vipClaim{{Role: "PID_USER", User: "seller", Company: "seller-company", Relationship: "DIRECT"}}}
 		if len(line) != 0 {
 			f.LineID = line[0]

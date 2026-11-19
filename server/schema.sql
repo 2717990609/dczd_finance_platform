@@ -852,6 +852,7 @@ CREATE TABLE IF NOT EXISTS catalog_business_routes (
 );
 CREATE INDEX IF NOT EXISTS catalog_business_route_scope
  ON catalog_business_routes(product_id,observed_at,source,domain,record_table);
+ALTER TABLE catalog_business_routes ADD COLUMN IF NOT EXISTS source_product_code text;
 
 CREATE TABLE IF NOT EXISTS source_order_classifications (
  source_version_id bigint PRIMARY KEY REFERENCES source_order_versions(id),

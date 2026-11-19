@@ -55,6 +55,7 @@ const reason = {
   MAPPING_CONFLICT: '订单同时命中多条场景映射',
   RULE_MISSING: '付款时点没有适用规则',
   RULE_CONFLICT: '同一付款命中多份规则',
+  COMPOUND_RECOGNITION_UNSUPPORTED: '组合确认待启用',
   VIP_SALES_RULE_UNSUPPORTED: '销售分项待启用',
   UNCONFIGURED_COMPONENT: '此分项尚未配置可用的来源角色或计算方式',
   MISSING_PAYMENT_ID: '缺少原付款 ID',

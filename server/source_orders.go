@@ -222,7 +222,7 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 			}
 		}
 	}
-	classification := classifySourcePayment(source, wire.Business.Domain, wire.Business.Entity, wire.Record.Table)
+	classification := classifySourcePayment(source, wire.Business.Domain, wire.Business.Entity, wire.Record.Table, wire.Business.Code)
 	var vipClaims []vipClaim
 	if classification.Key != "" && wire.Kind == "ORDER_PAID" {
 		vipClaims = vipSourceClaims(wire.Attribution.Participants)
@@ -537,8 +537,8 @@ const ordersSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FR
  LEFT JOIN LATERAL (
   SELECT min(m.product_id) AS product_id FROM catalog_business_routes m
   JOIN product_catalog_settings c ON c.product_id=m.product_id AND c.captured_at=m.observed_at
-  WHERE (m.source,m.domain,m.record_table,m.entity_type,m.business_key,m.classifier)=
-   (v.source,v.fact->>'domain',split_part(v.record_key,':',1),classification.entity_type,classification.business_key,classification.classifier)
+  WHERE ` + catalogRouteFactSQL + ` AND (m.entity_type,m.business_key,m.classifier)=
+   (classification.entity_type,classification.business_key,classification.classifier)
    AND m.effective_from<=v.occurred_at AND (m.effective_to IS NULL OR v.occurred_at<m.effective_to)
   HAVING count(DISTINCT m.product_id)=1
  ) route ON true

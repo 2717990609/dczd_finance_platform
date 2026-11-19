@@ -36,6 +36,7 @@ const catalogMatchSQL = `WITH period AS (
  SELECT v.source_id,v.effective_from,v.effective_to,v.version_no,v.published_at,p.name,p.scope_id,p.resume_from,
  v.definition->'policy_scope'->'sales_systems' AS sales_systems,
  v.definition->'policy_scope'->'business_sku_codes' AS skus,
+ v.definition->>'recognition_plan' IS NOT NULL AS compound_recognition,
  ` + catalogRulePriority + ` AS priority
  FROM period scope JOIN product_rule_packages p ON p.product_id=scope.product_id AND p.project_code=scope.project_code
  JOIN product_rule_versions v ON v.package_id=p.source_id AND ` + catalogVersionVisible + `
@@ -45,12 +46,12 @@ const catalogMatchSQL = `WITH period AS (
 ), payments AS (
  SELECT v.id,v.source,v.order_id,v.occurred_at,v.fact->>'orderNo' AS order_no,
   v.fact->>'transactionType' AS transaction_type,v.fact->>'domain' AS domain,
-  v.fact->>'paymentId' AS payment_id,v.line_id,v.record_key,
+  v.fact->>'paymentId' AS payment_id,v.line_id,v.record_key,v.fact->>'sourceKey' AS source_product_code,
   CASE WHEN jsonb_typeof(v.fact->'amountMinor')='number' THEN (v.fact->>'amountMinor')::bigint END AS paid,
   split_part(v.record_key,':',1) AS record_table,
   count(*) OVER (PARTITION BY v.source,v.fact->>'paymentId') AS payment_count
  FROM period scope JOIN source_order_versions v ON v.kind='ORDER_PAID' AND v.occurred_at>=scope.after AND v.occurred_at<scope.before
- WHERE EXISTS (SELECT 1 FROM routes WHERE source=v.source AND domain=v.fact->>'domain' AND record_table=split_part(v.record_key,':',1))
+ WHERE EXISTS (SELECT 1 FROM routes m WHERE ` + catalogRouteFactSQL + `)
  AND NOT EXISTS (
   SELECT 1 FROM source_order_versions newer
   WHERE (newer.source,newer.order_id,newer.line_id,newer.record_key,newer.kind)=(v.source,v.order_id,v.line_id,v.record_key,v.kind)
@@ -80,16 +81,18 @@ const catalogMatchSQL = `WITH period AS (
   WHEN m.n>1 THEN 'MAPPING_CONFLICT'
   WHEN r.n=0 THEN 'RULE_MISSING'
   WHEN r.n>1 THEN 'RULE_CONFLICT'
+  WHEN r.compound_recognition THEN 'COMPOUND_RECOGNITION_UNSUPPORTED'
   ELSE 'MATCHED' END AS status
  FROM payments f LEFT JOIN source_order_classifications c ON c.source_version_id=f.id
  LEFT JOIN LATERAL (
   SELECT count(*) n,min(sku_code) sku,min(sku_label) label,min(mapping_version) version FROM routes m
   WHERE (m.source,m.domain,m.record_table,m.entity_type,m.business_key,m.classifier)=(f.source,f.domain,f.record_table,c.entity_type,c.business_key,c.classifier)
+   AND (m.source_product_code=f.source_product_code OR m.source_product_code IS NULL AND m.domain<>'HEALTH_IDENTITY')
    AND m.effective_from<=f.occurred_at AND (m.effective_to IS NULL OR f.occurred_at<m.effective_to)
  ) m ON true
  LEFT JOIN LATERAL (
-  SELECT count(*) n,min(source_id::text) id,min(name) name,min(version_no) version FROM (
-   SELECT r.source_id,r.name,r.version_no FROM rules r
+  SELECT count(*) n,min(source_id::text) id,min(name) name,min(version_no) version,bool_or(compound_recognition) compound_recognition FROM (
+   SELECT r.source_id,r.name,r.version_no,r.compound_recognition FROM rules r
    WHERE m.n=1 AND r.scope_id=m.sku AND r.skus ? m.sku AND r.sales_systems ? f.source
     AND r.effective_from<=f.occurred_at AND (r.effective_to IS NULL OR f.occurred_at<r.effective_to)
     AND (r.resume_from IS NULL OR r.resume_from<=f.occurred_at)

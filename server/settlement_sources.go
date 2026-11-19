@@ -68,14 +68,14 @@ const settlementSourceCoverageSQL = `WITH scope AS (
  FROM periods p WHERE p.id=$1
 ), required AS (
  SELECT DISTINCT CASE WHEN r.source='DCAI' AND r.domain='VIP' THEN 'VIP_ORDERS'
-  WHEN r.source='DCAI' AND r.domain='HEALTH_IDENTITY' THEN 'HEALTH_IDENTITY_ORDERS' ELSE '' END AS stream
+  WHEN r.source='DCAI' AND r.domain='HEALTH_IDENTITY' THEN 'HEALTH_IDENTITY_ORDERS' ELSE '' END AS stream,r.domain
  FROM scope p JOIN product_catalog_settings c USING(product_id)
  JOIN catalog_business_routes r ON r.product_id=p.product_id AND r.observed_at=c.captured_at
  WHERE r.effective_from<p.through_time AND (r.effective_to IS NULL OR r.effective_to>p.from_time)
 )
 SELECT r.stream,` + settlementSourceStatusSQL + `,
  s.initial_from,s.completed_through,s.last_success_at,
- CASE WHEN r.stream='VIP_ORDERS' THEN (
+ CASE WHEN r.stream IN ('VIP_ORDERS','HEALTH_IDENTITY_ORDERS') THEN (
   SELECT count(DISTINCT b.order_id) FROM dcai_order_blockers b
   WHERE b.stream=r.stream AND cardinality(b.reasons)>0 AND 'REFUND_EVIDENCE_MISSING'=ANY(b.reasons)
    AND (
@@ -83,13 +83,13 @@ SELECT r.stream,` + settlementSourceStatusSQL + `,
      SELECT 1 FROM source_order_versions v
      JOIN calculation_draft_performance perf ON perf.source_version_id=v.id AND perf.payment_version_id IS NULL
      JOIN periods original ON original.id=perf.period_id
-     WHERE v.source='DCAI' AND v.order_id=b.order_id AND v.kind='ORDER_PAID' AND v.fact->>'domain'='VIP'
+     WHERE v.source='DCAI' AND v.order_id=b.order_id AND v.kind='ORDER_PAID' AND v.fact->>'domain'=r.domain
       AND original.product_id=p.product_id AND (perf.period_id=$1 OR original.ordinal<p.ordinal
        AND EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=original.id))
     )
     OR b.cursor_updated_at<p.through_time AND NOT EXISTS(
      SELECT 1 FROM source_order_versions v
-     WHERE v.source='DCAI' AND v.order_id=b.order_id AND v.kind='ORDER_PAID' AND v.fact->>'domain'='VIP'
+     WHERE v.source='DCAI' AND v.order_id=b.order_id AND v.kind='ORDER_PAID' AND v.fact->>'domain'=r.domain
     )
    )
  ) ELSE 0 END,p.from_time,p.through_time

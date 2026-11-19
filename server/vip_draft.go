@@ -15,6 +15,7 @@ const catalogDraftAvailableSQL = `(pro.period_mode='calendar' AND EXISTS(
  JOIN product_rule_versions v ON v.package_id=k.source_id AND v.observed_at=c.captured_at
  WHERE c.product_id=pro.id AND c.source_system='DCAI'
    AND k.scope_type='BUSINESS_SCENARIO' AND v.definition->'internal_sales_direct_split'->>'mode'='DCAI_INTERNAL_DIRECT'
+   AND v.definition->>'recognition_plan' IS NULL
    AND EXISTS(SELECT 1 FROM catalog_business_routes m WHERE m.product_id=c.product_id AND m.observed_at=c.captured_at)
 ))`
 
@@ -191,7 +192,8 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 }
 
 func excludedVIPPayment(status string) bool {
-	return status == "INVALID_PAYMENT" || status == "DUPLICATE_PAYMENT" || status == "PAYMENT_ALREADY_SETTLED"
+	return status == "INVALID_PAYMENT" || status == "DUPLICATE_PAYMENT" || status == "PAYMENT_ALREADY_SETTLED" ||
+		status == "COMPOUND_RECOGNITION_UNSUPPORTED"
 }
 
 func appendVIPDraftLine(result *paymentDraft, row catalogPaymentMatch, rule pgtype.UUID, key, party, unit, owner string, amount, rate int64,

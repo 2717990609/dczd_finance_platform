@@ -62,8 +62,7 @@ const catalogRefundInputsSQL = refundInputSelectionSQL + `
  JOIN product_catalog_settings c ON c.product_id=target.product_id
  JOIN source_order_versions v ON v.source=c.source_system AND EXISTS(
   SELECT 1 FROM catalog_business_routes m
-  WHERE m.product_id=c.product_id AND m.observed_at=c.captured_at AND m.source=v.source
-   AND (m.domain,m.record_table)=(v.fact->>'domain',split_part(v.record_key,':',1))
+  WHERE m.product_id=c.product_id AND m.observed_at=c.captured_at AND ` + catalogRouteFactSQL + `
  )
 ` + refundPeriodSQL + refundEligibilitySQL
 
@@ -80,6 +79,7 @@ const refundPostingHistorySQL = ` LEFT JOIN LATERAL (
     bool_or(rv.occurred_at IS DISTINCT FROM v.occurred_at
       OR rv.fact->'amountMinor' IS DISTINCT FROM v.fact->'amountMinor'
       OR rv.fact->'refundsPayment' IS DISTINCT FROM v.fact->'refundsPayment'
+      OR v.fact->>'domain'='HEALTH_IDENTITY' AND rv.fact->'sourceKey' IS DISTINCT FROM v.fact->'sourceKey'
       OR rv.order_id IS DISTINCT FROM v.order_id OR rv.line_id IS DISTINCT FROM v.line_id)
       FILTER (WHERE s.id IS NOT NULL) AS changed
   FROM source_order_versions rv

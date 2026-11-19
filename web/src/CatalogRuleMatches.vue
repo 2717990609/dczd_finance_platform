@@ -31,6 +31,7 @@ const statuses = {
   MAPPING_CONFLICT:'场景冲突',
   RULE_MISSING:'未匹配规则',
   RULE_CONFLICT:'规则冲突',
+  COMPOUND_RECOGNITION_UNSUPPORTED:'组合确认待启用',
 }
 const poolColumns = [
   {title:'团队池',dataIndex:'name'},

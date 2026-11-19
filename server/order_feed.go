@@ -252,6 +252,7 @@ func normalizeDCAIOrderRow(stream string, through time.Time, wire orderWireRow) 
 		domain = "HEALTH_IDENTITY"
 	}
 	previousRank := 0
+	productCode := ""
 	for _, raw := range wire.Facts {
 		var doc sourceDocument
 		if json.Unmarshal(raw, &doc) != nil || !textOK(doc.Order.ID, 128) || row.OrderID != "" && doc.Order.ID != row.OrderID {
@@ -260,7 +261,8 @@ func normalizeDCAIOrderRow(stream string, through time.Time, wire orderWireRow) 
 		fact, err := normalizeFact("DCAI", doc.Order.ID, raw)
 		// The page position and the fact revision clock are distinct fields in
 		// this contract. Only the cursor controls pagination.
-		if err != nil || fact.Domain != domain || !through.IsZero() && fact.UpdatedAt.After(through) {
+		if err != nil || fact.Domain != domain || !through.IsZero() && fact.UpdatedAt.After(through) ||
+			stream == dcaiHealthStream && previousRank > 0 && productCode != fact.SourceKey {
 			return row, errSourceRead
 		}
 		rank := 0
@@ -281,7 +283,7 @@ func normalizeDCAIOrderRow(stream string, through time.Time, wire orderWireRow) 
 		if rank <= previousRank {
 			return row, errSourceRead
 		}
-		previousRank, row.OrderID = rank, doc.Order.ID
+		previousRank, row.OrderID, productCode = rank, doc.Order.ID, fact.SourceKey
 		row.Facts = append(row.Facts, fact)
 	}
 	seen := map[string]bool{}
