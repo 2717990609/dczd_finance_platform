@@ -60,7 +60,18 @@ const poolAllocationBasisSQL = `SELECT md5(concat_ws('|',
  LEFT JOIN catalog_sales_context c ON c.source=config.source_system WHERE target.id=`
 
 const poolAllocationCurrentSQL = `(a.draft_version=d.version AND
- (EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=a.period_id) OR a.basis_token=(` + poolAllocationBasisSQL + `a.period_id))
+ (EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=a.period_id) OR (
+  a.basis_token=(` + poolAllocationBasisSQL + `a.period_id) AND NOT EXISTS(
+   SELECT 1 FROM monthly_pool_allocation_shares s
+   JOIN monthly_pool_allocation_funding f ON f.share_id=s.id
+   JOIN calculation_draft_lines l ON l.id=f.source_line_id
+   JOIN source_order_versions paid ON paid.id=l.source_version_id
+   WHERE s.allocation_id=a.id AND s.person_id IS NOT NULL AND NOT EXISTS(
+    SELECT 1 FROM organization_assignments m WHERE m.person_id=s.person_id AND m.unit_id=l.beneficiary_unit_id
+     AND m.valid_from<=paid.occurred_at AND (m.valid_to IS NULL OR paid.occurred_at<m.valid_to)
+   )
+  )
+ ))
  AND NOT EXISTS (
  SELECT 1 FROM monthly_pool_allocation_shares s WHERE s.allocation_id=a.id AND s.amount_minor<>(
   SELECT coalesce(sum(f.amount_minor),0) FROM monthly_pool_allocation_funding f

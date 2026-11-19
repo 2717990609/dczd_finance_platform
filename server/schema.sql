@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS finance_accounts (
  failures int NOT NULL DEFAULT 0,
  retry_after timestamptz
 );
+ALTER TABLE finance_accounts ADD COLUMN IF NOT EXISTS organization_write boolean NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS finance_account_rule_grants (
  account_id uuid NOT NULL REFERENCES finance_accounts(id) ON DELETE CASCADE,
@@ -443,6 +444,7 @@ CREATE TABLE IF NOT EXISTS calculation_draft_corrections (
 CREATE INDEX IF NOT EXISTS calculation_corrections_page ON calculation_draft_corrections(period_id,id);
 CREATE INDEX IF NOT EXISTS calculation_corrections_original ON calculation_draft_corrections(original_line_id);
 CREATE INDEX IF NOT EXISTS calculation_corrections_source ON calculation_draft_corrections(source_version_id);
+CREATE INDEX IF NOT EXISTS calculation_corrections_recipient ON calculation_draft_corrections(person_id,original_line_id);
 CREATE OR REPLACE TRIGGER protect_confirmed_corrections BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_corrections
  FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
 
@@ -688,6 +690,9 @@ CREATE TABLE IF NOT EXISTS organization_assignments (
  valid_from timestamptz NOT NULL,
  valid_to timestamptz CHECK (valid_to > valid_from)
 );
+ALTER TABLE organization_assignments
+ ADD COLUMN IF NOT EXISTS changed_at timestamptz,
+ ADD COLUMN IF NOT EXISTS changed_by uuid REFERENCES finance_accounts(id);
 CREATE INDEX IF NOT EXISTS organization_assignments_unit_time
  ON organization_assignments(unit_id,valid_from,valid_to);
 CREATE INDEX IF NOT EXISTS organization_assignments_person_time

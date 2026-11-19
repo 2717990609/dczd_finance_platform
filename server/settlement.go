@@ -55,12 +55,7 @@ func lockSettlementOperator(ctx context.Context, tx pgx.Tx, operator *financePri
 	if err != nil {
 		return err
 	}
-	err = tx.QueryRow(ctx, `SELECT 1 FROM finance_account_sessions WHERE token_hash=$1 AND account_id=$2::uuid
-	 AND expires_at>now() FOR SHARE`, operator.sessionHash, operator.ID).Scan(&authorized)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return errFinanceLogin
-	}
-	return err
+	return lockFinanceOperatorSession(ctx, tx, operator)
 }
 
 type settlement struct {

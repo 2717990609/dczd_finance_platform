@@ -103,6 +103,26 @@ func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t 
 	save("v2", "Replacement", "order", 1200, at(time.July, 5))
 	save("v2-boundary-display", "Replacement", "same correction after month boundary", 1200, at(time.August, 1))
 	needsCheck := draftAt(july, 120, 1, 1)
+	const dept = "10000000-0000-0000-0000-000000000001"
+	if _, err := service.db.Exec(ctx, `INSERT INTO organization_units(id,kind,name,status) VALUES($1::uuid,'DEPARTMENT','接收部门','ACTIVE')`, dept); err != nil {
+		t.Fatal(err)
+	}
+	// The July correction uses the original June payment time, even though
+	// June is closed and the updated appointment does not reach July.
+	endOfJune := at(time.June, 29)
+	if _, err := service.addOrganizationAssignment(ctx, addAppointmentInput{PersonID: b, StartsAt: at(time.June, 1), ThroughAt: &endOfJune,
+		appointmentTarget: appointmentTarget{UnitID: dept, Kind: "PRIMARY"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var reassigned string
+	if err := service.db.QueryRow(ctx, `SELECT department_id::text FROM calculation_draft_corrections
+	 WHERE period_id=$1 AND person_id=$2`, july, b).Scan(&reassigned); err != nil || reassigned != dept {
+		t.Fatalf("historical correction department %q, want %q: %v", reassigned, dept, err)
+	}
+	needsCheck = draftAt(july, 120, 1, 1)
 	save("v2-review-display", "Replacement", "updated order display", 1200, at(time.July, 5).Add(time.Hour))
 	if repeat := draftAt(july, 120, 1, 1); repeat.Version != needsCheck.Version {
 		t.Fatalf("display-only update changed a pending draft: %d -> %d", needsCheck.Version, repeat.Version)

@@ -23,7 +23,7 @@ const organizationUnitsSQL = `SELECT coalesce(jsonb_agg(jsonb_build_object(
  ORDER BY sort_order,name,id),'[]') FROM organization_units`
 
 const organizationAssignmentsSQL = `WITH matching AS (
- SELECT a.id,p.name AS "personName",p.id AS "personId",u.name AS "unitName",
+ SELECT a.id,p.name AS "personName",p.id AS "personId",u.id AS "unitId",u.name AS "unitName",
   a.kind,a.position,a.valid_from AS "validFrom",a.valid_to AS "validTo"
  FROM organization_assignments a JOIN people p ON p.id=a.person_id JOIN organization_units u ON u.id=a.unit_id
  WHERE ($1::uuid IS NULL OR a.unit_id=$1) AND
@@ -193,7 +193,8 @@ const importOrganizationAssignmentsSQL = `INSERT INTO organization_assignments(i
  FROM jsonb_to_recordset($1) AS i(id uuid,"personId" uuid,"unitId" uuid,kind text,position text,"from" timestamptz,"to" timestamptz)
  LEFT JOIN people p ON p.legacy_party_id=i."personId"
  ON CONFLICT(id) DO UPDATE SET person_id=excluded.person_id,unit_id=excluded.unit_id,kind=excluded.kind,
- position=excluded.position,valid_from=excluded.valid_from,valid_to=excluded.valid_to`
+ position=excluded.position,valid_from=excluded.valid_from,valid_to=excluded.valid_to
+ WHERE organization_assignments.changed_at IS NULL`
 
 const importOrganizationCompanySourcesSQL = `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from,valid_to)
  SELECT i.source,nullif(btrim(i."sourceCompanyId"),''),u.id,i."from",i."to"

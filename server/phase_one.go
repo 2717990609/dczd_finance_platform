@@ -148,6 +148,10 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-units", Handler: s.list(organizationUnitsSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-assignments", Handler: s.organizationAssignments},
+		{Method: http.MethodGet, Path: "/api/v1/organization-people", Handler: s.organizationPeople},
+		{Method: http.MethodPost, Path: "/api/v1/organization-assignments", Handler: submitJSON(32<<10, s.addOrganizationAssignment)},
+		{Method: http.MethodPost, Path: "/api/v1/organization-assignments/end", Handler: submitJSON(32<<10, s.endOrganizationAssignment)},
+		{Method: http.MethodPost, Path: "/api/v1/organization-assignments/transfer", Handler: submitJSON(32<<10, s.transferOrganizationAssignment)},
 		{Method: http.MethodGet, Path: "/api/v1/people", Handler: s.list(peopleSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/people", Handler: submit(s.createPerson)},
 		{Method: http.MethodGet, Path: "/api/v1/identities", Handler: s.list(identitiesSQL)},
@@ -235,7 +239,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusConflict, err.Error()
 	case errors.Is(err, errCalculationOverflow):
 		code, message = http.StatusConflict, "试算金额超出范围，请核对原单和规则"
-	case errors.Is(err, conflict):
+	case errors.Is(err, conflict), errors.Is(err, errAppointmentOverlap), errors.Is(err, errAppointmentChanged), errors.Is(err, errAppointmentUnitInactive):
 		code, message = 409, err.Error()
 	case errors.Is(err, pgx.ErrNoRows):
 		code, message = 404, "找不到对应记录"

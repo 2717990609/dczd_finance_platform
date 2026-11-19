@@ -131,6 +131,8 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 	allocation := `INSERT INTO practice_enrollments(period_key,source_enrollment_id,participant_id,membership_type,commission_eligible,signed_at,paid_order_ids,hash)
 	 VALUES('PRACTICE:1:1:3','3','3',3,true,'2026-08-01',ARRAY['paid-b'],'\x01');
 	 INSERT INTO practice_pools(product_id,unit_id,name) VALUES(2,'00000000-0000-0000-0000-000000000002','甲池');
+	 INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from) VALUES
+	 ('00000000-0000-0000-0000-000000000005',2,'00000000-0000-0000-0000-000000000002','MEMBER','2026-01-01');
 	 UPDATE calculation_draft_lines SET practice_enrollment_id=1,beneficiary_unit_id='00000000-0000-0000-0000-000000000002',
 	  practice_pool_id=1,allocation_owner_id=1,identity_id=NULL,person_id=NULL,component_type='period:delivery:0' WHERE period_id=3;
 	 INSERT INTO monthly_pool_allocations(period_id,unit_id,item_key,scenario_key,draft_version,basis_token,revision)
@@ -155,6 +157,13 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 	}
 	if stale := get("view=current&dimension=person", http.StatusOK); stale.Items[1].TotalMinor != 3000 || stale.Items[2].AllocationMinor != 0 {
 		t.Fatalf("stale allocation still counted: %+v", stale.Items)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE monthly_pool_allocations SET basis_token=(`+poolAllocationBasisSQL+`3) WHERE period_id=3;
+	 UPDATE organization_assignments SET valid_to='2026-07-20' WHERE id='00000000-0000-0000-0000-000000000005'`); err != nil {
+		t.Fatal(err)
+	}
+	if stale := get("view=current&dimension=person", http.StatusOK); stale.Items[1].TotalMinor != 3000 || stale.Items[2].AllocationMinor != 0 {
+		t.Fatalf("open plan still counted after membership ended before its payment: %+v", stale.Items)
 	}
 	if _, err := s.db.Exec(ctx, `WITH revised AS (
 	 INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
@@ -193,4 +202,16 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 	}
 	get("view=current&dimension=person&page=2&snapshot="+beforeExtra.Snapshot, http.StatusConflict)
 	get("view=settled&dimension=department&snapshot="+confirmed.Snapshot, http.StatusOK)
+	if _, err := s.db.Exec(ctx, `UPDATE organization_assignments SET valid_to=NULL WHERE id='00000000-0000-0000-0000-000000000005';
+	 INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(3,2,'fixture');
+	 UPDATE organization_assignments SET valid_to='2026-07-20' WHERE id='00000000-0000-0000-0000-000000000005'`); err != nil {
+		t.Fatal(err)
+	}
+	frozenPool := get("view=settled&dimension=person", http.StatusOK)
+	for _, item := range frozenPool.Items {
+		if item.ID == "2" && item.AllocationMinor == 200 {
+			return
+		}
+	}
+	t.Fatalf("confirmed pool allocation changed after membership ended: %+v", frozenPool.Items)
 }

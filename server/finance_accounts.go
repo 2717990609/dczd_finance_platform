@@ -20,12 +20,13 @@ type financeRuleGrant struct {
 }
 
 type financeAccountConfig struct {
-	Login       string             `json:"login"`
-	PersonID    int64              `json:"personId"`
-	Enabled     bool               `json:"enabled"`
-	Workspace   bool               `json:"workspace"`
-	Rules       []financeRuleGrant `json:"rules"`
-	Settlements []int64            `json:"settlements"`
+	Login             string             `json:"login"`
+	PersonID          int64              `json:"personId"`
+	Enabled           bool               `json:"enabled"`
+	Workspace         bool               `json:"workspace"`
+	OrganizationWrite bool               `json:"organizationWrite"`
+	Rules             []financeRuleGrant `json:"rules"`
+	Settlements       []int64            `json:"settlements"`
 }
 
 var financeLoginPattern = regexp.MustCompile(`^[a-z0-9._@+-]{1,80}$`)
@@ -58,7 +59,7 @@ func (s workspace) saveFinanceAccount(ctx context.Context, input financeAccountC
 		}
 		seen[grant.ProductID] = true
 	}
-	if !input.Workspace && len(input.Settlements) != 0 {
+	if !input.Workspace && (len(input.Settlements) != 0 || input.OrganizationWrite) {
 		return invalid
 	}
 	clear(seen)
@@ -71,17 +72,17 @@ func (s workspace) saveFinanceAccount(ctx context.Context, input financeAccountC
 	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var accountID string
 		if hash != nil {
-			err := tx.QueryRow(ctx, `INSERT INTO finance_accounts (login,person_id,password_hash,enabled,workspace_access)
-			 VALUES ($1,$2,$3,$4,$5) ON CONFLICT(person_id) DO UPDATE SET
+			err := tx.QueryRow(ctx, `INSERT INTO finance_accounts (login,person_id,password_hash,enabled,workspace_access,organization_write)
+			 VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(person_id) DO UPDATE SET
 			  login=excluded.login,password_hash=excluded.password_hash,enabled=excluded.enabled,
-			  workspace_access=excluded.workspace_access,failures=0,retry_after=NULL RETURNING id::text`,
-				login, input.PersonID, hash, input.Enabled, input.Workspace).Scan(&accountID)
+			  workspace_access=excluded.workspace_access,organization_write=excluded.organization_write,failures=0,retry_after=NULL RETURNING id::text`,
+				login, input.PersonID, hash, input.Enabled, input.Workspace, input.OrganizationWrite).Scan(&accountID)
 			if err != nil {
 				return err
 			}
 		} else {
-			err := tx.QueryRow(ctx, `UPDATE finance_accounts SET login=$2,enabled=$3,workspace_access=$4,failures=0,retry_after=NULL
-			 WHERE person_id=$1 RETURNING id::text`, input.PersonID, login, input.Enabled, input.Workspace).Scan(&accountID)
+			err := tx.QueryRow(ctx, `UPDATE finance_accounts SET login=$2,enabled=$3,workspace_access=$4,organization_write=$5,failures=0,retry_after=NULL
+			 WHERE person_id=$1 RETURNING id::text`, input.PersonID, login, input.Enabled, input.Workspace, input.OrganizationWrite).Scan(&accountID)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return errors.New("首次登记须从标准输入提供密码")
 			}

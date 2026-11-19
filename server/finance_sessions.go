@@ -34,6 +34,7 @@ type financePrincipal struct {
 	ID                 string             `json:"-"`
 	Name               string             `json:"name"`
 	Workspace          bool               `json:"workspace"`
+	OrganizationWrite  bool               `json:"organizationWrite"`
 	Rules              []financeRuleGrant `json:"rules"`
 	SettlementProducts []int64            `json:"settlementProducts"`
 	sessionHash        []byte
@@ -86,12 +87,12 @@ func (s workspace) accountSession(r *http.Request) (*financePrincipal, error) {
 		return nil, nil
 	}
 	var p financePrincipal
-	err := s.db.QueryRow(r.Context(), `SELECT a.id::text,p.name,a.workspace_access,
+	err := s.db.QueryRow(r.Context(), `SELECT a.id::text,p.name,a.workspace_access,a.organization_write,
 	 coalesce((SELECT jsonb_agg(jsonb_build_object('productId',g.product_id,'publish',g.can_publish) ORDER BY g.product_id)
 	  FROM finance_account_rule_grants g WHERE g.account_id=a.id),'[]'),
 	 ARRAY(SELECT g.product_id FROM finance_account_settlement_grants g WHERE g.account_id=a.id)
 	 FROM finance_account_sessions s JOIN finance_accounts a ON a.id=s.account_id JOIN people p ON p.id=a.person_id
-	 WHERE s.token_hash=$1 AND s.expires_at>now() AND a.enabled`, hash).Scan(&p.ID, &p.Name, &p.Workspace, &p.Rules, &p.SettlementProducts)
+	 WHERE s.token_hash=$1 AND s.expires_at>now() AND a.enabled`, hash).Scan(&p.ID, &p.Name, &p.Workspace, &p.OrganizationWrite, &p.Rules, &p.SettlementProducts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -100,6 +101,16 @@ func (s workspace) accountSession(r *http.Request) (*financePrincipal, error) {
 	}
 	p.sessionHash = hash
 	return &p, nil
+}
+
+func lockFinanceOperatorSession(ctx context.Context, tx pgx.Tx, operator *financePrincipal) error {
+	var authorized int
+	err := tx.QueryRow(ctx, `SELECT 1 FROM finance_account_sessions WHERE token_hash=$1 AND account_id=$2::uuid
+	 AND expires_at>now() FOR SHARE`, operator.sessionHash, operator.ID).Scan(&authorized)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errFinanceLogin
+	}
+	return err
 }
 
 func (s workspace) loginFinanceAccount(ctx context.Context, input financeLoginInput) (string, error) {
