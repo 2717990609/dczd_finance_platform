@@ -1,11 +1,12 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  AppstoreOutlined, BankOutlined, CalculatorOutlined, CalendarOutlined, CloudSyncOutlined,
+  AppstoreOutlined, BankOutlined, BarChartOutlined, CalculatorOutlined, CalendarOutlined, CloudSyncOutlined,
   FileSearchOutlined, LinkOutlined, PlusOutlined, ProfileOutlined, ReloadOutlined, TeamOutlined,
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import DraftWorkbench from './DraftWorkbench.vue'
+import MonthlyReport from './MonthlyReport.vue'
 import CatalogRuleRates from './CatalogRuleRates.vue'
 import PracticePeriodBenefitEditor from './PracticePeriodBenefitEditor.vue'
 import PracticeRetrainSplitEditor from './PracticeRetrainSplitEditor.vue'
@@ -17,6 +18,7 @@ import PracticeTierEditor from './PracticeTierEditor.vue'
 
 const navigation = [
   {key:'settlement', title:'分润试算', icon:CalculatorOutlined},
+  {key:'monthly', title:'月度汇总', icon:BarChartOutlined},
   {key:'products', title:'产品目录', icon:AppstoreOutlined, description:'维护核算产品，绑定子系统的原始商品或业务标识。'},
   {key:'periods', title:'核算期次', icon:CalendarOutlined, description:'设置实际开班或结算窗口，查看各期匹配的规则。'},
   {key:'rules', title:'产品规则', icon:ProfileOutlined, description:'配置各产品的分润方式、适用范围和生效时间，查看规则版本。'},
@@ -42,10 +44,11 @@ const active = computed(() => navigation.find(x => x.key === current.value))
 const theme = {token:{colorPrimary:'#315ab2', colorLink:'#315ab2', colorText:'#253044', borderRadius:6, fontSize:14, controlHeight:34}}
 const productScope = ref()
 const scopeSearch = ref('')
-const productScopedPages = new Set(['products','periods','rules','settlement'])
+const productScopedPages = new Set(['products','periods','rules','settlement','monthly'])
 const usesProductScope = computed(() => productScopedPages.has(current.value))
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
 const organization = ref()
+const monthlyReport = ref()
 const orderSync = ref()
 const rateRule = ref()
 const emptyData = () => ({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
@@ -181,7 +184,7 @@ const syncStreams = computed(() => data.value.sources
   .filter(entry => entry.configured && (!sourceFilter.value || sourceFilter.value===entry.source))
   .flatMap(entry => options(entry.source.toLowerCase()+'OrderStream')))
 const sourceLabel = key => optionLabel('source',key)?.split(' · ')[0]
-const titles = {product:'新增产品',mapping:'添加来源映射',period:'新建期次',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
+const titles = {product:'新增产品',mapping:'添加来源映射',period:'新建期次',reportMonth:'设置报表月份',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
 const actions = computed(() => {
   if (current.value === 'products') return tab.value === 'mapping' ? 'mapping' : 'product'
   if (current.value === 'people') return tab.value === 'identity' ? 'identity' : 'person'
@@ -235,7 +238,7 @@ const columns = computed(() => {
   const values = {
     product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['来源映射','mappingCount']],
     mapping:[['产品名称','productName'],['来源系统','source'],['业务域','domain'],['来源标识','sourceKey']],
-    period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],['匹配规则','ruleVersion',200]],
+    period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],['报表月份','reportMonth',115],['匹配规则','ruleVersion',200]],
     rule:[['规则名称','label',200],['所属产品','productName',155],['版本','version',80],
       ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',195]],
     pull:[['原订单','orderNo',250],['来源系统','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
@@ -267,7 +270,7 @@ async function refresh(reloadOptions = false) {
   if (sourceFilter.value) params.set('source',sourceFilter.value)
   if (filter.value.trim()) params.set('orderId',filter.value.trim())
   if (olderThan.value) params.set('beforeId',olderThan.value)
-  const sections = {settlement:['products','periods'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
+  const sections = {settlement:['products','periods'], monthly:['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
   if (requests.catalogRules) requests.catalogRules = '/rule-catalog'
   if (requests.practiceCountOpenings) requests.practiceCountOpenings = '/practice-count-openings'
@@ -290,6 +293,7 @@ async function refresh(reloadOptions = false) {
 function refreshWorkspace() {
   refresh(true)
   organization.value?.refresh()
+  monthlyReport.value?.refresh()
   orderSync.value?.reload()
 }
 function changeRoute() {
@@ -424,6 +428,7 @@ function open(kind, row) {
     orderId:row?.orderId || '',scope:firstOption('ruleScope'),
     productId:['mapping','period','rule'].includes(kind) ? productScope.value : undefined,
   }
+  if (kind === 'reportMonth') draft.value = {periodId:row.id, periodName:row.name, reportMonth:row.reportMonthOverride || ''}
   if (kind === 'rule') draft.value.components = [newRuleComponent()]
 }
 function close() { if (!saving.value) drawer.value = '' }
@@ -543,8 +548,10 @@ function bodyFor(kind,f) {
       const settlementMonth = must(f.settlementMonth)
       return {productId, settlementMonth, name:f.name?.trim() || settlementMonth+(classRefundMonth.value ? ' 退款账期' : ' 账期')}
     }
-    return {productId,name:must(f.name),ordinal:must(f.ordinal),startsOn:must(f.startsOn),endsOn:must(f.endsOn),...(f.sourcePeriodKey?.trim() ? {sourcePeriodKey:f.sourcePeriodKey.trim()} : {})}
+    return {productId,name:must(f.name),ordinal:must(f.ordinal),startsOn:must(f.startsOn),endsOn:must(f.endsOn),
+      ...(f.sourcePeriodKey?.trim() ? {sourcePeriodKey:f.sourcePeriodKey.trim()} : {}), ...(classRule.value && f.reportMonth ? {reportMonth:f.reportMonth} : {})}
   }
+  if (kind === 'reportMonth') return {periodId:f.periodId,month:f.reportMonth || ''}
   if (kind === 'rule') return {productId:must(f.productId),label:must(f.label),
     ...(f.scope === 'period' ? {periodId:must(f.periodId)} : {}),
     ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal)} : {}),
@@ -559,7 +566,7 @@ async function save() {
   if (saving.value) return
   const issuedFor = sessionRequest
   const kind = drawer.value
-  const paths = {product:'/products',mapping:'/mappings',period:'/periods',rule:'/rules',person:'/people',identity:'/identities',pull:'/orders/pull'}
+  const paths = {product:'/products',mapping:'/mappings',period:'/periods',reportMonth:'/period-report-month',rule:'/rules',person:'/people',identity:'/identities',pull:'/orders/pull'}
   formError.value = ''
   saving.value = true
   try {
@@ -650,6 +657,11 @@ async function save() {
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
             :api="api" :format-money="formatMoney" :format-time="formatTime" />
         </template>
+        <template v-else-if="current==='monthly'">
+          <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
+          <MonthlyReport ref="monthlyReport" :api="api" :format-money="formatMoney" :product-id="productScope"
+            :views="options('monthlyReportView')" :dimensions="options('draftReportDimension')"/>
+        </template>
         <template v-else-if="current==='organization'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <OrganizationDirectory ref="organization" :api="api" :option-label="optionLabel" :format-time="formatTime"/>
@@ -697,6 +709,10 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ optionLabel('periodMode',text) }}</a-tag></template>
                 <template v-else-if="column.key==='mappingCount'">{{ data.mappings.filter(x=>x.productId===record.id).length }}</template>
+                <template v-else-if="column.key==='reportMonth'">
+                  <a-button v-if="record.reportMonthEditable" type="link" size="small" :title="'设置 '+record.name+' 的报表月份'" @click="open('reportMonth',record)">{{ text }}</a-button>
+                  <span v-else>{{ text }}</span>
+                </template>
                 <template v-else-if="column.key==='ruleVersion'">
                   <a-tag v-if="record.practiceRefundMonth" color="blue">按结算时规则</a-tag>
                   <a-tag v-else-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag>
@@ -791,7 +807,16 @@ async function save() {
           <a-form-item label="来源期次标识" extra="填入子系统已确认签到名单的期次标识。">
             <a-input v-model:value="draft.sourcePeriodKey" aria-label="来源期次标识" placeholder="PRACTICE:1:1:123" :maxlength="80"/>
           </a-form-item>
+          <a-form-item v-if="classRule" label="报表月份" extra="留空按班次结束日期归月。">
+            <a-input v-model:value="draft.reportMonth" aria-label="报表月份" type="month"/>
+          </a-form-item>
         </template>
+      </template>
+      <template v-if="drawer==='reportMonth'">
+        <p>{{ draft.periodName }}</p>
+        <a-form-item label="报表月份" extra="留空按班次结束日期归月。">
+          <a-input v-model:value="draft.reportMonth" aria-label="报表月份" type="month"/>
+        </a-form-item>
       </template>
       <template v-if="drawer==='rule'">
         <a-form-item label="规则名称" required><a-input v-model:value="draft.label" aria-label="规则名称"/></a-form-item>

@@ -121,6 +121,9 @@ BEGIN
 END
 $$;
 ALTER TABLE periods ADD COLUMN IF NOT EXISTS calendar_month date;
+ALTER TABLE periods ADD COLUMN IF NOT EXISTS report_month date CHECK(calendar_month IS NULL AND extract(day FROM report_month)=1 OR report_month IS NULL);
+CREATE INDEX IF NOT EXISTS periods_reporting_scope
+ ON periods(coalesce(report_month,calendar_month,date_trunc('month',ends_on::timestamp)::date),product_id,id);
 CREATE UNIQUE INDEX IF NOT EXISTS periods_ordinal_without_month
  ON periods(product_id,ordinal) WHERE calendar_month IS NULL;
 ALTER TABLE periods DROP CONSTRAINT IF EXISTS periods_product_id_ordinal_key;
@@ -805,7 +808,9 @@ $$;
 INSERT INTO configuration_options(group_key,option_key,label,display_order) VALUES
  ('draftReportDimension','person','人员',10),
  ('draftReportDimension','company','公司',20),
- ('draftReportDimension','department','部门',30)
+ ('draftReportDimension','department','部门',30),
+ ('monthlyReportView','current','当前结果',10),
+ ('monthlyReportView','settled','仅已结算',20)
 ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS catalog_business_routes (
@@ -1077,6 +1082,6 @@ CREATE OR REPLACE TRIGGER protect_confirmed_catalog_package BEFORE UPDATE ON leg
        (NEW.source_id,NEW.product_id,NEW.code,NEW.project_code,NEW.policy_kind,NEW.scope_type,NEW.scope_id))
  EXECUTE FUNCTION protect_confirmed_catalog_scope();
 CREATE OR REPLACE TRIGGER protect_confirmed_period_scope BEFORE UPDATE ON periods FOR EACH ROW
- WHEN ((OLD.id,OLD.product_id,OLD.ordinal,OLD.starts_on,OLD.ends_on,OLD.source_period_key,OLD.calendar_month) IS DISTINCT FROM
-       (NEW.id,NEW.product_id,NEW.ordinal,NEW.starts_on,NEW.ends_on,NEW.source_period_key,NEW.calendar_month))
+ WHEN ((OLD.id,OLD.product_id,OLD.ordinal,OLD.starts_on,OLD.ends_on,OLD.source_period_key,OLD.calendar_month,OLD.report_month) IS DISTINCT FROM
+       (NEW.id,NEW.product_id,NEW.ordinal,NEW.starts_on,NEW.ends_on,NEW.source_period_key,NEW.calendar_month,NEW.report_month))
  EXECUTE FUNCTION protect_confirmed_catalog_scope();

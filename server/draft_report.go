@@ -10,7 +10,7 @@ import (
 )
 
 const currentReportPoolAllocationsSQL = `
- SELECT a.id FROM selected_draft d JOIN monthly_pool_allocations a USING(period_id)
+ SELECT a.id,a.revision FROM selected_draft d JOIN monthly_pool_allocations a USING(period_id)
  WHERE ` + poolAllocationCurrentSQL
 
 const commissionReportPostingsSQL = `
@@ -76,9 +76,7 @@ FROM selected_draft`
 
 func (s workspace) draftReport(w http.ResponseWriter, r *http.Request) {
 	dimension := r.URL.Query().Get("dimension")
-	switch dimension {
-	case "person", "company", "department":
-	default:
+	if !validReportDimension(dimension) {
 		respond(w, nil, invalid)
 		return
 	}
@@ -95,6 +93,10 @@ func (s workspace) draftReport(w http.ResponseWriter, r *http.Request) {
 	respond(w, result, err)
 }
 
+func validReportDimension(value string) bool {
+	return value == "person" || value == "company" || value == "department"
+}
+
 func draftReportPage(r *http.Request) (period, version int64, offset int, err error) {
 	query := r.URL.Query()
 	period, periodErr := strconv.ParseInt(query.Get("periodId"), 10, 64)
@@ -102,12 +104,17 @@ func draftReportPage(r *http.Request) (period, version int64, offset int, err er
 	if periodErr != nil || versionErr != nil || period < 1 || version < 1 {
 		return 0, 0, 0, invalid
 	}
-	page := 1
-	if value := query.Get("page"); value != "" {
-		page, err = strconv.Atoi(value)
-		if err != nil || page < 1 || page > 100000 {
-			return 0, 0, 0, invalid
-		}
+	offset, err = reportPageOffset(query.Get("page"))
+	return period, version, offset, err
+}
+
+func reportPageOffset(value string) (int, error) {
+	if value == "" {
+		return 0, nil
 	}
-	return period, version, (page - 1) * 25, nil
+	page, err := strconv.Atoi(value)
+	if err != nil || page < 1 || page > 100000 {
+		return 0, invalid
+	}
+	return (page - 1) * 25, nil
 }

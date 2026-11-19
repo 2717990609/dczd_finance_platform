@@ -137,6 +137,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/mappings", Handler: submit(s.createMapping)},
 		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.listForAuthorizedProducts(periodsSQL, true)},
 		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createPeriod)},
+		{Method: http.MethodPost, Path: "/api/v1/period-report-month", Handler: submit(s.setPeriodReportMonth)},
 		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.listForAuthorizedProducts(rulesSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.listForAuthorizedProducts(catalogRulesSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-rates", Handler: s.getCatalogRuleRates},
@@ -161,6 +162,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/drafts/status", Handler: s.draftRefreshStatus},
 		{Method: http.MethodGet, Path: "/api/v1/draft-personnel", Handler: s.draftPersonnel},
 		{Method: http.MethodGet, Path: "/api/v1/draft-report", Handler: s.draftReport},
+		{Method: http.MethodGet, Path: "/api/v1/monthly-report", Handler: s.monthlyReport},
 		{Method: http.MethodGet, Path: "/api/v1/period-rule-matches", Handler: s.catalogMatches},
 		{Method: http.MethodGet, Path: "/api/v1/period-pool-contributions", Handler: s.periodPoolContributions},
 		{Method: http.MethodGet, Path: "/api/v1/draft-pools", Handler: s.draftPools},
@@ -273,6 +275,8 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
   WHERE m.product_id=p.product_id AND m.observed_at=c.captured_at)) AS "ruleMatchingAvailable",
  ` + catalogDraftAvailableSQL + ` AS "catalogDraftAvailable",
  p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",
+ to_char(` + periodReportMonthSQL + `,'YYYY-MM') AS "reportMonth",to_char(p.report_month,'YYYY-MM') AS "reportMonthOverride",
+ (pro.period_mode='class' AND p.calendar_month IS NULL AND NOT EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=p.id)) AS "reportMonthEditable",
  (pro.period_mode='class' AND p.calendar_month IS NOT NULL) AS "practiceRefundMonth",
  p.source_period_key AS "sourcePeriodKey",roster.starts_at AS "classStartsAt",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
  FROM periods p JOIN products pro ON pro.id=p.product_id
@@ -329,6 +333,7 @@ type createPeriodInput struct {
 	ProductID              int64
 	Name, StartsOn, EndsOn string
 	SettlementMonth        string
+	ReportMonth            string
 	SourcePeriodKey        string
 	Ordinal                int
 }
@@ -386,6 +391,14 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 		if p.SourcePeriodKey != "" && (mode != "class" || p.SettlementMonth != "" || !validPracticeKey(p.SourcePeriodKey)) {
 			return invalid
 		}
+		var reportMonth *time.Time
+		if p.ReportMonth != "" {
+			month, err := parseReportMonth(p.ReportMonth)
+			if err != nil || mode != "class" || p.SettlementMonth != "" {
+				return invalid
+			}
+			reportMonth = &month
+		}
 		var month, from, to string
 		ordinal := p.Ordinal
 		if p.SettlementMonth != "" {
@@ -435,9 +448,9 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 				return conflict
 			}
 		}
-		if err := tx.QueryRow(ctx, `INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month,source_period_key)
-			VALUES($1,$2,$3,$4::text::date,$5::text::date,nullif($6::text,'')::date,nullif($7,'')) RETURNING id`,
-			p.ProductID, strings.TrimSpace(p.Name), ordinal, from, to, month, p.SourcePeriodKey).Scan(&id); err != nil {
+		if err := tx.QueryRow(ctx, `INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month,source_period_key,report_month)
+			VALUES($1,$2,$3,$4::text::date,$5::text::date,nullif($6::text,'')::date,nullif($7,''),$8) RETURNING id`,
+			p.ProductID, strings.TrimSpace(p.Name), ordinal, from, to, month, p.SourcePeriodKey, reportMonth).Scan(&id); err != nil {
 			return err
 		}
 		if p.SourcePeriodKey != "" {
