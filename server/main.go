@@ -86,8 +86,9 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 	if len(os.Args) != 1 {
+		const importUsage = "usage: import-practice-roster|import-practice-count-opening|import-product-config|import-organization|import-order-facts|import-sales-context <file.json>"
 		if len(os.Args) != 3 {
-			log.Fatal("usage: import-practice-roster|import-practice-count-opening|import-legacy-catalog|import-organization|import-order-facts|import-sales-context <source.json>")
+			log.Fatal(importUsage)
 		}
 		switch os.Args[1] {
 		case "import-practice-roster":
@@ -100,10 +101,10 @@ func main() {
 			err = importSourceFactFile(ctx, cfg, os.Args[2])
 		case "import-organization":
 			err = importOrganization(ctx, cfg, os.Args[2])
-		case "import-legacy-catalog":
-			err = importLegacyCatalog(ctx, cfg, os.Args[2])
+		case "import-product-config", "import-legacy-catalog":
+			err = importProductConfig(ctx, cfg, os.Args[2])
 		default:
-			log.Fatal("usage: import-practice-roster|import-practice-count-opening|import-legacy-catalog|import-organization|import-order-facts|import-sales-context <source.json>")
+			log.Fatal(importUsage)
 		}
 		if err != nil {
 			log.Fatal(err)

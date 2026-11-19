@@ -16,9 +16,9 @@ import (
 )
 
 var (
-	errLegacyCatalogInvalid  = errors.New("旧财务产品与规则快照格式无效")
-	errLegacyCatalogStale    = errors.New("旧财务快照早于已导入版本")
-	errLegacyCatalogConflict = errors.New("旧财务快照与已登记主键或版本冲突")
+	errLegacyCatalogInvalid  = errors.New("产品与规则配置文件格式无效")
+	errLegacyCatalogStale    = errors.New("配置文件的生成时间早于已导入配置")
+	errLegacyCatalogConflict = errors.New("配置文件与已登记主键或规则版本冲突")
 	errLegacyRuleNotAdapted  = errors.New("该产品的规则待启用")
 )
 
@@ -275,9 +275,9 @@ func storeLegacyPackage(ctx context.Context, tx pgx.Tx, productID int64, observe
 	return nil
 }
 
-func importLegacyCatalog(ctx context.Context, cfg config, filename string) error {
+func importProductConfig(ctx context.Context, cfg config, filename string) error {
 	if !strings.HasSuffix(cfg.database.ConnConfig.Database, "_dev") {
-		return errors.New("legacy catalog import requires the isolated development database")
+		return errors.New("产品配置导入需要使用专用开发数据库")
 	}
 	var input legacyCatalogFile
 	if err := readImportFile(filename, &input, 32<<20); err != nil {
@@ -294,6 +294,6 @@ func importLegacyCatalog(ctx context.Context, cfg config, filename string) error
 	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error { return storeLegacyCatalog(ctx, tx, input) }); err != nil {
 		return err
 	}
-	fmt.Printf("Legacy catalog verified for %d products\n", len(input.Products))
+	fmt.Printf("已导入并核验 %d 个产品的配置\n", len(input.Products))
 	return nil
 }

@@ -41,8 +41,8 @@ const reason = {
   REFUND_POLICY_MISSING: '原结算规则缺少退款处理口径',
   REFUND_BOOKED_CHANGED: '已入账退款金额或关联有修订，需核对后办理更正',
   CORRECTION_SCOPE_CHANGED: '原付款标识、产品或发生时间有变动，需核对归属',
-  CORRECTION_MISSING_FACT_OR_RULE: '缺少原推荐规则或有效的最新付款金额',
-  CORRECTION_REFUND_CONFLICT: '最新付款与已登记退款无法按原规则对平',
+  CORRECTION_MISSING_FACT_OR_RULE: '缺少结算时使用的推荐规则或有效的最新付款金额',
+  CORRECTION_REFUND_CONFLICT: '最新付款与已登记退款无法按结算时规则对平',
   CORRECTION_RECOVERY_PENDING: '原受益人的扣回处理尚未确认',
   PRACTICE_DUPLICATE_ENROLLMENT: '同一报名和付款仍在其他期次，请在来源名单核对延期',
   PRACTICE_REFUND_PENDING: '对应付款已有退款，待核对实战班退款处理',
@@ -201,7 +201,7 @@ async function loadMore(section, cursorName) {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
             {{ record.originalOrderNo || record.originalOrderId }}
-            <small class="order-version">原规则 v{{ record.ruleVersion }} · 退款 {{ record.refundId }}</small>
+            <small class="order-version">结算时规则 v{{ record.ruleVersion }} · 退款 {{ record.refundId }}</small>
           </template>
           <template v-else-if="column.key === 'amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
         </template>
@@ -216,7 +216,7 @@ async function loadMore(section, cursorName) {
         <template #bodyCell="{column,record}">
           <template v-if="column.key==='order'">
             {{ record.orderNo || record.orderId }}
-            <small class="order-version">原规则 v{{ record.ruleVersion }} · 订单版本 {{ record.sourceVersion }}</small>
+            <small class="order-version">结算时规则 v{{ record.ruleVersion }} · 订单版本 {{ record.sourceVersion }}</small>
           </template>
           <template v-else-if="column.key==='amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
         </template>

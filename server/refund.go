@@ -6,7 +6,7 @@ import (
 )
 
 var (
-	errRefundPolicy = errors.New("原规则未配置适用的退款口径")
+	errRefundPolicy = errors.New("计提时使用的规则未配置适用的退款口径")
 	errRefundAmount = errors.New("退款或累计扣减金额超出原结算")
 )
 
