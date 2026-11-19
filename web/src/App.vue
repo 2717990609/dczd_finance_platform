@@ -237,13 +237,13 @@ const mainRows = computed(() => {
 const columns = computed(() => {
   const values = {
     product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['来源映射','mappingCount']],
-    mapping:[['产品名称','productName'],['来源系统','source'],['业务域','domain'],['来源标识','sourceKey']],
+    mapping:[['产品名称','productName'],['业务来源','source'],['业务域','domain'],['来源标识','sourceKey']],
     period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],['报表月份','reportMonth',115],['匹配规则','ruleVersion',200]],
     rule:[['规则名称','label',200],['所属产品','productName',155],['版本','version',80],
       ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',195]],
-    pull:[['原订单','orderNo',250],['来源系统','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
+    pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
     person:[['人员名称','name'],['人员 ID','id']],
-    identity:[['归属人员','personName'],['来源系统','source'],['来源人员 ID','externalId'],['生效时间','validFrom'],['结束时间','validTo']],
+    identity:[['归属人员','personName'],['业务来源','source'],['来源人员 ID','externalId'],['生效时间','validFrom'],['结束时间','validTo']],
   }
   return values[actions.value].map(([title,dataIndex,width]) => ({title,dataIndex,key:dataIndex,width}))
 })
@@ -789,9 +789,9 @@ async function save() {
         </a-form-item>
       </template>
       <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='rule' ? ruleProductOptions : productOptions"/></a-form-item>
-      <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" label="来源系统"><a-select v-model:value="draft.source" aria-label="来源系统" :options="sources"/></a-form-item>
+      <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" :label="drawer==='pull' ? '订单来源' : '业务来源'"><a-select v-model:value="draft.source" :aria-label="drawer==='pull' ? '订单来源' : '业务来源'" :options="sources"/></a-form-item>
       <template v-if="drawer==='mapping'">
-        <a-form-item label="来源业务域" required><a-input v-model:value="draft.domain" aria-label="来源业务域" placeholder="填写源系统返回的业务域"/></a-form-item>
+        <a-form-item label="来源业务域" required><a-input v-model:value="draft.domain" aria-label="来源业务域" placeholder="填写业务接口返回的业务域"/></a-form-item>
         <a-form-item label="源产品标识" required><a-input v-model:value="draft.sourceKey" aria-label="源产品标识"/></a-form-item>
       </template>
       <template v-if="drawer==='period'">
