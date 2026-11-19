@@ -29,6 +29,7 @@ const matchingOnly = computed(() => hasMatching.value && !selectedPeriod.value?.
 const newerDraft = computed(() => refreshStatus.value?.version > (draft.value?.version || 0))
 const componentLabel = code => {
   const type = code?.startsWith('period:') ? code.split(':')[1] : code
+  if (type==='company_referral') return '公司推荐分润'
   return props.componentOptions.find(option=>option.value===type)?.label || type
 }
 const memberLabel = type => props.memberOptions.find(option=>option.value===(type===3 ? 'new' : 'retrain'))?.label
@@ -82,6 +83,10 @@ const reason = {
   PRACTICE_COMPANY_RECIPIENT_CONFLICT: '付款时的收款公司映射有冲突',
   PRACTICE_COMPANY_SCOPE_MISSING: '销售公司在本报名类型下没有适用标准',
   PRACTICE_COMPANY_AWARD_EXCEEDS_PAYMENT: '外部公司固定提成超过报名净实收',
+  PRACTICE_RECOMMENDATION_RELATION_MISSING: '销售公司的推荐关系待核',
+  PRACTICE_RECOMMENDATION_COMPANY_MISSING: '付款时的推荐公司映射缺失或公司已停用',
+  PRACTICE_RECOMMENDATION_CONFLICT: '推荐公司归属冲突，请核对订金、尾款和公司关系',
+  PRACTICE_RECOMMENDATION_ROUTE_MISSING: '推荐公司缺少适用的直收配置',
   PRACTICE_TIER_COMPANY_NOT_CONFIGURED: '该销售公司未配置阶梯',
   PRACTICE_TIER_OPENING_MISSING: '所选冻结期初中缺少该人员的期初人数',
   PRACTICE_TIER_HISTORY_MISSING: '累计起点或历史期次缺少已确认名单',

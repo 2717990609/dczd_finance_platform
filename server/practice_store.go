@@ -85,7 +85,8 @@ func readPracticeHeader(ctx context.Context, tx pgx.Tx, periodKey string, summar
 	return startsAt, err
 }
 
-const practicePaymentsSQL = `SELECT v.id,v.fact,coalesce(company.company_id,'')
+const practicePaymentsSQL = `SELECT v.id,v.fact,coalesce(company.company_id,''),
+ coalesce(company.recommendation_company_id,''),coalesce(company.recommendation_conflict,false)
  FROM source_order_versions v JOIN source_mappings m ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'
  LEFT JOIN source_payment_companies company ON company.source_version_id=v.id
  WHERE m.product_id=(SELECT product_id FROM periods WHERE id=$1)
@@ -242,7 +243,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	}
 	facts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (paymentInput, error) {
 		var item paymentInput
-		err := row.Scan(&item.ID, &item.Fact, &item.Fact.SalesCompanyID)
+		err := row.Scan(&item.ID, &item.Fact, &item.Fact.SalesCompanyID, &item.Fact.ReferrerCompanyID, &item.Fact.ReferrerConflict)
 		return item, err
 	})
 	if err != nil {
@@ -308,7 +309,11 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	runtime := practiceDraftRuntime{appointments: appointments, companyOffers: companyOffers, companyRecipients: companyRecipients}
+	recommendations, err := loadPracticeCompanyRecommendations(ctx, tx, companyOffers, companyRecipients, orders)
+	if err != nil {
+		return paymentDraft{}, nil, err
+	}
+	runtime := practiceDraftRuntime{appointments: appointments, companyOffers: companyOffers, companyRecipients: companyRecipients, recommendations: recommendations}
 	result, err := calculatePracticeDraft(members, rule, orders, identities, blocked, history, matchPracticeRefunds(refunds, orders), runtime)
 	if err != nil {
 		return paymentDraft{}, nil, err

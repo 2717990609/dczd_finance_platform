@@ -29,7 +29,7 @@ func (s workspace) practiceRuleRecipients(w http.ResponseWriter, r *http.Request
 	var result json.RawMessage
 	err = s.db.QueryRow(r.Context(), `SELECT jsonb_build_object(
 	 'people',(`+peopleSQL+`),
-	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name) ORDER BY name,id)
+	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name,'kind',kind) ORDER BY name,id)
 	  FROM organization_units WHERE status='ACTIVE'),'[]'))
 	 FROM products WHERE id=$1 AND period_mode='class'`, product).Scan(&result)
 	respond(w, result, err)

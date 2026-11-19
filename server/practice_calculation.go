@@ -31,6 +31,7 @@ type practiceDraftRuntime struct {
 	appointments      map[practiceAppointmentKey][]practiceAppointment
 	companyOffers     practiceCompanyOffers
 	companyRecipients map[string][]companySourceAssignment
+	recommendations   practiceCompanyRecommendations
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -127,7 +128,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			draft.Issues = append(draft.Issues, practiceIssue(purchase.companyRoutingIssue, member, rule, "company_sales"))
 		}
 		if purchase.companyAward != nil {
-			if err := appendPracticeCompanySale(&draft, rule, purchase, runtime.companyRecipients, identities); err != nil {
+			if err := appendPracticeCompanySale(&draft, rule, purchase, runtime.companyRecipients, identities, runtime.recommendations); err != nil {
 				return paymentDraft{}, err
 			}
 		}

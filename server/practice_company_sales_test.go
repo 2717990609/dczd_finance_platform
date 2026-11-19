@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -171,6 +173,180 @@ func TestPracticePriorCompanyAndPersonalRolesFollowTheirOwnRuleVersion(t *testin
 	if err != nil || prior.counts[1][1] != 1 || prior.counts[1][2] != 0 || len(prior.counts[2]) != 0 || !prior.incomplete[3] {
 		t.Fatalf("historical company scope and sales roles changed: %+v %v", prior, err)
 	}
+}
+
+func TestPracticeCompanyRecommendationUsesCurrentDirectoryAndSkipsKnownNoParent(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	const salesCompany = "40000000-0000-4000-8000-000000000001"
+	const referrer = "40000000-0000-4000-8000-000000000002"
+	const explicitReferrer = "40000000-0000-4000-8000-000000000003"
+	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_REFERRALS", Name: "实战班", PeriodMode: "class"}))
+	period := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "八月班", Ordinal: 1, StartsOn: "2026-08-08", EndsOn: "2026-08-09", SourcePeriodKey: "PRACTICE:1:1:1"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "fixture"}))
+	seller := id(s.createPerson(ctx, createPersonInput{Name: "销售甲"}))
+	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: seller, Source: "DCZD", ExternalID: "seller", ValidFrom: "2026-08-01T00:00:00Z"}))
+	if _, err := s.db.Exec(ctx, `INSERT INTO configuration_options(group_key,option_key,label,display_order)
+	 VALUES('practiceSalesCompany','direct','销售公司',10)`); err != nil {
+		t.Fatal(err)
+	}
+	organizations := func(day string, referrals any) []byte {
+		t.Helper()
+		data, err := json.Marshal(map[string]any{"capturedAt": day, "people": []any{}, "assignments": []any{},
+			"units": []map[string]string{
+				{"id": salesCompany, "name": "销售公司", "kind": "COMPANY", "status": "ACTIVE"},
+				{"id": referrer, "name": "推荐公司", "kind": "COMPANY", "status": "ACTIVE"},
+				{"id": explicitReferrer, "name": "订单指定的推荐公司", "kind": "COMPANY", "status": "ACTIVE"},
+			}, "companies": []map[string]string{
+				{"source": "DCZD", "sourceCompanyId": "direct", "companyId": salesCompany, "from": "2026-01-01T00:00:00Z"},
+				{"source": "DCZD", "sourceCompanyId": "explicit", "companyId": explicitReferrer, "from": "2026-01-01T00:00:00Z"},
+			}, "recommendations": referrals})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return data
+	}
+	persistDirectory := func(day string, referrals any) {
+		t.Helper()
+		if err := storeOrganizationSnapshot(ctx, s.db, organizations(day, referrals)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	persistDirectory("2026-08-01T00:00:00Z", []any{})
+	var rule publishRuleInput
+	err := json.Unmarshal([]byte(`{"label":"公司推荐分润","components":[{
+	 "type":"company_sales","mode":"company_sales","classMember":"new","sourceRole":"DIRECT_REFERRER",
+	 "companySales":{"categories":[{"label":"外部公司","companies":["direct"],"mode":"rate","value":400000,
+	  "recommendationRate":40000,"overrides":[{"companyId":"direct","mode":"rate","value":500000,"recommendationRate":50000}]}]}}]}`), &rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule.ProductID = product
+	rule.Components[0].CompanySales.RecommendationRecipients = []string{referrer}
+	if _, err := s.publishRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
+	storePayment := func(tx pgx.Tx, order, version, company string, amount int64, updated time.Time) error {
+		fact := map[string]any{"fact_schema_version": sourceSchema, "fact_type": "ORDER_PAID", "occurred_at": at,
+			"order": map[string]string{"source_order_id": order}, "business": map[string]string{"source_domain_code": "PRACTICE", "source_product_code": "fixture"},
+			"source_record": map[string]any{"source_table": "payment", "record_id": order, "record_version": version, "updated_at": updated},
+			"payment":       map[string]string{"source_payment_id": order}, "amounts": map[string]string{"paid_minor": fmt.Sprint(amount)},
+		}
+		parties := []sourceAttributionParticipant{{Role: "DIRECT_COMPANY", CompanyID: "direct"}, {Role: "DIRECT_REFERRER", UserID: "seller"}}
+		if company != "" {
+			parties = append(parties, sourceAttributionParticipant{Role: "UPSTREAM_COMPANY", CompanyID: company})
+		}
+		if company == "conflicting" {
+			parties = append(parties, sourceAttributionParticipant{Role: "UPSTREAM_COMPANY", CompanyID: "explicit"})
+		}
+		fact["attribution_snapshot"] = map[string]any{"participants": parties}
+		raw, err := json.Marshal(fact)
+		if err != nil {
+			return err
+		}
+		input, err := normalizeFact("DCZD", order, raw)
+		if err != nil {
+			return err
+		}
+		_, err = storeSourceFacts(ctx, tx, []sourceFact{input})
+		return err
+	}
+	start := at.AddDate(0, 0, 1)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: "PRACTICE:1:1:1", Hash: "referral-roster", SourceVersion: 1, StartsAt: start, ConfirmedAt: start.Add(time.Hour),
+			Enrollments: []practiceEnrollment{{SourceEnrollmentID: "1", ParticipantID: "11", MembershipType: 3, CommissionEligible: true,
+				SignedAt: start, PaidOrderIDs: []string{"31", "32"}, ContentHash: "ab"}}})
+		if err != nil {
+			return err
+		}
+		if err := storePayment(tx, "31", "1", "", 4001, at); err != nil {
+			return err
+		}
+		return storePayment(tx, "32", "1", "", 6009, at)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertDraft := func(minor int64, issues, lines int) draftSummary {
+		t.Helper()
+		raw, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := raw.(draftSummary)
+		if got.Total != minor || got.IssueCount != issues || got.LineCount != lines {
+			t.Fatalf("wanted total %d, %d issues and %d lines, got %+v", minor, issues, lines, got)
+		}
+		return got
+	}
+	assertRecipient := func(want string) {
+		t.Helper()
+		var recipients []string
+		var amounts []int64
+		err := s.db.QueryRow(ctx, `SELECT array_agg(beneficiary_unit_id::text ORDER BY amount_minor),
+		array_agg(amount_minor ORDER BY amount_minor) FROM calculation_draft_lines
+		WHERE period_id=$1 AND component_type LIKE 'period:company_referral:%'`, period).Scan(&recipients, &amounts)
+		if err != nil || !reflect.DeepEqual(recipients, []string{want, want}) || !reflect.DeepEqual(amounts, []int64{201, 300}) {
+			t.Fatalf("expected %s with exact amounts 201 and 300: %v %v %v", want, recipients, amounts, err)
+		}
+	}
+	assertDraft(5005, 1, 2)
+	persistDirectory("2026-08-02T00:00:00Z", []map[string]any{{"companyId": salesCompany, "referrerCompanyId": referrer}})
+	var queued bool
+	if err := s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)", period).Scan(&queued); err != nil || !queued {
+		t.Fatalf("directory updates must enqueue the open draft: %t %v", queued, err)
+	}
+	current := assertDraft(5506, 0, 4)
+	assertRecipient(referrer)
+	if next := assertDraft(5506, 0, 4); next.Version != current.Version {
+		t.Fatal("unchanged inputs replaced the draft")
+	}
+	if err := storeOrganizationSnapshot(ctx, s.db, organizations("2026-08-03T00:00:00Z", []map[string]any{{"companyId": salesCompany}})); err == nil {
+		t.Fatal("an omitted referrer must not silently clear a known relationship")
+	}
+	persistDirectory("2026-08-03T00:00:00Z", []map[string]any{{"companyId": salesCompany, "referrerCompanyId": nil}})
+	assertDraft(5005, 0, 2)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		return storePayment(tx, "31", "2", "explicit", 4001, at.Add(time.Hour))
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertDraft(5005, 1, 2)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		// Older imports retained the order version without the company recommendation.
+		return storePayment(tx, "32", "1", "explicit", 6009, at)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var versions int64
+	if err := s.db.QueryRow(ctx, `SELECT (SELECT count(*) FROM source_order_versions WHERE order_id='32' AND kind='ORDER_PAID'),
+	 EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, period).Scan(&versions, &queued); err != nil || versions != 1 || !queued {
+		t.Fatalf("same-version attribution backfill must enqueue the draft without duplicating the order: %d %t %v", versions, queued, err)
+	}
+	assertDraft(5005, 1, 2)
+	var issue string
+	if err := s.db.QueryRow(ctx, "SELECT code FROM calculation_draft_issues WHERE period_id=$1", period).Scan(&issue); err != nil || issue != "PRACTICE_RECOMMENDATION_ROUTE_MISSING" {
+		t.Fatalf("an active company without a configured direct route must remain pending: %s %v", issue, err)
+	}
+	rule.Components[0].CompanySales.RecommendationRecipients = []string{referrer, explicitReferrer}
+	if _, err := s.publishRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	assertDraft(5506, 0, 4)
+	assertRecipient(explicitReferrer)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		return storePayment(tx, "32", "2", "conflicting", 6009, at.Add(2*time.Hour))
+	}); err != nil {
+		t.Fatalf("ambiguous recommendation metadata must not block the payment: %v", err)
+	}
+	assertDraft(5005, 1, 2)
 }
 
 func TestPracticeCorporateAndIndividualClaimsCannotPayTheSamePayment(t *testing.T) {

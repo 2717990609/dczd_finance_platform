@@ -93,6 +93,8 @@ const peopleOptions = computed(() => data.value.people.map(p => ({value:p.id,lab
 const classRuleDirectory = ref()
 const classPeopleOptions = computed(() => classRuleDirectory.value?.people.map(person=>({value:person.id,label:person.name})) || peopleOptions.value)
 const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({value:unit.id,label:unit.name})) || [])
+const companyRecipientOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>unit.kind==='COMPANY')
+  .map(unit=>({value:unit.id,label:unit.name})) || [])
 const periodOptions = computed(() => data.value.periods.filter(p => p.productId === draft.value.productId).map(p => ({value:p.id,label:p.name})))
 const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
 const calculationPeriods = computed(() => data.value.periods.filter(p => !productScope.value || p.productId === productScope.value))
@@ -434,7 +436,8 @@ function ruleComponentBody(row) {
     must(sourceRole,'请选择销售来源角色')
     const value = item => {
       const mode = must(item.mode,'请选择外部公司计算方式')
-      return {mode,value:mode==='rate' ? periodRate(item.value) : minor(must(item.value,'请填写计提金额'))}
+      return {mode,value:mode==='rate' ? periodRate(item.value) : minor(must(item.value,'请填写计提金额')),
+        ...(row.classMember==='new' && item.recommendationRate != null ? {recommendationRate:periodRate(item.recommendationRate)} : {})}
     }
     component.companySales = {internalCompanies:row.companySales.internalCompanies,categories:row.companySales.categories.map(category=>({
       label:must(category.label?.trim(),'请填写类别名称'),
@@ -445,6 +448,11 @@ function ruleComponentBody(row) {
       }))} : {}),
     }))}
     if (component.companySales.categories.some(category=>!category.companies.length)) throw new Error('请选择每个类别适用的公司')
+    if (component.companySales.categories.some(category=>category.recommendationRate>0 ||
+      category.overrides?.some(override=>override.recommendationRate>0))) {
+      if (!row.companySales.recommendationRecipients?.length) throw new Error('请选择可直接收取推荐分润的公司')
+      component.companySales.recommendationRecipients = row.companySales.recommendationRecipients
+    }
     return component
   }
   if (row.mode === 'period_rate') {
@@ -680,6 +688,8 @@ async function save() {
                   <div v-for="(c,index) in text" :key="index">
                     <a-tag>{{ c.periodBenefit?.label || optionLabel('component',c.type) }}{{ c.classMember ? ' · '+optionLabel('classMember',c.classMember) : '' }}
                       {{ c.mode==='company_sales' ? c.companySales.categories.length+' 个类别' : c.mode==='period_rate' ? c.periodBenefit.tiers?.length ? '班次阶梯' : (c.value/10000)+'%' : c.mode==='tiered' ? tierLabel(c.tiers) : c.mode==='rate' ? (c.value/100)+'%' : formatMoney(c.value) }}</a-tag>
+                    <small v-if="c.companySales?.categories.some(category=>category.recommendationRate>0 || category.overrides?.some(override=>override.recommendationRate>0))"
+                      class="order-version">含公司推荐分润</small>
                     <small v-if="c.tiers?.companySchedules?.length" class="order-version">
                       {{ c.tiers.companySchedules.map(company=>optionLabel('practiceSalesCompany',company.companyId)).join('、') }}
                     </small>
@@ -771,7 +781,7 @@ async function save() {
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
             :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')"/>
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
-            :amounts="baseModes" :source-roles="options('practicePeriodSourceRole')"/>
+            :recipients="companyRecipientOptions" :amounts="baseModes" :source-roles="options('practicePeriodSourceRole')"/>
           <a-form-item v-if="selectedProduct && (!classRule || !['rate','period_rate','company_sales'].includes(c.mode))" :label="'分项 '+(i+1)+' 的退款处理'"
             :extra="classRule ? '适用于确认名单前的固定金额分项或固定金额档位。' : '历史退款沿用付款时的规则版本。'">
             <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>

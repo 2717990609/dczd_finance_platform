@@ -517,6 +517,10 @@ CREATE TABLE IF NOT EXISTS source_payment_companies (
  company_id text NOT NULL CHECK (length(company_id)>0)
 );
 
+ALTER TABLE source_payment_companies
+ ADD COLUMN IF NOT EXISTS recommendation_company_id text,
+ ADD COLUMN IF NOT EXISTS recommendation_conflict boolean NOT NULL DEFAULT false;
+
 CREATE TABLE IF NOT EXISTS legacy_catalog_products (
  product_id bigint PRIMARY KEY REFERENCES products(id),
  source_id uuid NOT NULL UNIQUE,
@@ -620,6 +624,12 @@ CREATE TABLE IF NOT EXISTS organization_company_sources (
  valid_from timestamptz NOT NULL,
  valid_to timestamptz CHECK (valid_to > valid_from),
  PRIMARY KEY(source,source_company_id,valid_from)
+);
+
+CREATE TABLE IF NOT EXISTS organization_company_recommendations (
+ company_id uuid PRIMARY KEY REFERENCES organization_units(id),
+ referrer_company_id uuid REFERENCES organization_units(id),
+ CHECK (company_id<>referrer_company_id)
 );
 
 CREATE TABLE IF NOT EXISTS calculation_draft_performance (

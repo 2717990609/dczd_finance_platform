@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"slices"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -9,8 +11,9 @@ import (
 )
 
 type practiceCompanySales struct {
-	Categories        []practiceCompanyCategory `json:"categories"`
-	InternalCompanies []string                  `json:"internalCompanies,omitempty"`
+	Categories               []practiceCompanyCategory `json:"categories"`
+	InternalCompanies        []string                  `json:"internalCompanies,omitempty"`
+	RecommendationRecipients []string                  `json:"recommendationRecipients,omitempty"`
 }
 
 type practiceCompanyValue struct {
@@ -19,14 +22,16 @@ type practiceCompanyValue struct {
 }
 
 type practiceCompanyCategory struct {
-	Label     string                    `json:"label"`
-	Companies []string                  `json:"companies"`
-	Overrides []practiceCompanyOverride `json:"overrides,omitempty"`
+	Label              string                    `json:"label"`
+	Companies          []string                  `json:"companies"`
+	Overrides          []practiceCompanyOverride `json:"overrides,omitempty"`
+	RecommendationRate *int64                    `json:"recommendationRate,omitempty"`
 	practiceCompanyValue
 }
 
 type practiceCompanyOverride struct {
-	CompanyID string `json:"companyId"`
+	CompanyID          string `json:"companyId"`
+	RecommendationRate *int64 `json:"recommendationRate,omitempty"`
 	practiceCompanyValue
 }
 
@@ -41,6 +46,10 @@ func (v practiceCompanyValue) valid(member string) bool {
 	}
 }
 
+func validCompanyRecommendation(member string, rate *int64) bool {
+	return rate == nil || member == "new" && *rate >= 0 && *rate <= periodRateScale
+}
+
 func validPracticeCompanySales(c component) bool {
 	if c.Type != "company_sales" || c.Mode != "company_sales" || c.ClassMember == "" ||
 		c.CompanySales == nil || len(c.CompanySales.Categories) == 0 || c.Value != 0 ||
@@ -48,8 +57,23 @@ func validPracticeCompanySales(c component) bool {
 		return false
 	}
 	seen := make(map[string]bool)
+	if c.ClassMember != "new" && len(c.CompanySales.RecommendationRecipients) != 0 {
+		return false
+	}
+	for _, id := range c.CompanySales.RecommendationRecipients {
+		if normalized, ok := canonicalSourceUUID(id); !ok || normalized != id || seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	clear(seen)
+	validRate := func(rate *int64) bool {
+		return validCompanyRecommendation(c.ClassMember, rate) &&
+			(rate == nil || *rate == 0 || len(c.CompanySales.RecommendationRecipients) != 0)
+	}
 	for _, category := range c.CompanySales.Categories {
-		if !textOK(category.Label, 80) || len(category.Companies) == 0 || !category.practiceCompanyValue.valid(c.ClassMember) {
+		if !textOK(category.Label, 80) || len(category.Companies) == 0 ||
+			!category.practiceCompanyValue.valid(c.ClassMember) || !validRate(category.RecommendationRate) {
 			return false
 		}
 		member := make(map[string]bool)
@@ -60,7 +84,8 @@ func validPracticeCompanySales(c component) bool {
 			seen[company], member[company] = true, true
 		}
 		for _, override := range category.Overrides {
-			if !member[override.CompanyID] || !override.practiceCompanyValue.valid(c.ClassMember) {
+			if !member[override.CompanyID] || !override.practiceCompanyValue.valid(c.ClassMember) ||
+				!validRate(override.RecommendationRate) {
 				return false
 			}
 			delete(member, override.CompanyID)
@@ -93,8 +118,11 @@ func validPracticeCompanyScopes(items []component) bool {
 
 type practiceCompanyAward struct {
 	practiceCompanyValue
-	role, key string
-	internal  bool
+	role, key                string
+	internal                 bool
+	componentIndex           int
+	recommendationRate       int64
+	recommendationRecipients []string
 }
 
 type practiceCompanyOffers map[string]map[string]practiceCompanyAward
@@ -116,11 +144,21 @@ func practiceCompanyStandards(rule paymentRule) practiceCompanyOffers {
 		standards := offers[part.ClassMember]
 		key := practicePeriodComponentKey(part, i)
 		for _, category := range part.CompanySales.Categories {
+			award := practiceCompanyAward{practiceCompanyValue: category.practiceCompanyValue, role: part.SourceRole, key: key,
+				componentIndex: i, recommendationRecipients: part.CompanySales.RecommendationRecipients}
+			if category.RecommendationRate != nil {
+				award.recommendationRate = *category.RecommendationRate
+			}
 			for _, company := range category.Companies {
-				standards[company] = practiceCompanyAward{practiceCompanyValue: category.practiceCompanyValue, role: part.SourceRole, key: key}
+				standards[company] = award
 			}
 			for _, override := range category.Overrides {
-				standards[override.CompanyID] = practiceCompanyAward{practiceCompanyValue: override.practiceCompanyValue, role: part.SourceRole, key: key}
+				custom := award
+				custom.practiceCompanyValue = override.practiceCompanyValue
+				if override.RecommendationRate != nil {
+					custom.recommendationRate = *override.RecommendationRate
+				}
+				standards[override.CompanyID] = custom
 			}
 		}
 	}
@@ -154,12 +192,16 @@ func loadPracticeCompanyRecipients(ctx context.Context, tx pgx.Tx, offers practi
 			}
 		}
 	}
+	return loadPracticeCompanySources(ctx, tx, keys, false)
+}
+
+func loadPracticeCompanySources(ctx context.Context, tx pgx.Tx, keys []string, activeOnly bool) (map[string][]companySourceAssignment, error) {
 	if len(keys) == 0 {
 		return nil, nil
 	}
 	rows, err := tx.Query(ctx, `SELECT c.source_company_id,c.company_id,c.valid_from,c.valid_to
 	 FROM organization_company_sources c JOIN organization_units u ON u.id=c.company_id AND u.kind='COMPANY'
-	 WHERE c.source='DCZD' AND c.source_company_id=ANY($1::text[])`, keys)
+	 WHERE c.source='DCZD' AND c.source_company_id=ANY($1::text[]) AND (NOT $2 OR u.status='ACTIVE')`, keys, activeOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +226,8 @@ func practiceCompanyRecipient(assignments []companySourceAssignment, at time.Tim
 }
 
 func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practicePurchase,
-	recipients map[string][]companySourceAssignment, identities map[identityKey][]identityAssignment) error {
+	recipients map[string][]companySourceAssignment, identities map[identityKey][]identityAssignment,
+	recommendations practiceCompanyRecommendations) error {
 	award := p.companyAward
 	if award == nil {
 		return nil
@@ -209,18 +252,43 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 	}
 	amount := award.Value
 	if award.Mode == "rate" {
-		amount = p.base/periodRateScale*award.Value + (p.base%periodRateScale*award.Value+periodRateScale/2)/periodRateScale
+		amount = practiceCompanyRate(p.base, award.Value)
 	}
 	if amount > p.base {
 		draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_COMPANY_AWARD_EXCEEDS_PAYMENT", p.member, rule, award.key))
 		return nil
 	}
+	if err := appendPracticeCompanyShare(draft, rule, p, unit, award.key, amount); err != nil {
+		return err
+	}
+	if award.recommendationRate > 0 {
+		key := "period:company_referral:" + strconv.Itoa(award.componentIndex)
+		parent, issue := recommendations.resolve(p.payments, unit)
+		if issue == "" && parent.Valid && !slices.Contains(award.recommendationRecipients, parent.String()) {
+			issue = "PRACTICE_RECOMMENDATION_ROUTE_MISSING"
+		}
+		if issue != "" {
+			pending := practiceIssue(issue, p.member, rule, key)
+			pending.FactID = p.payments[0].ID
+			draft.Issues = append(draft.Issues, pending)
+		} else if parent.Valid {
+			return appendPracticeCompanyShare(draft, rule, p, parent, key, practiceCompanyRate(p.base, award.recommendationRate))
+		}
+	}
+	return nil
+}
+
+func practiceCompanyRate(base, rate int64) int64 {
+	return base/periodRateScale*rate + (base%periodRateScale*rate+periodRateScale/2)/periodRateScale
+}
+
+func appendPracticeCompanyShare(draft *paymentDraft, rule paymentRule, p practicePurchase, unit pgtype.UUID, key string, amount int64) error {
 	var err error
 	draft.Total, err = addMinor(draft.Total, amount)
 	if err != nil {
 		return err
 	}
-	line := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: award.key, BeneficiaryUnit: &unit}
+	line := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: key, BeneficiaryUnit: &unit}
 	appendPracticePeriodShare(draft, line, practiceBenefitShare{purchase: p, payments: p.payments, amount: amount})
 	return nil
 }

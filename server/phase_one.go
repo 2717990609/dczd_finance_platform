@@ -450,13 +450,14 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 		}
 		var personIDs []int64
 		var companyIDs []string
-		var unitIDs, appointmentKinds []string
+		var unitIDs, appointmentKinds, recommendationRecipients []string
 		for _, c := range p.Components {
 			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil) {
 				return invalid
 			}
 			if c.CompanySales != nil {
 				companyIDs = append(companyIDs, c.CompanySales.InternalCompanies...)
+				recommendationRecipients = append(recommendationRecipients, c.CompanySales.RecommendationRecipients...)
 				for _, category := range c.CompanySales.Categories {
 					companyIDs = append(companyIDs, category.Companies...)
 				}
@@ -495,6 +496,17 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 				for _, start := range c.Tiers.PersonCountStarts {
 					personIDs = append(personIDs, start.PersonID)
 				}
+			}
+		}
+		if len(recommendationRecipients) != 0 {
+			var valid bool
+			if err := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM unnest($1::text[]) AS requested(id)
+			 WHERE NOT EXISTS(SELECT 1 FROM organization_units u WHERE u.id=requested.id::uuid AND u.kind='COMPANY' AND u.status='ACTIVE'))`,
+				recommendationRecipients).Scan(&valid); err != nil {
+				return err
+			}
+			if !valid {
+				return invalid
 			}
 		}
 		if len(companyIDs) != 0 {

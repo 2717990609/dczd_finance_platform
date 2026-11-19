@@ -22,8 +22,10 @@ const draftRefreshFacts = `WITH keys AS (
  LEFT JOIN source_payment_companies cv ON cv.source_version_id=current.id
  LEFT JOIN source_payment_companies pv ON pv.source_version_id=previous.id
  WHERE current.id=ANY($2::bigint[]) OR (current.id=ANY($1::bigint[]) AND (
-  previous.id IS NULL OR (current.fact-ARRAY['version','updatedAt','orderNo'],cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,cv.company_id)
-  IS DISTINCT FROM (previous.fact-ARRAY['version','updatedAt','orderNo'],pc.entity_type,pc.business_key,pc.classifier,pc.sales_claims,pv.company_id)))
+  previous.id IS NULL OR (current.fact-ARRAY['version','updatedAt','orderNo'],cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,
+   cv.company_id,cv.recommendation_company_id,cv.recommendation_conflict)
+  IS DISTINCT FROM (previous.fact-ARRAY['version','updatedAt','orderNo'],pc.entity_type,pc.business_key,pc.classifier,pc.sales_claims,
+   pv.company_id,pv.recommendation_company_id,pv.recommendation_conflict)))
 ), events AS MATERIALIZED (
  SELECT v.id,v.source,v.fact,v.order_id,v.kind,v.record_key,v.occurred_at FROM changed c
  JOIN source_order_versions v ON v.id=c.current_id OR v.id=c.previous_id

@@ -28,28 +28,30 @@ type sourceConfig struct{ BaseURL, Token string }
 type pullInput struct{ Source, Stream, OrderID string }
 
 type sourceFact struct {
-	Source          string                   `json:"source"`
-	OrderID         string                   `json:"orderId"`
-	OrderNo         string                   `json:"orderNo"`
-	LineID          string                   `json:"lineId"`
-	RecordKey       string                   `json:"recordKey"`
-	Version         string                   `json:"version"`
-	Kind            string                   `json:"kind"`
-	Domain          string                   `json:"domain"`
-	SourceKey       string                   `json:"sourceKey"`
-	TransactionType string                   `json:"transactionType"`
-	SourceStatus    string                   `json:"sourceStatus"`
-	PaymentID       string                   `json:"paymentId,omitempty"`
-	RefundID        string                   `json:"refundId,omitempty"`
-	RefundsPayment  []sourcePaymentReference `json:"refundsPayment,omitempty"`
-	ReferrerID      string                   `json:"referrerId,omitempty"`
-	Participants    []sourceParticipant      `json:"participants,omitempty"`
-	SalesCompanyID  string                   `json:"-"`
-	Classification  sourceClassification     `json:"-"`
-	VIPClaims       []vipClaim               `json:"-"`
-	AmountMinor     *int64                   `json:"amountMinor"`
-	OccurredAt      time.Time                `json:"occurredAt"`
-	UpdatedAt       time.Time                `json:"updatedAt"`
+	Source            string                   `json:"source"`
+	OrderID           string                   `json:"orderId"`
+	OrderNo           string                   `json:"orderNo"`
+	LineID            string                   `json:"lineId"`
+	RecordKey         string                   `json:"recordKey"`
+	Version           string                   `json:"version"`
+	Kind              string                   `json:"kind"`
+	Domain            string                   `json:"domain"`
+	SourceKey         string                   `json:"sourceKey"`
+	TransactionType   string                   `json:"transactionType"`
+	SourceStatus      string                   `json:"sourceStatus"`
+	PaymentID         string                   `json:"paymentId,omitempty"`
+	RefundID          string                   `json:"refundId,omitempty"`
+	RefundsPayment    []sourcePaymentReference `json:"refundsPayment,omitempty"`
+	ReferrerID        string                   `json:"referrerId,omitempty"`
+	ReferrerCompanyID string                   `json:"-"`
+	ReferrerConflict  bool                     `json:"-"`
+	Participants      []sourceParticipant      `json:"participants,omitempty"`
+	SalesCompanyID    string                   `json:"-"`
+	Classification    sourceClassification     `json:"-"`
+	VIPClaims         []vipClaim               `json:"-"`
+	AmountMinor       *int64                   `json:"amountMinor"`
+	OccurredAt        time.Time                `json:"occurredAt"`
+	UpdatedAt         time.Time                `json:"updatedAt"`
 }
 
 type sourcePaymentReference struct {
@@ -167,11 +169,24 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 		}
 		amount = &n
 	}
-	var company string
+	var company, recommendedCompany string
+	var recommendationConflict bool
 	if source == "DCZD" && wire.Kind == "ORDER_PAID" {
 		company, err = sourceSalesCompany(wire.Attribution.Participants)
 		if err != nil {
 			return sourceFact{}, err
+		}
+		for _, part := range wire.Attribution.Participants {
+			if part.Role != "UPSTREAM_COMPANY" {
+				continue
+			}
+			id := strings.TrimSpace(part.CompanyID)
+			if !textOK(id, 128) || recommendedCompany != "" && recommendedCompany != id {
+				recommendationConflict = true
+				recommendedCompany = ""
+				break
+			}
+			recommendedCompany = id
 		}
 	}
 	referrer := ""
@@ -216,6 +231,7 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 		RecordKey: wire.Record.Table + ":" + wire.Record.ID, Version: wire.Record.Version, Kind: wire.Kind, Domain: wire.Business.Domain,
 		SourceKey: wire.Business.Code, TransactionType: wire.Business.TransactionType, SourceStatus: wire.Order.Status.Code,
 		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, RefundsPayment: refundTargets, ReferrerID: referrer, Participants: participants, SalesCompanyID: company, AmountMinor: amount,
+		ReferrerCompanyID: recommendedCompany, ReferrerConflict: recommendationConflict,
 		OccurredAt: occurredAt, UpdatedAt: wire.Record.UpdatedAt,
 		Classification: classification, VIPClaims: vipClaims}, nil
 }
@@ -458,7 +474,7 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 			metadataChanged = changed
 		}
 		if f.SalesCompanyID != "" {
-			changed, e := storeSourcePaymentCompany(ctx, tx, sourceVersion, f.SalesCompanyID)
+			changed, e := storeSourcePaymentCompany(ctx, tx, sourceVersion, f)
 			if e != nil {
 				return 0, e
 			}
@@ -481,14 +497,23 @@ func touchSourceWrites(ctx context.Context, tx pgx.Tx, sources []string) error {
 	return err
 }
 
-func storeSourcePaymentCompany(ctx context.Context, tx pgx.Tx, version int64, company string) (bool, error) {
-	tag, err := tx.Exec(ctx, `INSERT INTO source_payment_companies(source_version_id,company_id)
-	 VALUES($1,$2) ON CONFLICT(source_version_id) DO NOTHING`, version, company)
+func storeSourcePaymentCompany(ctx context.Context, tx pgx.Tx, version int64, f sourceFact) (bool, error) {
+	tag, err := tx.Exec(ctx, `INSERT INTO source_payment_companies(source_version_id,company_id,recommendation_company_id,recommendation_conflict)
+	 VALUES($1,$2,nullif($3,''),$4)
+	 ON CONFLICT(source_version_id) DO UPDATE SET recommendation_company_id=excluded.recommendation_company_id,
+	  recommendation_conflict=excluded.recommendation_conflict
+	 WHERE source_payment_companies.company_id=excluded.company_id
+	  AND source_payment_companies.recommendation_company_id IS NULL AND NOT source_payment_companies.recommendation_conflict
+	  AND (excluded.recommendation_company_id IS NOT NULL OR excluded.recommendation_conflict)`,
+		version, f.SalesCompanyID, f.ReferrerCompanyID, f.ReferrerConflict)
 	if err != nil || tag.RowsAffected() != 0 {
 		return err == nil, err
 	}
 	var same bool
-	if err = tx.QueryRow(ctx, "SELECT company_id=$2 FROM source_payment_companies WHERE source_version_id=$1", version, company).Scan(&same); err != nil {
+	if err = tx.QueryRow(ctx, `SELECT company_id=$2 AND (($3='' AND NOT $4) OR
+	 (coalesce(recommendation_company_id,'')=$3 AND recommendation_conflict=$4))
+	 FROM source_payment_companies WHERE source_version_id=$1`,
+		version, f.SalesCompanyID, f.ReferrerCompanyID, f.ReferrerConflict).Scan(&same); err != nil {
 		return false, err
 	}
 	if !same {

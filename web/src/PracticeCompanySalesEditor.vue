@@ -1,8 +1,10 @@
 <script setup>
 import { computed, watch } from 'vue'
 
-const props = defineProps({component:Object,index:Number,companies:Array,amounts:Array,sourceRoles:Array})
+const props = defineProps({component:Object,index:Number,companies:Array,recipients:Array,amounts:Array,sourceRoles:Array})
 const categories = computed(() => props.component.companySales.categories)
+const hasRecommendations = computed(() => props.component.classMember==='new' && categories.value.some(category=>
+  category.recommendationRate>0 || category.overrides.some(override=>override.recommendationRate>0)))
 const internalOptions = computed(() => props.companies.filter(option=>!categories.value.some(c=>c.companies.includes(option.value))))
 const amounts = computed(() => props.amounts.filter(option =>
   props.component.classMember==='retrain' || option.value==='rate'))
@@ -65,6 +67,11 @@ watch(amounts, choices => {
           :max="category.mode==='rate'?100:undefined" :precision="category.mode==='rate'?4:2"/>
       </a-form-item>
     </div>
+    <a-form-item v-if="component.classMember==='new'" label="公司推荐比例（%）" :html-for="field('recommendation-'+i)"
+      extra="按报名净实收计提给推荐公司。留空或填 0 时不计提。">
+      <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate"
+        :min="0" :max="100" :precision="4"/>
+    </a-form-item>
     <a-collapse v-if="category.companies.length" ghost>
       <a-collapse-panel key="overrides" header="公司单独标准">
         <div class="company-override" v-for="(override,j) in category.overrides" :key="j">
@@ -81,6 +88,11 @@ watch(amounts, choices => {
                 :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
             </a-form-item>
           </div>
+          <a-form-item v-if="component.classMember==='new'" label="公司单独推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)"
+            extra="留空沿用类别比例，填 0 时此公司不计提推荐分润。">
+            <a-input-number :id="field('override-recommendation-'+i+'-'+j)" v-model:value="override.recommendationRate"
+              :min="0" :max="100" :precision="4"/>
+          </a-form-item>
           <a-button type="link" danger @click="category.overrides.splice(j,1)">移除单独标准</a-button>
         </div>
         <a-button v-if="category.overrides.length<category.companies.length" type="dashed" block
@@ -89,6 +101,11 @@ watch(amounts, choices => {
     </a-collapse>
   </section>
   <a-button type="dashed" block @click="categories.push({mode:amounts[0]?.value,companies:[],overrides:[]})">添加公司类别</a-button>
+  <a-form-item v-if="hasRecommendations" label="推荐分润直收公司" :html-for="field('referral-recipients')" required
+    extra="可从公司目录选择多个。系统按订单或公司关系确定实际收款公司。">
+    <a-select :id="field('referral-recipients')" v-model:value="component.companySales.recommendationRecipients"
+      :options="recipients" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
+  </a-form-item>
 </template>
 
 <style scoped>

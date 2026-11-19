@@ -76,11 +76,12 @@ func (s workspace) organizationAssignments(w http.ResponseWriter, r *http.Reques
 }
 
 type organizationSnapshot struct {
-	CapturedAt  time.Time
-	People      json.RawMessage
-	Units       json.RawMessage
-	Assignments json.RawMessage
-	Companies   json.RawMessage
+	CapturedAt      time.Time
+	People          json.RawMessage
+	Units           json.RawMessage
+	Assignments     json.RawMessage
+	Companies       json.RawMessage
+	Recommendations json.RawMessage
 }
 
 func importOrganization(ctx context.Context, cfg config, path string) error {
@@ -115,8 +116,10 @@ func storeOrganizationSnapshot(ctx context.Context, db *pgxpool.Pool, raw json.R
 			return invalid
 		}
 	}
-	if len(snapshot.Companies) != 0 && snapshot.Companies[0] != '[' {
-		return invalid
+	for _, rows := range []json.RawMessage{snapshot.Companies, snapshot.Recommendations} {
+		if len(rows) != 0 && rows[0] != '[' {
+			return invalid
+		}
 	}
 	digest := sha256.Sum256(raw)
 	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
@@ -148,6 +151,11 @@ func storeOrganizationSnapshot(ctx context.Context, db *pgxpool.Pool, raw json.R
 		if len(snapshot.Companies) != 0 {
 			if _, err := tx.Exec(ctx, importOrganizationCompanySourcesSQL, snapshot.Companies); err != nil {
 				return fmt.Errorf("write organization company sources: %w", err)
+			}
+		}
+		if len(snapshot.Recommendations) != 0 {
+			if _, err := tx.Exec(ctx, importOrganizationCompanyRecommendationsSQL, snapshot.Recommendations); err != nil {
+				return fmt.Errorf("write company recommendations: %w", err)
 			}
 		}
 		var cyclic bool
@@ -192,3 +200,11 @@ const importOrganizationCompanySourcesSQL = `INSERT INTO organization_company_so
  FROM jsonb_to_recordset($1) AS i(source text,"sourceCompanyId" text,"companyId" uuid,"from" timestamptz,"to" timestamptz)
  LEFT JOIN organization_units u ON u.id=i."companyId" AND u.kind='COMPANY'
  ON CONFLICT(source,source_company_id,valid_from) DO UPDATE SET company_id=excluded.company_id,valid_to=excluded.valid_to`
+
+const importOrganizationCompanyRecommendationsSQL = `INSERT INTO organization_company_recommendations(company_id,referrer_company_id)
+ SELECT CASE WHEN i.value?'referrerCompanyId' AND (i.value->>'referrerCompanyId' IS NULL OR parent.id IS NOT NULL)
+  THEN direct.id END,parent.id
+ FROM jsonb_array_elements($1) AS i(value)
+ LEFT JOIN organization_units direct ON direct.id=(i.value->>'companyId')::uuid AND direct.kind='COMPANY'
+ LEFT JOIN organization_units parent ON parent.id=(i.value->>'referrerCompanyId')::uuid AND parent.kind='COMPANY'
+ ON CONFLICT(company_id) DO UPDATE SET referrer_company_id=excluded.referrer_company_id`
