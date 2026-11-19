@@ -1,8 +1,10 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import DraftPersonnel from './DraftPersonnel.vue'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, api: Function, formatMoney: Function, formatTime: Function })
 const selected = ref()
+const view = ref('detail')
 const draft = ref()
 const loading = ref(false)
 const calculating = ref(false)
@@ -102,7 +104,7 @@ async function load(replace = false) {
     if (request === sequence) loading.value = false
   }
 }
-watch(selected, () => load(true))
+watch(selected, () => { view.value = 'detail'; load(true) })
 watch(options, (values) => {
   if (selected.value && !values.some(option => option.value === selected.value)) selected.value = undefined
 })
@@ -166,7 +168,13 @@ async function loadMore(section, cursorName) {
     <article v-if="draft.correctionCount"><div><small>推荐人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div></article>
     <article><div><small>本期合计</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
   </div>
-  <section v-if="draft" class="records">
+  <a-tabs v-if="draft" v-model:active-key="view">
+    <a-tab-pane key="detail" tab="明细"/>
+    <a-tab-pane key="personnel" tab="人员分润"/>
+  </a-tabs>
+  <DraftPersonnel v-if="draft && view==='personnel'" :draft="draft" :api="api" :format-money="formatMoney"/>
+  <template v-if="draft && view==='detail'">
+  <section class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>
     <div class="table-container">
       <a-table :columns="lineColumns" :data-source="draft.lines" :pagination="false" row-key="id" :scroll="{ x: 755 }">
@@ -225,6 +233,7 @@ async function loadMore(section, cursorName) {
     </div>
     <div v-if="draft.issueCount > draft.issues.length" class="paging"><a-button :loading="loading" @click="loadMore('issues', 'afterIssueId')">加载下一页</a-button></div>
   </section>
+  </template>
   <section v-if="!draft && !error" class="records empty">
     <a-empty :description="loading ? '正在读取试算' : selected ? '本期暂无草稿' : '请选择核算期'" />
   </section>

@@ -138,6 +138,46 @@ func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t 
 		view.Corrections[0].OriginalPersonName != "Original recipient" || view.Corrections[0].RuleVersion != 1 || view.Corrections[0].SourceVersion != "v3" {
 		t.Fatalf("correction detail invariant failed: %+v", view.Corrections)
 	}
+	type personTotals struct {
+		PersonID, AccruedMinor, RefundMinor, CorrectionMinor, TotalMinor int64
+	}
+	readPersonnel := func(period, version int64, status int) []personTotals {
+		t.Helper()
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/draft-personnel?periodId=%d&version=%d", period, version), nil)
+		for _, route := range service.routes() {
+			if route.Path != req.URL.Path || route.Method != req.Method {
+				continue
+			}
+			route.Handler(w, req)
+			if w.Code != status {
+				t.Fatalf("personnel HTTP %d expected %d", w.Code, status)
+			}
+			if status != http.StatusOK {
+				return nil
+			}
+			var result struct {
+				Items []personTotals
+				Total int
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || result.Total != len(result.Items) {
+				t.Fatalf("personnel result was invalid: %v", err)
+			}
+			return result.Items
+		}
+		t.Fatal("missing personnel endpoint")
+		return nil
+	}
+	if rows := readPersonnel(original, originalSettlement.DraftVersion, http.StatusOK); len(rows) != 1 ||
+		rows[0] != (personTotals{PersonID: a, AccruedMinor: 100, TotalMinor: 100}) {
+		t.Fatalf("original personnel amounts = %+v", rows)
+	}
+	if rows := readPersonnel(august, newDraft.Version, http.StatusOK); len(rows) != 2 ||
+		rows[0] != (personTotals{PersonID: c, CorrectionMinor: 90, TotalMinor: 90}) ||
+		rows[1] != (personTotals{PersonID: b, CorrectionMinor: -120, TotalMinor: -120}) {
+		t.Fatalf("corrected personnel amounts = %+v", rows)
+	}
+	readPersonnel(august, newDraft.Version+1, http.StatusConflict)
 	review(c, "recover")
 	refund := int64(200)
 	err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
@@ -151,8 +191,19 @@ func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t 
 	}
 	// Refund originally references A. The correction restores the difference for A
 	// and charges the part of commission still held by the corrected beneficiary.
-	if got := draftAt(september, -20, 2, 0); got.RefundTotal != -20 || got.CorrectionTotal != 0 {
-		t.Fatalf("refund after recommendation changes=%+v", got)
+	refunded := draftAt(september, -20, 2, 0)
+	if refunded.RefundTotal != -20 || refunded.CorrectionTotal != 0 {
+		t.Fatalf("refund after recommendation changes=%+v", refunded)
+	}
+	var sum int64
+	for _, row := range readPersonnel(september, refunded.Version, http.StatusOK) {
+		if row.PersonID == a && row.RefundMinor != -20 || row.PersonID != a && row.RefundMinor != 0 {
+			t.Fatalf("refund allocated to the wrong person: %+v", row)
+		}
+		sum += row.TotalMinor
+	}
+	if sum != refunded.Total {
+		t.Fatalf("personnel total=%d, draft total=%d", sum, refunded.Total)
 	}
 	if _, err = service.db.Exec(ctx, "DELETE FROM settlements WHERE id=$1", originalSettlement.ID); err == nil {
 		t.Fatal("deleted the original settlement despite booked corrections")
