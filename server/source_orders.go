@@ -329,7 +329,10 @@ func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) (sourceOr
 		}
 		row, err := normalizeDCAIOrderRow(req.Stream, time.Time{}, *result.Item)
 		if err == nil && row.OrderID == "" {
-			return lookup, pgx.ErrNoRows
+			if req.Stream != dcaiHealthStream {
+				return lookup, pgx.ErrNoRows
+			}
+			row.OrderID = req.OrderID
 		}
 		if err != nil || row.OrderID != req.OrderID {
 			return lookup, errSourceRead

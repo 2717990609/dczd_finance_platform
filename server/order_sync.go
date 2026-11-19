@@ -296,6 +296,9 @@ func storeDCAIBlockers(ctx context.Context, tx pgx.Tx, stream string, rows []ord
 	if len(rows) == 0 {
 		return nil
 	}
+	if stream == dcaiHealthStream {
+		return storeHealthCompletionState(ctx, tx, rows)
+	}
 	type update struct {
 		ID        string    `json:"id"`
 		OrderID   string    `json:"order_id"`

@@ -184,6 +184,8 @@ CREATE TABLE IF NOT EXISTS dcai_order_blockers (
  PRIMARY KEY(stream,source_row_id)
 );
 CREATE INDEX IF NOT EXISTS dcai_active_order_blockers ON dcai_order_blockers(stream,order_id) WHERE cardinality(reasons)>0;
+ALTER TABLE dcai_order_blockers ADD COLUMN IF NOT EXISTS completion_version_id bigint REFERENCES source_order_versions(id);
+ALTER TABLE dcai_order_blockers ADD COLUMN IF NOT EXISTS completion_observed boolean NOT NULL DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS dcai_sync_jobs (
  stream text PRIMARY KEY,

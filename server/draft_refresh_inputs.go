@@ -89,8 +89,15 @@ const draftRefreshFacts = `WITH keys AS (
   ON paid.source=v.source AND paid.order_id=v.order_id AND paid.kind='ORDER_PAID'
  JOIN calculation_draft_lines line ON line.source_version_id=paid.id AND line.component_type='referral'
  JOIN settlements final ON final.period_id=line.period_id WHERE v.kind='ORDER_PAID'
+), health_changes AS (
+ SELECT DISTINCT v.id AS payment_version_id,NULL::bigint AS previous_id,b.completion_version_id AS current_id
+ FROM events v JOIN dcai_order_blockers b ON b.stream='HEALTH_IDENTITY_ORDERS' AND b.order_id=v.order_id
+  AND b.source_row_id=split_part(v.record_key,':',2) AND b.completion_version_id IS NOT NULL
+ WHERE v.source='DCAI' AND v.kind='ORDER_PAID' AND v.fact->>'domain'='HEALTH_IDENTITY'
+  AND split_part(v.record_key,':',1)='ai_health_ambassador_order'
 )
 SELECT id FROM origin
+UNION ` + healthCompletionAffectedPeriodsSQL + `
 UNION SELECT p.id FROM late l JOIN calendar p USING(product_id)
  WHERE (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
 UNION SELECT refund.period_id FROM refund_versions v JOIN calculation_draft_refunds refund ON refund.refund_source_version_id=v.id

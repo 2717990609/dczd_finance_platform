@@ -55,10 +55,12 @@ type dcaiGate struct {
 }
 
 type orderPageRow struct {
-	Cursor   orderCursor
-	OrderID  string
-	Facts    []sourceFact
-	Blockers []string
+	Cursor                 orderCursor
+	OrderID                string
+	Facts                  []sourceFact
+	Blockers               []string
+	healthContractObserved bool
+	healthCompletion       *sourceFact
 }
 
 type orderPage struct {
@@ -272,8 +274,9 @@ func normalizeDCAIOrderRow(stream string, through time.Time, wire orderWireRow) 
 				rank = 1
 			}
 		case "ORDER_COMPLETED":
-			if stream == dcaiHealthStream {
+			if stream == dcaiHealthStream && previousRank == 1 && validHealthCompletion(doc, fact, row.Facts[0], wire.Cursor.ID) {
 				rank = 2
+				row.healthCompletion = &fact
 			}
 		case "REFUND_SUCCEEDED":
 			if fact.AmountMinor != nil && *fact.AmountMinor > 0 && textOK(fact.RefundID, 128) && len(fact.RefundsPayment) != 0 {
@@ -293,11 +296,38 @@ func normalizeDCAIOrderRow(stream string, through time.Time, wire orderWireRow) 
 			return row, errSourceRead
 		}
 		seen[gate.Code], row.OrderID = true, gate.OrderID
+		if gate.Code == "CONTRACT_PREREQUISITE" && (gate.Status == "PASSED") != (row.healthCompletion != nil) {
+			return row, errSourceRead
+		}
 		if gate.Status == "BLOCKED" && gate.Reason != nil && textOK(*gate.Reason, 64) {
 			row.Blockers = append(row.Blockers, *gate.Reason)
 		} else if gate.Status != "PASSED" || gate.Reason != nil {
 			return row, errSourceRead
 		}
 	}
+	if stream == dcaiHealthStream {
+		if (len(wire.Facts) != 0 || len(wire.Gates) != 0) && !seen["CONTRACT_PREREQUISITE"] {
+			return row, errSourceRead
+		}
+		row.healthContractObserved = true
+	}
 	return row, nil
+}
+
+func validHealthCompletion(doc sourceDocument, completion, paid sourceFact, sourceRowID string) bool {
+	if doc.Record.Table != "ai_health_ambassador_apply" || doc.Business.Entity != "HEALTH_IDENTITY_ORDER" ||
+		paid.RecordKey != "ai_health_ambassador_order:"+sourceRowID || completion.OccurredAt.Before(paid.OccurredAt) {
+		return false
+	}
+	matched := false
+	for _, link := range doc.Relations {
+		if link.Kind != "COMPLETES_ORDER" {
+			continue
+		}
+		if matched || link.OrderID != paid.OrderID || link.LineID != paid.LineID || link.RecordID != sourceRowID {
+			return false
+		}
+		matched = true
+	}
+	return matched
 }
