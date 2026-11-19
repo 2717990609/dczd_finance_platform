@@ -285,7 +285,7 @@ async function loadMore(section, cursorName) {
             <small v-else-if="record.beneficiaryKind==='company'" class="order-version">{{ record.beneficiaryUnitKind==='DEPARTMENT' ? '部门分润' : '公司分润' }}</small>
           </template>
           <template v-else-if="column.key === 'component'">{{ salesRoles[record.componentRole] || record.componentLabel || componentLabel(record.component) }}</template>
-          <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}<small v-if="draft.catalog && record.ruleLabel" class="order-version">{{ record.ruleLabel }}</small></template>
+          <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}<small v-if="record.ruleLabel" class="order-version">{{ record.ruleLabel }}</small></template>
           <template v-else-if="column.key === 'base'">
             {{ formatMoney(record.baseMinor) }}<small v-if="record.classRefundMinor>0" class="order-version">已扣退款 {{ formatMoney(record.classRefundMinor) }}</small>
           </template>
