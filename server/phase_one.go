@@ -166,6 +166,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/draft-pools", Handler: s.draftPools},
 		{Method: http.MethodGet, Path: "/api/v1/settlement-review", Handler: s.getSettlementReview},
 		{Method: http.MethodPost, Path: "/api/v1/settlements", Handler: submitJSON(32<<10, s.confirmAuthorizedSettlement)},
+		{Method: http.MethodPost, Path: "/api/v1/correction-recovery", Handler: submit(s.reviewCorrectionRecovery)},
 		{Method: http.MethodPost, Path: "/api/v1/draft-pool-allocations", Handler: submit(s.savePoolAllocation)},
 		{Method: http.MethodPost, Path: "/api/v1/drafts", Handler: submit(s.recalculateDraft)},
 	}

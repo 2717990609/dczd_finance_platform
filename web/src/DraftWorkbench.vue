@@ -1,19 +1,25 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Modal } from 'ant-design-vue'
 import CatalogRuleMatches from './CatalogRuleMatches.vue'
 import DraftReport from './DraftReport.vue'
 import DraftPoolAllocations from './DraftPoolAllocations.vue'
 import DraftSettlementReview from './DraftSettlementReview.vue'
 import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
-const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array, api: Function, formatMoney: Function, formatTime: Function })
+const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
+  recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function })
 const selected = ref()
 const view = ref('detail')
 const draft = ref()
 const loading = ref(false)
 const calculating = ref(false)
 const pullingRoster = ref(false)
-const rosterNotice = ref('')
+const notice = ref('')
+const recovery = ref()
+const recoveryOutcome = ref()
+const recoveryError = ref('')
+const savingRecovery = ref(false)
 const error = ref('')
 const refreshStatus = ref()
 let sequence = 0
@@ -27,6 +33,7 @@ const options = computed(() => props.periods.map(period => ({
 })))
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
 const canPullRoster = computed(() => selectedPeriod.value?.periodMode === 'class' && selectedPeriod.value.sourcePeriodKey && !draft.value?.settlement)
+const canReviewRecovery = computed(() => !draft.value?.settlement && props.recoveryOptions?.length && props.settlementProducts?.includes(selectedPeriod.value?.productId))
 const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable)
 const hasSettlementReview = computed(() => draft.value?.settlementReviewAvailable ?? (draft.value?.catalog && draft.value?.refundsReady))
 const matchingOnly = computed(() => hasMatching.value && !selectedPeriod.value?.catalogDraftAvailable)
@@ -72,7 +79,7 @@ const reason = {
   CORRECTION_SCOPE_CHANGED: '原付款标识、产品或发生时间有变动，需核对归属',
   CORRECTION_MISSING_FACT_OR_RULE: '缺少结算时使用的推荐规则或有效的最新付款金额',
   CORRECTION_REFUND_CONFLICT: '最新付款与已登记退款无法按结算时规则对平',
-  CORRECTION_RECOVERY_PENDING: '原受益人的扣回处理尚未确认',
+  CORRECTION_RECOVERY_PENDING: '待确认扣回方式',
   PRACTICE_DUPLICATE_ENROLLMENT: '同一报名和付款仍在其他期次，请在来源名单核对延期',
   PRACTICE_PAYMENT_ALREADY_SETTLED: '报名中的付款已结算，请核对原班次和延期记录',
   PRACTICE_REFUND_PENDING: '对应付款已有退款，请重新试算',
@@ -190,7 +197,8 @@ watch(selected, async () => {
   clearTimeout(statusTimer)
   const request = ++statusSequence
   refreshStatus.value = undefined
-  rosterNotice.value = ''
+  notice.value = ''
+  recovery.value = undefined
   view.value = 'detail'
   await load(true)
   if (request === statusSequence) checkRefresh()
@@ -222,17 +230,42 @@ async function pullRoster() {
   if (!canPullRoster.value || pullingRoster.value || calculating.value) return
   pullingRoster.value = true
   error.value = ''
-  rosterNotice.value = ''
+  notice.value = ''
   try {
     const result = await props.api('/practice-rosters/pull', { method: 'POST', body: JSON.stringify({ periodId }) })
     if (selected.value !== periodId || unmounted) return
-    rosterNotice.value = result.changed ? `已读取签到名单 v${result.version}，可重新试算。` : `签到名单已是 v${result.version}。`
+    notice.value = result.changed ? `已读取签到名单 v${result.version}，可重新试算。` : `签到名单已是 v${result.version}。`
     if (result.changed && view.value === 'review') await load()
     await checkRefresh()
   } catch (err) {
     if (selected.value === periodId && !unmounted) error.value = err.message
   } finally {
     pullingRoster.value = false
+  }
+}
+
+function openRecovery(record) {
+  recoveryOutcome.value = undefined
+  recoveryError.value = ''
+  recovery.value = { ...record.recovery, periodId: selected.value, version: draft.value.version, issueId: record.id }
+}
+
+async function saveRecovery() {
+  if (!recovery.value || !recoveryOutcome.value || savingRecovery.value) return
+  const { periodId, version, issueId } = recovery.value
+  savingRecovery.value = true
+  recoveryError.value = ''
+  notice.value = ''
+  try {
+    await props.api('/correction-recovery', {method:'POST', body:JSON.stringify({periodId, version, issueId, outcome:recoveryOutcome.value})})
+    if (selected.value !== periodId || unmounted) return
+    recovery.value = undefined
+    notice.value = '扣回处理已登记。'
+    await calculate()
+  } catch (err) {
+    if (selected.value === periodId && !unmounted) recoveryError.value = err.message
+  } finally {
+    savingRecovery.value = false
   }
 }
 
@@ -265,7 +298,7 @@ async function loadMore(section, cursorName) {
   <section class="records draft-controls">
     <div class="draft-toolbar">
       <label for="draft-period">产品和核算期</label>
-      <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和核算期" :disabled="calculating || pullingRoster" />
+      <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和核算期" :disabled="calculating || pullingRoster || savingRecovery" />
       <a-button v-if="!matchingOnly" type="primary" :disabled="!selected || loading || pullingRoster || !!draft?.settlement" :loading="calculating" @click="calculate">重新试算</a-button>
       <a-button v-if="canPullRoster" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
       <a-button v-if="!matchingOnly" :disabled="!selected || loading || calculating || pullingRoster" @click="load()">刷新结果</a-button>
@@ -280,7 +313,7 @@ async function loadMore(section, cursorName) {
     </p>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
-  <a-alert v-if="rosterNotice" class="feedback" type="success" :message="rosterNotice" show-icon />
+  <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon />
   <a-alert v-if="!draft?.settlement && refreshStatus?.message" class="feedback" type="warning" :message="refreshStatus.message" show-icon/>
   <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount, 'summary-collection':!draft.refundsReady }">
     <article v-if="!draft.practiceRefundMonth"><div><small>{{ draft.practiceRosterVersion ? '本班计提（含名单确认前退款）' : '正向计提' }}</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
@@ -366,7 +399,13 @@ async function loadMore(section, cursorName) {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'source'">{{ record.orderId || '—' }}<small v-if="record.enrollmentId" class="order-version">报名 {{ record.enrollmentId }}</small></template>
           <template v-else-if="column.key === 'component'">{{ record.componentLabel || componentLabel(record.component) || '—' }}</template>
-          <template v-else-if="column.key === 'reason'"><a-tag v-if="record.advisory" color="blue">提示</a-tag>{{ reason[record.code] || record.code }}</template>
+          <template v-else-if="column.key === 'reason'">
+            <a-tag v-if="record.advisory" color="blue">提示</a-tag>{{ reason[record.code] || record.code }}
+            <template v-if="record.recovery">
+              <small class="order-version">{{ record.recovery.personName }}（人员 {{ record.recovery.personId }}） · {{ formatMoney(-record.recovery.amountMinor) }}</small>
+              <a-button v-if="canReviewRecovery" type="link" size="small" :disabled="refreshStatus?.pending || calculating || savingRecovery" @click="openRecovery(record)">登记扣回处理</a-button>
+            </template>
+          </template>
         </template>
       </a-table>
     </div>
@@ -378,4 +417,18 @@ async function loadMore(section, cursorName) {
   <section v-if="!draft && !error && !hasMatching" class="records empty">
     <a-empty :description="loading ? '正在读取试算' : selected ? '本期暂无草稿' : '请选择核算期'" />
   </section>
+  <Modal :open="!!recovery" title="登记扣回处理" ok-text="保存并试算" cancel-text="取消" :confirm-loading="savingRecovery"
+    :ok-button-props="{ disabled: !recoveryOutcome }" :cancel-button-props="{ disabled: savingRecovery }" :closable="!savingRecovery"
+    :mask-closable="!savingRecovery" :keyboard="!savingRecovery" @ok="saveRecovery" @cancel="recovery=undefined">
+    <template v-if="recovery">
+      <p>{{ recovery.personName }}（人员 {{ recovery.personId }}） · 待扣回 {{ formatMoney(-recovery.amountMinor) }}</p>
+      <p>原结算期 {{ recovery.originalPeriod }} · 结算时规则 v{{ recovery.ruleVersion }}</p>
+      <a-form layout="vertical">
+        <a-form-item label="处理方式" html-for="correction-recovery-outcome">
+          <a-select id="correction-recovery-outcome" v-model:value="recoveryOutcome" :options="recoveryOptions" :disabled="savingRecovery" placeholder="请选择处理方式"/>
+        </a-form-item>
+      </a-form>
+      <a-alert v-if="recoveryError" :message="recoveryError" type="error" show-icon/>
+    </template>
+  </Modal>
 </template>

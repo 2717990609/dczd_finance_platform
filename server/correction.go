@@ -17,7 +17,7 @@ func addMinor(left, right int64) (int64, error) {
 	return left + right, nil
 }
 
-func recommendationDeltas(recorded, desired map[int64]int64, recovery map[int64]string) ([]recipientDelta, bool, error) {
+func recommendationDeltas(recorded, desired map[int64]int64, recovery map[int64]string) ([]recipientDelta, []recipientDelta, error) {
 	people := make([]int64, 0, len(recorded)+len(desired))
 	for person := range recorded {
 		people = append(people, person)
@@ -28,25 +28,26 @@ func recommendationDeltas(recorded, desired map[int64]int64, recovery map[int64]
 		}
 	}
 	slices.Sort(people)
-	var pending bool
-	var deltas []recipientDelta
+	var posted, pending []recipientDelta
 	for _, person := range people {
 		amount := recorded[person]
 		want := desired[person]
 		if amount == math.MinInt64 {
-			return nil, false, errCalculationOverflow
+			return nil, nil, errCalculationOverflow
 		}
 		delta, err := addMinor(want, -amount)
 		if err != nil {
-			return nil, false, err
+			return nil, nil, err
 		}
 		if delta < 0 && recovery[person] != "recover" {
-			pending = pending || recovery[person] != "departed_unreachable"
+			if recovery[person] != "departed_unreachable" {
+				pending = append(pending, recipientDelta{PersonID: person, Amount: delta})
+			}
 			continue
 		}
 		if delta != 0 {
-			deltas = append(deltas, recipientDelta{PersonID: person, Amount: delta})
+			posted = append(posted, recipientDelta{PersonID: person, Amount: delta})
 		}
 	}
-	return deltas, pending, nil
+	return posted, pending, nil
 }

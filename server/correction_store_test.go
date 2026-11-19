@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -94,18 +95,81 @@ func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t 
 	}
 	review := func(personID int64, outcome string) {
 		t.Helper()
-		err := service.reviewCorrectionRecovery(ctx, reviewCorrectionRecoveryInput{OriginalLineID: originalLine, PersonID: personID, Outcome: outcome}, "integration")
+		_, err := service.db.Exec(ctx, storeCorrectionRecoverySQL, originalLine, personID, outcome, "integration")
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
 	save("v2", "Replacement", "order", 1200, at(time.July, 5))
+	save("v2-boundary-display", "Replacement", "same correction after month boundary", 1200, at(time.August, 1))
 	needsCheck := draftAt(july, 120, 1, 1)
 	save("v2-review-display", "Replacement", "updated order display", 1200, at(time.July, 5).Add(time.Hour))
 	if repeat := draftAt(july, 120, 1, 1); repeat.Version != needsCheck.Version {
 		t.Fatalf("display-only update changed a pending draft: %d -> %d", needsCheck.Version, repeat.Version)
 	}
-	review(a, "recover")
+	api := http.NewServeMux()
+	for _, route := range service.routes() {
+		api.HandleFunc(route.Method+" "+route.Path, route.Handler)
+	}
+	operator := mustID(service.createPerson(ctx, createPersonInput{Name: "Finance operator"}))
+	if err := service.saveFinanceAccount(ctx, financeAccountConfig{PersonID: operator, Login: "recovery.operator", Enabled: true,
+		Workspace: true, Settlements: []int64{product}}, "isolated-recovery-password"); err != nil {
+		t.Fatal(err)
+	}
+	key, err := service.loginFinanceAccount(ctx, financeLoginInput{Login: "recovery.operator", Password: "isolated-recovery-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var issueID int64
+	if err := service.db.QueryRow(ctx, `SELECT id FROM calculation_draft_issues WHERE period_id=$1 AND code='CORRECTION_RECOVERY_PENDING'`, july).Scan(&issueID); err != nil {
+		t.Fatal(err)
+	}
+	callDecision := func(session string, version, issue int64, outcome string, status int) {
+		t.Helper()
+		body := fmt.Sprintf(`{"periodId":%d,"version":%d,"issueId":%d,"outcome":%q}`, july, version, issue, outcome)
+		r := httptest.NewRequest(http.MethodPost, "http://127.0.0.1/api/v1/correction-recovery", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Origin", "http://127.0.0.1")
+		if session != "" {
+			r.AddCookie(&http.Cookie{Name: financeAccountCookie, Value: session})
+		}
+		w := httptest.NewRecorder()
+		api.ServeHTTP(w, r)
+		if w.Code != status {
+			t.Fatalf("recovery decision HTTP %d, want %d: %s", w.Code, status, w.Body.String())
+		}
+	}
+	callDecision("", needsCheck.Version, issueID, "recover", http.StatusUnauthorized)
+	viewerPerson := mustID(service.createPerson(ctx, createPersonInput{Name: "Finance viewer"}))
+	if err := service.saveFinanceAccount(ctx, financeAccountConfig{PersonID: viewerPerson, Login: "recovery.viewer", Enabled: true,
+		Workspace: true}, "isolated-viewer-password"); err != nil {
+		t.Fatal(err)
+	}
+	viewer, err := service.loginFinanceAccount(ctx, financeLoginInput{Login: "recovery.viewer", Password: "isolated-viewer-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	callDecision(viewer, needsCheck.Version, issueID, "recover", http.StatusForbidden)
+	callDecision(key, needsCheck.Version+1, issueID, "recover", http.StatusConflict)
+	callDecision(key, needsCheck.Version, issueID+1, "recover", http.StatusConflict)
+	if _, err := service.db.Exec(ctx, `UPDATE configuration_options SET enabled=false WHERE group_key='correctionRecovery' AND option_key='recover'`); err != nil {
+		t.Fatal(err)
+	}
+	callDecision(key, needsCheck.Version, issueID, "recover", http.StatusBadRequest)
+	if _, err := service.db.Exec(ctx, `UPDATE configuration_options SET enabled=true WHERE group_key='correctionRecovery' AND option_key='recover'`); err != nil {
+		t.Fatal(err)
+	}
+	// The stored issue must not authorize a write when its deduction no longer exists.
+	review(a, "departed_unreachable")
+	callDecision(key, needsCheck.Version, issueID, "recover", http.StatusConflict)
+	if _, err := service.db.Exec(ctx, `DELETE FROM correction_recovery_decisions WHERE original_line_id=$1 AND person_id=$2`, originalLine, a); err != nil {
+		t.Fatal(err)
+	}
+	callDecision(key, needsCheck.Version, issueID, "recover", http.StatusOK)
+	var queued bool
+	if err := service.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, july).Scan(&queued); err != nil || !queued {
+		t.Fatalf("saving a decision must queue the open draft: %v %v", queued, err)
+	}
 	draftAt(july, 20, 2, 0)
 	review(a, "departed_unreachable")
 	pending := draftAt(july, 120, 1, 0)
@@ -114,6 +178,7 @@ func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t 
 		t.Fatalf("display-only change produced a new draft version: %d -> %d", pending.Version, repeat.Version)
 	}
 	confirm(pending)
+	callDecision(key, pending.Version, issueID, "recover", http.StatusConflict)
 	save("v3", "Second replacement", "changed display only", 900, at(time.August, 5))
 	review(b, "recover")
 	newDraft := draftAt(august, -30, 2, 0)
@@ -180,7 +245,7 @@ func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t 
 	readPersonnel(august, newDraft.Version+1, http.StatusConflict)
 	review(c, "recover")
 	refund := int64(200)
-	err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
+	err = pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
 		_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCAI", Kind: "REFUND_SUCCEEDED", OrderID: "original-order", RefundID: "refund", RecordKey: "refunds:1",
 			Version: "refund-1", Domain: "VIP", SourceKey: "VIP", AmountMinor: &refund, OccurredAt: at(time.September, 5), UpdatedAt: at(time.September, 5),
 			RefundsPayment: []sourcePaymentReference{{OrderID: "original-order", RecordID: "1"}}}})

@@ -31,12 +31,12 @@ var (
 )
 
 type financePrincipal struct {
-	ID          string             `json:"-"`
-	Name        string             `json:"name"`
-	Workspace   bool               `json:"workspace"`
-	Rules       []financeRuleGrant `json:"rules"`
-	settlements []int64
-	sessionHash []byte
+	ID                 string             `json:"-"`
+	Name               string             `json:"name"`
+	Workspace          bool               `json:"workspace"`
+	Rules              []financeRuleGrant `json:"rules"`
+	SettlementProducts []int64            `json:"settlementProducts"`
+	sessionHash        []byte
 }
 
 type financeSessionView struct {
@@ -91,7 +91,7 @@ func (s workspace) accountSession(r *http.Request) (*financePrincipal, error) {
 	  FROM finance_account_rule_grants g WHERE g.account_id=a.id),'[]'),
 	 ARRAY(SELECT g.product_id FROM finance_account_settlement_grants g WHERE g.account_id=a.id)
 	 FROM finance_account_sessions s JOIN finance_accounts a ON a.id=s.account_id JOIN people p ON p.id=a.person_id
-	 WHERE s.token_hash=$1 AND s.expires_at>now() AND a.enabled`, hash).Scan(&p.ID, &p.Name, &p.Workspace, &p.Rules, &p.settlements)
+	 WHERE s.token_hash=$1 AND s.expires_at>now() AND a.enabled`, hash).Scan(&p.ID, &p.Name, &p.Workspace, &p.Rules, &p.SettlementProducts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}

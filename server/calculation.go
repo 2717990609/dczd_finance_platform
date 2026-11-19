@@ -49,13 +49,15 @@ type draftLine struct {
 }
 
 type draftIssue struct {
-	FactID       int64  `json:"factId,omitempty"`
-	RuleID       int64  `json:"ruleId,omitempty"`
-	Component    string `json:"component,omitempty"`
-	Code         string `json:"code"`
-	EnrollmentID int64  `json:"enrollmentId,omitempty"`
-	Advisory     bool   `json:"advisory,omitempty"`
-	stableKey    string
+	FactID           int64                      `json:"factId,omitempty"`
+	RuleID           int64                      `json:"ruleId,omitempty"`
+	Component        string                     `json:"component,omitempty"`
+	Code             string                     `json:"code"`
+	EnrollmentID     int64                      `json:"enrollmentId,omitempty"`
+	Advisory         bool                       `json:"advisory,omitempty"`
+	Recovery         *pendingCorrectionRecovery `json:"recovery,omitempty"`
+	CorrectionLineID int64                      `json:"correctionLineId,omitempty"`
+	stableKey        string
 }
 
 type paymentDraft struct {

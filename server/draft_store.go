@@ -460,18 +460,16 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Issues) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_issues"},
-			[]string{"period_id", "source_version_id", "component_type", "code", "practice_enrollment_id", "advisory"},
+			[]string{"period_id", "source_version_id", "component_type", "code", "practice_enrollment_id", "advisory",
+				"correction_line_id", "recovery_person_id", "recovery_minor"},
 			pgx.CopyFromSlice(len(result.Issues), func(i int) ([]any, error) {
 				issue := result.Issues[i]
-				var factID *int64
-				if issue.FactID != 0 {
-					factID = &issue.FactID
+				var recovery pendingCorrectionRecovery
+				if issue.Recovery != nil {
+					recovery = *issue.Recovery
 				}
-				var enrollment *int64
-				if issue.EnrollmentID != 0 {
-					enrollment = &issue.EnrollmentID
-				}
-				return []any{summary.PeriodID, factID, issue.Component, issue.Code, enrollment, issue.Advisory}, nil
+				return []any{summary.PeriodID, optionalDraftID(issue.FactID), issue.Component, issue.Code, optionalDraftID(issue.EnrollmentID), issue.Advisory,
+					optionalDraftID(issue.CorrectionLineID), optionalDraftID(recovery.PersonID), optionalDraftID(recovery.Amount)}, nil
 			}))
 	}
 	if err != nil {
@@ -626,8 +624,15 @@ const draftDetailSQL = `SELECT jsonb_build_object(
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
   SELECT i.id,i.component_type AS "component",i.code,i.advisory,o.source,o.order_id AS "orderId",e.source_enrollment_id AS "enrollmentId",
    CASE WHEN r.id IS NOT NULL AND starts_with(i.component_type,'period:')
-     THEN r.components->(split_part(i.component_type,':',3)::int)->'periodBenefit'->>'label' END AS "componentLabel"
+     THEN r.components->(split_part(i.component_type,':',3)::int)->'periodBenefit'->>'label' END AS "componentLabel",
+   CASE WHEN i.recovery_person_id IS NOT NULL THEN jsonb_build_object(
+     'personName',recipient.name,'personId',recipient.id,'amountMinor',i.recovery_minor,'originalPeriod',original_period.name,'ruleVersion',original_rule.version)
+   END AS recovery
   FROM calculation_draft_issues i LEFT JOIN source_order_versions o ON o.id=i.source_version_id LEFT JOIN practice_enrollments e ON e.id=i.practice_enrollment_id
+  LEFT JOIN people recipient ON recipient.id=i.recovery_person_id
+  LEFT JOIN calculation_draft_lines original ON original.id=i.correction_line_id
+  LEFT JOIN periods original_period ON original_period.id=original.period_id
+  LEFT JOIN rule_versions original_rule ON original_rule.id=original.rule_id
   WHERE i.period_id=d.period_id AND i.id>$3 ORDER BY i.id LIMIT 50
  ) i),'[]')
 ) FROM calculation_drafts d JOIN periods period ON period.id=d.period_id JOIN products product ON product.id=period.product_id

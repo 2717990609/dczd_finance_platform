@@ -30,7 +30,7 @@ type confirmSettlementInput struct {
 }
 
 func (p *financePrincipal) permitsSettlement(product int64) bool {
-	return p != nil && p.Workspace && slices.Contains(p.settlements, product)
+	return p != nil && p.Workspace && slices.Contains(p.SettlementProducts, product)
 }
 
 func (s workspace) confirmAuthorizedSettlement(ctx context.Context, req confirmSettlementInput) (settlement, error) {
@@ -217,23 +217,31 @@ func (s workspace) confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSett
 }
 
 func verifySettlementDraft(ctx context.Context, tx pgx.Tx, periodID int64, scope settlementReview) error {
-	summary := draftSummary{PeriodID: periodID}
-	window, rules, err := readDraftScope(ctx, tx, &summary)
+	current, err := readUnchangedDraft(ctx, tx, periodID, scope)
 	if err != nil {
 		return err
-	}
-	if summary.Catalog != scope.catalog || summary.PracticeRefundMonth != scope.practiceRefundMonth {
-		return errSettlementStale
-	}
-	current, digest, err := computeDraft(ctx, tx, summary, window, rules)
-	if err != nil {
-		return err
-	}
-	if !bytes.Equal(digest, scope.digest) {
-		return errSettlementStale
 	}
 	if current.blockingIssues() != 0 {
 		return errSettlementPending
 	}
 	return nil
+}
+
+func readUnchangedDraft(ctx context.Context, tx pgx.Tx, periodID int64, scope settlementReview) (paymentDraft, error) {
+	summary := draftSummary{PeriodID: periodID}
+	window, rules, err := readDraftScope(ctx, tx, &summary)
+	if err != nil {
+		return paymentDraft{}, err
+	}
+	if summary.Catalog != scope.catalog || summary.PracticeRefundMonth != scope.practiceRefundMonth {
+		return paymentDraft{}, errSettlementStale
+	}
+	current, digest, err := computeDraft(ctx, tx, summary, window, rules)
+	if err != nil {
+		return paymentDraft{}, err
+	}
+	if !bytes.Equal(digest, scope.digest) {
+		return paymentDraft{}, errSettlementStale
+	}
+	return current, nil
 }

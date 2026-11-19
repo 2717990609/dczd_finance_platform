@@ -6,6 +6,8 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+const draftDisplayFactFields = `ARRAY['version','updatedAt','orderNo']`
+
 const draftRefreshFacts = `WITH keys AS (
  SELECT DISTINCT source,order_id,line_id,record_key,kind FROM source_order_versions
  WHERE id=ANY($1::bigint[]) OR id=ANY($2::bigint[])
@@ -22,9 +24,9 @@ const draftRefreshFacts = `WITH keys AS (
  LEFT JOIN source_payment_companies cv ON cv.source_version_id=current.id
  LEFT JOIN source_payment_companies pv ON pv.source_version_id=previous.id
  WHERE current.id=ANY($2::bigint[]) OR (current.id=ANY($1::bigint[]) AND (
-  previous.id IS NULL OR (current.fact-ARRAY['version','updatedAt','orderNo'],cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,
+  previous.id IS NULL OR (current.fact-` + draftDisplayFactFields + `,cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,
    cv.company_id,cv.recommendation_company_id,cv.recommendation_conflict)
-  IS DISTINCT FROM (previous.fact-ARRAY['version','updatedAt','orderNo'],pc.entity_type,pc.business_key,pc.classifier,pc.sales_claims,
+  IS DISTINCT FROM (previous.fact-` + draftDisplayFactFields + `,pc.entity_type,pc.business_key,pc.classifier,pc.sales_claims,
    pv.company_id,pv.recommendation_company_id,pv.recommendation_conflict)))
 ), events AS MATERIALIZED (
  SELECT v.id,v.source,v.fact,v.order_id,v.kind,v.record_key,v.occurred_at FROM changed c
@@ -96,6 +98,7 @@ UNION SELECT refund.period_id FROM refund_versions v JOIN calculation_draft_refu
 UNION SELECT posted.period_id FROM refund_versions v JOIN calculation_draft_performance posted ON posted.source_version_id=v.id
  WHERE posted.payment_version_id IS NOT NULL
 UNION SELECT posted.period_id FROM corrected_originals o JOIN calculation_draft_corrections posted ON posted.original_line_id=o.id
+UNION SELECT issue.period_id FROM corrected_originals o JOIN calculation_draft_issues issue ON issue.correction_line_id=o.id
 UNION SELECT id FROM classes
 UNION SELECT id FROM practice_refund_months
 UNION SELECT p.id FROM classes c JOIN periods p ON p.product_id=c.product_id AND p.ordinal>c.ordinal
@@ -133,6 +136,9 @@ const draftRefreshAfterClose = `WITH closing AS (
 ), related_refunds AS (
  SELECT DISTINCT v.occurred_at FROM paid JOIN source_order_versions v ON v.source=paid.source AND v.kind='REFUND_SUCCEEDED'
  AND (v.order_id=paid.order_id OR v.fact->'refundsPayment' @> jsonb_build_array(jsonb_build_object('orderId',paid.order_id)))
+), closed_adjustments AS (
+ SELECT original_line_id FROM calculation_draft_corrections WHERE period_id=$1
+ UNION SELECT original_line_id FROM calculation_draft_refunds WHERE period_id=$1
 )
 SELECT p.id FROM closing original JOIN periods p ON p.product_id=original.product_id AND p.id<>original.id
 WHERE (original.period_mode='class' AND p.calendar_month IS NOT NULL OR original.period_mode<>'class' AND p.ordinal>original.ordinal)
@@ -142,7 +148,9 @@ WHERE (original.period_mode='class' AND p.calendar_month IS NOT NULL OR original
   AND r.occurred_at<(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
  OR original.period_mode='class' AND EXISTS(SELECT 1 FROM calculation_draft_performance refund
   JOIN payments paid ON paid.source_version_id=refund.payment_version_id WHERE refund.period_id=p.id))
-UNION SELECT period_id FROM practice_payment_dependents($1)`
+UNION SELECT period_id FROM practice_payment_dependents($1)
+UNION SELECT c.period_id FROM closed_adjustments a JOIN calculation_draft_corrections c USING(original_line_id)
+UNION SELECT i.period_id FROM closed_adjustments a JOIN calculation_draft_issues i ON i.correction_line_id=a.original_line_id`
 
 const draftRefreshRoster = `WITH base AS (
  SELECT p.id,p.product_id,p.ordinal,p.source_period_key,split_part(p.source_period_key,':',3) AS series FROM periods p

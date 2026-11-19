@@ -303,6 +303,7 @@ CREATE OR REPLACE TRIGGER protect_confirmed_issues BEFORE INSERT OR UPDATE OR DE
 
 CREATE OR REPLACE FUNCTION protect_settlement_record() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE refund_dependents bigint[];
+        correction_dependents bigint[];
 BEGIN
  IF TG_OP='UPDATE' THEN
   RAISE EXCEPTION 'confirmed settlement cannot be changed' USING ERRCODE='55000';
@@ -350,17 +351,20 @@ BEGIN
  ) THEN
   RAISE EXCEPTION 'settlement has booked adjustments' USING ERRCODE='55000';
  END IF;
+ SELECT array_agg(dep.period_id) INTO correction_dependents FROM (
+  SELECT a.period_id FROM calculation_draft_corrections a JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id
+  UNION SELECT i.period_id FROM calculation_draft_issues i JOIN calculation_draft_lines l ON l.id=i.correction_line_id WHERE l.period_id=OLD.period_id
+ ) dep;
  DELETE FROM calculation_drafts
  WHERE period_id IN (SELECT a.period_id FROM calculation_draft_refunds a
    JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id
-   UNION SELECT a.period_id FROM calculation_draft_corrections a
-   JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id
+   UNION SELECT unnest(correction_dependents)
    UNION SELECT a.period_id FROM calculation_draft_performance a
    JOIN calculation_draft_performance o ON o.source_version_id=a.payment_version_id WHERE o.period_id=OLD.period_id)
  AND period_id<>OLD.period_id;
  INSERT INTO draft_refresh_queue(period_id)
  SELECT p.id FROM periods p WHERE (p.id=OLD.period_id AND p.source_period_key IS NOT NULL)
- OR ((p.id=ANY(refund_dependents) OR p.id IN (SELECT period_id FROM practice_payment_dependents(OLD.period_id)))
+ OR ((p.id=ANY(refund_dependents) OR p.id=ANY(correction_dependents) OR p.id IN (SELECT period_id FROM practice_payment_dependents(OLD.period_id)))
   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id))
  ORDER BY p.id ON CONFLICT(period_id) DO UPDATE
  SET generation=excluded.generation,requested_at=excluded.requested_at,retry_on_scan=true,message='';
@@ -447,6 +451,20 @@ CREATE TABLE IF NOT EXISTS correction_recovery_decisions (
  reviewed_at timestamptz NOT NULL DEFAULT now(),
  PRIMARY KEY(original_line_id,person_id)
 );
+
+DO $$
+BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_attribute WHERE attrelid='calculation_draft_issues'::regclass AND attname='correction_line_id' AND NOT attisdropped) THEN
+  ALTER TABLE calculation_draft_issues ADD COLUMN correction_line_id bigint REFERENCES calculation_draft_lines(id) ON DELETE CASCADE,
+   ADD COLUMN recovery_person_id bigint REFERENCES people(id), ADD COLUMN recovery_minor bigint CHECK(recovery_minor<0);
+  INSERT INTO draft_refresh_queue(period_id)
+  SELECT DISTINCT i.period_id FROM calculation_draft_issues i WHERE i.component_type='referral'
+   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=i.period_id)
+  ON CONFLICT DO NOTHING;
+ END IF;
+END
+$$;
+CREATE INDEX IF NOT EXISTS calculation_draft_correction_original ON calculation_draft_issues(correction_line_id) WHERE correction_line_id IS NOT NULL;
 
 ALTER TABLE periods ADD COLUMN IF NOT EXISTS source_period_key text;
 CREATE UNIQUE INDEX IF NOT EXISTS periods_source_period_key ON periods(source_period_key) WHERE source_period_key IS NOT NULL;
@@ -540,6 +558,8 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('refundPolicy','proportional','按实际退款比例扣回',10,'{}'),
  ('refundPolicy','full_reversal','有退款即整笔冲回',20,'{}'),
  ('refundPolicy','non_refundable','退款时不扣回',30,'{}'),
+ ('correctionRecovery','recover','扣回该受益人',10,'{}'),
+ ('correctionRecovery','departed_unreachable','已离职且无法联系，免扣',20,'{}'),
  ('dcaiOrderStream','VIP_ORDERS','AI 会员',10,'{}'),
  ('dcaiOrderStream','HEALTH_IDENTITY_ORDERS','健康大使或创客',20,'{}'),
  ('dczdOrderStream','ORDER_FACTS','大春之道订单与退款',10,'{}'),
