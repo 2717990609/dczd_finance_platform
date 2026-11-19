@@ -55,7 +55,7 @@ func storeSourceClassification(ctx context.Context, tx pgx.Tx, version int64, cl
 	return false, err
 }
 
-func normalizeCatalogRoutes(product *legacyCatalogProduct, ids map[string]bool) error {
+func normalizeCatalogRoutes(product *productConfigEntry, ids map[string]bool) error {
 	for i := range product.BusinessRoutes {
 		route := &product.BusinessRoutes[i]
 		id, valid := canonicalSourceUUID(route.SourceID)
@@ -64,11 +64,11 @@ func normalizeCatalogRoutes(product *legacyCatalogProduct, ids map[string]bool) 
 			!textOK(route.BusinessKey, 180) || !textOK(route.Classifier, 128) || !textOK(route.SKU, 128) ||
 			!textOK(route.Label, 200) || route.Version < 1 || route.From.IsZero() ||
 			route.Through != nil && !route.Through.After(route.From) {
-			return errLegacyCatalogInvalid
+			return errProductConfigInvalid
 		}
 		ids[id], route.SourceID = true, id
 		route.From = route.From.UTC().Truncate(time.Microsecond)
-		route.Through = canonicalLegacyTime(route.Through)
+		route.Through = canonicalConfigTime(route.Through)
 	}
 	return nil
 }
@@ -85,7 +85,7 @@ func storeCatalogRoute(ctx context.Context, tx pgx.Tx, productID int64, observed
 	  excluded.classifier,excluded.sku_code,excluded.mapping_version,excluded.effective_from)`, route.SourceID, productID, route.Source, route.Domain,
 		route.Entity, route.RecordTable, route.BusinessKey, route.Classifier, route.SKU, route.Label, route.Version, route.From, route.Through, observed)
 	if err == nil && tag.RowsAffected() == 0 {
-		return errLegacyCatalogConflict
+		return errProductConfigConflict
 	}
 	return err
 }

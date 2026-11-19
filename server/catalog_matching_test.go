@@ -28,9 +28,9 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 		 "rate_bps":300,"item_key":"FIXED_A","label":"固定分项"}],
 		 "policy_scope":{"business_sku_codes":[%q],"sales_systems":["DCAI"],"financial_event_types":["order.paid"],"priority":%d}}`, cycle, sku, priority))
 	}
-	pack := func(id, version, priority int, sku string, scope string, paused bool) legacyCatalogPackage {
-		return legacyCatalogPackage{SourceID: z(id), Project: "TEST", Code: fmt.Sprint(id), Name: fmt.Sprintf("规则 %d", version), ScopeType: scope, ScopeID: sku,
-			Kind: "LEGACY_BUNDLE", Paused: paused, Versions: []legacyCatalogVersion{{SourceID: z(id + 1), Number: version, Status: "PUBLISHED",
+	pack := func(id, version, priority int, sku string, scope string, paused bool) productRulePackageConfig {
+		return productRulePackageConfig{SourceID: z(id), Project: "TEST", Code: fmt.Sprint(id), Name: fmt.Sprintf("规则 %d", version), ScopeType: scope, ScopeID: sku,
+			Kind: "COMPONENT_RULE", Paused: paused, Versions: []productRuleVersionConfig{{SourceID: z(id + 1), Number: version, Status: "PUBLISHED",
 				From: from, Through: &through, Hash: z(id + 1), Definition: policy(sku, priority, "MONTHLY_25_TO_24")}}}
 	}
 	mapping := func(id, version int, scenario string, start time.Time, end *time.Time) catalogBusinessRoute {
@@ -38,10 +38,10 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 			BusinessKey: "dcai:vip:new", Classifier: "dcai.vip-lifecycle.v1", SKU: scenario, Label: scenario,
 			Version: version, From: start, Through: end}
 	}
-	input := legacyCatalogFile{Environment: "test", CapturedAt: time.Now(), Products: []legacyCatalogProduct{{
+	input := productConfigFile{Environment: "test", CapturedAt: time.Now(), Products: []productConfigEntry{{
 		SourceID: z(1), Code: "CATALOG_VIP", Name: "会员", Project: "TEST", Source: "DCAI", SourceKey: "dcai.vip", PeriodMode: "calendar", CycleStartDay: &day,
 		BusinessRoutes: []catalogBusinessRoute{mapping(2, 1, "BEFORE", from, &boundary), mapping(3, 2, "AFTER", boundary, nil)},
-		Packages: []legacyCatalogPackage{
+		Packages: []productRulePackageConfig{
 			pack(10, 11, 10, "BEFORE", "BUSINESS_SCENARIO", false),
 			pack(12, 12, 15, "AFTER", "BUSINESS_SCENARIO", false),
 			pack(14, 13, 16, "AFTER", "BUSINESS_SCENARIO", false),
@@ -51,7 +51,7 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 	}}}
 	saveConfig := func() {
 		t.Helper()
-		err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error { return storeLegacyCatalog(ctx, tx, input) })
+		err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error { return storeProductConfig(ctx, tx, input) })
 		if err != nil {
 			t.Fatal(err)
 		}

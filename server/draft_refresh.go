@@ -39,7 +39,7 @@ func enqueueDraftPeriods(ctx context.Context, tx pgx.Tx, selection string, args 
 
 const draftRefreshProduct = `SELECT id FROM periods WHERE product_id=$1`
 
-const draftRefreshSalesContext = `SELECT p.id FROM periods p JOIN legacy_catalog_products c USING(product_id) WHERE c.source_system=$1`
+const draftRefreshSalesContext = `SELECT p.id FROM periods p JOIN product_catalog_settings c USING(product_id) WHERE c.source_system=$1`
 
 const draftRefreshIdentity = `SELECT p.id FROM periods p JOIN source_mappings m USING(product_id)
  JOIN products pro ON pro.id=p.product_id WHERE m.source=$1
@@ -92,7 +92,7 @@ func (s workspace) refreshPendingDrafts(ctx context.Context) error {
 }
 
 func draftRefreshFailure(err error) (string, bool) {
-	for _, known := range []error{errDraftRule, errDraftLimit, errLegacyRuleNotAdapted, errPracticeNotReady, errPracticeStart} {
+	for _, known := range []error{errDraftRule, errDraftLimit, errProductRuleUnavailable, errPracticeNotReady, errPracticeStart} {
 		if errors.Is(err, known) {
 			return known.Error(), false
 		}

@@ -12,7 +12,7 @@ import (
 const catalogRulePriority = `CASE WHEN jsonb_typeof(v.definition->'policy_scope'->'priority')='number'
  THEN (v.definition->'policy_scope'->>'priority')::numeric ELSE 0 END`
 
-const catalogRuleEligible = `p.policy_kind='LEGACY_BUNDLE' AND p.scope_type='BUSINESS_SCENARIO' AND NOT p.paused
+const catalogRuleEligible = `p.policy_kind='COMPONENT_RULE' AND p.scope_type='BUSINESS_SCENARIO' AND NOT p.paused
  AND v.source_status='PUBLISHED' AND v.definition->>'schema_version' IN ('1.1','1.2','1.3')
  AND v.definition->>'recognition_trigger'='PAID'
  AND v.definition->'policy_scope'->'financial_event_types' ? 'order.paid'`
@@ -28,7 +28,7 @@ const catalogMatchSQL = `WITH period AS (
   (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai' AS before,
   CASE pro.cycle_start_day WHEN 25 THEN 'MONTHLY_25_TO_24' WHEN 1 THEN 'MONTHLY' END AS cycle
  FROM periods p JOIN products pro ON pro.id=p.product_id
- JOIN legacy_catalog_products c ON c.product_id=p.product_id
+ JOIN product_catalog_settings c ON c.product_id=p.product_id
  WHERE p.id=$1 AND pro.period_mode='calendar'
 ), routes AS MATERIALIZED (
  SELECT m.* FROM catalog_business_routes m JOIN period p USING(product_id) WHERE m.observed_at=p.captured_at
@@ -37,8 +37,8 @@ const catalogMatchSQL = `WITH period AS (
  v.definition->'policy_scope'->'sales_systems' AS sales_systems,
  v.definition->'policy_scope'->'business_sku_codes' AS skus,
  ` + catalogRulePriority + ` AS priority
- FROM period scope JOIN legacy_rule_packages p ON p.product_id=scope.product_id AND p.project_code=scope.project_code
- JOIN legacy_rule_versions v ON v.package_id=p.source_id AND ` + catalogVersionVisible + `
+ FROM period scope JOIN product_rule_packages p ON p.product_id=scope.product_id AND p.project_code=scope.project_code
+ JOIN product_rule_versions v ON v.package_id=p.source_id AND ` + catalogVersionVisible + `
  WHERE ` + catalogRuleEligible + ` AND v.effective_from<scope.before
   AND (v.effective_to IS NULL OR scope.after<v.effective_to)
   AND v.definition->'settlement_policy'->>'cycle'=scope.cycle
@@ -102,7 +102,7 @@ const catalogMatchSQL = `WITH period AS (
  SELECT v.source_id::text AS rule_id,a->>'item_key' AS item_key,a->>'label' AS label,
   CASE WHEN a->>'rate_bps' ~ '^[0-9]{1,5}$' THEN (a->>'rate_bps')::integer END AS rate_bps
  FROM (SELECT DISTINCT "ruleId" FROM page WHERE status='MATCHED') selected
- JOIN legacy_rule_versions v ON v.source_id=selected."ruleId"::uuid
+ JOIN product_rule_versions v ON v.source_id=selected."ruleId"::uuid
  CROSS JOIN LATERAL jsonb_array_elements(CASE WHEN jsonb_typeof(v.definition->'benefit_actions')='array'
   THEN v.definition->'benefit_actions' ELSE '[]'::jsonb END) a
  WHERE v.definition->>'amount_basis'='ACTUAL_RECEIVED' AND v.definition->>'stacking_policy'='SUM'

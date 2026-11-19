@@ -43,7 +43,7 @@ func lockDraftInputs(ctx context.Context, tx pgx.Tx, periodID int64) error {
 	// writer committed after our snapshot, PostgreSQL forces a serializable retry.
 	_, err := tx.Exec(ctx, `SELECT source FROM source_write_state
 	 WHERE source='CONFIG' OR source IN (
-	  SELECT c.source_system FROM periods p JOIN legacy_catalog_products c USING(product_id) WHERE p.id=$1
+	  SELECT c.source_system FROM periods p JOIN product_catalog_settings c USING(product_id) WHERE p.id=$1
 	  UNION SELECT m.source FROM periods p JOIN source_mappings m USING(product_id) WHERE p.id=$1
 	 ) ORDER BY source FOR SHARE`, periodID)
 	return err
@@ -69,7 +69,7 @@ const settlementSourceCoverageSQL = `WITH scope AS (
 ), required AS (
  SELECT DISTINCT CASE WHEN r.source='DCAI' AND r.domain='VIP' THEN 'VIP_ORDERS'
   WHEN r.source='DCAI' AND r.domain='HEALTH_IDENTITY' THEN 'HEALTH_IDENTITY_ORDERS' ELSE '' END AS stream
- FROM scope p JOIN legacy_catalog_products c USING(product_id)
+ FROM scope p JOIN product_catalog_settings c USING(product_id)
  JOIN catalog_business_routes r ON r.product_id=p.product_id AND r.observed_at=c.captured_at
  WHERE r.effective_from<p.through_time AND (r.effective_to IS NULL OR r.effective_to>p.from_time)
 )

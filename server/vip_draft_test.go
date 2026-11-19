@@ -30,16 +30,16 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		).Replace(testVIPBenefits))
 	}
 	day := 25
-	input := legacyCatalogFile{Environment: "test", CapturedAt: start, Products: []legacyCatalogProduct{{
+	input := productConfigFile{Environment: "test", CapturedAt: start, Products: []productConfigEntry{{
 		SourceID: id(1), Code: "VIP_TEST", Name: "会员样本", Project: "AI", Source: "DCAI", SourceKey: "vip-test", PeriodMode: "calendar", CycleStartDay: &day,
-		Packages: []legacyCatalogPackage{{SourceID: id(2), Code: "test", Name: "规则样本", Project: "AI", Kind: "LEGACY_BUNDLE", ScopeType: "BUSINESS_SCENARIO", ScopeID: "test",
-			Versions: []legacyCatalogVersion{{SourceID: id(3), Number: 1, Status: "PUBLISHED", From: previousStart, Through: &boundary, Hash: "first", Definition: policy("500")},
+		Packages: []productRulePackageConfig{{SourceID: id(2), Code: "test", Name: "规则样本", Project: "AI", Kind: "COMPONENT_RULE", ScopeType: "BUSINESS_SCENARIO", ScopeID: "test",
+			Versions: []productRuleVersionConfig{{SourceID: id(3), Number: 1, Status: "PUBLISHED", From: previousStart, Through: &boundary, Hash: "first", Definition: policy("500")},
 				{SourceID: id(4), Number: 2, Status: "PUBLISHED", From: boundary, Hash: "second", Definition: policy("700")}},
 		}},
 		BusinessRoutes: []catalogBusinessRoute{{SourceID: id(5), Source: "DCAI", Domain: "VIP", Entity: "VIP_ORDER", RecordTable: "ai_vip_order",
 			BusinessKey: "dcai:vip:new", Classifier: "dcai.vip-lifecycle.v1", SKU: "test", Label: "会员下单", Version: 1, From: previousStart}},
 	}}}
-	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { return storeLegacyCatalog(ctx, tx, input) }); err != nil {
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { return storeProductConfig(ctx, tx, input) }); err != nil {
 		t.Fatal(err)
 	}
 	var productID int64
@@ -447,10 +447,10 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if _, err := s.db.Exec(ctx, "UPDATE monthly_pool_allocation_shares SET amount_minor=400"); err == nil {
 		t.Fatal("confirmed recipient amount can change")
 	}
-	if _, err := s.db.Exec(ctx, "UPDATE legacy_rule_versions SET definition='{}'::jsonb WHERE source_id=$1", id(4)); err == nil {
+	if _, err := s.db.Exec(ctx, "UPDATE product_rule_versions SET definition='{}'::jsonb WHERE source_id=$1", id(4)); err == nil {
 		t.Fatal("confirmed rule content can change")
 	}
-	if _, err := s.db.Exec(ctx, "UPDATE legacy_rule_packages SET scope_id='other' WHERE source_id=$1", id(2)); err == nil {
+	if _, err := s.db.Exec(ctx, "UPDATE product_rule_packages SET scope_id='other' WHERE source_id=$1", id(2)); err == nil {
 		t.Fatal("confirmed rule scope can change")
 	}
 	if _, err := s.db.Exec(ctx, "UPDATE periods SET ordinal=ordinal+1 WHERE id=$1", periodID); err == nil {
@@ -596,10 +596,10 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if err != nil || published.ID == id(4) || published.Version != 3 {
 		t.Fatalf("publication failed: %+v, %v", published, err)
 	}
-	if _, err := s.db.Exec(ctx, `UPDATE legacy_rule_versions SET published_by='other' WHERE source_id=$1::uuid`, published.ID); err == nil {
+	if _, err := s.db.Exec(ctx, `UPDATE product_rule_versions SET published_by='other' WHERE source_id=$1::uuid`, published.ID); err == nil {
 		t.Fatal("a published version accepted an audit change")
 	}
-	if _, err := s.db.Exec(ctx, `DELETE FROM legacy_rule_versions WHERE source_id=$1::uuid`, published.ID); err == nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM product_rule_versions WHERE source_id=$1::uuid`, published.ID); err == nil {
 		t.Fatal("a published version was removable before settlement")
 	}
 	if _, err := s.publishCatalogRates(ctx, inputRates, "finance-fixture"); !errors.Is(err, errCatalogRateStale) {

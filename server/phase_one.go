@@ -218,7 +218,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, invalid), errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany):
 		code, message = 400, err.Error()
-	case errors.Is(err, errLegacyRuleNotAdapted), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
+	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errPracticeRosterSource), errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap),
 		errors.Is(err, errPracticeMonthSettlementDependency),
 		errors.Is(err, errCatalogRateStale), errors.Is(err, errCatalogRateUnavailable), errors.Is(err, errCatalogRateDates), errors.Is(err, errCatalogTeamRate),
@@ -264,14 +264,14 @@ func (s workspace) list(query string) http.HandlerFunc {
 const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT p.id,p.code,p.name,p.period_mode AS "periodMode",p.cycle_start_day AS "cycleStartDay",
  (l.product_id IS NOT NULL) AS "catalogPending"
- FROM products p LEFT JOIN legacy_catalog_products l ON l.product_id=p.id
+ FROM products p LEFT JOIN product_catalog_settings l ON l.product_id=p.id
  WHERE ($1::bigint[] IS NULL OR p.id=ANY($1)) ORDER BY p.id DESC LIMIT 500) p`
 const mappingsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT m.id,m.product_id AS "productId",p.name AS "productName",m.source,m.domain,m.source_key AS "sourceKey"
  FROM source_mappings m JOIN products p ON p.id=m.product_id ORDER BY m.id DESC LIMIT 500) p`
 const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
  (SELECT p.id,p.product_id AS "productId",pro.name AS "productName",pro.period_mode AS "periodMode",p.name,p.ordinal,
- (pro.period_mode='calendar' AND EXISTS(SELECT 1 FROM catalog_business_routes m JOIN legacy_catalog_products c USING(product_id)
+ (pro.period_mode='calendar' AND EXISTS(SELECT 1 FROM catalog_business_routes m JOIN product_catalog_settings c USING(product_id)
   WHERE m.product_id=p.product_id AND m.observed_at=c.captured_at)) AS "ruleMatchingAvailable",
  ` + catalogDraftAvailableSQL + ` AS "catalogDraftAvailable",
  p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",
@@ -475,13 +475,13 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 	var version int
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var mode string
-		var legacy bool
-		if e := tx.QueryRow(ctx, `SELECT period_mode,EXISTS(SELECT 1 FROM legacy_catalog_products WHERE product_id=p.id)
-		 FROM products p WHERE id=$1 FOR UPDATE`, p.ProductID).Scan(&mode, &legacy); e != nil {
+		var scenarioRules bool
+		if e := tx.QueryRow(ctx, `SELECT period_mode,EXISTS(SELECT 1 FROM product_catalog_settings WHERE product_id=p.id)
+		 FROM products p WHERE id=$1 FOR UPDATE`, p.ProductID).Scan(&mode, &scenarioRules); e != nil {
 			return e
 		}
-		if legacy && mode != "class" {
-			return errLegacyRuleNotAdapted
+		if scenarioRules && mode != "class" {
+			return errProductRuleUnavailable
 		}
 		if p.PeriodID != nil && mode == "class" {
 			var month bool

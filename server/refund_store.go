@@ -59,7 +59,7 @@ const refundInputsSQL = refundInputSelectionSQL + `
 ` + refundPeriodSQL + ` AND NOT ` + catalogSourceReservedSQL + refundEligibilitySQL
 
 const catalogRefundInputsSQL = refundInputSelectionSQL + `
- JOIN legacy_catalog_products c ON c.product_id=target.product_id
+ JOIN product_catalog_settings c ON c.product_id=target.product_id
  JOIN source_order_versions v ON v.source=c.source_system AND EXISTS(
   SELECT 1 FROM catalog_business_routes m
   WHERE m.product_id=c.product_id AND m.observed_at=c.captured_at AND m.source=v.source
@@ -131,7 +131,7 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
  JOIN calculation_drafts d ON d.period_id=l.period_id
  JOIN periods original ON original.id=l.period_id
  LEFT JOIN rule_versions r ON r.id=l.rule_id
- LEFT JOIN legacy_rule_versions cv ON cv.source_id=l.catalog_rule_id
+ LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
  LEFT JOIN practice_enrollments enrollment ON enrollment.id=l.practice_enrollment_id
  LEFT JOIN source_payment_companies company ON company.source_version_id=p.id AND enrollment.id IS NOT NULL
  WHERE original.product_id=(SELECT product_id FROM periods WHERE id=$2)

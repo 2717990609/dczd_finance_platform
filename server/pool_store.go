@@ -56,7 +56,7 @@ const poolAllocationBasisSQL = `SELECT md5(concat_ws('|',
   JOIN pool_period_order prior ON prior.id=st.period_id
   WHERE prior.product_id=target.product_id
    AND (prior.book_date,prior.book_stage,prior.ordinal)<(target.book_date,target.book_stage,target.ordinal))))
- FROM pool_period_order target LEFT JOIN legacy_catalog_products config ON config.product_id=target.product_id
+ FROM pool_period_order target LEFT JOIN product_catalog_settings config ON config.product_id=target.product_id
  LEFT JOIN catalog_sales_context c ON c.source=config.source_system WHERE target.id=`
 
 const poolAllocationCurrentSQL = `(a.draft_version=d.version AND
@@ -94,7 +94,7 @@ const poolEntriesSQL = `WITH scope AS (
  FROM required_lines needed JOIN pool_line_accounts account ON account.line_id=needed.line_id
  JOIN calculation_draft_lines l ON l.id=account.line_id
  LEFT JOIN scope ON scope.id=l.period_id
- LEFT JOIN legacy_rule_versions r ON r.source_id=l.catalog_rule_id
+ LEFT JOIN product_rule_versions r ON r.source_id=l.catalog_rule_id
  LEFT JOIN practice_pools pool ON pool.id=l.practice_pool_id
  JOIN source_order_versions v ON v.id=l.source_version_id
  LEFT JOIN LATERAL (
@@ -122,8 +122,8 @@ const poolEligibilitySQL = `SELECT DISTINCT l.id,m.person_id,person.name FROM un
  JOIN calculation_draft_lines l ON l.id=source.id
  JOIN source_order_versions v ON v.id=l.source_version_id
  JOIN periods period ON period.id=l.period_id JOIN products prod ON prod.id=period.product_id
- JOIN legacy_catalog_products cfg ON cfg.product_id=prod.id JOIN catalog_sales_context c ON c.source=cfg.source_system
- JOIN legacy_rule_versions policy ON policy.source_id=l.catalog_rule_id
+ JOIN product_catalog_settings cfg ON cfg.product_id=prod.id JOIN catalog_sales_context c ON c.source=cfg.source_system
+ JOIN product_rule_versions policy ON policy.source_id=l.catalog_rule_id
  JOIN LATERAL (
   SELECT a->>'role' AS role FROM jsonb_array_elements(policy.definition->'benefit_actions') a
   WHERE a->>'item_key'=l.component_type AND a->>'beneficiary_mode'='TEAM_POOL'

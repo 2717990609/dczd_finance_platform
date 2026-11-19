@@ -24,7 +24,7 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 		return value.(map[string]int64)["id"]
 	}
 	product := id(s.createProduct(ctx, createProductInput{Code: "CLASS_PERIOD_BENEFITS", Name: "班次分润", PeriodMode: "class"}))
-	if _, err := s.db.Exec(ctx, `INSERT INTO legacy_catalog_products
+	if _, err := s.db.Exec(ctx, `INSERT INTO product_catalog_settings
 	 (product_id,source_id,source_environment,project_code,source_system,source_key,captured_at,snapshot_digest)
 	 VALUES($1,'40000000-0000-4000-8000-000000000005','test','PRACTICE','DCZD','test',
 	 clock_timestamp(),decode(repeat('00',32),'hex'))`, product); err != nil {

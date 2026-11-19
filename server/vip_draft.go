@@ -10,9 +10,9 @@ import (
 )
 
 const catalogDraftAvailableSQL = `(pro.period_mode='calendar' AND EXISTS(
- SELECT 1 FROM legacy_catalog_products c
- JOIN legacy_rule_packages k ON k.product_id=c.product_id AND k.project_code=c.project_code
- JOIN legacy_rule_versions v ON v.package_id=k.source_id AND v.observed_at=c.captured_at
+ SELECT 1 FROM product_catalog_settings c
+ JOIN product_rule_packages k ON k.product_id=c.product_id AND k.project_code=c.project_code
+ JOIN product_rule_versions v ON v.package_id=k.source_id AND v.observed_at=c.captured_at
  WHERE c.product_id=pro.id AND c.source_system='DCAI'
    AND k.scope_type='BUSINESS_SCENARIO' AND v.definition->'internal_sales_direct_split'->>'mode'='DCAI_INTERNAL_DIRECT'
    AND EXISTS(SELECT 1 FROM catalog_business_routes m WHERE m.product_id=c.product_id AND m.observed_at=c.captured_at)

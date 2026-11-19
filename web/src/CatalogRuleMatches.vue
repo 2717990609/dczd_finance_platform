@@ -94,7 +94,7 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
         <a-button :loading="loading" @click="refresh">刷新匹配</a-button>
       </div>
     </div>
-    <p class="draft-report-note">{{ draftAvailable ? '按当前订单核对适用规则。试算和结算明细可查实际使用的规则版本。' : '按付款时间核对业务场景和适用规则。该产品的分润试算待启用。' }}</p>
+    <p class="draft-report-note">{{ draftAvailable ? '按当前订单核对适用规则。试算和结算明细可查实际使用的规则版本。' : '按付款时间核对业务场景和适用规则。该产品暂未开放分润试算。' }}</p>
     <a-alert v-if="error" type="error" :message="error" show-icon/>
     <div v-if="report" class="catalog-match-totals">
       <span>已匹配 <strong>{{ report.matchedCount }} / {{ report.orderCount }}</strong> 笔</span>

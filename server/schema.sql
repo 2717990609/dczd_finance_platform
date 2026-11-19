@@ -609,7 +609,19 @@ ALTER TABLE source_payment_companies
  ADD COLUMN IF NOT EXISTS recommendation_company_id text,
  ADD COLUMN IF NOT EXISTS recommendation_conflict boolean NOT NULL DEFAULT false;
 
-CREATE TABLE IF NOT EXISTS legacy_catalog_products (
+-- Keep UUIDs and foreign keys when adopting the product catalog names.
+ALTER TABLE IF EXISTS legacy_catalog_products RENAME TO product_catalog_settings;
+DO $$ BEGIN
+ IF to_regclass('legacy_rule_packages') IS NOT NULL THEN
+  DROP TRIGGER IF EXISTS protect_confirmed_catalog_package ON legacy_rule_packages;
+  ALTER TABLE legacy_rule_packages RENAME TO product_rule_packages;
+  UPDATE product_rule_packages SET policy_kind='COMPONENT_RULE' WHERE policy_kind='LEGACY_BUNDLE';
+ END IF;
+END $$;
+ALTER INDEX IF EXISTS legacy_rule_packages_product RENAME TO product_rule_packages_product;
+ALTER TABLE IF EXISTS legacy_rule_versions RENAME TO product_rule_versions;
+
+CREATE TABLE IF NOT EXISTS product_catalog_settings (
  product_id bigint PRIMARY KEY REFERENCES products(id),
  source_id uuid NOT NULL UNIQUE,
  source_environment text NOT NULL,
@@ -620,9 +632,9 @@ CREATE TABLE IF NOT EXISTS legacy_catalog_products (
  snapshot_digest bytea NOT NULL CHECK (octet_length(snapshot_digest)=32)
 );
 
-CREATE TABLE IF NOT EXISTS legacy_rule_packages (
+CREATE TABLE IF NOT EXISTS product_rule_packages (
  source_id uuid PRIMARY KEY,
- product_id bigint NOT NULL REFERENCES legacy_catalog_products(product_id),
+ product_id bigint NOT NULL REFERENCES product_catalog_settings(product_id),
  code text NOT NULL,
  name text NOT NULL,
  project_code text NOT NULL,
@@ -632,11 +644,11 @@ CREATE TABLE IF NOT EXISTS legacy_rule_packages (
  paused boolean NOT NULL,
  resume_from timestamptz
 );
-CREATE INDEX IF NOT EXISTS legacy_rule_packages_product ON legacy_rule_packages(product_id);
+CREATE INDEX IF NOT EXISTS product_rule_packages_product ON product_rule_packages(product_id);
 
-CREATE TABLE IF NOT EXISTS legacy_rule_versions (
+CREATE TABLE IF NOT EXISTS product_rule_versions (
  source_id uuid PRIMARY KEY,
- package_id uuid NOT NULL REFERENCES legacy_rule_packages(source_id),
+ package_id uuid NOT NULL REFERENCES product_rule_packages(source_id),
  version_no integer NOT NULL CHECK(version_no>0),
  source_status text NOT NULL,
  effective_from timestamptz NOT NULL,
@@ -646,10 +658,10 @@ CREATE TABLE IF NOT EXISTS legacy_rule_versions (
  observed_at timestamptz NOT NULL,
  UNIQUE(package_id,version_no)
 );
-ALTER TABLE legacy_rule_versions
+ALTER TABLE product_rule_versions
  ADD COLUMN IF NOT EXISTS published_at timestamptz,
  ADD COLUMN IF NOT EXISTS published_by text,
- ADD COLUMN IF NOT EXISTS predecessor_id uuid REFERENCES legacy_rule_versions(source_id);
+ ADD COLUMN IF NOT EXISTS predecessor_id uuid REFERENCES product_rule_versions(source_id);
 
 INSERT INTO configuration_options(group_key,option_key,label,display_order) VALUES
  ('catalogSalesRelationship','ANY','不限',10),
@@ -815,7 +827,7 @@ ON CONFLICT DO NOTHING;
 
 CREATE TABLE IF NOT EXISTS catalog_business_routes (
  source_id uuid PRIMARY KEY,
- product_id bigint NOT NULL REFERENCES legacy_catalog_products(product_id),
+ product_id bigint NOT NULL REFERENCES product_catalog_settings(product_id),
  source text NOT NULL,
  domain text NOT NULL,
  entity_type text NOT NULL,
@@ -921,7 +933,7 @@ ALTER TABLE calculation_draft_lines
  ALTER COLUMN rule_id DROP NOT NULL,
  ALTER COLUMN identity_id DROP NOT NULL,
  ALTER COLUMN person_id DROP NOT NULL,
- ADD COLUMN IF NOT EXISTS catalog_rule_id uuid REFERENCES legacy_rule_versions(source_id),
+ ADD COLUMN IF NOT EXISTS catalog_rule_id uuid REFERENCES product_rule_versions(source_id),
  ADD COLUMN IF NOT EXISTS beneficiary_unit_id uuid REFERENCES organization_units(id),
  ADD COLUMN IF NOT EXISTS allocation_owner_id bigint REFERENCES people(id),
  ADD COLUMN IF NOT EXISTS practice_pool_id bigint REFERENCES practice_pools(id),
@@ -1013,8 +1025,8 @@ CREATE OR REPLACE VIEW pool_line_accounts AS
  SELECT l.id AS line_id,l.period_id,l.beneficiary_unit_id AS unit_id,
   coalesce(l.practice_pool_id::text,l.component_type) AS item_key,
   CASE WHEN l.practice_pool_id IS NOT NULL THEN 'class' ELSE p.scope_id END AS scenario_key
- FROM calculation_draft_lines l LEFT JOIN legacy_rule_versions v ON v.source_id=l.catalog_rule_id
- LEFT JOIN legacy_rule_packages p ON p.source_id=v.package_id
+ FROM calculation_draft_lines l LEFT JOIN product_rule_versions v ON v.source_id=l.catalog_rule_id
+ LEFT JOIN product_rule_packages p ON p.source_id=v.package_id
  WHERE l.allocation_owner_id IS NOT NULL;
 
 CREATE OR REPLACE VIEW pool_account_activity AS
@@ -1052,12 +1064,12 @@ $$;
 
 CREATE OR REPLACE FUNCTION protect_confirmed_catalog_scope() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
- IF TG_TABLE_NAME='legacy_rule_versions' THEN
+ IF TG_TABLE_NAME='product_rule_versions' THEN
   IF OLD.published_at IS NOT NULL OR EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.catalog_rule_id=OLD.source_id) THEN
    RAISE EXCEPTION 'confirmed rule version cannot be changed' USING ERRCODE='55000';
   END IF;
- ELSIF TG_TABLE_NAME='legacy_rule_packages' THEN
-  IF EXISTS(SELECT 1 FROM legacy_rule_versions v JOIN calculation_draft_lines l ON l.catalog_rule_id=v.source_id
+ ELSIF TG_TABLE_NAME='product_rule_packages' THEN
+  IF EXISTS(SELECT 1 FROM product_rule_versions v JOIN calculation_draft_lines l ON l.catalog_rule_id=v.source_id
    JOIN settlements s USING(period_id) WHERE v.package_id=OLD.source_id) THEN
    RAISE EXCEPTION 'confirmed rule scope cannot be changed' USING ERRCODE='55000';
   END IF;
@@ -1068,16 +1080,16 @@ BEGIN
 END $$;
 
 CREATE INDEX IF NOT EXISTS calculation_draft_catalog_rules ON calculation_draft_lines(catalog_rule_id) WHERE catalog_rule_id IS NOT NULL;
-CREATE OR REPLACE TRIGGER protect_confirmed_catalog_version BEFORE UPDATE ON legacy_rule_versions FOR EACH ROW
+CREATE OR REPLACE TRIGGER protect_confirmed_catalog_version BEFORE UPDATE ON product_rule_versions FOR EACH ROW
  WHEN ((OLD.source_id,OLD.package_id,OLD.version_no,OLD.effective_from,OLD.content_hash,OLD.definition) IS DISTINCT FROM
        (NEW.source_id,NEW.package_id,NEW.version_no,NEW.effective_from,NEW.content_hash,NEW.definition))
  EXECUTE FUNCTION protect_confirmed_catalog_scope();
-CREATE OR REPLACE TRIGGER protect_published_catalog_version BEFORE UPDATE ON legacy_rule_versions FOR EACH ROW
+CREATE OR REPLACE TRIGGER protect_published_catalog_version BEFORE UPDATE ON product_rule_versions FOR EACH ROW
  WHEN (OLD.published_at IS NOT NULL AND OLD IS DISTINCT FROM NEW)
  EXECUTE FUNCTION protect_confirmed_catalog_scope();
-CREATE OR REPLACE TRIGGER protect_published_catalog_version_delete BEFORE DELETE ON legacy_rule_versions FOR EACH ROW
+CREATE OR REPLACE TRIGGER protect_published_catalog_version_delete BEFORE DELETE ON product_rule_versions FOR EACH ROW
  WHEN (OLD.published_at IS NOT NULL) EXECUTE FUNCTION protect_confirmed_catalog_scope();
-CREATE OR REPLACE TRIGGER protect_confirmed_catalog_package BEFORE UPDATE ON legacy_rule_packages FOR EACH ROW
+CREATE OR REPLACE TRIGGER protect_confirmed_catalog_package BEFORE UPDATE ON product_rule_packages FOR EACH ROW
  WHEN ((OLD.source_id,OLD.product_id,OLD.code,OLD.project_code,OLD.policy_kind,OLD.scope_type,OLD.scope_id) IS DISTINCT FROM
        (NEW.source_id,NEW.product_id,NEW.code,NEW.project_code,NEW.policy_kind,NEW.scope_type,NEW.scope_id))
  EXECUTE FUNCTION protect_confirmed_catalog_scope();

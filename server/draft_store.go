@@ -45,7 +45,7 @@ const maxDraftPayments = 100000
 
 const draftScopeSQL = `SELECT pro.period_mode, p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
  (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',coalesce(p.source_period_key,''),p.ordinal,
- EXISTS(SELECT 1 FROM legacy_catalog_products l WHERE l.product_id=pro.id),` + catalogDraftAvailableSQL + `,
+ EXISTS(SELECT 1 FROM product_catalog_settings l WHERE l.product_id=pro.id),` + catalogDraftAvailableSQL + `,
  (pro.period_mode='class' AND p.calendar_month IS NOT NULL)
  FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1`
 
@@ -164,8 +164,8 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (periodWindow, []paymentRule, error) {
 	var window periodWindow
 	var mode, sourceKey string
-	var legacy bool
-	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &legacy, &summary.Catalog, &summary.PracticeRefundMonth)
+	var scenarioRules bool
+	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &scenarioRules, &summary.Catalog, &summary.PracticeRefundMonth)
 	if err != nil {
 		return window, nil, err
 	}
@@ -176,8 +176,8 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 	if summary.Catalog {
 		return window, nil, nil
 	}
-	if legacy && mode != "class" {
-		return window, nil, errLegacyRuleNotAdapted
+	if scenarioRules && mode != "class" {
+		return window, nil, errProductRuleUnavailable
 	}
 	var classStart time.Time
 	if mode == "class" {
@@ -576,8 +576,8 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   FROM calculation_draft_lines l JOIN source_order_versions o ON o.id=l.source_version_id
   LEFT JOIN people p ON p.id=l.person_id LEFT JOIN organization_units beneficiary ON beneficiary.id=l.beneficiary_unit_id
   LEFT JOIN practice_pools practice_pool ON practice_pool.id=l.practice_pool_id
-  LEFT JOIN rule_versions rv ON rv.id=l.rule_id LEFT JOIN legacy_rule_versions cv ON cv.source_id=l.catalog_rule_id
-  LEFT JOIN legacy_rule_packages package ON package.source_id=cv.package_id
+  LEFT JOIN rule_versions rv ON rv.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
+  LEFT JOIN product_rule_packages package ON package.source_id=cv.package_id
   LEFT JOIN LATERAL (
    SELECT b AS definition FROM jsonb_array_elements(cv.definition->'benefit_actions') b
    WHERE b->>'item_key'=l.component_type OR
@@ -602,7 +602,7 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   JOIN calculation_draft_lines l ON l.id=a.original_line_id JOIN source_order_versions o ON o.id=l.source_version_id
   LEFT JOIN people p ON p.id=l.person_id LEFT JOIN organization_units beneficiary ON beneficiary.id=l.beneficiary_unit_id
   LEFT JOIN practice_pools practice_pool ON practice_pool.id=l.practice_pool_id
-  LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN legacy_rule_versions cv ON cv.source_id=l.catalog_rule_id
+  LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
   LEFT JOIN LATERAL (
    SELECT b->>'pool_name' AS name FROM jsonb_array_elements(cv.definition->'benefit_actions') b
    WHERE l.allocation_owner_id IS NOT NULL AND b->>'item_key'=l.component_type LIMIT 1

@@ -536,7 +536,7 @@ const ordersSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FR
  LEFT JOIN source_order_classifications classification ON classification.source_version_id=v.id
  LEFT JOIN LATERAL (
   SELECT min(m.product_id) AS product_id FROM catalog_business_routes m
-  JOIN legacy_catalog_products c ON c.product_id=m.product_id AND c.captured_at=m.observed_at
+  JOIN product_catalog_settings c ON c.product_id=m.product_id AND c.captured_at=m.observed_at
   WHERE (m.source,m.domain,m.record_table,m.entity_type,m.business_key,m.classifier)=
    (v.source,v.fact->>'domain',split_part(v.record_key,':',1),classification.entity_type,classification.business_key,classification.classifier)
    AND m.effective_from<=v.occurred_at AND (m.effective_to IS NULL OR v.occurred_at<m.effective_to)

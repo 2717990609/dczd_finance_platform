@@ -39,7 +39,7 @@ const draftRefreshFacts = `WITH keys AS (
  UNION
  SELECT v.id,c.product_id,v.occurred_at,v.kind FROM events v JOIN catalog_business_routes r
   ON r.source=v.source AND r.domain=v.fact->>'domain' AND r.record_table=split_part(v.record_key,':',1)
- JOIN legacy_catalog_products c ON c.product_id=r.product_id AND c.captured_at=r.observed_at
+ JOIN product_catalog_settings c ON c.product_id=r.product_id AND c.captured_at=r.observed_at
 ), calendar AS (
  SELECT p.id,p.product_id,p.starts_on,p.ends_on FROM periods p JOIN products pro ON pro.id=p.product_id WHERE pro.period_mode='calendar'
 ), origin AS (

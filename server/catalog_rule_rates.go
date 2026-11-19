@@ -89,8 +89,8 @@ func (s workspace) ruleRateProduct(ctx context.Context, raw string) (string, int
 		return "", 0, invalid
 	}
 	var product int64
-	err := s.db.QueryRow(ctx, `SELECT p.product_id FROM legacy_rule_versions v
-	 JOIN legacy_rule_packages p ON p.source_id=v.package_id WHERE v.source_id=$1::uuid`, id).Scan(&product)
+	err := s.db.QueryRow(ctx, `SELECT p.product_id FROM product_rule_versions v
+	 JOIN product_rule_packages p ON p.source_id=v.package_id WHERE v.source_id=$1::uuid`, id).Scan(&product)
 	return id, product, err
 }
 
@@ -141,8 +141,8 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	 SELECT p.product_id,pro.name AS product_name,p.name,v.version_no,v.effective_from,`+catalogDisplayedThrough+` AS effective_to,v.definition,
 	  v.source_status='PUBLISHED' AND NOT p.paused AND `+catalogVersionVisible+` AS available,
 	  scope.source_system
-	 FROM legacy_rule_versions v JOIN legacy_rule_packages p ON p.source_id=v.package_id
-	 JOIN legacy_catalog_products scope ON scope.product_id=p.product_id AND scope.project_code=p.project_code
+	 FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
+	 JOIN product_catalog_settings scope ON scope.product_id=p.product_id AND scope.project_code=p.project_code
 	 JOIN products pro ON pro.id=p.product_id
 	 WHERE v.source_id=$1::uuid AND p.scope_type='BUSINESS_SCENARIO' AND scope.source_system='DCAI'
 	), companies AS (

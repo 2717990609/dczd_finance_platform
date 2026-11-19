@@ -37,9 +37,9 @@ type catalogPublication struct {
 }
 
 const catalogScenarioRateCandidates = `SELECT v.source_id,v.effective_from,v.effective_to,v.published_at,p.resume_from,` + catalogRulePriority + ` AS priority
- FROM legacy_catalog_products scope JOIN products pro ON pro.id=scope.product_id
- JOIN legacy_rule_packages p ON p.product_id=scope.product_id AND p.project_code=scope.project_code
- JOIN legacy_rule_versions v ON v.package_id=p.source_id AND ` + catalogVersionVisible + `
+ FROM product_catalog_settings scope JOIN products pro ON pro.id=scope.product_id
+ JOIN product_rule_packages p ON p.product_id=scope.product_id AND p.project_code=scope.project_code
+ JOIN product_rule_versions v ON v.package_id=p.source_id AND ` + catalogVersionVisible + `
  WHERE scope.product_id=$1 AND p.scope_id=$2 AND ` + catalogRuleEligible + `
   AND v.definition->'settlement_policy'->>'cycle'=CASE pro.cycle_start_day WHEN 25 THEN 'MONTHLY_25_TO_24' WHEN 1 THEN 'MONTHLY' END
   AND v.definition->'policy_scope'->'business_sku_codes' ? p.scope_id
@@ -53,7 +53,7 @@ const catalogActiveRateVersionSQL = `WITH rules AS (` + catalogScenarioRateCandi
 SELECT count(*),min(source_id::text) FROM winner`
 
 const catalogRateDraftPeriodsSQL = `WITH rates AS MATERIALIZED (` + catalogScenarioRateCandidates + `), routes AS MATERIALIZED (
- SELECT r.* FROM catalog_business_routes r JOIN legacy_catalog_products c ON c.product_id=r.product_id AND c.captured_at=r.observed_at
+ SELECT r.* FROM catalog_business_routes r JOIN product_catalog_settings c ON c.product_id=r.product_id AND c.captured_at=r.observed_at
  WHERE r.product_id=$1 AND r.sku_code=$2 AND r.source=c.source_system
 ), windows AS (
  SELECT p.id,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai' AS starts_at,
@@ -82,7 +82,7 @@ WHERE EXISTS(
   ) best)
 )`
 
-const catalogDisplayedThrough = `least(v.effective_to,(SELECT min(later.effective_from) FROM legacy_rule_versions later
+const catalogDisplayedThrough = `least(v.effective_to,(SELECT min(later.effective_from) FROM product_rule_versions later
  WHERE later.package_id=v.package_id AND later.published_at IS NOT NULL AND later.effective_from>v.effective_from))`
 
 func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalogRatesInput, actor string) (catalogPublication, error) {
@@ -100,8 +100,8 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 		var definition json.RawMessage
 		err := tx.QueryRow(ctx, `SELECT pro.id,p.scope_id,v.package_id::text,v.version_no,
 		 v.effective_from,v.effective_to,v.definition
-		 FROM legacy_rule_versions v JOIN legacy_rule_packages p ON p.source_id=v.package_id
-		 JOIN legacy_catalog_products c ON c.product_id=p.product_id JOIN products pro ON pro.id=c.product_id
+		 FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
+		 JOIN product_catalog_settings c ON c.product_id=p.product_id JOIN products pro ON pro.id=c.product_id
 		 WHERE v.source_id=$1::uuid AND c.source_system='DCAI' AND pro.period_mode='calendar'
 		  AND p.scope_type='BUSINESS_SCENARIO' AND p.project_code=c.project_code FOR UPDATE OF pro`, id).
 			Scan(&product, &scope, &pack, &published.Version, &fromBase, &throughBase, &definition)
@@ -124,9 +124,9 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 			return err
 		}
 		contentHash := sha256.Sum256(body)
-		if err := tx.QueryRow(ctx, `INSERT INTO legacy_rule_versions
+		if err := tx.QueryRow(ctx, `INSERT INTO product_rule_versions
 		 (source_id,package_id,version_no,source_status,effective_from,effective_to,content_hash,definition,observed_at,published_at,published_by,predecessor_id)
-		 SELECT gen_random_uuid(),$1::uuid,(SELECT max(version_no)+1 FROM legacy_rule_versions WHERE package_id=$1::uuid),
+		 SELECT gen_random_uuid(),$1::uuid,(SELECT max(version_no)+1 FROM product_rule_versions WHERE package_id=$1::uuid),
 		 'PUBLISHED',$2,$3,$4,$5,now(),now(),$6,$7::uuid RETURNING source_id::text,version_no`,
 			pack, from, throughBase, hex.EncodeToString(contentHash[:]), body, actor, id).Scan(&published.ID, &published.Version); err != nil {
 			return err

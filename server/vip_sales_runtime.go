@@ -60,7 +60,7 @@ type vipRuntimeData struct {
 
 const vipRuntimeSQL = `WITH scope AS (
  SELECT c.captured_at,c.benefit_ready,pro.code,cfg.project_code FROM periods p JOIN products pro ON pro.id=p.product_id
- JOIN legacy_catalog_products cfg ON cfg.product_id=pro.id
+ JOIN product_catalog_settings cfg ON cfg.product_id=pro.id
  LEFT JOIN catalog_sales_context c ON c.source=cfg.source_system
  WHERE p.id=$1 AND cfg.source_system='DCAI'
 ), claims AS MATERIALIZED (
@@ -83,7 +83,7 @@ const vipRuntimeSQL = `WITH scope AS (
  JOIN people p ON p.id=a.person_id
  WHERE a.scope='ORGANIZATION_UNIT' OR a.scope='PRODUCT' AND a.scope_key=s.code OR a.scope='PROJECT' AND a.scope_key=s.project_code
 ), definitions AS MATERIALIZED (
- SELECT v.source_id,v.definition FROM unnest($3::text[]) r(id) JOIN legacy_rule_versions v ON v.source_id=r.id::uuid
+ SELECT v.source_id,v.definition FROM unnest($3::text[]) r(id) JOIN product_rule_versions v ON v.source_id=r.id::uuid
 )
 SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitReady',coalesce(s.benefit_ready,false),
  'organizations',(SELECT jsonb_agg(jsonb_build_object('party',b.party_uuid,'unit',o.id,'name',o.name))

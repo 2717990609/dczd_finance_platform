@@ -647,16 +647,16 @@ func TestPracticeRefundReplaysSettledClassTierAndFullyRefundedDeposit(t *testing
 func TestClassProductConfigurationCanReimportAfterOpeningRefundMonth(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
-	input := legacyCatalogFile{Environment: "fixture", CapturedAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), Products: []legacyCatalogProduct{
+	input := productConfigFile{Environment: "fixture", CapturedAt: time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC), Products: []productConfigEntry{
 		{SourceID: "40000000-0000-4000-8000-000000000011", Name: "实战班", Code: "PRACTICE_MONTH_IMPORTED",
 			Project: "PRACTICE", Source: "DCZD", SourceKey: "practice", PeriodMode: "class"},
 	}}
-	if err := normalizeLegacyCatalog(&input); err != nil {
+	if err := normalizeProductConfig(&input); err != nil {
 		t.Fatal(err)
 	}
 	load := func() {
 		t.Helper()
-		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { return storeLegacyCatalog(ctx, tx, input) }); err != nil {
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error { return storeProductConfig(ctx, tx, input) }); err != nil {
 			t.Fatal(err)
 		}
 	}
