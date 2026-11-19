@@ -384,3 +384,8 @@ CREATE TABLE IF NOT EXISTS practice_count_opening_people (
 INSERT INTO configuration_options(group_key,option_key,label,display_order,applies_to)
  VALUES ('tierStartMode','opening','沿用冻结期初',30,'{"countScopes":["default"]}')
  ON CONFLICT(group_key,option_key) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS source_payment_companies (
+ source_version_id bigint PRIMARY KEY REFERENCES source_order_versions(id),
+ company_id text NOT NULL CHECK (length(company_id)>0)
+);

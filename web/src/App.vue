@@ -82,6 +82,8 @@ function updateAmountMode(row, mode) {
       count:[{mode:baseModes.value[0]?.value}],
       performance:[{from:0,mode:baseModes.value[0]?.value}],
       personCountStarts:[],
+      companies:[],
+      onlyCompanies:false,
     }
   }
 }
@@ -90,6 +92,7 @@ function resetAmountMode(row) {
   if (!modes.some(option => option.value === row.mode)) row.mode = modes[0]?.value
 }
 function tierLabel(tiers) {
+  if (tiers.companySchedules?.length) return '公司阶梯'
   if (tiers.count?.length && tiers.performance?.length) return '人数优先阶梯'
   return tiers.count?.length ? '累计人数阶梯' : '本期实付阶梯'
 }
@@ -274,7 +277,7 @@ function ruleComponentBody(row) {
   })).sort((a,b) => a.from-b.from)
   component.tiers = {}
   if (form.metric !== 'performance') {
-    component.tiers.count = serialize(form.count,Number)
+    if (!form.onlyCompanies) component.tiers.count = serialize(form.count,Number)
     if (form.startMode === 'opening') component.tiers.openingId = must(form.openingId,'请选择冻结期初')
     else Object.assign(component.tiers,countStartBody(form))
     if (form.personCountStarts.length) component.tiers.personCountStarts = form.personCountStarts.map(item => ({
@@ -282,7 +285,13 @@ function ruleComponentBody(row) {
       ...countStartBody(item),
     }))
   }
-  if (form.metric !== 'count') component.tiers.performance = serialize(form.performance,minor)
+  if (form.metric !== 'count' && !form.onlyCompanies) component.tiers.performance = serialize(form.performance,minor)
+  if (form.onlyCompanies && !form.companies.length) throw new Error('请添加销售公司档位')
+  if (form.companies.length) component.tiers.companySchedules = form.companies.map(company => ({
+    companyId:must(company.companyId,'请选择销售公司'),
+    ...(form.metric !== 'performance' ? {count:serialize(company.count,Number)} : {}),
+    ...(form.metric !== 'count' ? {performance:serialize(company.performance,minor)} : {}),
+  }))
   return component
 }
 function bodyFor(kind,f) {
@@ -421,6 +430,9 @@ async function save() {
                 <template v-else-if="column.key==='components'">
                   <div v-for="c in text" :key="c.type+':'+(c.classMember || '')">
                     <a-tag>{{ optionLabel('component',c.type) }}{{ c.classMember ? ' · '+optionLabel('classMember',c.classMember) : '' }} {{ c.mode==='tiered' ? tierLabel(c.tiers) : c.mode==='rate' ? (c.value/100)+'%' : formatMoney(c.value) }}</a-tag>
+                    <small v-if="c.tiers?.companySchedules?.length" class="order-version">
+                      {{ c.tiers.companySchedules.map(company=>optionLabel('practiceSalesCompany',company.companyId)).join('、') }}
+                    </small>
                     <small v-if="c.tiers?.openingId" class="order-version">{{ savedOpeningLabel(c.tiers.openingId) }}</small>
                     <details v-if="c.tiers?.personCountStarts?.length" class="rule-count-review">
                       <summary>个人累计起点（{{ c.tiers.personCountStarts.length }}）</summary>
@@ -504,7 +516,7 @@ async function save() {
           <a-form-item v-if="['sales','referral'].includes(c.type)" :label="'分项 '+(i+1)+' 的来源角色'">
             <a-input v-model:value="c.sourceRole" :aria-label="'来源角色 '+(i+1)" placeholder="如 LOCK_SALES_USER 或 DIRECT_REFERRER" :maxlength="64"/>
           </a-form-item>
-          <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes" :people="peopleOptions" :openings="practiceOpeningOptions"/>
+          <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes" :people="peopleOptions" :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"/>
           <a-form-item v-if="selectedProduct?.periodMode==='calendar'" :label="'分项 '+(i+1)+' 的退款处理'" extra="历史退款沿用付款时的规则版本。">
             <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>
           </a-form-item>

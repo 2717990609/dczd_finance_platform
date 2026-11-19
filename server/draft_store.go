@@ -225,11 +225,13 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 	type stablePayment struct {
 		Source, Order, Payment, Line, Record string
 		OccurredAt                           time.Time
+		SalesCompanyID                       string `json:",omitempty"`
 	}
 	facts := make(map[int64]stablePayment, len(inputs))
 	for _, input := range inputs {
 		f := input.Fact
-		facts[input.ID] = stablePayment{f.Source, f.OrderID, f.PaymentID, f.LineID, f.RecordKey, f.OccurredAt.UTC()}
+		facts[input.ID] = stablePayment{Source: f.Source, Order: f.OrderID, Payment: f.PaymentID, Line: f.LineID,
+			Record: f.RecordKey, OccurredAt: f.OccurredAt.UTC(), SalesCompanyID: f.SalesCompanyID}
 	}
 	hash := sha256.New()
 	encode := json.NewEncoder(hash)
@@ -428,9 +430,11 @@ const draftDetailSQL = `SELECT jsonb_build_object(
  'settlement',CASE WHEN st.id IS NOT NULL THEN jsonb_build_object('id',st.id,'confirmedAt',st.confirmed_at,'draftVersion',st.draft_version) END,
  'lines',coalesce((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM (
   SELECT l.id,p.name AS "personName",l.component_type AS "component",l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",
-   o.source,o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",rv.version AS "ruleVersion",e.source_enrollment_id AS "enrollmentId",e.membership_type AS "membershipType"
+   o.source,o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",rv.version AS "ruleVersion",e.source_enrollment_id AS "enrollmentId",e.membership_type AS "membershipType",coalesce(company_label.label,company.company_id) AS "salesCompany"
   FROM calculation_draft_lines l JOIN people p ON p.id=l.person_id JOIN source_order_versions o ON o.id=l.source_version_id
   JOIN rule_versions rv ON rv.id=l.rule_id LEFT JOIN practice_enrollments e ON e.id=l.practice_enrollment_id
+  LEFT JOIN source_payment_companies company ON company.source_version_id=l.source_version_id AND e.id IS NOT NULL
+  LEFT JOIN configuration_options company_label ON company_label.group_key='practiceSalesCompany' AND company_label.option_key=company.company_id
   WHERE l.period_id=d.period_id AND l.id>$2 ORDER BY l.id LIMIT 50
  ) l),'[]'),
  'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (

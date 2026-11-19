@@ -55,7 +55,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 	if err != nil {
 		return draft, err
 	}
-	awards, tierIssue, err := practiceTierAwards(rule, purchases, orders, identities, blocked, history)
+	awards, tierIssues, err := practiceTierAwards(rule, purchases, orders, identities, blocked, history)
 	if err != nil {
 		return draft, err
 	}
@@ -82,11 +82,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 			isTiered := part.Mode == "tiered"
 			if isTiered {
-				issue := tierIssue[assignments[0].PersonID]
-				if issue == "" {
-					issue = tierIssue[0]
-				}
-				if issue != "" {
+				if issue := tierIssues.forPurchase(assignments[0].PersonID, member.ID); issue != "" {
 					draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
 					continue
 				}
@@ -125,14 +121,46 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 	return draft, nil
 }
 
+type practiceTierIssues struct {
+	people      map[int64]string
+	enrollments map[int64]string
+}
+
+func (i practiceTierIssues) forPurchase(personID, enrollmentID int64) string {
+	if i.enrollments[enrollmentID] != "" {
+		return i.enrollments[enrollmentID]
+	}
+	if i.people[personID] != "" {
+		return i.people[personID]
+	}
+	return i.people[0]
+}
+
+func practicePurchaseCompany(payments []paymentInput) (string, string) {
+	var company string
+	for _, payment := range payments {
+		id := payment.Fact.SalesCompanyID
+		if id == "" {
+			return "", "PRACTICE_TIER_COMPANY_MISSING"
+		}
+		if company != "" && company != id {
+			return "", "PRACTICE_TIER_COMPANY_CONFLICT"
+		}
+		company = id
+	}
+	return company, ""
+}
+
 func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map[string][]paymentInput,
-	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory) (map[int64]practiceTier, map[int64]string, error) {
+	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory) (map[int64]practiceTier, practiceTierIssues, error) {
 	part := practiceTierComponent(rule)
 	if part == nil {
-		return nil, nil, nil
+		return nil, practiceTierIssues{}, nil
 	}
 	config := part.Tiers
-	issues := make(map[int64]string)
+	issues := practiceTierIssues{people: make(map[int64]string), enrollments: make(map[int64]string)}
+	schedules := config.schedules()
+	needsCount := make(map[int64]bool)
 	seenPayments := make(map[string]bool)
 	rows := make([]practiceTierPurchase, 0, len(current))
 	purchases := make(map[int64]practicePurchase)
@@ -141,12 +169,29 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		if classMember(member.MembershipType) != "new" {
 			continue
 		}
+		var company, companyIssue string
+		if len(config.CompanySchedules) != 0 && purchase.issue == "" {
+			company, companyIssue = practicePurchaseCompany(purchase.payments)
+		}
+		schedule, configured := companyTierSchedule(schedules, company)
+		if company != "" && !configured {
+			issues.enrollments[member.ID] = "PRACTICE_TIER_COMPANY_NOT_CONFIGURED"
+			continue
+		}
 		person := practicePurchaseOwner(purchase, part.SourceRole, identities)
 		if person == 0 || repeatedPracticePayment(purchase.payments, seenPayments) {
-			issues[0] = "PRACTICE_TIER_GROUP_INCOMPLETE"
+			issues.people[0] = "PRACTICE_TIER_GROUP_INCOMPLETE"
 			return nil, issues, nil
 		}
-		row := practiceTierPurchase{EnrollmentID: member.ID, PersonID: person, Base: purchase.base,
+		if companyIssue != "" {
+			issues.enrollments[member.ID] = companyIssue
+			issues.people[person] = "PRACTICE_TIER_GROUP_INCOMPLETE"
+			continue
+		}
+		if len(schedule.Count) != 0 {
+			needsCount[person] = true
+		}
+		row := practiceTierPurchase{EnrollmentID: member.ID, PersonID: person, CompanyID: company, Base: purchase.base,
 			SequenceKey: purchase.payments[0].Fact.OrderID, PaidAt: purchase.payments[0].Fact.OccurredAt}
 		if len(purchase.payments) == 2 {
 			row.SequenceKey = member.SourceEnrollmentID
@@ -157,14 +202,13 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		rows = append(rows, row)
 		purchases[member.ID] = purchase
 	}
-	if len(config.Count) == 0 || len(rows) == 0 {
-		awards, err := choosePracticeSalesTiers(*config, rows, nil)
-		return awards, issues, err
-	}
-
-	index, err := indexPracticePrior(history, part.SourceRole, orders, identities, blocked)
-	if err != nil {
-		return nil, nil, err
+	var index practicePriorIndex
+	if len(needsCount) != 0 {
+		var err error
+		index, err = indexPracticePrior(history, part.SourceRole, orders, identities, blocked)
+		if err != nil {
+			return nil, issues, err
+		}
 	}
 	startsByPerson := make(map[int64]practiceCountStart)
 	for _, person := range config.PersonCountStarts {
@@ -178,7 +222,8 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 	prior := make(map[int64]int64)
 	for _, row := range rows {
 		person := row.PersonID
-		if _, checked := windows[person]; checked {
+		_, checked := windows[person]
+		if checked || !needsCount[person] || issues.people[person] != "" {
 			continue
 		}
 		window, ready := defaultWindow, defaultReady
@@ -189,31 +234,32 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		windows[person] = window
 		count, valid := index.personCount(person, window)
 		if !ready {
-			issues[person] = "PRACTICE_TIER_HISTORY_MISSING"
+			issues.people[person] = "PRACTICE_TIER_HISTORY_MISSING"
 		} else if !valid {
-			issues[person] = "PRACTICE_TIER_HISTORY_INCOMPLETE"
+			issues.people[person] = "PRACTICE_TIER_HISTORY_INCOMPLETE"
 		} else if history.opening != nil && !hasPersonalStart {
 			openingCount, found := history.opening.counts[person]
 			if !found {
-				issues[person] = "PRACTICE_TIER_OPENING_MISSING"
+				issues.people[person] = "PRACTICE_TIER_OPENING_MISSING"
 				continue
 			}
+			var err error
 			prior[person], err = addMinor(openingCount, count)
 			if err != nil {
-				return nil, nil, err
+				return nil, issues, err
 			}
 		} else {
 			prior[person] = count
 		}
 	}
 	for _, row := range rows {
-		if issues[row.PersonID] == "" && index.repeats(purchases[row.EnrollmentID], windows[row.PersonID]) {
-			issues[row.PersonID] = "PRACTICE_TIER_GROUP_INCOMPLETE"
+		if issues.people[row.PersonID] == "" && index.repeats(purchases[row.EnrollmentID], windows[row.PersonID]) {
+			issues.people[row.PersonID] = "PRACTICE_TIER_GROUP_INCOMPLETE"
 		}
 	}
 	ready := rows[:0]
 	for _, row := range rows {
-		if issues[row.PersonID] == "" {
+		if issues.people[row.PersonID] == "" {
 			ready = append(ready, row)
 		}
 	}

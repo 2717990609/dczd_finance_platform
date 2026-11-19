@@ -134,3 +134,17 @@ func TestCalendarDraftDigestRemainsCompatible(t *testing.T) {
 		t.Fatalf("calendar digest = %x, error = %v", digest, err)
 	}
 }
+
+func TestClassDraftKeepsNewCompanyVersionEvenWhenAmountIsSame(t *testing.T) {
+	fact := paymentInput{ID: 1, Fact: sourceFact{Source: "DCZD", OrderID: "1", PaymentID: "1", SalesCompanyID: "first"}}
+	draft := paymentDraft{Lines: []draftLine{{FactID: 1, RuleID: 1, EnrollmentID: 1, PersonID: 1, Amount: 99}}}
+	first, err := digestDraft(1, draft, []paymentInput{fact})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact.Fact.SalesCompanyID = "second"
+	next, err := digestDraft(1, draft, []paymentInput{fact})
+	if err != nil || string(first) == string(next) {
+		t.Fatalf("company change did not invalidate the draft, error=%v", err)
+	}
+}

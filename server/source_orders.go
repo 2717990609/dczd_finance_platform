@@ -43,6 +43,7 @@ type sourceFact struct {
 	RefundsPayment  []sourcePaymentReference `json:"refundsPayment,omitempty"`
 	ReferrerID      string                   `json:"referrerId,omitempty"`
 	Participants    []sourceParticipant      `json:"participants,omitempty"`
+	SalesCompanyID  string                   `json:"-"`
 	AmountMinor     *int64                   `json:"amountMinor"`
 	OccurredAt      time.Time                `json:"occurredAt"`
 	UpdatedAt       time.Time                `json:"updatedAt"`
@@ -52,6 +53,13 @@ type sourcePaymentReference struct {
 	OrderID  string `json:"orderId"`
 	LineID   string `json:"lineId,omitempty"`
 	RecordID string `json:"recordId,omitempty"`
+}
+
+type sourceAttributionParticipant struct {
+	Role           string `json:"source_role_code"`
+	UserID         string `json:"source_user_id"`
+	CompanyID      string `json:"source_company_id"`
+	OrganizationID string `json:"source_organization_id"`
 }
 
 type sourceDocument struct {
@@ -95,11 +103,40 @@ type sourceDocument struct {
 		RecordID string `json:"target_source_record_id"`
 	} `json:"relations"`
 	Attribution struct {
-		Participants []struct {
-			Role   string `json:"source_role_code"`
-			UserID string `json:"source_user_id"`
-		} `json:"participants"`
+		Participants []sourceAttributionParticipant `json:"participants"`
 	} `json:"attribution_snapshot"`
+}
+
+func sourceSalesCompany(parties []sourceAttributionParticipant) (string, error) {
+	var company, fallback string
+	conflictingFallback := false
+	for _, party := range parties {
+		switch party.Role {
+		case "DIRECT_COMPANY", "PARENT_COMPANY":
+			id := strings.TrimSpace(party.CompanyID)
+			if id == "" {
+				continue
+			}
+			if !textOK(id, 128) || company != "" && company != id {
+				return "", errSourceRead
+			}
+			company = id
+		case "DIRECT_REFERRER", "PROFESSOR":
+			id := strings.TrimSpace(party.OrganizationID)
+			if id == "" {
+				continue
+			}
+			conflictingFallback = conflictingFallback || !textOK(id, 128) || fallback != "" && fallback != id
+			fallback = id
+		}
+	}
+	if company != "" {
+		return company, nil
+	}
+	if conflictingFallback {
+		return "", errSourceRead
+	}
+	return fallback, nil
 }
 
 func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, error) {
@@ -124,6 +161,13 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 			return sourceFact{}, errSourceRead
 		}
 		amount = &n
+	}
+	var company string
+	if source == "DCZD" && wire.Kind == "ORDER_PAID" {
+		company, err = sourceSalesCompany(wire.Attribution.Participants)
+		if err != nil {
+			return sourceFact{}, err
+		}
 	}
 	referrer := ""
 	var participants []sourceParticipant
@@ -161,7 +205,7 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 	return sourceFact{Source: source, OrderID: orderID, OrderNo: wire.Order.No, LineID: wire.Order.Line,
 		RecordKey: wire.Record.Table + ":" + wire.Record.ID, Version: wire.Record.Version, Kind: wire.Kind, Domain: wire.Business.Domain,
 		SourceKey: wire.Business.Code, TransactionType: wire.Business.TransactionType, SourceStatus: wire.Order.Status.Code,
-		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, RefundsPayment: refundTargets, ReferrerID: referrer, Participants: participants, AmountMinor: amount,
+		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, RefundsPayment: refundTargets, ReferrerID: referrer, Participants: participants, SalesCompanyID: company, AmountMinor: amount,
 		OccurredAt: occurredAt, UpdatedAt: wire.Record.UpdatedAt}, nil
 }
 
@@ -287,27 +331,49 @@ func storeSourceFacts(ctx context.Context, tx pgx.Tx, facts []sourceFact) (int64
 		if e != nil {
 			return 0, e
 		}
-		tag, e := tx.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING`,
-			f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, f.UpdatedAt, raw, f.OccurredAt)
-		if e != nil {
-			return 0, e
-		}
-		if tag.RowsAffected() == 0 {
+		var sourceVersion int64
+		e = tx.QueryRow(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING RETURNING id`,
+			f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, f.UpdatedAt, raw, f.OccurredAt).Scan(&sourceVersion)
+		if errors.Is(e, pgx.ErrNoRows) {
 			var same bool
-			e = tx.QueryRow(ctx, `SELECT fact=$7::jsonb OR (NOT (fact ? 'participants') AND fact=$7::jsonb - 'participants') FROM source_order_versions
+			e = tx.QueryRow(ctx, `SELECT id,fact=$7::jsonb OR (NOT (fact ? 'participants') AND fact=$7::jsonb - 'participants') FROM source_order_versions
 			 WHERE source=$1 AND order_id=$2 AND line_id=$3 AND record_key=$4 AND version=$5 AND kind=$6`,
-				f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, raw).Scan(&same)
+				f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, raw).Scan(&sourceVersion, &same)
 			if e != nil {
 				return 0, e
 			}
 			if !same {
 				return 0, conflict
 			}
+		} else if e != nil {
+			return 0, e
+		} else {
+			inserted++
 		}
-		inserted += tag.RowsAffected()
+		if f.SalesCompanyID != "" {
+			if e := storeSourcePaymentCompany(ctx, tx, sourceVersion, f.SalesCompanyID); e != nil {
+				return 0, e
+			}
+		}
 	}
 	return inserted, nil
+}
+
+func storeSourcePaymentCompany(ctx context.Context, tx pgx.Tx, version int64, company string) error {
+	tag, err := tx.Exec(ctx, `INSERT INTO source_payment_companies(source_version_id,company_id)
+	 VALUES($1,$2) ON CONFLICT(source_version_id) DO NOTHING`, version, company)
+	if err != nil || tag.RowsAffected() != 0 {
+		return err
+	}
+	var same bool
+	if err = tx.QueryRow(ctx, "SELECT company_id=$2 FROM source_payment_companies WHERE source_version_id=$1", version, company).Scan(&same); err != nil {
+		return err
+	}
+	if !same {
+		return conflict
+	}
+	return nil
 }
 
 const ordersSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (

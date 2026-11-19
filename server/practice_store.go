@@ -86,8 +86,9 @@ func readPracticeHeader(ctx context.Context, tx pgx.Tx, periodKey string, summar
 	return startsAt, err
 }
 
-const practicePaymentsSQL = `SELECT v.id,v.fact
+const practicePaymentsSQL = `SELECT v.id,v.fact,coalesce(company.company_id,'')
  FROM source_order_versions v JOIN source_mappings m ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'
+ LEFT JOIN source_payment_companies company ON company.source_version_id=v.id
  WHERE m.product_id=(SELECT product_id FROM periods WHERE id=$1)
    AND v.source='DCZD' AND v.kind='ORDER_PAID' AND v.order_id=ANY($2::text[])
    AND NOT EXISTS(
@@ -207,7 +208,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	}
 	var history practiceTierHistory
 	part := practiceTierComponent(rule)
-	if part != nil && len(part.Tiers.Count) != 0 {
+	if part != nil && part.Tiers.hasCountTiers() {
 		history, err = readPracticeTierHistory(ctx, tx, summary, *part.Tiers)
 		if err != nil {
 			return paymentDraft{}, nil, err
@@ -237,7 +238,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	}
 	facts, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (paymentInput, error) {
 		var item paymentInput
-		err := row.Scan(&item.ID, &item.Fact)
+		err := row.Scan(&item.ID, &item.Fact, &item.Fact.SalesCompanyID)
 		return item, err
 	})
 	if err != nil {

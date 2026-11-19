@@ -45,6 +45,9 @@ const reason = {
   PRACTICE_MISSING_PAYMENT: '缺少对应付款，请在来源核对订单',
   PRACTICE_INVALID_PAYMENT: '付款金额或发生时间不符合签到计提条件',
   PRACTICE_ATTRIBUTION_CONFLICT: '订金与尾款的受益人归属不一致',
+  PRACTICE_TIER_COMPANY_MISSING: '付款记录缺少销售公司',
+  PRACTICE_TIER_COMPANY_CONFLICT: '订金和尾款的销售公司不一致',
+  PRACTICE_TIER_COMPANY_NOT_CONFIGURED: '该销售公司未配置阶梯',
   PRACTICE_TIER_OPENING_MISSING: '所选冻结期初中缺少该人员的期初人数',
   PRACTICE_TIER_HISTORY_MISSING: '累计起点或历史期次缺少已确认名单',
   PRACTICE_TIER_HISTORY_INCOMPLETE: '历史新报的付款或人员归属待核',
@@ -168,7 +171,7 @@ async function loadMore(section, cursorName) {
     <div class="table-container">
       <a-table :columns="lineColumns" :data-source="draft.lines" :pagination="false" row-key="id" :scroll="{ x: 755 }">
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'order'">{{ record.orderNo || record.orderId }}<small class="order-version">来源版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template></small></template>
+          <template v-if="column.key === 'order'">{{ record.orderNo || record.orderId }}<small class="order-version">来源版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template><template v-if="record.salesCompany"> · {{ record.salesCompany }}</template></small></template>
           <template v-else-if="column.key === 'component'">{{ componentLabel(record.component) }}</template>
           <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}</template>
           <template v-else-if="column.key === 'base'">{{ formatMoney(record.baseMinor) }}</template>

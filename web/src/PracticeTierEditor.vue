@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import PracticeTierRanges from './PracticeTierRanges.vue'
 
 const props = defineProps({
   config: { type: Object, required: true },
@@ -8,6 +9,7 @@ const props = defineProps({
   amounts: { type: Array, required: true },
   people: { type: Array, required: true },
   openings: { type: Array, required: true },
+  companies: { type: Array, required: true },
 })
 const personalStartModes = computed(() => props.startModes.filter(option =>
   !option.scope?.countScopes || option.scope.countScopes.includes('person')))
@@ -20,6 +22,18 @@ const sections = computed(() => {
 function eligiblePeople(row) {
   return props.people.filter(person =>
     !props.config.personCountStarts.some(other => other !== row && other.personId === person.value))
+}
+function eligibleCompanies(row) {
+  return props.companies.filter(company =>
+    !props.config.companies.some(other => other !== row && other.companyId === company.value))
+}
+function addCompany() {
+  const mode = props.amounts[0]?.value
+  props.config.companies.push({count:[{mode}],performance:[{from:0,mode}]})
+}
+function removeCompany(index) {
+  props.config.companies.splice(index,1)
+  if (!props.config.companies.length) props.config.onlyCompanies = false
 }
 </script>
 
@@ -63,27 +77,22 @@ function eligiblePeople(row) {
         <a-button type="dashed" block @click="config.personCountStarts.push({startMode:personalStartModes[0]?.value})">添加个人起点</a-button>
       </details>
     </template>
-    <fieldset v-for="section in sections" :key="section.key" class="tier-ranges">
-      <legend>{{ section.title }}</legend>
-      <p class="tier-note">上下限均含当前值。上限留空时，延续至下一档的起点之前。</p>
-      <div v-for="(row, index) in config[section.key]" :key="index" class="tier-range">
-        <div class="tier-values">
-          <a-form-item :html-for="'tier-from-'+section.key+index" :label="'下限（'+section.unit+'）'" required>
-            <a-input-number :id="'tier-from-'+section.key+index" v-model:value="row.from" :min="0" :precision="section.decimals"/>
-          </a-form-item>
-          <a-form-item :html-for="'tier-through-'+section.key+index" :label="'上限（'+section.unit+'）'">
-            <a-input-number :id="'tier-through-'+section.key+index" v-model:value="row.through" :min="0" :precision="section.decimals"/>
-          </a-form-item>
-          <a-form-item :html-for="'tier-mode-'+section.key+index" label="计提方式">
-            <a-select :id="'tier-mode-'+section.key+index" v-model:value="row.mode" :options="amounts"/>
-          </a-form-item>
-          <a-form-item :html-for="'tier-value-'+section.key+index" label="计提值" required>
-            <a-input-number :id="'tier-value-'+section.key+index" v-model:value="row.value" :min="0" :precision="2"/>
-          </a-form-item>
-        </div>
-        <a-button v-if="config[section.key].length>1" type="link" danger @click="config[section.key].splice(index,1)">移除档位</a-button>
+    <PracticeTierRanges v-if="!config.onlyCompanies" :config="config" :sections="sections" :amounts="amounts"/>
+    <details class="tier-person-starts">
+      <summary>按销售公司配置档位</summary>
+      <p class="tier-note">按原付款中的销售公司选档，同一人的累计在所选公司间合并。</p>
+      <label class="tier-note">
+        <input v-model="config.onlyCompanies" type="checkbox"> 仅计算已配置公司
+      </label>
+      <div v-for="(company,index) in config.companies" :key="index" class="tier-range">
+        <a-form-item :html-for="'tier-company-'+index" label="销售公司" required>
+          <a-select :id="'tier-company-'+index" v-model:value="company.companyId" :options="eligibleCompanies(company)" show-search option-filter-prop="label"/>
+        </a-form-item>
+        <PracticeTierRanges :config="company" :sections="sections" :amounts="amounts" :prefix="'company-'+index+'-'"/>
+        <a-button type="link" danger @click="removeCompany(index)">移除公司档位</a-button>
       </div>
-      <a-button type="dashed" block @click="config[section.key].push({mode:amounts[0]?.value})">添加{{ section.title }}</a-button>
-    </fieldset>
+      <a-button v-if="config.companies.length<companies.length" type="dashed" block @click="addCompany">添加公司档位</a-button>
+      <p v-else-if="!companies.length" class="tier-note">暂无可选销售公司。</p>
+    </details>
   </div>
 </template>

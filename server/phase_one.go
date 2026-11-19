@@ -32,6 +32,8 @@ type component struct {
 	Tiers        *practiceSalesTiers `json:"tiers,omitempty"`
 }
 
+var errPracticeTierCompany = errors.New("公司阶梯引用的销售公司未配置或已停用")
+
 var errPracticeCountPerson = errors.New("个人累计起点引用的人员不存在")
 
 var invalid = errors.New("请核对名称、范围与必填配置")
@@ -153,7 +155,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 	code, message := http.StatusInternalServerError, "处理失败，请稍后重试"
 	var dbErr *pgconn.PgError
 	switch {
-	case errors.Is(err, invalid), errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope):
+	case errors.Is(err, invalid), errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany):
 		code, message = 400, err.Error()
 	case errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
@@ -356,6 +358,7 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 			return invalid
 		}
 		var personIDs []int64
+		var companyIDs []string
 		for _, c := range p.Components {
 			if mode != "class" && c.ClassMember != "" {
 				return invalid
@@ -371,9 +374,23 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 						return errPracticeOpeningScope
 					}
 				}
+				for _, company := range c.Tiers.CompanySchedules {
+					companyIDs = append(companyIDs, company.CompanyID)
+				}
 				for _, start := range c.Tiers.PersonCountStarts {
 					personIDs = append(personIDs, start.PersonID)
 				}
+			}
+		}
+		if len(companyIDs) != 0 {
+			var missing bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM unnest($1::text[]) AS company(id)
+			 WHERE NOT EXISTS(SELECT 1 FROM configuration_options o
+			  WHERE o.group_key='practiceSalesCompany' AND o.option_key=company.id AND o.enabled))`, companyIDs).Scan(&missing); err != nil {
+				return err
+			}
+			if missing {
+				return errPracticeTierCompany
 			}
 		}
 		if len(personIDs) != 0 {
