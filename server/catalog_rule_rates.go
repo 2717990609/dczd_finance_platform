@@ -95,9 +95,10 @@ func (s workspace) ruleRateProduct(ctx context.Context, raw string) (string, int
 }
 
 func (s workspace) getCatalogRuleRates(w http.ResponseWriter, r *http.Request) {
-	session := s.ruleAuth.session(r)
-	if session == nil {
-		respond(w, nil, errRuleLogin)
+	w.Header().Set("Cache-Control", "no-store")
+	_, permits, err := s.financeRateActor(r)
+	if err != nil {
+		respond(w, nil, err)
 		return
 	}
 	id, product, err := s.ruleRateProduct(r.Context(), r.URL.Query().Get("ruleId"))
@@ -105,20 +106,19 @@ func (s workspace) getCatalogRuleRates(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
-	if !session.permits(product, false) {
+	if !permits(product, false) {
 		respond(w, nil, errRulePermission)
 		return
 	}
 	sheet, err := s.catalogRuleRateSheet(r.Context(), id)
-	sheet.MayPublish = sheet.MayPublish && session.permits(product, true)
-	w.Header().Set("Cache-Control", "no-store")
+	sheet.MayPublish = sheet.MayPublish && permits(product, true)
 	respond(w, sheet, err)
 }
 
 func (s workspace) postCatalogRuleRates(w http.ResponseWriter, r *http.Request) {
-	session := s.ruleAuth.session(r)
-	if session == nil {
-		respond(w, nil, errRuleLogin)
+	actor, permits, err := s.financeRateActor(r)
+	if err != nil {
+		respond(w, nil, err)
 		return
 	}
 	submitJSON(128<<10, func(ctx context.Context, input publishCatalogRatesInput) (catalogPublication, error) {
@@ -126,10 +126,10 @@ func (s workspace) postCatalogRuleRates(w http.ResponseWriter, r *http.Request) 
 		if err != nil {
 			return catalogPublication{}, err
 		}
-		if !session.permits(product, true) {
+		if !permits(product, true) {
 			return catalogPublication{}, errRulePermission
 		}
-		return s.publishCatalogRates(ctx, input, session.Subject)
+		return s.publishCatalogRates(ctx, input, actor)
 	})(w, r)
 }
 

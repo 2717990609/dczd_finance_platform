@@ -99,26 +99,30 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 }
 
 type workspace struct {
-	db       *pgxpool.Pool
-	sources  map[string]sourceConfig
-	ruleAuth catalogRuleAuth
+	db          *pgxpool.Pool
+	sources     map[string]sourceConfig
+	ruleAuth    catalogRuleAuth
+	development bool
 }
 
 func (s workspace) routes() []rest.Route {
-	return []rest.Route{
+	routes := []rest.Route{
+		{Method: http.MethodGet, Path: "/api/v1/session", Handler: s.getFinanceSession},
+		{Method: http.MethodPost, Path: "/api/v1/session", Handler: s.postFinanceSession},
+		{Method: http.MethodDelete, Path: "/api/v1/session", Handler: s.deleteFinanceSession},
 		{Method: http.MethodGet, Path: "/api/v1/configuration-options", Handler: s.list(configurationOptionsSQL)},
-		{Method: http.MethodGet, Path: "/api/v1/products", Handler: s.list(productsSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/products", Handler: s.listForAuthorizedProducts(productsSQL, true)},
 		{Method: http.MethodPost, Path: "/api/v1/products", Handler: submit(s.createProduct)},
 		{Method: http.MethodGet, Path: "/api/v1/mappings", Handler: s.list(mappingsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/mappings", Handler: submit(s.createMapping)},
-		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.list(periodsSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.listForAuthorizedProducts(periodsSQL, true)},
 		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createPeriod)},
-		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.list(rulesSQL)},
-		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.list(catalogRulesSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.listForAuthorizedProducts(rulesSQL, false)},
+		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.listForAuthorizedProducts(catalogRulesSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-rates", Handler: s.getCatalogRuleRates},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-rule-rates", Handler: s.postCatalogRuleRates},
-		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.list(practiceCountOpeningsSQL)},
-		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishRule)},
+		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.listForAuthorizedProducts(practiceCountOpeningsSQL, false)},
+		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-units", Handler: s.list(organizationUnitsSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-assignments", Handler: s.organizationAssignments},
 		{Method: http.MethodGet, Path: "/api/v1/people", Handler: s.list(peopleSQL)},
@@ -141,6 +145,10 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/draft-pool-allocations", Handler: submit(s.savePoolAllocation)},
 		{Method: http.MethodPost, Path: "/api/v1/drafts", Handler: submit(s.recalculateDraft)},
 	}
+	for i := range routes {
+		routes[i] = s.financeRoute(routes[i])
+	}
+	return routes
 }
 
 func submit[T any](apply func(context.Context, T) (any, error)) http.HandlerFunc {
@@ -175,10 +183,12 @@ func respond(w http.ResponseWriter, result any, err error) {
 	code, message := http.StatusInternalServerError, "处理失败，请稍后重试"
 	var dbErr *pgconn.PgError
 	switch {
-	case errors.Is(err, errRuleLogin):
+	case errors.Is(err, errRuleLogin), errors.Is(err, errFinanceLogin), errors.Is(err, errFinancePassword):
 		code, message = http.StatusUnauthorized, err.Error()
-	case errors.Is(err, errRulePermission):
+	case errors.Is(err, errRulePermission), errors.Is(err, errFinanceForbidden):
 		code, message = http.StatusForbidden, err.Error()
+	case errors.Is(err, errFinanceLoginBusy):
+		code, message = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, invalid), errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany):
 		code, message = 400, err.Error()
 	case errors.Is(err, errLegacyRuleNotAdapted), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
@@ -221,7 +231,8 @@ func (s workspace) list(query string) http.HandlerFunc {
 const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT p.id,p.code,p.name,p.period_mode AS "periodMode",p.cycle_start_day AS "cycleStartDay",
  (l.product_id IS NOT NULL) AS "catalogPending"
- FROM products p LEFT JOIN legacy_catalog_products l ON l.product_id=p.id ORDER BY p.id DESC LIMIT 500) p`
+ FROM products p LEFT JOIN legacy_catalog_products l ON l.product_id=p.id
+ WHERE ($1::bigint[] IS NULL OR p.id=ANY($1)) ORDER BY p.id DESC LIMIT 500) p`
 const mappingsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT m.id,m.product_id AS "productId",p.name AS "productName",m.source,m.domain,m.source_key AS "sourceKey"
  FROM source_mappings m JOIN products p ON p.id=m.product_id ORDER BY m.id DESC LIMIT 500) p`
@@ -241,7 +252,7 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
     THEN roster.starts_at IS NOT NULL AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
     ELSE rv.effective_from IS NULL OR rv.effective_from < ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai') END
   ORDER BY ` + matchingRuleOrder + ` LIMIT 1
- ) rule ON true ORDER BY p.id DESC LIMIT 500) a`
+ ) rule ON true WHERE ($1::bigint[] IS NULL OR p.product_id=ANY($1)) ORDER BY p.id DESC LIMIT 500) a`
 const matchingRuleScope = `rv.product_id=p.product_id AND
   (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal)))`
 const matchingRuleOrder = `(rv.period_id IS NOT NULL) DESC,rv.from_ordinal DESC NULLS LAST,
@@ -249,7 +260,8 @@ const matchingRuleOrder = `(rv.period_id IS NOT NULL) DESC,rv.from_ordinal DESC 
 const rulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
  (SELECT rv.id,rv.product_id AS "productId",p.name AS "productName",rv.version,rv.label,
  rv.from_ordinal AS "fromOrdinal",rv.period_id AS "periodId",pr.name AS "periodName",rv.effective_from AS "effectiveFrom",rv.components
- FROM rule_versions rv JOIN products p ON p.id=rv.product_id LEFT JOIN periods pr ON pr.id=rv.period_id ORDER BY rv.id DESC LIMIT 500) a`
+ FROM rule_versions rv JOIN products p ON p.id=rv.product_id LEFT JOIN periods pr ON pr.id=rv.period_id
+ WHERE ($1::bigint[] IS NULL OR rv.product_id=ANY($1)) ORDER BY rv.id DESC LIMIT 500) a`
 const peopleSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT id,name FROM people) p`
 const identitiesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
@@ -457,9 +469,13 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 				return errPracticeCountPerson
 			}
 		}
-		if err := tx.QueryRow(ctx, `INSERT INTO rule_versions(product_id,version,label,period_id,from_ordinal,effective_from,components)
-   SELECT $1,coalesce(max(version),0)+1,$2,$3,$4,$5,$6 FROM rule_versions WHERE product_id=$1 RETURNING version`,
-			p.ProductID, strings.TrimSpace(p.Label), p.PeriodID, p.FromOrdinal, p.EffectiveFrom, raw).Scan(&version); err != nil {
+		var publisher *string
+		if actor := financeUser(ctx); actor != nil {
+			publisher = &actor.ID
+		}
+		if err := tx.QueryRow(ctx, `INSERT INTO rule_versions(product_id,version,label,period_id,from_ordinal,effective_from,components,published_by)
+   SELECT $1,coalesce(max(version),0)+1,$2,$3,$4,$5,$6,$7::uuid FROM rule_versions WHERE product_id=$1 RETURNING version`,
+			p.ProductID, strings.TrimSpace(p.Label), p.PeriodID, p.FromOrdinal, p.EffectiveFrom, raw, publisher).Scan(&version); err != nil {
 			return err
 		}
 		return enqueueDraftConfiguration(ctx, tx, draftRefreshRule, p.ProductID, p.PeriodID, p.FromOrdinal, p.EffectiveFrom)
@@ -512,15 +528,12 @@ func (s workspace) assignIdentity(ctx context.Context, p assignIdentityInput) (a
 
 func startHTTP(ctx context.Context, cfg config, db *pgxpool.Pool) error {
 	host, portText, err := net.SplitHostPort(cfg.addr)
-	if err != nil || (host != "127.0.0.1" && host != "localhost" && host != "::1") {
-		return errors.New("development HTTP address must use loopback")
+	if err != nil || !isLoopbackHost(host) {
+		return errors.New("HTTP address must use loopback; expose the server through an HTTPS proxy")
 	}
 	port, err := strconv.Atoi(portText)
 	if err != nil || port < 1 || port > 65535 {
 		return errors.New("invalid port")
-	}
-	if !strings.HasSuffix(cfg.database.ConnConfig.Database, "_dev") {
-		return errors.New("development database name must end with _dev")
 	}
 	if err = migrate(ctx, db); err != nil {
 		return err
@@ -531,7 +544,7 @@ func startHTTP(ctx context.Context, cfg config, db *pgxpool.Pool) error {
 	}
 	defer server.Stop()
 	health := newHandler(db.Ping)
-	api := workspace{db: db, sources: readSources(), ruleAuth: cfg.ruleAuth}
+	api := workspace{db: db, sources: readSources(), ruleAuth: cfg.ruleAuth, development: cfg.development}
 	stopSync := api.startDCAISyncWorkers(ctx, cfg.dcaiSyncInterval)
 	defer stopSync()
 	stopDraftRefresh := api.startDraftRefreshWorker(ctx, cfg.draftInterval)

@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	github.com/golang-jwt/jwt/v4 v4.5.2
 	github.com/jackc/pgx/v5 v5.8.0
+	golang.org/x/crypto v0.48.0
 )
 
 require (

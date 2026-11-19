@@ -7,6 +7,7 @@ import {
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import DraftWorkbench from './DraftWorkbench.vue'
 import CatalogRuleRates from './CatalogRuleRates.vue'
+import FinanceLogin from './FinanceLogin.vue'
 import OrganizationDirectory from './OrganizationDirectory.vue'
 import OrderSyncPanel from './OrderSyncPanel.vue'
 import PracticeTierEditor from './PracticeTierEditor.vue'
@@ -20,8 +21,20 @@ const navigation = [
   {key:'organization', title:'组织与人员', icon:TeamOutlined},
   {key:'people', title:'人员映射', icon:TeamOutlined, description:'查询财务计算使用的来源人员标识及有效区间。'},
 ]
-const getRoute = () => navigation.some(x => x.key === location.hash.slice(1)) ? location.hash.slice(1) : 'products'
-const current = ref(getRoute())
+const session = ref()
+const sessionError = ref('')
+const loginRequested = ref(false)
+const sessionBusy = ref(false)
+const sessionChecking = ref(false)
+const wholeWorkspace = computed(() => session.value?.user ? session.value.user.workspace : session.value?.development)
+const visibleNavigation = computed(() => wholeWorkspace.value ? navigation : session.value?.user?.rules.length
+  ? navigation.filter(entry => entry.key==='rules') : [])
+const getRoute = () => {
+  const key = location.hash.slice(1)
+  if (visibleNavigation.value.some(entry => entry.key === key)) return key
+  return wholeWorkspace.value ? 'products' : visibleNavigation.value[0]?.key
+}
+const current = ref()
 const active = computed(() => navigation.find(x => x.key === current.value))
 const theme = {token:{colorPrimary:'#315ab2', colorLink:'#315ab2', colorText:'#253044', borderRadius:6, fontSize:14, controlHeight:34}}
 const productScope = ref()
@@ -32,7 +45,8 @@ const showScope = computed(() => usesProductScope.value || current.value === 'or
 const organization = ref()
 const orderSync = ref()
 const rateRule = ref()
-const data = ref({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
+const emptyData = () => ({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
+const data = ref(emptyData())
 const loading = ref(false)
 const saving = ref(false)
 const globalError = ref('')
@@ -46,6 +60,7 @@ const sourceFilter = ref('')
 const olderThan = ref('')
 const pageStack = ref([])
 let requestVersion = 0
+let sessionRequest = 0
 const configuration = ref({})
 const configurationReady = ref(false)
 const options = group => configuration.value[group] || []
@@ -61,9 +76,16 @@ function matchesOption(option, periodMode, type, member) {
     (!scope.classMembers || scope.classMembers.includes(member))
 }
 const productOptions = computed(() => data.value.products.map(p => ({value:p.id,label:p.name})))
+const scopedProducts = computed(() => data.value.products.filter(p => current.value !== 'rules' ||
+  !session.value?.user || session.value.user.rules.some(rule=>rule.productId===p.id)))
+const scopeProductOptions = computed(() => scopedProducts.value.map(p=>({value:p.id,label:p.name})))
+const canPublishRule = productId => session.value?.user
+  ? session.value.user.rules.some(rule => rule.productId===productId && rule.publish) : session.value?.development
+const ruleProductOptions = computed(() => data.value.products.filter(p=>!p.catalogPending && canPublishRule(p.id))
+  .map(p=>({value:p.id,label:p.name})))
 const visibleProducts = computed(() => {
   const term = scopeSearch.value.trim().toLowerCase()
-  return term ? data.value.products.filter(p => (p.name+' '+p.code).toLowerCase().includes(term)) : data.value.products
+  return term ? scopedProducts.value.filter(p => (p.name+' '+p.code).toLowerCase().includes(term)) : scopedProducts.value
 })
 const peopleOptions = computed(() => data.value.people.map(p => ({value:p.id,label:p.name})))
 const periodOptions = computed(() => data.value.periods.filter(p => p.productId === draft.value.productId).map(p => ({value:p.id,label:p.name})))
@@ -138,7 +160,7 @@ function savedOpeningLabel(id) {
 const labels = {ORDER_PAID:'付款',ORDER_REFUNDED:'退款',REFUND_SUCCEEDED:'退款',REFUND_ADJUSTED:'退款更正',DELIVERY_COMPLETED:'已交付'}
 const catalogScopeLabels = {BUSINESS_SCENARIO:'业务场景',CROSS_SCENARIO_AGGREGATE:'跨场景汇总'}
 const canOpenAction = computed(() => current.value!=='rules' ||
-  !data.value.products.some(product => product.id===productScope.value && product.catalogPending))
+  ruleProductOptions.value.some(product => !productScope.value || product.value===productScope.value))
 function catalogRuleBadge(row) {
   const now = Date.now()
   if (!row.inLatestSnapshot) return { text:'历史版本', color:'default' }
@@ -182,16 +204,19 @@ const columns = computed(() => {
 const tableWidth = computed(() => Math.max(620, columns.value.reduce((width, column) => width + (column.width || 0), 0)))
 
 async function api(path, options) {
+  const issuedFor = sessionRequest
   const response = await fetch('/api/v1' + path, {...options, headers:{'Content-Type':'application/json'}})
   const body = await response.json().catch(() => null)
   if (!response.ok) {
     const error = new Error(body?.message || '接口暂不可用，请检查本地服务')
     error.status = response.status
+    if (response.status===401 && path!=='/session' && session.value?.user && issuedFor===sessionRequest) clearSession()
     throw error
   }
   return body
 }
 async function refresh(reloadOptions = false) {
+  if (!current.value) return
   const version = ++requestVersion
   loading.value = true
   globalError.value = ''
@@ -203,6 +228,7 @@ async function refresh(reloadOptions = false) {
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
   if (requests.catalogRules) requests.catalogRules = '/rule-catalog'
   if (requests.practiceCountOpenings) requests.practiceCountOpenings = '/practice-count-openings'
+  if (!wholeWorkspace.value) delete requests.people
   if (!configurationReady.value || reloadOptions) requests.configuration = '/configuration-options'
   const entries = Object.entries(requests)
   const results = await Promise.allSettled(entries.map(([,url]) => api(url)))
@@ -225,6 +251,9 @@ function refreshWorkspace() {
 }
 function changeRoute() {
   current.value = getRoute()
+  if (current.value==='rules' && session.value?.user && !session.value.user.rules.some(rule=>rule.productId===productScope.value)) {
+    productScope.value=undefined
+  }
   tab.value = 'main'
   filter.value = ''
   sourceFilter.value = ''
@@ -233,7 +262,69 @@ function changeRoute() {
   notice.value = ''
   refresh()
 }
-onMounted(() => { addEventListener('hashchange',changeRoute); refresh() })
+function clearWorkspace() {
+  ++requestVersion
+  data.value = emptyData()
+  productScope.value = undefined
+  current.value = undefined
+  drawer.value = ''
+  draft.value = {}
+  rateRule.value = undefined
+  saving.value = false
+  formError.value = ''
+  globalError.value = ''
+  notice.value = ''
+  filter.value = ''
+  sourceFilter.value = ''
+  olderThan.value = ''
+  pageStack.value = []
+  configuration.value = {}
+  configurationReady.value = false
+}
+function clearSession() {
+  ++sessionRequest
+  clearWorkspace()
+  session.value = {development:session.value.development,user:null}
+  loginRequested.value = session.value.development
+  sessionChecking.value = false
+}
+function cancelLogin() {
+  loginRequested.value = false
+  changeRoute()
+}
+async function loadSession() {
+  const check=++sessionRequest
+  sessionChecking.value = true
+  sessionError.value = ''
+  try {
+    const next = await api('/session')
+    if (check!==sessionRequest) return
+    clearWorkspace()
+    session.value = next
+    loginRequested.value = false
+    changeRoute()
+  } catch (err) {
+    if (check===sessionRequest) {
+      clearWorkspace()
+      sessionError.value = err.message
+    }
+  } finally {
+    if (check===sessionRequest) sessionChecking.value = false
+  }
+}
+async function signOut() {
+  if (sessionBusy.value) return
+  sessionBusy.value = true
+  try {
+    await api('/session',{method:'DELETE'})
+    clearSession()
+  } catch (err) {
+    sessionError.value = err.message
+  } finally {
+    sessionBusy.value = false
+  }
+}
+onMounted(() => { addEventListener('hashchange',changeRoute); loadSession() })
 onBeforeUnmount(() => removeEventListener('hashchange',changeRoute))
 watch(() => draft.value.productId, (next, previous) => {
   if (drawer.value === 'rule' && next !== previous) {
@@ -343,6 +434,7 @@ function bodyFor(kind,f) {
 }
 async function save() {
   if (saving.value) return
+  const issuedFor = sessionRequest
   const kind = drawer.value
   const paths = {product:'/products',mapping:'/mappings',period:'/periods',rule:'/rules',person:'/people',identity:'/identities',pull:'/orders/pull'}
   formError.value = ''
@@ -350,6 +442,7 @@ async function save() {
   try {
     const payload = bodyFor(kind,draft.value)
     const result = await api(paths[kind],{method:'POST',body:JSON.stringify(payload)})
+    if (issuedFor!==sessionRequest) return
     notice.value = kind === 'pull' ? '同步完成，读取 '+result.facts+' 条业务记录，新增 '+result.newVersions+' 个版本。'
       : kind === 'rule' ? '规则 v'+result.version+' 已保存。' : '保存成功。'
     drawer.value = ''
@@ -359,27 +452,43 @@ async function save() {
       resetOrders()
     } else refresh()
   } catch (err) {
-    formError.value = err.message
+    if (issuedFor===sessionRequest) formError.value = err.message
   } finally {
-    saving.value = false
+    if (issuedFor===sessionRequest) saving.value = false
   }
 }
 </script>
 
 <template>
 <a-config-provider :theme="theme" :locale="zhCN" :auto-insert-space-in-button="false">
-  <div class="layout">
+  <main v-if="!session || sessionError || sessionChecking" class="workspace-content">
+    <a-alert v-if="sessionError" :message="sessionError" type="error" show-icon>
+      <template #action><a-button @click="loadSession">重试</a-button></template>
+    </a-alert>
+    <a-spin v-else tip="正在打开工作台"/>
+  </main>
+  <FinanceLogin v-else-if="!session.user && (!session.development || loginRequested)" :api="api"
+    :development="session.development" @signed-in="loadSession" @cancel="cancelLogin"/>
+  <main v-else-if="!visibleNavigation.length" class="workspace-content">
+    <a-alert message="当前账号尚未配置工作台或产品规则权限" type="warning" show-icon>
+      <template #action><a-button :loading="sessionBusy" @click="signOut">退出登录</a-button></template>
+    </a-alert>
+  </main>
+  <div v-else-if="active" class="layout">
     <header class="topbar">
       <div class="brand">
         <span class="brand-icon"><BankOutlined aria-hidden="true"/></span>
         <div class="path"><b>财务工作台</b><span aria-hidden="true">/</span><span>{{ active.title }}</span></div>
       </div>
       <div class="topbar-actions">
+        <span v-if="session.user" class="finance-account-name">{{ session.user.name }}</span>
+        <a-button v-if="session.user" :loading="sessionBusy" @click="signOut">退出登录</a-button>
+        <a-button v-else @click="loginRequested=true">登录</a-button>
         <a-button v-if="current!=='settlement'" :loading="loading" @click="refreshWorkspace"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新数据</a-button>
       </div>
     </header>
     <nav class="workspace-nav" aria-label="主导航">
-      <a v-for="entry in navigation" :key="entry.key" :href="'#'+entry.key" :class="{active:current===entry.key}" :aria-current="current===entry.key ? 'page' : undefined">
+      <a v-for="entry in visibleNavigation" :key="entry.key" :href="'#'+entry.key" :class="{active:current===entry.key}" :aria-current="current===entry.key ? 'page' : undefined">
         <component :is="entry.icon" aria-hidden="true"/><span>{{ entry.title }}</span>
       </a>
     </nav>
@@ -396,7 +505,7 @@ async function save() {
           </div>
           <div class="mobile-scope">
             <label for="scope-product">产品范围</label>
-            <a-select id="scope-product" v-model:value="productScope" placeholder="全部产品" :options="productOptions" allow-clear/>
+            <a-select id="scope-product" v-model:value="productScope" placeholder="全部产品" :options="scopeProductOptions" allow-clear/>
           </div>
         </template>
         <template v-else>
@@ -479,7 +588,8 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='components' && record.catalogPending">
                   <a-tag :color="catalogRuleBadge(record).color">{{ catalogRuleBadge(record).text }}</a-tag>
-                  <a-button v-if="record.draftSupported && record.projectMatches" type="link" size="small" @click="rateRule=record">分润费率</a-button>
+                  <a-button v-if="record.draftSupported && record.projectMatches && (!session.user || session.user.rules.some(grant=>grant.productId===record.productId))"
+                    type="link" size="small" @click="rateRule=record">分润费率</a-button>
                 </template>
                 <template v-else-if="column.key==='components'">
                   <div v-for="c in text" :key="c.type+':'+(c.classMember || '')">
@@ -517,7 +627,7 @@ async function save() {
       </main>
     </div>
   </div>
-  <a-drawer :open="Boolean(drawer)" :title="titles[drawer]" :width="'min(510px, 100vw)'" @close="close">
+  <a-drawer v-if="active && !sessionError && !sessionChecking && !loginRequested" :open="Boolean(drawer)" :title="titles[drawer]" :width="'min(510px, 100vw)'" @close="close">
     <a-alert v-if="formError" class="feedback" type="error" :message="formError" show-icon/>
     <a-form :model="draft" layout="vertical" @finish="save">
       <template v-if="drawer==='product'">
@@ -526,7 +636,7 @@ async function save() {
         <a-form-item label="核算方式"><a-select v-model:value="draft.periodMode" aria-label="核算方式" :options="options('periodMode')"/></a-form-item>
         <a-form-item v-if="draft.periodMode==='calendar'" label="每月开始日" extra="填 1 表示自然月。填 25 表示上月 25 日至本月 24 日。" required><a-input-number v-model:value="draft.cycleStartDay" aria-label="每月开始日" :min="1" :max="28" :precision="0"/></a-form-item>
       </template>
-      <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="productOptions"/></a-form-item>
+      <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='rule' ? ruleProductOptions : productOptions"/></a-form-item>
       <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" label="来源系统"><a-select v-model:value="draft.source" aria-label="来源系统" :options="sources"/></a-form-item>
       <template v-if="drawer==='mapping'">
         <a-form-item label="来源业务域" required><a-input v-model:value="draft.domain" aria-label="来源业务域" placeholder="填写源系统返回的业务域"/></a-form-item>
@@ -591,6 +701,7 @@ async function save() {
       <div class="form-actions"><a-button :disabled="saving" @click="close">取消</a-button><a-button html-type="submit" type="primary" :loading="saving">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':'保存' }}</a-button></div>
     </a-form>
   </a-drawer>
-  <CatalogRuleRates v-if="rateRule" :rule="rateRule" :api="api" :format-time="formatTime" @close="rateRule=undefined" @published="ratePublished"/>
+  <CatalogRuleRates v-if="rateRule && active && !sessionError && !sessionChecking && !loginRequested"
+    :rule="rateRule" :api="api" :format-time="formatTime" @close="rateRule=undefined" @published="ratePublished"/>
 </a-config-provider>
 </template>

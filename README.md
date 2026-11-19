@@ -29,7 +29,7 @@
 
 ## 本地运行
 
-需要 Go 1.25、Node.js 22、pnpm 10 和专用 PostgreSQL 开发库。首次配置时将 `.env.example` 复制为 `.env.local`，填写本地开发库连接。库名须以 `_dev` 结尾，并与 `FINANCE_EXPECTED_DATABASE` 一致。服务启动时初始化一期表。此配置文件仅保存在本机。
+需要 Go 1.25、Node.js 22、pnpm 10 和专用 PostgreSQL 开发库。首次配置时将 `.env.example` 复制为 `.env.local`，填写本地开发库连接。开发模式使用回环地址和以 `_dev` 结尾的数据库。库名须与 `FINANCE_EXPECTED_DATABASE` 一致。服务启动时初始化表。此配置文件仅保存在本机。
 
 ```sh
 test -e .env.local || cp .env.example .env.local
@@ -54,6 +54,28 @@ pnpm --dir web dev
 
 前端地址为 `http://127.0.0.1:5176/`，开发代理转发至后端 `127.0.0.1:8096`。`/healthz` 检查 HTTP 服务，`/readyz` 检查开发库连接。
 
+## 财务账号
+
+默认的 `FINANCE_ACCESS_MODE=managed` 要求登录后使用工作台。后端监听回环地址，对外访问由同源 HTTPS 代理转发。仅本机开发库可设为 `development` 来匿名读取和试算开发样本。
+
+账号关联已有的财务人员主键。技术人员使用 `configure-finance-account` 登记账号或调整权限。配置文件可参照下例，人员和产品 ID 使用本平台实际主键。
+
+```json
+{
+  "login": "finance.operator",
+  "personId": 1,
+  "enabled": true,
+  "workspace": false,
+  "rules": [{ "productId": 1, "publish": true }]
+}
+```
+
+首次登记或更换密码时，通过标准输入将密码传给 `go -C server run . configure-finance-account /path/to/account.json`。密码使用安全的凭据输入渠道。调整权限或停用时可用 `</dev/null` 保留密码。修改后的配置替换该账号的权限并使既有会话失效。
+
+`workspace: true` 授予全量业务工作台访问，包括全量订单、试算和报表。规则定义的读取和规则发布均按 `rules` 的产品授权校验。`publish: false` 可以查看该产品的规则。发布记录使用当前登录账号主键。从工作台退出会撤销本次会话。
+
+## 产品与数据配置
+
 工作台的固定下拉选项由数据库 `configuration_options` 提供，可配置显示名、顺序、是否启用和适用范围。应用从 `GET /api/v1/configuration-options` 读取，初始化仅补入缺少的默认项，不覆盖已有配置。产品、人员和期次从各自的业务表读取。选项编码对应服务端支持的业务行为，改显示名或排列不会修改已经保存的规则。
 
 工作台的「组织与人员」从本平台数据库查询。可按公司、部门、小组或门店筛选直接任职，查看当前归属、指定日期北京时间零点的归属，或全部任职记录。任职起止按区间保存，结束时刻与下一段起始时刻重合时，由新任职生效。组织树显示当前层级，已停用组织仍可查询任职历史。组织和任职的授权维护入口待接入。
@@ -74,7 +96,7 @@ go -C server run . import-product-config /path/to/product-config.json
 
 大春 AI 499 的「产品规则 → 分润费率」按分项展示固定比例和费率表，可按销售公司、关系或类别筛选。具备该产品发布权限时，可修改比例并指定北京时间的生效时点。每次金额参数实际变化生成一版规则，记录发布账号，并仅标记采用新版规则的开放账期。订单按付款时点选版，历史结算和其后的退款继续引用原结算的规则。与内部团队拆分联动的销售总费率由拆分规则约束。
 
-费率配置接口接收受信任登录服务签发的 HS256 会话，可用同源 `finance_session` Cookie 或 Bearer 传入。使用 `FINANCE_SESSION_ISSUER`、`FINANCE_SESSION_SECRET` 配置校验，Token 需包含匹配的 `iss`、`aud=finance-platform`、有效的 `exp`、账号主键 `sub`、授权产品 `product_ids` 和 `permission_codes`。可读权限为 `finance.rules.read`，发布权限为 `finance.rules.publish`。正式账号会话签发与平台登录仍需接通。
+工作台使用财务账号会话访问费率配置接口。技术集成可显式配置受信任的签发方，通过 Bearer 调用同一接口。使用 `FINANCE_SESSION_ISSUER`、`FINANCE_SESSION_SECRET` 校验签发，Token 需包含匹配的 `iss`、`aud=finance-platform`、有效的 `exp`、账号主键 `sub`、授权产品 `product_ids` 和 `permission_codes`。可读权限为 `finance.rules.read`，发布权限为 `finance.rules.publish`。
 
 大春 AI 499 可在「分润试算」生成付款与退款草稿。每期只保留一份草稿，明细引用订单版本和适用规则版本。按付款时的有效任职计算负责人分项，公司分润归规则指定的公司，团队池逐笔归集。公司、部门和人员都能查看同一草稿的净业绩、计提和退款扣减，人员视角单列公司及团队池分润。实时匹配页的「团队池归集」显示整个账期的付款归集金额和待核笔数。
 

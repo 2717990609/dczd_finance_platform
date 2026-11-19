@@ -14,7 +14,7 @@ import (
 
 func TestDraftReportSeparatesOrderPerformanceAndRecipientOrganization(t *testing.T) {
 	ctx := context.Background()
-	service := workspace{db: integrationDB(t)}
+	service := workspace{db: integrationDB(t), development: true}
 	mustID := func(result any, err error) int64 {
 		t.Helper()
 		if err != nil {

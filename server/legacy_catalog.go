@@ -78,6 +78,7 @@ const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(result) ORDER BY res
   AND v.definition->'internal_sales_direct_split'->>'mode'='DCAI_INTERNAL_DIRECT',false) AS "draftSupported"
  FROM legacy_rule_versions v JOIN legacy_rule_packages p ON p.source_id=v.package_id
  JOIN legacy_catalog_products c ON c.product_id=p.product_id JOIN products pr ON pr.id=c.product_id
+ WHERE ($1::bigint[] IS NULL OR p.product_id=ANY($1))
 ) result`
 
 func normalizeLegacyCatalog(input *legacyCatalogFile) error {

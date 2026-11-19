@@ -56,7 +56,7 @@ func TestLegacyCatalogImportPreservesVersionAndRejectsStaleOrChangedDefinition(t
 		t.Fatalf("product=%d paused=%t versions=%d err=%v", product, paused, total, err)
 	}
 	var list json.RawMessage
-	if err := db.QueryRow(ctx, catalogRulesSQL).Scan(&list); err != nil {
+	if err := db.QueryRow(ctx, catalogRulesSQL, nil).Scan(&list); err != nil {
 		t.Fatal(err)
 	}
 	var rules []struct {
@@ -70,7 +70,7 @@ func TestLegacyCatalogImportPreservesVersionAndRejectsStaleOrChangedDefinition(t
 	if _, err := db.Exec(ctx, `UPDATE legacy_rule_packages SET scope_type='LEGACY_SCOPE'`); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.QueryRow(ctx, catalogRulesSQL).Scan(&list); err != nil {
+	if err := db.QueryRow(ctx, catalogRulesSQL, nil).Scan(&list); err != nil {
 		t.Fatal(err)
 	}
 	rules = nil

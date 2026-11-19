@@ -21,6 +21,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .path { color: var(--muted); font-size: 13px; white-space: nowrap; }
 .path b { color: var(--ink); font-size: 15px; }
 .topbar-actions { gap: 8px; }
+.finance-account-name { font-size: 13px; max-width: 10rem; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .workspace-nav { display: flex; gap: 12px; overflow: auto; padding-inline: 24px; background: var(--panel); border-bottom: 1px solid var(--line); }
 .workspace-nav a { display: flex; align-items: center; gap: 7px; flex: none; min-height: 46px; padding: 0 9px; color: var(--muted); border-bottom: 2px solid transparent; font-weight: 500; text-decoration: none; white-space: nowrap; }
 .workspace-nav a:hover { color: var(--accent); background: var(--accent-soft); }
@@ -82,6 +83,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .scope-panel { padding-inline: 12px; }
 }
 @media (max-width: 680px) {
+  .finance-account-name { display: none; }
   .topbar { min-height: 55px; padding: 8px 12px; gap: 8px; }
   .brand, .path { gap: 7px; }
   .path > span { display: none; }

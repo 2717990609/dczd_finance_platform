@@ -42,7 +42,7 @@ type practiceCountOpening struct {
 const practiceCountOpeningsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a."throughAt" DESC,a.id DESC),'[]') FROM (
  SELECT o.id,o.product_id AS "productId",o.source_settlement_id AS "sourceSettlementId",o.through_at AS "throughAt",
  (SELECT count(*) FROM practice_count_opening_people p WHERE p.opening_id=o.id) AS "personCount"
- FROM practice_count_openings o ORDER BY o.through_at DESC,o.id DESC
+ FROM practice_count_openings o WHERE ($1::bigint[] IS NULL OR o.product_id=ANY($1)) ORDER BY o.through_at DESC,o.id DESC
 ) a`
 
 func canonicalSourceUUID(raw string) (string, bool) {

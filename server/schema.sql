@@ -46,6 +46,32 @@ CREATE TABLE IF NOT EXISTS people (
  created_at timestamptz NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS finance_accounts (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ person_id bigint NOT NULL UNIQUE REFERENCES people(id),
+ login text NOT NULL UNIQUE,
+ password_hash text NOT NULL,
+ enabled boolean NOT NULL,
+ workspace_access boolean NOT NULL,
+ failures int NOT NULL DEFAULT 0,
+ retry_after timestamptz
+);
+
+CREATE TABLE IF NOT EXISTS finance_account_rule_grants (
+ account_id uuid NOT NULL REFERENCES finance_accounts(id) ON DELETE CASCADE,
+ product_id bigint NOT NULL REFERENCES products(id),
+ can_publish boolean NOT NULL,
+ PRIMARY KEY(account_id,product_id)
+);
+
+CREATE TABLE IF NOT EXISTS finance_account_sessions (
+ token_hash bytea PRIMARY KEY CHECK (octet_length(token_hash)=32),
+ account_id uuid NOT NULL REFERENCES finance_accounts(id) ON DELETE CASCADE,
+ expires_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS finance_sessions_account ON finance_account_sessions(account_id,expires_at);
+ALTER TABLE rule_versions ADD COLUMN IF NOT EXISTS published_by uuid REFERENCES finance_accounts(id);
+
 CREATE TABLE IF NOT EXISTS identity_mappings (
  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
  person_id bigint NOT NULL REFERENCES people(id),

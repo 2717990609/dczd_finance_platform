@@ -23,6 +23,7 @@ type config struct {
 	dcaiSyncInterval time.Duration
 	draftInterval    time.Duration
 	ruleAuth         catalogRuleAuth
+	development      bool
 }
 
 func readConfig() (config, error) {
@@ -57,7 +58,11 @@ func readConfig() (config, error) {
 	if err != nil {
 		return config{}, err
 	}
-	return config{addr: addr, database: database, dcaiSyncInterval: interval, draftInterval: draftInterval, ruleAuth: ruleAuth}, nil
+	development, err := developmentAccess(addr, expectedDatabase)
+	if err != nil {
+		return config{}, err
+	}
+	return config{addr: addr, database: database, dcaiSyncInterval: interval, draftInterval: draftInterval, ruleAuth: ruleAuth, development: development}, nil
 }
 
 func intervalSetting(name string) (time.Duration, error) {
@@ -119,11 +124,13 @@ func main() {
 		return
 	}
 	if len(os.Args) != 1 {
-		const importUsage = "usage: import-practice-roster|import-practice-count-opening|import-product-config|import-organization|import-order-facts|import-sales-context <file.json>"
+		const importUsage = "usage: configure-finance-account|import-practice-roster|import-practice-count-opening|import-product-config|import-organization|import-order-facts|import-sales-context <file.json>"
 		if len(os.Args) != 3 {
 			log.Fatal(importUsage)
 		}
 		switch os.Args[1] {
+		case "configure-finance-account":
+			err = configureFinanceAccount(ctx, cfg, os.Args[2])
 		case "import-practice-roster":
 			err = importPracticeFile(ctx, cfg, os.Args[2])
 		case "import-practice-count-opening":

@@ -25,6 +25,15 @@ func TestCatalogRuleAccessRequiresSignedScopedSession(t *testing.T) {
 		return value
 	}
 	token := sign(valid, auth.key)
+	browser := httptest.NewRequest(http.MethodGet, "https://finance.test/api/v1/catalog-rule-rates", nil)
+	browser.AddCookie(&http.Cookie{Name: "finance_session", Value: token})
+	if _, _, err := (workspace{ruleAuth: auth}).financeRateActor(browser); err != errRuleLogin {
+		t.Fatalf("managed browser restored access from a separate JWT cookie: %v", err)
+	}
+	browser.Header.Set("Authorization", "Bearer "+token)
+	if actor, permits, err := (workspace{ruleAuth: auth}).financeRateActor(browser); err != nil || actor != "fixture" || !permits(13, true) {
+		t.Fatalf("configured API credential no longer works: %q %v", actor, err)
+	}
 	r := httptest.NewRequest(http.MethodPost, "https://finance.test/api/v1/catalog-rule-rates", nil)
 	r.AddCookie(&http.Cookie{Name: "finance_session", Value: token})
 	r.Header.Set("Origin", "https://other.finance.test")

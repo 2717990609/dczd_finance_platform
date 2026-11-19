@@ -15,7 +15,7 @@ import (
 func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 	ctx := context.Background()
 	db := integrationDB(t)
-	s := workspace{db: db}
+	s := workspace{db: db, development: true}
 	z := func(n int) string { return fmt.Sprintf("30000000-0000-4000-8000-%012d", n) }
 	from := time.Date(2025, 7, 25, 0, 0, 0, 0, shanghai)
 	boundary := from.AddDate(0, 0, 7)

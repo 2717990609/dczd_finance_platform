@@ -11,7 +11,7 @@ import (
 
 func TestOrganizationDirectoryUsesLocalAssignmentIntervals(t *testing.T) {
 	ctx := context.Background()
-	s := workspace{db: integrationDB(t)}
+	s := workspace{db: integrationDB(t), development: true}
 	raw := json.RawMessage(`{
 		"capturedAt":"2026-10-02T00:00:00Z",
 		"people":[{"id":"00000000-0000-0000-0000-000000000001","name":"测试人员"}],

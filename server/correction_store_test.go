@@ -14,7 +14,7 @@ import (
 
 func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t *testing.T) {
 	ctx := context.Background()
-	service := workspace{db: integrationDB(t)}
+	service := workspace{db: integrationDB(t), development: true}
 	at := func(month time.Month, day int) time.Time { return time.Date(2000, month, day, 12, 0, 0, 0, shanghai) }
 	mustID := func(result any, err error) int64 {
 		t.Helper()
