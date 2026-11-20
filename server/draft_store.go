@@ -651,6 +651,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
  ) l),'[]'),
  'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (
   SELECT a.id,a.amount_minor AS "amountMinor",a.tier_credit AS "tierCredit",rv.fact->>'refundId' AS "refundId",rv.version AS "refundVersion",
+   rv.id AS "refundSourceVersionId",
    coalesce(p.name,practice_pool.name,pool.name,beneficiary.name) AS "personName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",o.id AS "sourceVersionId",coalesce(r.version,cv.version_no) AS "ruleVersion",
@@ -677,7 +678,8 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
  'corrections',coalesce((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM (
   SELECT c.id,c.amount_minor AS "amountMinor",paid.order_id AS "orderId",
    CASE WHEN paid.order_id=v.order_id AND v.kind='ORDER_PAID' THEN v.fact->>'orderNo' ELSE paid.fact->>'orderNo' END AS "orderNo",
-   v.version AS "sourceVersion",paid.id AS "sourceVersionId",coalesce(p.name,pool.name,recipient.name) AS "personName",
+   paid.fact->>'orderNo' AS "originalOrderNo",v.id AS "correctionSourceVersionId",v.version AS "sourceVersion",
+   paid.id AS "sourceVersionId",coalesce(p.name,pool.name,recipient.name) AS "personName",
    coalesce(old_person.name,pool.name,old_recipient.name) AS "originalPersonName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN c.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    CASE WHEN paid.order_id<>v.order_id THEN v.order_id END AS "triggerOrderId",v.fact->>'refundId' AS "triggerRefundId",

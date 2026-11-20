@@ -66,6 +66,25 @@ func TestDraftDetailSearchIncludesRefundsAndBothCorrectionRecipients(t *testing.
 	if initial.TotalMinor != 900 || initial.LineCount != 1 || initial.DetailHasMore != nil {
 		t.Fatalf("unexpected unfiltered draft: %+v", initial)
 	}
+	var refundSource struct {
+		SourceVersionID       int64
+		RefundSourceVersionID int64
+	}
+	if len(initial.Refunds) != 1 || json.Unmarshal(initial.Refunds[0], &refundSource) != nil ||
+		refundSource.SourceVersionID != 1 || refundSource.RefundSourceVersionID != 3 {
+		t.Fatalf("refund should link to both the original payment and the recorded refund version: %+v", refundSource)
+	}
+	var correctionSource struct {
+		SourceVersionID           int64
+		CorrectionSourceVersionID int64
+		OriginalOrderNo           string
+		SourceVersion             string
+	}
+	if len(initial.Corrections) != 1 || json.Unmarshal(initial.Corrections[0], &correctionSource) != nil ||
+		correctionSource.SourceVersionID != 1 || correctionSource.CorrectionSourceVersionID != 2 ||
+		correctionSource.OriginalOrderNo != "显示订单一" || correctionSource.SourceVersion != "v2" {
+		t.Fatalf("correction should show the original order and open its own recorded source version: %+v", correctionSource)
+	}
 	original := get("order-1", "原受益人", "", "2", http.StatusOK)
 	if original.TotalMinor != initial.TotalMinor || len(original.Lines) != 1 || len(original.Refunds) != 1 || len(original.Corrections) != 1 || len(original.DetailHasMore) != 3 {
 		t.Fatalf("original recipient search: %+v", original)

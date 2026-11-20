@@ -524,8 +524,10 @@ async function loadMore(section, cursorName) {
             <small class="order-version">
               <button v-if="record.ruleVersion" type="button" class="order-link" @click="showAppliedRule('refunds',record)">计提时规则 v{{ record.ruleVersion }}</button>
               <template v-if="record.ruleLabel"> · {{ record.ruleLabel }}</template>
-              <template v-if="record.replayTriggerOrderId"> · 班次联动 · 订单 {{ record.replayTriggerOrderId }} 的退款 {{ record.refundId }}</template>
-              <template v-else> · 退款 {{ record.refundId }}</template>
+              <template v-if="record.replayTriggerOrderId"> · 班次联动 · 订单 {{ record.replayTriggerOrderId }}</template>
+              <template v-if="record.refundId"> ·
+                <button type="button" class="order-link" @click="emit('show-order', record.refundSourceVersionId)">退款 {{ record.refundId }}</button>
+              </template>
             </small>
           </template>
           <template v-else-if="column.key === 'beneficiary'">
@@ -548,12 +550,14 @@ async function loadMore(section, cursorName) {
       <a-table :columns="correctionColumns" :data-source="draft.corrections" :loading="loading" :pagination="false" row-key="id" :scroll="{x:710}">
         <template #bodyCell="{column,record}">
           <template v-if="column.key==='order'">
-            <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>
+            <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.originalOrderNo || record.orderId }}</button>
             <small class="order-version">
               <button v-if="record.ruleVersion" type="button" class="order-link" @click="showAppliedRule('corrections',record)">结算时规则 v{{ record.ruleVersion }}</button>
               <template v-if="record.ruleLabel"> · {{ record.ruleLabel }}</template>
             </small>
-            <small class="order-version">更正来源版本 {{ record.sourceVersion }}</small>
+            <small class="order-version">
+              <button type="button" class="order-link" @click="emit('show-order', record.correctionSourceVersionId)">更正来源版本 {{ record.sourceVersion }}</button>
+            </small>
             <small v-if="record.triggerOrderId || record.triggerRefundId" class="order-version">
               联动来源 {{ record.triggerOrderId || record.orderId }}<template v-if="record.triggerRefundId"> · 退款 {{ record.triggerRefundId }}</template>
             </small>

@@ -10,6 +10,18 @@ const error = ref('')
 const salesCompanyID = computed(() => order.value?.practiceRegistration?.companyId || order.value?.salesCompanyId)
 const recordsHref = computed(() => !loading.value && !error.value && order.value?.orderId
   ? props.recordsLink(order.value) : undefined)
+const referralRoles = [
+  {role:'DIRECT_PID_USER',label:'直接推荐账号'},
+  {role:'LOCK_DIRECT_SHARE_USER',label:'锁粉推荐账号'},
+]
+const referralAccounts = computed(() => {
+  if (order.value?.source !== 'DCAI') return []
+  const participants = order.value.participants || []
+  return referralRoles.map(entry => ({
+    ...entry,
+    accounts: [...new Set(participants.filter(person=>person.role===entry.role && person.userId).map(person=>person.userId))],
+  })).filter(entry=>entry.accounts.length)
+})
 
 watch(() => props.selection, async (selection, _, onCleanup) => {
   order.value = selection.order
@@ -45,6 +57,7 @@ watch(() => props.selection, async (selection, _, onCleanup) => {
           <a-descriptions-item v-if="order.paymentId" label="付款编号">{{ order.paymentId }}</a-descriptions-item>
           <a-descriptions-item v-if="order.refundId" label="退款编号">{{ order.refundId }}</a-descriptions-item>
           <a-descriptions-item v-if="order.referrerId" :label="order.practiceRegistration ? '报名销售账号' : '来源推荐人 ID'">{{ order.referrerId }}</a-descriptions-item>
+          <a-descriptions-item v-for="entry in referralAccounts" :key="entry.role" :label="entry.label">{{ entry.accounts.join('、') }}</a-descriptions-item>
           <a-descriptions-item v-if="order.practiceNoReferrer" label="来源销售归属">无推荐人</a-descriptions-item>
           <a-descriptions-item v-if="order.salesAttribution?.length" label="来源销售归属">
             <ul class="order-attribution">
