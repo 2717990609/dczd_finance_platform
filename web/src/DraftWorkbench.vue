@@ -9,9 +9,9 @@ import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
   recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
-  requestedPeriod: Number })
+  requestedPeriod: Number, periodsLoading: Boolean, month: String })
 const emit = defineEmits(['show-order'])
-const selected = ref()
+const selected = defineModel('periodId', {type:Number})
 const view = ref('detail')
 const draft = ref()
 const loading = ref(false)
@@ -218,10 +218,11 @@ watch(selected, async () => {
   view.value = 'detail'
   await load(true)
   if (request === statusSequence) checkRefresh()
-})
+}, {immediate:true})
 watch(options, (values) => {
   if (selected.value && !values.some(option => option.value === selected.value)) selected.value = undefined
-})
+  if (values.length === 1 && !selected.value) selected.value = values[0].value
+}, {immediate:true})
 watch(linkedPeriod, period => {
   if (period) selected.value = period
 }, {immediate:true})
@@ -313,47 +314,54 @@ async function loadMore(section, cursorName) {
 </script>
 
 <template>
-  <section class="heading">
-    <div><h1>分润试算</h1><p>选择核算期，查看应计金额、订单版本和待核项。</p></div>
-  </section>
-  <section class="records draft-controls">
-    <div class="draft-toolbar">
-      <label for="draft-period">产品和核算期</label>
-      <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和核算期" :disabled="calculating || pullingRoster || savingRecovery" />
-      <a-button v-if="!matchingOnly" type="primary" :disabled="!selected || loading || pullingRoster || !!draft?.settlement" :loading="calculating" @click="calculate">重新试算</a-button>
-      <a-button v-if="canPullRoster" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
-      <a-button v-if="!matchingOnly" :disabled="!selected || loading || calculating || pullingRoster" @click="load()">刷新结果</a-button>
+  <section class="records draft-controls workbench-controls" aria-label="核算操作">
+    <div class="workbench-toolbar">
+      <div class="workbench-period">
+        <label for="draft-period">产品和核算期</label>
+        <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和核算期" :loading="periodsLoading"
+          show-search option-filter-prop="label" :disabled="calculating || pullingRoster || savingRecovery" />
+      </div>
+      <div v-if="selected" class="workbench-actions">
+        <a-button v-if="canPullRoster" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
+        <a-button v-if="!matchingOnly && !draft?.settlement" :disabled="loading || pullingRoster" :loading="calculating"
+          :type="draft ? 'default' : 'primary'" @click="calculate">{{ draft ? '重新试算' : '生成草稿' }}</a-button>
+        <a-button v-if="!matchingOnly" :disabled="loading || calculating || pullingRoster" @click="load()">刷新结果</a-button>
+        <a-button v-if="hasSettlementReview && !draft?.settlement && view!=='review'" type="primary" :disabled="loading || calculating || pullingRoster" @click="view='review'">去结算核对</a-button>
+      </div>
     </div>
     <p v-if="selectedPeriod" class="draft-context">
-      {{ selectedPeriod.practiceRefundMonth ? '退款账期' : selectedPeriod.periodMode === 'class' ? '期次' : '账期' }} {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
+      <a-tag :color="draft?.settlement ? 'green' : draft ? 'blue' : 'default'">{{ draft?.settlement ? '已结算' : draft ? '草稿 v'+draft.version : '未试算' }}</a-tag>
+      {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
       <span v-if="draft?.practiceRosterVersion"> · 签到名单 v{{ draft.practiceRosterVersion }} · 到课 {{ draft.attendanceCount }} 人</span>
-      <span v-if="draft?.settlement"> · 已结算 · {{ formatTime(draft.settlement.confirmedAt) }}</span>
-      <span v-else-if="draft"> · 草稿 v{{ draft.version }} · {{ formatTime(draft.calculatedAt) }}</span>
+      <span v-if="draft?.settlement"> · 确认于 {{ formatTime(draft.settlement.confirmedAt) }}</span>
+      <span v-else-if="draft"> · 试算于 {{ formatTime(draft.calculatedAt) }}</span>
       <span v-if="!draft?.settlement && refreshStatus?.pending && !refreshStatus.message"> · 有变更待试算</span>
       <span v-if="view==='pools' && newerDraft"> · 草稿已更新，请刷新结果后核对分配</span>
-      <span v-if="unitId && draft"> · 明细与汇总按组织筛选，合计及结算核对为全期</span>
     </p>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
   <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon />
   <a-alert v-if="!draft?.settlement && refreshStatus?.message" class="feedback" type="warning" :message="refreshStatus.message" show-icon/>
-  <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount, 'summary-collection':!draft.refundsReady }">
-    <article v-if="!draft.practiceRefundMonth"><div><small>{{ draft.practiceRosterVersion ? '本班计提（含名单确认前退款）' : '正向计提' }}</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
-    <article v-if="!draft.practiceRosterVersion"><div><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div></article>
-    <article v-if="draft.correctionCount"><div><small>受益人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div></article>
-    <article v-if="draft.refundsReady"><div><small>本期合计</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
+  <div v-if="draft" class="records workbench-totals">
+    <div v-if="draft.refundsReady" class="workbench-net"><small>{{ draft.practiceRosterVersion ? '本班净分润' : '本期净分润' }}</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div>
+    <div v-if="!draft.practiceRefundMonth && (!draft.practiceRosterVersion || draft.correctionCount || !draft.refundsReady)"><small>计提分润</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div>
+    <div v-if="!draft.practiceRosterVersion"><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div>
+    <div v-if="draft.correctionCount"><small>受益人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div>
+    <div><small>{{ draft.practiceRefundMonth ? '退款及更正' : '计提明细' }}</small><strong>{{ draft.practiceRefundMonth ? draft.refundCount + draft.correctionCount : draft.lineCount }} <span>条</span></strong></div>
   </div>
-  <a-tabs v-if="draft" v-model:active-key="view">
-    <a-tab-pane key="detail" tab="明细"/>
+  <a-tabs v-if="draft" v-model:active-key="view" class="workbench-tabs">
+    <a-tab-pane key="detail" tab="分润明细"/>
     <a-tab-pane v-if="reportDimensions.length" key="report" tab="业绩与分润"/>
+    <a-tab-pane key="issues" :tab="draft.issueCount ? '待核 '+draft.issueCount : draft.advisoryCount ? '处理提示 '+draft.advisoryCount : '待核'"/>
     <a-tab-pane v-if="draft.poolAllocationAvailable" key="pools" tab="团队池分配"/>
     <a-tab-pane v-if="hasSettlementReview" key="review" tab="结算核对"/>
     <a-tab-pane v-if="hasMatching" key="matching" tab="订单规则匹配"/>
   </a-tabs>
+  <p v-if="unitId && draft" class="workbench-scope-note">明细与汇总按组织筛选，合计及结算核对为全期</p>
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney" :unit-id="unitId"/>
   <DraftPoolAllocations v-if="draft?.poolAllocationAvailable && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
   <DraftSettlementReview v-if="hasSettlementReview && view==='review'" :draft="draft" :period="selectedPeriod" :api="api" :format-money="formatMoney"
-    :format-time="formatTime" :source-streams="sourceStreams" @show-pools="view='pools'" @show-issues="view='detail'" @confirmed="load()"/>
+    :format-time="formatTime" :source-streams="sourceStreams" @show-pools="view='pools'" @show-issues="view='issues'" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">
   <section v-if="!draft.practiceRefundMonth" class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>
@@ -422,9 +430,10 @@ async function loadMore(section, cursorName) {
     </div>
     <div v-if="(draft.scopeCorrectionCount ?? draft.correctionCount) > draft.corrections.length" class="paging"><a-button :loading="loading" @click="loadMore('corrections','afterCorrectionId')">加载下一页</a-button></div>
   </section>
-  <section v-if="draft?.issueCount || draft?.advisoryCount" class="records draft-issues">
+  </template>
+  <section v-if="draft && view==='issues'" class="records">
     <div class="records-head"><h2>{{ draft.issueCount ? (draft.advisoryCount ? '待核项与处理提示' : '待核项') : '处理提示' }}</h2></div>
-    <div class="table-container">
+    <div v-if="draft.issueCount || draft.advisoryCount" class="table-container">
       <a-table :columns="issueColumns" :data-source="draft.issues" :pagination="false" row-key="id" :scroll="{ x: 510 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'source'">{{ record.orderId || '—' }}<small v-if="record.enrollmentId" class="order-version">报名 {{ record.enrollmentId }}</small></template>
@@ -439,13 +448,14 @@ async function loadMore(section, cursorName) {
         </template>
       </a-table>
     </div>
+    <a-empty v-else description="本期暂无待核项"/>
     <div v-if="draft.issueCount + (draft.advisoryCount || 0) > draft.issues.length" class="paging"><a-button :loading="loading" @click="loadMore('issues', 'afterIssueId')">加载下一页</a-button></div>
   </section>
-  </template>
   <CatalogRuleMatches v-if="hasMatching && (!draft || view==='matching')" :period-id="selected" :draft-available="selectedPeriod.catalogDraftAvailable"
     :api="api" :format-money="formatMoney" :format-time="formatTime"/>
   <section v-if="!draft && !error && !hasMatching" class="records empty">
-    <a-empty :description="loading ? '正在读取试算' : selected ? '本期暂无草稿' : '请选择核算期'" />
+    <a-empty :description="periodsLoading || loading ? '正在读取核算期' : selected ? '本期暂无草稿' : options.length ? '请选择核算期' : month ? '所选月份暂无核算期' : '暂无核算期'" />
+    <a-button v-if="!periodsLoading && !loading && !options.length" href="#periods">查看核算期次</a-button>
   </section>
   <Modal :open="!!recovery" title="登记扣回处理" ok-text="保存并试算" cancel-text="取消" :confirm-loading="savingRecovery"
     :ok-button-props="{ disabled: !recoveryOutcome }" :cancel-button-props="{ disabled: savingRecovery }" :closable="!savingRecovery"

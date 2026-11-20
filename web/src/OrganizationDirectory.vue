@@ -101,11 +101,7 @@ defineExpose({refresh})
 </script>
 
 <template>
-  <section class="heading">
-    <h1>组织与人员</h1>
-    <a-button v-if="canWrite && panel==='organization'" type="primary" @click="openEditor('add')">登记任职</a-button>
-  </section>
-  <a-tabs v-model:active-key="panel">
+  <a-tabs v-model:active-key="panel" class="workbench-tabs">
     <a-tab-pane key="organization" tab="组织任职"/>
     <a-tab-pane key="catalog" tab="计提任职"/>
   </a-tabs>
@@ -133,6 +129,7 @@ defineExpose({refresh})
     <div class="records-head">
       <h2>人员任职</h2>
       <span class="organization-context">{{ history ? '全部有效区间' : on ? on+' 00:00（北京时间）' : '当前归属' }}</span>
+      <a-button v-if="canWrite" type="primary" @click="openEditor('add')">登记任职</a-button>
     </div>
     <a-table :columns="columns" :data-source="entries.items" :loading="loading" row-key="id" :pagination="pagination"
       :scroll="{x:canWrite?859:735}" @change="changePage">

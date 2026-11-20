@@ -1,0 +1,64 @@
+const localTime = value => value ? new Date(Date.parse(value) + 8 * 60 * 60 * 1000).toISOString().slice(0, -1) : undefined
+
+function tierRows(rows, scale) {
+  return (rows || []).map(row => ({
+    ...row, from:row.from / scale, through:row.through == null ? undefined : row.through / scale, value:row.value / 100,
+  }))
+}
+
+function countStart(start) {
+  return {
+    startMode:start.openingId ? 'opening' : start.countFromOrdinal ? 'ordinal' : 'time',
+    openingId:start.openingId, countFromOrdinal:start.countFromOrdinal, countFromAt:localTime(start.countFromAt),
+  }
+}
+
+function tierForm(tiers) {
+  const schedules = tiers.companySchedules || []
+  const hasCount = [tiers, ...schedules].some(schedule => schedule.count?.length)
+  const hasPerformance = [tiers, ...schedules].some(schedule => schedule.performance?.length)
+  return {
+    ...countStart(tiers),
+    metric:hasCount ? (hasPerformance ? 'fallback' : 'count') : 'performance',
+    onlyCompanies:!tiers.count?.length && !tiers.performance?.length,
+    count:tierRows(tiers.count,1), performance:tierRows(tiers.performance,100),
+    personCountStarts:(tiers.personCountStarts || []).map(start => ({personId:start.personId, ...countStart(start)})),
+    companies:schedules.map(schedule => ({
+      companyId:schedule.companyId, count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
+    })),
+  }
+}
+
+function companyValue(row) {
+  return {...row, value:row.value / (row.mode === 'rate' ? 10000 : 100),
+    recommendationRate:row.recommendationRate == null ? undefined : row.recommendationRate / 10000}
+}
+
+export function copiedRuleComponents(savedComponents) {
+  const components = JSON.parse(JSON.stringify(savedComponents))
+  return components.map(component => {
+    const {tiers, periodBenefit, companySales, retrainSplits, value, ...form} = component
+    form.classMember ??= ''
+    form.amount = value / (form.mode === 'period_rate' ? 10000 : 100)
+    if (tiers) form.tierConfig = tierForm(tiers)
+    if (periodBenefit) {
+      form.periodBenefit = {...periodBenefit,
+        recipient:periodBenefit.pool ? 'pool' : periodBenefit.unitId ? 'unit' : 'person',
+        pool:periodBenefit.pool || {}, useTiers:Boolean(periodBenefit.tiers?.length),
+        tiers:periodBenefit.tiers?.map(row => ({from:row.from / 100,
+          through:row.through == null ? undefined : row.through / 100, value:row.value / 10000})) || [{from:0}],
+      }
+    }
+    if (companySales) {
+      form.companySales = {...companySales, internalCompanies:companySales.internalCompanies || [],
+        categories:companySales.categories.map(category => ({...companyValue(category),
+          overrides:(category.overrides || []).map(companyValue),
+        })),
+      }
+    }
+    if (retrainSplits) form.retrainSplits = retrainSplits.map(split => ({companyId:split.companyId,
+      pool:split.pool, personal:split.personalMinor / 100, servicePersonId:split.servicePersonId, service:(split.serviceMinor || 0) / 100,
+    }))
+    return form
+  })
+}

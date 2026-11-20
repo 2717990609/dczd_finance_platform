@@ -54,7 +54,7 @@ function removeCompany(index) {
         <a-select id="tier-opening" v-model:value="config.openingId" :options="openings" />
       </a-form-item>
       <a-form-item v-else html-for="tier-start-time" label="起始开班时间" extra="使用北京时间。" required>
-        <a-input id="tier-start-time" v-model:value="config.countFromAt" type="datetime-local"/>
+        <a-input id="tier-start-time" v-model:value="config.countFromAt" type="datetime-local" step="any"/>
       </a-form-item>
       <details class="tier-person-starts">
         <summary>按人员设置累计起点</summary>
@@ -70,7 +70,7 @@ function removeCompany(index) {
             <a-input-number :id="'tier-person-start-ordinal-'+index" v-model:value="row.countFromOrdinal" :min="1" :precision="0"/>
           </a-form-item>
           <a-form-item v-else :html-for="'tier-person-start-time-'+index" label="个人起始开班时间" extra="使用北京时间。" required>
-            <a-input :id="'tier-person-start-time-'+index" v-model:value="row.countFromAt" type="datetime-local"/>
+            <a-input :id="'tier-person-start-time-'+index" v-model:value="row.countFromAt" type="datetime-local" step="any"/>
           </a-form-item>
           <a-button type="link" danger @click="config.personCountStarts.splice(index,1)">移除个人起点</a-button>
         </div>

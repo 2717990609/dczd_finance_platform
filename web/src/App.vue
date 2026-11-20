@@ -1,8 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  AppstoreOutlined, BankOutlined, BarChartOutlined, CalculatorOutlined, CalendarOutlined, CloudSyncOutlined,
-  FileSearchOutlined, LinkOutlined, PlusOutlined, ProfileOutlined, ReloadOutlined, TeamOutlined,
+  BankOutlined, CloudSyncOutlined, PlusOutlined, ReloadOutlined, RightOutlined,
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import { TreeSelect } from 'ant-design-vue'
@@ -18,17 +17,20 @@ import OrderDetails from './OrderDetails.vue'
 import OrderSyncPanel from './OrderSyncPanel.vue'
 import PracticeTierEditor from './PracticeTierEditor.vue'
 import { organizationTree } from './organization-tree'
+import { copiedRuleComponents } from './rule-component-form'
 
 const navigation = [
-  {key:'settlement', title:'分润试算', icon:CalculatorOutlined},
-  {key:'monthly', title:'月度汇总', icon:BarChartOutlined},
-  {key:'products', title:'产品目录', icon:AppstoreOutlined, description:'维护核算产品，绑定子系统的原始商品或业务标识。'},
-  {key:'periods', title:'核算期次', icon:CalendarOutlined, description:'设置实际开班或结算窗口，查看适用规则。'},
-  {key:'rules', title:'产品规则', icon:ProfileOutlined, description:'配置各产品的分润方式、适用范围和生效时间，查看规则版本。'},
-  {key:'orders', title:'来源订单', icon:FileSearchOutlined, description:'按原订单 ID 从子系统重拉，查询财务目前收到的业务记录。'},
-  {key:'organization', title:'组织与人员', icon:TeamOutlined},
-  {key:'people', title:'人员映射', icon:TeamOutlined, description:'查询财务计算使用的来源人员标识及有效区间。'},
+  {key:'settlement', area:'work', title:'分润试算'},
+  {key:'monthly', area:'work', title:'月度汇总'},
+  {key:'orders', area:'work', title:'来源订单'},
+  {key:'products', area:'config', title:'产品目录'},
+  {key:'periods', area:'config', title:'核算期次'},
+  {key:'rules', area:'config', title:'产品规则'},
+  {key:'organization', area:'data', title:'组织与人员'},
+  {key:'people', area:'data', title:'人员映射'},
 ]
+const workspaces = [{key:'work',title:'工作台'}, {key:'config',title:'配置'}, {key:'data',title:'系统与数据'}]
+const lastWorkspacePages = ref({})
 const session = ref()
 const sessionError = ref('')
 const loginRequested = ref(false)
@@ -43,7 +45,15 @@ const getRoute = key => {
 }
 const current = ref()
 const requestedPeriod = ref()
+const workbenchPeriod = ref()
 const active = computed(() => navigation.find(x => x.key === current.value))
+const workspacePages = computed(() => visibleNavigation.value.filter(page => page.area === active.value?.area))
+const visibleWorkspaces = computed(() => workspaces.flatMap(workspace => {
+  const pages = visibleNavigation.value.filter(page => page.area === workspace.key)
+  const target = pages.find(page => page.key === lastWorkspacePages.value[workspace.key]) || pages[0]
+  return target ? [{...workspace, target:target.key}] : []
+}))
+const activeWorkspace = computed(() => workspaces.find(workspace => workspace.key === active.value?.area))
 const theme = {token:{colorPrimary:'#315ab2', colorLink:'#315ab2', colorText:'#253044', borderRadius:6, fontSize:14, controlHeight:34}}
 const productScope = ref()
 const unitScope = ref()
@@ -54,7 +64,8 @@ const usesProductScope = computed(() => productScopedPages.has(current.value))
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
 const organization = ref()
 const monthlyReport = ref()
-const monthlyMonth = ref(new Intl.DateTimeFormat('sv-SE', {year:'numeric',month:'2-digit',timeZone:'Asia/Shanghai'}).format(new Date()))
+const workspaceMonth = ref(new Intl.DateTimeFormat('sv-SE', {year:'numeric',month:'2-digit',timeZone:'Asia/Shanghai'}).format(new Date()))
+const usesWorkspaceMonth = computed(() => ['settlement','monthly'].includes(current.value))
 const monthlyView = ref()
 const monthlyDimension = ref()
 const orderSync = ref()
@@ -85,6 +96,11 @@ const optionLabel = (group, value) => options(group).find(option => option.value
 const scopeTree = computed(() => organizationTree(scopeUnits.value || [],kind=>optionLabel('organizationKind',kind)))
 const sources = computed(() => options('source'))
 const classMembers = computed(() => options('classMember'))
+function componentSourceRoles(saved) {
+  const configured = options('orderAttributionRole')
+  return saved && !configured.some(option => option.value === saved)
+    ? [...configured, {value:saved,label:saved}] : configured
+}
 const baseModes = computed(() => options('amountMode').filter(option => !option.scope?.componentTypes))
 function matchesOption(option, periodMode, type, member) {
   const scope = option.scope || {}
@@ -114,7 +130,11 @@ const companyRecipientOptions = computed(() => classRuleDirectory.value?.units.f
 const periodOptions = computed(() => data.value.periods.filter(p => p.productId === draft.value.productId && !p.practiceRefundMonth)
   .map(p => ({value:p.id,label:p.name})))
 const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
-const calculationPeriods = computed(() => data.value.periods.filter(p => !productScope.value || p.productId === productScope.value))
+const calculationPeriods = computed(() => data.value.periods.filter(p =>
+  (!productScope.value || p.productId === productScope.value) && (!workspaceMonth.value || p.reportMonth === workspaceMonth.value)))
+watch(() => data.value.periods.find(period => period.id === requestedPeriod.value)?.reportMonth, month => {
+  if (month) workspaceMonth.value = month
+})
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
 const classRefundMonth = computed(() => classRule.value && draft.value.practicePeriodKind === 'refund_month')
 const periodBenefitMode = computed(() => options('amountMode').find(option=>option.value==='period_rate'))
@@ -190,7 +210,6 @@ const nextComponent = computed(() => {
     }
   }
 })
-const enabledSources = computed(() => data.value.sources.filter(s => s.configured && sources.value.some(option => option.value===s.source)).length)
 const syncStreams = computed(() => data.value.sources
   .filter(entry => entry.configured && (!sourceFilter.value || sourceFilter.value===entry.source))
   .flatMap(entry => options(entry.source.toLowerCase()+'OrderStream')))
@@ -251,7 +270,7 @@ const columns = computed(() => {
     mapping:[['产品名称','productName'],['业务来源','source'],['业务域','domain'],['来源标识','sourceKey']],
     period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],['报表月份','reportMonth',115],['适用规则','ruleVersion',200]],
     rule:[['规则名称','label',200],['所属产品','productName',155],['版本','version',80],
-      ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',195]],
+      ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',220],['操作','ruleAction',112]],
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
     person:[['人员名称','name'],['人员 ID','id']],
     identity:[['归属人员','personName'],['业务来源','source'],['来源人员 ID','externalId'],['生效时间','validFrom'],['结束时间','validTo']],
@@ -313,6 +332,7 @@ function refreshWorkspace() {
 function changeRoute() {
   const [key, query] = location.hash.slice(1).split('?', 2)
   current.value = getRoute(key)
+  if (active.value) lastWorkspacePages.value[active.value.area] = current.value
   const periodID = Number(new URLSearchParams(query).get('periodId'))
   requestedPeriod.value = key === 'settlement' && current.value === key && Number.isSafeInteger(periodID) && periodID > 0 ? periodID : undefined
   orderDetails.value = undefined
@@ -336,8 +356,10 @@ function clearWorkspace() {
   productScope.value = undefined
   unitScope.value = undefined
   scopeUnits.value = undefined
+  lastWorkspacePages.value = {}
   current.value = undefined
   requestedPeriod.value = undefined
+  workbenchPeriod.value = undefined
   orderDetails.value = undefined
   drawer.value = ''
   draft.value = {}
@@ -399,7 +421,7 @@ async function signOut() {
 onMounted(() => { addEventListener('hashchange',changeRoute); loadSession() })
 onBeforeUnmount(() => removeEventListener('hashchange',changeRoute))
 watch(() => draft.value.productId, (next, previous) => {
-  if (drawer.value === 'rule' && next !== previous) {
+  if (drawer.value === 'rule' && next !== previous && !draft.value.copiedFrom) {
     draft.value.periodId = undefined
     draft.value.effectiveFrom = undefined
     draft.value.components = [newRuleComponent()]
@@ -458,7 +480,14 @@ function open(kind, row) {
     productId:['mapping','period','rule'].includes(kind) ? productScope.value : undefined,
   }
   if (kind === 'reportMonth') draft.value = {periodId:row.id, periodName:row.name, reportMonth:row.reportMonthOverride || ''}
-  if (kind === 'rule') draft.value.components = [newRuleComponent()]
+  if (kind === 'rule') {
+    if (row) {
+      draft.value = {productId:row.productId, label:row.label, copiedFrom:row.version,
+        scope:row.periodId ? 'period' : row.fromOrdinal ? 'ordinal' : 'default',
+        components:copiedRuleComponents(row.components),
+      }
+    } else draft.value.components = [newRuleComponent()]
+  }
 }
 function pullFromDetails() {
   const order = orderDetails.value.order
@@ -483,8 +512,9 @@ function countStartBody(form) {
 }
 function ruleComponentBody(row) {
   const sourceRole = row.sourceRole?.trim().toUpperCase()
+  if (['sales','referral'].includes(row.type)) must(sourceRole,'请选择销售或推荐分项的订单角色。')
   const component = {type:must(row.type),mode:must(row.mode,'请选择计提方式'),value:0,
-    ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy && (!classRule.value || !['rate','period_rate','company_sales'].includes(row.mode)) ? {refundPolicy:row.refundPolicy} : {}),
+    ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy && !['period_rate','company_sales'].includes(row.mode) ? {refundPolicy:row.refundPolicy} : {}),
     ...(row.classMember ? {classMember:row.classMember} : {})}
   if (row.mode==='company_sales') {
     must(sourceRole,'请选择销售来源角色')
@@ -587,8 +617,8 @@ function bodyFor(kind,f) {
   }
   if (kind === 'reportMonth') return {periodId:f.periodId,month:f.reportMonth || ''}
   if (kind === 'rule') return {productId:must(f.productId),label:must(f.label),
-    ...(f.scope === 'period' ? {periodId:must(f.periodId)} : {}),
-    ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal)} : {}),
+    ...(f.scope === 'period' ? {periodId:must(f.periodId,'请选择适用期次。')} : {}),
+    ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal,'请填写适用的起始期数。')} : {}),
     ...(f.effectiveFrom ? {effectiveFrom:new Date(f.effectiveFrom+'+08:00').toISOString()} : {}),
     components:f.components.map(ruleComponentBody),
   }
@@ -640,24 +670,30 @@ async function save() {
   </main>
   <div v-else-if="active" class="layout">
     <header class="topbar">
-      <div class="brand">
-        <span class="brand-icon"><BankOutlined aria-hidden="true"/></span>
-        <div class="path"><b>财务工作台</b><span aria-hidden="true">/</span><span>{{ active.title }}</span></div>
-      </div>
+      <div class="path" aria-label="当前位置"><BankOutlined aria-hidden="true"/><span>财务平台</span><RightOutlined aria-hidden="true"/><b>{{ active.title }}</b></div>
       <div class="topbar-actions">
         <span v-if="session.user" class="finance-account-name">{{ session.user.name }}</span>
-        <a-button v-if="session.user" :loading="sessionBusy" @click="signOut">退出登录</a-button>
-        <a-button v-else @click="loginRequested=true">登录</a-button>
-        <a-button v-if="current!=='settlement'" :loading="loading" @click="refreshWorkspace"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新数据</a-button>
+        <a-button v-if="session.user" type="text" size="small" :loading="sessionBusy" @click="signOut">退出登录</a-button>
+        <a-button v-else type="text" size="small" @click="loginRequested=true">登录</a-button>
       </div>
     </header>
-    <nav class="workspace-nav" aria-label="主导航">
-      <a v-for="entry in visibleNavigation" :key="entry.key" :href="'#'+entry.key" :class="{active:current===entry.key}" :aria-current="current===entry.key ? 'page' : undefined">
-        <component :is="entry.icon" aria-hidden="true"/><span>{{ entry.title }}</span>
-      </a>
-    </nav>
+    <div class="workspace-bar">
+      <div class="brand"><span class="brand-icon"><BankOutlined aria-hidden="true"/></span><b>财务工作台</b></div>
+      <div class="workspace-bar-actions">
+        <div v-if="usesWorkspaceMonth" class="workspace-month">
+          <label for="workspace-month">结算月</label>
+          <a-input id="workspace-month" v-model:value="workspaceMonth" type="month"/>
+        </div>
+        <a-button v-if="current!=='settlement'" :loading="loading" @click="refreshWorkspace"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新数据</a-button>
+        <nav class="workspace-areas" aria-label="工作区">
+          <a v-for="workspace in visibleWorkspaces" :key="workspace.key" :href="'#'+workspace.target"
+            :aria-current="activeWorkspace?.key===workspace.key ? 'location' : undefined">{{ workspace.title }}</a>
+        </nav>
+      </div>
+    </div>
     <div class="workspace-body" :class="{ 'with-scope':showScope }">
       <aside v-if="showScope" class="scope-panel" aria-label="筛选范围">
+        <h2>范围</h2>
         <div v-if="usesOrganizationScope" class="scope-organization">
           <label for="workspace-organization">组织范围</label>
           <TreeSelect id="workspace-organization" :value="unitScope" :tree-data="scopeTree" :loading="loading && !scopeUnits"
@@ -691,16 +727,27 @@ async function save() {
         </template>
       </aside>
       <main class="workspace-content">
+        <section class="workspace-page-head">
+          <div class="workspace-page-title">
+            <h1>{{ active.title }}</h1>
+            <a-button v-if="actions && canOpenAction" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
+          </div>
+          <nav v-if="workspacePages.length>1" class="workspace-nav" :aria-label="activeWorkspace?.title+'导航'">
+            <a v-for="entry in workspacePages" :key="entry.key" :href="'#'+entry.key" :aria-current="current===entry.key ? 'page' : undefined">{{ entry.title }}</a>
+          </nav>
+        </section>
+        <div class="workspace-page-body">
         <template v-if="current==='settlement'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
-          <DraftWorkbench :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
+          <DraftWorkbench v-model:period-id="workbenchPeriod" :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
             :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" :requested-period="requestedPeriod"
+            :periods-loading="loading" :month="workspaceMonth"
             @show-order="orderDetails={versionId:$event}" />
         </template>
         <template v-else-if="current==='monthly'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
-          <MonthlyReport ref="monthlyReport" v-model:month="monthlyMonth" v-model:view="monthlyView" v-model:dimension="monthlyDimension"
+          <MonthlyReport ref="monthlyReport" :month="workspaceMonth" v-model:view="monthlyView" v-model:dimension="monthlyDimension"
             :api="api" :format-money="formatMoney" :product-id="productScope" :unit-id="unitScope"
             :views="options('monthlyReportView')" :dimensions="options('draftReportDimension')"/>
         </template>
@@ -711,26 +758,13 @@ async function save() {
             :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"/>
         </template>
         <template v-else>
-        <section class="heading">
-          <div><h1>{{ active.title }}</h1><p>{{ active.description }}</p></div>
-          <a-button v-if="canOpenAction" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
-        </section>
         <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
         <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
-        <div v-if="current==='products'" class="summary-grid">
-          <article><span class="metric-icon"><AppstoreOutlined/></span><div><small>目录产品</small><strong>{{ data.products.length }}</strong></div></article>
-          <article><span class="metric-icon blue"><LinkOutlined/></span><div><small>来源映射</small><strong>{{ data.mappings.length }}</strong></div></article>
-          <article><span class="metric-icon gold"><CloudSyncOutlined/></span><div><small>已配置来源</small><strong>{{ enabledSources }}<em> / {{ sources.length }}</em></strong></div></article>
-        </div>
-        <div v-if="current==='orders'" class="summary-grid">
-          <article v-for="entry in data.sources" :key="entry.source">
-            <span class="metric-icon"><CloudSyncOutlined/></span>
-            <div>
-              <small>{{ sourceLabel(entry.source) }}</small>
-              <strong class="source-state">{{ entry.configured ? '已配置' : '未配置' }}</strong>
-              <small v-if="entry.lastUpdate">最近入库 {{ formatTime(entry.lastUpdate) }}</small>
-            </div>
-          </article>
+        <div v-if="current==='orders' && data.sources.length" class="source-status-strip">
+          <div v-for="entry in data.sources" :key="entry.source">
+            <b>{{ sourceLabel(entry.source) }}</b><a-tag :color="entry.configured ? 'green' : 'default'">{{ entry.configured ? '已接入' : '未接入' }}</a-tag>
+            <span v-if="entry.lastUpdate">最近入库 {{ formatTime(entry.lastUpdate) }}</span>
+          </div>
         </div>
         <OrderSyncPanel v-if="current==='orders' && configurationReady && syncStreams.length"
           ref="orderSync" :api="api" :streams="syncStreams" :format-time="formatTime" @updated="refresh()"/>
@@ -777,8 +811,12 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='components' && record.catalogPending">
                   <a-tag :color="catalogRuleBadge(record).color">{{ catalogRuleBadge(record).text }}</a-tag>
-                  <a-button v-if="record.rateConfigAvailable && record.projectMatches && (!session.user || session.user.rules.some(grant=>grant.productId===record.productId))"
+                </template>
+                <template v-else-if="column.key==='ruleAction'">
+                  <a-button v-if="record.catalogPending && record.rateConfigAvailable && record.projectMatches && (!session.user || session.user.rules.some(grant=>grant.productId===record.productId))"
                     type="link" size="small" @click="rateRule=record">分润配置</a-button>
+                  <a-button v-else-if="!record.catalogPending && canPublishRule(record.productId)" :disabled="!configurationReady"
+                    type="link" size="small" @click="open('rule',record)">复制配置</a-button>
                 </template>
                 <template v-else-if="column.key==='components'">
                   <div v-for="(c,index) in text" :key="index">
@@ -817,12 +855,13 @@ async function save() {
           <div v-if="current==='orders'&&mainRows.length" class="paging"><a-button :disabled="!pageStack.length||loading" @click="prevOrders">上一页</a-button><a-button :disabled="mainRows.length<50||loading" @click="nextOrders">下一页</a-button></div>
         </section>
         </template>
+        </div>
       </main>
     </div>
   </div>
-  <a-drawer v-if="active && !sessionError && !sessionChecking && !loginRequested" :open="Boolean(drawer)" :title="titles[drawer]" :width="'min(510px, 100vw)'" @close="close">
+  <a-drawer v-if="active && !sessionError && !sessionChecking && !loginRequested" :open="Boolean(drawer)" :title="drawer==='rule' && draft.copiedFrom ? '复制分润规则' : titles[drawer]" :width="drawer==='rule' ? 'min(620px, 100vw)' : 'min(510px, 100vw)'" @close="close">
     <a-alert v-if="formError" class="feedback" type="error" :message="formError" show-icon/>
-    <a-form :model="draft" layout="vertical" @finish="save">
+    <a-form id="finance-edit-form" :model="draft" layout="vertical" @finish="save">
       <template v-if="drawer==='product'">
         <a-form-item label="产品名称" required><a-input v-model:value="draft.name" aria-label="产品名称" :maxlength="80"/></a-form-item>
         <a-form-item label="产品编码" required><a-input v-model:value="draft.code" aria-label="产品编码" :maxlength="48"/></a-form-item>
@@ -832,7 +871,7 @@ async function save() {
           <a-input-number v-model:value="draft.cycleStartDay" aria-label="退款账期每月开始日" :min="1" :max="28" :precision="0"/>
         </a-form-item>
       </template>
-      <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='rule' ? ruleProductOptions : productOptions"/></a-form-item>
+      <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='rule' ? ruleProductOptions : productOptions" :disabled="Boolean(draft.copiedFrom)"/></a-form-item>
       <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" :label="drawer==='pull' ? '订单来源' : '业务来源'"><a-select v-model:value="draft.source" :aria-label="drawer==='pull' ? '订单来源' : '业务来源'" :options="sources"/></a-form-item>
       <template v-if="drawer==='mapping'">
         <a-form-item label="来源业务域" required><a-input v-model:value="draft.domain" aria-label="来源业务域" placeholder="填写业务接口返回的业务域"/></a-form-item>
@@ -865,6 +904,7 @@ async function save() {
         </a-form-item>
       </template>
       <template v-if="drawer==='rule'">
+        <a-alert v-if="draft.copiedFrom" class="feedback" type="info" :message="'已带入 v'+draft.copiedFrom+' 的组件配置，请核对本次适用范围和生效时间。'" show-icon/>
         <a-form-item label="规则名称" required><a-input v-model:value="draft.label" aria-label="规则名称"/></a-form-item>
         <a-form-item html-for="rule-scope" label="适用范围"><a-select id="rule-scope" v-model:value="draft.scope" :options="options('ruleScope')"/></a-form-item>
         <a-form-item v-if="draft.scope==='period'" html-for="rule-period" label="指定期次" required><a-select id="rule-period" v-model:value="draft.periodId" :options="periodOptions"/></a-form-item>
@@ -885,8 +925,9 @@ async function save() {
           <a-form-item v-if="classRule" :html-for="'rule-member-'+i" :label="'报名类型 '+(i+1)">
             <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="availableClassMembers(c)" @change="resetAmountMode(c)"/>
           </a-form-item>
-          <a-form-item v-if="['sales','referral'].includes(c.type)" :label="'分项 '+(i+1)+' 的来源角色'">
-            <a-input v-model:value="c.sourceRole" :aria-label="'来源角色 '+(i+1)" placeholder="如 LOCK_SALES_USER 或 DIRECT_REFERRER" :maxlength="64"/>
+          <a-form-item v-if="['sales','referral'].includes(c.type)" :html-for="'rule-source-role-'+i" label="按订单中的谁计提" required>
+            <a-select :id="'rule-source-role-'+i" v-model:value="c.sourceRole" :options="componentSourceRoles(c.sourceRole)"
+              placeholder="选择订单角色" show-search option-filter-prop="label"/>
           </a-form-item>
           <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes" :people="classPeopleOptions" :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"/>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
@@ -916,8 +957,10 @@ async function save() {
         <a-form-item v-if="draft.source==='DCAI'" label="订单类型"><a-select v-model:value="draft.stream" aria-label="订单类型" :options="options('dcaiOrderStream')"/></a-form-item>
         <a-form-item label="原订单 ID" required><a-input v-model:value="draft.orderId" aria-label="原订单 ID"/></a-form-item>
       </template>
-      <div class="form-actions"><a-button :disabled="saving" @click="close">取消</a-button><a-button html-type="submit" type="primary" :loading="saving">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':'保存' }}</a-button></div>
     </a-form>
+    <template #footer>
+      <div class="workspace-edit-footer"><a-button :disabled="saving" @click="close">取消</a-button><a-button html-type="submit" form="finance-edit-form" type="primary" :loading="saving">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':'保存' }}</a-button></div>
+    </template>
   </a-drawer>
   <OrderDetails v-if="orderDetails" :selection="orderDetails" :api="api" :format-money="formatMoney" :format-time="formatTime" :source-label="sourceLabel"
     :labels="labels" :can-pull="Boolean(orderDetails.order && configurationReady && data.sources.some(source=>source.source===orderDetails.order.source && source.configured))"

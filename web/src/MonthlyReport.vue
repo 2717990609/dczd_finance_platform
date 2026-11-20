@@ -1,8 +1,8 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
-const props = defineProps({ api:Function, formatMoney:Function, productId:Number, views:Array, dimensions:Array, unitId:String })
-const month = defineModel('month', {type:String})
+const props = defineProps({ api:Function, formatMoney:Function, productId:Number, views:Array, dimensions:Array, unitId:String, month:String })
+const month = computed(() => props.month)
 const view = defineModel('view', {type:String})
 const dimension = defineModel('dimension', {type:String})
 const page = ref(1)
@@ -99,13 +99,8 @@ defineExpose({refresh})
 </script>
 
 <template>
-  <section class="heading">
-    <h1>月度汇总</h1>
-  </section>
   <section class="records draft-controls">
     <div class="draft-toolbar monthly-filters">
-      <label for="monthly-report-month">报表月份</label>
-      <a-input id="monthly-report-month" v-model:value="month" type="month"/>
       <label for="monthly-report-view">结果范围</label>
       <a-select id="monthly-report-view" v-model:value="view" :options="views"/>
       <label for="monthly-report-dimension">汇总维度</label>
@@ -124,10 +119,10 @@ defineExpose({refresh})
       :message="report.duplicateFacts+' 笔重复的付款或退款已按来源主键只计一次业绩。'" show-icon/>
     <a-alert v-if="includedCount && !report.performanceReady && !report.conflictingPerformance" class="feedback"
       type="info" message="部分结果缺少完整的净业绩数据。" show-icon/>
-    <div class="summary-grid">
-      <article><div><small>净业绩</small><strong>{{ formatMoney(report.performanceMinor) }}</strong></div></article>
-      <article><div><small>净分润</small><strong>{{ includedCount ? formatMoney(report.commissionMinor) : '—' }}</strong></div></article>
-      <article><div><small>纳入汇总</small><strong>{{ includedCount }}<em> / {{ report.periods.length }} 期</em></strong></div></article>
+    <div class="records workbench-totals">
+      <div><small>净业绩</small><strong>{{ formatMoney(report.performanceMinor) }}</strong></div>
+      <div class="workbench-net"><small>净分润</small><strong>{{ includedCount ? formatMoney(report.commissionMinor) : '—' }}</strong></div>
+      <div><small>纳入汇总</small><strong>{{ includedCount }} <span>/ {{ report.periods.length }} 期</span></strong></div>
     </div>
     <section class="records">
       <div class="records-head"><h2>{{ dimensionLabel }}汇总</h2></div>
@@ -162,7 +157,6 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
-.monthly-filters .ant-input { width: 150px; }
 .monthly-filters .ant-select { min-width: 108px; }
 .monthly-periods { margin-top: 16px; }
 .monthly-periods > summary { padding: 12px 16px; cursor: pointer; font-weight: 600; }
