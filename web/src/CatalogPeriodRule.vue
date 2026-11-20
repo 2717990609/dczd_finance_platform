@@ -71,7 +71,8 @@ const firstStart = computed(() => sheet.value && !creating.value ? nextStart(she
 const cutoff = computed(() => sheet.value?.effectiveTo
   ? localDate(new Date(Date.parse(sheet.value.effectiveTo)-86400000).toISOString()) : undefined)
 const canSave = computed(() => sheet.value?.mayPublish && (!cutoff.value || firstStart.value<=cutoff.value))
-const componentsChanged = computed(() => JSON.stringify(rows.value) !== JSON.stringify(editableRows(sheet.value?.items || [])))
+const componentsChanged = computed(() => JSON.stringify(rows.value.map(configuredRow)) !==
+  JSON.stringify(editableRows(sheet.value?.items || []).map(configuredRow)))
 const scenariosChanged = computed(() => {
   const published = sheet.value?.scenarios || []
   return scenarioCodes.value.length !== published.length || !published.every(sku=>scenarioCodes.value.includes(sku.code))
@@ -94,9 +95,22 @@ function editableRows(items) {
   return items.map(item => ({uid:item.itemKey,itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,
     organizationKey:item.organizationKey,personId:item.personId,personName:item.personId ? item.targetName : undefined,
     poolName:item.poolName || '',ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
-    tiers:item.tiers.map(row => ({
-    from:(row.min_inclusive || 0)/100,rate:row.rate_bps/100,
-  }))}))
+    method:item.tiers.length===1 ? 'rate' : 'tiers',
+    uniformRate:item.tiers.length===1 ? item.tiers[0].rate_bps/100 : undefined,
+    tiers:item.tiers.length===1 ? [] : item.tiers.map(row=>({from:(row.min_inclusive || 0)/100,rate:row.rate_bps/100}))}))
+}
+function configuredRow({method,uniformRate,tiers,...item}) {
+  return {...item,tiers:method==='rate' ? [{from:0,rate:uniformRate}] : tiers}
+}
+const methodLabels = {rate:'统一比例',tiers:'按净额阶梯'}
+function setMethod(item, method) {
+  if (method==='tiers' && !item.tiers.length) item.tiers = [{from:0,rate:item.uniformRate}]
+  if (method==='rate' && item.uniformRate==null && item.tiers.length===1) item.uniformRate = item.tiers[0].rate
+  item.method = method
+}
+function methodSummary(item) {
+  if (item.method==='tiers') return item.tiers.length+' 档阶梯'
+  return item.uniformRate==null ? methodLabels.rate : '统一 '+item.uniformRate+'%'
 }
 const targetTypes = [{value:'person',label:'指定个人'},{value:'company',label:'指定公司'},{value:'pool',label:'团队池'}]
 const targetLabels = {person:'个人',company:'公司',pool:'团队池'}
@@ -151,7 +165,7 @@ function setTarget(row, target) {
 }
 function addComponent() {
   const uid = 'new-' + (++newComponentID)
-  rows.value.push({uid,label:'',targetKind:'company',tiers:[{from:0,rate:0}]})
+  rows.value.push({uid,label:'',targetKind:'company',method:'rate',tiers:[]})
   activeComponent.value = uid
   editingComponent.value = uid
 }
@@ -174,11 +188,12 @@ function componentChanges() {
     if (item.targetKind==='pool' && (!item.poolName?.trim() || !item.ownerRole || !item.memberRole)) {
       throw new Error('请填写团队池名称、负责人职责和成员职责。')
     }
-    const starts = item.tiers.map(row=>minor(row.from,'请输入每档净额起点。'))
+    const {tiers} = configuredRow(item)
+    const starts = tiers.map(row=>minor(row.from,'请输入每档净额起点。'))
     if (starts.some((from,index)=>index && from<=starts[index-1])) throw new Error('每一档净额起点须高于上一档。')
     return {itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,organizationKey:item.organizationKey,
-      personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole,tiers:item.tiers.map((row,index)=>{
-      const rate = minor(row.rate,'请输入每档比例。')
+      personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole,tiers:tiers.map((row,index)=>{
+      const rate = minor(row.rate,item.method==='rate' ? '请输入统一比例。' : '请输入每档比例。')
       if (rate>10000) throw new Error('比例须在 0% 到 100% 之间。')
       return {min_inclusive:starts[index],max_exclusive:starts[index+1],rate_bps:rate}
     })}
@@ -188,6 +203,12 @@ function removeTier(tiers, index) {
   tiers.splice(index,1)
   tiers[0].from = 0
 }
+
+watch([rows, amounts, performanceScope, scenarioCodes], () => {
+  quoteRequest++
+  quote.value = undefined
+  previewing.value = false
+}, {deep:true})
 
 watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,product])=>{
   const request = ++versionRequest
@@ -323,7 +344,7 @@ async function publish() {
 </script>
 
 <template>
-  <a-drawer open :title="creating ? '新增整期规则' : applied ? '计提使用的整期规则' : '整期阶梯配置'" width="min(1260px, 100vw)" root-class-name="finance-rule-editor"
+  <a-drawer open :title="creating ? '新增整期规则' : applied ? '计提使用的整期规则' : '整期分润配置'" width="min(1260px, 100vw)" root-class-name="finance-rule-editor"
     :closable="!saving && !savingDraft" :mask-closable="!saving && !savingDraft" :keyboard="!saving && !savingDraft" @close="emit('close')">
     <a-alert v-if="error" class="feedback" :message="error" type="error" show-icon/>
     <a-form v-if="creating" layout="vertical" class="rule-basics" :disabled="saving">
@@ -411,7 +432,7 @@ async function publish() {
             <DownOutlined aria-hidden="true"/>
             <strong>{{ item.label || '新收款安排' }}</strong>
             <span class="rule-block-badge">{{ targetLabels[item.targetKind] }}</span>
-            <small>{{ targetLabel(item) }}</small>
+            <small>{{ targetLabel(item) }} · {{ methodSummary(item) }}</small>
           </button>
           <div v-if="activeComponent===item.uid" :id="'period-rule-part-'+item.uid" class="rule-block-body">
           <div class="period-component-heading">
@@ -455,10 +476,25 @@ async function publish() {
             <p v-if="item.ownerRole" class="rule-formula">负责人 {{ optionLabel('catalogAppointmentRole',item.ownerRole) || item.ownerRole }} · 成员 {{ optionLabel('catalogAppointmentRole',item.memberRole) || item.memberRole || '未配置' }}</p>
           </template>
           <h4 class="rule-item-section">提成怎么算</h4>
-          <p class="rule-formula">同一收款组用本组净收款选档，再用净额乘以该档比例。</p>
+          <div class="period-method">
+            <a-radio-group v-if="canSave" :value="item.method" aria-label="计提方式" role="radiogroup" size="small" button-style="solid"
+              :disabled="saving" @update:value="setMethod(item,$event)">
+              <a-radio-button v-for="(label,key) in methodLabels" :key="key" :value="key">{{ label }}</a-radio-button>
+            </a-radio-group>
+            <a-form v-if="item.method==='rate' && canSave" layout="inline">
+              <a-form-item label="统一比例（%）" html-for="period-benefit-uniform-rate">
+                <a-input-number id="period-benefit-uniform-rate" v-model:value="item.uniformRate" size="small" :min="0" :max="100"
+                  :precision="2" :disabled="saving"/>
+              </a-form-item>
+            </a-form>
+            <span v-else-if="item.method==='rate'">{{ methodSummary(item) }}</span>
+            <span v-if="item.method==='rate'" class="period-method-formula">本组净额 × 统一比例</span>
+          </div>
           <p v-if="rows.length>1 && rows.some(row=>row.targetKind==='pool')" class="rule-formula">
-            团队池负责人或可分配成员变动时分组。同组的各个收款安排共用选档净额，可各设比例。
+            团队池负责人或可分配成员变动时分组，同组各收款安排共用本组净额。
           </p>
+          <template v-if="item.method==='tiers'">
+          <p class="rule-formula">按本组净额选档，净额乘该档比例。</p>
           <div class="period-tier-grid period-tier-header" aria-hidden="true">
             <span>净额起点（元，含）</span><span>净额止点（元，不含）</span><span>计提比例（%）</span><span v-if="canSave">操作</span>
           </div>
@@ -472,6 +508,7 @@ async function publish() {
               @click="removeTier(item.tiers,i)">删除</a-button>
           </div>
           <a-button v-if="canSave" type="dashed" :disabled="saving" @click="item.tiers.push({from:undefined,rate:0})">新增档位</a-button>
+          </template>
           </div>
         </section>
         </div>
@@ -569,7 +606,7 @@ async function publish() {
         </template>
         <template v-if="!applied">
         <h3 class="form-subhead">金额演算</h3>
-        <p class="rule-formula">手填所选场景的汇总金额，用于核对档位和计提金额。</p>
+        <p class="rule-formula">填写汇总金额，演算各收款安排的计提金额。</p>
         <a-form layout="vertical">
           <div class="period-quote-inputs">
             <a-form-item label="本期实收（元）" html-for="period-quote-received">
@@ -611,6 +648,9 @@ async function publish() {
 .period-component-layout { margin:16px 0 22px; }
 .period-scenario-select { width:min(100%,720px); }
 .period-component-heading { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+.period-method { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; margin-bottom:6px; }
+.period-method :deep(.ant-form-item) { margin:0; }
+.period-method-formula { color:var(--muted); font-size:13px; }
 .period-tier-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:8px; align-items:center; margin-bottom:8px; }
 .period-tier-header { color:var(--muted); font-size:12px; }
 .period-tier-grid :deep(.ant-input-number),.period-quote-inputs :deep(.ant-input-number) { width:100%; }

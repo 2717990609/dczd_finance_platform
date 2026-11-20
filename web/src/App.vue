@@ -1524,7 +1524,7 @@ async function save() {
                   <a-button v-if="record.catalogPending && record.rateConfigAvailable && record.projectMatches && (!session.user || session.user.rules.some(grant=>grant.productId===record.productId))"
                     type="link" size="small" @click="rateRule=record">分润配置</a-button>
                   <a-button v-else-if="record.periodConfigAvailable && canReadRules(record.productId)" type="link" size="small"
-                    @click="periodRule=record">整期阶梯</a-button>
+                    @click="periodRule=record">整期分润</a-button>
                   <template v-else-if="!record.catalogPending">
                     <a-button type="link" size="small" @click="ruleDetails=record">查看规则</a-button>
                     <a-button v-if="canPublishRule(record.productId) && !record.retiredFrom && ruleEditVersionIDs.has(record.id)" :disabled="!configurationReady"
