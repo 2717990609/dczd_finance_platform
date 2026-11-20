@@ -76,12 +76,12 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if err := storeVIPSalesContext(ctx, s.db, json.RawMessage(raw)); err != nil {
 		t.Fatal(err)
 	}
-	save := func(order, version string, amount int64, at, updated time.Time, entity string, line ...string) {
+	saveWithSeller := func(order, version, seller string, amount int64, at, updated time.Time, entity string, line ...string) {
 		t.Helper()
 		f := sourceFact{Source: "DCAI", Kind: "ORDER_PAID", OrderID: order, OrderNo: version, PaymentID: order, RecordKey: "ai_vip_order:" + order,
 			Domain: "VIP", SourceKey: "vip-test", Version: version, AmountMinor: &amount, OccurredAt: at, UpdatedAt: updated,
 			Classification: classifySourcePayment("DCAI", "VIP", entity, "ai_vip_order", "vip-test"),
-			VIPClaims:      []vipClaim{{Role: "PID_USER", User: "seller", Company: "seller-company", Relationship: "DIRECT"}}}
+			VIPClaims:      []vipClaim{{Role: "PID_USER", User: seller, Company: "seller-company", Relationship: "DIRECT"}}}
 		if len(line) != 0 {
 			f.LineID = line[0]
 		}
@@ -92,6 +92,10 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+	}
+	save := func(order, version string, amount int64, at, updated time.Time, entity string, line ...string) {
+		t.Helper()
+		saveWithSeller(order, version, "seller", amount, at, updated, entity, line...)
 	}
 	recalc := func() draftSummary {
 		t.Helper()
@@ -789,6 +793,202 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 			if err != nil || actualPerson != expected.person || actualRule != expected.rule {
 				t.Fatalf("order %s person=%d rule=%s error=%v", expected.order, actualPerson, actualRule, err)
 			}
+		}
+	})
+
+	t.Run("已结算订单更正销售归属", func(t *testing.T) {
+		if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", october); err != nil {
+			t.Fatal(err)
+		}
+		var seller, replacement, lineID, remaining int64
+		if err := s.db.QueryRow(ctx, `SELECT id FROM people WHERE legacy_party_id=$1::uuid`, id(13)).Scan(&replacement); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, `INSERT INTO catalog_sales_people_sources(id,source,external_id,person_id,valid_from,observed_at)
+		 SELECT $1,'DCAI','replacement',$2,'2026-01-01',captured_at FROM catalog_sales_context WHERE source='DCAI'`, id(30), replacement); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := editor.addCatalogAppointment(ctx, addCatalogAppointmentInput{PersonID: replacement, StartsAt: previousStart,
+			catalogAppointmentTarget: catalogAppointmentTarget{Role: "SALES", Scope: "PROJECT", ScopeKey: "AI"}}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.db.QueryRow(ctx, `SELECT l.id,l.person_id,l.amount_minor+coalesce(sum(r.amount_minor),0)
+		 FROM calculation_draft_lines l JOIN source_order_versions v ON v.id=l.source_version_id
+		 LEFT JOIN calculation_draft_refunds r ON r.original_line_id=l.id AND r.period_id=$2
+		 WHERE l.period_id=$1 AND l.component_type='sales' AND v.order_id='one' GROUP BY l.id`, periodID, sept).Scan(&lineID, &seller, &remaining); err != nil || remaining <= 0 {
+			t.Fatalf("expected settled sales with a remaining balance: %d %v", remaining, err)
+		}
+		before := draftAt(october)
+		baselineRefunds := draftAt(current)
+		updated := time.Now().UTC().Truncate(time.Microsecond)
+		saveWithSeller("one", "sales-reassigned", "replacement", 10000, boundary.Add(-time.Second), updated, "VIP_ORDER")
+		var queued bool
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, current).Scan(&queued); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, `UPDATE source_order_versions SET received_at=$1 WHERE version='sales-reassigned'`, octoberPayment); err != nil {
+			t.Fatal(err)
+		}
+		saveRefund("one", "after-sales-adjustment", "1", 3000, time.Now().Add(-time.Second))
+		tooEarly := draftAt(current)
+		if tooEarly.CorrectionCount != 0 || tooEarly.IssueCount != baselineRefunds.IssueCount+1 {
+			t.Fatalf("the later refund must wait before the earlier draft is first opened: %+v", tooEarly)
+		}
+		changed := draftAt(october)
+		if changed.CorrectionCount != 1 || changed.CorrectionTotal != remaining || changed.IssueCount != before.IssueCount+1 || !queued {
+			t.Fatalf("expected a %d credit and a pending recovery after sync: queued=%t, before=%+v after=%+v", remaining, queued, before, changed)
+		}
+		w := httptest.NewRecorder()
+		s.getDraft(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/drafts?periodId=%d", october), nil))
+		var detail struct {
+			Corrections []struct {
+				AmountMinor int64
+				RuleVersion int
+				PersonName  string
+			}
+			Issues []struct {
+				ID       int64
+				Recovery *struct{ PersonID, AmountMinor, RuleVersion int64 }
+			}
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &detail); err != nil || w.Code != http.StatusOK || len(detail.Corrections) != 1 ||
+			detail.Corrections[0].AmountMinor != remaining || detail.Corrections[0].RuleVersion != 1 || detail.Corrections[0].PersonName != "分配负责人" {
+			t.Fatalf("correction detail did not retain rule v1: %d %v %s", w.Code, err, w.Body)
+		}
+		var issueID int64
+		for _, issue := range detail.Issues {
+			if issue.Recovery != nil && issue.Recovery.PersonID == seller && issue.Recovery.AmountMinor == -remaining && issue.Recovery.RuleVersion == 1 {
+				issueID = issue.ID
+			}
+		}
+		if issueID == 0 {
+			t.Fatalf("missing pending recovery for the original person: %s", w.Body)
+		}
+		saveWithSeller("one", "sales-reassigned-display", "replacement", 10000, boundary.Add(-time.Second), updated.Add(time.Second), "VIP_ORDER")
+		if repeat := draftAt(october); repeat.Version != changed.Version {
+			t.Fatalf("display-only change published another correction draft: %+v", repeat)
+		}
+		token, err := s.loginFinanceAccount(ctx, financeLoginInput{Login: "settlement.fixture", Password: "isolated-close-fixture"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		payload := fmt.Sprintf(`{"periodId":%d,"version":%d,"issueId":%d,"outcome":"recover"}`, october, changed.Version, issueID)
+		request := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/correction-recovery", strings.NewReader(payload))
+		request.Header.Set("Origin", "http://localhost")
+		request.Header.Set("Content-Type", "application/json")
+		request.AddCookie(&http.Cookie{Name: financeAccountCookie, Value: token})
+		w = httptest.NewRecorder()
+		for _, route := range s.routes() {
+			if route.Method == request.Method && route.Path == request.URL.Path {
+				route.Handler.ServeHTTP(w, request)
+				break
+			}
+		}
+		if w.Code != http.StatusOK {
+			t.Fatalf("authorized recovery not accepted: %d %s", w.Code, w.Body)
+		}
+		reviewed := draftAt(october)
+		if reviewed.CorrectionCount != 2 || reviewed.CorrectionTotal != 0 || reviewed.IssueCount != before.IssueCount {
+			t.Fatalf("two-sided correction expected after review: %+v", reviewed)
+		}
+		w = httptest.NewRecorder()
+		s.draftReport(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/draft-report?periodId=%d&version=%d&dimension=person", october, reviewed.Version), nil))
+		var report struct {
+			Items []struct {
+				Name            string
+				CorrectionMinor int64
+			}
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &report); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("correction report: %d %v %s", w.Code, err, w.Body)
+		}
+		var credit, debit int64
+		for _, row := range report.Items {
+			switch row.Name {
+			case "分配负责人":
+				credit = row.CorrectionMinor
+			case "销售乙":
+				debit = row.CorrectionMinor
+			}
+		}
+		if credit != remaining || debit != -remaining {
+			t.Fatalf("report lost the two signed person entries: %d, %d", credit, debit)
+		}
+		if err := s.db.QueryRow(ctx, `SELECT person_id FROM calculation_draft_lines WHERE id=$1`, lineID).Scan(&seller); err != nil || seller == replacement {
+			t.Fatalf("frozen recipient changed: %d %v", seller, err)
+		}
+
+		saveWithSeller("unclassified", "other-order-reassigned", "replacement", 1100, boundary, updated, "VIP_ORDER")
+		saveRefund("unclassified", "earlier-refund-after-reassignment", "1", 100, octoberPayment.Add(time.Second))
+		earlier := draftAt(october)
+		if earlier.RefundCount != reviewed.RefundCount+5 || earlier.IssueCount != reviewed.IssueCount || earlier.CorrectionCount != reviewed.CorrectionCount {
+			t.Fatalf("an earlier refund must not pick up a revision received in a later period before its draft exists: %+v", earlier)
+		}
+		if later := draftAt(current); later.CorrectionCount != 1 || later.IssueCount != baselineRefunds.IssueCount+2 {
+			t.Fatalf("another order should reserve its own correction in the later period: %+v", later)
+		}
+		if repeat := draftAt(october); repeat.Version != earlier.Version {
+			t.Fatalf("the later draft cannot change the earlier refund: %+v", repeat)
+		}
+		save("unclassified", "other-order-reassignment-reverted", 1100, boundary, updated.Add(time.Second), "VIP_ORDER")
+		reviewed = draftAt(october)
+		waiting := draftAt(current)
+		var waitingFound bool
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM calculation_draft_issues WHERE period_id=$1 AND code='CORRECTION_REFUND_WAITING')`, current).Scan(&waitingFound); err != nil ||
+			!waitingFound || waiting.CorrectionCount != 0 || waiting.RefundCount != baselineRefunds.RefundCount+5 {
+			t.Fatalf("refund must wait for the other open correction: %+v %t %v", waiting, waitingFound, err)
+		}
+		closeReviewed(reviewed, review(reviewed).Token)
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, current).Scan(&queued); err != nil || !queued {
+			t.Fatalf("closing the correction must queue the waiting refund: %t %v", queued, err)
+		}
+		refunded := draftAt(current)
+		if refunded.IssueCount != baselineRefunds.IssueCount+1 || refunded.RefundCount != waiting.RefundCount ||
+			refunded.CorrectionCount != 1 || refunded.CorrectionTotal != 300 {
+			t.Fatalf("refund after a booked correction must offset the frozen payee and review the new payee: %+v", refunded)
+		}
+		var payee, refundDebit int64
+		if err := s.db.QueryRow(ctx, `SELECT recovery_person_id,recovery_minor FROM calculation_draft_issues
+		 WHERE period_id=$1 AND code='CORRECTION_RECOVERY_PENDING'`, current).Scan(&payee, &refundDebit); err != nil || payee != replacement || refundDebit != -300 {
+			t.Fatalf("wrong refund recipient or amount: %d %d %v", payee, refundDebit, err)
+		}
+		saveWithSeller("one", "sales-reassigned-amount-changed", "replacement", 9000, boundary.Add(-time.Second), updated.Add(2*time.Second), "VIP_ORDER")
+		mismatch := draftAt(current)
+		var conflictFound bool
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM calculation_draft_issues WHERE period_id=$1 AND code='CORRECTION_SCOPE_CHANGED')`, current).Scan(&conflictFound); err != nil ||
+			!conflictFound || mismatch.CorrectionCount != 0 || mismatch.IssueCount != baselineRefunds.IssueCount+1 {
+			t.Fatalf("a payment amount change cannot be confirmed as an equivalent recipient change: %+v %t %v", mismatch, conflictFound, err)
+		}
+		// Isolate the database's deletion rule from pool-carry dependencies.
+		onlyCorrection := createPeriod("2036-01", "仅更正")
+		onlyRefund := createPeriod("2036-02", "仅退款")
+		correctionDraft, refundDraft := draftAt(onlyCorrection), draftAt(onlyRefund)
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `INSERT INTO calculation_draft_corrections(period_id,original_line_id,source_version_id,person_id,amount_minor)
+			 SELECT $1,original_line_id,source_version_id,person_id,amount_minor FROM calculation_draft_corrections WHERE period_id=$2`, onlyCorrection, october); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `INSERT INTO calculation_draft_refunds(period_id,original_line_id,refund_period_id,refund_source_version_id,amount_minor)
+			 SELECT $1,original_line_id,refund_period_id,refund_source_version_id,amount_minor FROM calculation_draft_refunds
+			 WHERE period_id=$2 AND original_line_id=$3`, onlyRefund, current, lineID); err != nil {
+				return err
+			}
+			if _, err := insertSettlement(ctx, tx, onlyCorrection, correctionDraft.Version, "fixture", "", nil); err != nil {
+				return err
+			}
+			_, err := insertSettlement(ctx, tx, onlyRefund, refundDraft.Version, "fixture", "", nil)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", onlyCorrection); err == nil || !strings.Contains(err.Error(), "booked adjustments") {
+			t.Fatalf("cannot reopen a correction needed by a later settled refund: %v", err)
+		}
+		if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", onlyRefund); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", onlyCorrection); err != nil {
+			t.Fatalf("reopening in reverse order should succeed: %v", err)
 		}
 	})
 }

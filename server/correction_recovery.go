@@ -24,7 +24,8 @@ const pendingCorrectionRecoverySQL = `SELECT i.correction_line_id,i.recovery_per
  FROM calculation_draft_issues i JOIN calculation_draft_lines line ON line.id=i.correction_line_id
  JOIN settlements booked ON booked.period_id=line.period_id JOIN periods p ON p.id=booked.period_id
  WHERE i.period_id=$1 AND i.id=$2 AND i.code='CORRECTION_RECOVERY_PENDING' AND i.recovery_minor<0
-  AND line.component_type='referral' AND p.product_id=$3 AND i.recovery_person_id IS NOT NULL`
+  AND (line.component_type='referral' OR line.catalog_rule_id IS NOT NULL)
+  AND line.person_id IS NOT NULL AND p.product_id=$3 AND i.recovery_person_id IS NOT NULL`
 
 const draftRefreshCorrectionRecovery = `SELECT $1::bigint
  UNION SELECT period_id FROM calculation_draft_issues WHERE correction_line_id=$2

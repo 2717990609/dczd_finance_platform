@@ -78,7 +78,9 @@ const reason = {
   REFUND_AMOUNT_EXCEEDS_PAYMENT: '累计退款或扣回金额超过原付款或原计提',
   REFUND_POLICY_MISSING: '适用规则缺少退款处理口径',
   REFUND_BOOKED_CHANGED: '已入账退款金额或关联有修订，需核对后办理更正',
-  CORRECTION_SCOPE_CHANGED: '原付款标识、产品或发生时间有变动，需核对归属',
+  CORRECTION_SCOPE_CHANGED: '付款标识、产品、金额或时间有变动，需核对原结算与最新订单',
+  CORRECTION_LINKED_REVIEW: '归属变更涉及关联分项，需核对计提金额、受益人及资金池',
+  CORRECTION_REFUND_WAITING: '该退款关联的受益人更正仍在其他账期待办理，请先完成更正',
   CORRECTION_MISSING_FACT_OR_RULE: '缺少结算时使用的推荐规则或有效的最新付款金额',
   CORRECTION_REFUND_CONFLICT: '最新付款与已登记退款无法按结算时规则对平',
   CORRECTION_RECOVERY_PENDING: '待确认扣回方式',
@@ -323,7 +325,7 @@ async function loadMore(section, cursorName) {
   <div v-if="draft" class="summary-grid" :class="{ 'summary-with-corrections':draft.correctionCount, 'summary-collection':!draft.refundsReady }">
     <article v-if="!draft.practiceRefundMonth"><div><small>{{ draft.practiceRosterVersion ? '本班计提（含名单确认前退款）' : '正向计提' }}</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div></article>
     <article v-if="!draft.practiceRosterVersion"><div><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div></article>
-    <article v-if="draft.correctionCount"><div><small>推荐人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div></article>
+    <article v-if="draft.correctionCount"><div><small>受益人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div></article>
     <article v-if="draft.refundsReady"><div><small>本期合计</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div></article>
   </div>
   <a-tabs v-if="draft" v-model:active-key="view">
@@ -387,7 +389,7 @@ async function loadMore(section, cursorName) {
     <div v-if="draft.refundCount > draft.refunds.length" class="paging"><a-button :loading="loading" @click="loadMore('refunds', 'afterRefundId')">加载下一页</a-button></div>
   </section>
   <section v-if="draft?.correctionCount" class="records draft-issues">
-    <div class="records-head"><h2>推荐人更正明细</h2></div>
+    <div class="records-head"><h2>受益人更正明细</h2></div>
     <div class="table-container">
       <a-table :columns="correctionColumns" :data-source="draft.corrections" :pagination="false" row-key="id" :scroll="{x:710}">
         <template #bodyCell="{column,record}">

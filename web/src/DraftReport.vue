@@ -19,7 +19,7 @@ const columns = computed(() => [
   {title:props.draft.practiceRosterVersion ? '本班计提' : '正向计提',dataIndex:'accruedMinor',key:'accruedMinor',width:125,align:'right'},
   ...(props.draft.refundsReady ? [
     ...(props.draft.practiceRosterVersion ? [] : [{title:'退款扣减',dataIndex:'refundMinor',key:'refundMinor',width:125,align:'right'}]),
-    ...(props.draft.catalog ? [] : [{title:'推荐人更正',dataIndex:'correctionMinor',key:'correctionMinor',width:125,align:'right'}]),
+    ...(!props.draft.catalog || props.draft.correctionCount ? [{title:'受益人更正',dataIndex:'correctionMinor',key:'correctionMinor',width:125,align:'right'}] : []),
     ...(props.draft.catalog ? [{title:props.draft.settlement ? '团队池分配' : '团队池拟分配',dataIndex:'allocationMinor',key:'allocationMinor',width:135,align:'right'}] : []),
     {title:'本期净分润',dataIndex:'totalMinor',key:'totalMinor',width:125,align:'right'},
   ] : []),

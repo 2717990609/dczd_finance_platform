@@ -593,11 +593,11 @@ const draftDetailSQL = `SELECT jsonb_build_object(
  'corrections',coalesce((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM (
   SELECT c.id,c.amount_minor AS "amountMinor",v.order_id AS "orderId",v.fact->>'orderNo' AS "orderNo",
    v.version AS "sourceVersion",p.name AS "personName",old_person.name AS "originalPersonName",
-   original_period.name AS "originalPeriod",r.version AS "ruleVersion"
+   original_period.name AS "originalPeriod",coalesce(r.version,cv.version_no) AS "ruleVersion"
   FROM calculation_draft_corrections c JOIN source_order_versions v ON v.id=c.source_version_id
   JOIN people p ON p.id=c.person_id JOIN calculation_draft_lines l ON l.id=c.original_line_id
   JOIN people old_person ON old_person.id=l.person_id JOIN periods original_period ON original_period.id=l.period_id
-  JOIN rule_versions r ON r.id=l.rule_id
+  LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
   WHERE c.period_id=d.period_id AND c.id>$6 ORDER BY c.id LIMIT 50
  ) c),'[]'),
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
@@ -605,13 +605,15 @@ const draftDetailSQL = `SELECT jsonb_build_object(
    CASE WHEN r.id IS NOT NULL AND starts_with(i.component_type,'period:')
      THEN r.components->(split_part(i.component_type,':',3)::int)->'periodBenefit'->>'label' END AS "componentLabel",
    CASE WHEN i.recovery_person_id IS NOT NULL THEN jsonb_build_object(
-     'personName',recipient.name,'personId',recipient.id,'amountMinor',i.recovery_minor,'originalPeriod',original_period.name,'ruleVersion',original_rule.version)
+     'personName',recipient.name,'personId',recipient.id,'amountMinor',i.recovery_minor,'originalPeriod',original_period.name,
+     'ruleVersion',coalesce(original_rule.version,original_catalog_rule.version_no))
    END AS recovery
   FROM calculation_draft_issues i LEFT JOIN source_order_versions o ON o.id=i.source_version_id LEFT JOIN practice_enrollments e ON e.id=i.practice_enrollment_id
   LEFT JOIN people recipient ON recipient.id=i.recovery_person_id
   LEFT JOIN calculation_draft_lines original ON original.id=i.correction_line_id
   LEFT JOIN periods original_period ON original_period.id=original.period_id
   LEFT JOIN rule_versions original_rule ON original_rule.id=original.rule_id
+  LEFT JOIN product_rule_versions original_catalog_rule ON original_catalog_rule.source_id=original.catalog_rule_id
   WHERE i.period_id=d.period_id AND i.id>$3 ORDER BY i.id LIMIT 50
  ) i),'[]')
 ) FROM calculation_drafts d JOIN periods period ON period.id=d.period_id JOIN products product ON product.id=period.product_id

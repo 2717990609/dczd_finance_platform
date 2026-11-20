@@ -77,18 +77,15 @@ const draftRefreshFacts = `WITH keys AS (
  JOIN periods p ON p.source_period_key=e.period_key
  JOIN LATERAL (SELECT id FROM practice_rosters r WHERE r.period_key=e.period_key ORDER BY source_version DESC LIMIT 1) latest ON true
  JOIN practice_roster_members member ON member.roster_id=latest.id AND member.enrollment_id=e.id
+), corrected_originals AS (
+ SELECT DISTINCT line.id,prior.product_id FROM events v JOIN source_order_versions paid
+  ON paid.source=v.source AND paid.order_id=v.order_id AND paid.kind='ORDER_PAID'
+ JOIN calculation_draft_lines line ON line.source_version_id=paid.id
+  AND (line.component_type='referral' OR line.catalog_rule_id IS NOT NULL)
+ JOIN settlements final ON final.period_id=line.period_id JOIN periods prior ON prior.id=line.period_id WHERE v.kind='ORDER_PAID'
 ), late AS (
  SELECT o.product_id FROM origin o JOIN settlements s ON s.period_id=o.id WHERE o.kind='REFUND_SUCCEEDED'
- UNION SELECT prior.product_id FROM events v JOIN source_order_versions paid
-  ON paid.source=v.source AND paid.order_id=v.order_id AND paid.kind='ORDER_PAID'
- JOIN calculation_draft_lines line ON line.source_version_id=paid.id AND line.component_type='referral'
- JOIN settlements final ON final.period_id=line.period_id JOIN periods prior ON prior.id=line.period_id
- WHERE v.kind='ORDER_PAID'
-), corrected_originals AS (
- SELECT DISTINCT line.id FROM events v JOIN source_order_versions paid
-  ON paid.source=v.source AND paid.order_id=v.order_id AND paid.kind='ORDER_PAID'
- JOIN calculation_draft_lines line ON line.source_version_id=paid.id AND line.component_type='referral'
- JOIN settlements final ON final.period_id=line.period_id WHERE v.kind='ORDER_PAID'
+ UNION SELECT product_id FROM corrected_originals
 ), health_changes AS (
  SELECT DISTINCT v.id AS payment_version_id,NULL::bigint AS previous_id,b.completion_version_id AS current_id
  FROM events v JOIN dcai_order_blockers b ON b.stream='HEALTH_IDENTITY_ORDERS' AND b.order_id=v.order_id
@@ -167,7 +164,8 @@ WHERE (original.period_mode='class' AND p.calendar_month IS NOT NULL OR original
   JOIN payments paid ON paid.source_version_id=refund.payment_version_id WHERE refund.period_id=p.id))
 UNION SELECT period_id FROM practice_payment_dependents($1)
 UNION SELECT c.period_id FROM closed_adjustments a JOIN calculation_draft_corrections c USING(original_line_id)
-UNION SELECT i.period_id FROM closed_adjustments a JOIN calculation_draft_issues i ON i.correction_line_id=a.original_line_id`
+UNION SELECT i.period_id FROM closed_adjustments a JOIN calculation_draft_issues i ON i.correction_line_id=a.original_line_id
+UNION SELECT r.period_id FROM closed_adjustments a JOIN calculation_draft_refunds r USING(original_line_id)`
 
 const draftRefreshRoster = `WITH base AS (
  SELECT p.id,p.product_id,p.ordinal,p.source_period_key,split_part(p.source_period_key,':',3) AS series FROM periods p

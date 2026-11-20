@@ -35,6 +35,7 @@ type correctionEvaluation struct {
 type correctionBalance struct {
 	recorded           map[int64]int64
 	refunded           int64
+	refundDebit        int64
 	currentRefundDebit int64
 	recoverability     map[int64]string
 }
@@ -138,28 +139,37 @@ func addRecommendationCorrections(ctx context.Context, tx pgx.Tx, periodID int64
 		if err != nil {
 			return err
 		}
+		key := ""
 		if result.issue != "" || len(result.pending) != 0 {
-			key, err := correctionIssueKey(input)
+			key, err = correctionIssueKey(input)
 			if err != nil {
 				return err
 			}
-			if result.issue != "" {
-				draft.Issues = append(draft.Issues, draftIssue{FactID: input.SourceVersionID, Component: "referral", Code: result.issue,
-					CorrectionLineID: input.OriginalLineID, stableKey: key})
-			}
-			for _, pending := range result.pending {
-				draft.Issues = append(draft.Issues, draftIssue{FactID: input.SourceVersionID, Component: "referral", Code: "CORRECTION_RECOVERY_PENDING",
-					CorrectionLineID: input.OriginalLineID, stableKey: key,
-					Recovery: &pendingCorrectionRecovery{PersonID: pending.PersonID, Amount: pending.Amount}})
-			}
 		}
-		for _, line := range result.lines {
-			draft.CorrectionTotal, err = addMinor(draft.CorrectionTotal, line.Amount)
-			if err != nil {
-				return err
-			}
-			draft.Corrections = append(draft.Corrections, line)
+		if err := appendCorrection(draft, input, "referral", key, result); err != nil {
+			return err
 		}
+	}
+	return nil
+}
+
+func appendCorrection(draft *paymentDraft, input correctionInput, component, key string, result correctionEvaluation) error {
+	if result.issue != "" {
+		draft.Issues = append(draft.Issues, draftIssue{FactID: input.SourceVersionID, Component: component, Code: result.issue,
+			CorrectionLineID: input.OriginalLineID, stableKey: key})
+	}
+	for _, pending := range result.pending {
+		draft.Issues = append(draft.Issues, draftIssue{FactID: input.SourceVersionID, Component: component, Code: "CORRECTION_RECOVERY_PENDING",
+			CorrectionLineID: input.OriginalLineID, stableKey: key,
+			Recovery: &pendingCorrectionRecovery{PersonID: pending.PersonID, Amount: pending.Amount}})
+	}
+	for _, line := range result.lines {
+		total, err := addMinor(draft.CorrectionTotal, line.Amount)
+		if err != nil {
+			return err
+		}
+		draft.CorrectionTotal = total
+		draft.Corrections = append(draft.Corrections, line)
 	}
 	return nil
 }
@@ -207,11 +217,11 @@ func readCorrectionBalances(ctx context.Context, tx pgx.Tx, inputs []correctionI
 		originalPeople[id] = input.OriginalPersonID
 		balances[id] = &correctionBalance{recorded: map[int64]int64{input.OriginalPersonID: input.OriginalAmount}, recoverability: make(map[int64]string)}
 	}
-	rows, err := tx.Query(ctx, `SELECT c.original_line_id,c.person_id,c.amount_minor,0::bigint
+	rows, err := tx.Query(ctx, `SELECT c.original_line_id,c.person_id,c.amount_minor,0::bigint,false
 	 FROM calculation_draft_corrections c JOIN settlements s USING (period_id)
 	 WHERE c.original_line_id=ANY($1::bigint[])
 	 UNION ALL
-	 SELECT a.original_line_id,l.person_id,a.amount_minor,(v.fact->>'amountMinor')::bigint
+	 SELECT a.original_line_id,coalesce(l.person_id,0),a.amount_minor,(v.fact->>'amountMinor')::bigint,true
 	 FROM calculation_draft_refunds a JOIN settlements s USING (period_id)
 	 JOIN calculation_draft_lines l ON l.id=a.original_line_id JOIN source_order_versions v ON v.id=a.refund_source_version_id
 	 WHERE a.original_line_id=ANY($1::bigint[])`, ids)
@@ -220,11 +230,12 @@ func readCorrectionBalances(ctx context.Context, tx pgx.Tx, inputs []correctionI
 	}
 	for rows.Next() {
 		var id, person, amount, principal int64
-		if err = rows.Scan(&id, &person, &amount, &principal); err != nil {
+		var refund bool
+		if err = rows.Scan(&id, &person, &amount, &principal, &refund); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if err = balances[id].apply(person, amount, principal); err != nil {
+		if err = balances[id].apply(person, amount, principal, refund); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -234,7 +245,7 @@ func readCorrectionBalances(ctx context.Context, tx pgx.Tx, inputs []correctionI
 	}
 	for _, item := range pendingRefunds {
 		if entry := balances[item.OriginalLineID]; entry != nil {
-			if err = entry.apply(originalPeople[item.OriginalLineID], item.Amount, item.Principal); err != nil {
+			if err = entry.apply(originalPeople[item.OriginalLineID], item.Amount, item.Principal, true); err != nil {
 				return nil, err
 			}
 			entry.currentRefundDebit, err = addMinor(entry.currentRefundDebit, -item.Amount)
@@ -260,10 +271,13 @@ func readCorrectionBalances(ctx context.Context, tx pgx.Tx, inputs []correctionI
 	return balances, rows.Err()
 }
 
-func (b *correctionBalance) apply(person, amount, principal int64) error {
+func (b *correctionBalance) apply(person, amount, principal int64, refund bool) error {
 	var err error
 	b.recorded[person], err = addMinor(b.recorded[person], amount)
-	if err == nil {
+	if err == nil && refund {
+		b.refundDebit, err = addMinor(b.refundDebit, -amount)
+	}
+	if err == nil && refund {
 		b.refunded, err = addMinor(b.refunded, principal)
 	}
 	return err
@@ -296,8 +310,12 @@ func computeRecommendationCorrection(input correctionInput, b *correctionBalance
 		}
 		expected += negative
 	}
-	desired := map[int64]int64{assignment.PersonID: expected}
-	if original := input.OriginalPersonID; assignment.PersonID != original &&
+	return evaluateRecipientCorrection(input, b, assignment.PersonID, expected)
+}
+
+func evaluateRecipientCorrection(input correctionInput, b *correctionBalance, recipientID, expected int64) (correctionEvaluation, error) {
+	desired := map[int64]int64{recipientID: expected}
+	if original := input.OriginalPersonID; recipientID != original &&
 		b.recoverability[original] == "departed_unreachable" && b.currentRefundDebit > 0 {
 		// Undo the provisional debit from the frozen payee when their recovery was waived.
 		retained, err := addMinor(b.recorded[original], b.currentRefundDebit)

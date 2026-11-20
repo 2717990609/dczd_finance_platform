@@ -470,7 +470,7 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 		}
 		metadataChanged := false
 		if f.Classification.Key != "" {
-			changed, e := storeSourceClassification(ctx, tx, sourceVersion, f.Classification, f.VIPClaims)
+			changed, e := storeSourceClassification(ctx, tx, sourceVersion, f.Classification, f.VIPClaims, created)
 			if e != nil {
 				return 0, e
 			}

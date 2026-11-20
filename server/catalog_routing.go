@@ -44,13 +44,14 @@ func classifySourcePayment(source, domain, entity, table, productCode string) so
 	return sourceClassification{}
 }
 
-func storeSourceClassification(ctx context.Context, tx pgx.Tx, version int64, classification sourceClassification, claims []vipClaim) (bool, error) {
-	tag, err := tx.Exec(ctx, `INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier,sales_claims)
-	 VALUES($1,$2,$3,$4,$5) ON CONFLICT(source_version_id) DO UPDATE
-	  SET sales_claims=excluded.sales_claims
+func storeSourceClassification(ctx context.Context, tx pgx.Tx, version int64, classification sourceClassification, claims []vipClaim, created bool) (bool, error) {
+	tag, err := tx.Exec(ctx, `INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier,sales_claims,sales_claims_completed_at)
+	 VALUES($1,$2,$3,$4,$5,CASE WHEN NOT $6 AND $5::jsonb IS NOT NULL THEN now() END)
+	  ON CONFLICT(source_version_id) DO UPDATE
+	  SET sales_claims=excluded.sales_claims,sales_claims_completed_at=now()
 	 WHERE source_order_classifications.sales_claims IS NULL AND excluded.sales_claims IS NOT NULL
 	 AND (source_order_classifications.entity_type,source_order_classifications.business_key,source_order_classifications.classifier)
-	 =(excluded.entity_type,excluded.business_key,excluded.classifier)`, version, classification.Entity, classification.Key, classification.Classifier, claims)
+	 =(excluded.entity_type,excluded.business_key,excluded.classifier)`, version, classification.Entity, classification.Key, classification.Classifier, claims, created)
 	if err != nil || tag.RowsAffected() != 0 {
 		return err == nil, err
 	}

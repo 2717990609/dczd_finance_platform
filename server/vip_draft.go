@@ -69,6 +69,9 @@ func computeVIPDraft(ctx context.Context, tx pgx.Tx, periodID int64, window peri
 	if err := addRefunds(ctx, tx, periodID, window, nil, payments, &result, vipRefundTermsByRule(data.Definitions)); err != nil {
 		return paymentDraft{}, nil, err
 	}
+	if err := addVIPRecipientCorrections(ctx, tx, periodID, window, &result); err != nil {
+		return paymentDraft{}, nil, err
+	}
 	digest, err := digestDraft(0, result, payments)
 	return result, digest, err
 }

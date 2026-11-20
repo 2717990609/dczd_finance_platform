@@ -319,6 +319,8 @@ CREATE OR REPLACE TRIGGER protect_confirmed_issues BEFORE INSERT OR UPDATE OR DE
 CREATE OR REPLACE FUNCTION protect_settlement_record() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE refund_dependents bigint[];
         correction_dependents bigint[];
+        adjustment_dependents bigint[];
+        has_later_adjustment boolean;
 BEGIN
  IF TG_OP='UPDATE' THEN
   RAISE EXCEPTION 'confirmed settlement cannot be changed' USING ERRCODE='55000';
@@ -326,7 +328,26 @@ BEGIN
  -- Keep roster imports and their draft queues ordered with a technical reopening.
  PERFORM source FROM source_write_state WHERE source='CONFIG' FOR SHARE;
  SELECT array_agg(period_id) INTO refund_dependents FROM practice_refund_dependents(OLD.period_id);
- IF EXISTS(
+ -- A later adjustment can depend on the same original posting without
+ -- referencing this settlement's own draft lines.
+ WITH applied AS (
+  SELECT original_line_id FROM calculation_draft_corrections WHERE period_id=OLD.period_id
+  UNION SELECT original_line_id FROM calculation_draft_refunds WHERE period_id=OLD.period_id
+ ), related_lines AS (
+  SELECT DISTINCT linked.id FROM applied a JOIN calculation_draft_lines original ON original.id=a.original_line_id
+  JOIN calculation_draft_lines linked ON linked.period_id=original.period_id AND linked.source_version_id=original.source_version_id
+  WHERE original.catalog_rule_id IS NOT NULL
+  UNION SELECT original.id FROM applied a JOIN calculation_draft_lines original ON original.id=a.original_line_id
+  WHERE original.component_type='referral'
+ ), related_adjustments AS (
+  SELECT r.period_id,true AS posting FROM related_lines l JOIN calculation_draft_refunds r ON r.original_line_id=l.id
+  UNION SELECT c.period_id,true FROM related_lines l JOIN calculation_draft_corrections c ON c.original_line_id=l.id
+  UNION SELECT i.period_id,false FROM related_lines l JOIN calculation_draft_issues i ON i.correction_line_id=l.id
+ )
+ SELECT array_agg(DISTINCT a.period_id) FILTER (WHERE s.id IS NULL),coalesce(bool_or(a.posting AND s.id>OLD.id),false)
+ INTO adjustment_dependents,has_later_adjustment
+ FROM related_adjustments a LEFT JOIN settlements s ON s.period_id=a.period_id WHERE a.period_id<>OLD.period_id;
+ IF has_later_adjustment OR EXISTS(
     SELECT 1 FROM calculation_draft_lines l
     JOIN calculation_draft_refunds a ON a.original_line_id=l.id
     JOIN settlements s ON s.period_id=a.period_id WHERE l.period_id=OLD.period_id AND s.id<>OLD.id
@@ -378,7 +399,8 @@ BEGIN
  INSERT INTO draft_refresh_queue(period_id)
  SELECT p.id FROM periods p WHERE (p.id=OLD.period_id AND p.source_period_key IS NOT NULL)
  OR p.id IN (SELECT period_id FROM health_completion_open_periods(OLD.period_id))
- OR ((p.id=ANY(refund_dependents) OR p.id=ANY(correction_dependents) OR p.id IN (SELECT period_id FROM practice_payment_dependents(OLD.period_id)))
+ OR ((p.id=ANY(refund_dependents) OR p.id=ANY(correction_dependents) OR p.id=ANY(adjustment_dependents)
+  OR p.id IN (SELECT period_id FROM practice_payment_dependents(OLD.period_id)))
   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id))
  ORDER BY p.id ON CONFLICT(period_id) DO UPDATE
  SET generation=excluded.generation,requested_at=excluded.requested_at,retry_on_scan=true,message='';
@@ -877,6 +899,7 @@ CREATE INDEX IF NOT EXISTS catalog_payment_record_scope
  WHERE kind='ORDER_PAID';
 
 ALTER TABLE source_order_classifications ADD COLUMN IF NOT EXISTS sales_claims jsonb;
+ALTER TABLE source_order_classifications ADD COLUMN IF NOT EXISTS sales_claims_completed_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS catalog_sales_context (
  source text PRIMARY KEY,
@@ -1153,6 +1176,7 @@ BEGIN
 END $$;
 
 CREATE INDEX IF NOT EXISTS calculation_draft_catalog_rules ON calculation_draft_lines(catalog_rule_id) WHERE catalog_rule_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS calculation_draft_catalog_payment ON calculation_draft_lines(source_version_id,period_id) WHERE catalog_rule_id IS NOT NULL;
 CREATE OR REPLACE TRIGGER protect_confirmed_catalog_version BEFORE UPDATE ON product_rule_versions FOR EACH ROW
  WHEN ((OLD.source_id,OLD.package_id,OLD.version_no,OLD.effective_from,OLD.content_hash,OLD.definition) IS DISTINCT FROM
        (NEW.source_id,NEW.package_id,NEW.version_no,NEW.effective_from,NEW.content_hash,NEW.definition))
