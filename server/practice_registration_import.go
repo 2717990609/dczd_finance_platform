@@ -124,9 +124,14 @@ func (s workspace) previewPracticeRegistrationImport(ctx context.Context, input 
 			return errPracticeRosterProduct
 		}
 		if input.PeriodID != nil {
-			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM periods WHERE id=$1 AND product_id=$2 AND calendar_month IS NULL
-			 AND split_part(source_period_key,':',2)=split_part($3,':',2) AND split_part(source_period_key,':',3)=split_part($3,':',3)
-			 AND (source_period_key=$3 OR starts_on>($4::timestamptz AT TIME ZONE 'Asia/Shanghai')::date))`,
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM periods p
+			 LEFT JOIN LATERAL (
+			  SELECT starts_at FROM practice_rosters WHERE period_key=p.source_period_key ORDER BY source_version DESC LIMIT 1
+			 ) roster ON true
+			 WHERE p.id=$1 AND p.product_id=$2 AND p.calendar_month IS NULL
+			 AND split_part(p.source_period_key,':',2)=split_part($3,':',2) AND split_part(p.source_period_key,':',3)=split_part($3,':',3)
+			 AND (p.source_period_key=$3 OR coalesce(roster.starts_at>$4::timestamptz,
+			    p.starts_on>($4::timestamptz AT TIME ZONE 'Asia/Shanghai')::date)))`,
 				*input.PeriodID, input.ProductID, doc.PeriodKey, doc.StartsAt).Scan(&permitted); err != nil {
 				return err
 			}

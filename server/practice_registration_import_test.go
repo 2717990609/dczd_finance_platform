@@ -93,6 +93,29 @@ func TestPracticeRegistrationImportPreviewsApprovedGroupsAndPendingRows(t *testi
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM rule_versions`).Scan(&versions); err != nil || versions != 0 {
 		t.Fatalf("preview cannot publish any rule version: %d %v", versions, err)
 	}
+	if _, err := s.db.Exec(ctx, `
+	 INSERT INTO periods(id,product_id,name,ordinal,starts_on,ends_on,source_period_key) OVERRIDING SYSTEM VALUE VALUES
+	 (9010,9001,'起始班次',20,'2026-06-08','2026-06-08','PRACTICE:2:4:95'),
+	 (9011,9001,'上午更早的班次',19,'2026-06-08','2026-06-08','PRACTICE:2:4:94'),
+	 (9012,9001,'下午班次',21,'2026-06-08','2026-06-08','PRACTICE:2:4:96');
+	 INSERT INTO practice_rosters(period_key,source_version,source_hash,starts_at,confirmed_at,attendance_count) VALUES
+	 ('PRACTICE:2:4:94',1,'morning','2026-06-08 08:00+08','2026-06-09 00:00+08',0),
+	 ('PRACTICE:2:4:96',1,'previous','2026-06-08 08:30+08','2026-06-09 00:00+08',0),
+	 ('PRACTICE:2:4:96',2,'afternoon','2026-06-08 14:00+08','2026-06-10 00:00+08',0)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{9010, 9012} {
+		input.PeriodID = &id
+		if result, err := preview(); err != nil || len(result.Components) != 2 {
+			t.Fatalf("the start period and a later same-day class can use the relationship version: period %d, %+v %v", id, result, err)
+		}
+	}
+	earlier := int64(9011)
+	input.PeriodID = &earlier
+	if _, err := preview(); !errors.Is(err, errPracticeRosterProduct) {
+		t.Fatalf("an earlier class on the same day must be rejected: %v", err)
+	}
+	input.PeriodID = nil
 	input.ProductID = 9002
 	if _, err := preview(); !errors.Is(err, errPracticeRosterProduct) {
 		t.Fatalf("different product scope should be rejected: %v", err)
