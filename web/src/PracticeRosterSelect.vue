@@ -1,7 +1,7 @@
 <script setup>
-import { computed, onBeforeUnmount, ref } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
-const props = defineProps({api:Function, periodId:Number, formatTime:Function})
+const props = defineProps({api:Function, periodId:Number, productId:Number, formatTime:Function})
 const emit = defineEmits(['picked'])
 const value = defineModel('value', {type:String})
 const manual = ref(false)
@@ -28,6 +28,7 @@ function search(text = '') {
   error.value = ''
   const params = new URLSearchParams()
   if (props.periodId) params.set('periodId',props.periodId)
+  else if (props.productId) params.set('productId',props.productId)
   if (searchText) params.set('q',searchText)
   timer = setTimeout(async () => {
     try {
@@ -45,10 +46,18 @@ function picked(key) {
   const roster = directory.value.find(row=>row.key===key)
   if (roster) emit('picked',roster)
 }
-onBeforeUnmount(() => {
+function cancelSearch() {
   clearTimeout(timer)
   sequence++
+}
+watch(()=>props.productId,()=>{
+  cancelSearch()
+  directory.value=[]
+  loading.value=false
+  error.value=''
+  searchText=''
 })
+onBeforeUnmount(cancelSearch)
 </script>
 
 <template>

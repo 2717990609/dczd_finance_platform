@@ -105,7 +105,7 @@ func (snapshot practiceRosterSourceSnapshot) rosters() ([]practiceRoster, error)
 	return []practiceRoster{first, latest}, nil
 }
 
-const practiceRosterPullScope = `SELECT p.source_period_key FROM periods p JOIN products pro ON pro.id=p.product_id
+const practiceRosterPullScope = `SELECT p.product_id,p.source_period_key FROM periods p JOIN products pro ON pro.id=p.product_id
  WHERE p.id=$1 AND pro.period_mode='class' AND p.calendar_month IS NULL AND p.source_period_key IS NOT NULL
  AND EXISTS(SELECT 1 FROM source_mappings m WHERE m.product_id=p.product_id AND m.source='DCZD' AND m.domain='PRACTICE')`
 
@@ -114,9 +114,10 @@ func (s workspace) pullPracticeRoster(ctx context.Context, input calculateDraftI
 		return nil, invalid
 	}
 	var key string
+	var productID int64
 	var closed bool
-	err := s.db.QueryRow(ctx, `SELECT scope.source_period_key,EXISTS(SELECT 1 FROM settlements WHERE period_id=$1)
-	 FROM (`+practiceRosterPullScope+`) scope`, input.PeriodID).Scan(&key, &closed)
+	err := s.db.QueryRow(ctx, `SELECT scope.product_id,scope.source_period_key,EXISTS(SELECT 1 FROM settlements WHERE period_id=$1)
+	 FROM (`+practiceRosterPullScope+`) scope`, input.PeriodID).Scan(&productID, &key, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errPracticeNotReady
 	}
@@ -125,6 +126,9 @@ func (s workspace) pullPracticeRoster(ctx context.Context, input calculateDraftI
 	}
 	if closed {
 		return nil, errSettlementClosed
+	}
+	if err := checkPracticeRosterProduct(ctx, s.db, productID, key); err != nil {
+		return nil, err
 	}
 	snapshot, err := s.fetchPracticeRoster(ctx, key, true)
 	if err != nil {
@@ -137,7 +141,7 @@ func (s workspace) pullPracticeRoster(ctx context.Context, input calculateDraftI
 	var inserted bool
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var currentKey string
-		if err := tx.QueryRow(ctx, practiceRosterPullScope+" FOR NO KEY UPDATE OF p", input.PeriodID).Scan(&currentKey); err != nil {
+		if err := tx.QueryRow(ctx, practiceRosterPullScope+" FOR NO KEY UPDATE OF p", input.PeriodID).Scan(&productID, &currentKey); err != nil {
 			return err
 		}
 		if key != currentKey {
@@ -146,6 +150,9 @@ func (s workspace) pullPracticeRoster(ctx context.Context, input calculateDraftI
 		if _, err := readSettlement(ctx, tx, input.PeriodID); err == nil {
 			return errSettlementClosed
 		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return err
+		}
+		if err := checkPracticeRosterProduct(ctx, tx, productID, currentKey); err != nil {
 			return err
 		}
 		var currentVersion int64

@@ -46,7 +46,7 @@ type draftSummary struct {
 
 const maxDraftPayments = 100000
 
-const draftScopeSQL = `SELECT pro.period_mode, p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
+const draftScopeSQL = `SELECT pro.id,pro.period_mode, p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
  (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',coalesce(p.source_period_key,''),p.ordinal,
  EXISTS(SELECT 1 FROM product_catalog_settings l WHERE l.product_id=pro.id),` + catalogDraftAvailableSQL + `,
  (pro.period_mode='class' AND p.calendar_month IS NOT NULL),p.aggregate_package_id::text
@@ -172,8 +172,9 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (periodWindow, []paymentRule, error) {
 	var window periodWindow
 	var mode, sourceKey string
+	var productID int64
 	var scenarioRules bool
-	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &scenarioRules, &summary.Catalog, &summary.PracticeRefundMonth, &summary.AggregatePackage)
+	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&productID, &mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &scenarioRules, &summary.Catalog, &summary.PracticeRefundMonth, &summary.AggregatePackage)
 	if err != nil {
 		return window, nil, err
 	}
@@ -193,6 +194,11 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 	}
 	var classStart time.Time
 	if mode == "class" {
+		if sourceKey != "" {
+			if err := checkPracticeRosterProduct(ctx, tx, productID, sourceKey); err != nil {
+				return window, nil, err
+			}
+		}
 		classStart, err = readPracticeHeader(ctx, tx, sourceKey, summary)
 		if err != nil {
 			return window, nil, err

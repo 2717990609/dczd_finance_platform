@@ -262,7 +262,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod),
 		errors.Is(err, errPracticeRosterSource), errors.Is(err, errPracticeRosterRoute), errors.Is(err, errPracticeRosterAccess),
-		errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap),
+		errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap), errors.Is(err, errPracticeRosterProduct),
 		errors.Is(err, errPracticeMonthSettlementDependency),
 		errors.Is(err, errCatalogRateStale), errors.Is(err, errCatalogRateUnavailable), errors.Is(err, errCatalogRateDates), errors.Is(err, errCatalogTeamRate),
 		errors.Is(err, errCatalogRateConditions), errors.Is(err, errCatalogRequiredEntry), errors.Is(err, errCatalogPeriodRecipient), errors.Is(err, errCatalogPeriodComponents), errors.Is(err, errCatalogPeriodScenarios),
@@ -479,6 +479,11 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 		}
 		if p.SourcePeriodKey != "" && (mode != "class" || p.SettlementMonth != "" || !validPracticeKey(p.SourcePeriodKey)) {
 			return invalid
+		}
+		if p.SourcePeriodKey != "" {
+			if err := checkPracticeRosterProduct(ctx, tx, p.ProductID, p.SourcePeriodKey); err != nil {
+				return err
+			}
 		}
 		var reportMonth *time.Time
 		if p.ReportMonth != "" {

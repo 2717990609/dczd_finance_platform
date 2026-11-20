@@ -797,6 +797,12 @@ async function signOut() {
 onMounted(() => { addEventListener('hashchange',changeRoute); loadSession() })
 onBeforeUnmount(() => removeEventListener('hashchange',changeRoute))
 watch(() => draft.value.productId, (next, previous) => {
+  if (drawer.value==='period' && next!==previous) {
+    if (draft.value.startsOn===draft.value.rosterStartsOn) draft.value.startsOn=undefined
+    draft.value.sourcePeriodKey=undefined
+    draft.value.pickedRosterKey=undefined
+    draft.value.rosterStartsOn=undefined
+  }
   if (drawer.value === 'rule' && next !== previous && !draft.value.copiedFrom && !draft.value.lockedPeriod) {
     draft.value.periodId = undefined
     draft.value.effectiveFrom = undefined
@@ -1525,7 +1531,7 @@ async function save() {
           <a-form-item label="期次名称" required><a-input v-model:value="draft.name" aria-label="期次名称"/></a-form-item>
           <a-form-item label="期数" required><a-input-number v-model:value="draft.ordinal" aria-label="期数" :min="1" :precision="0"/></a-form-item>
           <a-form-item v-if="classRule">
-            <PracticeRosterSelect v-model:value="draft.sourcePeriodKey" :api="api" :format-time="formatTime" @picked="pickPeriodRoster"/>
+            <PracticeRosterSelect v-model:value="draft.sourcePeriodKey" :api="api" :format-time="formatTime" :product-id="draft.productId" @picked="pickPeriodRoster"/>
           </a-form-item>
           <div class="field-grid"><a-form-item label="开始日期" required><a-input v-model:value="draft.startsOn" aria-label="开始日期" type="date"/></a-form-item><a-form-item label="结束日期" required><a-input v-model:value="draft.endsOn" aria-label="结束日期" type="date"/></a-form-item></div>
           <a-form-item v-if="classRule" label="报表月份" extra="留空按班次结束日期归月。">

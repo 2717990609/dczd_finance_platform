@@ -12,15 +12,45 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+var errPracticeRosterProduct = errors.New("签到名单属于其他产品，请核对所选班次和来源映射")
+
+// Strategy is the source product code on DCZD practice payments. Existing
+// imports with descriptive product keys still work where no numeric route exists.
+const practiceRosterProductAllowed = `(scope.product_id IS NULL
+ OR EXISTS(SELECT 1 FROM source_mappings m WHERE m.source='DCZD' AND m.domain='PRACTICE'
+   AND m.product_id=scope.product_id AND m.source_key=strategy.source_key)
+ OR NOT EXISTS(SELECT 1 FROM source_mappings m WHERE m.source='DCZD' AND m.domain='PRACTICE'
+   AND (m.source_key=strategy.source_key OR m.product_id=scope.product_id AND m.source_key~'^[1-9][0-9]*$')))`
+
+func checkPracticeRosterProduct(ctx context.Context, db catalogPeriodReader, productID int64, key string) error {
+	var allowed bool
+	err := db.QueryRow(ctx, `SELECT `+practiceRosterProductAllowed+`
+	 FROM (SELECT $1::bigint AS product_id) scope CROSS JOIN (SELECT split_part($2,':',3) AS source_key) strategy`,
+		productID, key).Scan(&allowed)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return errPracticeRosterProduct
+	}
+	return nil
+}
+
 const practiceRosterOptionsSQL = `WITH current_period AS (
- SELECT source_period_key FROM periods WHERE id=$1
+ SELECT product_id,source_period_key FROM periods WHERE id=$1 AND calendar_month IS NULL
+), scope AS (
+ SELECT product_id,source_period_key FROM current_period
+ UNION ALL SELECT nullif($3::bigint,0),NULL::text
+  WHERE $1=0 AND ($3=0 OR EXISTS(SELECT 1 FROM products p WHERE p.id=$3 AND p.period_mode='class'))
 ), options AS (
  SELECT r.period_key,r.source_version,r.starts_at,r.attendance_count,
   (r.starts_at AT TIME ZONE 'Asia/Shanghai')::date AS starts_on,
-  r.period_key=(SELECT source_period_key FROM current_period) AS current
- FROM practice_rosters r
+  r.period_key=scope.source_period_key AS current
+ FROM practice_rosters r CROSS JOIN scope
+ CROSS JOIN LATERAL (SELECT split_part(r.period_key,':',3) AS source_key) strategy
  WHERE NOT EXISTS(SELECT 1 FROM practice_rosters newer WHERE newer.period_key=r.period_key AND newer.source_version>r.source_version)
   AND NOT EXISTS(SELECT 1 FROM periods p WHERE p.source_period_key=r.period_key AND p.id<>$1)
+  AND ` + practiceRosterProductAllowed + `
   AND ($2='' OR strpos(lower(r.period_key),lower($2))>0
     OR strpos(to_char(r.starts_at AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD'),$2)>0)
  ORDER BY current DESC NULLS LAST,r.starts_at DESC,r.period_key LIMIT 50
@@ -31,11 +61,18 @@ FROM options`
 
 func (s workspace) listPracticeRosterOptions(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	var periodID int64
-	if raw := query.Get("periodId"); raw != "" {
+	var periodID, productID int64
+	for _, filter := range []struct {
+		name string
+		id   *int64
+	}{{"periodId", &periodID}, {"productId", &productID}} {
+		raw := query.Get(filter.name)
+		if raw == "" {
+			continue
+		}
 		var err error
-		periodID, err = strconv.ParseInt(raw, 10, 64)
-		if err != nil || periodID < 1 {
+		*filter.id, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || *filter.id < 1 {
 			respond(w, nil, invalid)
 			return
 		}
@@ -46,7 +83,7 @@ func (s workspace) listPracticeRosterOptions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var rows json.RawMessage
-	err := s.db.QueryRow(r.Context(), practiceRosterOptionsSQL, periodID, term).Scan(&rows)
+	err := s.db.QueryRow(r.Context(), practiceRosterOptionsSQL, periodID, term, productID).Scan(&rows)
 	respond(w, rows, err)
 }
 
@@ -70,10 +107,11 @@ func (s workspace) setPeriodPracticeRoster(ctx context.Context, input periodPrac
 	changed := false
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var oldKey, oldStart, oldEnd string
-		if err := tx.QueryRow(ctx, `SELECT coalesce(p.source_period_key,''),to_char(p.starts_on,'YYYY-MM-DD'),to_char(p.ends_on,'YYYY-MM-DD')
+		var productID int64
+		if err := tx.QueryRow(ctx, `SELECT p.product_id,coalesce(p.source_period_key,''),to_char(p.starts_on,'YYYY-MM-DD'),to_char(p.ends_on,'YYYY-MM-DD')
 		 FROM periods p JOIN products product ON product.id=p.product_id
 		 WHERE p.id=$1 AND product.period_mode='class' AND p.calendar_month IS NULL FOR NO KEY UPDATE OF p`,
-			input.PeriodID).Scan(&oldKey, &oldStart, &oldEnd); err != nil {
+			input.PeriodID).Scan(&productID, &oldKey, &oldStart, &oldEnd); err != nil {
 			return err
 		}
 		if _, err := readSettlement(ctx, tx, input.PeriodID); err == nil {
@@ -88,6 +126,9 @@ func (s workspace) setPeriodPracticeRoster(ctx context.Context, input periodPrac
 			return conflict
 		}
 		if key != "" {
+			if err := checkPracticeRosterProduct(ctx, tx, productID, key); err != nil {
+				return err
+			}
 			var inRange *bool
 			if err := tx.QueryRow(ctx, `SELECT (SELECT (starts_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN $2::text::date AND $3::text::date
 			 FROM practice_rosters WHERE period_key=$1 ORDER BY source_version DESC LIMIT 1)`, key, input.StartsOn, input.EndsOn).Scan(&inRange); err != nil {
