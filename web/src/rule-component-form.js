@@ -60,6 +60,7 @@ export function copiedRuleComponents(savedComponents) {
     if (companySales) {
       form.companySales = {...companySales, internalCompanies:companySales.internalCompanies || [],
         categories:companySales.categories.map(category => ({...companyValue(category),
+          scope:category.salesCategoryId ? 'category' : 'companies', companies:category.companies || [],
           overrides:(category.overrides || []).map(companyValue),
         })),
       }

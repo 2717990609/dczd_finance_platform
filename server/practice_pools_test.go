@@ -34,7 +34,7 @@ func TestPracticeRetrainSplitsSaleServiceAndPoolAcrossPayments(t *testing.T) {
 	if err := validateComponents([]component{pooledSales, directSales}); err != nil {
 		t.Fatalf("independent internal and external company scopes should be publishable: %v", err)
 	}
-	if !practiceCompanyStandards(paymentRule{Components: []component{pooledSales, directSales}})["retrain"]["direct"].internal {
+	if !practiceCompanyStandards(paymentRule{Components: []component{pooledSales, directSales}}).companies["retrain"]["direct"].internal {
 		t.Fatal("a company with a split must be automatically included in the internal scope")
 	}
 	paid1, paid2, refundAmount := int64(12345), int64(37655), int64(45000)

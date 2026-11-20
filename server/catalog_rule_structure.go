@@ -53,11 +53,20 @@ type catalogNewBenefitItem struct {
 	Rows         []catalogConditionInput `json:"rows,omitempty"`
 }
 
-const catalogStructureOptionsSQL = `WITH companies AS (
- SELECT company_uuid::text AS value,min(u.name) AS label
+const catalogSalesCompanyKeysSQL = `SELECT a.company_uuid AS key,a.company_unit_id AS unit
  FROM catalog_sales_company_aliases a JOIN catalog_sales_context c ON c.source=a.source AND c.captured_at=a.observed_at
- JOIN organization_units u ON u.id=a.company_unit_id AND u.kind='COMPANY' AND u.status='ACTIVE'
- WHERE a.source='DCAI' GROUP BY company_uuid HAVING count(DISTINCT u.id)=1
+ WHERE a.source='DCAI'
+ UNION
+ SELECT DISTINCT s.company_id,s.company_id FROM organization_company_sources s WHERE s.source='DCAI'
+  AND NOT EXISTS(SELECT 1 FROM catalog_sales_company_aliases a
+   JOIN catalog_sales_context c ON c.source=a.source AND c.captured_at=a.observed_at
+   WHERE a.source=s.source AND a.company_unit_id=s.company_id)`
+
+const catalogStructureOptionsSQL = `WITH company_keys AS (` + catalogSalesCompanyKeysSQL + `), companies AS (
+ SELECT a.key::text AS value,min(u.name) AS label
+ FROM company_keys a
+ JOIN organization_units u ON u.id=a.unit AND u.kind='COMPANY' AND u.status='ACTIVE'
+ GROUP BY a.key HAVING count(DISTINCT u.id)=1
 ), organizations AS (
  SELECT b.party_uuid::text AS value,min(u.name) AS label,min(u.kind) AS kind,min(u.id::text) AS "unitId"
  FROM catalog_benefit_organizations b JOIN catalog_sales_context c ON c.source=b.source AND c.captured_at=b.observed_at

@@ -131,9 +131,17 @@ type categoryAssignmentResult struct {
 
 const draftRefreshCompanyCategory = `SELECT p.id FROM periods p JOIN product_catalog_settings cfg USING(product_id)
  WHERE cfg.source_system='DCAI' AND $2<((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
- AND EXISTS(SELECT 1 FROM catalog_sales_company_aliases a JOIN catalog_sales_context c
+ AND (EXISTS(SELECT 1 FROM catalog_sales_company_aliases a JOIN catalog_sales_context c
   ON c.source=a.source AND c.captured_at=a.observed_at WHERE a.source=cfg.source_system
-  AND a.company_unit_id=ANY($1::uuid[]) AND (a.valid_to IS NULL OR a.valid_to>$2))`
+  AND a.company_unit_id=ANY($1::uuid[]) AND (a.valid_to IS NULL OR a.valid_to>$2))
+ OR EXISTS(SELECT 1 FROM organization_company_sources s WHERE s.source=cfg.source_system
+  AND s.company_id=ANY($1::uuid[]) AND (s.valid_to IS NULL OR s.valid_to>$2)))
+ UNION SELECT p.id FROM periods p JOIN source_mappings m USING(product_id)
+ WHERE m.source='DCZD' AND m.domain='PRACTICE' AND p.calendar_month IS NULL
+ AND EXISTS(SELECT 1 FROM organization_company_sources s WHERE s.source='DCZD'
+  AND s.company_id=ANY($1::uuid[]) AND (s.valid_to IS NULL OR s.valid_to>$2))
+ AND EXISTS(SELECT 1 FROM rule_versions r WHERE r.product_id=p.product_id
+  AND jsonb_path_exists(r.components,'$[*].companySales.categories[*].salesCategoryId'))`
 
 func (s workspace) assignOrganizationCategory(ctx context.Context, input assignOrganizationCategoryInput) (categoryAssignmentResult, error) {
 	var result categoryAssignmentResult

@@ -177,7 +177,8 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	rows, err := tx.Query(ctx, `SELECT p.ordinal,p.ends_on,roster.starts_at,
 	 CASE WHEN roster.starts_at<$4
 	  AND split_part(p.source_period_key,':',3)=split_part(current.source_period_key,':',3)
-	  THEN roster.id ELSE 0 END, selected.components
+	  THEN roster.id ELSE 0 END, selected.components, settlement.period_id IS NOT NULL,
+	  closed.practice_replay_inputs->'companyClassifications'
 	 FROM periods current JOIN periods p ON p.product_id=current.product_id AND p.ordinal<current.ordinal AND p.calendar_month IS NULL
 	 LEFT JOIN settlements settlement ON settlement.period_id=p.id
 	 LEFT JOIN calculation_drafts closed ON closed.period_id=settlement.period_id
@@ -198,7 +199,7 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	history.periods, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (practiceHistoryPeriod, error) {
 		var period practiceHistoryPeriod
 		var components []component
-		err := row.Scan(&period.ordinal, &period.endsOn, &period.startsAt, &period.rosterID, &components)
+		err := row.Scan(&period.ordinal, &period.endsOn, &period.startsAt, &period.rosterID, &components, &period.settled, &period.categories)
 		period.ruleKnown = len(components) != 0
 		period.companyOffers = practiceCompanyStandards(paymentRule{Components: components})
 		for _, part := range components {
@@ -327,11 +328,21 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 		return paymentDraft{}, nil, err
 	}
 	companyOffers := practiceCompanyStandards(rule)
-	companyRecipients, err := loadPracticeCompanyRecipients(ctx, tx, companyOffers)
+	var companyClassifications map[string]string
+	if companyOffers.usesCategories() || slices.ContainsFunc(history.periods, func(period practiceHistoryPeriod) bool {
+		return !period.settled && period.companyOffers.usesCategories()
+	}) {
+		companyClassifications, err = loadPracticeCompanyClassifications(ctx, tx, facts)
+		if err != nil {
+			return paymentDraft{}, nil, err
+		}
+		history.liveCategories = companyClassifications
+	}
+	companyRecipients, err := loadPracticeCompanyRecipients(ctx, tx, companyOffers, orders, companyClassifications)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	recommendations, err := loadPracticeCompanyRecommendations(ctx, tx, companyOffers, companyRecipients, orders)
+	recommendations, err := loadPracticeCompanyRecommendations(ctx, tx, companyOffers, companyRecipients, orders, companyClassifications)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
@@ -340,7 +351,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 		return paymentDraft{}, nil, err
 	}
 	runtime := practiceDraftRuntime{appointments: appointments, salesOrganizations: salesOrganizations, companyOffers: companyOffers,
-		companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
+		companyClassifications: companyClassifications, companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
 	result, err := calculatePracticeDraft(members, rule, orders, identities, blocked, history, matchPracticeRefunds(refunds, orders), runtime)
 	if err != nil {
 		return paymentDraft{}, nil, err

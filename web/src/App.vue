@@ -278,7 +278,8 @@ function updateAmountMode(row, mode) {
   }
   if (mode==='company_sales' && !row.companySales) {
     row.sourceRole = row.sourceRole || firstOption('practicePeriodSourceRole')
-    row.companySales = {internalCompanies:[],categories:[{mode:baseModes.value[0]?.value,companies:[],overrides:[]}]}
+    row.companySales = {internalCompanies:[],categories:[{mode:baseModes.value[0]?.value,companies:[],overrides:[],
+      scope:options('practiceSalesCategory').length ? 'category' : 'companies'}]}
   }
   if (mode === 'tiered' && !row.tierConfig) {
     row.tierConfig = {
@@ -401,8 +402,9 @@ async function saveRuleRetirement() {
     retiringRule.value = false
   }
 }
-function ratePublished(result) {
+function ratePublished(result, targetSku) {
   notice.value = result.id === (rateRule.value || periodRule.value)?.id ? '规则无变化。' : '规则 v'+result.version+' 已发布。'
+  if (targetSku && rateRule.value) ruleBusinessScope.value = rateRule.value.productId+':sku:'+targetSku
   rateRule.value = undefined
   periodRule.value = undefined
   refresh()
@@ -947,21 +949,26 @@ function ruleComponentBody(row) {
     ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy && !['period_rate','company_sales'].includes(row.mode) ? {refundPolicy:row.refundPolicy} : {}),
     ...(row.classMember ? {classMember:row.classMember} : {})}
   if (row.mode==='company_sales') {
-    must(sourceRole,'请选择销售来源角色')
+    must(sourceRole,'请选择从订单读取的销售角色')
     const value = item => {
       const mode = must(item.mode,'请选择外部公司计算方式')
       return {mode,value:mode==='rate' ? periodRate(item.value) : minor(must(item.value,'请填写计提金额')),
         ...(row.classMember==='new' && item.recommendationRate != null ? {recommendationRate:periodRate(item.recommendationRate)} : {})}
     }
-    component.companySales = {internalCompanies:row.companySales.internalCompanies,categories:row.companySales.categories.map(category=>({
-      label:must(category.label?.trim(),'请填写类别名称'),
-      companies:category.companies,
-      ...value(category),
-      ...(category.overrides.length ? {overrides:category.overrides.map(override=>({
-        companyId:must(override.companyId,'请选择采用单独标准的公司'), ...value(override),
-      }))} : {}),
-    }))}
-    if (component.companySales.categories.some(category=>!category.companies.length)) throw new Error('请选择每个类别适用的公司')
+    component.companySales = {internalCompanies:row.companySales.internalCompanies,categories:row.companySales.categories.map(category=>{
+      const byCategory = category.scope==='category'
+      const overrides = category.overrides.filter(override=>byCategory || !override.companyId || category.companies.includes(override.companyId))
+      return {
+        ...(byCategory
+          ? {salesCategoryId:must(category.salesCategoryId,'请选择销售类别'),companies:[]}
+          : {label:must(category.label?.trim(),'请填写公司范围名称'),companies:category.companies}),
+        ...value(category),
+        ...(overrides.length ? {overrides:overrides.map(override=>({
+          companyId:must(override.companyId,'请选择采用单独标准的公司'), ...value(override),
+        }))} : {}),
+      }
+    })}
+    if (component.companySales.categories.some(category=>!category.salesCategoryId && !category.companies.length)) throw new Error('请选择适用公司')
     if (component.companySales.categories.some(category=>category.recommendationRate>0 ||
       category.overrides?.some(override=>override.recommendationRate>0))) {
       if (!row.companySales.recommendationRecipients?.length) throw new Error('请选择可直接收取推荐分润的公司')
@@ -1542,7 +1549,8 @@ async function save() {
             :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"
             :pools="practicePoolOptions" :create-pool="createPracticePool"/>
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
-            :recipients="companyRecipientOptions" :amounts="baseModes" :source-roles="options('practicePeriodSourceRole')"/>
+            :sales-categories="options('practiceSalesCategory')" :recipients="companyRecipientOptions" :amounts="baseModes"
+            :source-roles="options('practicePeriodSourceRole')"/>
           <a-form-item v-if="selectedProduct && (!classRule || !['rate','period_rate','company_sales'].includes(c.mode))" :label="'分项 '+(i+1)+' 的退款处理'"
             :extra="classRule ? (c.retrainSplits?.length ? '仅适用于未设置公司拆分的固定提成。' : '适用于确认名单前的固定金额分项或固定金额档位。') : '退款按计提时使用的规则版本处理。'">
             <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>
@@ -1614,6 +1622,7 @@ async function save() {
   <CatalogRuleRates v-if="(rateRule || appliedRule?.catalog) && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="rateRule" :applied="appliedRule?.catalog ? appliedRule : undefined" :api="api" :format-time="formatTime"
     :format-money="formatMoney" :periods="data.periods"
+    :skus="data.products.find(product=>product.id===rateRule?.productId)?.businessSkus"
     @close="rateRule=undefined; appliedRule=undefined" @published="ratePublished"/>
   <CatalogPeriodRule v-if="periodRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="periodRule" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"

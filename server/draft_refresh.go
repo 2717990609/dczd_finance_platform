@@ -41,8 +41,9 @@ const draftRefreshProduct = `SELECT id FROM periods WHERE product_id=$1`
 
 const draftRefreshSalesContext = `SELECT p.id FROM periods p JOIN product_catalog_settings c USING(product_id) WHERE c.source_system=$1`
 
-const draftRefreshIdentity = `SELECT p.id FROM periods p JOIN source_mappings m USING(product_id)
- JOIN products pro ON pro.id=p.product_id WHERE m.source=$1
+const draftRefreshIdentity = `SELECT p.id FROM periods p JOIN products pro ON pro.id=p.product_id
+ WHERE (EXISTS(SELECT 1 FROM source_mappings m WHERE m.product_id=p.product_id AND m.source=$1)
+    OR EXISTS(SELECT 1 FROM product_catalog_settings c WHERE c.product_id=p.product_id AND c.source_system=$1))
  AND (pro.period_mode='class' OR $2<((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'))`
 
 const draftRefreshRule = `SELECT id FROM periods WHERE product_id=$1

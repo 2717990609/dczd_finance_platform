@@ -31,12 +31,13 @@ type practicePurchase struct {
 }
 
 type practiceDraftRuntime struct {
-	appointments       map[practiceAppointmentKey][]practiceAppointment
-	salesOrganizations practiceSalesOrganizations
-	companyOffers      practiceCompanyOffers
-	companyRecipients  map[string][]companySourceAssignment
-	recommendations    practiceCompanyRecommendations
-	poolUnits          map[int64]pgtype.UUID
+	appointments           map[practiceAppointmentKey][]practiceAppointment
+	salesOrganizations     practiceSalesOrganizations
+	companyOffers          *practiceCompanyOffers
+	companyClassifications map[string]string
+	companyRecipients      map[string][]companySourceAssignment
+	recommendations        practiceCompanyRecommendations
+	poolUnits              map[int64]pgtype.UUID
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -82,7 +83,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		return draft, err
 	}
 	for i := range purchases {
-		purchases[i].classifyCompany(runtime.companyOffers)
+		purchases[i].classifyCompany(runtime.companyOffers, runtime.companyClassifications)
 	}
 	performancePayments := make(map[paymentKey]int)
 	for _, purchase := range purchases {

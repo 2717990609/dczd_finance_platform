@@ -12,14 +12,32 @@ type practiceCompanyRecommendations struct {
 	explicit  map[string][]companySourceAssignment
 }
 
-func loadPracticeCompanyRecommendations(ctx context.Context, tx pgx.Tx, offers practiceCompanyOffers,
-	recipients map[string][]companySourceAssignment, orders map[string][]paymentInput) (practiceCompanyRecommendations, error) {
+func loadPracticeCompanyRecommendations(ctx context.Context, tx pgx.Tx, offers *practiceCompanyOffers,
+	recipients map[string][]companySourceAssignment, orders map[string][]paymentInput, categories map[string]string) (practiceCompanyRecommendations, error) {
 	var out practiceCompanyRecommendations
+	if offers == nil {
+		return out, nil
+	}
 	companies := make(map[pgtype.UUID]bool)
-	for sourceID, award := range offers["new"] {
+	for sourceID, award := range offers.companies["new"] {
 		if award.recommendationRate > 0 {
 			for _, assignment := range recipients[sourceID] {
 				companies[assignment.Company] = true
+			}
+		}
+	}
+	var explicit []string
+	for _, matches := range orders {
+		for _, payment := range matches {
+			f := payment.Fact
+			if offers.newCompanyAward(f.SalesCompanyID, categories[f.PaymentID]).recommendationRate <= 0 {
+				continue
+			}
+			for _, assignment := range recipients[f.SalesCompanyID] {
+				companies[assignment.Company] = true
+			}
+			if f.ReferrerCompanyID != "" {
+				explicit = append(explicit, f.ReferrerCompanyID)
 			}
 		}
 	}
@@ -45,15 +63,6 @@ func loadPracticeCompanyRecommendations(ctx context.Context, tx pgx.Tx, offers p
 	})
 	if err != nil {
 		return out, err
-	}
-	var explicit []string
-	for _, matches := range orders {
-		for _, payment := range matches {
-			fact := payment.Fact
-			if fact.ReferrerCompanyID != "" && offers["new"][fact.SalesCompanyID].recommendationRate > 0 {
-				explicit = append(explicit, fact.ReferrerCompanyID)
-			}
-		}
 	}
 	out.explicit, err = loadPracticeCompanySources(ctx, tx, explicit, true)
 	return out, err

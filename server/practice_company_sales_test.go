@@ -149,7 +149,7 @@ func TestPracticePriorCompanyAndPersonalRolesFollowTheirOwnRuleVersion(t *testin
 	history := practiceTierHistory{
 		periods: []practiceHistoryPeriod{
 			{rosterID: 1, ruleKnown: true, personalRole: "LOCK_SALES_USER"},
-			{rosterID: 2, ruleKnown: true, companyOffers: practiceCompanyOffers{"new": {"partner": {}}}},
+			{rosterID: 2, ruleKnown: true, companyOffers: &practiceCompanyOffers{companies: map[string]map[string]practiceCompanyAward{"new": {"partner": {}}}}},
 			{rosterID: 3},
 		},
 		members: []practiceEnrollment{
@@ -376,5 +376,107 @@ func TestPracticeCorporateAndIndividualClaimsCannotPayTheSamePayment(t *testing.
 		draft.Issues[1].Code != "PRACTICE_DUPLICATE_PERFORMANCE_PAYMENT" ||
 		draft.Issues[2].Code != "PRACTICE_COMPANY_SCOPE_MISSING" {
 		t.Fatalf("ambiguous payments must not become company or personal commissions: %+v %v", draft, err)
+	}
+}
+
+func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_CATEGORY", Name: "类别计提", PeriodMode: "class"}))
+	class := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "八月班", Ordinal: 1,
+		StartsOn: "2026-08-08", EndsOn: "2026-08-09", SourcePeriodKey: "PRACTICE:1:1:1"}))
+	month := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "九月", SettlementMonth: "2026-09"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "category"}))
+	const first = "41000000-0000-4000-8000-000000000001"
+	const second = "41000000-0000-4000-8000-000000000002"
+	const company = "41000000-0000-4000-8000-000000000003"
+	const internal = "41000000-0000-4000-8000-000000000004"
+	mustExec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := s.db.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	mustExec(`INSERT INTO organization_sales_categories(id,name,active) VALUES ($1,'地区渠道',true),($2,'其他渠道',true)`, first, second)
+	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &class, Label: "按销售类别",
+		Components: []component{{Type: "sales", Mode: "rate", Value: 1000, ClassMember: "new", SourceRole: "DIRECT_REFERRER"},
+			{Type: "company_sales", Mode: "company_sales", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
+				CompanySales: &practiceCompanySales{Categories: []practiceCompanyCategory{
+					{SalesCategoryID: first, practiceCompanyValue: practiceCompanyValue{"rate", 400000}},
+					{SalesCategoryID: second, practiceCompanyValue: practiceCompanyValue{"rate", 100000}},
+				}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	// Both the company and the person arrive after the rule has been published.
+	seller := id(s.createPerson(ctx, createPersonInput{Name: "新销售"}))
+	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: seller, Source: "DCZD", ExternalID: "new-seller", ValidFrom: "2026-08-01T00:00:00Z"}))
+	mustExec(`INSERT INTO organization_units(id,name,kind,status,sales_company_type) VALUES($1,'新外部公司','COMPANY','ACTIVE','EXTERNAL')`, company)
+	mustExec(`INSERT INTO organization_units(id,name,kind,status,sales_company_type) VALUES($1,'新内部公司','COMPANY','ACTIVE','INTERNAL')`, internal)
+	mustExec(`INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
+	 VALUES('DCZD','new-company',$1,'2026-08-01'),('DCZD','new-internal',$2,'2026-08-01')`, company, internal)
+	mustExec(`INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from,valid_to)
+	 VALUES($1,$2,'2026-08-01','2026-08-07'),($1,$3,'2026-08-07',NULL)`, company, first, second)
+	pay := func(order, company string, day int) sourceFact {
+		at := time.Date(2026, 8, day, 12, 0, 0, 0, time.UTC)
+		amount := int64(10000)
+		return sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: "category", Kind: "ORDER_PAID", OrderID: order, PaymentID: order,
+			RecordKey: "payment:" + order, Version: "1", SalesCompanyID: company, AmountMinor: &amount, OccurredAt: at, UpdatedAt: at,
+			ReferrerID: "new-seller"}
+	}
+	start := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: "PRACTICE:1:1:1", Hash: "category", SourceVersion: 1, StartsAt: start, ConfirmedAt: start.Add(time.Hour),
+			Enrollments: []practiceEnrollment{
+				{SourceEnrollmentID: "1", ParticipantID: "11", MembershipType: 3, CommissionEligible: true, SignedAt: start, PaidOrderIDs: []string{"31"}, ContentHash: "ab"},
+				{SourceEnrollmentID: "2", ParticipantID: "12", MembershipType: 3, CommissionEligible: true, SignedAt: start, PaidOrderIDs: []string{"32"}, ContentHash: "cd"},
+				{SourceEnrollmentID: "3", ParticipantID: "13", MembershipType: 3, CommissionEligible: true, SignedAt: start, PaidOrderIDs: []string{"33"}, ContentHash: "ef"},
+			}})
+		if err != nil {
+			return err
+		}
+		_, err = storeSourceFacts(ctx, tx, []sourceFact{pay("31", "new-company", 6), pay("32", "new-company", 7), pay("33", "new-internal", 7)})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	checkDraft := func(period int64, total int64, lines int) draftSummary {
+		t.Helper()
+		result, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+		if err != nil {
+			t.Fatal(err)
+		}
+		summary := result.(draftSummary)
+		if summary.Total != total || summary.IssueCount != 0 || summary.LineCount != lines {
+			t.Fatalf("expected %d across %d lines, got %+v", total, lines, summary)
+		}
+		return summary
+	}
+	settled := checkDraft(class, 6000, 3)
+	var earnings int64
+	if err := s.db.QueryRow(ctx, `SELECT amount_minor FROM calculation_draft_lines WHERE period_id=$1 AND person_id=$2`,
+		class, seller).Scan(&earnings); err != nil || earnings != 1000 {
+		t.Fatalf("the new internal seller should receive the existing personal rate, got %d: %v", earnings, err)
+	}
+	mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES ($1,$2,'fixture')`, class, settled.Version)
+	mustExec(`UPDATE organization_sales_category_history SET category_id=$2 WHERE unit_id=$1`, company, second)
+	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
+	partial := int64(5000)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCZD", Domain: "PRACTICE", SourceKey: "category", Kind: "REFUND_SUCCEEDED",
+			OrderID: "31", RefundID: "refund-31", RecordKey: "refund:31", Version: "1", OccurredAt: at, UpdatedAt: at, AmountMinor: &partial,
+			RefundsPayment: []sourcePaymentReference{{OrderID: "31", RecordID: "31"}}}})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := checkDraft(month, -2000, 0); got.RefundCount != 1 {
+		t.Fatalf("expected one refund in September: %+v", got)
 	}
 }

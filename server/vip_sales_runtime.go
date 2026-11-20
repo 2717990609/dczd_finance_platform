@@ -61,16 +61,18 @@ type vipLink struct {
 }
 
 type vipRuntimeData struct {
-	Product, Project             string
-	ConfigurationRevision        int64
-	DirectoryFingerprint         string
-	Claims                       map[int64][]vipClaim
-	Definitions                  map[string]json.RawMessage
-	Users, Companies, Categories []vipLink
-	LocalCategories              []vipLink
-	BenefitReady                 bool
-	Organizations                []vipBenefitOrganization
-	PersonIDs                    map[string]int64
+	Product, Project                      string
+	ConfigurationRevision                 int64
+	DirectoryFingerprint                  string
+	Claims                                map[int64][]vipClaim
+	Definitions                           map[string]json.RawMessage
+	Users, Companies, Categories          []vipLink
+	DirectoryUsers, DirectoryCompanies    []vipLink
+	DirectoryCategories, DirectoryAliases []vipLink
+	LocalCategories                       []vipLink
+	BenefitReady                          bool
+	Organizations                         []vipBenefitOrganization
+	PersonIDs                             map[string]int64
 	vipSalesData
 }
 
@@ -91,10 +93,23 @@ const vipRuntimeSQL = `WITH scope AS (
  SELECT u.external_id AS key,` + vipPersonKey + ` AS value,p.id,u.valid_from AS "from",u.valid_to AS "to"
  FROM catalog_sales_people_sources u JOIN scope s ON u.source='DCAI' AND s.captured_at=u.observed_at
  JOIN people p ON p.id=u.person_id WHERE u.external_id IN (SELECT person FROM keys)
+), directory_users AS MATERIALIZED (
+ SELECT u.external_id AS key,` + vipPersonKey + ` AS value,p.id,u.valid_from AS "from",u.valid_to AS "to"
+ FROM identity_mappings u JOIN people p ON p.id=u.person_id
+ WHERE u.source='DCAI' AND u.external_id IN (SELECT person FROM keys)
 ), companies AS MATERIALIZED (
  SELECT a.external_id AS key,a.company_uuid AS value,a.company_unit_id AS unit,a.valid_from AS "from",a.valid_to AS "to"
  FROM catalog_sales_company_aliases a JOIN scope s ON a.source='DCAI' AND a.observed_at=s.captured_at
  WHERE a.external_id IN (SELECT company FROM keys)
+), directory_companies AS MATERIALIZED (
+ SELECT a.source_company_id AS key,a.company_id AS value,a.company_id AS unit,
+  a.valid_from AS "from",a.valid_to AS "to"
+ FROM organization_company_sources a JOIN organization_units u ON u.id=a.company_id AND u.kind='COMPANY'
+ WHERE a.source='DCAI' AND a.source_company_id IN (SELECT company FROM keys)
+), directory_aliases AS MATERIALIZED (
+ SELECT b.company_unit_id AS key,b.company_uuid AS value,b.valid_from AS "from",b.valid_to AS "to"
+ FROM catalog_sales_company_aliases b JOIN scope s ON b.source='DCAI' AND b.observed_at=s.captured_at
+ WHERE b.company_unit_id IN (SELECT unit FROM directory_companies)
 ), roles AS (
  SELECT ` + vipPersonKey + ` AS person,p.id,a.role,a.scope,a.scope_key AS key,a.valid_from AS "from",a.valid_to AS "to"
  FROM catalog_current_sales_appointments a JOIN people p ON p.id=a.person_id CROSS JOIN scope s
@@ -110,7 +125,7 @@ const vipRuntimeSQL = `WITH scope AS (
  CROSS JOIN LATERAL jsonb_path_query(definition,'$.internal_sales_direct_split.teams[*].service_party_id') key
 ), persons AS MATERIALIZED (
  SELECT p.id,p.name,` + vipPersonKey + ` AS key FROM people p
- WHERE p.legacy_party_id IS NOT NULL OR p.id IN (SELECT id FROM users UNION SELECT id FROM roles)
+ WHERE p.legacy_party_id IS NOT NULL OR p.id IN (SELECT id FROM users UNION SELECT id FROM directory_users UNION SELECT id FROM roles)
   OR ('person:'||p.id) IN (SELECT key FROM named_people)
 )
 SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitReady',coalesce(s.benefit_ready,false),
@@ -127,16 +142,23 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
   'internal_sales_direct_split',definition->'internal_sales_direct_split',
   'benefit_actions',definition->'benefit_actions')) FROM definitions),
  'users',(SELECT jsonb_agg(to_jsonb(users)-'id') FROM users),
+ 'directoryUsers',(SELECT jsonb_agg(to_jsonb(directory_users)-'id') FROM directory_users),
  'companies',(SELECT jsonb_agg(to_jsonb(companies)) FROM companies),
+ 'directoryCompanies',(SELECT jsonb_agg(to_jsonb(directory_companies)) FROM directory_companies),
+ 'directoryAliases',(SELECT jsonb_agg(to_jsonb(directory_aliases)) FROM directory_aliases),
  'categories',(SELECT jsonb_agg(jsonb_build_object('key',h.company_uuid,'value',h.category_uuid,'from',h.valid_from,'to',h.valid_to))
-  FROM catalog_sales_categories h WHERE h.source='DCAI' AND h.observed_at=s.captured_at AND h.company_uuid IN (SELECT value FROM companies)),
+  FROM catalog_sales_categories h WHERE h.source='DCAI' AND h.observed_at=s.captured_at
+   AND h.company_uuid IN (SELECT value FROM companies UNION SELECT value FROM directory_aliases)),
  'localCategories',(SELECT jsonb_agg(jsonb_build_object('key',h.unit_id,'value',h.category_id,'from',h.valid_from,'to',h.valid_to))
-  FROM organization_sales_category_history h WHERE h.recorded_at IS NOT NULL AND h.unit_id IN (SELECT unit FROM companies)),
+  FROM organization_sales_category_history h
+  WHERE h.recorded_at IS NOT NULL AND h.unit_id IN (SELECT unit FROM companies)),
+ 'directoryCategories',(SELECT jsonb_agg(jsonb_build_object('key',h.unit_id,'value',h.category_id,'from',h.valid_from,'to',h.valid_to))
+  FROM organization_sales_category_history h WHERE h.unit_id IN (SELECT unit FROM directory_companies)),
  'roles',(SELECT jsonb_agg(to_jsonb(roles)-'id' ORDER BY person,role,scope,key,"from","to") FROM roles),
  'memberships',(SELECT jsonb_agg(jsonb_build_object('person',` + vipPersonKey + `,'unit',a.unit_id,'kind',a.kind,'unitKind',u.kind,'from',a.valid_from,'to',a.valid_to)
    ORDER BY p.id,a.unit_id,a.kind,a.valid_from,a.valid_to)
   FROM organization_assignments a JOIN people p ON p.id=a.person_id JOIN organization_units u ON u.id=a.unit_id
-  WHERE p.id IN (SELECT id FROM users)),
+  WHERE p.id IN (SELECT id FROM users UNION SELECT id FROM directory_users)),
  'people',(SELECT jsonb_object_agg(key,name) FROM persons),
  'personIds',(SELECT jsonb_object_agg(key,id) FROM persons))
 FROM scope s`
@@ -208,15 +230,32 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 	req.Relationship = claim.Relationship
 	var conflict bool
 	req.Seller, conflict = resolveVIPLink(d.Users, claim.User, sale.PaidAt)
+	if req.Seller == "" && !conflict {
+		req.Seller, conflict = resolveVIPLink(d.DirectoryUsers, claim.User, sale.PaidAt)
+	}
 	if conflict {
 		return req, "SALES_PERSON_CONFLICT"
 	}
 	company, conflict := resolveVIPLinkRecord(d.Companies, claim.Company, sale.PaidAt)
+	companyFromDirectory := company.Key == "" && !conflict
+	if companyFromDirectory {
+		company, conflict = resolveVIPLinkRecord(d.DirectoryCompanies, claim.Company, sale.PaidAt)
+		if !conflict && company.Unit != "" {
+			var alias string
+			alias, conflict = resolveVIPLink(d.DirectoryAliases, company.Unit, sale.PaidAt)
+			if alias != "" {
+				company.Value = alias
+			}
+		}
+	}
 	if conflict {
 		return req, "SALES_COMPANY_CONFLICT"
 	}
 	req.Company, req.CompanyUnit = company.Value, company.Unit
 	category, conflict := resolveVIPLinkRecord(d.LocalCategories, req.CompanyUnit, sale.PaidAt)
+	if companyFromDirectory {
+		category, conflict = resolveVIPLinkRecord(d.DirectoryCategories, req.CompanyUnit, sale.PaidAt)
+	}
 	if category.Key == "" && !conflict {
 		category, conflict = resolveVIPLinkRecord(d.Categories, req.Company, sale.PaidAt)
 	}

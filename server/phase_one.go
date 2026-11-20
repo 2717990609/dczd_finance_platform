@@ -263,6 +263,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errPracticeMonthSettlementDependency),
 		errors.Is(err, errCatalogRateStale), errors.Is(err, errCatalogRateUnavailable), errors.Is(err, errCatalogRateDates), errors.Is(err, errCatalogTeamRate),
 		errors.Is(err, errCatalogRateConditions), errors.Is(err, errCatalogRequiredEntry), errors.Is(err, errCatalogPeriodRecipient), errors.Is(err, errCatalogPeriodComponents),
+		errors.Is(err, errCatalogScenarioTarget), errors.Is(err, errCatalogScenarioOccupied),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
 		errors.Is(err, errSettlementUnsupported),
 		errors.Is(err, errDraftChanged),
@@ -609,7 +610,7 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 		}
 		var personIDs []int64
 		var companyIDs []string
-		var unitIDs, appointmentKinds, recommendationRecipients, salesUnitIDs []string
+		var unitIDs, appointmentKinds, recommendationRecipients, salesUnitIDs, categoryIDs []string
 		poolIDs := make(map[int64]int64)
 		for _, target := range practicePoolTargets(p.Components) {
 			if owner := poolIDs[target.PoolID]; owner != 0 && owner != target.OwnerID {
@@ -641,6 +642,12 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				recommendationRecipients = append(recommendationRecipients, c.CompanySales.RecommendationRecipients...)
 				for _, category := range c.CompanySales.Categories {
 					companyIDs = append(companyIDs, category.Companies...)
+					if category.SalesCategoryID != "" {
+						categoryIDs = append(categoryIDs, category.SalesCategoryID)
+						for _, override := range category.Overrides {
+							companyIDs = append(companyIDs, override.CompanyID)
+						}
+					}
 				}
 			}
 			for _, split := range c.retrainSplits() {
@@ -697,11 +704,26 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				return invalid
 			}
 		}
+		if len(categoryIDs) != 0 {
+			var missing bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM unnest($1::text[]) AS requested(id)
+			 WHERE NOT EXISTS(SELECT 1 FROM organization_sales_categories c WHERE c.id=requested.id::uuid AND c.active))`,
+				categoryIDs).Scan(&missing); err != nil {
+				return err
+			}
+			if missing {
+				return errOrganizationCategoryTarget
+			}
+		}
 		if len(companyIDs) != 0 {
 			var missing bool
 			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM unnest($1::text[]) AS company(id)
-			 WHERE NOT EXISTS(SELECT 1 FROM configuration_options o
-			  WHERE o.group_key='practiceSalesCompany' AND o.option_key=company.id AND o.enabled))`, companyIDs).Scan(&missing); err != nil {
+			 WHERE NOT coalesce((SELECT o.enabled FROM configuration_options o
+			  WHERE o.group_key='practiceSalesCompany' AND o.option_key=company.id),
+			 (SELECT count(DISTINCT s.company_id)=1 FROM organization_company_sources s
+			  JOIN organization_units u ON u.id=s.company_id AND u.kind='COMPANY' AND u.status='ACTIVE'
+			  WHERE s.source='DCZD' AND s.source_company_id=company.id AND s.valid_from<=CURRENT_TIMESTAMP
+			   AND (s.valid_to IS NULL OR CURRENT_TIMESTAMP<s.valid_to))))`, companyIDs).Scan(&missing); err != nil {
 				return err
 			}
 			if missing {

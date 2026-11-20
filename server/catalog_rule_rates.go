@@ -33,6 +33,7 @@ type catalogRateRow struct {
 	Company      string `json:"company"`
 	Relationship string `json:"relationship"`
 	Category     string `json:"category,omitempty"`
+	Scope        string `json:"scope"`
 	Rate         int64  `json:"rateBps"`
 	TeamRate     bool   `json:"teamRate,omitempty"`
 	Fallback     bool   `json:"companyFallback,omitempty"`
@@ -59,9 +60,12 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 	}
 	sales, _ := readVIPSalesPolicy(raw)
 	items := make([]catalogRateComponent, 0, len(actions))
-	caption := func(names map[string]string, code string) string {
+	caption := func(names map[string]string, code, missing string) string {
 		if name := names[code]; name != "" {
 			return name
+		}
+		if _, isID := canonicalSourceUUID(code); isID {
+			return missing
 		}
 		return code
 	}
@@ -105,9 +109,19 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 				return nil, errCatalogRateUnavailable
 			}
 			for i, entry := range rows {
+				scope := "company"
+				switch {
+				case entry.Company == "ANY" && entry.Category != "":
+					scope = "category"
+				case entry.Company == "ANY":
+					scope = "general"
+				case entry.SnapshotDefault:
+					scope = "inherited"
+				}
 				item.Rows = append(item.Rows, catalogRateRow{
-					Row: i + 1, Company: caption(companies, entry.Company), Category: caption(categories, entry.Category),
-					Relationship: caption(relationships, entry.Relationship), Rate: entry.Rate,
+					Row: i + 1, Company: caption(companies, entry.Company, "公司名称待补"),
+					Category:     caption(categories, entry.Category, "销售类别名称待补"),
+					Relationship: caption(relationships, entry.Relationship, "销售关系待核"), Rate: entry.Rate, Scope: scope,
 					TeamRate: item.ItemKey == sales.Split.Item && slices.ContainsFunc(sales.Split.Teams, func(team vipInternalTeam) bool {
 						return team.Company == entry.Company
 					}),
@@ -193,17 +207,16 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	 JOIN product_catalog_settings scope ON scope.product_id=p.product_id AND scope.project_code=p.project_code
 	 JOIN products pro ON pro.id=p.product_id
 	 WHERE v.source_id=$1::uuid AND p.scope_type='BUSINESS_SCENARIO' AND scope.source_system='DCAI'
-	), companies AS (
-	 SELECT a.company_uuid,min(u.name) AS name FROM rule r JOIN catalog_sales_context c ON c.source=r.source_system
-	 JOIN catalog_sales_company_aliases a ON a.source=c.source AND a.observed_at=c.captured_at
-	 JOIN organization_units u ON u.id=a.company_unit_id GROUP BY a.company_uuid HAVING count(DISTINCT u.name)=1
+	), company_keys AS (`+catalogSalesCompanyKeysSQL+`), companies AS (
+	 SELECT a.key,min(u.name) AS name FROM company_keys a
+	 JOIN organization_units u ON u.id=a.unit GROUP BY a.key HAVING count(DISTINCT u.name)=1
 	), organizations AS (
 	 SELECT b.party_uuid,min(u.name) AS name FROM rule r JOIN catalog_sales_context c ON c.source=r.source_system
 	 JOIN catalog_benefit_organizations b ON b.source=c.source AND b.observed_at=c.captured_at
 	 JOIN organization_units u ON u.id=b.unit_id GROUP BY b.party_uuid HAVING count(DISTINCT u.id)=1
 	)
 	SELECT r.product_id,r.product_name,r.name,r.version_no,r.effective_from,r.effective_to,r.definition,r.available,r.supported,r.requires_completion,
-	 coalesce((SELECT jsonb_object_agg(company_uuid,name) FROM companies),'{}'),
+	 coalesce((SELECT jsonb_object_agg(key,name) FROM companies),'{}'),
 	 coalesce((SELECT jsonb_object_agg(key,label) FROM catalog_sales_category_options),'{}'),
 	 coalesce((SELECT jsonb_object_agg(option_key,label) FROM configuration_options WHERE group_key='catalogSalesRelationship' AND enabled),'{}'),
 	 coalesce((SELECT jsonb_object_agg(party_uuid,name) FROM organizations),'{}')

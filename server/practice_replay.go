@@ -12,17 +12,18 @@ import (
 // the class draft. Keep only calculation inputs that those versions cannot
 // supply when a later refund changes the outcome for the class.
 type practiceReplayInputs struct {
-	Version            int                                  `json:"version"`
-	IndependentRefunds bool                                 `json:"independentRefunds,omitempty"`
-	PriorCounts        map[int64]int64                      `json:"priorCounts,omitempty"`
-	Identities         map[string][]identityAssignment      `json:"identities,omitempty"`
-	Appointments       map[int][]practiceAppointment        `json:"appointments,omitempty"`
-	SalesOrganizations practiceSalesOrganizations           `json:"salesOrganizations,omitempty"`
-	Companies          map[string][]companySourceAssignment `json:"companies,omitempty"`
-	ReferrerCompanies  map[string][]companySourceAssignment `json:"referrerCompanies,omitempty"`
-	Recommendations    map[string]pgtype.UUID               `json:"recommendations,omitempty"`
-	PaymentCompanies   map[string]practiceReplayCompany     `json:"paymentCompanies,omitempty"`
-	PoolUnits          map[int64]pgtype.UUID                `json:"poolUnits,omitempty"`
+	Version                int                                  `json:"version"`
+	IndependentRefunds     bool                                 `json:"independentRefunds,omitempty"`
+	PriorCounts            map[int64]int64                      `json:"priorCounts,omitempty"`
+	Identities             map[string][]identityAssignment      `json:"identities,omitempty"`
+	Appointments           map[int][]practiceAppointment        `json:"appointments,omitempty"`
+	SalesOrganizations     practiceSalesOrganizations           `json:"salesOrganizations,omitempty"`
+	Companies              map[string][]companySourceAssignment `json:"companies,omitempty"`
+	CompanyClassifications map[string]string                    `json:"companyClassifications,omitempty"`
+	ReferrerCompanies      map[string][]companySourceAssignment `json:"referrerCompanies,omitempty"`
+	Recommendations        map[string]pgtype.UUID               `json:"recommendations,omitempty"`
+	PaymentCompanies       map[string]practiceReplayCompany     `json:"paymentCompanies,omitempty"`
+	PoolUnits              map[int64]pgtype.UUID                `json:"poolUnits,omitempty"`
 }
 
 const practiceRefundReplaySQL = `(d.practice_replay_inputs IS NOT NULL
@@ -68,6 +69,9 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 	if len(runtime.salesOrganizations) != 0 {
 		inputs.SalesOrganizations = make(practiceSalesOrganizations)
 	}
+	if runtime.companyOffers.usesCategories() {
+		inputs.CompanyClassifications = make(map[string]string)
+	}
 	current := make(map[int64]bool, len(draft.Performance))
 	for _, posting := range draft.Performance {
 		if posting.PaymentVersionID == 0 {
@@ -79,6 +83,9 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 			continue
 		}
 		f := payment.Fact
+		if category := runtime.companyClassifications[f.PaymentID]; category != "" && inputs.CompanyClassifications != nil {
+			inputs.CompanyClassifications[f.PaymentID] = category
+		}
 		if captured := runtime.salesOrganizations[payment.ID]; len(captured) != 0 {
 			inputs.SalesOrganizations[payment.ID] = captured
 		}
@@ -205,8 +212,8 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 	replay.history = practiceTierHistory{replaying: true, frozenPrior: values.PriorCounts}
 	replay.runtime = practiceDraftRuntime{
 		appointments: make(map[practiceAppointmentKey][]practiceAppointment), companyOffers: practiceCompanyStandards(replay.rule),
-		salesOrganizations: values.SalesOrganizations,
-		companyRecipients:  values.Companies, poolUnits: values.PoolUnits,
+		salesOrganizations:     values.SalesOrganizations,
+		companyClassifications: values.CompanyClassifications, companyRecipients: values.Companies, poolUnits: values.PoolUnits,
 		recommendations: practiceCompanyRecommendations{
 			directory: make(map[pgtype.UUID]pgtype.UUID), explicit: values.ReferrerCompanies,
 		},

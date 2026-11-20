@@ -253,10 +253,10 @@ func applyIndependentPracticeCorrectionRefunds(replay practiceReplay, original [
 	for _, member := range replay.members {
 		members[member.ID] = member.MembershipType
 	}
-	companies := make(map[int64]string)
+	paymentsByID := make(map[int64]paymentInput)
 	for _, payments := range replay.payments {
 		for _, payment := range payments {
-			companies[payment.ID] = payment.Fact.SalesCompanyID
+			paymentsByID[payment.ID] = payment
 		}
 	}
 	for i, line := range original {
@@ -265,8 +265,10 @@ func applyIndependentPracticeCorrectionRefunds(replay practiceReplay, original [
 		if principal == 0 || after.Amount == 0 {
 			continue
 		}
+		f := paymentsByID[line.payment].Fact
 		terms := practiceMonthlyRefundPolicy(replay.rule.Components,
-			refundObligation{Base: after.Base, Accrued: after.Amount, ComponentType: after.Component}, 1, members[line.enrollment], companies[line.payment])
+			refundObligation{Base: after.Base, Accrued: after.Amount, ComponentType: after.Component},
+			1, members[line.enrollment], f.SalesCompanyID, replay.runtime.companyClassifications[f.PaymentID])
 		debit, err := refundDelta(terms, after.Base, after.Amount, principal, 0)
 		if err != nil {
 			return err
@@ -359,6 +361,11 @@ func (r practiceReplay) applyRecipientRevisions(ctx context.Context, tx pgx.Tx, 
 				old.TransactionType != revised.TransactionType || !old.OccurredAt.Equal(revised.OccurredAt) ||
 				old.AmountMinor == nil || revised.AmountMinor == nil || *old.AmountMinor != *revised.AmountMinor {
 				return errPracticeRefundReplay
+			}
+			if old.SalesCompanyID != revised.SalesCompanyID {
+				// The captured category belongs to the original company. An explicitly
+				// configured replacement can still be priced without a category lookup.
+				delete(r.runtime.companyClassifications, old.PaymentID)
 			}
 			for _, user := range practiceCorrectionUsers(revised) {
 				key := identityKey{old.Source, user}

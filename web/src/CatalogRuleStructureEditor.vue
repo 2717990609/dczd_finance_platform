@@ -9,7 +9,7 @@ const editing = defineModel('editing', {type:Boolean,default:false})
 const form = ref()
 const error = ref('')
 const targets = [{value:'person',label:'个人'},{value:'company',label:'公司'},{value:'pool',label:'团队池'}]
-const formats = [{value:'fixed',label:'固定比例'},{value:'table',label:'按费率条件'}]
+const formats = [{value:'fixed',label:'统一比例'},{value:'table',label:'按类别或公司设置比例'}]
 const organizations = computed(() => props.options.organizations.filter(option=>form.value?.target!=='company' || option.kind==='COMPANY'))
 const roles = computed(() => props.options.roles.filter(option=>form.value?.target==='pool' || option.personal))
 const blankCondition = () => ({company:'ANY',
@@ -24,11 +24,12 @@ function itemLabel(item) {
   const recipient = item.target==='person' ? item.personName : labelFor(props.options.organizations,item.organization)
   return [item.label,recipient,item.rows?.length ? item.rows.length+' 条费率条件' : percent(item.rateBps)].join(' · ')
 }
-function begin(kind) {
+function begin(kind,scope) {
   error.value = ''
   form.value = kind==='item'
     ? {kind,target:'person',format:'fixed',rows:[blankCondition()]}
-    : {kind,itemKey:props.component.itemKey,itemLabel:props.component.label,row:blankCondition()}
+    : {kind,scope,itemKey:props.component.itemKey,itemLabel:props.component.label,
+      row:{...blankCondition(),company:scope==='company' ? undefined : 'ANY'}}
 }
 function changeTarget() {
   form.value.role = undefined
@@ -50,6 +51,7 @@ function stage() {
   const staged = form.value
   try {
     if (staged.kind==='row') {
+      if (staged.scope==='category' && !staged.row.category) throw new Error('请选择一个销售类别。')
       draft.value.rateRows.push({itemKey:staged.itemKey,itemLabel:staged.itemLabel,...readCondition(staged.row)})
     } else {
       const label = staged.label?.trim()
@@ -77,13 +79,17 @@ watch(form, value => { editing.value = !!value })
   <section class="catalog-rule-structure" aria-label="分润分项和费率条件">
     <div v-if="!form" class="topbar-actions">
       <a-button @click="begin('item')">添加分润分项</a-button>
-      <a-button v-if="component?.rows?.length" @click="begin('row')">添加费率条件</a-button>
+      <template v-if="component?.rows?.length">
+        <a-button v-if="options.categories.length" @click="begin('row','category')">添加类别默认比例</a-button>
+        <a-button @click="begin('row','company')">添加公司单独比例</a-button>
+        <a-button @click="begin('row')">添加其他比例</a-button>
+      </template>
     </div>
     <div v-if="form" class="catalog-add-form">
       <a-alert v-if="error" :message="error" type="error" show-icon class="feedback"/>
       <template v-if="form.kind==='row'">
         <p class="workbench-scope-note">{{ form.itemLabel }}</p>
-        <CatalogRateCondition v-model="form.row" :options="options"/>
+        <CatalogRateCondition v-model="form.row" :options="options" :scope="form.scope"/>
       </template>
       <template v-else>
         <a-form-item label="分项名称" html-for="catalog-add-label" required>
@@ -93,7 +99,7 @@ watch(form, value => { editing.value = !!value })
         <a-form-item label="收款对象" html-for="catalog-add-target">
           <a-select id="catalog-add-target" v-model:value="form.target" :options="targets" @change="changeTarget"/>
         </a-form-item>
-        <a-form-item v-if="form.target!=='company'" :label="form.target==='pool'?'分配负责人任职':'计提任职'"
+        <a-form-item v-if="form.target!=='company'" :label="form.target==='pool'?'谁负责分配':'收款人须担任的岗位'"
           html-for="catalog-add-role" required>
           <a-select id="catalog-add-role" v-model:value="form.role" :options="roles" show-search option-filter-prop="label"/>
         </a-form-item>
@@ -103,7 +109,7 @@ watch(form, value => { editing.value = !!value })
         </a-form-item>
         <a-form-item v-else :label="form.target==='pool'?'归集组织':'收款公司'" html-for="catalog-add-organization" required>
           <a-select id="catalog-add-organization" v-model:value="form.organization" :options="organizations"
-            show-search option-filter-prop="label" placeholder="选择已完成映射的组织"/>
+            show-search option-filter-prop="label" placeholder="从组织目录选择"/>
         </a-form-item>
         <h3 class="form-subhead">提成怎么算</h3>
         <a-form-item label="计提方式" html-for="catalog-add-format" extra="按每笔付款实收乘以适用比例。">
@@ -123,7 +129,7 @@ watch(form, value => { editing.value = !!value })
       </template>
       <div class="form-actions">
         <a-button @click="cancel">取消添加</a-button>
-        <a-button type="primary" @click="stage">{{ form.kind==='item' ? '暂存分项' : '暂存条件' }}</a-button>
+        <a-button type="primary" @click="stage">{{ form.kind==='item' ? '暂存分项' : '暂存比例' }}</a-button>
       </div>
     </div>
     <ul v-if="draft.items.length || draft.rateRows.length" class="catalog-staged-entries" aria-label="待发布新增配置">

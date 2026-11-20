@@ -123,7 +123,8 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
 	rows, err := tx.Query(ctx, `SELECT q.id,l.id,p.id,l.base_minor,l.amount_minor,l.component_type,r.components,
   l.catalog_rule_id IS NOT NULL,coalesce(l.applied_rate_bps,-1),coalesce(cv.definition->>'refund_policy',''),
   coalesce(cv.definition->'internal_sales_direct_split'->>'sales_item_key',''),
-  coalesce(cardinality(enrollment.paid_order_ids),0),coalesce(enrollment.membership_type,0),coalesce(company.company_id,'')
+  coalesce(cardinality(enrollment.paid_order_ids),0),coalesce(enrollment.membership_type,0),coalesce(company.company_id,''),
+  coalesce(d.practice_replay_inputs->'companyClassifications'->>(p.fact->>'paymentId'),'')
  FROM jsonb_to_recordset($1::jsonb) AS q(id bigint,source text,order_id text,line_id text,record_id text)
  JOIN source_order_versions p ON p.source=q.source AND p.order_id=q.order_id AND p.kind='ORDER_PAID'
   AND (q.line_id='' OR p.line_id=q.line_id)
@@ -152,9 +153,9 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
 		var rate int64
 		var terms vipRefundTerms
 		var legs, membership int
-		var company string
+		var company, category string
 		if err = rows.Scan(&id, &line.ID, &line.PaymentVersion, &line.Base, &line.Accrued, &line.ComponentType,
-			&components, &catalog, &rate, &terms.Mode, &terms.SplitItem, &legs, &membership, &company); err != nil {
+			&components, &catalog, &rate, &terms.Mode, &terms.SplitItem, &legs, &membership, &company, &category); err != nil {
 			return nil, err
 		}
 		line.Policy = refundComponent(components, line.ComponentType)
@@ -162,7 +163,7 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
 			terms.apply(&line, rate)
 		}
 		if practiceMonth {
-			line.Policy = practiceMonthlyRefundPolicy(components, line, legs, membership, company)
+			line.Policy = practiceMonthlyRefundPolicy(components, line, legs, membership, company, category)
 		}
 		result[id] = append(result[id], line)
 	}

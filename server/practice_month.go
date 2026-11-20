@@ -76,7 +76,7 @@ func computePracticeRefundMonth(ctx context.Context, tx pgx.Tx, id int64, window
 	return draft, digest, err
 }
 
-func practiceMonthlyRefundPolicy(parts []component, original refundObligation, legs, membership int, company string) component {
+func practiceMonthlyRefundPolicy(parts []component, original refundObligation, legs, membership int, company, category string) component {
 	replay := component{Mode: "practice_replay"}
 	if legs != 1 {
 		return replay
@@ -120,7 +120,11 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 	if err != nil || index < 0 || index >= len(parts) || parts[index].CompanySales == nil {
 		return replay
 	}
-	c := practiceCompanyStandards(paymentRule{Components: parts})[member][company]
+	offers := practiceCompanyStandards(paymentRule{Components: parts})
+	c, named := offers.companies[member][company]
+	if !named {
+		c = offers.categories[member][category]
+	}
 	if c.internal || c.componentIndex != index || c.key == "" {
 		return replay
 	}

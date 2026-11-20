@@ -130,9 +130,9 @@ onMounted(async () => {
           <template v-if="part.companySales">
             <p v-if="part.companySales.internalCompanies?.length">内部销售公司 {{ part.companySales.internalCompanies.map(companyName).join('、') }}</p>
             <p v-if="part.companySales.recommendationRecipients?.length">公司推荐收款范围 {{ part.companySales.recommendationRecipients.map(unitName).join('、') }}</p>
-            <template v-for="group in part.companySales.categories" :key="group.label">
-              <h4>{{ group.label }} · {{ standard(group,10000) }}<template v-if="group.recommendationRate!=null"> · 推荐 {{ rate(group.recommendationRate,10000) }}</template></h4>
-              <p>{{ group.companies.map(companyName).join('、') }}</p>
+            <template v-for="group in part.companySales.categories" :key="group.salesCategoryId || group.label">
+              <h4>{{ group.salesCategoryId ? label('practiceSalesCategory',group.salesCategoryId) : group.label }} · {{ standard(group,10000) }}<template v-if="group.recommendationRate!=null"> · 推荐 {{ rate(group.recommendationRate,10000) }}</template></h4>
+              <p v-if="group.companies?.length">{{ group.companies.map(companyName).join('、') }}</p>
               <ul v-if="group.overrides?.length">
                 <li v-for="row in group.overrides" :key="row.companyId">{{ companyName(row.companyId) }} · {{ standard(row,10000) }}<template v-if="row.recommendationRate!=null"> · 推荐 {{ rate(row.recommendationRate,10000) }}</template></li>
               </ul>

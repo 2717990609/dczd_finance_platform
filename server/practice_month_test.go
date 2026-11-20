@@ -303,17 +303,17 @@ func TestPracticeRefundUsesFrozenSinglePaymentTerms(t *testing.T) {
 			{Label: "类别", Companies: []string{"company"}, practiceCompanyValue: practiceCompanyValue{Mode: "rate", Value: rate}},
 		}}}
 	line := refundObligation{Base: 10000, Accrued: 4000, ComponentType: "period:company_sales:0"}
-	policy := practiceMonthlyRefundPolicy([]component{company}, line, 1, 3, "company")
+	policy := practiceMonthlyRefundPolicy([]component{company}, line, 1, 3, "company", "")
 	got, err := refundDelta(policy, line.Base, line.Accrued, 2500, 0)
 	if err != nil || got != -1000 {
 		t.Fatalf("expected exact company deduction, got %d %v", got, err)
 	}
-	policy = practiceMonthlyRefundPolicy([]component{company}, line, 2, 3, "company")
+	policy = practiceMonthlyRefundPolicy([]component{company}, line, 2, 3, "company", "")
 	if _, err := refundDelta(policy, line.Base, line.Accrued, 2500, 0); !errors.Is(err, errPracticeRefundReplay) {
 		t.Fatalf("split enrollment must wait for the original class replay: %v", err)
 	}
 	aggregate := component{Type: "delivery", PeriodBenefit: &practicePeriodBenefit{TierOnWholeClass: true}}
-	policy = practiceMonthlyRefundPolicy([]component{company, aggregate}, line, 1, 3, "company")
+	policy = practiceMonthlyRefundPolicy([]component{company, aggregate}, line, 1, 3, "company", "")
 	if _, err := refundDelta(policy, line.Base, line.Accrued, 2500, 0); !errors.Is(err, errPracticeRefundReplay) {
 		t.Fatalf("dependent period terms must wait for the original class replay: %v", err)
 	}

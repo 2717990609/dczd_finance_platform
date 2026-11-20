@@ -4,7 +4,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 
-const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array })
+const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
 const sheet = ref()
 const selected = ref()
@@ -23,6 +23,10 @@ const structure = ref({items:[],rateRows:[]})
 const structureEditing = ref(false)
 const removedItems = ref(new Set())
 const removedRateRows = ref(new Map())
+const copy = ref()
+const more = ref([])
+const targetSkus = computed(()=>(props.skus || []).filter(sku=>sku.code!==props.rule?.scopeId)
+  .map(sku=>({value:sku.code,label:sku.label})))
 let sequence = 0
 
 const rateColumns = [
@@ -37,7 +41,7 @@ const componentOptions = computed(() => (sheet.value?.components || []).map(item
 })))
 const component = computed(() => sheet.value?.components.find(item => item.itemKey === selected.value))
 const targetKind = computed(() => component.value?.targetKind || (component.value?.recipient ? 'person' : ''))
-const targetKindLabels = {seller:'订单成交销售',person:'指定个人',company:'指定公司',pool:'团队池'}
+const targetKindLabels = {seller:'订单上的成交销售',person:'指定个人',company:'指定公司',pool:'团队池'}
 const teamSplit = computed(() => component.value?.teamSplit)
 const splitRows = computed(() => {
   const split = teamSplit.value
@@ -54,16 +58,32 @@ const itemRemoved = computed(() => removedItems.value.has(selected.value))
 const editable = computed(() => sheet.value?.mayPublish && !saving.value && !itemRemoved.value)
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => recipientEdits.value.size + teamEdits.value.size > 0)
-const hasEdits = computed(() => recipientsChanged.value || Object.keys(edits.value).length > 0 ||
+const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
   structure.value.items.length || structure.value.rateRows.length || removedItems.value.size || removedRateRows.value.size)
 const impactPeriods = computed(() => (props.periods || []).filter(period=>period.productId===sheet.value?.productId && !period.settled))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
 const percent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
-const rows = computed(() => {
-  const term = filter.value.trim().toLowerCase()
-  return (component.value?.rows || []).filter(row => !term ||
-    [row.company,row.relationship,row.category].some(value => value?.toLowerCase().includes(term)))
+const rateGroups = computed(() => {
+  const rows = component.value?.rows || []
+  const result = [
+    {key:'default',title:'默认比例',rows:rows.filter(row=>['category','general'].includes(row.scope))},
+    {key:'company',title:'公司单独比例',rows:rows.filter(row=>row.scope==='company')},
+    {key:'inherited',title:'公司补充比例',rows:rows.filter(row=>row.scope==='inherited')},
+  ]
+  return result.filter(group=>group.rows.length)
 })
+const rateGroup = ref()
+watch([selected,rateGroups], ([,groups]) => {
+  if (!groups.some(group=>group.key===rateGroup.value)) rateGroup.value = groups[0]?.key
+})
+watch(selected, () => { rateGroup.value = rateGroups.value[0]?.key })
+const displayedRates = computed(() => {
+  const term = filter.value.trim().toLowerCase()
+  const group = rateGroups.value.find(group=>group.key===rateGroup.value)
+  return (group?.rows || []).filter(row => !term ||
+    [rateGroup.value==='default' ? undefined : row.company,row.relationship,row.category].some(value => value?.toLowerCase().includes(term)))
+})
+const displayedColumns = computed(() => rateGroup.value==='default' ? columns.value.filter(col=>col.key!=='company') : columns.value)
 const cellKey = (item, row) => JSON.stringify([item,row || 0])
 function toggleItemRemoval() {
   const key = selected.value
@@ -109,6 +129,8 @@ function setTeamPerson(field, id, option) {
 watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   const request = ++sequence
   sheet.value = undefined
+  copy.value = undefined
+  more.value = []
   edits.value = {}
   removedItems.value.clear()
   removedRateRows.value.clear()
@@ -149,12 +171,14 @@ watch(selected, () => { filter.value = '' })
 function publicationInput() {
   if (structureEditing.value) throw new Error('请先暂存正在编辑的配置。')
   if (!effectiveFrom.value) throw new Error('请选择生效时间。')
+  if (copy.value && (!copy.value.sku || !copy.value.label?.trim())) throw new Error('请选择目标 SKU，并填写规则名称。')
   const changes = Object.values(edits.value)
     .filter(({itemKey,row})=>!removedItems.value.has(itemKey) && !removedRateRows.value.has(cellKey(itemKey,row)))
     .map(({itemKey,row,value}) => ({itemKey,row,rateBps:rateAsBasisPoints(value)}))
   if (changes.some(change => change.rateBps === undefined)) throw new Error('请填写 0 至 100 之间的比例，最多保留两位小数。')
   return {
     baseId:props.rule.id,
+    copy:copy.value,
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
     changes,
     recipientChanges:Array.from(recipientEdits.value,([itemKey, person])=>({itemKey,personId:person.id}))
@@ -188,7 +212,7 @@ async function publish() {
       method:'POST',
       body:JSON.stringify(publicationInput()),
     })
-    emit('published',result)
+    emit('published',result,copy.value?.sku)
   } catch (err) {
     error.value = err.message
   } finally {
@@ -204,22 +228,22 @@ async function publish() {
     <a-alert v-if="error" type="error" :message="error" show-icon class="feedback"/>
     <a-spin :spinning="loading">
       <template v-if="sheet">
-        <h2>{{ sheet.productName }}</h2>
-        <p class="draft-report-note">{{ sheet.label }} · v{{ sheet.version }}</p>
-        <p v-if="rule?.scopeId && rule.scopeType==='BUSINESS_SCENARIO'" class="draft-report-note">业务 SKU {{ rule.scopeLabel || rule.scopeId }}</p>
-        <p class="draft-report-note">
-          生效于 {{ formatTime(sheet.effectiveFrom) }}<span v-if="sheet.effectiveTo"> · 截止 {{ formatTime(sheet.effectiveTo) }}</span>
-        </p>
-        <p v-if="sheet.requiresCompletion" class="draft-report-note">规则按付款时间匹配。订单确认完成后计提。</p>
-        <a-form v-show="!impactInput" layout="vertical" @submit.prevent="publish">
+        <header class="catalog-rate-summary">
+          <div>
+            <h2>{{ sheet.productName }}</h2>
+            <p>{{ sheet.label }} · v{{ sheet.version }}</p>
+          </div>
+          <div class="catalog-rate-context">
+            <p v-if="rule?.scopeId && rule.scopeType==='BUSINESS_SCENARIO'">业务 SKU {{ rule.scopeLabel || rule.scopeId }}</p>
+            <p>{{ formatTime(sheet.effectiveFrom) }}生效<span v-if="sheet.effectiveTo"> · 截至 {{ formatTime(sheet.effectiveTo) }}</span></p>
+            <p v-if="sheet.requiresCompletion">订单确认完成后计提</p>
+          </div>
+        </header>
+        <a-form v-show="!impactInput" id="catalog-rate-form" layout="vertical" @submit.prevent="publish">
           <a-form-item label="分润分项" html-for="catalog-rate-component">
             <a-select id="catalog-rate-component" v-model:value="selected" :options="componentOptions"/>
           </a-form-item>
-          <template v-if="sheet.mayPublish && !applied && component && targetKind!=='seller'">
-            <a-button v-if="itemRemoved" @click="toggleItemRemoval">撤销删除分项</a-button>
-            <a-button v-else danger :disabled="structureEditing || saving" @click="toggleItemRemoval">删除分项</a-button>
-            <p v-if="itemRemoved" class="rule-formula">保存后此分项从新版停用。原规则仍可查询。</p>
-          </template>
+          <a-alert v-if="itemRemoved" type="warning" message="此分项将从新版移除" show-icon class="feedback"/>
           <h3 v-if="component" class="form-subhead">发给谁</h3>
           <p v-if="targetKind && !recipient && !component?.targetLabel" class="rule-formula">
             {{ targetKindLabels[targetKind] }}<template v-if="teamSplit"> · 内部团队按岗位拆分</template>
@@ -233,7 +257,7 @@ async function publish() {
           <a-form-item v-if="component?.targetLabel" :label="targetKindLabels[targetKind] || '收款对象'">{{ component.targetLabel }}</a-form-item>
           <h3 v-if="component" class="form-subhead">提成怎么算</h3>
           <p v-if="component?.rateBps != null || component?.rows?.length" class="rule-formula">
-            每笔付款实收 × {{ component.rows?.length ? '命中的费率' : '下方比例' }}
+            每笔付款实收 × {{ component.rows?.length ? '适用比例' : '下方比例' }}
           </p>
           <a-form-item v-if="component?.rateBps != null" label="比例（%）" html-for="catalog-fixed-rate">
             <a-input-number v-if="!applied" id="catalog-fixed-rate" :value="displayRate(component.rateBps)" :disabled="!editable"
@@ -241,14 +265,21 @@ async function publish() {
             <span v-else>{{ displayRate(component.rateBps) }}%</span>
           </a-form-item>
           <template v-if="component?.rows?.length">
-            <a-form-item label="筛选费率表" html-for="catalog-rate-filter">
-              <a-input id="catalog-rate-filter" v-model:value="filter" placeholder="输入销售公司、关系或类别" allow-clear/>
-            </a-form-item>
-            <a-table :key="selected + filter" :columns="columns" :data-source="rows" row-key="row" size="small"
-              :scroll="{x:sheet.mayPublish && !applied ? 660 : 575}" :pagination="{pageSize:8,showSizeChanger:false,hideOnSinglePage:true}">
+            <div class="catalog-rate-toolbar">
+              <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" aria-label="查看比例">
+                <a-radio-button v-for="group in rateGroups" :key="group.key" :value="group.key">{{ group.title }}</a-radio-button>
+              </a-radio-group>
+              <a-input v-if="component.rows.length>8" id="catalog-rate-filter" v-model:value="filter"
+                placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
+            </div>
+            <p v-if="rateGroup==='default' && rateGroups.find(group=>group.key==='default')?.rows.some(row=>row.scope==='category')" class="rule-formula">
+              同类别的新公司自动使用默认比例。有公司单独比例时，优先使用单独比例。
+            </p>
+            <a-table :key="selected + filter + rateGroup" :columns="displayedColumns" :data-source="displayedRates" row-key="row" size="small"
+              :scroll="{x:rateGroup==='default' ? 455 : 660}" :pagination="{pageSize:8,showSizeChanger:false,hideOnSinglePage:true}">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key==='company'">
-                  {{ record.company }}<small v-if="record.companyFallback" class="order-version">公司兜底</small>
+                  {{ record.company }}
                 </template>
                 <template v-if="column.key==='category'">{{ record.category || '不限' }}</template>
                 <template v-if="column.key==='rate'">
@@ -298,33 +329,70 @@ async function publish() {
             </a-collapse-panel>
           </a-collapse>
           <template v-if="sheet.mayPublish">
-            <CatalogRuleStructureEditor v-if="sheet.structureOptions" :key="rule.id"
-              v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
-              :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints"/>
+            <a-collapse v-model:active-key="more" ghost class="catalog-more">
+              <a-collapse-panel key="more" header="更多配置">
+                <CatalogRuleStructureEditor v-if="sheet.structureOptions" :key="rule.id"
+                  v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
+                  :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints"/>
+                <div class="topbar-actions">
+                  <a-button v-if="component && targetKind!=='seller'" :danger="!itemRemoved" :disabled="structureEditing || saving"
+                    @click="toggleItemRemoval">{{ itemRemoved ? '撤销删除分项' : '删除分项' }}</a-button>
+                  <a-button v-if="targetSkus.length && !copy" :disabled="saving" @click="copy={}">复制到其他 SKU</a-button>
+                </div>
+              </a-collapse-panel>
+            </a-collapse>
+            <div v-if="copy" class="catalog-copy">
+              <h3>复制到其他 SKU</h3>
+              <p class="rule-formula">当前填写的分润比例和收款对象会用于目标 SKU。</p>
+              <div class="field-grid">
+                <a-form-item label="目标 SKU" html-for="catalog-copy-sku" required>
+                  <a-select id="catalog-copy-sku" v-model:value="copy.sku" :options="targetSkus" show-search option-filter-prop="label"/>
+                </a-form-item>
+                <a-form-item label="新规则名称" html-for="catalog-copy-label" required>
+                  <a-input id="catalog-copy-label" v-model:value="copy.label" :maxlength="80"/>
+                </a-form-item>
+              </div>
+              <a-button type="link" :disabled="saving" @click="copy=undefined">取消复制</a-button>
+            </div>
             <a-form-item label="生效时间（北京时间）" html-for="catalog-rate-effective-date"
               :extra="recipientsChanged
-                ? '请选择规则生效时间，并在计提任职核对有关人员的有效区间。已结算结果保留确认时的规则。'
-                : '请选择此版本适用区间内的时间。订单按付款时点匹配，已结算结果保留其规则版本。'">
+                ? '指定收款人需在订单付款时符合任职条件。已结算结果保留原规则。'
+                : '订单按付款时间匹配规则。已结算结果保留原规则。'">
               <a-input id="catalog-rate-effective-date" v-model:value="effectiveFrom" type="datetime-local"
-                :min="dateInput(sheet.effectiveFrom)" :max="dateInput(sheet.effectiveTo)" required/>
+                :min="copy ? undefined : dateInput(sheet.effectiveFrom)" :max="copy ? undefined : dateInput(sheet.effectiveTo)" required/>
             </a-form-item>
-            <div class="form-actions">
-              <a-button :disabled="saving" @click="emit('close')">取消</a-button>
-              <a-button :disabled="saving || structureEditing || !hasEdits" @click="previewImpact">预览差额</a-button>
-              <a-button html-type="submit" type="primary" :loading="saving" :disabled="structureEditing || !hasEdits">保存并生效</a-button>
-            </div>
           </template>
         </a-form>
-        <template v-if="impactInput">
-          <RuleImpactPreview v-model:busy="impactBusy" :periods="impactPeriods" :simulate="compareCatalogRule" :format-money="formatMoney"/>
-          <div class="form-actions">
-            <a-button :disabled="saving" @click="impactInput=undefined; error=''">返回编辑</a-button>
-            <a-button type="primary" :loading="saving" :disabled="impactBusy" @click="publish">保存并生效</a-button>
-          </div>
-        </template>
+        <RuleImpactPreview v-if="impactInput" v-model:busy="impactBusy" :periods="impactPeriods"
+          :simulate="compareCatalogRule" :format-money="formatMoney"/>
       </template>
     </a-spin>
-    <div v-if="applied" class="form-actions"><a-button @click="emit('close')">关闭</a-button></div>
     </section>
+    <template v-if="sheet" #footer>
+      <div class="workspace-edit-footer" v-if="!sheet.mayPublish || applied">
+        <a-button @click="emit('close')">关闭</a-button>
+      </div>
+      <div class="workspace-edit-footer" v-else-if="impactInput">
+        <a-button :disabled="saving" @click="impactInput=undefined; error=''">返回编辑</a-button>
+        <a-button type="primary" :loading="saving" :disabled="impactBusy" @click="publish">保存并生效</a-button>
+      </div>
+      <div class="workspace-edit-footer" v-else>
+        <a-button :disabled="saving" @click="emit('close')">取消</a-button>
+        <a-button :disabled="saving || structureEditing || !hasEdits" @click="previewImpact">预览差额</a-button>
+        <a-button html-type="submit" form="catalog-rate-form" type="primary" :loading="saving"
+          :disabled="structureEditing || !hasEdits">保存并生效</a-button>
+      </div>
+    </template>
   </a-drawer>
 </template>
+
+<style scoped>
+.catalog-rate-toolbar {display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px}
+.catalog-rate-toolbar :deep(.ant-input-affix-wrapper) {width:min(100%,260px)}
+.catalog-rate-summary {display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;padding:0 0 16px;margin-bottom:18px;border-bottom:1px solid var(--line)}
+.catalog-rate-summary h2 {font-size:20px;margin:0 0 4px}
+.catalog-rate-summary p {margin:0;color:var(--muted);line-height:1.65}
+.catalog-rate-context {font-size:13px}
+.catalog-more {margin:16px 0}
+.catalog-copy {padding:16px;margin:12px 0;border:1px solid var(--line);border-radius:8px}
+</style>

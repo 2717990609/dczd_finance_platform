@@ -1007,4 +1007,81 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 			t.Fatalf("reopening in reverse order should succeed: %v", err)
 		}
 	})
+
+	t.Run("新增公司和销售套用默认比例", func(t *testing.T) {
+		var person int64
+		if err := s.db.QueryRow(ctx, "INSERT INTO people(name) VALUES('新销售') RETURNING id").Scan(&person); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.assignIdentity(ctx, assignIdentityInput{PersonID: person, Source: "DCAI",
+			ExternalID: "new-seller", ValidFrom: boundary.Format(time.RFC3339)}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := editor.addCatalogAppointment(ctx, addCatalogAppointmentInput{PersonID: person, StartsAt: boundary,
+			catalogAppointmentTarget: catalogAppointmentTarget{Role: "SALES", Scope: "PROJECT", ScopeKey: "AI"}}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, `INSERT INTO organization_units(id,kind,name,status)
+		 VALUES($1,'COMPANY','新渠道公司','ACTIVE')`, id(60)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, `INSERT INTO organization_sales_categories(id,name,active) VALUES($1,'渠道类别',true)`, id(29)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
+		 VALUES('DCAI','new-company',$1,$2)`, id(60), boundary); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, `INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from)
+		 VALUES($1,$2,$3)`, id(60), id(29), boundary); err != nil {
+			t.Fatal(err)
+		}
+		change := boundary.Add(time.Hour)
+		if _, err := s.db.Exec(ctx, `INSERT INTO catalog_sales_company_aliases(id,source,external_id,company_uuid,company_unit_id,valid_from,valid_to,observed_at)
+		 SELECT $1::uuid,source,'previous-alias',$3::uuid,$5::uuid,'2026-01-01'::timestamptz,$6::timestamptz,captured_at FROM catalog_sales_context WHERE source='DCAI'
+		 UNION ALL SELECT $2::uuid,source,'next-alias',$4::uuid,$5::uuid,$6::timestamptz,NULL,captured_at FROM catalog_sales_context WHERE source='DCAI'`,
+			id(61), id(62), id(63), id(64), id(60), change); err != nil {
+			t.Fatal(err)
+		}
+		saveWithSeller("member-from-directory", "1", "new-seller", 10000, boundary, boundary, "VIP_ORDER")
+		item := catalogPaymentMatch{OrderID: "member-from-directory", PaidAt: boundary, Status: "MATCHED", RuleID: id(4)}
+		amount := int64(10000)
+		item.PaidMinor = &amount
+		if err := s.db.QueryRow(ctx, `UPDATE source_order_classifications SET sales_claims=jsonb_set(sales_claims,'{0,company}','"new-company"')
+		 WHERE source_version_id=(SELECT id FROM source_order_versions WHERE order_id=$1) RETURNING source_version_id`, item.OrderID).
+			Scan(&item.SourceVersionID); err != nil {
+			t.Fatal(err)
+		}
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			orders := []catalogPaymentMatch{item}
+			data, err := loadVIPRuntimeData(ctx, tx, periodID, orders, true)
+			if err != nil {
+				return err
+			}
+			applyVIPQuotes(orders, data)
+			quote := orders[0]
+			if len(quote.SalesParts) != 1 || quote.SalesParts[0].Name != "新销售" || quote.SalesParts[0].Amount != 1500 {
+				return fmt.Errorf("expected 15%% paid to newly appointed seller: %s %+v", quote.SalesStatus, quote.SalesParts)
+			}
+			req, issue := vipPaymentInputs(item, data)
+			if issue != "" || req.Company != id(63) {
+				return fmt.Errorf("company alias at the original payment: %q %q", req.Company, issue)
+			}
+			later := item
+			later.PaidAt = change
+			req, issue = vipPaymentInputs(later, data)
+			if issue != "" || req.Company != id(64) {
+				return fmt.Errorf("company alias at the change boundary: %q %q", req.Company, issue)
+			}
+			before := item
+			before.PaidAt = boundary.Add(-time.Second)
+			req, _ = vipPaymentInputs(before, data)
+			if req.Seller != "" || req.Company != "" {
+				return fmt.Errorf("directory links matched before their effective time: %+v", req)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+	})
 }

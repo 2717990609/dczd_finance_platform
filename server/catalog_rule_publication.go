@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -36,6 +37,7 @@ type publishCatalogRatesInput struct {
 	NewRateRows      []catalogNewRateRow          `json:"newRateRows"`
 	RemovedItems     []string                     `json:"removedItems"`
 	RemovedRateRows  []catalogRateRowRemoval      `json:"removedRateRows"`
+	Copy             *catalogScenarioCopy         `json:"copy,omitempty"`
 }
 
 type catalogPublication struct {
@@ -151,7 +153,8 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
 	structureChanged := len(input.NewItems)+len(input.NewRateRows) != 0
 	removals := len(input.RemovedItems)+len(input.RemovedRateRows) != 0
-	if !valid || from.IsZero() || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 && !structureChanged && !removals || !textOK(actor, 128) {
+	if !valid || from.IsZero() || input.Copy == nil && len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 &&
+		!structureChanged && !removals || !textOK(actor, 128) {
 		return published, invalid
 	}
 	err := func() error {
@@ -165,30 +168,42 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 		var fromBase time.Time
 		var throughBase *time.Time
 		var definition json.RawMessage
-		var editable, compound bool
+		var editable, compound, copyable bool
 		err := tx.QueryRow(ctx, `SELECT pro.id,p.scope_id,v.package_id::text,v.version_no,
-		 v.effective_from,v.effective_to,v.definition,`+catalogRateConfigurationSQL+`,`+catalogHealthRateRule+`
+		 v.effective_from,v.effective_to,v.definition,`+catalogRateConfigurationSQL+`,`+catalogHealthRateRule+`,
+		 coalesce((`+catalogRateVersionEligibilitySQL+`) AND `+catalogVersionVisible+`,false)
 		 FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
 		 JOIN product_catalog_settings scope ON scope.product_id=p.product_id JOIN products pro ON pro.id=scope.product_id
 		 WHERE v.source_id=$1::uuid AND scope.source_system='DCAI' AND pro.period_mode='calendar'
 		  AND p.scope_type='BUSINESS_SCENARIO' AND p.project_code=scope.project_code FOR UPDATE OF pro`, id).
-			Scan(&product, &scope, &pack, &published.Version, &fromBase, &throughBase, &definition, &editable, &compound)
+			Scan(&product, &scope, &pack, &published.Version, &fromBase, &throughBase, &definition, &editable, &compound, &copyable)
 		if err != nil {
 			return err
 		}
 		if !editable {
 			return errCatalogRateUnavailable
 		}
-		var count int
-		var active *string
-		if err := tx.QueryRow(ctx, catalogActiveRateVersionSQL, product, scope, from).Scan(&count, &active); err != nil {
-			return err
-		}
-		if count != 1 || active == nil || *active != id {
-			return errCatalogRateStale
-		}
-		if !from.After(fromBase) {
-			return errCatalogRateDates
+		if input.Copy == nil {
+			var count int
+			var active *string
+			if err := tx.QueryRow(ctx, catalogActiveRateVersionSQL, product, scope, from).Scan(&count, &active); err != nil {
+				return err
+			}
+			if count != 1 || active == nil || *active != id {
+				return errCatalogRateStale
+			}
+			if !from.After(fromBase) {
+				return errCatalogRateDates
+			}
+		} else {
+			if !copyable {
+				return errCatalogRateUnavailable
+			}
+			target := *input.Copy
+			target.Label = strings.TrimSpace(target.Label)
+			if err := checkCatalogScenarioCopy(ctx, tx, product, scope, target, from); err != nil {
+				return err
+			}
 		}
 		body := definition
 		var ratesChanged, recipientsChanged bool
@@ -222,7 +237,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 				return err
 			}
 		}
-		if !ratesChanged && !recipientsChanged && !structureChanged && !removals {
+		if input.Copy == nil && !ratesChanged && !recipientsChanged && !structureChanged && !removals {
 			return nil
 		}
 		if _, _, err := catalogRateActions(body); err != nil {
@@ -233,13 +248,26 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 				return err
 			}
 		}
-		contentHash := sha256.Sum256(body)
-		if err := tx.QueryRow(ctx, `INSERT INTO product_rule_versions
+		if input.Copy != nil {
+			body, err = copyCatalogScenarioDefinition(body, scope, input.Copy.SKU)
+			if err != nil {
+				return err
+			}
+			scope, throughBase = input.Copy.SKU, nil
+			contentHash := sha256.Sum256(body)
+			published, err = insertCatalogScenarioCopy(ctx, tx, product, *input.Copy, from, actor, hex.EncodeToString(contentHash[:]), body)
+			if err != nil {
+				return err
+			}
+		} else {
+			contentHash := sha256.Sum256(body)
+			if err := tx.QueryRow(ctx, `INSERT INTO product_rule_versions
 		 (source_id,package_id,version_no,source_status,effective_from,effective_to,content_hash,definition,observed_at,published_at,published_by,predecessor_id)
 		 SELECT gen_random_uuid(),$1::uuid,(SELECT max(version_no)+1 FROM product_rule_versions WHERE package_id=$1::uuid),
 		 'PUBLISHED',$2,$3,$4,$5,now(),now(),$6,$7::uuid RETURNING source_id::text,version_no`,
-			pack, from, throughBase, hex.EncodeToString(contentHash[:]), body, actor, id).Scan(&published.ID, &published.Version); err != nil {
-			return err
+				pack, from, throughBase, hex.EncodeToString(contentHash[:]), body, actor, id).Scan(&published.ID, &published.Version); err != nil {
+				return err
+			}
 		}
 		if !refreshDrafts {
 			return nil

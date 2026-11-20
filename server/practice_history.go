@@ -7,18 +7,21 @@ type practiceHistoryPeriod struct {
 	ordinal       int
 	startsAt      *time.Time
 	endsOn        time.Time
-	companyOffers practiceCompanyOffers
+	companyOffers *practiceCompanyOffers
+	categories    map[string]string
+	settled       bool
 	personalRole  string
 	ruleKnown     bool
 }
 
 type practiceTierHistory struct {
-	current     practiceHistoryPeriod
-	periods     []practiceHistoryPeriod
-	members     []practiceEnrollment
-	opening     *practiceCountOpening
-	replaying   bool
-	frozenPrior map[int64]int64
+	current        practiceHistoryPeriod
+	periods        []practiceHistoryPeriod
+	members        []practiceEnrollment
+	opening        *practiceCountOpening
+	replaying      bool
+	frozenPrior    map[int64]int64
+	liveCategories map[string]string
 }
 
 func (h practiceTierHistory) defaultStart(config practiceSalesTiers) practiceCountStart {
@@ -77,7 +80,11 @@ func indexPracticePrior(history practiceTierHistory, role string, orders map[str
 		}
 		roster := member.RosterID
 		period := historical[roster]
-		purchase.classifyCompany(period.companyOffers)
+		categories := period.categories
+		if !period.settled {
+			categories = history.liveCategories
+		}
+		purchase.classifyCompany(period.companyOffers, categories)
 		if purchase.companyAward != nil {
 			continue
 		}

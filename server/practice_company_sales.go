@@ -22,7 +22,8 @@ type practiceCompanyValue struct {
 }
 
 type practiceCompanyCategory struct {
-	Label              string                    `json:"label"`
+	Label              string                    `json:"label,omitempty"`
+	SalesCategoryID    string                    `json:"salesCategoryId,omitempty"`
 	Companies          []string                  `json:"companies"`
 	Overrides          []practiceCompanyOverride `json:"overrides,omitempty"`
 	RecommendationRate *int64                    `json:"recommendationRate,omitempty"`
@@ -67,14 +68,22 @@ func validPracticeCompanySales(c component) bool {
 		seen[id] = true
 	}
 	clear(seen)
+	seenCategories := make(map[string]bool)
 	validRate := func(rate *int64) bool {
 		return validCompanyRecommendation(c.ClassMember, rate) &&
 			(rate == nil || *rate == 0 || len(c.CompanySales.RecommendationRecipients) != 0)
 	}
 	for _, category := range c.CompanySales.Categories {
-		if !textOK(category.Label, 80) || len(category.Companies) == 0 ||
+		if category.SalesCategoryID == "" && (!textOK(category.Label, 80) || len(category.Companies) == 0) ||
 			!category.practiceCompanyValue.valid(c.ClassMember) || !validRate(category.RecommendationRate) {
 			return false
+		}
+		if id := category.SalesCategoryID; id != "" {
+			normalized, ok := canonicalSourceUUID(id)
+			if !ok || normalized != id || seenCategories[id] || len(category.Companies) != 0 {
+				return false
+			}
+			seenCategories[id] = true
 		}
 		member := make(map[string]bool)
 		for _, company := range category.Companies {
@@ -84,10 +93,11 @@ func validPracticeCompanySales(c component) bool {
 			seen[company], member[company] = true, true
 		}
 		for _, override := range category.Overrides {
-			if !member[override.CompanyID] || !override.practiceCompanyValue.valid(c.ClassMember) ||
+			if !(member[override.CompanyID] || category.SalesCategoryID != "" && textOK(override.CompanyID, 128) && !seen[override.CompanyID]) || !override.practiceCompanyValue.valid(c.ClassMember) ||
 				!validRate(override.RecommendationRate) {
 				return false
 			}
+			seen[override.CompanyID] = true
 			delete(member, override.CompanyID)
 		}
 	}
@@ -104,6 +114,9 @@ func validPracticeCompanyScopes(items []component) bool {
 			internal = append(internal, s.InternalCompanies...)
 			for _, category := range s.Categories {
 				external = append(external, category.Companies...)
+				for _, override := range category.Overrides {
+					external = append(external, override.CompanyID)
+				}
 			}
 		}
 	}
@@ -128,29 +141,40 @@ type practiceCompanyAward struct {
 	recommendationRecipients []string
 }
 
-type practiceCompanyOffers map[string]map[string]practiceCompanyAward
+type practiceCompanyOffers struct {
+	companies  map[string]map[string]practiceCompanyAward
+	categories map[string]map[string]practiceCompanyAward
+	personal   map[string]bool
+}
 
-func practiceCompanyStandards(rule paymentRule) practiceCompanyOffers {
-	var offers practiceCompanyOffers
+func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
+	var offers *practiceCompanyOffers
 	for i, part := range rule.Components {
 		if part.CompanySales == nil {
 			continue
 		}
 		if offers == nil {
-			offers = practiceCompanyOffers{"new": {}, "retrain": {}}
+			offers = &practiceCompanyOffers{
+				companies:  map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
+				categories: map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
+				personal:   make(map[string]bool),
+			}
 		}
 		for _, company := range part.CompanySales.InternalCompanies {
-			for _, standards := range offers {
+			for _, standards := range offers.companies {
 				standards[company] = practiceCompanyAward{internal: true}
 			}
 		}
-		standards := offers[part.ClassMember]
+		standards := offers.companies[part.ClassMember]
 		key := practicePeriodComponentKey(part, i)
 		for _, category := range part.CompanySales.Categories {
 			award := practiceCompanyAward{practiceCompanyValue: category.practiceCompanyValue, role: part.SourceRole, key: key,
 				componentIndex: i, recommendationRecipients: part.CompanySales.RecommendationRecipients}
 			if category.RecommendationRate != nil {
 				award.recommendationRate = *category.RecommendationRate
+			}
+			if category.SalesCategoryID != "" {
+				offers.categories[part.ClassMember][category.SalesCategoryID] = award
 			}
 			for _, company := range category.Companies {
 				standards[company] = award
@@ -167,8 +191,15 @@ func practiceCompanyStandards(rule paymentRule) practiceCompanyOffers {
 	}
 	if offers != nil {
 		for _, part := range rule.Components {
+			if part.Type == "sales" {
+				for _, member := range []string{"new", "retrain"} {
+					if part.ClassMember == "" || part.ClassMember == member {
+						offers.personal[member] = true
+					}
+				}
+			}
 			for _, split := range part.retrainSplits() {
-				for _, standards := range offers {
+				for _, standards := range offers.companies {
 					standards[split.CompanyID] = practiceCompanyAward{internal: true}
 				}
 			}
@@ -177,9 +208,13 @@ func practiceCompanyStandards(rule paymentRule) practiceCompanyOffers {
 	return offers
 }
 
-func (p *practicePurchase) classifyCompany(offers practiceCompanyOffers) {
-	standards := offers[classMember(p.member.MembershipType)]
-	if p.issue != "" || standards == nil {
+func (p *practicePurchase) classifyCompany(offers *practiceCompanyOffers, categories map[string]string) {
+	if p.issue != "" || offers == nil {
+		return
+	}
+	member := classMember(p.member.MembershipType)
+	standards := offers.companies[member]
+	if standards == nil {
 		return
 	}
 	var company string
@@ -188,6 +223,21 @@ func (p *practicePurchase) classifyCompany(offers practiceCompanyOffers) {
 		return
 	}
 	terms, exists := standards[company]
+	if !exists && (len(offers.categories[member]) != 0 || offers.usesCategories() && offers.personal[member]) {
+		var category string
+		for _, payment := range p.payments {
+			id := categories[payment.Fact.PaymentID]
+			if id == "" || category != "" && category != id {
+				p.companyRoutingIssue = "PRACTICE_COMPANY_SCOPE_MISSING"
+				return
+			}
+			category = id
+		}
+		if category == practiceInternalCompany && offers.personal[member] {
+			return
+		}
+		terms, exists = offers.categories[member][category]
+	}
 	if !exists {
 		p.companyRoutingIssue = "PRACTICE_COMPANY_SCOPE_MISSING"
 	} else if !terms.internal {
@@ -195,14 +245,96 @@ func (p *practicePurchase) classifyCompany(offers practiceCompanyOffers) {
 	}
 }
 
-func loadPracticeCompanyRecipients(ctx context.Context, tx pgx.Tx, offers practiceCompanyOffers) (map[string][]companySourceAssignment, error) {
-	var keys []string
-	for _, group := range offers {
-		for key, terms := range group {
-			if !terms.internal {
-				keys = append(keys, key)
+const practiceInternalCompany = "INTERNAL"
+
+const practiceCompanyClassificationsSQL = `WITH matched AS (
+ SELECT p.payment,c.company_id,
+  CASE WHEN coalesce(change.previous_type,u.sales_company_type)='INTERNAL' THEN '` + practiceInternalCompany + `'
+  ELSE coalesce(h.category_id::text,'') END AS scope
+ FROM unnest($1::text[],$2::text[],$3::timestamptz[]) p(payment,company,paid_at)
+ JOIN organization_company_sources c ON c.source='DCZD' AND c.source_company_id=p.company
+  AND c.valid_from<=p.paid_at AND (c.valid_to IS NULL OR c.valid_to>p.paid_at)
+ JOIN organization_units u ON u.id=c.company_id
+ LEFT JOIN LATERAL (
+  SELECT previous_type FROM organization_sales_company_type_changes t
+  WHERE t.unit_id=u.id AND t.changed_at>p.paid_at ORDER BY t.version LIMIT 1
+ ) change ON u.sales_company_type_version>1
+ LEFT JOIN organization_sales_category_history h ON h.unit_id=c.company_id
+  AND coalesce(change.previous_type,u.sales_company_type)='EXTERNAL'
+  AND h.valid_from<=p.paid_at AND (h.valid_to IS NULL OR h.valid_to>p.paid_at)
+)
+ SELECT payment,min(scope) FROM matched GROUP BY payment HAVING count(DISTINCT (company_id,scope))=1`
+
+func loadPracticeCompanyClassifications(ctx context.Context, tx pgx.Tx, facts []paymentInput) (map[string]string, error) {
+	var payments, companies []string
+	var paidAt []time.Time
+	for _, p := range facts {
+		f := p.Fact
+		if f.SalesCompanyID != "" {
+			payments = append(payments, f.PaymentID)
+			companies = append(companies, f.SalesCompanyID)
+			paidAt = append(paidAt, f.OccurredAt)
+		}
+	}
+	if len(payments) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, practiceCompanyClassificationsSQL, payments, companies, paidAt)
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[string]string)
+	var payment, category string
+	_, err = pgx.ForEachRow(rows, []any{&payment, &category}, func() error {
+		if category != "" {
+			result[payment] = category
+		}
+		return nil
+	})
+	return result, err
+}
+
+func (offers *practiceCompanyOffers) usesCategories() bool {
+	return offers != nil && len(offers.categories["new"])+len(offers.categories["retrain"]) != 0
+}
+
+func (offers *practiceCompanyOffers) newCompanyAward(company, category string) practiceCompanyAward {
+	if award, configured := offers.companies["new"][company]; configured {
+		return award
+	}
+	return offers.categories["new"][category]
+}
+
+func loadPracticeCompanyRecipients(ctx context.Context, tx pgx.Tx, offers *practiceCompanyOffers,
+	orders map[string][]paymentInput, categories map[string]string) (map[string][]companySourceAssignment, error) {
+	if offers == nil {
+		return nil, nil
+	}
+	selected := make(map[string]bool)
+	// Keep configured company recipients available to replay a later attribution correction.
+	for _, group := range offers.companies {
+		for company, award := range group {
+			if !award.internal {
+				selected[company] = true
 			}
 		}
+	}
+	if offers.usesCategories() {
+		for _, matches := range orders {
+			for _, payment := range matches {
+				f := payment.Fact
+				for _, member := range []string{"new", "retrain"} {
+					_, byCategory := offers.categories[member][categories[f.PaymentID]]
+					if _, named := offers.companies[member][f.SalesCompanyID]; byCategory && !named {
+						selected[f.SalesCompanyID] = true
+					}
+				}
+			}
+		}
+	}
+	var keys []string
+	for key := range selected {
+		keys = append(keys, key)
 	}
 	return loadPracticeCompanySources(ctx, tx, keys, false)
 }
