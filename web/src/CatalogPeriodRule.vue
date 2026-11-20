@@ -218,18 +218,20 @@ function removeComponent(row) {
   activeComponent.value = rows.value[Math.min(index,rows.value.length-1)].uid
   editingComponent.value = undefined
 }
-async function openArrangement(itemKey) {
-  const item = rows.value.find(row=>row.itemKey===itemKey)
-  if (!item) return
-  activeComponent.value = item.uid
-  editingComponent.value = canSave.value ? item.uid : undefined
+async function openArrangement(uid) {
+  if (!uid || !rows.value.some(row=>row.uid===uid)) return
+  activeComponent.value = uid
+  editingComponent.value = canSave.value ? uid : undefined
   await nextTick()
-  const heading = document.getElementById('period-rule-control-'+item.uid)
+  const heading = document.getElementById('period-rule-control-'+uid)
   heading?.scrollIntoView({block:'start'})
   heading?.focus({preventScroll:true})
 }
+const targetIssueRow = issue => issue.ruleId ? rows.value.find(row=>row.itemKey===issue.itemKey)
+  : rows.value[issue.proposedItemIndex]
+const issueInOtherVersion = issue => issue.ruleId && issue.ruleId!==props.rule.id
 function followTargetIssue(issue) {
-  if (!issue.ruleId || issue.ruleId===props.rule.id) return openArrangement(issue.itemKey)
+  if (!issueInOtherVersion(issue)) return openArrangement(targetIssueRow(issue)?.uid)
   emit('open-version',{ruleId:issue.ruleId,itemKey:issue.itemKey,month:activityMonth.value})
 }
 function minor(value, message) {
@@ -697,9 +699,9 @@ async function resumeRule() {
                 <ul v-if="Object.keys(activity.grouping.issues).length" class="period-activity-issues" aria-label="待核分组">
                   <li v-for="issue in activity.grouping.targetIssues || []" :key="issue.ruleId+'-'+issue.itemKey+'-'+issue.code">
                     <strong>{{ issue.label }}</strong> · {{ issue.ruleId ? 'v'+issue.version : '待发布' }} · {{ groupingIssueLabels[issue.code] || issue.code }} · {{ issue.count }} 笔
-                    <a-button v-if="issue.ruleId || rows.some(item=>item.itemKey===issue.itemKey)" type="link" size="small"
-                      :disabled="saving || (issue.ruleId && issue.ruleId!==rule.id ? changed : !rows.some(item=>item.itemKey===issue.itemKey))"
-                      @click="followTargetIssue(issue)">{{ issue.ruleId && issue.ruleId!==rule.id ? '查看规则 v'+issue.version : canSave ? '编辑收款安排' : '查看收款安排' }}</a-button>
+                    <a-button v-if="issue.ruleId || targetIssueRow(issue)" type="link" size="small"
+                      :disabled="saving || (issueInOtherVersion(issue) ? changed : !targetIssueRow(issue))"
+                      @click="followTargetIssue(issue)">{{ issueInOtherVersion(issue) ? '查看规则 v'+issue.version : canSave ? '编辑收款安排' : '查看收款安排' }}</a-button>
                   </li>
                   <li v-for="[issue,count] in otherGroupingIssues" :key="issue">{{ groupingIssueLabels[issue] || issue }} · {{ count }} 笔</li>
                 </ul>

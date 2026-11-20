@@ -89,3 +89,47 @@ func TestCatalogPeriodGroupsKeepOriginalRuleAndSplitOnPoolMembership(t *testing.
 		t.Fatalf("warning should trace to original version, blocked item and draft warning: %+v %+v", issue, report.postingIssues)
 	}
 }
+
+func TestCatalogPeriodTargetIssueIdentifiesProposedArrangement(t *testing.T) {
+	window := time.Date(2026, 10, 1, 0, 0, 0, 0, shanghai)
+	definition := catalogPeriodDefinition{Scenarios: []string{"FIRST"}, Items: []catalogPeriodItem{
+		{ItemKey: "existing-person", Label: "运营计提", TargetKind: "person", PersonID: 1},
+		{ItemKey: "generated-pool-key", Label: "运营计提", TargetKind: "pool", OrganizationKey: "team", OwnerRole: "OWNER"},
+	}}
+	directory := catalogAggregateDirectory{
+		People:        map[int64]string{1: "运营人员"},
+		Organizations: []vipBenefitOrganization{{Party: "team", Unit: "unit", Name: "运营组"}},
+	}
+	event := catalogActivityEvent{EventID: 1, PaymentID: 1, PaidAt: window, Scenario: "FIRST", Amount: 1000}
+	for _, tc := range []struct {
+		ruleID     string
+		isProposal bool
+	}{{"", true}, {"published-version", false}} {
+		rule := catalogAggregateRule{ID: tc.ruleID, From: window, Definition: definition}
+		report, err := groupCatalogPeriodEvents([]catalogActivityEvent{event}, []catalogAggregateRule{rule}, directory, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var response struct {
+			TargetIssues []struct {
+				RuleID, ItemKey, Code string
+				ProposedItemIndex     *int
+			}
+		}
+		encoded, err := json.Marshal(report)
+		if err != nil || json.Unmarshal(encoded, &response) != nil || len(response.TargetIssues) != 1 {
+			t.Fatalf("expected one issue: %s, %v", encoded, err)
+		}
+		issue := response.TargetIssues[0]
+		if issue.RuleID != tc.ruleID || issue.ItemKey != "generated-pool-key" || issue.Code != "BENEFIT_POOL_OWNER_MISSING" {
+			t.Fatalf("incorrect issue: %+v", issue)
+		}
+		if tc.isProposal {
+			if issue.ProposedItemIndex == nil || *issue.ProposedItemIndex != 1 {
+				t.Fatalf("expected the second arrangement's index: %s", encoded)
+			}
+		} else if issue.ProposedItemIndex != nil {
+			t.Fatalf("published arrangement should use its stored key: %s", encoded)
+		}
+	}
+}

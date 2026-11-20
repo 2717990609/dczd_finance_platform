@@ -61,12 +61,13 @@ type catalogPeriodGroupReport struct {
 }
 
 type catalogPeriodTargetIssue struct {
-	RuleID  string `json:"ruleId"`
-	Version int    `json:"version"`
-	ItemKey string `json:"itemKey"`
-	Label   string `json:"label"`
-	Code    string `json:"code"`
-	Count   int    `json:"count"`
+	RuleID            string `json:"ruleId"`
+	Version           int    `json:"version"`
+	ItemKey           string `json:"itemKey"`
+	ProposedItemIndex *int   `json:"proposedItemIndex,omitempty"`
+	Label             string `json:"label"`
+	Code              string `json:"code"`
+	Count             int    `json:"count"`
 }
 
 type catalogPeriodGroup struct {
@@ -253,7 +254,7 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 			if rule != nil {
 				targets := make([]catalogPeriodGroupTarget, 0, len(rule.Definition.Items))
 				keys := make([]catalogGroupTargetKey, 0, len(rule.Definition.Items))
-				for _, item := range rule.Definition.Items {
+				for index, item := range rule.Definition.Items {
 					target, key, issue := directory.groupTarget(item, event.PaidAt)
 					if issue != "" {
 						applied.issue = issue
@@ -262,6 +263,9 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 						if problem == nil {
 							problem = &catalogPeriodTargetIssue{RuleID: rule.ID, Version: rule.Version,
 								ItemKey: item.ItemKey, Label: item.Label, Code: issue}
+							if rule.ID == "" {
+								problem.ProposedItemIndex = &index
+							}
 							targetIssues[issueKey] = problem
 						}
 						applied.targetIssue = problem
