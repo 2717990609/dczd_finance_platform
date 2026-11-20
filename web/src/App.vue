@@ -507,6 +507,9 @@ function openCatalogPeriodCreation() {
   const selected = catalogPeriodProducts.value.find(option=>option.value===Number(id))
   periodRule.value = {create:true,productId:selected?.value || productScope.value,sku:selected && kind==='sku' ? sku.join(':') : undefined}
 }
+function copyCatalogPeriodRule(source) {
+  periodRule.value = {create:true,productId:source.productId,copiedFrom:source}
+}
 function periodRulePublished(result, product) {
   if (product) ruleBusinessScope.value = product+':aggregate'
   ratePublished(result)
@@ -1814,9 +1817,10 @@ async function save() {
     :skus="data.products.find(product=>product.id===rateRule?.productId)?.businessSkus"
     @close="rateRule=undefined; appliedRule=undefined" @published="ratePublished"/>
   <CatalogPeriodRule v-if="(periodRule || appliedRule?.aggregate) && active && !sessionError && !sessionChecking && !loginRequested"
+    :key="periodRule?.create ? 'create' : periodRule?.id || 'applied'"
     :rule="periodRule" :applied="appliedRule?.aggregate" :products="catalogPeriodProducts" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
     :can-review-activity="wholeWorkspace && !appliedRule?.aggregate && !periodRule?.create"
-    @close="periodRule=undefined; appliedRule=undefined" @published="periodRulePublished" @open-draft="openAggregateDraft"/>
+    @close="periodRule=undefined; appliedRule=undefined" @published="periodRulePublished" @open-draft="openAggregateDraft" @copy="copyCatalogPeriodRule"/>
   <CatalogScenarioCreate v-if="catalogScenarioCreation && active && !sessionError && !sessionChecking && !loginRequested"
     :products="catalogScenarioProducts" :initial-product="catalogScenarioCreation.productId" :initial-sku="catalogScenarioCreation.sku" :api="api"
     @close="catalogScenarioCreation=undefined" @published="catalogScenarioPublished"/>

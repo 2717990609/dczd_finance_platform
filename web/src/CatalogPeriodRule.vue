@@ -4,8 +4,9 @@ import { DownOutlined } from '@ant-design/icons-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
 const props = defineProps({rule:Object, applied:Object, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
-const emit = defineEmits(['close','published','open-draft'])
+const emit = defineEmits(['close','published','open-draft','copy'])
 const creating = computed(() => Boolean(props.rule?.create))
+const copiedFrom = computed(() => props.rule?.copiedFrom)
 const productId = ref(props.rule?.productId || (props.products?.length===1 ? props.products[0].value : undefined))
 const ruleName = ref('')
 const creationCycle = ref()
@@ -83,9 +84,10 @@ const changed = computed(() => creating.value ? Boolean(ruleName.value.trim() &&
 const scenarioOptions = computed(() => {
   const label = sku => sku.label+(sku.requiresCompletion ? ' · 完成后计提' : '')
   const available = new Map((sheet.value?.options?.scenarios || []).map(sku=>[sku.code,{value:sku.code,label:label(sku)}]))
-  for (const sku of sheet.value?.scenarios || []) {
-    if (!available.has(sku.code)) {
-      available.set(sku.code,{value:sku.code,label:sku.mapped ? label(sku) : sku.label+'（尚未映射）',disabled:sku.locked})
+  for (const sku of copiedFrom.value?.scenarios || sheet.value?.scenarios || []) {
+    if (!available.has(sku.code) && (!copiedFrom.value || scenarioCodes.value.includes(sku.code))) {
+      available.set(sku.code,{value:sku.code,label:copiedFrom.value ? sku.label+'（当前不可选）'
+        : sku.mapped ? label(sku) : sku.label+'（尚未映射）',disabled:!copiedFrom.value && sku.locked})
     }
   }
   return [...available.values()]
@@ -121,7 +123,7 @@ function performanceForm(scope) {
 }
 const unitOptions = computed(() => {
   const choices = new Map((sheet.value?.options?.organizations || []).map(unit=>[unit.unitId,{value:unit.unitId,label:unit.label,kind:unit.kind}]))
-  for (const [id,label] of Object.entries(sheet.value?.scopeLabels?.units || {})) {
+  for (const [id,label] of Object.entries(copiedFrom.value?.scopeLabels?.units || sheet.value?.scopeLabels?.units || {})) {
     if (!choices.has(id)) choices.set(id,{value:id,label})
   }
   return Array.from(choices.values())
@@ -147,8 +149,10 @@ function availableOrganizations(row) {
   const options = (sheet.value?.options?.organizations || []).filter(item=>row.targetKind==='pool' || item.kind==='COMPANY')
   if (!row.organizationKey || options.some(item=>item.value===row.organizationKey)) return options
   const original = sheet.value.items.find(item=>item.itemKey===row.itemKey)
-  return [...options,{value:row.organizationKey,label:original?.targetName || row.organizationKey}]
+  return [...options,{value:row.organizationKey,label:original?.targetName || row.organizationName || row.organizationKey}]
 }
+const copiedOrganizationUnavailable = row => copiedFrom.value && row.organizationKey &&
+  !sheet.value.options?.organizations?.some(option=>option.value===row.organizationKey)
 function availableRoles(role) {
   const options = (sheet.value?.options?.roles || []).filter(item=>item.organization)
   if (!role || options.some(item=>item.value===role)) return options
@@ -168,6 +172,26 @@ function addComponent() {
   rows.value.push({uid,label:'',targetKind:'company',method:'rate',tiers:[]})
   activeComponent.value = uid
   editingComponent.value = uid
+}
+function initializeCreation(data, product) {
+  const copy = copiedFrom.value
+  creationCycle.value = copy?.cycle || data.cycle
+  effectiveDate.value = nextStart(new Date().toISOString(),creationCycle.value)
+  if (copy) {
+    scenarioCodes.value = copy.scenarios.map(sku=>sku.code)
+    performanceScope.value = performanceForm(copy.performanceScope)
+    appointmentName.value = copy.scopeLabels?.person || ''
+    rows.value = editableRows(copy.items).map(({itemKey,...row}, index)=>({
+      ...row,uid:'new-'+(++newComponentID),organizationName:copy.items[index].targetName,
+    }))
+    activeComponent.value = rows.value[0]?.uid
+    editingComponent.value = activeComponent.value
+    return
+  }
+  const options = data.options.scenarios
+  const selected = product===props.rule.productId && options.find(option=>option.code===props.rule.sku)
+  scenarioCodes.value = selected ? [selected.code] : options.length===1 ? [options[0].code] : []
+  addComponent()
 }
 function removeComponent(row) {
   const index = rows.value.indexOf(row)
@@ -204,12 +228,6 @@ function removeTier(tiers, index) {
   tiers[0].from = 0
 }
 
-watch([rows, amounts, performanceScope, scenarioCodes], () => {
-  quoteRequest++
-  quote.value = undefined
-  previewing.value = false
-}, {deep:true})
-
 watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,product])=>{
   const request = ++versionRequest
   error.value = ''
@@ -229,14 +247,8 @@ watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,pro
     editingPerformance.value = false
     activeComponent.value = rows.value.length===1 ? rows.value[0].uid : undefined
     editingComponent.value = undefined
-    if (creating.value) {
-      creationCycle.value = data.cycle
-      effectiveDate.value = nextStart(new Date().toISOString(),data.cycle)
-      const options = data.options.scenarios
-      const selected = product===props.rule.productId && options.find(option=>option.code===props.rule.sku)
-      scenarioCodes.value = selected ? [selected.code] : options.length===1 ? [options[0].code] : []
-      addComponent()
-    } else effectiveDate.value = canSave.value ? firstStart.value : ''
+    if (creating.value) initializeCreation(data,product)
+    else effectiveDate.value = canSave.value ? firstStart.value : ''
   } catch (err) {
     if (request === versionRequest) error.value = err.message
   } finally {
@@ -310,6 +322,8 @@ async function preview() {
 }
 function creationInput() {
   if (!changed.value || !effectiveDate.value) throw new Error('请填写规则名称、生效日期，并选择参与场景。')
+  const selectable = new Set(sheet.value.options.scenarios.map(sku=>sku.code))
+  if (scenarioCodes.value.some(code=>!selectable.has(code))) throw new Error('请移除当前不可选的 SKU，并核对参与场景。')
   return {create:{productId:productId.value,label:ruleName.value.trim(),cycle:creationCycle.value},
     effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),scenarioCodes:scenarioCodes.value,
     ...componentChanges(),...performanceChanges()}
@@ -344,12 +358,12 @@ async function publish() {
 </script>
 
 <template>
-  <a-drawer open :title="creating ? '新增整期规则' : applied ? '计提使用的整期规则' : '整期分润配置'" width="min(1260px, 100vw)" root-class-name="finance-rule-editor"
+  <a-drawer open :title="copiedFrom ? '复制整期规则' : creating ? '新增整期规则' : applied ? '计提使用的整期规则' : '整期分润配置'" width="min(1260px, 100vw)" root-class-name="finance-rule-editor"
     :closable="!saving && !savingDraft" :mask-closable="!saving && !savingDraft" :keyboard="!saving && !savingDraft" @close="emit('close')">
     <a-alert v-if="error" class="feedback" :message="error" type="error" show-icon/>
     <a-form v-if="creating" layout="vertical" class="rule-basics" :disabled="saving">
       <a-form-item label="所属产品" html-for="period-create-product" required>
-        <a-select id="period-create-product" v-model:value="productId" :options="products" placeholder="选择产品"/>
+        <a-select id="period-create-product" v-model:value="productId" :options="products" :disabled="!!copiedFrom" placeholder="选择产品"/>
       </a-form-item>
       <a-form-item label="规则名称" html-for="period-create-name" required>
         <a-input id="period-create-name" v-model:value="ruleName" :maxlength="80"/>
@@ -363,7 +377,13 @@ async function publish() {
     </a-form>
     <a-spin :spinning="loading">
       <section v-if="sheet">
-        <h2 v-if="!creating">{{ sheet.label }} <a-tag>v{{ sheet.version }}</a-tag></h2>
+        <header v-if="!creating" class="period-component-heading">
+          <h2>{{ sheet.label }} <a-tag>v{{ sheet.version }}</a-tag></h2>
+          <a-button v-if="sheet.mayPublish && !applied" size="small" :disabled="changed || saving || savingDraft" @click="emit('copy',sheet)">
+            复制为新规则
+          </a-button>
+        </header>
+        <p v-if="copiedFrom" class="rule-formula">复制自 {{ copiedFrom.label }} v{{ copiedFrom.version }}，按各 SKU 当前的确认时点归期。</p>
         <a-alert v-if="sheet.paused && !applied" class="feedback" type="info" show-icon
           message="当前暂停执行。保存档位新版本后仍维持暂停。"/>
         <a-descriptions size="small" :column="{xs:1,sm:1,md:2}" bordered>
@@ -455,7 +475,8 @@ async function publish() {
                 :filters="peopleFilters" :current="item.personId ? {id:item.personId,name:item.personName} : undefined"
                 :disabled="saving" @change="(_,option)=>item.personName=option.name"/>
             </a-form-item>
-            <a-form-item v-else :label="item.targetKind==='pool' ? '归集组织' : '收款公司'" html-for="period-benefit-org">
+            <a-form-item v-else :label="item.targetKind==='pool' ? '归集组织' : '收款公司'" html-for="period-benefit-org"
+              :extra="copiedOrganizationUnavailable(item) ? '请重新选择当前有效的收款组织。' : undefined">
               <a-select id="period-benefit-org" v-model:value="item.organizationKey" :options="availableOrganizations(item)"
                 :disabled="saving" show-search option-filter-prop="label"/>
             </a-form-item>
@@ -648,6 +669,7 @@ async function publish() {
 .period-component-layout { margin:16px 0 22px; }
 .period-scenario-select { width:min(100%,720px); }
 .period-component-heading { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
+.period-component-heading h2 { margin:0; }
 .period-method { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; margin-bottom:6px; }
 .period-method :deep(.ant-form-item) { margin:0; }
 .period-method-formula { color:var(--muted); font-size:13px; }
