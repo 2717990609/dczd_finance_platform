@@ -269,12 +269,17 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 	seller := id(s.createPerson(ctx, createPersonInput{Name: "成交销售"}))
 	const nextDepartment = "40000000-0000-4000-8000-000000000006"
 	const nextGroup = "40000000-0000-4000-8000-000000000007"
+	const otherCompany = "40000000-0000-4000-8000-000000000009"
+	const otherDepartment = "40000000-0000-4000-8000-000000000010"
 	if _, err := s.db.Exec(ctx, `INSERT INTO organization_units(id,parent_id,kind,name,status) VALUES
-	 ($1,$3,'DEPARTMENT','新部门','ACTIVE'),($2,$1,'TEAM','新小组','ACTIVE')`, nextDepartment, nextGroup, company); err != nil {
+	 ($1,$3,'DEPARTMENT','新部门','ACTIVE'),($2,$1,'TEAM','新小组','ACTIVE'),
+	 ($4,NULL,'COMPANY','另一家公司','ACTIVE'),($5,$4,'DEPARTMENT','另一家销售部','ACTIVE')`,
+		nextDepartment, nextGroup, company, otherCompany, otherDepartment); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from,valid_to) VALUES
-	 (gen_random_uuid(),$1,$2,'PRIMARY',$4,$5),(gen_random_uuid(),$1,$3,'PRIMARY',$5,NULL)`, seller, group, nextGroup, at.Add(-time.Hour), at); err != nil {
+	 (gen_random_uuid(),$1,$2,'MEMBER',$4,$5),(gen_random_uuid(),$1,$3,'MEMBER',$5,NULL),
+	 (gen_random_uuid(),$1,$6,'PRIMARY',$4,NULL)`, seller, group, nextGroup, at.Add(-time.Hour), at, otherDepartment); err != nil {
 		t.Fatal(err)
 	}
 	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: seller, Source: "DCZD", ExternalID: "10", ValidFrom: at.Add(-time.Hour).Format(time.RFC3339)}))
@@ -298,7 +303,7 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 	parts := def["components"].([]any)
 	line := parts[1].(map[string]any)
 	line["sourceRole"] = "DIRECT_REFERRER"
-	line["periodBenefit"].(map[string]any)["salesUnits"] = []string{department, group}
+	line["periodBenefit"].(map[string]any)["salesUnits"] = []string{department}
 	raw, err = json.Marshal(def)
 	if err != nil {
 		t.Fatal(err)
@@ -340,7 +345,7 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 	}
 	summary = result.(draftSummary)
 	if summary.Total != 3242 || summary.LineCount != 7 || summary.IssueCount != 0 {
-		t.Fatalf("signup and whole-class fixed awards each contribute their configured total: %+v", summary)
+		t.Fatalf("class awards use the seller's payment-time team in the order company: %+v", summary)
 	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, summary.Version); err != nil {
 		t.Fatal(err)

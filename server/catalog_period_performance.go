@@ -293,25 +293,13 @@ func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPe
 		return value, conflict
 	}
 	claim := d.claims[event.PaymentID]
-	key, conflict := resolve(d.users, claim.User)
-	if conflict {
-		return catalogPerformanceDecision{issue: "SALES_PERSON_CONFLICT"}
-	}
-	person, err := strconv.ParseInt(key, 10, 64)
-	if err != nil || person <= 0 {
-		return catalogPerformanceDecision{issue: "SALES_PERSON_MISSING"}
-	}
-	org := d.organization.resolve(person, event.PaidAt, identityKey{})
+	var company pgtype.UUID
 	if claim.Company != "" {
 		key, conflict := resolve(d.companies, claim.Company)
 		if conflict {
 			return catalogPerformanceDecision{issue: "SALES_COMPANY_CONFLICT"}
 		}
-		if key == "" {
-			return catalogPerformanceDecision{issue: "AGGREGATE_SALES_ORGANIZATION_MISSING"}
-		}
-		var company pgtype.UUID
-		if company.Scan(key) != nil {
+		if company.Scan(key) != nil || !company.Valid {
 			return catalogPerformanceDecision{issue: "AGGREGATE_SALES_ORGANIZATION_MISSING"}
 		}
 		if !slices.ContainsFunc(scope.UnitIDs, func(id string) bool {
@@ -320,14 +308,16 @@ func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPe
 		}) {
 			return catalogPerformanceDecision{excluded: true}
 		}
-		attributed := d.organization.ancestors(org.Department).Company
-		if !attributed.Valid && org.Group != nil {
-			attributed = d.organization.ancestors(*org.Group).Company
-		}
-		if attributed != company {
-			return catalogPerformanceDecision{issue: "AGGREGATE_SALES_ORGANIZATION_MISSING"}
-		}
 	}
+	key, conflict := resolve(d.users, claim.User)
+	if conflict {
+		return catalogPerformanceDecision{issue: "SALES_PERSON_CONFLICT"}
+	}
+	person, err := strconv.ParseInt(key, 10, 64)
+	if err != nil || person <= 0 {
+		return catalogPerformanceDecision{issue: "SALES_PERSON_MISSING"}
+	}
+	org := d.organization.resolveAssignments(person, event.PaidAt, company, !company.Valid)
 	if !org.Department.Valid && org.Group == nil {
 		return catalogPerformanceDecision{issue: "AGGREGATE_SALES_ORGANIZATION_MISSING"}
 	}

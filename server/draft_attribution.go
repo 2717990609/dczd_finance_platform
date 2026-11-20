@@ -160,16 +160,34 @@ func (i reportAttribution) ancestors(id pgtype.UUID) reportOrganization {
 }
 
 func (i reportAttribution) resolve(person int64, at time.Time, sourceCompany identityKey) reportOrganization {
+	if sourceCompany.ExternalID == "" {
+		return i.resolveAssignments(person, at, pgtype.UUID{}, true)
+	}
+	var exact uniqueUnit
+	for _, assignment := range i.Companies[sourceCompany] {
+		if !at.Before(assignment.From) && (assignment.To == nil || at.Before(*assignment.To)) {
+			exact.add(assignment.Company)
+		}
+	}
+	return i.resolveAssignments(person, at, exact.value(), false)
+}
+
+func (i reportAttribution) resolveAssignments(person int64, at time.Time, company pgtype.UUID, inferCompany bool) reportOrganization {
 	var companies, hierarchy, primary, concurrent uniqueUnit
 	for _, assignment := range i.Assignments[person] {
 		if at.Before(assignment.From) || assignment.To != nil && !at.Before(*assignment.To) {
 			continue
 		}
 		unit := i.ancestors(assignment.Unit)
-		if i.Units[assignment.Unit].Kind == "COMPANY" {
-			companies.add(unit.Company)
-		} else {
-			hierarchy.add(unit.Company)
+		if company.Valid && unit.Company != company {
+			continue
+		}
+		if inferCompany {
+			if i.Units[assignment.Unit].Kind == "COMPANY" {
+				companies.add(unit.Company)
+			} else {
+				hierarchy.add(unit.Company)
+			}
 		}
 		if assignment.Kind == "PRIMARY" {
 			primary.add(unit.Department)
@@ -180,25 +198,16 @@ func (i reportAttribution) resolve(person int64, at time.Time, sourceCompany ide
 	if !primary.ID.Valid {
 		primary = concurrent
 	}
-	var company pgtype.UUID
-	switch {
-	case sourceCompany.ExternalID != "":
-		var exact uniqueUnit
-		for _, assignment := range i.Companies[sourceCompany] {
-			if !at.Before(assignment.From) && (assignment.To == nil || at.Before(*assignment.To)) {
-				exact.add(assignment.Company)
-			}
-		}
-		company = exact.value()
-	case companies.ID.Valid:
-		company = companies.value()
-	default:
-		company = hierarchy.value()
-	}
 	department := primary.value()
-	if company.Valid {
-		if departmentCompany := i.ancestors(department).Company; departmentCompany.Valid && departmentCompany != company {
-			department = pgtype.UUID{}
+	if inferCompany {
+		company = hierarchy.value()
+		if companies.ID.Valid {
+			company = companies.value()
+		}
+		if company.Valid {
+			if departmentCompany := i.ancestors(department).Company; departmentCompany.Valid && departmentCompany != company {
+				department = pgtype.UUID{}
+			}
 		}
 	}
 	var primaryGroup, concurrentGroup uniqueUnit

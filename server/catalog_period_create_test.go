@@ -26,21 +26,25 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		 (gen_random_uuid(),980,'DCAI','VIP','VIP_ORDER','ai_vip_order','first','vip','FIRST','会员',1,'2026-09-01','2026-11-01'),
 		 (gen_random_uuid(),980,'DCAI','VIP','VIP_ORDER','ai_vip_order','second','vip','SECOND','另一个SKU',1,'2026-09-01','2026-11-01')`,
 		`INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES(9801,'整期个人收款')`,
-		`INSERT INTO organization_units(id,kind,name,status) VALUES ('10000000-0000-4000-8000-000000000981','COMPANY','整期公司收款','ACTIVE')`,
+		`INSERT INTO organization_units(id,kind,name,status) VALUES ('10000000-0000-4000-8000-000000000981','COMPANY','整期公司收款','ACTIVE'),
+		 ('10000000-0000-4000-8000-000000000986','COMPANY','其他销售公司','ACTIVE')`,
 		`INSERT INTO organization_units(id,parent_id,kind,name,status) VALUES
 		 ('10000000-0000-4000-8000-000000000982','10000000-0000-4000-8000-000000000981','DEPARTMENT','销售一部','ACTIVE'),
 		 ('10000000-0000-4000-8000-000000000983','10000000-0000-4000-8000-000000000981','DEPARTMENT','销售二部','ACTIVE'),
 		 ('10000000-0000-4000-8000-000000000984','10000000-0000-4000-8000-000000000982','TEAM','销售一组','ACTIVE'),
-		 ('10000000-0000-4000-8000-000000000985','10000000-0000-4000-8000-000000000981','TEAM','直属小组','ACTIVE')`,
+		 ('10000000-0000-4000-8000-000000000985','10000000-0000-4000-8000-000000000981','TEAM','直属小组','ACTIVE'),
+		 ('10000000-0000-4000-8000-000000000987','10000000-0000-4000-8000-000000000986','DEPARTMENT','其他公司销售部','ACTIVE')`,
 		`INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES(9802,'整期销售'),
 		 (9803,'另一组销售'),(9804,'直属组销售')`,
 		`INSERT INTO identity_mappings(person_id,source,external_id,valid_from) VALUES
 		 (9802,'DCAI','seller','2026-09-01'),(9803,'DCAI','other','2026-09-01'),(9804,'DCAI','direct','2026-09-01')`,
 		`INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
-		 VALUES('DCAI','company','10000000-0000-4000-8000-000000000981','2026-09-01')`,
+		 VALUES('DCAI','company','10000000-0000-4000-8000-000000000981','2026-09-01'),
+		 ('DCAI','outside','10000000-0000-4000-8000-000000000986','2026-09-01')`,
 		`INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from,valid_to) VALUES
-		 (gen_random_uuid(),9802,'10000000-0000-4000-8000-000000000984','PRIMARY','2026-09-01','2026-10-03T00:00Z'),
-		 (gen_random_uuid(),9802,'10000000-0000-4000-8000-000000000983','PRIMARY','2026-10-03T00:00Z',NULL),
+		 (gen_random_uuid(),9802,'10000000-0000-4000-8000-000000000984','MEMBER','2026-09-01','2026-10-03T00:00Z'),
+		 (gen_random_uuid(),9802,'10000000-0000-4000-8000-000000000983','MEMBER','2026-10-03T00:00Z',NULL),
+		 (gen_random_uuid(),9802,'10000000-0000-4000-8000-000000000987','PRIMARY','2026-09-01',NULL),
 		 (gen_random_uuid(),9803,'10000000-0000-4000-8000-000000000984','PRIMARY','2026-09-01',NULL),
 		 (gen_random_uuid(),9804,'10000000-0000-4000-8000-000000000985','PRIMARY','2026-09-01',NULL)`,
 		`INSERT INTO catalog_sales_context(source,captured_at,snapshot_digest)
@@ -123,10 +127,13 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	 VALUES('DCAI','103','','ai_vip_order:103','1','ORDER_PAID','2026-10-01T00:00Z','2026-10-01T00:00Z',
 	 '{"domain":"VIP","sourceKey":"new","paymentId":"103","amountMinor":70000}'),
 	 ('DCAI','104','','ai_vip_order:104','1','ORDER_PAID','2026-10-04T00:00Z','2026-10-04T00:00Z',
-	 '{"domain":"VIP","sourceKey":"new","paymentId":"104","amountMinor":4000}') RETURNING id,order_id)
+	 '{"domain":"VIP","sourceKey":"new","paymentId":"104","amountMinor":4000}'),
+	 ('DCAI','105','','ai_vip_order:105','1','ORDER_PAID','2026-10-04T00:00Z','2026-10-04T00:00Z',
+	 '{"domain":"VIP","sourceKey":"new","paymentId":"105","amountMinor":90000}') RETURNING id,order_id)
 	 INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier,sales_claims)
 	 SELECT id,'VIP_ORDER','first','vip',jsonb_build_array(jsonb_build_object('role','PID_USER','user',
-	  CASE order_id WHEN '103' THEN 'other' ELSE 'direct' END,'company','company','relationship','DIRECT')) FROM payment`); err != nil {
+	  CASE order_id WHEN '103' THEN 'other' WHEN '104' THEN 'direct' ELSE 'unmapped-seller' END,
+	  'company',CASE order_id WHEN '105' THEN 'outside' ELSE 'company' END,'relationship','DIRECT')) FROM payment`); err != nil {
 		t.Fatal(err)
 	}
 	scopedInput := strings.TrimSuffix(strings.Replace(input, "新整期规则", "销售一部负责人", 1), "}") + `,
@@ -142,7 +149,7 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	}
 	scoped := trial.(draftSummary)
 	if scoped.Total != 2800 || scoped.LineCount != 2 || scoped.IssueCount != 0 {
-		t.Fatalf("the payment at appointment start and the directly attached team's payment should count once each: %+v", scoped)
+		t.Fatalf("count the seller's in-company team at appointment start and the direct team once each, without blocking on an unrelated seller: %+v", scoped)
 	}
 	for _, sql := range []string{
 		`UPDATE products SET settlement_enabled=true WHERE id=980`,
@@ -187,7 +194,8 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	outsideScope.RefundsPayment = []sourcePaymentReference{{OrderID: "102", RecordID: "102"}}
 	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `UPDATE organization_assignments SET unit_id=CASE WHEN valid_to IS NOT NULL
-		 THEN '10000000-0000-4000-8000-000000000983'::uuid ELSE '10000000-0000-4000-8000-000000000984'::uuid END WHERE person_id=9802`); err != nil {
+		 THEN '10000000-0000-4000-8000-000000000983'::uuid ELSE '10000000-0000-4000-8000-000000000984'::uuid END
+		 WHERE person_id=9802 AND kind='MEMBER'`); err != nil {
 			return err
 		}
 		_, err := storeSourceFactsFrom(ctx, tx, []sourceFact{refund, outsideScope}, s.dcaiSourceKey())
