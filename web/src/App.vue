@@ -274,7 +274,7 @@ const amountModes = row => {
 function updateAmountMode(row, mode) {
   row.mode = mode
   if (mode==='period_rate' && !row.periodBenefit) {
-    row.periodBenefit = {label:'',pool:{},tiers:[{from:0}],useTiers:false}
+    row.periodBenefit = {label:'',pool:{},tiers:[{from:0}],method:'rate'}
   }
   if (mode==='company_sales' && !row.companySales) {
     row.sourceRole = row.sourceRole || firstOption('practicePeriodSourceRole')
@@ -1015,7 +1015,7 @@ function ruleComponentBody(row) {
   if (row.mode === 'period_rate') {
     const b = row.periodBenefit
     must(b.recipient,'请选择收款对象')
-    component.value = b.useTiers ? 0 : periodRate(row.amount)
+    component.value = b.method==='rate' ? periodRate(row.amount) : 0
     component.periodBenefit = {
       label:must(b.label?.trim(),'请填写收款安排名称'),
       ...(b.recipient==='pool' ? {pool:practicePoolBody(b.pool)} : b.recipient==='unit'
@@ -1026,7 +1026,8 @@ function ruleComponentBody(row) {
       ...(b.recipient==='person' && b.appointmentUnitId ? {
         appointmentUnitId:b.appointmentUnitId,appointmentKind:must(b.appointmentKind,'请选择任职方式'),
       } : {}),
-      ...(b.useTiers ? {tierOnWholeClass:b.tierOnWholeClass || false,tiers:b.tiers.map(t=>({
+      ...(b.method==='fixed' ? {fixedMinor:minor(must(b.fixedAmount,'请填写每份报名金额'))} : {}),
+      ...(b.method==='tiers' ? {tierOnWholeClass:b.tierOnWholeClass || false,tiers:b.tiers.map(t=>({
         from:minor(must(t.from,'请填写净实收档位下限')),
         ...(t.through != null ? {through:minor(t.through)} : {}),
         value:periodRate(t.value),

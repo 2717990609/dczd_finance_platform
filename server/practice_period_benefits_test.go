@@ -13,6 +13,55 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func TestPracticeFixedSignupBenefitKeepsOriginalPaymentShares(t *testing.T) {
+	var part component
+	if err := json.Unmarshal([]byte(`{"type":"delivery","mode":"period_rate","classMember":"new",
+	 "periodBenefit":{"label":"每份新报交付","personId":1,"fixedMinor":1000}}`), &part); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateComponents([]component{part}); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 8, 8, 8, 0, 0, 0, time.UTC)
+	member := practiceEnrollment{ID: 1, MembershipType: 3, CommissionEligible: true,
+		PaidOrderIDs: []string{"1", "2"}, ConfirmedAt: start}
+	makePayment := func(id int64, amount int64) paymentInput {
+		order := strconv.FormatInt(id, 10)
+		return paymentInput{ID: id, Fact: sourceFact{Source: "DCZD", PaymentID: order, OrderID: order,
+			AmountMinor: &amount, OccurredAt: start.Add(-time.Hour)}}
+	}
+	orders := map[string][]paymentInput{"1": {makePayment(1, 4000)}, "2": {makePayment(2, 6000)}}
+	for _, tc := range []struct {
+		name      string
+		refund    int64
+		replaying bool
+		want      [2]int64
+	}{
+		{"one enrollment", 0, false, [2]int64{400, 600}},
+		{"partial refund before confirmation", 2000, false, [2]int64{200, 600}},
+		{"full deposit refund in later month", 4000, true, [2]int64{0, 600}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refunds := map[int64][]practiceRefundMatch{}
+			if tc.refund != 0 {
+				refunds[1] = []practiceRefundMatch{{event: makePayment(3, tc.refund)}}
+			}
+			draft, err := calculatePracticeDraft([]practiceEnrollment{member}, paymentRule{ID: 1, Components: []component{part}},
+				orders, nil, nil, practiceTierHistory{replaying: tc.replaying}, refunds, practiceDraftRuntime{})
+			if err != nil || len(draft.Issues) != 0 {
+				t.Fatalf("fixed signup draft: %+v %v", draft.Issues, err)
+			}
+			var got [2]int64
+			for _, line := range draft.Lines {
+				got[line.FactID-1] += line.Amount
+			}
+			if got != tc.want || draft.Total != tc.want[0]+tc.want[1] {
+				t.Fatalf("payment shares %v, total %d, want %v", got, draft.Total, tc.want)
+			}
+		})
+	}
+}
+
 func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
@@ -209,6 +258,14 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 	if err := json.Unmarshal(raw, &scoped); err != nil {
 		t.Fatal(err)
 	}
+	fixed := int64(1000)
+	scoped.Components = append(scoped.Components, component{Type: "delivery", Mode: "period_rate", ClassMember: "new",
+		PeriodBenefit: &practicePeriodBenefit{Label: "新报固定交付", UnitID: department, FixedMinor: &fixed}})
+	bad := scoped.Components[len(scoped.Components)-1]
+	bad.Value = 1000
+	if !errors.Is(validateComponents([]component{bad}), invalid) {
+		t.Fatal("fixed amount must exclude ratio and tier configuration")
+	}
 	scoped.EditBaseID = &ruleID
 	for _, invalidUnit := range []string{company, "40000000-0000-4000-8000-000000000008"} {
 		benefit := scoped.Components[1].PeriodBenefit
@@ -230,8 +287,8 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 		t.Fatal(err)
 	}
 	summary = result.(draftSummary)
-	if summary.Total != 242 || summary.LineCount != 2 || summary.IssueCount != 0 {
-		t.Fatalf("old-group deposit earns 22 once; new-group balance is out of scope; manager earns 220: %+v", summary)
+	if summary.Total != 1242 || summary.LineCount != 4 || summary.IssueCount != 0 {
+		t.Fatalf("fixed delivery adds one award for the two-leg new signup, alongside the previous awards: %+v", summary)
 	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, summary.Version); err != nil {
 		t.Fatal(err)
@@ -240,19 +297,28 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 		t.Fatal(err)
 	}
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		replay, err := readPracticeReplay(ctx, tx, period)
+		replay, _, err := readVerifiedPracticeReplay(ctx, tx, period)
 		if err != nil {
 			return err
 		}
 		beforeRefund, err := replay.calculate()
-		if err != nil || beforeRefund.Total != 242 {
+		if err != nil || beforeRefund.Total != 1242 {
 			t.Fatalf("replay must use original scope after organization change: %d %v", beforeRefund.Total, err)
 		}
 		deposit := replay.payments["31"][0].ID
 		replay.refunds[deposit] = append(replay.refunds[deposit], practiceRefundMatch{event: paymentInput{Fact: fact("refund", 1000, at)}})
 		afterRefund, err := replay.calculate()
-		if err != nil || afterRefund.Total != 225 {
+		if err != nil || afterRefund.Total != 1192 {
 			t.Fatalf("refund must reselect tier using the whole class and apply it to the frozen scope: %d %v", afterRefund.Total, err)
+		}
+		var tail int64
+		for _, line := range afterRefund.Lines {
+			if line.Component == "period:delivery:3" && line.FactID == replay.payments["32"][0].ID {
+				tail = line.Amount
+			}
+		}
+		if tail != 666 {
+			t.Fatalf("the original fixed share of the unrefunded balance is 666 cents, got %d", tail)
 		}
 		return nil
 	}); err != nil {

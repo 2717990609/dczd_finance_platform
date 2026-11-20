@@ -9,6 +9,11 @@ const props = defineProps({
 const config = computed(() => props.component.periodBenefit)
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 const field = name => 'practice-benefit-'+props.index+'-'+name
+const calculationMethods = [
+  {value:'rate',label:'按净实收比例'},
+  {value:'fixed',label:'每份报名固定金额'},
+  {value:'tiers',label:'按净实收阶梯'},
+]
 </script>
 
 <template>
@@ -30,13 +35,16 @@ const field = name => 'practice-benefit-'+props.index+'-'+name
   <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <h4 class="rule-item-section">提成怎么算</h4>
-  <a-form-item>
-    <a-checkbox v-model:checked="config.useTiers">按净实收阶梯选比例</a-checkbox>
+  <a-form-item label="计算方式" :html-for="field('method')">
+    <a-select :id="field('method')" v-model:value="config.method" :options="calculationMethods"/>
   </a-form-item>
-  <a-form-item v-if="!config.useTiers" label="班次计提比例（%）" required>
+  <a-form-item v-if="config.method==='rate'" label="班次计提比例（%）" required>
     <a-input-number v-model:value="component.amount" aria-label="班次计提比例（%）" :min="0" :max="100" :precision="4"/>
   </a-form-item>
-  <template v-else>
+  <a-form-item v-else-if="config.method==='fixed'" label="每份报名（元）" :html-for="field('fixed')" required>
+    <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
+  </a-form-item>
+  <template v-else-if="config.method==='tiers'">
     <a-form-item>
       <a-checkbox v-model:checked="config.tierOnWholeClass">用全班净实收选档（含新报和复训）</a-checkbox>
     </a-form-item>

@@ -138,9 +138,9 @@ func appendPracticeRetrainSplit(draft *paymentDraft, p practicePurchase, rule pa
 	if err != nil {
 		return err
 	}
-	total := practiceGrossShares(p, p.payments, amount)
-	personal := practiceGrossShares(p, p.payments, split.PersonalMinor)
-	cumulative := practiceGrossShares(p, p.payments, split.PersonalMinor+split.ServiceMinor)
+	total := practiceGrossShares(p.gross, p.payments, amount)
+	personal := practiceGrossShares(p.gross, p.payments, split.PersonalMinor)
+	cumulative := practiceGrossShares(p.gross, p.payments, split.PersonalMinor+split.ServiceMinor)
 	for i, payment := range p.payments {
 		line := draftLine{FactID: payment.ID, RuleID: rule.ID, EnrollmentID: p.member.ID, Base: p.netAmount(payment)}
 		if personal[i] > 0 {

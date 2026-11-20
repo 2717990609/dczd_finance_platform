@@ -515,6 +515,6 @@ func appendPracticeCompanyShare(draft *paymentDraft, p practicePurchase, line dr
 	if err != nil {
 		return err
 	}
-	appendPracticePeriodShare(draft, line, practiceBenefitShare{purchase: p, payments: p.payments, amount: amount})
+	appendPracticePeriodShare(draft, line, practiceBenefitShare{purchase: p, payments: p.payments}, practiceGrossShares(p.gross, p.payments, amount))
 	return nil
 }

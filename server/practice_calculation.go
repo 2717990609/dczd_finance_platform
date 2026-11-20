@@ -19,6 +19,7 @@ func practiceIssue(code string, member practiceEnrollment, rule paymentRule, par
 type practicePurchase struct {
 	member              practiceEnrollment
 	payments            []paymentInput
+	originalPayments    []paymentInput
 	gross, base         int64
 	issue               string
 	issueFactID         int64

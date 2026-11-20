@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -150,6 +151,9 @@ func (p *practicePurchase) applyRefunds(matches map[int64][]practiceRefundMatch)
 			p.netPayments[payment.ID] = net
 		}
 		if p.replaying && net == 0 {
+			if p.originalPayments == nil {
+				p.originalPayments = slices.Clone(p.payments)
+			}
 			p.gross -= *payment.Fact.AmountMinor
 		} else {
 			active = append(active, payment)

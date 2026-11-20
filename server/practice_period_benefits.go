@@ -124,6 +124,7 @@ type practicePeriodBenefit struct {
 	SalesUnits        []string             `json:"salesUnits,omitempty"`
 	AppointmentUnitID string               `json:"appointmentUnitId,omitempty"`
 	AppointmentKind   string               `json:"appointmentKind,omitempty"`
+	FixedMinor        *int64               `json:"fixedMinor,omitempty"`
 	TierOnWholeClass  bool                 `json:"tierOnWholeClass,omitempty"`
 	Tiers             []practicePeriodRate `json:"tiers,omitempty"`
 	Pool              *practicePoolTarget  `json:"pool,omitempty"`
@@ -182,6 +183,9 @@ func validPracticePeriodBenefit(c component) bool {
 		if person <= 0 {
 			return false
 		}
+	}
+	if b.FixedMinor != nil {
+		return c.Value == 0 && *b.FixedMinor >= 0 && *b.FixedMinor <= 100000000000 && len(b.Tiers) == 0 && !b.TierOnWholeClass
 	}
 	if len(b.Tiers) == 0 {
 		return !b.TierOnWholeClass
@@ -243,6 +247,7 @@ func loadPracticeAppointments(ctx context.Context, tx pgx.Tx, rule paymentRule) 
 type practiceBenefitShare struct {
 	purchase practicePurchase
 	payments []paymentInput
+	fixed    [2]int64
 	key      string
 	net      int64
 	amount   int64
@@ -314,15 +319,19 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		if !memberMatches {
 			continue
 		}
-		if len(p.payments) == 2 {
-			left, right := p.payments[0].Fact, p.payments[1].Fact
+		payments := p.payments
+		if b.FixedMinor != nil && len(p.originalPayments) != 0 {
+			payments = p.originalPayments
+		}
+		if len(payments) == 2 {
+			left, right := payments[0].Fact, payments[1].Fact
 			if left.SalesCompanyID != right.SalesCompanyID ||
 				(left.ReferrerID != "" && right.ReferrerID != "" && left.ReferrerID != right.ReferrerID) {
 				return nil, 0, "PRACTICE_PERIOD_BENEFIT_INCOMPLETE", nil
 			}
 		}
 		share := practiceBenefitShare{purchase: p}
-		for _, payment := range p.payments {
+		for _, payment := range payments {
 			yes, issue := b.eligiblePayment(payment, part.SourceRole, assignments, identities, organizations)
 			if issue != "" {
 				return nil, 0, issue, nil
@@ -336,10 +345,10 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 			continue
 		}
 		share.key = share.payments[0].Fact.OrderID
-		if len(p.payments) == 2 {
+		if len(payments) == 2 {
 			share.key = p.member.SourceEnrollmentID
 		}
-		if !b.TierOnWholeClass {
+		if b.FixedMinor == nil && !b.TierOnWholeClass {
 			var err error
 			tierBase, err = addMinor(tierBase, share.net)
 			if err != nil {
@@ -404,6 +413,29 @@ func practicePeriodComponentKey(part component, index int) string {
 	return "period:" + part.Type + ":" + strconv.Itoa(index)
 }
 
+func allocatePracticeFixedSignup(shares []practiceBenefitShare, award int64) (int64, error) {
+	var total int64
+	for i := range shares {
+		share := &shares[i]
+		var gross int64
+		for _, payment := range share.payments {
+			gross += *payment.Fact.AmountMinor
+		}
+		amounts := practiceGrossShares(gross, share.payments, award)
+		for n, payment := range share.payments {
+			paid := *payment.Fact.AmountMinor
+			refunded := paid - share.purchase.netAmount(payment)
+			share.fixed[n] = amounts[n] - prorateMinor(amounts[n], refunded, paid)
+			var err error
+			total, err = addMinor(total, share.fixed[n])
+			if err != nil {
+				return 0, err
+			}
+		}
+	}
+	return total, nil
+}
+
 func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchases []practicePurchase,
 	runtime practiceDraftRuntime, identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int) error {
 	for index, part := range rule.Components {
@@ -437,12 +469,17 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		if len(shares) == 0 {
 			continue
 		}
-		rate, found := b.rate(part.Value, basis)
-		if !found {
-			draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, Component: key, Code: "PRACTICE_PERIOD_BENEFIT_TIER_MISSING"})
-			continue
+		var total int64
+		if b.FixedMinor != nil {
+			total, err = allocatePracticeFixedSignup(shares, *b.FixedMinor)
+		} else {
+			rate, found := b.rate(part.Value, basis)
+			if !found {
+				draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, Component: key, Code: "PRACTICE_PERIOD_BENEFIT_TIER_MISSING"})
+				continue
+			}
+			total, err = allocatePracticePeriodRate(shares, rate)
 		}
-		total, err := allocatePracticePeriodRate(shares, rate)
 		if err != nil {
 			return err
 		}
@@ -468,24 +505,28 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		for _, share := range shares {
 			base := draftLine{PersonID: b.PersonID, RuleID: rule.ID, EnrollmentID: share.purchase.member.ID,
 				Component: key, BeneficiaryUnit: unit, reportUnit: reportUnit, PracticePool: b.Pool}
-			appendPracticePeriodShare(draft, base, share)
+			amounts := share.fixed
+			if b.FixedMinor == nil {
+				amounts = practiceGrossShares(share.purchase.gross, share.payments, share.amount)
+			}
+			appendPracticePeriodShare(draft, base, share, amounts)
 		}
 	}
 	return nil
 }
 
-func appendPracticePeriodShare(draft *paymentDraft, line draftLine, share practiceBenefitShare) {
-	amounts := practiceGrossShares(share.purchase, share.payments, share.amount)
+func appendPracticePeriodShare(draft *paymentDraft, line draftLine, share practiceBenefitShare, amounts [2]int64) {
 	for i, payment := range share.payments {
-		if line.PracticePool != nil && amounts[i] == 0 {
+		net := share.purchase.netAmount(payment)
+		if net == 0 || line.PracticePool != nil && amounts[i] == 0 {
 			continue
 		}
-		line.FactID, line.Base, line.Amount = payment.ID, share.purchase.netAmount(payment), amounts[i]
+		line.FactID, line.Base, line.Amount = payment.ID, net, amounts[i]
 		draft.Lines = append(draft.Lines, line)
 	}
 }
 
-func practiceGrossShares(p practicePurchase, payments []paymentInput, amount int64) [2]int64 {
+func practiceGrossShares(gross int64, payments []paymentInput, amount int64) [2]int64 {
 	if len(payments) == 1 {
 		return [2]int64{amount, 0}
 	}
@@ -493,6 +534,6 @@ func practiceGrossShares(p practicePurchase, payments []paymentInput, amount int
 	// its floor share of the original gross payment and the deposit the rest.
 	var tail big.Int
 	tail.Mul(big.NewInt(amount), big.NewInt(*payments[1].Fact.AmountMinor))
-	tail.Quo(&tail, big.NewInt(p.gross))
+	tail.Quo(&tail, big.NewInt(gross))
 	return [2]int64{amount - tail.Int64(), tail.Int64()}
 }
