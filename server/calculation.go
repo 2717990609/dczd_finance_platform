@@ -33,6 +33,7 @@ type paymentRule struct {
 	ID         int64
 	Version    int
 	From       *time.Time
+	Through    *time.Time
 	Components []component
 }
 
@@ -175,7 +176,7 @@ func calculatePaymentDraft(window periodWindow, rules []paymentRule, facts []pay
 // Rules arrive in scope priority order, then in descending effective time.
 func selectPaymentRule(rules []paymentRule, at time.Time) *paymentRule {
 	for i := range rules {
-		if rules[i].From == nil || !at.Before(*rules[i].From) {
+		if (rules[i].From == nil || !at.Before(*rules[i].From)) && (rules[i].Through == nil || at.Before(*rules[i].Through)) {
 			return &rules[i]
 		}
 	}

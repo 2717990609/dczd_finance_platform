@@ -1,0 +1,136 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+var errRuleAlreadyRetired = errors.New("此规则已登记停用时间，请重新读取")
+
+// The anchor is the latest version in that scope when retirement was
+// recorded. Later publications can reopen the scope without editing history.
+const componentRuleRetiredAtSQL = `(SELECT min(st.effective_from)
+ FROM rule_scope_retirements st JOIN rule_versions anchor ON anchor.id=st.rule_id
+ WHERE anchor.product_id=rv.product_id AND anchor.version>=rv.version
+ AND anchor.period_id IS NOT DISTINCT FROM rv.period_id AND anchor.from_ordinal IS NOT DISTINCT FROM rv.from_ordinal)`
+
+const catalogRuleRetiredAtSQL = `(SELECT st.effective_from FROM catalog_rule_retirements st WHERE st.package_id=p.source_id)`
+const catalogRuleExecutionThrough = `least(v.effective_to,` + catalogRuleRetiredAtSQL + `)`
+
+type retireRuleInput struct {
+	ProductID        int64
+	RuleID           int64
+	CatalogVersionID string
+	EffectiveFrom    time.Time
+}
+
+func (s workspace) retireRule(ctx context.Context, input retireRuleInput) (any, error) {
+	if input.ProductID < 1 || (input.RuleID > 0) == (input.CatalogVersionID != "") || input.RuleID < 0 || input.EffectiveFrom.IsZero() {
+		return nil, invalid
+	}
+	if input.CatalogVersionID != "" {
+		if _, ok := canonicalSourceUUID(input.CatalogVersionID); !ok {
+			return nil, invalid
+		}
+	}
+	actor := financeUser(ctx)
+	var account *string
+	if actor != nil {
+		if !actor.permitsRule(input.ProductID, true) {
+			return nil, errFinanceForbidden
+		}
+		account = &actor.ID
+	}
+	at := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if input.CatalogVersionID != "" && actor != nil {
+			if err := lockCatalogPublisher(ctx, tx, actor, input.CatalogVersionID); err != nil {
+				return err
+			}
+		}
+		var mode string
+		if err := tx.QueryRow(ctx, `SELECT period_mode FROM products WHERE id=$1 FOR UPDATE`, input.ProductID).Scan(&mode); err != nil {
+			return err
+		}
+		if input.CatalogVersionID != "" {
+			return retireCatalogPackage(ctx, tx, input.ProductID, input.CatalogVersionID, at, account)
+		}
+		var periodID *int64
+		var ordinal *int
+		err := tx.QueryRow(ctx, `SELECT b.period_id,b.from_ordinal FROM rule_versions b
+		 WHERE b.id=$1 AND b.product_id=$2 AND NOT EXISTS (SELECT 1 FROM rule_versions n
+		 WHERE n.product_id=b.product_id AND n.period_id IS NOT DISTINCT FROM b.period_id
+		  AND n.from_ordinal IS NOT DISTINCT FROM b.from_ordinal AND n.version>b.version)`, input.RuleID, input.ProductID).
+			Scan(&periodID, &ordinal)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errRuleEditStale
+		}
+		if err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `INSERT INTO rule_scope_retirements(rule_id,effective_from,recorded_by)
+		 VALUES($1,$2,$3::uuid) ON CONFLICT(rule_id) DO NOTHING`, input.RuleID, at, account)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() == 0 {
+			return verifyRepeatedRetirement(at, tx.QueryRow(ctx,
+				`SELECT effective_from FROM rule_scope_retirements WHERE rule_id=$1`, input.RuleID))
+		}
+		refresh := draftRefreshRule
+		if mode == "class" {
+			refresh = draftRefreshClassRule
+		}
+		return enqueueDraftConfiguration(ctx, tx, refresh, input.ProductID, periodID, ordinal, at)
+	})
+	return map[string]time.Time{"retiredFrom": at}, err
+}
+
+func retireCatalogPackage(ctx context.Context, tx pgx.Tx, product int64, version string, at time.Time, account *string) error {
+	var packageID, scope string
+	var raw json.RawMessage
+	err := tx.QueryRow(ctx, `SELECT p.source_id::text,p.scope_type,v.definition
+	 FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
+	 JOIN product_catalog_settings scope ON scope.product_id=p.product_id
+	 WHERE v.source_id=$1::uuid AND p.product_id=$2 AND scope.source_system='DCAI' AND p.project_code=scope.project_code
+	  AND p.policy_kind='COMPONENT_RULE' AND p.scope_type IN ('BUSINESS_SCENARIO','CROSS_SCENARIO_AGGREGATE')
+	  AND v.source_status='PUBLISHED' AND `+catalogVersionVisible+` FOR UPDATE OF p`, version, product).Scan(&packageID, &scope, &raw)
+	if err != nil {
+		return err
+	}
+	if scope == "CROSS_SCENARIO_AGGREGATE" {
+		period, err := parseCatalogPeriodRule(raw)
+		if err != nil {
+			return err
+		}
+		if !validCatalogPeriodStart(at.In(shanghai), period.Cycle) {
+			return errCatalogPeriodStart
+		}
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO catalog_rule_retirements(package_id,effective_from,recorded_by)
+	 VALUES($1::uuid,$2,$3::uuid) ON CONFLICT(package_id) DO NOTHING`, packageID, at, account)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return verifyRepeatedRetirement(at, tx.QueryRow(ctx,
+			`SELECT effective_from FROM catalog_rule_retirements WHERE package_id=$1::uuid`, packageID))
+	}
+	return enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods
+	 WHERE product_id=$1 AND $2<((ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')`, product, at)
+}
+
+func verifyRepeatedRetirement(at time.Time, row pgx.Row) error {
+	var saved time.Time
+	if err := row.Scan(&saved); err != nil {
+		return err
+	}
+	if !at.Equal(saved) {
+		return errRuleAlreadyRetired
+	}
+	return nil
+}

@@ -210,7 +210,7 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 	err = tx.QueryRow(ctx, `SELECT v.source_id::text FROM product_rule_versions v
 	 JOIN product_rule_packages p ON p.source_id=v.package_id JOIN product_catalog_settings scope ON scope.product_id=p.product_id
 	 WHERE v.package_id=$1::uuid AND v.source_status='PUBLISHED' AND `+catalogVersionVisible+`
-	  AND v.effective_from<=$2 AND (v.effective_to IS NULL OR $2<v.effective_to)
+	  AND v.effective_from<=$2 AND (`+catalogRuleExecutionThrough+` IS NULL OR $2<`+catalogRuleExecutionThrough+`)
 	 ORDER BY v.effective_from DESC,v.version_no DESC LIMIT 1`, base.packageID, at).Scan(&active)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && active != input.BaseID {
 		return result, errCatalogRateStale

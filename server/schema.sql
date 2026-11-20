@@ -1327,3 +1327,17 @@ CREATE TABLE IF NOT EXISTS organization_sales_company_type_changes (
  changed_by uuid REFERENCES finance_accounts(id),
  PRIMARY KEY(unit_id,version)
 );
+
+CREATE TABLE IF NOT EXISTS rule_scope_retirements (
+ rule_id bigint PRIMARY KEY REFERENCES rule_versions(id),
+ effective_from timestamptz NOT NULL,
+ recorded_by uuid REFERENCES finance_accounts(id),
+ recorded_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS catalog_rule_retirements (
+ package_id uuid PRIMARY KEY REFERENCES product_rule_packages(source_id),
+ effective_from timestamptz NOT NULL,
+ recorded_by uuid REFERENCES finance_accounts(id),
+ recorded_at timestamptz NOT NULL DEFAULT now()
+);

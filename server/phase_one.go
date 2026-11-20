@@ -157,6 +157,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/practice-rule-recipients", Handler: s.practiceRuleRecipients},
 		{Method: http.MethodPost, Path: "/api/v1/practice-pools", Handler: submit(s.createPracticePool)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
+		{Method: http.MethodPost, Path: "/api/v1/rules/retire", Handler: submit(s.retireRule)},
 		{Method: http.MethodPost, Path: "/api/v1/rule-impact", Handler: submitJSON(1<<20, s.postComponentRuleImpact)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-units", Handler: s.list(organizationUnitsSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-sales-companies", Handler: s.organizationCompanies},
@@ -278,7 +279,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 	case errors.Is(err, errOrganizationCompanyTypeChanged), errors.Is(err, errOrganizationCategoryChanged), errors.Is(err, errOrganizationCategoryInUse),
 		errors.Is(err, errOrganizationCategoryName), errors.Is(err, errOrganizationCategoryTarget):
 		code, message = http.StatusConflict, err.Error()
-	case errors.Is(err, conflict), errors.Is(err, errRuleEditStale), errors.Is(err, errAppointmentOverlap), errors.Is(err, errBusinessDutyOverlap), errors.Is(err, errAppointmentChanged), errors.Is(err, errAppointmentUnitInactive),
+	case errors.Is(err, conflict), errors.Is(err, errRuleEditStale), errors.Is(err, errRuleAlreadyRetired), errors.Is(err, errAppointmentOverlap), errors.Is(err, errBusinessDutyOverlap), errors.Is(err, errAppointmentChanged), errors.Is(err, errAppointmentUnitInactive),
 		errors.Is(err, errCatalogAppointmentContext), errors.Is(err, errCatalogAppointmentOverlap), errors.Is(err, errCatalogAppointmentHolder),
 		errors.Is(err, errCatalogRecipientAppointment):
 		code, message = 409, err.Error()
@@ -330,17 +331,20 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
  coalesce(NOT roster.in_period,false) AS "classStartOutsidePeriod",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
  FROM periods p JOIN products pro ON pro.id=p.product_id
  LEFT JOIN settlements final ON final.period_id=p.id
- LEFT JOIN calculation_drafts frozen ON frozen.period_id=final.period_id AND pro.period_mode='class'
+ LEFT JOIN calculation_drafts frozen ON frozen.period_id=final.period_id
  LEFT JOIN LATERAL (
   SELECT r.starts_at,r.source_version,r.attendance_count,(r.starts_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on AS in_period
   FROM practice_rosters r WHERE r.period_key=p.source_period_key AND (final.period_id IS NULL OR r.id=frozen.practice_roster_id)
   ORDER BY r.source_version DESC LIMIT 1
  ) roster ON pro.period_mode='class'
  LEFT JOIN LATERAL (
-  SELECT rv.version,rv.label FROM rule_versions rv WHERE ` + matchingRuleScope + `
-  AND CASE WHEN pro.period_mode='class' AND final.period_id IS NOT NULL THEN rv.id=frozen.rule_id
+  SELECT rv.version,rv.label FROM rule_versions rv
+  CROSS JOIN LATERAL (SELECT ` + componentRuleRetiredAtSQL + ` AS at) stopped WHERE ` + matchingRuleScope + `
+  AND CASE WHEN final.period_id IS NOT NULL THEN rv.id=frozen.rule_id
     WHEN pro.period_mode='class' THEN roster.in_period AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
-    ELSE rv.effective_from IS NULL OR rv.effective_from < ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai') END
+      AND (stopped.at IS NULL OR roster.starts_at<stopped.at)
+    ELSE (rv.effective_from IS NULL OR rv.effective_from < ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'))
+      AND (stopped.at IS NULL OR greatest(rv.effective_from,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')<stopped.at) END
   ORDER BY ` + matchingRuleOrder + ` LIMIT 1
  ) rule ON true WHERE ($1::bigint[] IS NULL OR p.product_id=ANY($1)) ORDER BY p.id DESC LIMIT 500) a`
 const matchingRuleScope = `rv.product_id=p.product_id AND
@@ -348,7 +352,8 @@ const matchingRuleScope = `rv.product_id=p.product_id AND
 const matchingRuleOrder = `(rv.period_id IS NOT NULL) DESC,rv.from_ordinal DESC NULLS LAST,
   rv.effective_from DESC NULLS LAST,rv.version DESC`
 const ruleVersionRowsSQL = `SELECT rv.id,rv.product_id AS "productId",p.name AS "productName",rv.version,rv.label,
- rv.from_ordinal AS "fromOrdinal",rv.period_id AS "periodId",pr.name AS "periodName",rv.effective_from AS "effectiveFrom",rv.components
+ rv.from_ordinal AS "fromOrdinal",rv.period_id AS "periodId",pr.name AS "periodName",rv.effective_from AS "effectiveFrom",
+ ` + componentRuleRetiredAtSQL + ` AS "retiredFrom",rv.components
  FROM rule_versions rv JOIN products p ON p.id=rv.product_id LEFT JOIN periods pr ON pr.id=rv.period_id`
 
 const rulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM (` + ruleVersionRowsSQL + `

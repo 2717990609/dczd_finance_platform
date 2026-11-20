@@ -71,6 +71,7 @@ onMounted(async () => {
         <a-descriptions-item label="产品">{{ rule.productName }}</a-descriptions-item>
         <a-descriptions-item label="适用范围">{{ scope }}</a-descriptions-item>
         <a-descriptions-item label="生效时间">{{ rule.effectiveFrom ? formatTime(rule.effectiveFrom) : '范围默认' }}<template v-if="rule.effectiveTo"> 至 {{ formatTime(rule.effectiveTo) }}</template></a-descriptions-item>
+        <a-descriptions-item v-if="rule.retiredFrom" label="停用时间">{{ formatTime(rule.retiredFrom) }}</a-descriptions-item>
       </a-descriptions>
       <article v-for="(part,index) in rule.components" :key="index" class="rule-preview-part">
         <header>

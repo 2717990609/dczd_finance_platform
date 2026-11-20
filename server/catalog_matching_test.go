@@ -168,6 +168,18 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 	if got := get(); got.MatchedCount != 1 || got.Items[0].Status != "RULE_CONFLICT" {
 		t.Fatalf("tied rule must surface conflict: %+v", got)
 	}
+	insert("pre-cutoff", "VIP_ORDER", "1", boundary.Add(time.Second), 200)
+	if _, err := s.retireRule(ctx, retireRuleInput{ProductID: productID, CatalogVersionID: z(21),
+		EffectiveFrom: boundary.Add(time.Second * 10)}); err != nil {
+		t.Fatal(err)
+	}
+	stopped := make(map[string]catalogPaymentMatch)
+	for _, row := range get().Items {
+		stopped[row.OrderID] = row
+	}
+	if stopped["pre-cutoff"].Status != "RULE_CONFLICT" || stopped["after"].Status != "MATCHED" || stopped["after"].RuleVersion != 13 {
+		t.Fatalf("catalog retirement did not respect payment times: before=%+v after=%+v", stopped["pre-cutoff"], stopped["after"])
+	}
 	input.Products[0].BusinessRoutes = nil
 	input.CapturedAt = input.CapturedAt.Add(time.Second)
 	saveConfig()

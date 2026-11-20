@@ -51,9 +51,11 @@ const draftScopeSQL = `SELECT pro.period_mode, p.starts_on::timestamp AT TIME ZO
  (pro.period_mode='class' AND p.calendar_month IS NOT NULL)
  FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1`
 
-const draftRulesSQL = `SELECT rv.id,rv.version,rv.effective_from,rv.components FROM periods p
+const draftRulesSQL = `SELECT rv.id,rv.version,rv.effective_from,stopped.at,rv.components FROM periods p
  JOIN rule_versions rv ON ` + matchingRuleScope + `
+ CROSS JOIN LATERAL (SELECT ` + componentRuleRetiredAtSQL + ` AS at) stopped
  WHERE p.id=$1 AND (rv.effective_from IS NULL OR rv.effective_from<$2)
+ AND (stopped.at IS NULL OR greatest($3::timestamptz,rv.effective_from)<stopped.at)
  ORDER BY ` + matchingRuleOrder
 
 const draftPaymentsSQL = `SELECT v.id,v.fact,coalesce(company.company_id,'')
@@ -192,13 +194,13 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 			return window, nil, errPracticeStart
 		}
 	}
-	rows, err := tx.Query(ctx, draftRulesSQL, summary.PeriodID, window.Through)
+	rows, err := tx.Query(ctx, draftRulesSQL, summary.PeriodID, window.Through, window.Start)
 	if err != nil {
 		return window, nil, err
 	}
 	rules, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (paymentRule, error) {
 		var rule paymentRule
-		if err := row.Scan(&rule.ID, &rule.Version, &rule.From, &rule.Components); err != nil {
+		if err := row.Scan(&rule.ID, &rule.Version, &rule.From, &rule.Through, &rule.Components); err != nil {
 			return rule, err
 		}
 		return rule, validateComponents(rule.Components)

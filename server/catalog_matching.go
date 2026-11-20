@@ -48,7 +48,7 @@ const catalogMatchSQL = `WITH period AS (
 ), routes AS MATERIALIZED (
  SELECT m.* FROM catalog_business_routes m JOIN period p USING(product_id) WHERE m.observed_at=p.captured_at
 ), rules AS MATERIALIZED (
- SELECT v.source_id,v.effective_from,v.effective_to,v.version_no,v.published_at,p.name,p.scope_id,p.resume_from,
+ SELECT v.source_id,v.effective_from,` + catalogRuleExecutionThrough + ` AS effective_to,v.version_no,v.published_at,p.name,p.scope_id,p.resume_from,
  v.definition->'policy_scope'->'sales_systems' AS sales_systems,
  v.definition->'policy_scope'->'business_sku_codes' AS skus,
  v.definition->>'recognition_plan' IS NOT NULL AS compound_recognition,
@@ -57,7 +57,7 @@ const catalogMatchSQL = `WITH period AS (
  FROM period scope JOIN product_rule_packages p ON p.product_id=scope.product_id AND p.project_code=scope.project_code
  JOIN product_rule_versions v ON v.package_id=p.source_id AND ` + catalogVersionVisible + `
  WHERE ` + catalogRuleEligible + ` AND v.effective_from<scope.before
-  AND (v.effective_to IS NULL OR scope.after<v.effective_to OR EXISTS(
+  AND (` + catalogRuleExecutionThrough + ` IS NULL OR scope.after<` + catalogRuleExecutionThrough + ` OR EXISTS(
    SELECT 1 FROM routes m WHERE m.source='DCAI' AND m.domain='HEALTH_IDENTITY'
   ))
   AND v.definition->'settlement_policy'->>'cycle'=scope.cycle

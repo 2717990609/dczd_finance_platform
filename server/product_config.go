@@ -71,11 +71,16 @@ const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(result) ORDER BY res
  p.scope_id AS "scopeId",scenario.label AS "scopeLabel",
  v.version_no AS version,v.source_status AS "sourceStatus",v.effective_from AS "effectiveFrom",
  ` + catalogDisplayedThrough + ` AS "effectiveTo",
+ ` + catalogRuleRetiredAtSQL + ` AS "retiredFrom",
  p.paused,p.resume_from AS "resumeFrom",p.project_code=scope.project_code AS "projectMatches",
  ` + catalogVersionVisible + ` AS "inLatestSnapshot",
  v.published_at AS "publishedAt",
  ` + catalogRateConfigurationSQL + ` AS "rateConfigAvailable",
  (` + catalogPeriodRuleScope + `) AS "periodConfigAvailable",
+ CASE WHEN p.scope_type='CROSS_SCENARIO_AGGREGATE' THEN v.definition->'settlement_policy'->>'cycle' END AS "aggregateCycle",
+ (scope.source_system='DCAI' AND p.project_code=scope.project_code AND p.policy_kind='COMPONENT_RULE'
+  AND p.scope_type IN ('BUSINESS_SCENARIO','CROSS_SCENARIO_AGGREGATE') AND v.source_status='PUBLISHED'
+  AND ` + catalogVersionVisible + `) AS "retirementAvailable",
  ` + catalogRateConfigurationSQL + ` AS "draftSupported"
  FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
  JOIN product_catalog_settings scope ON scope.product_id=p.product_id JOIN products pr ON pr.id=scope.product_id

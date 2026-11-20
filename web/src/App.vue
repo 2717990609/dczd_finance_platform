@@ -104,6 +104,9 @@ const orderDetails = ref()
 const rateRule = ref()
 const periodRule = ref()
 const ruleDetails = ref()
+const ruleRetirement = ref()
+const retiringRule = ref(false)
+const retirementError = ref('')
 const appliedRule = ref()
 const rulePreview = ref()
 const ruleImpactBusy = ref(false)
@@ -186,14 +189,16 @@ const classPeopleOptions = computed(() => classRuleDirectory.value?.people.map(p
 const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({value:unit.id,label:unit.name})) || [])
 const salesUnitOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>['DEPARTMENT','TEAM'].includes(unit.kind))
   .map(unit=>({value:unit.id,label:unit.name+' · '+optionLabel('organizationKind',unit.kind)})) || [])
-const ruleEditVersionIDs = computed(() => {
+function latestComponentRuleIDs(sameEffectiveTime) {
   const latest = new Map()
   for (const rule of data.value.rules) {
-    const scope = JSON.stringify([rule.productId,rule.periodId,rule.fromOrdinal,rule.effectiveFrom])
+    const scope = JSON.stringify([rule.productId,rule.periodId,rule.fromOrdinal,sameEffectiveTime ? rule.effectiveFrom : undefined])
     if (!latest.has(scope) || latest.get(scope).version < rule.version) latest.set(scope,rule)
   }
   return new Set([...latest.values()].map(rule=>rule.id))
-})
+}
+const ruleEditVersionIDs = computed(() => latestComponentRuleIDs(true))
+const ruleRetirementIDs = computed(() => latestComponentRuleIDs(false))
 const practicePoolOptions = computed(() => classRuleDirectory.value?.pools?.map(pool=>({value:pool.id,label:pool.name+' · '+pool.unitName})) || [])
 const companyRecipientOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>unit.kind==='COMPANY')
   .map(unit=>({value:unit.id,label:unit.name})) || [])
@@ -341,12 +346,44 @@ function catalogRuleBadge(row) {
   if (!row.inLatestSnapshot) return { text:'历史版本', color:'default' }
   if (!row.projectMatches) return { text:'其他核算项目', color:'default' }
   if (row.sourceStatus!=='PUBLISHED') return { text:'已停用', color:'default' }
+  if (row.retiredFrom && Date.parse(row.retiredFrom)<=now) return { text:'已停用', color:'default' }
   if (row.effectiveTo && new Date(row.effectiveTo).getTime()<=now) return { text:'已截止', color:'default' }
   if (row.paused) return { text:'暂停执行', color:'orange' }
   if (new Date(row.effectiveFrom).getTime()>now || row.resumeFrom && new Date(row.resumeFrom).getTime()>now) {
     return { text:'待生效', color:'blue' }
   }
   return row.draftSupported ? { text:'可试算', color:'green' } : { text:'未开放试算', color:'blue' }
+}
+function openRuleRetirement(rule) {
+  retirementError.value = ''
+  const local = new Date(Date.now()+8*3600000)
+  let effectiveFrom = local.toISOString().slice(0,16)
+  if (rule.aggregateCycle) {
+    const day = rule.aggregateCycle==='MONTHLY_25_TO_24' ? 25 : 1
+    const offset = day > local.getUTCDate() ? 0 : 1
+    effectiveFrom = new Date(Date.UTC(local.getUTCFullYear(),local.getUTCMonth()+offset,day)).toISOString().slice(0,10)
+  }
+  ruleRetirement.value = {rule,effectiveFrom}
+}
+async function saveRuleRetirement() {
+  if (retiringRule.value || !ruleRetirement.value?.effectiveFrom) return
+  const {rule,effectiveFrom} = ruleRetirement.value
+  retirementError.value = ''
+  retiringRule.value = true
+  try {
+    await api('/rules/retire',{method:'POST',body:JSON.stringify({
+      productId:rule.productId,
+      ...(rule.catalogPending ? {catalogVersionId:rule.id} : {ruleId:rule.id}),
+      effectiveFrom:new Date(effectiveFrom+(rule.aggregateCycle ? 'T00:00:00+08:00' : '+08:00')).toISOString(),
+    })})
+    ruleRetirement.value = undefined
+    notice.value = '已登记规则停用时间。'
+    refresh()
+  } catch (err) {
+    retirementError.value = err.message
+  } finally {
+    retiringRule.value = false
+  }
 }
 function ratePublished(result) {
   notice.value = result.id === (rateRule.value || periodRule.value)?.id ? '规则无变化。' : '规则 v'+result.version+' 已发布。'
@@ -376,7 +413,7 @@ const columns = computed(() => {
     period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],
       ['报表月份','reportMonth',115],['签到名单','practiceRoster',150],['适用规则','ruleVersion',200]],
     rule:[['规则名称','label',200],['所属产品','productName',155],['版本','version',80],
-      ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',220],['操作','ruleAction',160]],
+      ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',220],['操作','ruleAction',270]],
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
     person:[['人员名称','name'],['人员 ID','id']],
     identity:[['归属人员','personName',128],['业务来源','source',112],['来源人员 ID','externalId',164],
@@ -562,6 +599,7 @@ function changeRoute() {
   rateRule.value = undefined
   periodRule.value = undefined
   ruleDetails.value = undefined
+  ruleRetirement.value = undefined
   appliedRule.value = undefined
   rulePreview.value = undefined
   if (requestedPeriod.value && productScope.value && data.value.periods.find(period => period.id === requestedPeriod.value)?.productId !== productScope.value) {
@@ -614,6 +652,7 @@ function clearWorkspace() {
   rateRule.value = undefined
   periodRule.value = undefined
   ruleDetails.value = undefined
+  ruleRetirement.value = undefined
   appliedRule.value = undefined
   rulePreview.value = undefined
   saving.value = false
@@ -1237,6 +1276,7 @@ async function save() {
                 <template v-else-if="column.key==='effectiveFrom'">
                   {{ text ? formatTime(text) : '范围默认' }}
                   <small v-if="record.effectiveTo" class="order-version">截止 {{ formatTime(record.effectiveTo) }}</small>
+                  <small v-if="record.retiredFrom" class="order-version">停用时间 {{ formatTime(record.retiredFrom) }}</small>
                 </template>
                 <template v-else-if="column.key==='scope'">
                   <template v-if="record.catalogPending">
@@ -1254,11 +1294,14 @@ async function save() {
                     @click="periodRule=record">整期阶梯</a-button>
                   <template v-else-if="!record.catalogPending">
                     <a-button type="link" size="small" @click="ruleDetails=record">查看规则</a-button>
-                    <a-button v-if="canPublishRule(record.productId) && ruleEditVersionIDs.has(record.id)" :disabled="!configurationReady"
+                    <a-button v-if="canPublishRule(record.productId) && !record.retiredFrom && ruleEditVersionIDs.has(record.id)" :disabled="!configurationReady"
                       type="link" size="small" @click="open('rule',record,true)">编辑规则</a-button>
                     <a-button v-if="canPublishRule(record.productId)" :disabled="!configurationReady"
                       type="link" size="small" @click="open('rule',record)">复制配置</a-button>
                   </template>
+                  <a-button v-if="canPublishRule(record.productId) && !record.retiredFrom &&
+                    (record.catalogPending ? record.retirementAvailable : ruleRetirementIDs.has(record.id))"
+                    type="link" danger size="small" @click="openRuleRetirement(record)">停用规则</a-button>
                 </template>
                 <template v-else-if="column.key==='components'">
                   <div v-for="(c,index) in text" :key="index">
@@ -1475,6 +1518,22 @@ async function save() {
       </div>
     </template>
   </a-drawer>
+  <a-modal v-if="ruleRetirement" open title="停用规则" ok-text="确认停用" cancel-text="返回"
+    :confirm-loading="retiringRule" :ok-button-props="{danger:true,disabled:!ruleRetirement.effectiveFrom}"
+    @ok="saveRuleRetirement" @cancel="!retiringRule && (ruleRetirement=undefined)">
+    <a-alert v-if="retirementError" class="feedback" :message="retirementError" type="error" show-icon/>
+    <p><strong>{{ ruleRetirement.rule.label }}</strong></p>
+    <p class="rule-formula">{{ ruleRetirement.rule.catalogPending
+      ? '该规则包的所有版本从停用时间起退出选版。'
+      : '同一适用范围内的已有版本从停用时间起退出选版。' }}已确认结算继续引用原规则。</p>
+    <a-form layout="vertical">
+      <a-form-item :label="ruleRetirement.rule.aggregateCycle ? '停用账期起点（北京时间）' : '停用时间（北京时间）'"
+        html-for="retirement-effective">
+        <a-input id="retirement-effective" v-model:value="ruleRetirement.effectiveFrom"
+          :type="ruleRetirement.rule.aggregateCycle ? 'date' : 'datetime-local'" :disabled="retiringRule"/>
+      </a-form-item>
+    </a-form>
+  </a-modal>
   <OrderDetails v-if="orderDetails" :selection="orderDetails" :api="api" :format-money="formatMoney" :format-time="formatTime" :source-label="sourceLabel"
     :labels="labels" :role-label="orderRoleLabel" :can-pull="Boolean(orderDetails.allowPull && configurationReady)" :records-link="orderRecordsLink"
     @close="orderDetails=undefined" @pull="pullFromDetails"/>

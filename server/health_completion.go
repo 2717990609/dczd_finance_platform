@@ -106,7 +106,8 @@ const healthRulesAtPaymentSQL = `
     AND (v.observed_at=c.captured_at OR v.published_at IS NOT NULL) AND ` + catalogRuleEligible + `
     AND v.definition->'settlement_policy'->>'cycle'=CASE pro.cycle_start_day WHEN 25 THEN 'MONTHLY_25_TO_24' WHEN 1 THEN 'MONTHLY' END
     AND v.definition->'policy_scope'->'sales_systems' ? payment.source AND v.definition->'policy_scope'->'business_sku_codes' ? m.sku_code
-    AND v.effective_from<=payment.paid_at AND (v.effective_to IS NULL OR payment.paid_at<v.effective_to)
+    AND v.effective_from<=payment.paid_at
+    AND (` + catalogRuleExecutionThrough + ` IS NULL OR payment.paid_at<` + catalogRuleExecutionThrough + `)
     AND (p.resume_from IS NULL OR p.resume_from<=payment.paid_at)
    ORDER BY ` + catalogRuleOrder + ` FETCH FIRST 1 ROW WITH TIES`
 

@@ -184,9 +184,10 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	 LEFT JOIN LATERAL (SELECT r.id,r.starts_at FROM practice_rosters r
 	  WHERE r.period_key=p.source_period_key AND (closed.practice_roster_id IS NULL OR r.id=closed.practice_roster_id)
 	  ORDER BY r.source_version DESC LIMIT 1) roster ON true
-	 LEFT JOIN LATERAL (SELECT rv.components FROM rule_versions rv
+	 LEFT JOIN LATERAL (SELECT rv.components FROM rule_versions rv CROSS JOIN LATERAL (SELECT `+componentRuleRetiredAtSQL+` AS at) stopped
 	  WHERE CASE WHEN closed.rule_id IS NOT NULL THEN rv.id=closed.rule_id
-	   ELSE `+matchingRuleScope+` AND roster.starts_at IS NOT NULL AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at) END
+	   ELSE `+matchingRuleScope+` AND roster.starts_at IS NOT NULL AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
+	     AND (stopped.at IS NULL OR roster.starts_at<stopped.at) END
 	  ORDER BY `+matchingRuleOrder+` LIMIT 1) selected ON true
 	 WHERE current.id=$1 AND (($2>0 AND p.ordinal>=$2)
 	  OR ($3::timestamptz IS NOT NULL AND (roster.starts_at>=$3 OR p.ends_on>=($3 AT TIME ZONE 'Asia/Shanghai')::date)))

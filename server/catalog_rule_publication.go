@@ -56,7 +56,8 @@ const catalogRateVersionEligibilitySQL = catalogRuleEligible + `
  AND v.definition->'policy_scope'->'business_sku_codes' ? p.scope_id
  AND v.definition->'policy_scope'->'sales_systems' ? scope.source_system`
 
-const catalogScenarioRateCandidates = `SELECT v.source_id,v.effective_from,v.effective_to,v.published_at,p.resume_from,` + catalogRulePriority + ` AS priority
+const catalogScenarioRateCandidates = `SELECT v.source_id,v.effective_from,` + catalogRuleExecutionThrough + ` AS effective_to,
+ v.published_at,p.resume_from,` + catalogRulePriority + ` AS priority
  FROM product_catalog_settings scope JOIN products pro ON pro.id=scope.product_id
  JOIN product_rule_packages p ON p.product_id=scope.product_id AND p.project_code=scope.project_code
  JOIN product_rule_versions v ON v.package_id=p.source_id AND ` + catalogVersionVisible + `
@@ -131,7 +132,7 @@ JOIN periods boundary ON boundary.product_id=$1
  AND (dates.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN boundary.starts_on AND boundary.ends_on
 ` + healthCompletionTargetSQL
 
-const catalogDisplayedThrough = `least(v.effective_to,(SELECT min(later.effective_from) FROM product_rule_versions later
+const catalogDisplayedThrough = `least(` + catalogRuleExecutionThrough + `,(SELECT min(later.effective_from) FROM product_rule_versions later
  WHERE later.package_id=v.package_id AND later.published_at IS NOT NULL AND later.effective_from>v.effective_from))`
 
 func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalogRatesInput, actor string) (catalogPublication, error) {
