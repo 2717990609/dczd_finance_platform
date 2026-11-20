@@ -84,6 +84,17 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 		}
 		return id
 	}
+	activity := func(month string) *catalogPeriodGroupReport {
+		t.Helper()
+		reply := httptest.NewRecorder()
+		s.getCatalogPeriodActivity(reply, httptest.NewRequest(http.MethodGet,
+			"/api/v1/catalog-period-activity?ruleId="+versionID+"&month="+month, nil))
+		var report catalogPeriodActivity
+		if err := json.Unmarshal(reply.Body.Bytes(), &report); err != nil || reply.Code != http.StatusOK || report.Grouping == nil {
+			t.Fatalf("expected grouped activity: %d %s %v", reply.Code, reply.Body.String(), err)
+		}
+		return report.Grouping
+	}
 	periodID = open()
 	if open() != periodID {
 		t.Fatal("reopening the same rule package and month should reuse its period")
@@ -119,6 +130,9 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 	}
 	if result, err := s.calculateCurrentDraft(ctx, september, 0); err != nil || result.IssueCount != 1 {
 		t.Fatalf("an unconfirmed preceding month must be visible for review: %+v %v", result, err)
+	}
+	if report := activity("2026-09"); !report.PriorUnsettled {
+		t.Fatalf("preview must flag an unconfirmed preceding month: %+v", report)
 	}
 	if _, err := db.Exec(ctx, "UPDATE products SET settlement_enabled=true WHERE id=$1", productID); err != nil {
 		t.Fatal(err)
@@ -162,6 +176,16 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 		t.Fatal("a preceding settlement referenced by a subsequent settlement cannot be removed")
 	}
 	input.Month = "2026-10"
+	if report := activity(input.Month); report.PriorUnsettled || len(report.Groups) != 1 ||
+		report.Groups[0].Version != 1 || len(report.Groups[0].Targets) != 2 ||
+		report.Groups[0].Targets[0].Name != "收款公司" || report.Groups[0].CarryIn != -5000 ||
+		report.Groups[0].AfterCarry == nil || report.Groups[0].AfterCarry.CarryForward != -5000 {
+		t.Fatalf("preview must show the original payees and carry in an empty month: %+v", report)
+	}
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM periods
+	 WHERE aggregate_package_id='10000000-0000-4000-8000-000000000820' AND report_month='2026-10-01'`).Scan(&ordinaryPeriods); err != nil || ordinaryPeriods != 0 {
+		t.Fatalf("preview should leave an unopened period untouched, found %d: %v", ordinaryPeriods, err)
+	}
 	october := open()
 	carry, err := s.calculateCurrentDraft(ctx, october, 0)
 	if err != nil || carry.Total != 0 || carry.IssueCount != 0 {
@@ -181,6 +205,12 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 	if _, err := db.Exec(ctx, `INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier)
 	 VALUES($1,'ORDER','second','VIP')`, sourceID); err != nil {
 		t.Fatal(err)
+	}
+	preview := activity(input.Month)
+	if preview.PriorUnsettled || len(preview.Groups) != 1 || preview.Groups[0].CarryIn != -5000 ||
+		preview.Groups[0].BeforeCarry.Total != 2000 || preview.Groups[0].AfterCarry == nil ||
+		preview.Groups[0].AfterCarry.Total != 1000 || preview.Groups[0].AfterCarry.Basis != 5000 {
+		t.Fatalf("preview must offset the prior refund against the original group: %+v", preview)
 	}
 	if result, err := s.calculateCurrentDraft(ctx, october, 0); err != nil || result.Total != 1000 || result.IssueCount != 0 || result.Version <= carry.Version {
 		t.Fatalf("same group offsets the earlier refund before its rate is applied: %+v %v", result, err)

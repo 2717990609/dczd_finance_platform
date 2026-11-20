@@ -29,6 +29,7 @@ const quote = ref()
 const activityMonth = ref(new Date(Date.now()+8*3600000).toISOString().slice(0,7))
 const reviewingActivity = ref(false)
 const activity = ref()
+const showsPriorCarry = computed(() => activity.value?.grouping?.groups.some(group=>group.carryInMinor<0))
 const activityError = ref('')
 const savingDraft = ref(false)
 let versionRequest = 0
@@ -527,10 +528,12 @@ async function publish() {
               <p v-if="activity.grouping.paused && !activity.grouping.trialOnPaused" class="rule-formula">规则包已暂停，本次仅核对场景收退款。</p>
               <template v-else>
                 <p v-if="activity.grouping.trialOnPaused" class="rule-formula">按已发布的暂停规则试算，规则仍保持暂停。</p>
-                <p class="rule-formula">各组按本期净额选档。试算额尚未抵扣上期结转退款。</p>
+                <p v-if="activity.grouping.priorUnsettled" class="rule-formula" role="status">上一账期尚未确认，暂显示结转前试算。</p>
                 <div v-if="activity.grouping.groups.length" class="period-activity-table">
                   <table>
-                    <thead><tr><th>规则版本</th><th>收款对象</th><th>本期收款</th><th>本期退款</th><th>本期净额</th><th>结转前试算</th></tr></thead>
+                    <thead><tr><th>规则版本</th><th>收款对象</th><th>本期收款</th><th>本期退款</th><th>本期净额</th>
+                      <th v-if="showsPriorCarry">上期结转退款</th>
+                      <th>{{ activity.grouping.priorUnsettled ? '结转前试算' : '分润试算' }}</th></tr></thead>
                     <tbody>
                       <tr v-for="group in activity.grouping.groups" :key="group.id">
                         <td>v{{ group.version }}</td>
@@ -543,12 +546,13 @@ async function publish() {
                         <td>{{ formatMoney(group.receiptsMinor) }}</td>
                         <td>{{ formatMoney(group.refundsMinor) }}</td>
                         <td>{{ formatMoney(group.netMinor) }}</td>
+                        <td v-if="showsPriorCarry">{{ formatMoney(-(group.carryInMinor || 0)) }}</td>
                         <td>
-                          <div v-for="award in group.beforeCarry.awards" :key="award.itemKey">
+                          <div v-for="award in (group.afterCarry || group.beforeCarry).awards" :key="award.itemKey">
                             {{ formatMoney(award.amountMinor) }} <small>· {{ award.label }} {{ award.rateBps/100 }}%</small>
                           </div>
-                          <small v-if="group.beforeCarry.carryForwardMinor<0" class="order-version">
-                            本期未抵扣退款 {{ formatMoney(-group.beforeCarry.carryForwardMinor) }}
+                          <small v-if="(group.afterCarry || group.beforeCarry).carryForwardMinor<0" class="order-version">
+                            {{ activity.grouping.priorUnsettled ? '本期未抵扣退款' : '转下期退款' }} {{ formatMoney(-(group.afterCarry || group.beforeCarry).carryForwardMinor) }}
                           </small>
                         </td>
                       </tr>

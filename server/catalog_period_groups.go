@@ -50,11 +50,13 @@ type catalogAggregateDirectory struct {
 }
 
 type catalogPeriodGroupReport struct {
-	Paused        bool                 `json:"paused,omitempty"`
-	TrialOnPaused bool                 `json:"trialOnPaused,omitempty"`
-	Groups        []catalogPeriodGroup `json:"groups"`
-	Issues        map[string]int       `json:"issues"`
-	postingIssues []draftIssue
+	Paused          bool                 `json:"paused,omitempty"`
+	TrialOnPaused   bool                 `json:"trialOnPaused,omitempty"`
+	PriorUnsettled  bool                 `json:"priorUnsettled,omitempty"`
+	Groups          []catalogPeriodGroup `json:"groups"`
+	Issues          map[string]int       `json:"issues"`
+	carryFromPeriod int64
+	postingIssues   []draftIssue
 }
 
 type catalogPeriodGroup struct {
@@ -67,8 +69,17 @@ type catalogPeriodGroup struct {
 	Net         int64                      `json:"netMinor"`
 	Payments    int                        `json:"paymentCount"`
 	BeforeCarry catalogPeriodQuote         `json:"beforeCarry"`
+	CarryIn     int64                      `json:"carryInMinor,omitempty"`
+	AfterCarry  *catalogPeriodQuote        `json:"afterCarry,omitempty"`
 	posting     catalogAggregateGroupInput
 	items       []catalogPeriodItem
+}
+
+func (g catalogPeriodGroup) quote() catalogPeriodQuote {
+	if g.AfterCarry != nil {
+		return *g.AfterCarry
+	}
+	return g.BeforeCarry
 }
 
 type catalogPeriodGroupTarget struct {

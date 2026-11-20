@@ -509,6 +509,11 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 			if err != nil {
 				return result, err
 			}
+			if slices.ContainsFunc(rules, func(rule catalogAggregateRule) bool { return rule.From.Before(in.Window.Start) }) {
+				if err := readCatalogAggregateCarry(ctx, tx, &grouping, packageID, in.Window.Start, in.DraftPeriodID == 0); err != nil {
+					return result, err
+				}
+			}
 			grouping.Paused, grouping.TrialOnPaused = in.GroupRule.Paused, in.GroupRule.Paused && in.TrialPaused
 			result.Grouping = &grouping
 		}

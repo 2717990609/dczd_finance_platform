@@ -51,18 +51,25 @@ func catalogAggregateWindow(month string, cycle string) (periodWindow, error) {
 }
 
 func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []catalogActivityEvent, display bool) (map[catalogFrozenGroupReference]catalogPeriodGroup, error) {
-	var ids []int64
-	var keys []string
+	var refs []catalogFrozenGroupReference
 	seen := make(map[catalogFrozenGroupReference]bool)
 	for _, event := range events {
 		ref := event.frozen
 		if ref.PeriodID != 0 && !seen[ref] {
-			ids, keys = append(ids, ref.PeriodID), append(keys, ref.Key)
+			refs = append(refs, ref)
 			seen[ref] = true
 		}
 	}
-	if len(ids) == 0 {
+	return readCatalogAggregateGroupsByReference(ctx, tx, refs, display)
+}
+
+func readCatalogAggregateGroupsByReference(ctx context.Context, tx pgx.Tx, refs []catalogFrozenGroupReference, display bool) (map[catalogFrozenGroupReference]catalogPeriodGroup, error) {
+	if len(refs) == 0 {
 		return nil, nil
+	}
+	ids, keys := make([]int64, len(refs)), make([]string, len(refs))
+	for i, ref := range refs {
+		ids[i], keys[i] = ref.PeriodID, ref.Key
 	}
 	rows, err := tx.Query(ctx, `SELECT g.period_id,g.group_key,g.rule_id::text,g.targets,v.version_no,v.definition,
 	 CASE WHEN $3 THEN (
@@ -201,16 +208,15 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 	var result paymentDraft
 	var rule catalogPeriodVersion
 	var raw json.RawMessage
-	var first time.Time
 	rule.packageID = *summary.AggregatePackage
-	err := tx.QueryRow(ctx, `SELECT p.product_id,p.paused,v.definition,min(greatest(v.effective_from,p.resume_from)) OVER (),
+	err := tx.QueryRow(ctx, `SELECT p.product_id,p.paused,v.definition,
 	 `+catalogRuleRetiredAtSQL+`
 	 FROM product_rule_packages p JOIN product_catalog_settings scope ON scope.product_id=p.product_id
 	 JOIN product_rule_versions v ON v.package_id=p.source_id
 	 WHERE p.source_id=$1::uuid AND `+catalogPeriodRuleScope+` AND v.source_status='PUBLISHED' AND `+catalogVersionVisible+`
 	  AND v.effective_from<$2
 	 ORDER BY v.effective_from DESC,v.version_no DESC LIMIT 1`, rule.packageID, window.Through).
-		Scan(&rule.ProductID, &rule.Paused, &raw, &first, &rule.retiredFrom)
+		Scan(&rule.ProductID, &rule.Paused, &raw, &rule.retiredFrom)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, nil, errCatalogAggregatePeriod
 	}
@@ -239,21 +245,9 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 			}
 		}
 	}
-	groups := activity.Grouping.Groups
-	if first.Before(window.Start) {
-		err = tx.QueryRow(ctx, `SELECT p.id FROM periods p JOIN settlements final ON final.period_id=p.id
-		 WHERE p.aggregate_package_id=$1::uuid AND (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'=$2`,
-			rule.packageID, window.Start).Scan(&result.aggregatePredecessor)
-		if errors.Is(err, pgx.ErrNoRows) {
-			result.Issues = append(result.Issues, draftIssue{Code: "AGGREGATE_PRIOR_UNSETTLED"})
-		} else if err != nil {
-			return result, nil, err
-		} else {
-			groups, err = applyCatalogAggregateCarry(ctx, tx, result.aggregatePredecessor, groups)
-			if err != nil {
-				return result, nil, err
-			}
-		}
+	result.aggregatePredecessor = activity.Grouping.carryFromPeriod
+	if activity.Grouping.PriorUnsettled {
+		result.Issues = append(result.Issues, draftIssue{Code: "AGGREGATE_PRIOR_UNSETTLED"})
 	}
 	slices.SortFunc(result.Issues, func(a, b draftIssue) int {
 		return cmp.Or(cmp.Compare(a.FactID, b.FactID), cmp.Compare(a.Code, b.Code), cmp.Compare(a.Component, b.Component))
@@ -262,18 +256,19 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 	if err != nil {
 		return result, nil, err
 	}
-	for _, group := range groups {
+	for _, group := range activity.Grouping.Groups {
 		posting := group.posting
+		quote := group.quote()
 		posting.Key, posting.RuleID = group.ID, group.RuleID
 		posting.Receipts, posting.Refunds = group.Receipts, group.Refunds
-		posting.CarryOut = group.BeforeCarry.CarryForward
+		posting.CarryIn, posting.CarryOut = group.CarryIn, quote.CarryForward
 		slices.SortFunc(posting.Events, func(a, b catalogAggregateEventReference) int { return cmp.Compare(a.EventID, b.EventID) })
 		result.aggregateGroups = append(result.aggregateGroups, posting)
 		var applied pgtype.UUID
 		if err := applied.Scan(group.RuleID); err != nil {
 			return result, nil, err
 		}
-		for i, award := range group.BeforeCarry.Awards {
+		for i, award := range quote.Awards {
 			if award.Amount == 0 {
 				continue
 			}
@@ -289,7 +284,7 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 				return result, nil, err
 			}
 			result.Lines = append(result.Lines, draftLine{FactID: posting.AnchorID, Component: award.ItemKey, PersonID: target.Person,
-				AggregateGroup: group.ID, Catalog: benefit, Amount: award.Amount, Base: group.BeforeCarry.Basis,
+				AggregateGroup: group.ID, Catalog: benefit, Amount: award.Amount, Base: quote.Basis,
 				organization: organizations.ancestors(benefit.Unit)})
 		}
 	}
@@ -297,7 +292,22 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 	return result, digest, err
 }
 
-func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior int64, groups []catalogPeriodGroup) ([]catalogPeriodGroup, error) {
+func readCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, report *catalogPeriodGroupReport, packageID string, start time.Time, display bool) error {
+	err := tx.QueryRow(ctx, `SELECT p.id FROM periods p JOIN settlements final ON final.period_id=p.id
+	 WHERE p.aggregate_package_id=$1::uuid AND p.ends_on=($2::timestamptz AT TIME ZONE 'Asia/Shanghai')::date-1`, packageID, start).
+		Scan(&report.carryFromPeriod)
+	if errors.Is(err, pgx.ErrNoRows) {
+		report.PriorUnsettled = true
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	report.Groups, err = applyCatalogAggregateCarry(ctx, tx, report.carryFromPeriod, report.Groups, display)
+	return err
+}
+
+func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior int64, groups []catalogPeriodGroup, display bool) ([]catalogPeriodGroup, error) {
 	index := make(map[string]int, len(groups))
 	for i, group := range groups {
 		index[group.ID] = i
@@ -308,24 +318,42 @@ func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior int64, gro
 		return nil, err
 	}
 	var previous catalogAggregateGroupInput
+	firstCarryOnly := len(groups)
+	var carryOnly []catalogFrozenGroupReference
 	_, err = pgx.ForEachRow(rows, []any{&previous.Key, &previous.RuleID, &previous.AnchorID, &previous.Targets, &previous.CarryOut}, func() error {
 		targets := previous.Targets
 		previous.Targets = nil
 		if i, found := index[previous.Key]; found {
 			group := &groups[i]
-			group.posting.CarryIn, group.posting.CarryFromPeriod = previous.CarryOut, prior
+			group.CarryIn, group.posting.CarryFromPeriod = previous.CarryOut, prior
 			quote, err := quoteCatalogPeriod(group.items, group.Receipts, group.Refunds, previous.CarryOut)
-			group.BeforeCarry = quote
+			group.AfterCarry = &quote
 			return err
 		}
 		// A period with no new payments still passes its original group's debt forward.
-		posting := catalogAggregateGroupInput{AnchorID: previous.AnchorID, Targets: targets,
-			CarryIn: previous.CarryOut, CarryFromPeriod: prior}
+		posting := catalogAggregateGroupInput{AnchorID: previous.AnchorID, Targets: targets, CarryFromPeriod: prior}
 		groups = append(groups, catalogPeriodGroup{ID: previous.Key, RuleID: previous.RuleID, posting: posting,
-			BeforeCarry: catalogPeriodQuote{CarryForward: previous.CarryOut}})
+			CarryIn: previous.CarryOut, AfterCarry: &catalogPeriodQuote{CarryForward: previous.CarryOut}})
+		if display {
+			carryOnly = append(carryOnly, catalogFrozenGroupReference{PeriodID: prior, Key: previous.Key})
+		}
 		return nil
 	})
-	return groups, err
+	if err != nil || len(carryOnly) == 0 {
+		return groups, err
+	}
+	original, err := readCatalogAggregateGroupsByReference(ctx, tx, carryOnly, true)
+	if err != nil {
+		return nil, err
+	}
+	for i, ref := range carryOnly {
+		group, ok := original[ref]
+		if !ok {
+			return nil, errProductConfigConflict
+		}
+		groups[firstCarryOnly+i].Version, groups[firstCarryOnly+i].Targets = group.Version, group.Targets
+	}
+	return groups, nil
 }
 
 func storeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, periodID int64, groups []catalogAggregateGroupInput) error {
