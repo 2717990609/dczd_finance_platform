@@ -30,7 +30,10 @@ const standard = (row, scale) => row.mode==='rate' ? rate(row.value,scale) : pro
 const fixedUnit = computed(() => props.classProduct ? ' / 报名' : ' / 付款')
 const countStart = rule => rule.openingId ? props.openingLabel(rule.openingId)
   : rule.countFromOrdinal ? '第 '+rule.countFromOrdinal+' 期' : rule.countFromAt && props.formatTime(rule.countFromAt)
-const scope = props.rule.periodName || (props.rule.fromOrdinal ? '从第 '+props.rule.fromOrdinal+' 期起' : '产品默认')
+const scope = computed(() => [
+  props.rule.periodName || (props.rule.fromOrdinal ? '从第 '+props.rule.fromOrdinal+' 期起' : '产品默认'),
+  props.rule.activityType ? label('practiceActivityType', String(props.rule.activityType)) : '',
+].filter(Boolean).join(' · '))
 const range = (row, count) => {
   const value = n => count ? n+' 人' : props.formatMoney(n)
   return row.through == null ? value(row.from)+' 起' : value(row.from)+' 至 '+value(row.through)

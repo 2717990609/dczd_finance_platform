@@ -109,6 +109,9 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 				}
 			case "fixed":
 				if len(part.retrainSplits()) == 0 && part.Value == original.Accrued {
+					if part.RefundPolicy != "" {
+						return part
+					}
 					return component{Mode: "practice_fixed"}
 				}
 			}

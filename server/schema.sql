@@ -256,6 +256,7 @@ CREATE TABLE IF NOT EXISTS draft_refresh_queue (
 CREATE INDEX IF NOT EXISTS calculation_draft_issues_page ON calculation_draft_issues(period_id, id);
 
 ALTER TABLE rule_versions ADD COLUMN IF NOT EXISTS effective_from timestamptz;
+ALTER TABLE rule_versions ADD COLUMN IF NOT EXISTS activity_type smallint NOT NULL DEFAULT 0 CHECK (activity_type BETWEEN 0 AND 2);
 ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS rule_id bigint REFERENCES rule_versions(id);
 UPDATE calculation_draft_lines AS line SET rule_id=draft.rule_id
  FROM calculation_drafts AS draft WHERE line.period_id=draft.period_id AND line.rule_id IS NULL AND draft.rule_id IS NOT NULL;
@@ -638,6 +639,9 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('classMember','','全部',10,'{}'),
  ('classMember','new','新报',20,'{}'),
  ('classMember','retrain','复训',30,'{}'),
+ ('practiceActivityType','0','全部班次',10,'{}'),
+ ('practiceActivityType','1','线下班',20,'{}'),
+ ('practiceActivityType','2','线上班',30,'{}'),
  ('amountMode','rate','比例 %',10,'{}'),
  ('amountMode','fixed','金额 ¥',20,'{}'),
  ('amountMode','tiered','阶梯',30,'{"periodModes":["class"],"componentTypes":["sales"],"classMembers":["new"]}'),

@@ -50,7 +50,8 @@ const draftRefreshRule = `SELECT id FROM periods WHERE product_id=$1
  AND ($2::bigint IS NULL OR id=$2) AND ($3::integer IS NULL OR ordinal>=$3)
  AND ($4::timestamptz IS NULL OR $4<((ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'))`
 
-const draftRefreshClassRule = `WITH changed AS (` + draftRefreshRule + `)
+const draftRefreshClassRule = `WITH changed AS (` + draftRefreshRule + `
+ AND ($5::integer=0 OR $5::integer::text=split_part(source_period_key,':',2)))
  SELECT p.id FROM changed JOIN periods p USING(id) WHERE p.calendar_month IS NULL
  UNION SELECT p.id FROM changed c JOIN periods prior ON prior.id=c.id
  JOIN periods p ON p.product_id=prior.product_id AND p.ordinal>prior.ordinal

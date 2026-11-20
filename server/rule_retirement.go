@@ -16,7 +16,8 @@ var errRuleAlreadyRetired = errors.New("此规则已登记停用时间，请重�
 const componentRuleRetiredAtSQL = `(SELECT min(st.effective_from)
  FROM rule_scope_retirements st JOIN rule_versions anchor ON anchor.id=st.rule_id
  WHERE anchor.product_id=rv.product_id AND anchor.version>=rv.version
- AND anchor.period_id IS NOT DISTINCT FROM rv.period_id AND anchor.from_ordinal IS NOT DISTINCT FROM rv.from_ordinal)`
+ AND anchor.period_id IS NOT DISTINCT FROM rv.period_id AND anchor.from_ordinal IS NOT DISTINCT FROM rv.from_ordinal
+ AND anchor.activity_type=rv.activity_type)`
 
 const catalogRuleRetiredAtSQL = `(SELECT st.effective_from FROM catalog_rule_retirements st WHERE st.package_id=p.source_id)`
 const catalogRuleExecutionThrough = `least(v.effective_to,` + catalogRuleRetiredAtSQL + `)`
@@ -61,11 +62,12 @@ func (s workspace) retireRule(ctx context.Context, input retireRuleInput) (any, 
 		}
 		var periodID *int64
 		var ordinal *int
-		err := tx.QueryRow(ctx, `SELECT b.period_id,b.from_ordinal FROM rule_versions b
+		var activityType int
+		err := tx.QueryRow(ctx, `SELECT b.period_id,b.from_ordinal,b.activity_type FROM rule_versions b
 		 WHERE b.id=$1 AND b.product_id=$2 AND NOT EXISTS (SELECT 1 FROM rule_versions n
 		 WHERE n.product_id=b.product_id AND n.period_id IS NOT DISTINCT FROM b.period_id
-		  AND n.from_ordinal IS NOT DISTINCT FROM b.from_ordinal AND n.version>b.version)`, input.RuleID, input.ProductID).
-			Scan(&periodID, &ordinal)
+		  AND n.from_ordinal IS NOT DISTINCT FROM b.from_ordinal AND n.activity_type=b.activity_type AND n.version>b.version)`, input.RuleID, input.ProductID).
+			Scan(&periodID, &ordinal, &activityType)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errRuleEditStale
 		}
@@ -81,11 +83,10 @@ func (s workspace) retireRule(ctx context.Context, input retireRuleInput) (any, 
 			return verifyRepeatedRetirement(at, tx.QueryRow(ctx,
 				`SELECT effective_from FROM rule_scope_retirements WHERE rule_id=$1`, input.RuleID))
 		}
-		refresh := draftRefreshRule
 		if mode == "class" {
-			refresh = draftRefreshClassRule
+			return enqueueDraftConfiguration(ctx, tx, draftRefreshClassRule, input.ProductID, periodID, ordinal, at, activityType)
 		}
-		return enqueueDraftConfiguration(ctx, tx, refresh, input.ProductID, periodID, ordinal, at)
+		return enqueueDraftConfiguration(ctx, tx, draftRefreshRule, input.ProductID, periodID, ordinal, at)
 	})
 	return map[string]time.Time{"retiredFrom": at}, err
 }

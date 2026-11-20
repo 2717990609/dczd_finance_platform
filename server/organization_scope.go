@@ -63,7 +63,7 @@ const uncalculatedOrderInOrganization = `EXISTS (
   SELECT product.id,product.period_mode FROM source_mappings m JOIN products product ON product.id=m.product_id
   WHERE m.source=latest.source AND m.domain=latest.fact->>'domain' AND m.source_key=latest.fact->>'sourceKey'
  ), class_registration AS (
-  SELECT p.id,p.ordinal,r.starts_at,
+  SELECT p.id,p.ordinal,r.starts_at,p.source_period_key,
    CASE e.membership_type WHEN 3 THEN 'new' WHEN 2 THEN 'retrain' ELSE '' END AS member
   FROM mapped m JOIN periods p ON p.product_id=m.id
   JOIN LATERAL (SELECT id,starts_at FROM practice_rosters WHERE period_key=p.source_period_key ORDER BY source_version DESC LIMIT 1) r ON true
@@ -71,16 +71,17 @@ const uncalculatedOrderInOrganization = `EXISTS (
   JOIN practice_enrollments e ON e.id=roster.enrollment_id AND e.paid_order_ids@>ARRAY[latest.order_id]
   WHERE m.period_mode='class'
  ), financial_scope AS (
-  SELECT p.id,p.ordinal,latest.occurred_at AS as_of,'' AS member
+  SELECT p.id,p.ordinal,latest.occurred_at AS as_of,p.source_period_key,'' AS member
   FROM mapped m JOIN periods p ON p.product_id=m.id
   WHERE m.period_mode='calendar' AND (latest.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
-  UNION ALL SELECT id,ordinal,starts_at,member FROM class_registration
+  UNION ALL SELECT id,ordinal,starts_at,source_period_key,member FROM class_registration
  ), role AS (
   SELECT min(chosen.role) AS code FROM mapped m
   LEFT JOIN financial_scope p ON true
   JOIN LATERAL (
    SELECT rv.components FROM rule_versions rv CROSS JOIN LATERAL (SELECT ` + componentRuleRetiredAtSQL + ` AS at) stopped WHERE rv.product_id=m.id
     AND (rv.period_id=p.id OR rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal))
+    AND ` + matchingPracticeActivity + `
     AND (rv.effective_from IS NULL OR rv.effective_from<=coalesce(p.as_of,latest.occurred_at))
     AND (stopped.at IS NULL OR coalesce(p.as_of,latest.occurred_at)<stopped.at)
    ORDER BY ` + matchingRuleOrder + ` LIMIT 1

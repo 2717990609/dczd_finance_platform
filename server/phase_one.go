@@ -388,12 +388,13 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
       AND (stopped.at IS NULL OR greatest(rv.effective_from,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')<stopped.at) END
   ORDER BY ` + matchingRuleOrder + ` LIMIT 1
  ) rule ON true WHERE ($1::bigint[] IS NULL OR p.product_id=ANY($1)) ORDER BY p.id DESC LIMIT 500) a`
+const matchingPracticeActivity = `(rv.activity_type=0 OR rv.activity_type::text=split_part(p.source_period_key,':',2))`
 const matchingRuleScope = `rv.product_id=p.product_id AND
-  (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal)))`
+  (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal))) AND ` + matchingPracticeActivity
 const matchingRuleOrder = `(rv.period_id IS NOT NULL) DESC,rv.from_ordinal DESC NULLS LAST,
-  rv.effective_from DESC NULLS LAST,rv.version DESC`
+  (rv.activity_type<>0) DESC,rv.effective_from DESC NULLS LAST,rv.version DESC`
 const ruleVersionRowsSQL = `SELECT rv.id,rv.product_id AS "productId",p.name AS "productName",rv.version,rv.label,
- rv.from_ordinal AS "fromOrdinal",rv.period_id AS "periodId",pr.name AS "periodName",rv.effective_from AS "effectiveFrom",
+ rv.from_ordinal AS "fromOrdinal",rv.period_id AS "periodId",pr.name AS "periodName",rv.effective_from AS "effectiveFrom",rv.activity_type AS "activityType",
  ` + componentRuleRetiredAtSQL + ` AS "retiredFrom",rv.components
  FROM rule_versions rv JOIN products p ON p.id=rv.product_id LEFT JOIN periods pr ON pr.id=rv.period_id`
 
@@ -457,6 +458,7 @@ type publishRuleInput struct {
 	Label         string
 	PeriodID      *int64
 	FromOrdinal   *int
+	ActivityType  int
 	EffectiveFrom *time.Time
 	Components    []component
 }
@@ -603,6 +605,7 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 func validRulePublication(p publishRuleInput) bool {
 	return p.ProductID > 0 && (p.EditBaseID == nil || *p.EditBaseID > 0) && textOK(p.Label, 80) && (p.PeriodID == nil || *p.PeriodID > 0) &&
 		(p.FromOrdinal == nil || *p.FromOrdinal > 0) && (p.PeriodID == nil || p.FromOrdinal == nil) &&
+		p.ActivityType >= 0 && p.ActivityType <= 2 && (p.ActivityType == 0 || p.PeriodID == nil) &&
 		(p.EffectiveFrom == nil || !p.EffectiveFrom.IsZero()) && validateComponents(p.Components) == nil
 }
 
@@ -623,18 +626,21 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			return errProductRuleUnavailable
 		}
 		if p.EditBaseID != nil {
-			err := tx.QueryRow(ctx, `SELECT b.period_id,b.from_ordinal,b.effective_from FROM rule_versions b
+			err := tx.QueryRow(ctx, `SELECT b.period_id,b.from_ordinal,b.effective_from,b.activity_type FROM rule_versions b
 			 WHERE b.id=$1 AND b.product_id=$2 AND NOT EXISTS (
 			  SELECT 1 FROM rule_versions n WHERE n.product_id=b.product_id AND n.version>b.version
 			   AND n.period_id IS NOT DISTINCT FROM b.period_id AND n.from_ordinal IS NOT DISTINCT FROM b.from_ordinal
-			   AND n.effective_from IS NOT DISTINCT FROM b.effective_from)`, *p.EditBaseID, p.ProductID).
-				Scan(&p.PeriodID, &p.FromOrdinal, &p.EffectiveFrom)
+			   AND n.effective_from IS NOT DISTINCT FROM b.effective_from AND n.activity_type=b.activity_type)`, *p.EditBaseID, p.ProductID).
+				Scan(&p.PeriodID, &p.FromOrdinal, &p.EffectiveFrom, &p.ActivityType)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return errRuleEditStale
 			}
 			if err != nil {
 				return err
 			}
+		}
+		if p.ActivityType != 0 && mode != "class" {
+			return invalid
 		}
 		if p.PeriodID != nil && mode == "class" {
 			var month bool
@@ -817,19 +823,18 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 		if actor := financeUser(ctx); actor != nil {
 			publisher = &actor.ID
 		}
-		if err := tx.QueryRow(ctx, `INSERT INTO rule_versions(product_id,version,label,period_id,from_ordinal,effective_from,components,published_by)
-   SELECT $1,coalesce(max(version),0)+1,$2,$3,$4,$5,$6,$7::uuid FROM rule_versions WHERE product_id=$1 RETURNING version`,
-			p.ProductID, strings.TrimSpace(p.Label), p.PeriodID, p.FromOrdinal, p.EffectiveFrom, raw, publisher).Scan(&version); err != nil {
+		if err := tx.QueryRow(ctx, `INSERT INTO rule_versions(product_id,version,label,period_id,from_ordinal,effective_from,components,published_by,activity_type)
+   SELECT $1,coalesce(max(version),0)+1,$2,$3,$4,$5,$6,$7::uuid,$8 FROM rule_versions WHERE product_id=$1 RETURNING version`,
+			p.ProductID, strings.TrimSpace(p.Label), p.PeriodID, p.FromOrdinal, p.EffectiveFrom, raw, publisher, p.ActivityType).Scan(&version); err != nil {
 			return err
 		}
 		if !refreshDrafts {
 			return nil
 		}
-		refresh := draftRefreshRule
 		if mode == "class" {
-			refresh = draftRefreshClassRule
+			return enqueueDraftConfiguration(ctx, tx, draftRefreshClassRule, p.ProductID, p.PeriodID, p.FromOrdinal, p.EffectiveFrom, p.ActivityType)
 		}
-		return enqueueDraftConfiguration(ctx, tx, refresh, p.ProductID, p.PeriodID, p.FromOrdinal, p.EffectiveFrom)
+		return enqueueDraftConfiguration(ctx, tx, draftRefreshRule, p.ProductID, p.PeriodID, p.FromOrdinal, p.EffectiveFrom)
 	}()
 	return version, err
 }

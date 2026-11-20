@@ -166,6 +166,7 @@ const orderRoleLabel = role => role==='SALES_COMPANY' ? '销售公司' : optionL
 const scopeTree = computed(() => organizationTree(scopeUnits.value || [],kind=>optionLabel('organizationKind',kind)))
 const sources = computed(() => options('source'))
 const classMembers = computed(() => options('classMember').map(option=>option.value ? option : {...option,label:'通用报名（新报和复训）'}))
+const practiceActivityTypes = computed(() => options('practiceActivityType').map(option=>({...option,value:Number(option.value)})))
 function componentSourceRoles(saved) {
   const configured = options('orderAttributionRole')
   return saved && !configured.some(option => option.value === saved)
@@ -222,7 +223,7 @@ const salesUnitOptions = computed(() => classRuleDirectory.value?.units.filter(u
 function latestComponentRuleIDs(sameEffectiveTime) {
   const latest = new Map()
   for (const rule of data.value.rules) {
-    const scope = JSON.stringify([rule.productId,rule.periodId,rule.fromOrdinal,sameEffectiveTime ? rule.effectiveFrom : undefined])
+    const scope = JSON.stringify([rule.productId,rule.periodId,rule.fromOrdinal,rule.activityType || 0,sameEffectiveTime ? rule.effectiveFrom : undefined])
     if (!latest.has(scope) || latest.get(scope).version < rule.version) latest.set(scope,rule)
   }
   return new Set([...latest.values()].map(rule=>rule.id))
@@ -238,7 +239,8 @@ const previewPeriods = computed(() => {
   const rule = rulePreview.value
   return rule ? data.value.periods.filter(period=>period.productId===rule.productId
     && !period.settled && !period.practiceRefundMonth && (!rule.periodId || period.id===rule.periodId)
-    && (!rule.fromOrdinal || period.ordinal>=rule.fromOrdinal)) : []
+    && (!rule.fromOrdinal || period.ordinal>=rule.fromOrdinal)
+    && (!rule.activityType || Number(period.sourcePeriodKey?.split(':')[1])===rule.activityType)) : []
 })
 const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
 const calculationPeriods = computed(() => data.value.periods.filter(p =>
@@ -959,6 +961,7 @@ function open(kind, row, edit = false) {
       activeRuleComponent.value = undefined
       draft.value = {productId:row.productId, label:row.label, copiedFrom:row.version,
         scope:row.periodId ? 'period' : row.fromOrdinal ? 'ordinal' : 'default',
+        activityType:row.activityType || 0,
         components:copiedRuleComponents(row.components,optionLabel),
       }
     } else draft.value.components = [newRuleComponent()]
@@ -1202,6 +1205,7 @@ function bodyFor(kind,f) {
   if (kind === 'rule') return {productId:must(f.productId),label:must(f.label),
     ...(f.scope === 'period' ? {periodId:must(f.periodId,'请选择适用期次。')} : {}),
     ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal,'请填写适用的起始期数。')} : {}),
+    ...(classRule.value && f.scope!=='period' && f.activityType ? {activityType:f.activityType} : {}),
     ...(f.editBaseId ? {editBaseId:f.editBaseId, effectiveFrom:f.effectiveFrom} :
       f.effectiveFrom ? {effectiveFrom:new Date(f.effectiveFrom+'+08:00').toISOString()} : {}),
     components:f.components.map(ruleComponentBody),
@@ -1491,7 +1495,10 @@ async function save() {
                   <template v-if="record.catalogPending">
                     {{ record.scopeType==='CROSS_SCENARIO_AGGREGATE' ? '跨 SKU 汇总' : record.scopeLabel || catalogScopeLabels[record.scopeType] || '未细分范围' }}
                   </template>
-                  <template v-else>{{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}</template>
+                  <template v-else>
+                    {{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}
+                    <small v-if="record.activityType" class="order-version">{{ optionLabel('practiceActivityType',String(record.activityType)) }}</small>
+                  </template>
                 </template>
                 <template v-else-if="column.key==='components' && record.catalogPending">
                   <a-tag :color="catalogRuleBadge(record).color">{{ catalogRuleBadge(record).text }}</a-tag>
@@ -1625,6 +1632,10 @@ async function save() {
         <a-form-item html-for="rule-scope" label="适用范围"><a-select id="rule-scope" v-model:value="draft.scope" :options="options('ruleScope')" :disabled="Boolean(draft.lockedPeriod || draft.editBaseId)"/></a-form-item>
         <a-form-item v-if="draft.scope==='period'" html-for="rule-period" label="指定期次" required><a-select id="rule-period" v-model:value="draft.periodId" :options="periodOptions" :disabled="Boolean(draft.lockedPeriod || draft.editBaseId)"/></a-form-item>
         <a-form-item v-if="draft.scope==='ordinal'" label="起始期数" required><a-input-number v-model:value="draft.fromOrdinal" aria-label="起始期数" :min="1" :precision="0" :disabled="Boolean(draft.editBaseId)"/></a-form-item>
+        <a-form-item v-if="classRule && draft.scope!=='period'" html-for="rule-activity-type" label="开班方式">
+          <a-select id="rule-activity-type" :value="draft.activityType || 0" :options="practiceActivityTypes"
+            :disabled="Boolean(draft.editBaseId)" @update:value="draft.activityType=$event"/>
+        </a-form-item>
         <a-form-item v-if="selectedProduct" label="生效时间" :extra="classRule ? '按北京时间的实际开班时点匹配。留空时作为该适用范围的默认规则。' : '按北京时间和原付款时间匹配。留空时作为该适用范围的默认规则。'">
           <span v-if="draft.editBaseId">{{ draft.effectiveFrom ? formatTime(draft.effectiveFrom) : '范围默认' }}</span>
           <a-input v-else v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local" step="1"/>
