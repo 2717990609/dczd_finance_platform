@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
 import CatalogAppointments from './CatalogAppointments.vue'
+import OrganizationCompanies from './OrganizationCompanies.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
 import { organizationTree } from './organization-tree'
 
@@ -24,6 +25,7 @@ const editor = ref()
 const notice = ref('')
 const panel = ref('organization')
 const catalog = ref()
+const companies = ref()
 const person = ref()
 const personPage = ref(1)
 const personEntries = ref({total:0,items:[]})
@@ -127,7 +129,13 @@ function changePersonPage(pagination) {
 }
 
 function refresh() {
-  return panel.value==='catalog' ? catalog.value?.refresh() : Promise.all([loadUnits(),loadEntries()])
+  if (panel.value==='catalog') return catalog.value?.refresh()
+  if (panel.value==='companies') return companies.value?.refresh()
+  return Promise.all([loadUnits(),loadEntries()])
+}
+function showCompanyAppointments(id) {
+  unitId.value = id
+  panel.value = 'organization'
 }
 function filterEntries() {
   page.value = 1
@@ -158,11 +166,16 @@ defineExpose({refresh})
 <template>
   <a-tabs v-model:active-key="panel" class="workbench-tabs">
     <a-tab-pane key="organization" tab="组织任职"/>
+    <a-tab-pane key="companies" tab="销售公司"/>
     <a-tab-pane key="catalog" tab="计提任职"/>
   </a-tabs>
   <KeepAlive>
     <CatalogAppointments v-if="panel==='catalog'" ref="catalog" :api="api" :can-write="canWrite"
       :format-time="formatTime" :scopes="catalogScopes" :roles="catalogRoles"/>
+  </KeepAlive>
+  <KeepAlive>
+    <OrganizationCompanies v-if="panel==='companies'" ref="companies" :api="api" :format-time="formatTime"
+      @show-appointments="showCompanyAppointments"/>
   </KeepAlive>
   <div v-show="panel==='organization'">
     <a-alert v-if="unitsError || entriesError" class="feedback" type="error" :message="unitsError || entriesError" show-icon/>
@@ -193,7 +206,8 @@ defineExpose({refresh})
             <a-button v-if="column.key==='personName'" class="organization-person-link" type="link"
               :aria-label="'查看'+text+'的任职历史'" @click="openPersonHistory(record)">{{ text }}</a-button>
             <template v-else-if="column.key==='kind'">
-              {{ optionLabel('appointmentKind',text) }}<small v-if="record.position" class="order-version">{{ record.position }}</small>
+              {{ optionLabel('appointmentKind',text) }}
+              <a-tag v-if="record.appointmentType && record.appointmentType!==text">{{ optionLabel('appointmentKind',record.appointmentType) }}</a-tag><small v-if="record.position" class="order-version">{{ record.position }}</small>
             </template>
             <span v-else-if="column.key==='validFrom'||column.key==='validTo'" class="numeric">{{ formatTime(text) }}</span>
             <a-space v-else-if="column.key==='actions'" :size="1">
@@ -217,7 +231,8 @@ defineExpose({refresh})
       :pagination="personPagination" :scroll="{x:605}" @change="changePersonPage">
       <template #bodyCell="{column,record,text}">
         <template v-if="column.key==='kind'">
-          {{ optionLabel('appointmentKind',text) }}<small v-if="record.position" class="order-version">{{ record.position }}</small>
+          {{ optionLabel('appointmentKind',text) }}
+              <a-tag v-if="record.appointmentType && record.appointmentType!==text">{{ optionLabel('appointmentKind',record.appointmentType) }}</a-tag><small v-if="record.position" class="order-version">{{ record.position }}</small>
         </template>
         <span v-else-if="column.key==='validFrom'||column.key==='validTo'" class="numeric">{{ formatTime(text) }}</span>
       </template>

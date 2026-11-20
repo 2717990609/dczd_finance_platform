@@ -1248,3 +1248,24 @@ CREATE OR REPLACE TRIGGER protect_confirmed_period_scope BEFORE UPDATE ON period
  WHEN ((OLD.id,OLD.product_id,OLD.ordinal,OLD.starts_on,OLD.ends_on,OLD.source_period_key,OLD.calendar_month,OLD.report_month) IS DISTINCT FROM
        (NEW.id,NEW.product_id,NEW.ordinal,NEW.starts_on,NEW.ends_on,NEW.source_period_key,NEW.calendar_month,NEW.report_month))
  EXECUTE FUNCTION protect_confirmed_catalog_scope();
+
+-- A sales company uses the same stable unit as its organization and memberships.
+ALTER TABLE organization_units ADD COLUMN IF NOT EXISTS sales_company_type text
+ CHECK (sales_company_type IS NULL OR (kind='COMPANY' AND sales_company_type IN ('INTERNAL','EXTERNAL','UNKNOWN')));
+
+CREATE TABLE IF NOT EXISTS organization_sales_categories (
+ id uuid PRIMARY KEY,
+ name text NOT NULL CHECK (btrim(name)<>''),
+ active boolean NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS organization_sales_category_history (
+ unit_id uuid NOT NULL REFERENCES organization_units(id),
+ category_id uuid REFERENCES organization_sales_categories(id),
+ valid_from timestamptz NOT NULL,
+ valid_to timestamptz CHECK (valid_to > valid_from),
+ PRIMARY KEY(unit_id,valid_from)
+);
+
+ALTER TABLE organization_assignments ADD COLUMN IF NOT EXISTS appointment_type text
+ CHECK (appointment_type IN ('PRIMARY','CONCURRENT'));

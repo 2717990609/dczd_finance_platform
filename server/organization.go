@@ -25,7 +25,7 @@ const organizationUnitsSQL = `SELECT coalesce(jsonb_agg(jsonb_build_object(
 
 const organizationAssignmentsSQL = `WITH matching AS (
  SELECT a.id,p.name AS "personName",p.id AS "personId",u.id AS "unitId",u.name AS "unitName",
-  a.kind,a.position,a.valid_from AS "validFrom",a.valid_to AS "validTo"
+  a.kind,a.position,a.appointment_type AS "appointmentType",a.valid_from AS "validFrom",a.valid_to AS "validTo"
  FROM organization_assignments a JOIN people p ON p.id=a.person_id JOIN organization_units u ON u.id=a.unit_id
  WHERE ($1::uuid IS NULL OR a.unit_id=$1) AND
   ($2::timestamptz IS NULL OR (a.valid_from<=$2 AND (a.valid_to IS NULL OR a.valid_to>$2))) AND
@@ -91,12 +91,14 @@ func organizationAssignmentFilters(params url.Values) (offset int, at *time.Time
 }
 
 type organizationSnapshot struct {
-	CapturedAt      time.Time
-	People          json.RawMessage
-	Units           json.RawMessage
-	Assignments     json.RawMessage
-	Companies       json.RawMessage
-	Recommendations json.RawMessage
+	CapturedAt           time.Time
+	People               json.RawMessage
+	Units                json.RawMessage
+	Assignments          json.RawMessage
+	Companies            json.RawMessage
+	Recommendations      json.RawMessage
+	SalesCategories      json.RawMessage
+	SalesCategoryHistory json.RawMessage
 }
 
 func importOrganization(ctx context.Context, cfg config, path string) error {
@@ -131,7 +133,7 @@ func storeOrganizationSnapshot(ctx context.Context, db transactionBeginner, raw 
 			return invalid
 		}
 	}
-	for _, rows := range []json.RawMessage{snapshot.Companies, snapshot.Recommendations} {
+	for _, rows := range []json.RawMessage{snapshot.Companies, snapshot.Recommendations, snapshot.SalesCategories, snapshot.SalesCategoryHistory} {
 		if len(rows) != 0 && rows[0] != '[' {
 			return invalid
 		}
@@ -173,6 +175,9 @@ func storeOrganizationSnapshot(ctx context.Context, db transactionBeginner, raw 
 				return fmt.Errorf("write company recommendations: %w", err)
 			}
 		}
+		if err := importOrganizationSalesCategories(ctx, tx, snapshot); err != nil {
+			return fmt.Errorf("write organization sales categories: %w", err)
+		}
 		var cyclic bool
 		if err := tx.QueryRow(ctx, `WITH RECURSIVE ancestry(id,parent_id) AS (
 		 SELECT id,parent_id FROM organization_units WHERE parent_id IS NOT NULL
@@ -198,17 +203,19 @@ const importOrganizationPeopleSQL = `INSERT INTO people(name,legacy_party_id)
  FROM jsonb_to_recordset($1) AS incoming(id uuid,name text)
  ON CONFLICT(legacy_party_id) DO UPDATE SET name=excluded.name`
 
-const importOrganizationUnitsSQL = `INSERT INTO organization_units(id,parent_id,name,kind,status,sort_order)
- SELECT id,"parentId",name,kind,status,coalesce("sortOrder",100)
- FROM jsonb_to_recordset($1) AS incoming(id uuid,"parentId" uuid,name text,kind text,status text,"sortOrder" integer)
- ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,name=excluded.name,kind=excluded.kind,status=excluded.status,sort_order=excluded.sort_order`
+const importOrganizationUnitsSQL = `INSERT INTO organization_units(id,parent_id,name,kind,status,sort_order,sales_company_type)
+ SELECT id,"parentId",name,kind,status,coalesce("sortOrder",100),"salesCompanyType"
+ FROM jsonb_to_recordset($1) AS incoming(id uuid,"parentId" uuid,name text,kind text,status text,"sortOrder" integer,"salesCompanyType" text)
+ ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,name=excluded.name,kind=excluded.kind,status=excluded.status,
+ sort_order=excluded.sort_order,sales_company_type=coalesce(excluded.sales_company_type,organization_units.sales_company_type)`
 
-const importOrganizationAssignmentsSQL = `INSERT INTO organization_assignments(id,person_id,unit_id,kind,position,valid_from,valid_to)
- SELECT i.id,p.id,i."unitId",i.kind,coalesce(i.position,''),i."from",i."to"
- FROM jsonb_to_recordset($1) AS i(id uuid,"personId" uuid,"unitId" uuid,kind text,position text,"from" timestamptz,"to" timestamptz)
+const importOrganizationAssignmentsSQL = `INSERT INTO organization_assignments(id,person_id,unit_id,kind,position,valid_from,valid_to,appointment_type)
+ SELECT i.id,p.id,i."unitId",i.kind,coalesce(i.position,''),i."from",i."to",i."appointmentType"
+ FROM jsonb_to_recordset($1) AS i(id uuid,"personId" uuid,"unitId" uuid,kind text,position text,"from" timestamptz,"to" timestamptz,"appointmentType" text)
  LEFT JOIN people p ON p.legacy_party_id=i."personId"
  ON CONFLICT(id) DO UPDATE SET person_id=excluded.person_id,unit_id=excluded.unit_id,kind=excluded.kind,
- position=excluded.position,valid_from=excluded.valid_from,valid_to=excluded.valid_to
+ position=excluded.position,valid_from=excluded.valid_from,valid_to=excluded.valid_to,
+ appointment_type=coalesce(excluded.appointment_type,organization_assignments.appointment_type)
  WHERE organization_assignments.changed_at IS NULL`
 
 const importOrganizationCompanySourcesSQL = `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from,valid_to)

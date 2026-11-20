@@ -18,9 +18,10 @@ var (
 )
 
 type appointmentTarget struct {
-	UnitID   string `json:"unitId"`
-	Kind     string `json:"kind"`
-	Position string `json:"position"`
+	UnitID          string `json:"unitId"`
+	Kind            string `json:"kind"`
+	Position        string `json:"position"`
+	appointmentType *string
 }
 
 type addAppointmentInput struct {
@@ -153,9 +154,9 @@ func insertAppointment(ctx context.Context, tx pgx.Tx, personID int64, target ap
 		return "", errAppointmentOverlap
 	}
 	var id string
-	err = tx.QueryRow(ctx, `INSERT INTO organization_assignments(id,person_id,unit_id,kind,position,valid_from,valid_to,changed_at,changed_by)
-	 VALUES(gen_random_uuid(),$1,$2::uuid,$3,$4,$5,$6,now(),$7::uuid) RETURNING id::text`,
-		personID, target.UnitID, target.Kind, target.Position, from, through, by).Scan(&id)
+	err = tx.QueryRow(ctx, `INSERT INTO organization_assignments(id,person_id,unit_id,kind,position,valid_from,valid_to,changed_at,changed_by,appointment_type)
+	 VALUES(gen_random_uuid(),$1,$2::uuid,$3,$4,$5,$6,now(),$7::uuid,$8) RETURNING id::text`,
+		personID, target.UnitID, target.Kind, target.Position, from, through, by, target.appointmentType).Scan(&id)
 	return id, err
 }
 
@@ -234,8 +235,9 @@ func (s workspace) changeOrganizationAssignment(ctx context.Context, input endAp
 		var from time.Time
 		var through *time.Time
 		var unit, kind, position string
-		if err := tx.QueryRow(ctx, `SELECT valid_from,valid_to,unit_id::text,kind,position
-		 FROM organization_assignments WHERE id=$1::uuid`, id).Scan(&from, &through, &unit, &kind, &position); err != nil {
+		var appointmentType *string
+		if err := tx.QueryRow(ctx, `SELECT valid_from,valid_to,unit_id::text,kind,position,appointment_type
+		 FROM organization_assignments WHERE id=$1::uuid`, id).Scan(&from, &through, &unit, &kind, &position, &appointmentType); err != nil {
 			return err
 		}
 		if through != nil && through.Equal(at) {
@@ -263,6 +265,13 @@ func (s workspace) changeOrganizationAssignment(ctx context.Context, input endAp
 		}
 		result.ID = id
 		if target != nil {
+			switch target.Kind {
+			case "OWNER", "MANAGER", "MEMBER":
+				target.appointmentType = appointmentType
+				if kind == "PRIMARY" || kind == "CONCURRENT" {
+					target.appointmentType = &kind
+				}
+			}
 			replacement, err := insertAppointment(ctx, tx, person, *target, at, through, by)
 			if err != nil {
 				return err

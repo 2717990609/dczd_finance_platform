@@ -154,6 +154,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
 		{Method: http.MethodPost, Path: "/api/v1/rule-impact", Handler: submitJSON(1<<20, s.postComponentRuleImpact)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-units", Handler: s.list(organizationUnitsSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/organization-sales-companies", Handler: s.organizationCompanies},
+		{Method: http.MethodGet, Path: "/api/v1/organization-sales-company-categories", Handler: s.organizationCompanyCategoryHistory},
 		{Method: http.MethodGet, Path: "/api/v1/organization-assignments", Handler: s.organizationAssignments},
 		{Method: http.MethodGet, Path: "/api/v1/organization-people", Handler: s.organizationPeople},
 		{Method: http.MethodPost, Path: "/api/v1/organization-assignments", Handler: submitJSON(32<<10, s.addOrganizationAssignment)},
