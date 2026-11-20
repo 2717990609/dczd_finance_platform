@@ -4,7 +4,7 @@ import { DownOutlined } from '@ant-design/icons-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
 const props = defineProps({rule:Object, applied:Object, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
-const emit = defineEmits(['close','published','open-draft','copy','open-version'])
+const emit = defineEmits(['close','published','open-draft','copy','open-version','resumed'])
 const creating = computed(() => Boolean(props.rule?.create))
 const copiedFrom = computed(() => props.rule?.copiedFrom)
 const productId = ref(props.rule?.productId || (props.products?.length===1 ? props.products[0].value : undefined))
@@ -21,6 +21,9 @@ const appointmentName = ref('')
 const editingPerformance = ref(false)
 let newComponentID = 0
 const effectiveDate = ref('')
+const resumeDate = ref('')
+const resumeError = ref('')
+const resuming = ref(false)
 const amounts = ref({receipts:0,refunds:0,carry:0})
 const loading = ref(false)
 const saving = ref(false)
@@ -77,6 +80,14 @@ const firstStart = computed(() => sheet.value && !creating.value ? nextStart(she
 const cutoff = computed(() => sheet.value?.effectiveTo
   ? localDate(new Date(Date.parse(sheet.value.effectiveTo)-86400000).toISOString()) : undefined)
 const canSave = computed(() => sheet.value?.mayPublish && (!cutoff.value || firstStart.value<=cutoff.value))
+const firstResumeDate = computed(() => {
+  if (creating.value || !sheet.value?.paused) return ''
+  const next = nextStart(new Date().toISOString(),sheet.value.cycle)
+  const first = nextStart(new Date(Date.parse(sheet.value.effectiveFrom)-1).toISOString(),sheet.value.cycle)
+  return next > first ? next : first
+})
+const canResume = computed(() => sheet.value?.mayPublish && !props.applied && firstResumeDate.value &&
+  (!cutoff.value || firstResumeDate.value<=cutoff.value))
 const componentsChanged = computed(() => JSON.stringify(rows.value.map(configuredRow)) !==
   JSON.stringify(editableRows(sheet.value?.items || []).map(configuredRow)))
 const scenariosChanged = computed(() => {
@@ -375,6 +386,26 @@ async function publish() {
     saving.value = false
   }
 }
+function openResume() {
+  resumeError.value = ''
+  resumeDate.value = firstResumeDate.value
+}
+async function resumeRule() {
+  if (!resumeDate.value || resuming.value) return
+  resumeError.value = ''
+  resuming.value = true
+  try {
+    const result = await props.api('/catalog-period-rules/resume',{method:'POST',body:JSON.stringify({
+      ruleId:props.rule.id,effectiveFrom:new Date(resumeDate.value+'T00:00:00+08:00').toISOString(),
+    })})
+    resumeDate.value = ''
+    emit('resumed',result)
+  } catch (err) {
+    resumeError.value = err.message
+  } finally {
+    resuming.value = false
+  }
+}
 </script>
 
 <template>
@@ -399,16 +430,20 @@ async function publish() {
       <section v-if="sheet">
         <header v-if="!creating" class="period-component-heading">
           <h2>{{ sheet.label }} <a-tag>v{{ sheet.version }}</a-tag></h2>
-          <a-button v-if="sheet.mayPublish && !applied" size="small" :disabled="changed || saving || savingDraft" @click="emit('copy',sheet)">
-            复制为新规则
-          </a-button>
+          <a-space wrap>
+            <a-button v-if="sheet.mayPublish && !applied" size="small" :disabled="changed || saving || savingDraft" @click="emit('copy',sheet)">
+              复制为新规则
+            </a-button>
+            <a-button v-if="canResume" size="small" :disabled="changed || saving || savingDraft" @click="openResume">恢复执行</a-button>
+          </a-space>
         </header>
         <p v-if="copiedFrom" class="rule-formula">复制自 {{ copiedFrom.label }} v{{ copiedFrom.version }}，按各 SKU 当前的确认时点归期。</p>
         <a-alert v-if="sheet.paused && !applied" class="feedback" type="info" show-icon
-          message="当前暂停执行。保存档位新版本后仍维持暂停。"/>
+          message="当前暂停执行。保存新版本后，可另选账期恢复执行。"/>
         <a-descriptions size="small" :column="{xs:1,sm:1,md:2}" bordered>
           <a-descriptions-item v-if="!creating" label="结算周期">{{ cycleLabels[sheet.cycle] }}</a-descriptions-item>
           <a-descriptions-item v-if="!creating" label="有效范围">{{ formatTime(sheet.effectiveFrom) }}<template v-if="sheet.effectiveTo"> 至 {{ formatTime(sheet.effectiveTo) }}</template></a-descriptions-item>
+          <a-descriptions-item v-if="sheet.resumeFrom && !sheet.paused" label="恢复执行时间" :span="2">{{ formatTime(sheet.resumeFrom) }}</a-descriptions-item>
           <a-descriptions-item label="参与场景" :span="2">
             <template v-if="creating || editingScenarios">
               <a-select id="period-rule-scenarios" v-model:value="scenarioCodes" :options="scenarioOptions"
@@ -687,6 +722,17 @@ async function publish() {
         <a-button v-if="canSave" type="primary" :disabled="!changed" :loading="saving" @click="publish">{{ creating ? '保存并生效' : '保存新版本' }}</a-button>
       </div>
     </template>
+    <a-modal v-if="resumeDate" open title="恢复整期规则" ok-text="确认恢复" cancel-text="返回" :confirm-loading="resuming"
+      :mask-closable="!resuming" :closable="!resuming" :keyboard="!resuming" @cancel="!resuming && (resumeDate='')" @ok="resumeRule">
+      <a-alert v-if="resumeError" type="error" show-icon class="feedback" :message="resumeError"/>
+      <p>{{ sheet.label }} · v{{ sheet.version }}</p>
+      <a-form layout="vertical">
+        <a-form-item label="恢复账期起点（北京时间）" html-for="period-resume-date" required>
+          <a-input id="period-resume-date" :value="resumeDate" type="date" :min="firstResumeDate" :max="cutoff" :disabled="resuming"
+            @update:value="resumeDate=$event || firstResumeDate"/>
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </a-drawer>
 </template>
 

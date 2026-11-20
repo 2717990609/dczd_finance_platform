@@ -282,7 +282,9 @@ func storeCatalogRulePackage(ctx context.Context, tx pgx.Tx, productID int64, ob
 	}
 	tag, err := tx.Exec(ctx, `INSERT INTO product_rule_packages(source_id,product_id,code,name,project_code,policy_kind,scope_type,scope_id,paused,resume_from)
 	 VALUES($1::uuid,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-	 ON CONFLICT(source_id) DO UPDATE SET name=excluded.name,paused=excluded.paused,resume_from=excluded.resume_from
+	 ON CONFLICT(source_id) DO UPDATE SET name=excluded.name,
+	  paused=CASE WHEN product_rule_packages.resume_recorded_by IS NULL THEN excluded.paused ELSE product_rule_packages.paused END,
+	  resume_from=CASE WHEN product_rule_packages.resume_recorded_by IS NULL THEN excluded.resume_from ELSE product_rule_packages.resume_from END
 	 WHERE (product_rule_packages.product_id,product_rule_packages.code,product_rule_packages.project_code,product_rule_packages.policy_kind,
 	  product_rule_packages.scope_type,product_rule_packages.scope_id) =
 	  (excluded.product_id,excluded.code,excluded.project_code,excluded.policy_kind,excluded.scope_type,excluded.scope_id)`,

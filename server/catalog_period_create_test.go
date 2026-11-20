@@ -232,4 +232,85 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		ruleID != published.ID || refunds != 5000 || carry != -5000 {
 		t.Fatalf("refund must stay with its original group and version, got %s/%d/%d: %v", ruleID, refunds, carry, err)
 	}
+	refundDraft := trial.(draftSummary)
+	if _, err := db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`,
+		refundDraft.PeriodID, refundDraft.Version); err != nil {
+		t.Fatal(err)
+	}
+
+	const resumePath = path + "/resume"
+	var resume http.HandlerFunc
+	for _, route := range s.routes() {
+		if route.Path == resumePath && route.Method == http.MethodPost {
+			resume = route.Handler
+			break
+		}
+	}
+	if resume == nil {
+		t.Fatal("a paused aggregate package needs a resume action")
+	}
+	if _, err := db.Exec(ctx, `UPDATE product_rule_packages SET paused=true WHERE source_id=(SELECT package_id FROM product_rule_versions WHERE source_id=$1)`, later.ID); err != nil {
+		t.Fatal(err)
+	}
+	at = firstCatalogPeriodChange(time.Now(), "MONTHLY_25_TO_24").AddDate(0, 2, 0)
+	resumeInput := func(id string, from time.Time) string {
+		return fmt.Sprintf(`{"ruleId":%q,"effectiveFrom":%q}`, id, from.Format(time.RFC3339))
+	}
+	if rejected := submit(979, resumePath, resume, resumeInput(later.ID, at)); rejected.Code != 403 {
+		t.Fatalf("a different product grant cannot resume a package: %d %s", rejected.Code, rejected.Body.String())
+	}
+	if rejected := submit(980, resumePath, resume, resumeInput(later.ID, at.AddDate(0, 0, 1))); rejected.Code != 400 {
+		t.Fatalf("resume must use the start of a complete period: %d %s", rejected.Code, rejected.Body.String())
+	}
+	if rejected := submit(980, resumePath, resume, resumeInput(published.ID, at)); rejected.Code != 409 {
+		t.Fatalf("resume must check the version effective at the requested date: %d %s", rejected.Code, rejected.Body.String())
+	}
+	if _, err := db.Exec(ctx, `UPDATE organization_units SET status='INACTIVE' WHERE id='10000000-0000-4000-8000-000000000981'`); err != nil {
+		t.Fatal(err)
+	}
+	if rejected := submit(980, resumePath, resume, resumeInput(later.ID, at)); rejected.Code != 409 || !strings.Contains(rejected.Body.String(), "公司安排") {
+		t.Fatalf("an inactive payee must identify the blocked arrangement: %d %s", rejected.Code, rejected.Body.String())
+	}
+	if _, err := db.Exec(ctx, `UPDATE organization_units SET status='ACTIVE' WHERE id='10000000-0000-4000-8000-000000000981'`); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if resumed := submit(980, resumePath, resume, resumeInput(later.ID, at)); resumed.Code != 200 {
+			t.Fatalf("an authorized resume can be retried for the same date: %d %s", resumed.Code, resumed.Body.String())
+		}
+	}
+	var paused bool
+	var enabledAt time.Time
+	var frozenVersion int64
+	if err := db.QueryRow(ctx, `SELECT p.paused,p.resume_from,s.draft_version FROM product_rule_packages p
+	 JOIN periods m ON m.aggregate_package_id=p.source_id JOIN settlements s ON s.period_id=m.id WHERE m.id=$1`, scoped.PeriodID).
+		Scan(&paused, &enabledAt, &frozenVersion); err != nil || paused || !enabledAt.Equal(at) || frozenVersion != scoped.Version {
+		t.Fatalf("resume should set the new date while preserving the closed draft: %v %s %d %v", paused, enabledAt, frozenVersion, err)
+	}
+	var archived productRulePackageConfig
+	if err := db.QueryRow(ctx, `SELECT p.source_id::text,p.code,p.name,p.project_code,p.policy_kind,p.scope_type,p.scope_id
+	 FROM product_rule_packages p JOIN product_rule_versions v ON v.package_id=p.source_id WHERE v.source_id=$1`, later.ID).
+		Scan(&archived.SourceID, &archived.Code, &archived.Name, &archived.Project, &archived.Kind, &archived.ScopeType, &archived.ScopeID); err != nil {
+		t.Fatal(err)
+	}
+	archived.Paused = true
+	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		return storeCatalogRulePackage(ctx, tx, 980, time.Now(), archived)
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var resumed catalogPeriodVersion
+	resumed, err = readCatalogPeriodVersion(ctx, db, later.ID)
+	if err != nil || resumed.Paused || resumed.ResumeFrom == nil || !resumed.ResumeFrom.Equal(at) {
+		t.Fatalf("reimporting an archived pause must retain the locally scheduled execution: %+v %v", resumed, err)
+	}
+	w = httptest.NewRecorder()
+	s.getCatalogPeriodActivity(w, httptest.NewRequest(http.MethodGet, "/api/v1/catalog-period-activity?ruleId="+later.ID+
+		"&month="+at.In(shanghai).AddDate(0, 1, 0).Format("2006-01"), nil))
+	activity = catalogPeriodActivity{}
+	if err := json.Unmarshal(w.Body.Bytes(), &activity); err != nil || w.Code != 200 ||
+		activity.Grouping == nil || activity.Grouping.PriorUnsettled || len(activity.Grouping.Groups) != 1 ||
+		activity.Grouping.Groups[0].quote().CarryForward != -5000 {
+		t.Fatalf("the resumed period should recover the latest frozen carry even across paused months: %d %s %v", w.Code, w.Body.String(), err)
+	}
 }

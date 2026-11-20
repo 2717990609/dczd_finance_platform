@@ -517,6 +517,11 @@ function periodRulePublished(result, product) {
   if (product) ruleBusinessScope.value = product+':aggregate'
   ratePublished(result)
 }
+function periodRuleResumed(result) {
+  periodRule.value = undefined
+  notice.value = '整期规则从 '+formatTime(result.resumeFrom)+' 恢复执行。'
+  refresh()
+}
 const mainRows = computed(() => {
   const key = tab.value === 'mapping' ? 'mappings' : tab.value === 'identity' ? 'identities' : current.value
   const result = key === 'rules' ? [...data.value.rules,...data.value.catalogRules] : data.value[key]
@@ -1824,7 +1829,7 @@ async function save() {
     :rule="periodRule" :applied="appliedRule?.aggregate" :products="catalogPeriodProducts" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
     :can-review-activity="wholeWorkspace && !appliedRule?.aggregate && !periodRule?.create"
     @close="periodRule=undefined; appliedRule=undefined" @published="periodRulePublished" @open-draft="openAggregateDraft"
-    @copy="copyCatalogPeriodRule" @open-version="showCatalogPeriodIssueVersion"/>
+    @copy="copyCatalogPeriodRule" @open-version="showCatalogPeriodIssueVersion" @resumed="periodRuleResumed"/>
   <CatalogScenarioCreate v-if="catalogScenarioCreation && active && !sessionError && !sessionChecking && !loginRequested"
     :products="catalogScenarioProducts" :initial-product="catalogScenarioCreation.productId" :initial-sku="catalogScenarioCreation.sku" :api="api"
     @close="catalogScenarioCreation=undefined" @published="catalogScenarioPublished"/>

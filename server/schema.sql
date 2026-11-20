@@ -743,6 +743,7 @@ CREATE TABLE IF NOT EXISTS product_rule_packages (
  resume_from timestamptz
 );
 CREATE INDEX IF NOT EXISTS product_rule_packages_product ON product_rule_packages(product_id);
+ALTER TABLE product_rule_packages ADD COLUMN IF NOT EXISTS resume_recorded_by text;
 CREATE UNIQUE INDEX IF NOT EXISTS product_rule_package_scope_product ON product_rule_packages(source_id,product_id);
 DO $$ BEGIN
  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='periods'::regclass AND conname='period_aggregate_package_product') THEN

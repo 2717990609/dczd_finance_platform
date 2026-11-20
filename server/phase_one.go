@@ -178,6 +178,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/catalog-period-rules", Handler: s.getCatalogPeriodRule},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-period-rules", Handler: s.postCatalogPeriodRule},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-period-rules/preview", Handler: s.postCatalogPeriodQuote},
+		{Method: http.MethodPost, Path: "/api/v1/catalog-period-rules/resume", Handler: s.postCatalogPeriodResume},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-period-activity", Handler: s.getCatalogPeriodActivity},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-aggregate-drafts", Handler: submit(s.openCatalogAggregateDraft)},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-aggregate-drafts/events", Handler: s.getCatalogAggregateDraftEvents},
@@ -284,12 +285,12 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, errFinanceLoginBusy):
 		code, message = http.StatusTooManyRequests, err.Error()
-	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope),
+	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope), errors.Is(err, errCatalogPeriodResumeDate),
 		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany),
 		errors.Is(err, errPracticeRegistrationOverlap):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
-		errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod),
+		errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod), errors.Is(err, errCatalogPeriodResumeState), errors.Is(err, errCatalogPeriodResumeTarget),
 		errors.Is(err, errPracticeRosterSource), errors.Is(err, errPracticeRosterRoute), errors.Is(err, errPracticeRosterAccess),
 		errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap), errors.Is(err, errPracticeRosterProduct),
 		errors.Is(err, errPracticeMonthSettlementDependency),

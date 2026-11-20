@@ -209,14 +209,14 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 	var rule catalogPeriodVersion
 	var raw json.RawMessage
 	rule.packageID = *summary.AggregatePackage
-	err := tx.QueryRow(ctx, `SELECT p.product_id,p.paused,v.definition,
+	err := tx.QueryRow(ctx, `SELECT p.product_id,p.paused,p.resume_from,v.definition,
 	 `+catalogRuleRetiredAtSQL+`
 	 FROM product_rule_packages p JOIN product_catalog_settings scope ON scope.product_id=p.product_id
 	 JOIN product_rule_versions v ON v.package_id=p.source_id
 	 WHERE p.source_id=$1::uuid AND `+catalogPeriodRuleScope+` AND v.source_status='PUBLISHED' AND `+catalogVersionVisible+`
 	  AND v.effective_from<$2
 	 ORDER BY v.effective_from DESC,v.version_no DESC LIMIT 1`, rule.packageID, window.Through).
-		Scan(&rule.ProductID, &rule.Paused, &raw, &rule.retiredFrom)
+		Scan(&rule.ProductID, &rule.Paused, &rule.ResumeFrom, &raw, &rule.retiredFrom)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, nil, errCatalogAggregatePeriod
 	}
@@ -292,12 +292,14 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 	return result, digest, err
 }
 
-func readCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, report *catalogPeriodGroupReport, packageID string, start time.Time, display bool) error {
+func readCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, report *catalogPeriodGroupReport, packageID string, start time.Time, display, resumed bool) error {
 	err := tx.QueryRow(ctx, `SELECT p.id FROM periods p JOIN settlements final ON final.period_id=p.id
-	 WHERE p.aggregate_package_id=$1::uuid AND p.ends_on=($2::timestamptz AT TIME ZONE 'Asia/Shanghai')::date-1`, packageID, start).
+	 WHERE p.aggregate_package_id=$1::uuid AND p.ends_on<($2::timestamptz AT TIME ZONE 'Asia/Shanghai')::date
+	 AND ($3 OR p.ends_on=($2::timestamptz AT TIME ZONE 'Asia/Shanghai')::date-1)
+	 ORDER BY p.ends_on DESC,p.id DESC LIMIT 1`, packageID, start, resumed).
 		Scan(&report.carryFromPeriod)
 	if errors.Is(err, pgx.ErrNoRows) {
-		report.PriorUnsettled = true
+		report.PriorUnsettled = !resumed
 		return nil
 	}
 	if err != nil {

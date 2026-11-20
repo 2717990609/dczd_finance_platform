@@ -411,6 +411,9 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 		if in.DraftPeriodID != 0 {
 			event.EventID = eventID
 		}
+		if groupPayments && paymentID != 0 && frozen.PeriodID == 0 && in.GroupRule.ResumeFrom != nil && paidAt.Before(*in.GroupRule.ResumeFrom) {
+			return nil
+		}
 		if groupPayments && paymentID != 0 && code != "" && frozen.PeriodID == 0 {
 			selected := selections[paymentID]
 			if selected == nil {
@@ -511,8 +514,9 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 			if err != nil {
 				return result, err
 			}
-			if slices.ContainsFunc(rules, func(rule catalogAggregateRule) bool { return rule.From.Before(in.Window.Start) }) {
-				if err := readCatalogAggregateCarry(ctx, tx, &grouping, packageID, in.Window.Start, in.DraftPeriodID == 0); err != nil {
+			resumed := in.GroupRule.ResumeFrom != nil && in.GroupRule.ResumeFrom.Equal(in.Window.Start)
+			if resumed || slices.ContainsFunc(rules, func(rule catalogAggregateRule) bool { return rule.From.Before(in.Window.Start) }) {
+				if err := readCatalogAggregateCarry(ctx, tx, &grouping, packageID, in.Window.Start, in.DraftPeriodID == 0, resumed); err != nil {
 					return result, err
 				}
 			}

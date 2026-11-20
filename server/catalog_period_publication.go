@@ -30,6 +30,7 @@ type catalogPeriodVersion struct {
 	Through     *time.Time                `json:"effectiveTo"`
 	MayPublish  bool                      `json:"mayPublish"`
 	Paused      bool                      `json:"paused"`
+	ResumeFrom  *time.Time                `json:"resumeFrom,omitempty"`
 	Cycle       string                    `json:"cycle"`
 	Scenarios   []catalogPeriodSKU        `json:"scenarios"`
 	Items       []catalogPeriodItem       `json:"items"`
@@ -88,13 +89,13 @@ func readCatalogPeriodVersion(ctx context.Context, db catalogPeriodReader, id st
 		return rule, invalid
 	}
 	err := db.QueryRow(ctx, `SELECT p.product_id,pro.name,p.name,v.version_no,v.effective_from,`+catalogDisplayedThrough+`,
-	 v.package_id::text,v.definition,(v.source_status='PUBLISHED' AND `+catalogVersionVisible+`),p.paused,`+catalogRuleRetiredAtSQL+`
+	 v.package_id::text,v.definition,(v.source_status='PUBLISHED' AND `+catalogVersionVisible+`),p.paused,p.resume_from,`+catalogRuleRetiredAtSQL+`
 	 FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
 	 JOIN product_catalog_settings scope ON scope.product_id=p.product_id
 	 JOIN products pro ON pro.id=p.product_id
 	 WHERE v.source_id=$1::uuid AND `+catalogPeriodRuleScope, id).
 		Scan(&rule.ProductID, &rule.ProductName, &rule.Label, &rule.Version, &rule.From, &rule.Through, &rule.packageID,
-			&rule.raw, &rule.MayPublish, &rule.Paused, &rule.retiredFrom)
+			&rule.raw, &rule.MayPublish, &rule.Paused, &rule.ResumeFrom, &rule.retiredFrom)
 	return rule, err
 }
 
@@ -282,12 +283,7 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 		base.Through != nil && !at.Before(*base.Through) {
 		return result, errCatalogPeriodStart
 	}
-	var active string
-	err = tx.QueryRow(ctx, `SELECT v.source_id::text FROM product_rule_versions v
-	 JOIN product_rule_packages p ON p.source_id=v.package_id JOIN product_catalog_settings scope ON scope.product_id=p.product_id
-	 WHERE v.package_id=$1::uuid AND v.source_status='PUBLISHED' AND `+catalogVersionVisible+`
-	  AND v.effective_from<=$2 AND (`+catalogRuleExecutionThrough+` IS NULL OR $2<`+catalogRuleExecutionThrough+`)
-	 ORDER BY v.effective_from DESC,v.version_no DESC LIMIT 1`, base.packageID, at).Scan(&active)
+	active, err := catalogPeriodVersionAt(ctx, tx, base.packageID, at)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && active != input.BaseID {
 		return result, errCatalogRateStale
 	}
@@ -328,6 +324,16 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 	}
 	return result, enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods WHERE aggregate_package_id=$1::uuid
 	 AND $2<(ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'`, base.packageID, at)
+}
+
+func catalogPeriodVersionAt(ctx context.Context, db catalogPeriodReader, packageID string, at time.Time) (string, error) {
+	var active string
+	err := db.QueryRow(ctx, `SELECT v.source_id::text FROM product_rule_versions v
+	 JOIN product_rule_packages p ON p.source_id=v.package_id JOIN product_catalog_settings scope ON scope.product_id=p.product_id
+	 WHERE v.package_id=$1::uuid AND v.source_status='PUBLISHED' AND `+catalogVersionVisible+`
+	  AND v.effective_from<=$2 AND (`+catalogRuleExecutionThrough+` IS NULL OR $2<`+catalogRuleExecutionThrough+`)
+	 ORDER BY v.effective_from DESC,v.version_no DESC LIMIT 1`, packageID, at).Scan(&active)
+	return active, err
 }
 
 func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, raw json.RawMessage,
