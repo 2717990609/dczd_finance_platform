@@ -241,18 +241,14 @@ func resolveVIPRateRows(rows []vipRateRow, company, relationship string, categor
 			row.hasCategory() && (category == nil || row.Category != *category && !slices.Contains(row.CategoryIDs, *category)) {
 			continue
 		}
-		tier := 0
-		if categorized {
-			switch {
-			case row.Company != "ANY" && !row.SnapshotDefault:
-				tier = 0
-			case row.Company == "ANY" && row.hasCategory():
-				tier = 1
-			case row.Company != "ANY":
-				tier = 2
-			default:
-				tier = 3
-			}
+		tier := 3
+		switch {
+		case row.Company != "ANY" && !row.SnapshotDefault:
+			tier = 0
+		case row.Company == "ANY" && row.hasCategory():
+			tier = 1
+		case row.Company != "ANY":
+			tier = 2
 		}
 		groups[tier] = append(groups[tier], row)
 	}

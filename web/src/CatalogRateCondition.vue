@@ -7,7 +7,7 @@ const value = defineModel({type:Object,required:true})
 const companies = computed(() => props.options.companies.filter(option=>option.value!=='ANY'))
 const scope = computed(() => props.scope ?? value.value.scope)
 const scopes = computed(() => [
-  ...(props.options.categories.length ? [{value:'category',label:'按销售类别'}] : []),
+  ...(props.options.categories.length || value.value.categoryIds?.length ? [{value:'category',label:'按销售类别'}] : []),
   {value:'company',label:'公司特例'},
   {value:'general',label:'不限公司和类别'},
 ])
@@ -16,17 +16,17 @@ const scopes = computed(() => [
 <template>
   <div class="field-grid catalog-rate-fields">
     <div v-if="value.scope && !props.scope">
-      <label :for="'catalog-add-scope'+suffix">匹配方式</label>
+      <label :for="'catalog-add-scope'+suffix">适用范围</label>
       <a-select :id="'catalog-add-scope'+suffix" v-model:value="value.scope" :options="scopes"/>
     </div>
     <div v-if="scope!=='category' && scope!=='general'" class="catalog-rate-selector">
-      <label :for="'catalog-add-company'+suffix">适用公司</label>
+      <label :for="'catalog-add-company'+suffix">特例公司</label>
       <a-select :id="'catalog-add-company'+suffix" v-model:value="value.companyIds"
         :options="companies" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label"
         :placeholder="scope==='company' ? '选择公司' : '不限公司'"/>
     </div>
     <div v-if="scope!=='general' && (options.categories.length || value.categoryIds?.length)" class="catalog-rate-selector">
-      <label :for="'catalog-add-category'+suffix">销售类别</label>
+      <label :for="'catalog-add-category'+suffix">{{ scope==='company' ? '限销售类别（可选）' : '销售类别' }}</label>
       <a-select :id="'catalog-add-category'+suffix" v-model:value="value.categoryIds" :options="options.categories"
         :placeholder="scope==='category' ? '选择销售类别' : '不限销售类别'" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label"/>
     </div>

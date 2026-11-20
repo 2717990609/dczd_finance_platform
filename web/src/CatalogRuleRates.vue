@@ -70,13 +70,15 @@ const percent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFraction
 const rateGroups = computed(() => {
   const rows = component.value?.rows || []
   const result = [
-    {key:'default',title:'按销售类别',rows:rows.filter(row=>['category','general'].includes(row.scope))},
+    {key:'default',title:'按销售类别',rows:rows.filter(row=>row.scope==='category')},
     {key:'company',title:'公司特例',rows:rows.filter(row=>row.scope==='company')},
     {key:'inherited',title:'公司补充比例',rows:rows.filter(row=>row.scope==='inherited')},
+    {key:'general',title:'通用比例',rows:rows.filter(row=>row.scope==='general')},
   ]
   return result.filter(group=>group.rows.length)
 })
 const rateGroup = ref()
+const rateEditorTarget = computed(() => '#'+CSS.escape('catalog-rates-edit-'+selected.value))
 watch([selected,rateGroups], ([,groups]) => {
   if (!groups.some(group=>group.key===rateGroup.value)) rateGroup.value = groups[0]?.key
 })
@@ -89,15 +91,16 @@ const activeRateGroup = computed(() => rateGroups.value.find(group=>group.key===
 const displayedRates = computed(() => {
   const term = filter.value.trim().toLowerCase()
   return (activeRateGroup.value?.rows || []).filter(row => !term ||
-    [rateGroup.value==='default' ? undefined : row.company,row.relationship,row.category].some(value => value?.toLowerCase().includes(term)))
+    [row.company,row.relationship,row.category].some(value => value?.toLowerCase().includes(term)))
 })
 const displayedColumns = computed(() => columns.value.filter(col=>
-  (col.key!=='company' || rateGroup.value!=='default') &&
-  (col.key!=='category' || rateGroup.value==='default' || activeRateGroup.value?.rows.some(row=>row.category)) &&
+  (col.key!=='company' || ['company','inherited'].includes(rateGroup.value)) &&
+  (col.key!=='category' || activeRateGroup.value?.rows.some(row=>row.category)) &&
   (col.key!=='relationship' || activeRateGroup.value?.rows.some(row=>row.limitsRelationship)) &&
   (col.key!=='payee' || component.value?.targetKind==='seller')))
 const tableWidth = computed(() => displayedColumns.value.reduce((width,column)=>width+column.width,0))
 async function addRecipient() {
+  selected.value = undefined
   await nextTick()
   await structureEditor.value?.addRecipient()
 }
@@ -366,7 +369,9 @@ async function publish() {
               </a-radio-group>
               <a-input v-if="component.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
                 placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
-              <small v-if="rateGroup!=='inherited' && automaticCategoryRate" class="finance-rate-priority">{{ catalogRatePriorityLabel }}</small>
+              <small v-if="rateGroups.length>1 && rateGroup!=='inherited'" class="finance-rate-priority">
+                {{ automaticCategoryRate ? catalogRatePriorityLabel : '先匹配公司标准，再取通用比例。' }}
+              </small>
             </div>
             <p v-if="rateGroup==='inherited'" class="catalog-inheritance">公司没有单独比例，也未匹配到类别默认比例时，才使用此处配置。</p>
             <a-table :key="selected + filter + rateGroup" :columns="displayedColumns" :data-source="displayedRates" row-key="row" size="small"
@@ -375,7 +380,7 @@ async function publish() {
                 <template v-if="column.key==='company'">
                   {{ record.company }}
                 </template>
-                <template v-if="column.key==='category'">{{ record.category || (record.scope==='general' && automaticCategoryRate ? '其他已识别类别' : '不限') }}</template>
+                <template v-if="column.key==='category'">{{ record.category || '不限' }}</template>
                 <template v-if="column.key==='rate'">
                   <a-input-number v-if="!applied" :aria-label="'第 '+record.row+' 行比例'" size="small"
                     :value="pendingScope(selected,record.row) ? Number(pendingScope(selected,record.row).rateBps)/100 : displayRate(record.rateBps,record.row)"
@@ -396,6 +401,7 @@ async function publish() {
                 </template>
               </template>
             </a-table>
+            <div v-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
           </template>
           <a-collapse v-if="team && teamSplit" ghost class="catalog-more">
             <a-collapse-panel key="team" header="内部团队收款人">
@@ -431,9 +437,12 @@ async function publish() {
           </section>
           </div>
           <template v-if="sheet.mayPublish && !applied">
-            <CatalogRuleStructureEditor v-if="sheet.structureOptions" ref="structureEditor" :key="rule.id"
-              v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
-              :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints"/>
+            <Teleport v-if="sheet.structureOptions" :disabled="!component?.rows?.length || itemRemoved"
+              :to="component?.rows?.length && !itemRemoved ? rateEditorTarget : 'body'">
+              <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id"
+                v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
+                :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints"/>
+            </Teleport>
             <a-collapse v-model:active-key="more" ghost class="catalog-more">
               <a-collapse-panel key="more" header="更多配置">
                 <div class="topbar-actions">

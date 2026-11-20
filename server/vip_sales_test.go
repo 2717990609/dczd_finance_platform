@@ -189,8 +189,9 @@ func TestVIPSourceClaimsDistinguishARepeatedRoleFromAnotherSeller(t *testing.T) 
 	}
 }
 
-func TestVIPNonCategoryRateRejectsEqualSpecificity(t *testing.T) {
-	rows := []vipRateRow{{Company: "company", Relationship: "ANY", Rate: 1000}, {Company: "ANY", Relationship: "DIRECT", Rate: 500}}
+func TestVIPRateRejectsTwoCompanyExceptionsWithSamePriority(t *testing.T) {
+	rows := []vipRateRow{{Company: "company", Relationship: "ANY", Rate: 1000},
+		{CompanyIDs: []string{"company", "other"}, Relationship: "ANY", Rate: 500}}
 	if _, issue := resolveVIPRate(rows, "company", "DIRECT", nil); issue != "SALES_RATE_CONFLICT" {
 		t.Fatalf("equal specificity: %s", issue)
 	}

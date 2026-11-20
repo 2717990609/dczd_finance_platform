@@ -51,9 +51,20 @@ func TestCatalogNewRateConditionsPreserveMatcherPrecedence(t *testing.T) {
 	}
 	specific := row("company", "ANY", "", 1000, false)
 	before := []json.RawMessage{specific}
-	for _, conflicting := range []json.RawMessage{specific, row("ANY", "DIRECT", "", 1200, false)} {
-		if err := validateCatalogNewRateConditions(before, append(slices.Clone(before), conflicting)); !errors.Is(err, errCatalogRateConditions) {
-			t.Fatalf("condition must be rejected: %v", err)
+	if err := validateCatalogNewRateConditions(before, append(slices.Clone(before), specific)); !errors.Is(err, errCatalogRateConditions) {
+		t.Fatalf("duplicate company condition must be rejected: %v", err)
+	}
+	withGeneral := append(slices.Clone(before), row("ANY", "DIRECT", "", 1200, false))
+	if err := validateCatalogNewRateConditions(before, withGeneral); err != nil {
+		t.Fatalf("company exception must take priority over a general relationship rate: %v", err)
+	}
+	grouped, ok := parseVIPRateTable(withGeneral)
+	if !ok {
+		t.Fatal("cannot read company exception and general rate")
+	}
+	for company, want := range map[string]int64{"company": 1000, "other": 1200} {
+		if rate, issue := resolveVIPRate(grouped, company, "DIRECT", nil); issue != "" || rate != want {
+			t.Fatalf("%s rate=%d issue=%s, want %d", company, rate, issue, want)
 		}
 	}
 	after := append(slices.Clone(before), row("company", "DIRECT", "", 1200, false))

@@ -98,47 +98,44 @@ watch(amounts, choices => {
     <div v-for="({standard:category,index:i}) in group.rows" :key="i" class="company-category">
       <div class="company-standard-fields">
         <a-form-item v-if="category.scope==='category'" class="company-scope-field" label="销售类别" :html-for="field('sales-category-'+i)" required>
-          <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryIds" :options="salesCategoryOptions(category)"
+          <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryIds" :options="salesCategoryOptions(category)" size="small"
             mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择销售类别"/>
         </a-form-item>
         <a-form-item v-else class="company-scope-field" label="适用公司" :html-for="field('companies-'+i)" required>
-          <a-select :id="field('companies-'+i)" :value="category.companies" :options="availableCompanies(category)"
+          <a-select :id="field('companies-'+i)" :value="category.companies" :options="availableCompanies(category)" size="small"
             mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司" @change="selectCompanies(category,$event)"/>
         </a-form-item>
         <a-form-item v-if="amounts.length>1" label="计算方式" :html-for="field('method-'+i)">
-          <a-select :id="field('method-'+i)" :value="category.mode" :options="amounts" @change="modeChanged(category,$event)"/>
+          <a-select :id="field('method-'+i)" :value="category.mode" :options="amounts" size="small" @change="modeChanged(category,$event)"/>
         </a-form-item>
         <a-form-item :label="category.mode==='rate' ? '按报名净实收（%）' : '每份报名（元）'" :html-for="field('value-'+i)" required>
-          <a-input-number :id="field('value-'+i)" v-model:value="category.value" :min="0"
+          <a-input-number :id="field('value-'+i)" v-model:value="category.value" size="small" :min="0"
             :max="category.mode==='rate'?100:undefined" :precision="category.mode==='rate'?4:2"/>
         </a-form-item>
         <a-form-item v-if="component.classMember==='new'" label="推荐比例（%）" :html-for="field('recommendation-'+i)">
-          <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" :min="0" :max="100" :precision="4"/>
+          <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" size="small" :min="0" :max="100" :precision="4"/>
         </a-form-item>
         <a-button v-if="categories.length>1" size="small" type="link" danger class="company-standard-remove" @click="categories.splice(i,1)">移除</a-button>
       </div>
       <a-collapse v-if="category.overrides.length" ghost class="company-advanced">
         <a-collapse-panel key="overrides" :header="'组内公司特例（'+category.overrides.length+'）'">
-          <div class="company-override" v-for="(override,j) in category.overrides" :key="j">
-            <a-form-item label="公司" :html-for="field('override-'+i+'-'+j)" required>
+          <div class="company-override company-standard-fields" v-for="(override,j) in category.overrides" :key="j">
+            <a-form-item class="company-scope-field" label="特例公司" :html-for="field('override-'+i+'-'+j)" required>
               <a-select :id="field('override-'+i+'-'+j)" v-model:value="override.companyIds"
-                :options="overrideOptions(category,override)" mode="multiple" :max-tag-count="3" :filter-option="byName"/>
+                :options="overrideOptions(category,override)" size="small" mode="multiple" :max-tag-count="3" :filter-option="byName"/>
             </a-form-item>
-            <div class="company-value">
-              <a-form-item v-if="amounts.length>1" label="计算方式" :html-for="field('override-method-'+i+'-'+j)">
-                <a-select :id="field('override-method-'+i+'-'+j)" :value="override.mode" :options="amounts" @change="modeChanged(override,$event)"/>
-              </a-form-item>
-              <a-form-item :label="override.mode==='rate' ? '按报名净实收（%）' : '每份报名（元）'" :html-for="field('override-value-'+i+'-'+j)" required>
-                <a-input-number :id="field('override-value-'+i+'-'+j)" v-model:value="override.value" :min="0"
-                  :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
-              </a-form-item>
-            </div>
-            <a-form-item v-if="component.classMember==='new'" label="新报单独推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)"
-              extra="留空沿用类别比例">
+            <a-form-item v-if="amounts.length>1" label="计算方式" :html-for="field('override-method-'+i+'-'+j)">
+              <a-select :id="field('override-method-'+i+'-'+j)" :value="override.mode" :options="amounts" size="small" @change="modeChanged(override,$event)"/>
+            </a-form-item>
+            <a-form-item :label="override.mode==='rate' ? '按报名净实收（%）' : '每份报名（元）'" :html-for="field('override-value-'+i+'-'+j)" required>
+              <a-input-number :id="field('override-value-'+i+'-'+j)" v-model:value="override.value" size="small" :min="0"
+                :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
+            </a-form-item>
+            <a-form-item v-if="component.classMember==='new'" label="推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)">
               <a-input-number :id="field('override-recommendation-'+i+'-'+j)" v-model:value="override.recommendationRate"
-                :min="0" :max="100" :precision="4"/>
+                size="small" :min="0" :max="100" :precision="4" placeholder="沿用上方比例"/>
             </a-form-item>
-            <a-button type="link" danger @click="category.overrides.splice(j,1)">移除单独标准</a-button>
+            <a-button type="link" danger size="small" class="company-standard-remove" @click="category.overrides.splice(j,1)">移除单独标准</a-button>
           </div>
         </a-collapse-panel>
       </a-collapse>
@@ -162,8 +159,8 @@ watch(amounts, choices => {
 </template>
 
 <style scoped>
-.company-standard-group {border-top:1px solid var(--line);margin:4px 0}
-.company-category-title {display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px;padding:3px 0}
+.company-standard-group {border-top:1px solid var(--line);margin:2px 0}
+.company-category-title {display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:30px;padding:2px 0}
 .company-category-title h4 {margin:0}
 .company-category {padding:4px 8px 6px;background:#f6f8fb;border-radius:4px;margin-bottom:4px}
 .company-priority {margin:4px 0 6px}
@@ -172,13 +169,13 @@ watch(amounts, choices => {
 .company-meta :deep(.ant-form-item) {flex:1 1 140px;min-width:0;margin-bottom:0}
 .company-meta :deep(.rule-remove) {margin-bottom:4px}
 .company-standard-fields {display:flex;flex-wrap:wrap;align-items:end;gap:4px 10px}
-.company-category .company-standard-fields :deep(.ant-form-item) {flex:1 1 130px;min-width:0;margin:0}
-.company-standard-fields :deep(.company-scope-field) {flex:3 1 220px}
+.company-standard-fields :deep(.ant-form-item) {flex:1 1 130px;min-width:0;margin:0}
+.company-standard-fields :deep(.ant-form-item.company-scope-field) {flex:3 1 220px}
 .company-value :deep(.ant-form-item-label),.company-standard-fields :deep(.ant-form-item-label) {padding-bottom:2px}
-.company-standard-remove {margin:0 0 4px auto}
+.company-standard-remove {margin:0 0 0 auto}
 .company-advanced :deep(.ant-collapse-header) {padding:4px 0}
 .company-advanced :deep(.ant-collapse-content-box) {padding:4px 0}
 .company-value :deep(.ant-input-number),.company-standard-fields :deep(.ant-input-number) {width:100%}
-.company-override {border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:10px}
+.company-override + .company-override {border-top:1px solid var(--line);padding-top:4px;margin-top:4px}
 @media (max-width:520px) { .company-value {grid-template-columns:minmax(0,1fr)} }
 </style>

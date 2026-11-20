@@ -43,7 +43,8 @@ function editRateScope(entry, rate) {
   const pending = draft.value.rateRows.find(row=>row.itemKey===props.component.itemKey && row.row===entry.row)
   error.value = ''
   form.value = {kind:'row',itemKey:props.component.itemKey,itemLabel:props.component.label,rowNumber:entry.row,
-    row:{companyIds:[...(pending?.companyIds || entry.companyIds || [])],categoryIds:[...(pending?.categoryIds || entry.categoryIds || [])],
+    row:{scope:pending ? (pending.companyIds?.length ? 'company' : pending.categoryIds?.length ? 'category' : 'general') : entry.scope,
+      companyIds:[...(pending?.companyIds || entry.companyIds || [])],categoryIds:[...(pending?.categoryIds || entry.categoryIds || [])],
       relationship:pending?.relationship || entry.relationshipCode,payee:pending?.payee || entry.payee,
       rate:pending ? String(pending.rateBps/100) : rate}}
 }
@@ -97,7 +98,6 @@ defineExpose({addRecipient,editRateScope})
     <div v-if="form" class="catalog-add-form">
       <a-alert v-if="error" :message="error" type="error" show-icon class="feedback"/>
       <template v-if="form.kind==='row'">
-        <p v-if="form.scope" class="workbench-scope-note">{{ {category:'类别默认比例',company:'公司特例',general:'通用比例'}[form.scope] }}</p>
         <CatalogRateCondition v-model="form.row" :options="options" :scope="form.scope" :sales-payee="component?.targetKind==='seller'"/>
       </template>
       <template v-else>
