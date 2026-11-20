@@ -9,7 +9,8 @@ import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
   recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
-  requestedPeriod: Number, requestedView:String, ruleSetupLink:String, periodsLoading: Boolean, month: String, rosterEditReady:Boolean })
+  requestedPeriod:Number, requestedView:String, ruleSetupLink:String, issueRuleLink:String, relatedOrderLink:Function, relatedPeriodLink:Function,
+  periodsLoading:Boolean, month:String, rosterEditReady:Boolean })
 const emit = defineEmits(['show-order', 'show-issue-order', 'show-applied-rule', 'show-roster'])
 const selected = defineModel('periodId', {type:Number})
 const view = defineModel('view', {type:String})
@@ -164,6 +165,8 @@ const issueColumns = [
   { title: '分项', key: 'component', width: 110 },
   { title: '处理说明', key: 'reason', width: 240 },
 ]
+const ruleIssues = new Set(['RULE_MISSING','RULE_CONFLICT','MISSING_EFFECTIVE_RULE','UNCONFIGURED_COMPONENT',
+  'PRACTICE_MEMBER_RULE_MISSING','PRACTICE_TIER_COMPANY_NOT_CONFIGURED','PRACTICE_PERIOD_BENEFIT_TIER_MISSING'])
 
 function appendDetailFilters(params) {
   for (const [name,value] of Object.entries(detailQuery.value)) {
@@ -417,6 +420,7 @@ async function loadMore(section, cursorName) {
   <DraftPoolAllocations v-if="draft?.poolAllocationAvailable && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
   <DraftSettlementReview v-if="hasSettlementReview && view==='review'" :draft="draft" :period="selectedPeriod" :api="api" :format-money="formatMoney"
     :format-time="formatTime" :source-streams="sourceStreams" :working="calculating || pullingRoster" :can-pull-roster="canPullRoster"
+    :related-period-link="relatedPeriodLink"
     @show-pools="view='pools'" @show-issues="view='issues'" @recalculate="calculate" @pull-roster="pullRoster" @refresh-draft="load()" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">
   <section v-if="draft.lineCount || draft.refundCount || draft.correctionCount" class="records draft-detail-search" aria-label="明细筛选">
@@ -526,12 +530,18 @@ async function loadMore(section, cursorName) {
             <span v-else>{{ record.orderId || '—' }}</span>
             <small v-if="record.sourceVersion" class="order-version">订单版本 {{ record.sourceVersion }}</small>
             <small v-if="record.enrollmentId" class="order-version">报名 {{ record.enrollmentId }}</small>
-            <small v-if="record.enrollmentOrderIds?.length" class="order-version">关联付款单 {{ record.enrollmentOrderIds.join('、') }}</small>
+            <small v-if="record.enrollmentOrderIds?.length" class="order-version">
+              关联付款单
+              <template v-for="(orderId,index) in record.enrollmentOrderIds" :key="orderId">
+                <template v-if="index">、</template><a :href="relatedOrderLink({orderId,source:record.source})">{{ orderId }}</a>
+              </template>
+            </small>
           </template>
           <template v-else-if="column.key === 'component'">{{ record.componentLabel || componentLabel(record.component) || '—' }}</template>
           <template v-else-if="column.key === 'reason'">
             <a-tag v-if="record.advisory" color="blue">提示</a-tag>{{ reason[record.code] || record.code }}
             <small v-if="record.code==='SALES_COMPANY_REVIEW'" class="order-version">请在大春 AI 核对成交人和销售公司，更正后重新拉取。</small>
+            <small v-if="issueRuleLink && ruleIssues.has(record.code)" class="order-version"><a :href="issueRuleLink">查看产品规则</a></small>
             <template v-if="record.recovery">
               <small class="order-version">{{ record.recovery.personName }}（人员 {{ record.recovery.personId }}） · {{ formatMoney(-record.recovery.amountMinor) }}</small>
               <a-button v-if="canReviewRecovery" type="link" size="small" :disabled="refreshStatus?.pending || calculating || savingRecovery" @click="openRecovery(record)">登记扣回处理</a-button>

@@ -53,6 +53,8 @@ const requestedPeriod = ref()
 const requestedView = ref()
 const requestedRulePeriod = ref()
 const ruleReturn = ref()
+const reviewRootPeriod = ref()
+const configurationReturn = ref()
 const orderSyncTarget = ref()
 const orderReturn = ref()
 const draftViews = {detail:'分润明细',report:'业绩与分润',issues:'待核',pools:'团队池分配',review:'结算核对',matching:'订单规则匹配'}
@@ -160,6 +162,7 @@ function classRuleSetupLink(period, fromWorkbench = false) {
     const params = new URLSearchParams({productId:period.productId,periodId:period.id})
     if (fromWorkbench) params.set('from','settlement')
     if (fromWorkbench && periodOrigin.value) params.set('returnFrom',periodOrigin.value)
+    if (fromWorkbench && reviewRootPeriod.value) params.set('reviewRootPeriodId',reviewRootPeriod.value)
     return '#rules?'+params
   }
 }
@@ -193,6 +196,11 @@ const previewPeriods = computed(() => {
 const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
 const calculationPeriods = computed(() => data.value.periods.filter(p =>
   (!productScope.value || p.productId === productScope.value) && (!workspaceMonth.value || p.reportMonth === workspaceMonth.value)))
+const selectedWorkbenchPeriod = computed(() => calculationPeriods.value.find(period=>period.id===workbenchPeriod.value))
+const issueRuleLink = computed(() => {
+  const period = selectedWorkbenchPeriod.value
+  if (period && canReadRules(period.productId)) return workbenchPageLink('rules',{productId:period.productId})
+})
 watch(() => data.value.periods.find(period => period.id === requestedPeriod.value)?.reportMonth, month => {
   if (month) workspaceMonth.value = month
 })
@@ -445,36 +453,53 @@ function refreshWorkspace() {
   monthlyReport.value?.refresh()
   orderSync.value?.reload()
 }
-function settlementLink(periodId, view, origin) {
+function settlementLink(periodId, view, origin, rootPeriodId) {
   const params = new URLSearchParams({periodId})
   if (view) params.set('view',view)
   if (origin) params.set('from',origin)
+  if (rootPeriodId && rootPeriodId!==periodId) params.set('reviewRootPeriodId',rootPeriodId)
   return '#settlement?'+params
 }
-function orderRecordsLink(order) {
-  if (current.value==='orders' && sourceFilter.value===order.source && orderQuery.value===order.orderId) return
-  const params = new URLSearchParams({source:order.source,orderId:order.orderId})
+function workbenchPageLink(page, values) {
+  const params = new URLSearchParams(values)
   if (current.value==='settlement' && workbenchPeriod.value) {
     params.set('returnPeriodId',workbenchPeriod.value)
     params.set('returnView',workbenchView.value)
     if (periodOrigin.value) params.set('returnFrom',periodOrigin.value)
+    if (reviewRootPeriod.value) params.set('reviewRootPeriodId',reviewRootPeriod.value)
   }
-  return '#orders?'+params
+  return '#'+page+'?'+params
+}
+function orderRecordsLink(order) {
+  const source = order.source || ''
+  if (current.value==='orders' && sourceFilter.value===source && orderQuery.value===order.orderId) return
+  return workbenchPageLink('orders',source ? {source,orderId:order.orderId} : {orderId:order.orderId})
+}
+function relatedPeriodLink(periodId) {
+  if (periodId) return settlementLink(periodId,'review',periodOrigin.value,reviewRootPeriod.value || workbenchPeriod.value)
+  return workbenchPageLink('periods',selectedWorkbenchPeriod.value ? {productId:selectedWorkbenchPeriod.value.productId} : {})
+}
+function routeId(value) {
+  const id = Number(value)
+  return Number.isSafeInteger(id) && id > 0 ? id : undefined
 }
 function changeRoute() {
   const previous = current.value
   const previousOrigin = periodOrigin.value
+  const previousReviewRoot = reviewRootPeriod.value
   const [key, query] = location.hash.slice(1).split('?', 2)
   current.value = getRoute(key)
   if (active.value) lastWorkspacePages.value[active.value.area] = current.value
   const params = new URLSearchParams(query)
-  const productID = Number(params.get('productId'))
-  if (current.value === key && configProductPages.has(key) && Number.isSafeInteger(productID) && productID > 0) {
+  const productID = routeId(params.get('productId'))
+  if (current.value === key && configProductPages.has(key) && productID) {
     productScope.value = productID
   }
-  const periodID = Number(params.get('periodId'))
-  requestedRulePeriod.value = key==='rules' && current.value===key && Number.isSafeInteger(periodID) && periodID>0 ? periodID : undefined
-  requestedPeriod.value = key === 'settlement' && current.value === key && Number.isSafeInteger(periodID) && periodID > 0 ? periodID : undefined
+  const periodID = routeId(params.get('periodId'))
+  requestedRulePeriod.value = key==='rules' && current.value===key ? periodID : undefined
+  requestedPeriod.value = key==='settlement' && current.value===key ? periodID : undefined
+  const rootPeriodId = routeId(params.get('reviewRootPeriodId'))
+  reviewRootPeriod.value = requestedPeriod.value && rootPeriodId!==requestedPeriod.value ? rootPeriodId : undefined
   const view = params.get('view')
   requestedView.value = requestedPeriod.value && Object.hasOwn(draftViews,view) ? view : undefined
   const origin = params.get('from')
@@ -506,17 +531,20 @@ function changeRoute() {
   }
   const returnFrom = params.get('returnFrom')
   const returnOrigin = Object.hasOwn(periodOrigins,returnFrom) ? returnFrom : previous==='settlement' ? previousOrigin : undefined
-  ruleReturn.value = requestedRulePeriod.value && params.get('from')==='settlement'
-    ? settlementLink(requestedRulePeriod.value,undefined,returnOrigin) : undefined
-  const returnPeriod = Number(params.get('returnPeriodId'))
+  const returnRootPeriod = rootPeriodId || (previous==='settlement' ? previousReviewRoot : undefined)
+  ruleReturn.value = wholeWorkspace.value && requestedRulePeriod.value && params.get('from')==='settlement'
+    ? settlementLink(requestedRulePeriod.value,undefined,returnOrigin,returnRootPeriod) : undefined
+  const returnPeriod = routeId(params.get('returnPeriodId'))
   const isOrders = key === 'orders' && current.value === key
   const stream = params.get('stream')
   const fromDate = params.get('fromDate')
   orderSyncTarget.value = isOrders && stream ? {stream,fromDate} : undefined
   const returnView = params.get('returnView')
-  const orderReturnView = Object.hasOwn(draftViews,returnView) ? returnView : 'review'
-  orderReturn.value = isOrders && Number.isSafeInteger(returnPeriod) && returnPeriod > 0
-    ? {href:settlementLink(returnPeriod,orderReturnView,returnOrigin),label:'返回'+draftViews[orderReturnView]} : undefined
+  const targetView = Object.hasOwn(draftViews,returnView) ? returnView : 'review'
+  const returnLink = returnPeriod ? settlementLink(returnPeriod,targetView,returnOrigin,returnRootPeriod) : undefined
+  orderReturn.value = isOrders && returnLink ? {href:returnLink,label:'返回'+draftViews[targetView]} : undefined
+  configurationReturn.value = wholeWorkspace.value && current.value===key && ['rules','periods'].includes(key) && returnLink
+    ? {href:returnLink,label:'返回本期'+draftViews[targetView]} : undefined
   orderDetails.value = undefined
   rateRule.value = undefined
   ruleDetails.value = undefined
@@ -536,6 +564,9 @@ function changeRoute() {
   olderThan.value = ''
   pageStack.value = []
   notice.value = ''
+  if (reviewRootPeriod.value || previousReviewRoot || configurationReturn.value || orderReturn.value) {
+    nextTick(() => window.scrollTo(0,0))
+  }
   refresh()
 }
 function clearWorkspace() {
@@ -551,6 +582,8 @@ function clearWorkspace() {
   requestedView.value = undefined
   requestedRulePeriod.value = undefined
   ruleReturn.value = undefined
+  reviewRootPeriod.value = undefined
+  configurationReturn.value = undefined
   orderSyncTarget.value = undefined
   orderReturn.value = undefined
   workbenchPeriod.value = undefined
@@ -1047,8 +1080,10 @@ async function save() {
         <section class="workspace-page-head">
           <div class="workspace-page-title">
             <h1>{{ active.title }}</h1>
-            <a v-if="periodOrigin" class="workspace-return" :href="'#'+periodOrigin"><LeftOutlined aria-hidden="true"/>返回{{ periodOrigins[periodOrigin] }}</a>
-            <a v-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
+            <a v-if="reviewRootPeriod" class="workspace-return" :href="settlementLink(reviewRootPeriod,'review',periodOrigin)"><LeftOutlined aria-hidden="true"/>返回原期核对</a>
+            <a v-else-if="periodOrigin" class="workspace-return" :href="'#'+periodOrigin"><LeftOutlined aria-hidden="true"/>返回{{ periodOrigins[periodOrigin] }}</a>
+            <a v-if="configurationReturn" class="workspace-return" :href="configurationReturn.href"><LeftOutlined aria-hidden="true"/>{{ configurationReturn.label }}</a>
+            <a v-else-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
             <div v-if="actions && canOpenAction && !identityAccount" class="topbar-actions">
               <a v-if="orderReturn" class="workspace-return" :href="orderReturn.href"><LeftOutlined aria-hidden="true"/>{{ orderReturn.label }}</a>
               <a-button type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : titles[actions] }}</a-button>
@@ -1071,7 +1106,8 @@ async function save() {
             :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
             :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" :requested-period="requestedPeriod"
-            :rule-setup-link="classRuleSetupLink(calculationPeriods.find(period=>period.id===workbenchPeriod), true)"
+            :rule-setup-link="classRuleSetupLink(selectedWorkbenchPeriod, true)" :issue-rule-link="issueRuleLink"
+            :related-order-link="orderRecordsLink" :related-period-link="relatedPeriodLink"
             :periods-loading="loading" :month="workspaceMonth" :requested-view="requestedView" :roster-edit-ready="configurationReady"
             @show-order="orderDetails={versionId:$event}" @show-issue-order="orderDetails={versionId:$event,allowPull:true}"
             @show-roster="open('periodRoster',$event)"

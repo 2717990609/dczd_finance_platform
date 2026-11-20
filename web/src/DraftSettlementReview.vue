@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Modal } from 'ant-design-vue'
 
 const props = defineProps({draft:Object, period:Object, api:Function, formatMoney:Function, formatTime:Function, sourceStreams:Array,
-  working:Boolean, canPullRoster:Boolean})
+  working:Boolean, canPullRoster:Boolean, relatedPeriodLink:Function})
 const emit = defineEmits(['show-pools', 'show-issues', 'recalculate', 'pull-roster', 'refresh-draft', 'confirmed'])
 const review = ref()
 const loading = ref(false)
@@ -49,7 +49,6 @@ const settlementStatus = computed(() => {
   if (prerequisitesReady.value && !review.value?.mayConfirm) return {label:'当前账号无确认结算权限', tone:'neutral'}
   return {label:'还有事项待处理', tone:'pending'}
 })
-const periodReviewLink = id => '#settlement?periodId='+id+'&view=review'
 function orderSyncLink(source) {
   const params = new URLSearchParams({stream:source.stream,returnPeriodId:props.draft.periodId})
   if (source.requiredFrom && (!source.initialFrom || Date.parse(source.requiredFrom) < Date.parse(source.initialFrom))) {
@@ -182,8 +181,7 @@ onBeforeUnmount(() => { sequence++ })
               <ul class="review-list">
                 <li v-for="dependency in review.practiceDependencies" :key="dependency.kind + '/' + dependency.periodId + '/' + dependency.name">
                   <span>{{ dependency.name }}</span>
-                  <a v-if="dependency.periodId" :href="periodReviewLink(dependency.periodId)">打开核算期</a>
-                  <a v-else href="#periods">查看核算期次</a>
+                  <a :href="relatedPeriodLink(dependency.periodId)">{{ dependency.periodId ? '打开核算期' : '查看核算期次' }}</a>
                 </li>
               </ul>
             </section>
