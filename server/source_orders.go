@@ -412,7 +412,15 @@ func (s workspace) pullOrder(ctx context.Context, p pullInput) (any, error) {
 		}
 		return storeDCAIBlockers(ctx, tx, p.Stream, []orderPageRow{*lookup.DCAI})
 	})
-	return map[string]any{"facts": len(lookup.Facts), "newVersions": inserted}, err
+	if err != nil {
+		return nil, err
+	}
+	var blockers []string
+	if lookup.DCAI != nil {
+		blockers = lookup.DCAI.Blockers
+	}
+	return map[string]any{"facts": len(lookup.Facts), "newVersions": inserted,
+		"refundCheck": checkSourceOrderRefunds(lookup.Facts, blockers)}, nil
 }
 
 func storeSourceFacts(ctx context.Context, tx pgx.Tx, facts []sourceFact) (int64, error) {

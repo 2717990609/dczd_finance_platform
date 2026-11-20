@@ -806,6 +806,8 @@ function open(kind, row, edit = false) {
     productId:['mapping','period','rule'].includes(kind) ? productScope.value : undefined,
   }
   if (kind === 'pull') {
+    draft.value.source = row?.source || sourceFilter.value ||
+      data.value.sources.find(source=>source.configured)?.source || firstOption('source')
     const stream = row?.domain?.includes('HEALTH') ? 'HEALTH_IDENTITY_ORDERS' : row?.domain==='VIP' ? 'VIP_ORDERS' : undefined
     draft.value.stream = options('dcaiOrderStream').find(option=>option.value===stream)?.value || firstOption('dcaiOrderStream')
     draft.value.lockedOrder = Boolean(row?.orderId)
@@ -848,7 +850,9 @@ function pickPeriodRoster(roster) {
 }
 function pullFromDetails(order) {
   orderDetails.value = undefined
-  open('pull', order)
+  const references = order.refundsPayment
+  const originalOrder = references?.length===1 ? references[0].orderId : ''
+  open('pull', originalOrder ? {...order,orderId:originalOrder} : order)
 }
 function copyRuleDetails() {
   const rule = ruleDetails.value
@@ -1035,6 +1039,19 @@ function bodyFor(kind,f) {
   if (kind === 'identity') return {personId:must(f.personId),source:f.source,externalId:must(f.externalId),validFrom:new Date(must(f.validFrom)+'T00:00:00+08:00').toISOString()}
   return {source:f.source,stream:f.stream,orderId:must(f.orderId)}
 }
+function orderPullNotice(result) {
+  const synced = '同步完成，读取 '+result.facts+' 条业务记录，新增 '+result.newVersions+' 个版本。'
+  const check = result.refundCheck
+  if (!check) return synced
+  if (check.status==='PROCESSING') return synced+' 子系统退款处理中。'
+  if (check.status==='NEEDS_REVIEW') return synced+' 退款详情或原付款关联待核对。'
+  if (check.status==='NO_SUCCEEDED_REFUND') return synced+' 子系统本次未返回成功退款。'
+  if (check.status==='FULL' || check.status==='PARTIAL') {
+    const status = check.status==='FULL' ? '已全额退款' : '已部分退款'
+    return synced+' '+status+'，成功退款 '+formatMoney(check.refundedMinor)+'，原实收 '+formatMoney(check.paidMinor)+'。'
+  }
+  return synced
+}
 async function save() {
   if (saving.value) return
   const issuedFor = sessionRequest
@@ -1047,7 +1064,7 @@ async function save() {
     const payload = bodyFor(kind,draft.value)
     const result = await api(paths[kind],{method:'POST',body:JSON.stringify(payload)})
     if (issuedFor!==sessionRequest) return
-    notice.value = kind === 'pull' ? '同步完成，读取 '+result.facts+' 条业务记录，新增 '+result.newVersions+' 个版本。'
+    notice.value = kind === 'pull' ? orderPullNotice(result)
       : kind === 'rule' ? '规则 v'+result.version+' 已保存。'
       : kind === 'periodRoster' ? result.changed ? '签到名单关联已更新，待重新试算。' : '签到名单关联无变化。'
       : kind === 'identity' ? '来源账号归属已保存。' : '保存成功。'

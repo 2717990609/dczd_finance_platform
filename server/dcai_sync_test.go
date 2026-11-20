@@ -103,8 +103,12 @@ func TestDCAISyncResumesTheSameWatermarkAndCommitsOnlyCompleteCoverage(t *testin
 		defer release()
 		return syncOrdersLocked(ctx, conn, client, dcaiVIPStream, from, 0)
 	}
-	if _, err := service.pullOrder(ctx, pullInput{Source: "DCAI", Stream: "VIP_ORDERS", OrderID: "VIP-8"}); err != nil {
+	result, err := service.pullOrder(ctx, pullInput{Source: "DCAI", Stream: "VIP_ORDERS", OrderID: "VIP-8"})
+	if err != nil {
 		t.Fatalf("single-order gate before the first sync: %v", err)
+	}
+	if status := result.(map[string]any)["refundCheck"].(*sourceRefundCheck).Status; status != "NEEDS_REVIEW" {
+		t.Fatalf("incomplete source refund was treated as confirmed: %s", status)
 	}
 	var beforeSync int
 	if err := db.QueryRow(ctx, `SELECT count(*) FROM dcai_order_blockers WHERE source_row_id='8' AND cardinality(reasons)>0`).Scan(&beforeSync); err != nil || beforeSync != 1 {

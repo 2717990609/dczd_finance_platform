@@ -99,11 +99,11 @@ func TestHistoricalRefundRoutesToAugustThenCurrentAndReusesFrozenRule(t *testing
 	}
 	saveFact(makeRefund("first", "1", 34, refundedAt, refundedAt))
 	draftAt(august, 0, 0, 0, 1)
-	original := confirm(draftAt(june, 52, -16, 1, 0))
+	original := confirm(draftAt(june, 51, -17, 1, 0))
 	if _, err := service.db.Exec(ctx, "DELETE FROM settlements WHERE id=$1", original.ID); err != nil {
 		t.Fatalf("same-period refund incorrectly blocked technical redo: %v", err)
 	}
-	original = confirm(draftAt(june, 52, -16, 1, 0))
+	original = confirm(draftAt(june, 51, -17, 1, 0))
 	if err := service.refreshPendingDrafts(ctx); err != nil {
 		t.Fatal(err)
 	}
