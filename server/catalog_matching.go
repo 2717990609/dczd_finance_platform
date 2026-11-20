@@ -189,6 +189,13 @@ const catalogMatchSQL = `WITH period AS (
   "sourceTransactionType"=$4
   OR $4='UNKNOWN' AND coalesce("sourceTransactionType",'') NOT IN ('NEW','RENEWAL')
  )
+), summary AS (
+ SELECT count(*) AS orders,
+  count(*) FILTER(WHERE status='MATCHED') AS matched,
+  count(*) FILTER(WHERE "sourceDomain"='VIP' AND coalesce("sourceTransactionType",'') NOT IN ('NEW','RENEWAL')) AS unmarked_membership,
+  coalesce(sum("paidMinor") FILTER(WHERE "paidInWindow" AND status NOT IN ('INVALID_PAYMENT','DUPLICATE_PAYMENT','PAYMENT_ALREADY_SETTLED')),0) AS paid,
+  coalesce(sum(coalesce("recognizedMinor","paidMinor")) FILTER(WHERE status='MATCHED'),0) AS matched_minor
+ FROM selected_matches
 ), page AS MATERIALIZED (
  SELECT * FROM selected_matches ORDER BY "paidAt" DESC,"sourceVersionId" DESC LIMIT $3 OFFSET $2
 ), fixed_actions AS MATERIALIZED (
@@ -213,12 +220,13 @@ const catalogMatchSQL = `WITH period AS (
 )
 SELECT jsonb_build_object(
  'hasMembershipOrders',EXISTS(SELECT 1 FROM routes WHERE source='DCAI' AND domain='VIP' AND record_table='ai_vip_order'),
- 'orderCount',(SELECT count(*) FROM selected_matches),
- 'matchedCount',(SELECT count(*) FROM selected_matches WHERE status='MATCHED'),
- 'paidMinor',(SELECT coalesce(sum("paidMinor"),0) FROM selected_matches WHERE "paidInWindow" AND status NOT IN ('INVALID_PAYMENT','DUPLICATE_PAYMENT','PAYMENT_ALREADY_SETTLED')),
- 'matchedMinor',(SELECT coalesce(sum(coalesce("recognizedMinor","paidMinor")),0) FROM selected_matches WHERE status='MATCHED'),
+ 'orderCount',summary.orders,
+ 'matchedCount',summary.matched,
+ 'paidMinor',summary.paid,
+ 'matchedMinor',summary.matched_minor,
+ 'unmarkedMembershipCount',summary.unmarked_membership,
  'items',coalesce((SELECT jsonb_agg(to_jsonb(output) ORDER BY "paidAt" DESC,"sourceVersionId" DESC) FROM output),'[]'))
-FROM period WHERE EXISTS(SELECT 1 FROM routes)`
+FROM period CROSS JOIN summary WHERE EXISTS(SELECT 1 FROM routes)`
 
 func (s workspace) catalogMatches(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()

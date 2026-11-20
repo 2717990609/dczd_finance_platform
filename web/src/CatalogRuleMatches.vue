@@ -119,6 +119,8 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
       <span>已匹配 <strong>{{ report.matchedCount }} / {{ report.orderCount }}</strong> 笔</span>
       <span>{{ memberType ? '筛选实收' : '账期实收' }} <strong>{{ formatMoney(report.paidMinor) }}</strong></span>
       <span>已匹配基数 <strong>{{ formatMoney(report.matchedMinor) }}</strong></span>
+      <button v-if="!memberType && report.hasMembershipOrders && report.unmarkedMembershipCount"
+        type="button" class="order-link" @click="changeMemberType('UNKNOWN')">{{ report.unmarkedMembershipCount }} 笔类型未标记</button>
     </div>
     <a-table :columns="columns" :data-source="report?.items || []" :loading="loading" row-key="sourceVersionId"
       :pagination="pagination" :scroll="{x:970}" @change="changePage">

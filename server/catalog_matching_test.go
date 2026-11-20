@@ -148,7 +148,8 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 	}
 
 	report := get("")
-	if report.OrderCount != 4 || report.MatchedCount != 3 || report.MatchedMinor != 1650 || report.PaidMinor != 1820 {
+	if report.OrderCount != 4 || report.MatchedCount != 3 || report.MatchedMinor != 1650 || report.PaidMinor != 1820 ||
+		report.UnmarkedMembershipCount != 1 {
 		t.Fatalf("unexpected summary: %+v", report)
 	}
 	byOrder := make(map[string]catalogPaymentMatch)
@@ -165,6 +166,7 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 	}
 	renewal := get("&memberTransactionType=RENEWAL")
 	if renewal.OrderCount != 1 || renewal.MatchedCount != 1 || renewal.PaidMinor != 650 || renewal.MatchedMinor != 650 ||
+		renewal.UnmarkedMembershipCount != 0 ||
 		len(renewal.Items) != 1 || renewal.Items[0].OrderID != "after" {
 		t.Fatalf("renewal filter must retain the real source type and recompute totals: %+v", renewal)
 	}
@@ -177,7 +179,7 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 	if secondPage := get("&memberTransactionType=RENEWAL&page=2"); secondPage.OrderCount != 1 || len(secondPage.Items) != 0 {
 		t.Fatalf("filter must be applied before pagination: %+v", secondPage)
 	}
-	if unspecified := get("&memberTransactionType=UNKNOWN"); unspecified.OrderCount != 1 ||
+	if unspecified := get("&memberTransactionType=UNKNOWN"); unspecified.OrderCount != 1 || unspecified.UnmarkedMembershipCount != 1 ||
 		unspecified.MatchedCount != 0 || unspecified.PaidMinor != 170 || !unspecified.HasMembershipOrders ||
 		len(unspecified.Items) != 1 || unspecified.Items[0].SourceDomain != "VIP" ||
 		unspecified.Items[0].SourceTransactionType != "" {

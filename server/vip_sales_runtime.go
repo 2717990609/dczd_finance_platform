@@ -49,12 +49,13 @@ func (row catalogPaymentMatch) commissionBasis() int64 {
 }
 
 type catalogMatchReport struct {
-	HasMembershipOrders bool                  `json:"hasMembershipOrders,omitempty"`
-	OrderCount          int                   `json:"orderCount"`
-	MatchedCount        int                   `json:"matchedCount"`
-	MatchedMinor        int64                 `json:"matchedMinor"`
-	PaidMinor           int64                 `json:"paidMinor"`
-	Items               []catalogPaymentMatch `json:"items"`
+	HasMembershipOrders     bool                  `json:"hasMembershipOrders,omitempty"`
+	OrderCount              int                   `json:"orderCount"`
+	MatchedCount            int                   `json:"matchedCount"`
+	MatchedMinor            int64                 `json:"matchedMinor"`
+	PaidMinor               int64                 `json:"paidMinor"`
+	UnmarkedMembershipCount int                   `json:"unmarkedMembershipCount,omitempty"`
+	Items                   []catalogPaymentMatch `json:"items"`
 }
 
 type vipLink struct {
