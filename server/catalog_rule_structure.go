@@ -62,6 +62,15 @@ type catalogBenefitTargetChange struct {
 type catalogNewBenefitItem struct {
 	Label string `json:"label"`
 	catalogBenefitTarget
+	catalogBenefitCalculation
+}
+
+type catalogBenefitCalculationChange struct {
+	ItemKey string `json:"itemKey"`
+	catalogBenefitCalculation
+}
+
+type catalogBenefitCalculation struct {
 	Rate  *int64                  `json:"rateBps,omitempty"`
 	Fixed *int64                  `json:"fixedMinor,omitempty"`
 	Rows  []catalogConditionInput `json:"rows,omitempty"`
@@ -147,7 +156,7 @@ func (o catalogStructureOptions) condition(row catalogConditionInput) (json.RawM
 
 func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 	items []catalogNewBenefitItem, rateRows []catalogNewRateRow, targets []catalogBenefitTargetChange,
-	removed []catalogRateRowRemoval) (json.RawMessage, error) {
+	calculations []catalogBenefitCalculationChange, removed []catalogRateRowRemoval) (json.RawMessage, error) {
 	if _, err := tx.Exec(ctx, `SELECT source FROM catalog_sales_context WHERE source='DCAI' FOR SHARE`); err != nil {
 		return nil, err
 	}
@@ -196,6 +205,32 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 		fields["rate_table"], err = json.Marshal(updated)
 		if err != nil {
 			return nil, err
+		}
+	}
+	for _, change := range calculations {
+		index, found := positions[change.ItemKey]
+		if !found || change.ItemKey == before.Item {
+			return nil, invalid
+		}
+		var calculation vipBenefitAction
+		if err := configureCatalogBenefitCalculation(&calculation, change.catalogBenefitCalculation, options); err != nil {
+			return nil, err
+		}
+		fields := actions[index]
+		fields["type"], _ = json.Marshal(calculation.Type)
+		delete(fields, "rate_bps")
+		delete(fields, "amount_minor")
+		delete(fields, "rate_table")
+		switch calculation.Type {
+		case "RATE":
+			fields["rate_bps"], _ = json.Marshal(calculation.Rate)
+		case "FIXED":
+			fields["amount_minor"], _ = json.Marshal(calculation.Fixed)
+		case "RATE_TABLE":
+			fields["rate_table"], err = json.Marshal(calculation.RateTable)
+			if err != nil {
+				return nil, err
+			}
 		}
 	}
 	var people []catalogRuleRecipientChange
@@ -349,33 +384,12 @@ func newCatalogBenefitAction(key string,
 	if !textOK(label, 80) {
 		return nil, invalid
 	}
-	action := vipBenefitAction{Item: key, Label: label, Type: "RATE", Rate: item.Rate}
-	switch {
-	case item.Rate != nil && item.Fixed == nil && len(item.Rows) == 0 && *item.Rate >= 0 && *item.Rate <= 10000:
-	case item.Fixed != nil && item.Rate == nil && len(item.Rows) == 0 && *item.Fixed >= 0:
-		action.Type, action.Fixed = "FIXED", item.Fixed
-	case item.Rate == nil && item.Fixed == nil && len(item.Rows) != 0:
-		action.Type = "RATE_TABLE"
-	default:
-		return nil, invalid
+	action := vipBenefitAction{Item: key, Label: label}
+	if err := configureCatalogBenefitCalculation(&action, item.catalogBenefitCalculation, options); err != nil {
+		return nil, err
 	}
 	if err := configureCatalogBenefitTarget(&action, item.catalogBenefitTarget, options, people); err != nil {
 		return nil, err
-	}
-	if action.Type == "RATE_TABLE" {
-		for _, row := range item.Rows {
-			if row.Payee != "" {
-				return nil, invalid
-			}
-			value, err := options.condition(row)
-			if err != nil {
-				return nil, err
-			}
-			action.RateTable = append(action.RateTable, value)
-		}
-		if err := validateCatalogNewRateConditions(nil, action.RateTable); err != nil {
-			return nil, err
-		}
 	}
 	body, err := json.Marshal(action)
 	if err != nil {
@@ -384,6 +398,32 @@ func newCatalogBenefitAction(key string,
 	var fields map[string]json.RawMessage
 	err = json.Unmarshal(body, &fields)
 	return fields, err
+}
+
+func configureCatalogBenefitCalculation(action *vipBenefitAction, calculation catalogBenefitCalculation, options catalogStructureOptions) error {
+	rate, fixed, rows := calculation.Rate, calculation.Fixed, calculation.Rows
+	switch {
+	case rate != nil && fixed == nil && len(rows) == 0 && *rate >= 0 && *rate <= 10000:
+		action.Type, action.Rate = "RATE", rate
+	case fixed != nil && rate == nil && len(rows) == 0 && *fixed >= 0:
+		action.Type, action.Fixed = "FIXED", fixed
+	case rate == nil && fixed == nil && len(rows) != 0:
+		for _, row := range rows {
+			if row.Payee != "" {
+				return invalid
+			}
+			value, err := options.condition(row)
+			if err != nil {
+				return err
+			}
+			action.RateTable = append(action.RateTable, value)
+		}
+		action.Type = "RATE_TABLE"
+		return validateCatalogNewRateConditions(nil, action.RateTable)
+	default:
+		return invalid
+	}
+	return nil
 }
 
 func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenefitTarget,

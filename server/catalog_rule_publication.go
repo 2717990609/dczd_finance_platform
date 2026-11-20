@@ -30,18 +30,19 @@ type catalogRateChange struct {
 }
 
 type publishCatalogRatesInput struct {
-	BaseID           string                       `json:"baseId"`
-	EffectiveFrom    time.Time                    `json:"effectiveFrom"`
-	Changes          []catalogRateChange          `json:"changes"`
-	RecipientChanges []catalogRuleRecipientChange `json:"recipientChanges"`
-	TeamChanges      []catalogTeamRecipientChange `json:"teamChanges"`
-	NewItems         []catalogNewBenefitItem      `json:"newItems"`
-	NewRateRows      []catalogNewRateRow          `json:"newRateRows"`
-	TargetChanges    []catalogBenefitTargetChange `json:"targetChanges"`
-	RemovedItems     []string                     `json:"removedItems"`
-	RemovedRateRows  []catalogRateRowRemoval      `json:"removedRateRows"`
-	Copy             *catalogScenarioCopy         `json:"copy,omitempty"`
-	Create           *catalogScenarioCreate       `json:"create,omitempty"`
+	BaseID             string                            `json:"baseId"`
+	EffectiveFrom      time.Time                         `json:"effectiveFrom"`
+	Changes            []catalogRateChange               `json:"changes"`
+	RecipientChanges   []catalogRuleRecipientChange      `json:"recipientChanges"`
+	TeamChanges        []catalogTeamRecipientChange      `json:"teamChanges"`
+	NewItems           []catalogNewBenefitItem           `json:"newItems"`
+	NewRateRows        []catalogNewRateRow               `json:"newRateRows"`
+	TargetChanges      []catalogBenefitTargetChange      `json:"targetChanges"`
+	CalculationChanges []catalogBenefitCalculationChange `json:"calculationChanges,omitempty"`
+	RemovedItems       []string                          `json:"removedItems"`
+	RemovedRateRows    []catalogRateRowRemoval           `json:"removedRateRows"`
+	Copy               *catalogScenarioCopy              `json:"copy,omitempty"`
+	Create             *catalogScenarioCreate            `json:"create,omitempty"`
 }
 
 type catalogPublication struct {
@@ -154,7 +155,7 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRatesInput, actor string, refreshDrafts bool) (catalogPublication, error) {
 	if input.Create != nil {
 		if input.BaseID != "" || input.Copy != nil || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges)+
-			len(input.NewRateRows)+len(input.TargetChanges)+len(input.RemovedItems)+len(input.RemovedRateRows) != 0 {
+			len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges)+len(input.RemovedItems)+len(input.RemovedRateRows) != 0 {
 			return catalogPublication{}, invalid
 		}
 		return createCatalogScenarioRule(ctx, tx, *input.Create, input.EffectiveFrom, input.NewItems, actor, refreshDrafts)
@@ -162,10 +163,13 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 	published := catalogPublication{ID: input.BaseID}
 	id, valid := canonicalSourceUUID(input.BaseID)
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
-	structureChanged := len(input.NewItems)+len(input.NewRateRows)+len(input.TargetChanges) != 0
+	structureChanged := len(input.NewItems)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges) != 0
 	removals := len(input.RemovedItems)+len(input.RemovedRateRows) != 0
 	if !valid || from.IsZero() || input.Copy == nil && len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 &&
 		!structureChanged && !removals || !textOK(actor, 128) {
+		return published, invalid
+	}
+	if len(input.CalculationChanges) != 0 && catalogCalculationConflicts(input) {
 		return published, invalid
 	}
 	err := func() error {
@@ -235,7 +239,8 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			}
 		}
 		if structureChanged {
-			body, err = editCatalogStructure(ctx, tx, body, input.NewItems, input.NewRateRows, input.TargetChanges, input.RemovedRateRows)
+			body, err = editCatalogStructure(ctx, tx, body, input.NewItems, input.NewRateRows, input.TargetChanges,
+				input.CalculationChanges, input.RemovedRateRows)
 			if err != nil {
 				return err
 			}
@@ -286,6 +291,37 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 		return enqueueCatalogScenarioDrafts(ctx, tx, product, scope, from, throughBase, published.ID, compound)
 	}()
 	return published, err
+}
+
+func catalogCalculationConflicts(input publishCatalogRatesInput) bool {
+	replaced := make(map[string]bool, len(input.CalculationChanges))
+	for _, change := range input.CalculationChanges {
+		if replaced[change.ItemKey] {
+			return true
+		}
+		replaced[change.ItemKey] = true
+	}
+	for _, change := range input.Changes {
+		if replaced[change.ItemKey] && change.Label == nil {
+			return true
+		}
+	}
+	for _, row := range input.NewRateRows {
+		if replaced[row.ItemKey] {
+			return true
+		}
+	}
+	for _, row := range input.RemovedRateRows {
+		if replaced[row.ItemKey] {
+			return true
+		}
+	}
+	for _, item := range input.RemovedItems {
+		if replaced[item] {
+			return true
+		}
+	}
+	return false
 }
 
 func lockCatalogPublisher(ctx context.Context, tx pgx.Tx, operator *financePrincipal, ruleID string) error {

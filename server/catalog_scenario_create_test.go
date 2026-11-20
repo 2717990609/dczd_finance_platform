@@ -178,8 +178,41 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: 951, ExpectedVersion: result.Version, ReviewToken: review.Token}, "fixture"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{BaseID: updated.ID,
-		EffectiveFrom: cut.AddDate(0, 1, 0), RemovedItems: []string{fixedKey}}, "fixture"); err != nil {
+	var replacement publishCatalogRatesInput
+	if err := json.Unmarshal([]byte(`{"calculationChanges":[{"itemKey":"`+fixedKey+`",
+	 "rows":[{"company":"ANY","relationship":"ANY","rateBps":350}]}]}`), &replacement); err != nil {
+		t.Fatal(err)
+	}
+	replacement.BaseID, replacement.EffectiveFrom = updated.ID, cut.AddDate(0, 1, 0)
+	tableVersion, err := s.publishCatalogRates(ctx, replacement, "fixture")
+	if err != nil {
+		t.Fatalf("could not change the original fixed award to conditional rates: %v", err)
+	}
+	tableSheet, err := s.catalogRuleRateSheet(ctx, tableVersion.ID)
+	if err != nil || len(tableSheet.Components) != 3 {
+		t.Fatalf("could not reopen the changed arrangement: %+v %v", tableSheet, err)
+	}
+	table := tableSheet.Components[1]
+	if table.ItemKey != fixedKey || table.Fixed != nil || table.Rate != nil || len(table.Rows) != 1 ||
+		table.Rows[0].Rate != 350 || table.TargetOrg != sheet.Components[2].TargetOrg {
+		t.Fatalf("changing the calculation must retain the arrangement and its company: %+v", table)
+	}
+	replacement = publishCatalogRatesInput{}
+	if err := json.Unmarshal([]byte(`{"calculationChanges":[{"itemKey":"`+fixedKey+`","fixedMinor":802}]}`), &replacement); err != nil {
+		t.Fatal(err)
+	}
+	replacement.BaseID, replacement.EffectiveFrom = tableVersion.ID, cut.AddDate(0, 2, 0)
+	fixedVersion, err := s.publishCatalogRates(ctx, replacement, "fixture")
+	if err != nil {
+		t.Fatalf("could not switch back to fixed amount: %v", err)
+	}
+	fixedSheet, err := s.catalogRuleRateSheet(ctx, fixedVersion.ID)
+	if err != nil || len(fixedSheet.Components) != 3 || fixedSheet.Components[1].ItemKey != fixedKey ||
+		fixedSheet.Components[1].Fixed == nil || *fixedSheet.Components[1].Fixed != 802 || len(fixedSheet.Components[1].Rows) != 0 {
+		t.Fatalf("fixed method did not replace the table on the same arrangement: %+v %v", fixedSheet, err)
+	}
+	if _, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{BaseID: fixedVersion.ID,
+		EffectiveFrom: cut.AddDate(0, 3, 0), RemovedItems: []string{fixedKey}}, "fixture"); err != nil {
 		t.Fatal(err)
 	}
 	next, err := s.createPeriod(ctx, createPeriodInput{ProductID: 950, SettlementMonth: "2026-11", Name: "退款账期"})

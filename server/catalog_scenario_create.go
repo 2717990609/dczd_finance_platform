@@ -144,7 +144,7 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	}
 	body := base
 	if len(items) != 0 {
-		body, err = editCatalogStructure(ctx, tx, base, items, nil, nil, nil)
+		body, err = editCatalogStructure(ctx, tx, base, items, nil, nil, nil, nil)
 		if err != nil {
 			return result, err
 		}

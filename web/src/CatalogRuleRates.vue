@@ -24,7 +24,7 @@ const saving = ref(false)
 const error = ref('')
 const impactInput = ref()
 const impactBusy = ref(false)
-const structure = ref({items:[],rateRows:[]})
+const structure = ref({items:[],rateRows:[],calculations:[]})
 const structureEditing = ref(false)
 const structureEditor = ref()
 const removedItems = ref(new Set())
@@ -42,8 +42,12 @@ const rateColumns = [
   {title:'实收比例（%）',key:'rate',width:126},
   {title:'收款方',key:'payee',width:128},
 ]
-const columns = computed(() => sheet.value?.mayPublish && !props.applied ? [...rateColumns,{title:'操作',key:'operation',width:190}] : rateColumns)
 const component = computed(() => sheet.value?.components.find(item => item.itemKey === selected.value))
+const calculationFor = itemKey => structure.value.calculations.find(change=>change.itemKey===itemKey)
+const selectedCalculation = computed(() => calculationFor(selected.value))
+const hasRateTable = computed(() => !!(selectedCalculation.value || component.value)?.rows?.length)
+const columns = computed(() => sheet.value?.mayPublish && !props.applied && !selectedCalculation.value
+  ? [...rateColumns,{title:'操作',key:'operation',width:190}] : rateColumns)
 const targetKind = computed(() => targetEdits.value.get(selected.value)?.target || component.value?.targetKind)
 const targetKindLabels = {seller:'按下表结算',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人'}
 const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人'}
@@ -64,11 +68,13 @@ const editable = computed(() => sheet.value?.mayPublish && !saving.value && !ite
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
 const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 || labelEdits.value.size ||
-  structure.value.items.length || structure.value.rateRows.length || removedItems.value.size || removedRateRows.value.size)
+  structure.value.items.length || structure.value.rateRows.length || structure.value.calculations.length ||
+  removedItems.value.size || removedRateRows.value.size)
 const impactPeriods = computed(() => (props.periods || []).filter(period=>period.productId===sheet.value?.productId && !period.settled))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
 const percent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
-const canAddRates = computed(() => sheet.value?.mayPublish && !props.applied && !!sheet.value.structureOptions && !itemRemoved.value)
+const canAddRates = computed(() => sheet.value?.mayPublish && !props.applied && !!sheet.value.structureOptions &&
+  !itemRemoved.value && !selectedCalculation.value)
 const rateNames = computed(() => Object.fromEntries(['companies','categories','relationships'].map(kind=>
   [kind,new Map((sheet.value?.structureOptions?.[kind] || []).map(option=>[option.value,option.label]))])))
 function stagedRateRow(change, original) {
@@ -85,6 +91,9 @@ function stagedRateRow(change, original) {
   }
 }
 const rateRows = computed(() => {
+  if (selectedCalculation.value) {
+    return (selectedCalculation.value.rows || []).map((row,index)=>stagedRateRow({...row,draftKey:'method-'+index}))
+  }
   const stored = component.value?.rows || []
   const staged = structure.value.rateRows.filter(row=>row.itemKey===selected.value)
   if (!staged.length) return stored
@@ -189,10 +198,20 @@ function setFlat(item, method, value) {
   else edits.value[key] = {itemKey:item.itemKey,method,value}
 }
 function componentStandard(item) {
+  const calculation = calculationFor(item.itemKey)
+  if (calculation) {
+    if (calculation.rows?.length) return '按销售条件取比例'
+    if (calculation.fixedMinor!=null) return (calculation.fixedMinor/100).toFixed(2)+' 元/笔'
+    return percent(calculation.rateBps)
+  }
   if (item.rows?.length) return '按销售条件取比例'
   if (item.fixedMinor == null && item.rateBps == null) return ''
   const value = flatValue(item)
   return value == null || value==='' ? '' : value+(flatMethod(item)==='fixed' ? ' 元/笔' : '%')
+}
+function undoCalculation() {
+  const index = structure.value.calculations.indexOf(selectedCalculation.value)
+  if (index>=0) structure.value.calculations.splice(index,1)
 }
 function setLabel(item, label) {
   if (label.trim()===item.label) labelEdits.value.delete(item.itemKey)
@@ -260,7 +279,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   effectiveFrom.value = ''
   error.value = ''
   impactInput.value = undefined
-  structure.value = {items:[],rateRows:[]}
+  structure.value = {items:[],rateRows:[],calculations:[]}
   structureEditing.value = false
   if (applied) {
     const result = applied.catalog
@@ -292,7 +311,8 @@ function publicationInput() {
   if (!effectiveFrom.value) throw new Error('请选择生效时间。')
   if (copy.value && (!copy.value.sku || !copy.value.label?.trim())) throw new Error('请选择目标 SKU，并填写规则名称。')
   const changes = Object.values(edits.value)
-    .filter(({itemKey,row})=>!removedItems.value.has(itemKey) && !removedRateRows.value.has(cellKey(itemKey,row)) && !pendingScope(itemKey,row))
+    .filter(({itemKey,row})=>!removedItems.value.has(itemKey) && !removedRateRows.value.has(cellKey(itemKey,row)) &&
+      !pendingScope(itemKey,row) && !calculationFor(itemKey))
     .map(({itemKey,row,value,method}) => {
       if (method==='fixed') {
         const fixedMinor = moneyAsMinor(value)
@@ -320,10 +340,12 @@ function publicationInput() {
       teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
     })),
     newItems:structure.value.items.map(({personName,...item})=>item),
-    newRateRows:structure.value.rateRows.filter(({itemKey,row})=>!removedItems.value.has(itemKey) && !removedRateRows.value.has(cellKey(itemKey,row)))
+    calculationChanges:structure.value.calculations.filter(({itemKey})=>!removedItems.value.has(itemKey)),
+    newRateRows:structure.value.rateRows.filter(({itemKey,row})=>!removedItems.value.has(itemKey) &&
+      !removedRateRows.value.has(cellKey(itemKey,row)) && !calculationFor(itemKey))
       .map(({draftKey,...row})=>row),
     removedItems:[...removedItems.value],
-    removedRateRows:[...removedRateRows.value.values()].filter(row=>!removedItems.value.has(row.itemKey)),
+    removedRateRows:[...removedRateRows.value.values()].filter(row=>!removedItems.value.has(row.itemKey) && !calculationFor(row.itemKey)),
   }
 }
 function previewImpact() {
@@ -393,8 +415,14 @@ async function publish() {
           <a-alert v-if="itemRemoved" type="warning" message="此分项将从新版移除" show-icon class="feedback"/>
           <div v-if="targetKind!=='seller' || !component?.rows?.length" class="rule-blocks-heading catalog-receipt">
             <span v-if="!targetDraft">{{ targetKindLabels[targetKind] }}<template v-if="targetName(item)"> · {{ targetName(item) }}</template></span>
-            <a-button v-if="!applied && sheet.structureOptions && targetKind!=='seller' && !targetDraft"
-              size="small" :disabled="!editable || structureEditing" @click="beginTarget">编辑收款对象</a-button>
+            <a-space v-if="!applied && sheet.structureOptions && targetKind!=='seller' && !targetDraft" wrap :size="4">
+              <a-button size="small" :disabled="!editable || structureEditing" @click="beginTarget">编辑收款对象</a-button>
+              <a-button size="small" :disabled="!editable || structureEditing" @click="structureEditor?.editCalculation(selectedCalculation)">
+                {{ selectedCalculation ? '编辑新计提方式' : '更换计提方式' }}
+              </a-button>
+              <a-button v-if="selectedCalculation" size="small" type="link" :disabled="!editable || structureEditing"
+                @click="undoCalculation">撤销更换</a-button>
+            </a-space>
           </div>
           <template v-if="targetDraft">
             <div class="rule-basics">
@@ -406,7 +434,10 @@ async function publish() {
               <a-button type="primary" @click="stageTarget">确认收款对象</a-button>
             </a-space>
           </template>
-          <template v-if="item.fixedMinor != null || item.rateBps != null">
+          <p v-if="selectedCalculation && !hasRateTable" class="rule-formula">
+            {{ selectedCalculation.fixedMinor!=null ? '每笔付款固定金额' : '统一比例' }} · {{ componentStandard(item) }} · 未保存
+          </p>
+          <template v-else-if="!selectedCalculation && (item.fixedMinor != null || item.rateBps != null)">
             <div v-if="!applied && sheet.mayPublish" class="rule-basics">
               <a-form-item label="计提方式" html-for="catalog-flat-method">
                 <a-select id="catalog-flat-method" :value="flatMethod(item)" :options="catalogFlatMethods" :disabled="!editable"
@@ -423,7 +454,7 @@ async function publish() {
             </div>
             <p v-else class="rule-formula">{{ componentStandard(item) }}</p>
           </template>
-          <template v-if="component?.rows?.length">
+          <template v-if="hasRateTable">
             <div class="catalog-rate-toolbar">
               <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" size="small"
                 :disabled="structureEditing" role="radiogroup" aria-label="查看比例">
@@ -469,8 +500,8 @@ async function publish() {
                 </template>
               </template>
             </a-table>
-            <div v-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
           </template>
+          <div v-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
           <a-collapse v-if="team && teamSplit" ghost class="catalog-more">
             <a-collapse-panel key="team" header="内部团队收款人">
               <a-form-item label="销售公司" html-for="catalog-team-company">
@@ -505,8 +536,8 @@ async function publish() {
           </section>
           </div>
           <template v-if="sheet.mayPublish && !applied">
-            <Teleport v-if="sheet.structureOptions" :disabled="!component?.rows?.length || itemRemoved"
-              :to="component?.rows?.length && !itemRemoved ? rateEditorTarget : 'body'">
+            <Teleport v-if="sheet.structureOptions" :disabled="!component || itemRemoved"
+              :to="component && !itemRemoved ? rateEditorTarget : 'body'">
               <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id"
                 v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
                 :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" @rate-staged="showRateGroup"/>
