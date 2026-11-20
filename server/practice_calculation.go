@@ -56,6 +56,7 @@ type practiceDraftRuntime struct {
 	companyRecipients      map[string][]companySourceAssignment
 	recommendations        practiceCompanyRecommendations
 	poolUnits              map[int64]pgtype.UUID
+	legacyGrossRateShares  bool
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,

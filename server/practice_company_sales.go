@@ -523,7 +523,7 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_COMPANY_AWARD_EXCEEDS_PAYMENT", p.member, rule, award.key))
 		return nil
 	}
-	if err := appendPracticeCompanyShare(draft, p, line, amount); err != nil {
+	if err := appendPracticeCompanyShare(draft, p, line, amount, !runtime.legacyGrossRateShares && award.Mode == "rate"); err != nil {
 		return err
 	}
 	if award.recommendationRate > 0 {
@@ -542,7 +542,7 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		} else if parent.Valid {
 			referral := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: key, BeneficiaryUnit: &parent,
 				practiceProportionalRefund: true}
-			return appendPracticeCompanyShare(draft, p, referral, practiceCompanyRate(p.base, award.recommendationRate))
+			return appendPracticeCompanyShare(draft, p, referral, practiceCompanyRate(p.base, award.recommendationRate), !runtime.legacyGrossRateShares)
 		}
 	}
 	return nil
@@ -552,12 +552,12 @@ func practiceCompanyRate(base, rate int64) int64 {
 	return base/periodRateScale*rate + (base%periodRateScale*rate+periodRateScale/2)/periodRateScale
 }
 
-func appendPracticeCompanyShare(draft *paymentDraft, p practicePurchase, line draftLine, amount int64) error {
+func appendPracticeCompanyShare(draft *paymentDraft, p practicePurchase, line draftLine, amount int64, useNet bool) error {
 	var err error
 	draft.Total, err = addMinor(draft.Total, amount)
 	if err != nil {
 		return err
 	}
-	appendPracticePeriodShare(draft, line, practiceBenefitShare{purchase: p, payments: p.payments}, practiceGrossShares(p.gross, p.payments, amount))
+	appendPracticePeriodShare(draft, line, practiceBenefitShare{purchase: p, payments: p.payments}, p.benefitShares(p.payments, amount, useNet))
 	return nil
 }

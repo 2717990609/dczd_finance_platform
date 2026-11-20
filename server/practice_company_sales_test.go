@@ -424,12 +424,13 @@ func TestPracticeCorporateAndIndividualClaimsCannotPayTheSamePayment(t *testing.
 }
 
 func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *testing.T) {
-	t.Run("公司比例", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false) })
-	t.Run("公司比例和整班阶梯", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, false) })
-	t.Run("仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true) })
+	t.Run("公司比例", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false) })
+	t.Run("公司比例和整班阶梯", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, false, false) })
+	t.Run("仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false) })
+	t.Run("历史结算保留尾款补计", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, true) })
 }
 
-func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment bool) {
+func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacyShares bool) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
 	id := func(value any, err error) int64 {
@@ -556,6 +557,12 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment bool) {
 		class, seller).Scan(&earnings); err != nil || earnings != 1000 {
 		t.Fatalf("the new internal seller should receive the existing personal rate, got %d: %v", earnings, err)
 	}
+	if legacyShares {
+		// This class had no refunds at confirmation, so the originally booked shares
+		// are identical. Only the weighting used in subsequent tier replay differs.
+		mustExec(`UPDATE calculation_drafts SET practice_replay_inputs=jsonb_set(practice_replay_inputs,'{version}','1')
+		 WHERE period_id=$1`, class)
+	}
 	mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES ($1,$2,'fixture')`, class, settled.Version)
 	rule.Components[1].CompanySales.Payee = &practiceCompanyPayee{Kind: "person", PersonID: seller}
 	if _, err := s.publishRule(ctx, rule); err != nil {
@@ -601,14 +608,18 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment bool) {
 		}
 		refund("31", "deposit-complete", time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC), 3498)
 		cleared := checkDraft(nextMonth, -1435, 0)
-		if cleared.RefundCount != 3 {
-			t.Fatalf("the fully refunded deposit must reopen the total pool share on the balance payment: %+v", cleared)
+		wantCount, wantCredit := 2, int64(0)
+		if legacyShares {
+			wantCount, wantCredit = 3, 3
+		}
+		if cleared.RefundCount != wantCount {
+			t.Fatalf("expected %d original lines to be adjusted: %+v", wantCount, cleared)
 		}
 		var credit int64
-		if err := s.db.QueryRow(ctx, `SELECT r.amount_minor FROM calculation_draft_refunds r
+		if err := s.db.QueryRow(ctx, `SELECT coalesce(sum(r.amount_minor),0)::bigint FROM calculation_draft_refunds r
 		 JOIN calculation_draft_lines l ON l.id=r.original_line_id JOIN source_order_versions p ON p.id=l.source_version_id
-		 WHERE r.period_id=$1 AND p.order_id='34' AND l.practice_pool_id IS NOT NULL`, nextMonth).Scan(&credit); err != nil || credit != 3 {
-			t.Fatalf("the original balance payment's team pool must receive its three-cent increase: %d %v", credit, err)
+		 WHERE r.period_id=$1 AND p.order_id='34' AND l.practice_pool_id IS NOT NULL`, nextMonth).Scan(&credit); err != nil || credit != wantCredit {
+			t.Fatalf("the original balance payment's team pool adjustment = %d; want %d: %v", credit, wantCredit, err)
 		}
 		type adjustmentDetail struct {
 			OriginalOrderID, ReplayTriggerOrderID string
@@ -619,9 +630,10 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment bool) {
 		if err := s.db.QueryRow(ctx, draftDetailSQL, nextMonth, 0, 0, cleared.Version, 0, 0).Scan(&details); err != nil {
 			t.Fatal(err)
 		}
-		if !slices.ContainsFunc(details.Refunds, func(row adjustmentDetail) bool {
+		hasCredit := slices.ContainsFunc(details.Refunds, func(row adjustmentDetail) bool {
 			return row.TierCredit && row.AmountMinor == 3 && row.OriginalOrderID == "34" && row.ReplayTriggerOrderID == "31"
-		}) {
+		})
+		if hasCredit != legacyShares {
 			t.Fatalf("draft detail must identify the adjustment and the refund that triggered it: %+v", details)
 		}
 		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
@@ -645,7 +657,7 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment bool) {
 		thirdMonth := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "十一月", SettlementMonth: "2026-11"}))
 		refund("34", "balance-partial", time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC), 1000)
 		if later := checkDraft(thirdMonth, -410, 0); later.RefundCount != 2 {
-			t.Fatalf("the next refund must account for the confirmed increase: %+v", later)
+			t.Fatalf("the next refund must account for the confirmed payment shares: %+v", later)
 		}
 		return
 	}

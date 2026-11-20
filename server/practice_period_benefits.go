@@ -595,7 +595,7 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 				practiceProportionalRefund: b.FixedMinor == nil && len(b.Tiers) == 0, practiceTierRefund: len(b.Tiers) != 0}
 			amounts := share.fixed
 			if b.FixedMinor == nil {
-				amounts = practiceGrossShares(share.purchase.gross, share.payments, share.amount)
+				amounts = share.purchase.benefitShares(share.payments, share.amount, !runtime.legacyGrossRateShares)
 			}
 			appendPracticePeriodShare(draft, base, share, amounts)
 		}
@@ -615,14 +615,32 @@ func appendPracticePeriodShare(draft *paymentDraft, line draftLine, share practi
 	}
 }
 
+func (p practicePurchase) benefitShares(payments []paymentInput, amount int64, useNet bool) [2]int64 {
+	if !useNet {
+		return practiceGrossShares(p.gross, payments, amount)
+	}
+	if len(payments) == 1 {
+		return [2]int64{amount, 0}
+	}
+	tail := p.netAmount(payments[1])
+	return practiceSplitShares(p.netAmount(payments[0])+tail, tail, amount)
+}
+
 func practiceGrossShares(gross int64, payments []paymentInput, amount int64) [2]int64 {
 	if len(payments) == 1 {
 		return [2]int64{amount, 0}
 	}
+	return practiceSplitShares(gross, *payments[1].Fact.AmountMinor, amount)
+}
+
+func practiceSplitShares(base, tailBase, amount int64) [2]int64 {
+	if amount == 0 {
+		return [2]int64{}
+	}
 	// Preserve the split used for a credited entitlement. The balance receives
-	// its floor share of the original gross payment and the deposit the rest.
+	// its floor share and the deposit the rest.
 	var tail big.Int
-	tail.Mul(big.NewInt(amount), big.NewInt(*payments[1].Fact.AmountMinor))
-	tail.Quo(&tail, big.NewInt(gross))
+	tail.Mul(big.NewInt(amount), big.NewInt(tailBase))
+	tail.Quo(&tail, big.NewInt(base))
 	return [2]int64{amount - tail.Int64(), tail.Int64()}
 }
