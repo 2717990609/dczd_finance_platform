@@ -81,11 +81,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .product-links a { color: var(--accent); white-space: nowrap; text-decoration: none; }
 .product-links a:hover { text-decoration: underline; }
 .rule-draft-preview { outline: none; }
-.rule-scope-bar { display:flex; flex-wrap:wrap; align-items:center; gap:8px 14px; padding:8px 16px 16px; color:var(--ink); }
+.rule-scope-bar { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; padding:6px 12px 8px; color:var(--ink); }
 .rule-scope-bar > span { font-weight:600; }
 .rule-scope-bar > .ant-select { width:min(100%, 460px); }
 .rule-scope-buttons { display:flex; gap:6px; flex-wrap:wrap; min-width:0; }
-.rule-scope-buttons .ant-btn { max-width:100%; height:auto; min-height:34px; white-space:normal; text-align:left; }
+.rule-scope-buttons .ant-btn { max-width:100%; height:auto; min-height:30px; white-space:normal; text-align:left; }
 .product-business-skus { display:grid; gap:5px; overflow-wrap:anywhere; }
 .rule-basics { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,185px),1fr)); gap:0 16px; }
 .rule-blocks { display:grid; gap:10px; min-width:0; }
@@ -127,10 +127,14 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .finance-rule-editor .ant-drawer-body { padding:10px 14px; }
 .finance-rule-editor .ant-form-item { margin-bottom:6px; }
 .finance-rule-editor .ant-form-item-label { padding-bottom:2px; }
+.finance-rule-editor .rule-basics { gap:0 10px; }
 .finance-rule-editor .rule-blocks { gap:5px; }
-.finance-rule-editor .rule-block-header { min-height:36px; padding:5px 10px; }
+.finance-rule-editor .rule-blocks-heading { gap:4px 8px; margin-bottom:2px; }
+.finance-rule-editor .rule-block-header { min-height:34px; padding:4px 10px; gap:4px 8px; }
 .finance-rule-editor .rule-block-body,
 .finance-rule-editor .rule-block-body.component-editor { padding:8px 10px; }
+.finance-rule-editor .ant-descriptions-small .ant-descriptions-item-label,
+.finance-rule-editor .ant-descriptions-small .ant-descriptions-item-content { padding-block:4px; }
 .finance-rule-editor .rule-formula { margin-bottom:6px; }
 .finance-rule-editor .form-actions { padding-top:0; }
 .finance-rate-priority { color:var(--muted);font-size:13px; }

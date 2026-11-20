@@ -758,10 +758,10 @@ async function resumeRule() {
 </template>
 
 <style scoped>
-.period-component-layout { margin:16px 0 22px; }
+.period-component-layout { margin:8px 0 12px; }
 .period-scenario-select { width:min(100%,720px); }
-.period-component-heading { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
-.period-component-heading h2 { margin:0; }
+.period-component-heading { display:flex; justify-content:space-between; align-items:center; gap:4px 8px; flex-wrap:wrap; margin-bottom:6px; }
+.period-component-heading h2 { margin:0; font-size:16px; }
 .period-method { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; margin-bottom:6px; }
 .period-method :deep(.ant-form-item) { margin:0; }
 .period-method-formula { color:var(--muted); font-size:13px; }

@@ -82,13 +82,13 @@ watch(amounts, choices => {
       <a-select :id="field('payee')" v-model:value="payee.kind" :options="payeeKinds" size="small"/>
     </a-form-item>
     <a-form-item v-if="payee.kind==='order_person'" label="从订单取谁" :html-for="field('payee-role')" required>
-      <a-select :id="field('payee-role')" v-model:value="payee.role" :options="payeeRoles" show-search :filter-option="byName"/>
+      <a-select :id="field('payee-role')" v-model:value="payee.role" :options="payeeRoles" size="small" show-search :filter-option="byName"/>
     </a-form-item>
     <a-form-item v-if="payee.kind==='person'" label="收款人" :html-for="field('payee-person')" required>
-      <a-select :id="field('payee-person')" v-model:value="payee.personId" :options="people" show-search :filter-option="byName"/>
+      <a-select :id="field('payee-person')" v-model:value="payee.personId" :options="people" size="small" show-search :filter-option="byName"/>
     </a-form-item>
     <a-form-item v-if="payee.kind==='company'" label="收款公司" :html-for="field('payee-company')" required>
-      <a-select :id="field('payee-company')" v-model:value="payee.companyId" :options="recipients" show-search :filter-option="byName"/>
+      <a-select :id="field('payee-company')" v-model:value="payee.companyId" :options="recipients" size="small" show-search :filter-option="byName"/>
     </a-form-item>
     <slot name="actions"/>
   </div>
@@ -165,13 +165,15 @@ watch(amounts, choices => {
   </a-form-item>
   <a-collapse ghost class="company-advanced">
     <a-collapse-panel key="advanced" header="更多配置">
-      <a-form-item label="业绩归给订单里的谁" :html-for="field('role')" required>
-        <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
-      </a-form-item>
-      <a-form-item label="沿用个人提成的内部公司" :html-for="field('internal')">
-        <a-select :id="field('internal')" v-model:value="component.companySales.internalCompanies" :options="internalOptions"
-          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
-      </a-form-item>
+      <div class="rule-basics">
+        <a-form-item label="业绩归给订单里的谁" :html-for="field('role')" required>
+          <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles" size="small"/>
+        </a-form-item>
+        <a-form-item label="沿用个人提成的内部公司" :html-for="field('internal')">
+          <a-select :id="field('internal')" v-model:value="component.companySales.internalCompanies" :options="internalOptions"
+            mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" size="small"/>
+        </a-form-item>
+      </div>
     </a-collapse-panel>
   </a-collapse>
 </template>
@@ -189,7 +191,7 @@ watch(amounts, choices => {
 .company-meta :deep(.ant-form-item) {flex:1 1 140px;min-width:0;margin-bottom:0}
 .company-meta :deep(.rule-remove) {margin-bottom:0}
 .company-standard-fields {display:flex;flex-wrap:wrap;align-items:end;gap:4px 10px}
-.company-standard-column-labels {display:none;color:var(--muted);font-size:13px;padding:0 8px 4px}
+.company-standard-column-labels {display:none;color:var(--muted);font-size:13px;padding:3px 8px;background:#f6f8fb;border-radius:4px 4px 0 0}
 .company-standard-fields :deep(.ant-form-item) {flex:1 1 130px;min-width:0;margin:0}
 .company-standard-fields :deep(.ant-form-item.company-scope-field) {flex:3 1 220px}
 .company-meta :deep(.ant-form-item-label),.company-standard-fields :deep(.ant-form-item-label) {padding-bottom:2px}
@@ -202,7 +204,7 @@ watch(amounts, choices => {
     display:grid;align-items:center;
     grid-template-columns:minmax(0,3fr) var(--company-method-column,) minmax(0,1.25fr) var(--company-recommendation-column,) 48px;
   }
-  .company-category {padding-block:4px}
+  .company-category {padding-block:3px;margin-bottom:0;background:white;border-bottom:1px solid var(--line);border-radius:0}
   .company-category :deep(.ant-form-item-label) {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 }
 </style>

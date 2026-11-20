@@ -390,9 +390,9 @@ async function publish() {
             <p v-if="sheet.label!==(rule?.scopeLabel || sheet.productName)">{{ sheet.label }}</p>
           </div>
           <div class="catalog-rate-context">
-            <p><a-tag>v{{ sheet.version }}</a-tag>{{ formatTime(sheet.effectiveFrom) }} 生效</p>
-            <p v-if="sheet.effectiveTo">截至 {{ formatTime(sheet.effectiveTo) }}</p>
-            <p v-if="sheet.requiresCompletion">订单确认完成后计提</p>
+            <a-tag>v{{ sheet.version }}</a-tag>
+            <span>{{ formatTime(sheet.effectiveFrom) }} 生效<template v-if="sheet.effectiveTo"> · 截至 {{ formatTime(sheet.effectiveTo) }}</template></span>
+            <span v-if="sheet.requiresCompletion">订单确认完成后计提</span>
           </div>
         </header>
         <a-form v-show="!impactInput" id="catalog-rate-form" layout="vertical" @submit.prevent="publish">
@@ -568,7 +568,7 @@ async function publish() {
               </div>
               <a-button type="link" :disabled="saving" @click="copy=undefined">取消复制</a-button>
             </div>
-            <a-form-item v-if="hasEdits" label="新规则何时生效（北京时间）" html-for="catalog-rate-effective-date"
+            <a-form-item v-if="hasEdits" class="catalog-rate-effective" label="生效时间（北京时间）" html-for="catalog-rate-effective-date"
               :extra="recipientsChanged
                 ? '指定收款人需在订单付款时符合任职条件。已结算结果保留原规则。'
                 : '订单按付款时间匹配规则。已结算结果保留原规则。'">
@@ -606,12 +606,14 @@ async function publish() {
 .catalog-rate-toolbar :deep(.ant-input-affix-wrapper) {width:min(100%,190px)}
 .catalog-rate-add {margin-inline-start:auto}
 .catalog-rate-empty {margin:0;padding:5px 0;color:var(--muted);font-size:13px}
-.catalog-rate-table :deep(.ant-table.ant-table-small .ant-table-tbody > tr > .ant-table-cell) {padding-block:4px}
+.catalog-rate-table :deep(.ant-table.ant-table-small .ant-table-cell) {padding-block:4px}
 .catalog-rate-table :deep(.ant-table-pagination) {margin-block:6px}
-.catalog-rate-summary {display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 12px;padding:0 0 8px;margin-bottom:8px;border-bottom:1px solid var(--line)}
-.catalog-rate-summary h2 {font-size:18px;margin:0 0 2px}
+.catalog-rate-summary {display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;padding-bottom:6px;margin-bottom:6px;border-bottom:1px solid var(--line)}
+.catalog-rate-summary h2 {font-size:16px;margin:0 0 2px}
 .catalog-rate-summary p {margin:0;color:var(--muted);line-height:1.45}
-.catalog-rate-context {font-size:13px}
+.catalog-rate-context {display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;color:var(--muted);font-size:13px}
+.catalog-rate-context :deep(.ant-tag) {margin-inline-end:0}
+.catalog-rate-effective :deep(.ant-input) {width:min(100%,280px)}
 .catalog-receipt {margin-bottom:6px}
 .catalog-more {margin:6px 0}
 .catalog-rate-label {max-width:380px}

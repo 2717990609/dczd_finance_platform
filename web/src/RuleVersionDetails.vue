@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { exceptionCompanyIDs, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
+import { catalogRatePriorityLabel, exceptionCompanyIDs, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
   rule: Object, canCopy: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
@@ -33,6 +33,26 @@ function scheduleLabel(schedule) {
 const rate = (value, scale = 100) => (value / scale)+'%'
 const standard = (row, scale) => row.mode==='rate' ? rate(row.value,scale) : props.formatMoney(row.value)
 const fixedUnit = computed(() => props.classProduct ? ' / 报名' : ' / 付款')
+const companyStandards = computed(() => {
+  const defaults = [], exceptions = []
+  for (const group of props.rule.components[activePart.value]?.companySales?.categories || []) {
+    const categories = standardCategoryIDs(group)
+    const overrides = group.overrides || []
+    if (categories.length) {
+      defaults.push({row:group, names:categories.map(id=>label('practiceSalesCategory',id))})
+    } else {
+      const overridden = new Set(overrides.flatMap(exceptionCompanyIDs))
+      const names = group.companies.filter(id=>!overridden.has(id)).map(companyName)
+      if (names.length) exceptions.push({row:group,names})
+    }
+    for (const row of overrides) {
+      exceptions.push({row, names:exceptionCompanyIDs(row).map(companyName), inheritedRate:group.recommendationRate})
+    }
+  }
+  return {defaults,exceptions}
+})
+const showsRecommendation = computed(() => [...companyStandards.value.defaults,...companyStandards.value.exceptions]
+  .some(({row,inheritedRate})=>row.recommendationRate!=null || inheritedRate!=null))
 const countStart = rule => rule.openingId ? props.openingLabel(rule.openingId)
   : rule.countFromOrdinal ? '第 '+rule.countFromOrdinal+' 期' : rule.countFromAt && props.formatTime(rule.countFromAt)
 const scope = computed(() => [
@@ -104,7 +124,7 @@ onMounted(async () => {
           <small>{{ recipient(part) }}</small>
         </button>
         <div v-if="activePart===index" :id="'rule-preview-'+index" class="rule-block-body rule-preview-part">
-        <a-descriptions size="small" :column="1">
+        <a-descriptions size="small" :column="{xs:1,sm:2}">
           <a-descriptions-item label="发给谁">{{ recipient(part) }}</a-descriptions-item>
           <a-descriptions-item label="提成怎么算">{{ formula(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.salesCompanies?.length" label="适用销售公司">
@@ -115,7 +135,36 @@ onMounted(async () => {
           </a-descriptions-item>
           <a-descriptions-item v-if="part.refundPolicy" label="退款处理">{{ label('refundPolicy',part.refundPolicy) }}</a-descriptions-item>
         </a-descriptions>
-        <details v-if="part.tiers || part.periodBenefit || part.companySales || part.retrainSplits?.length">
+        <template v-if="part.companySales">
+          <div v-if="companyStandards.defaults.length && companyStandards.exceptions.length" class="finance-rate-priority">
+            {{ catalogRatePriorityLabel }}
+          </div>
+          <table class="rule-company-standards" aria-label="计提标准">
+            <thead>
+              <tr>
+                <th scope="col">适用范围</th>
+                <th scope="col">计提标准</th>
+                <th v-if="showsRecommendation" scope="col">推荐比例</th>
+              </tr>
+            </thead>
+            <tbody v-for="(rows, scopeName) in {'销售类别默认':companyStandards.defaults,'公司特例':companyStandards.exceptions}"
+              v-show="rows.length" :key="scopeName">
+              <tr v-for="({row,names,inheritedRate},rowIndex) in rows" :key="rowIndex">
+                <th scope="row">
+                  <small>{{ scopeName }}</small>
+                  {{ names.join('、') }}
+                </th>
+                <td>{{ standard(row,10000) }}{{ row.mode==='fixed' ? fixedUnit : '' }}</td>
+                <td v-if="showsRecommendation">
+                  {{ row.recommendationRate!=null ? rate(row.recommendationRate,10000) :
+                    inheritedRate!=null ? '沿用 '+rate(inheritedRate,10000) : '—' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </template>
+        <details v-if="part.tiers || part.periodBenefit || part.retrainSplits?.length ||
+          part.companySales?.internalCompanies?.length || part.companySales?.recommendationRecipients?.length">
           <summary>查看计算条件</summary>
           <template v-if="part.tiers">
             <p v-if="countStart(part.tiers)">累计起点 {{ countStart(part.tiers) }}</p>
@@ -154,13 +203,6 @@ onMounted(async () => {
           <template v-if="part.companySales">
             <p v-if="part.companySales.internalCompanies?.length">内部销售公司 {{ part.companySales.internalCompanies.map(companyName).join('、') }}</p>
             <p v-if="part.companySales.recommendationRecipients?.length">公司推荐收款范围 {{ part.companySales.recommendationRecipients.map(unitName).join('、') }}</p>
-            <template v-for="(group,index) in part.companySales.categories" :key="index">
-              <h4>{{ standardCategoryIDs(group).length ? standardCategoryIDs(group).map(id=>label('practiceSalesCategory',id)).join('、') :
-                '公司特例 · '+group.companies?.map(companyName).join('、') }} · {{ standard(group,10000) }}<template v-if="group.recommendationRate!=null"> · 推荐 {{ rate(group.recommendationRate,10000) }}</template></h4>
-              <ul v-if="group.overrides?.length">
-                <li v-for="(row,index) in group.overrides" :key="index">公司特例 · {{ exceptionCompanyIDs(row).map(companyName).join('、') }} · {{ standard(row,10000) }}<template v-if="row.recommendationRate!=null"> · 推荐 {{ rate(row.recommendationRate,10000) }}</template></li>
-              </ul>
-            </template>
           </template>
           <ul v-if="part.retrainSplits?.length">
             <li v-for="split in part.retrainSplits" :key="split.companyId">
@@ -182,9 +224,16 @@ onMounted(async () => {
 </template>
 
 <style scoped>
-.rule-preview h2 { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 12px; font-size:18px; }
-.rule-preview-scope { margin-bottom:16px; }
+.rule-preview h2 { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 6px; font-size:16px; }
+.rule-preview-scope { margin-bottom:8px; }
 .rule-preview-part h4, .rule-preview-part p { margin:8px 0 4px; font-size:13px; }
 .rule-preview-part ul { margin:4px 0; padding-left:20px; }
 .rule-preview-part summary { color:var(--accent); cursor:pointer; }
+.rule-preview-part > .finance-rate-priority { margin:4px 0; }
+.rule-company-standards { width:100%; border-collapse:collapse; margin:4px 0 6px; }
+.rule-company-standards th, .rule-company-standards td { padding:4px 8px; border-bottom:1px solid var(--line); text-align:left; }
+.rule-company-standards th { font-weight:500; overflow-wrap:anywhere; }
+.rule-company-standards thead { background:#f6f8fb; }
+.rule-company-standards td { white-space:nowrap; font-variant-numeric:tabular-nums; }
+.rule-company-standards small { display:inline-block; margin-inline-end:6px; color:var(--muted); }
 </style>
