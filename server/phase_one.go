@@ -256,7 +256,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, errFinanceLoginBusy):
 		code, message = http.StatusTooManyRequests, err.Error()
-	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart),
+	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart),
 		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
@@ -266,7 +266,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errPracticeMonthSettlementDependency),
 		errors.Is(err, errCatalogRateStale), errors.Is(err, errCatalogRateUnavailable), errors.Is(err, errCatalogRateDates), errors.Is(err, errCatalogTeamRate),
 		errors.Is(err, errCatalogRateConditions), errors.Is(err, errCatalogRequiredEntry), errors.Is(err, errCatalogPeriodRecipient), errors.Is(err, errCatalogPeriodComponents), errors.Is(err, errCatalogPeriodScenarios),
-		errors.Is(err, errCatalogScenarioTarget), errors.Is(err, errCatalogScenarioOccupied),
+		errors.Is(err, errCatalogScenarioTarget), errors.Is(err, errCatalogScenarioOccupied), errors.Is(err, errCatalogPeriodName),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
 		errors.Is(err, errSettlementUnsupported),
 		errors.Is(err, errDraftChanged),
@@ -314,6 +314,7 @@ func (s workspace) list(query string) http.HandlerFunc {
 const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT p.id,p.code,p.name,p.period_mode AS "periodMode",p.cycle_start_day AS "cycleStartDay",
  (l.product_id IS NOT NULL) AS "catalogPending",
+ coalesce(l.source_system='DCAI' AND p.period_mode='calendar' AND p.cycle_start_day IN (1,25),false) AS "catalogPeriodRule",
  coalesce((
   SELECT jsonb_agg(jsonb_build_object('code',sku_code,'label',label,'vipPaymentRule',vip_payment_rule) ORDER BY label,sku_code)
   FROM (

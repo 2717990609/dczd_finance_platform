@@ -204,6 +204,9 @@ const ruleProductOptions = computed(() => data.value.products.filter(p=>(!p.cata
 const catalogScenarioProducts = computed(() => current.value==='rules' ? data.value.products
   .filter(p=>(!productScope.value || p.id===productScope.value) && canPublishRule(p.id) && p.businessSkus?.some(sku=>sku.vipPaymentRule))
   .map(p=>({value:p.id,label:p.name})) : [])
+const catalogPeriodProducts = computed(() => current.value==='rules' ? data.value.products
+  .filter(p=>(!productScope.value || p.id===productScope.value) && canPublishRule(p.id) && p.catalogPeriodRule)
+  .map(p=>({value:p.id,label:p.name})) : [])
 const visibleProducts = computed(() => {
   const term = scopeSearch.value.trim().toLowerCase()
   return term ? scopedProducts.value.filter(p => (p.name+' '+p.code).toLowerCase().includes(term)) : scopedProducts.value
@@ -449,6 +452,15 @@ function catalogScenarioPublished(result, product, sku) {
   ruleBusinessScope.value = product+':sku:'+sku
   notice.value = '规则 v'+result.version+' 已发布。'
   refresh()
+}
+function openCatalogPeriodCreation() {
+  const [id,kind,...sku] = (ruleBusinessScope.value || '').split(':')
+  const selected = catalogPeriodProducts.value.find(option=>option.value===Number(id))
+  periodRule.value = {create:true,productId:selected?.value || productScope.value,sku:selected && kind==='sku' ? sku.join(':') : undefined}
+}
+function periodRulePublished(result, product) {
+  if (product) ruleBusinessScope.value = product+':aggregate'
+  ratePublished(result)
 }
 const mainRows = computed(() => {
   const key = tab.value === 'mapping' ? 'mappings' : tab.value === 'identity' ? 'identities' : current.value
@@ -1257,10 +1269,11 @@ async function save() {
             <a v-else-if="periodOrigin" class="workspace-return" :href="'#'+periodOrigin"><LeftOutlined aria-hidden="true"/>返回{{ periodOrigins[periodOrigin] }}</a>
             <a v-if="configurationReturn" class="workspace-return" :href="configurationReturn.href"><LeftOutlined aria-hidden="true"/>{{ configurationReturn.label }}</a>
             <a v-else-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
-            <div v-if="actions && (canOpenAction || catalogScenarioProducts.length) && !identityAccount" class="topbar-actions">
+            <div v-if="actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length) && !identityAccount" class="topbar-actions">
               <a v-if="orderReturn" class="workspace-return" :href="orderReturn.href"><LeftOutlined aria-hidden="true"/>{{ orderReturn.label }}</a>
               <a-button v-if="canOpenAction" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : titles[actions] }}</a-button>
               <a-button v-if="catalogScenarioProducts.length" :type="canOpenAction ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogScenarioCreation">新增逐单规则</a-button>
+              <a-button v-if="catalogPeriodProducts.length" :type="canOpenAction || catalogScenarioProducts.length ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogPeriodCreation">新增整期规则</a-button>
             </div>
           </div>
           <nav v-if="workspacePages.length>1" class="workspace-nav" :aria-label="activeWorkspace?.title+'导航'">
@@ -1692,9 +1705,9 @@ async function save() {
     :skus="data.products.find(product=>product.id===rateRule?.productId)?.businessSkus"
     @close="rateRule=undefined; appliedRule=undefined" @published="ratePublished"/>
   <CatalogPeriodRule v-if="(periodRule || appliedRule?.aggregate) && active && !sessionError && !sessionChecking && !loginRequested"
-    :rule="periodRule" :applied="appliedRule?.aggregate" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
-    :can-review-activity="wholeWorkspace && !appliedRule?.aggregate"
-    @close="periodRule=undefined; appliedRule=undefined" @published="ratePublished" @open-draft="openAggregateDraft"/>
+    :rule="periodRule" :applied="appliedRule?.aggregate" :products="catalogPeriodProducts" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
+    :can-review-activity="wholeWorkspace && !appliedRule?.aggregate && !periodRule?.create"
+    @close="periodRule=undefined; appliedRule=undefined" @published="periodRulePublished" @open-draft="openAggregateDraft"/>
   <CatalogScenarioCreate v-if="catalogScenarioCreation && active && !sessionError && !sessionChecking && !loginRequested"
     :products="catalogScenarioProducts" :initial-product="catalogScenarioCreation.productId" :initial-sku="catalogScenarioCreation.sku" :api="api"
     @close="catalogScenarioCreation=undefined" @published="catalogScenarioPublished"/>

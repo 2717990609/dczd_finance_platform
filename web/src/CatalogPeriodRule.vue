@@ -3,8 +3,12 @@ import { computed, ref, watch } from 'vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
-const props = defineProps({rule:Object, applied:Object, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
+const props = defineProps({rule:Object, applied:Object, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
 const emit = defineEmits(['close','published','open-draft'])
+const creating = computed(() => Boolean(props.rule?.create))
+const productId = ref(props.rule?.productId || (props.products?.length===1 ? props.products[0].value : undefined))
+const ruleName = ref('')
+const creationCycle = ref()
 const sheet = ref()
 const rows = ref([])
 const activeComponent = ref()
@@ -29,6 +33,7 @@ let quoteRequest = 0
 let activityRequest = 0
 
 const cycleLabels = {MONTHLY:'自然月',MONTHLY_25_TO_24:'每月 25 日至次月 24 日'}
+const cycleOptions = Object.entries(cycleLabels).map(([value,label])=>({value,label}))
 const activityIssueLabels = {
   REFUND_ADJUSTMENT:'退款更正待核对', INVALID_EVENT:'交易编号或金额缺失', DUPLICATE_EVENT:'交易编号重复',
   REFUND_ORIGIN_MISSING:'退款未能唯一关联原付款', UNCLASSIFIED:'原付款未分类', MAPPING_MISSING:'缺少场景映射',
@@ -48,14 +53,14 @@ const groupingIssueLabels = {
 const sourceStatusLabels = {READY:'覆盖本期',NOT_CONFIGURED:'来源未配置',NOT_STARTED:'未同步',INCOMPLETE:'同步未完成',
   OUTSIDE_RANGE:'未覆盖本期',STALE:'同步已过期',SOURCE_CHANGED:'来源已变更',FAILED:'同步失败',CLOCK_GAP:'来源时钟待核',UNSUPPORTED:'来源待核'}
 const localDate = stamp => new Date(Date.parse(stamp) + 8*3600000).toISOString().slice(0,10)
-const firstStart = computed(() => {
-  if (!sheet.value) return undefined
-  const from = new Date(Date.parse(sheet.value.effectiveFrom)+8*3600000)
-  const day = sheet.value.cycle==='MONTHLY' ? 1 : 25
+function nextStart(stamp, cycle) {
+  const from = new Date(Date.parse(stamp)+8*3600000)
+  const day = cycle==='MONTHLY' ? 1 : 25
   let start = new Date(Date.UTC(from.getUTCFullYear(),from.getUTCMonth(),day))
   if (start<=from) start = new Date(Date.UTC(from.getUTCFullYear(),from.getUTCMonth()+1,day))
   return start.toISOString().slice(0,10)
-})
+}
+const firstStart = computed(() => sheet.value && !creating.value ? nextStart(sheet.value.effectiveFrom,sheet.value.cycle) : undefined)
 const cutoff = computed(() => sheet.value?.effectiveTo
   ? localDate(new Date(Date.parse(sheet.value.effectiveTo)-86400000).toISOString()) : undefined)
 const canSave = computed(() => sheet.value?.mayPublish && (!cutoff.value || firstStart.value<=cutoff.value))
@@ -64,7 +69,8 @@ const scenariosChanged = computed(() => {
   const published = sheet.value?.scenarios || []
   return scenarioCodes.value.length !== published.length || !published.every(sku=>scenarioCodes.value.includes(sku.code))
 })
-const changed = computed(() => componentsChanged.value || scenariosChanged.value)
+const changed = computed(() => creating.value ? Boolean(ruleName.value.trim() && scenarioCodes.value.length && rows.value.length)
+  : componentsChanged.value || scenariosChanged.value)
 const scenarioOptions = computed(() => {
   const available = new Map((sheet.value?.options?.scenarios || []).map(sku=>[sku.code,{value:sku.code,label:sku.label}]))
   for (const sku of sheet.value?.scenarios || []) {
@@ -85,7 +91,7 @@ function editableRows(items) {
 }
 const targetTypes = [{value:'person',label:'指定个人'},{value:'company',label:'指定公司'},{value:'pool',label:'团队池'}]
 const targetLabels = {person:'个人',company:'公司',pool:'团队池'}
-const peopleFilters = computed(() => ({ruleId:props.rule?.id,scope:'period'}))
+const peopleFilters = computed(() => creating.value ? {productId:productId.value,scope:'period'} : {ruleId:props.rule?.id,scope:'period'})
 function targetLabel(item) {
   if (item.targetKind==='person') return item.personName || '待选择收款人'
   const name = availableOrganizations(item).find(org=>org.value===item.organizationKey)?.label ||
@@ -129,7 +135,7 @@ function minor(value, message) {
   return Math.round(value*100)
 }
 function componentChanges() {
-  if (!canSave.value || !componentsChanged.value) return {}
+  if (!canSave.value || (!creating.value && !componentsChanged.value)) return {}
   return {components:rows.value.map(item=>{
     if (!item.label.trim() || (item.targetKind==='person' ? !item.personId : !item.organizationKey)) {
       throw new Error('请填写收款安排名称并选择收款对象。')
@@ -152,13 +158,15 @@ function removeTier(tiers, index) {
   tiers[0].from = 0
 }
 
-watch(()=>[props.rule?.id,props.applied], async ([id,applied])=>{
+watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,product])=>{
   const request = ++versionRequest
   error.value = ''
   sheet.value = undefined
+  if (creating.value && !product) return
   loading.value = true
   try {
-    const data = applied || await props.api('/catalog-period-rules?ruleId='+encodeURIComponent(id))
+    const params = creating.value ? {productId:product} : {ruleId:id}
+    const data = applied || await props.api('/catalog-period-rules?'+new URLSearchParams(params))
     if (request !== versionRequest) return
     sheet.value = data
     rows.value = editableRows(data.items)
@@ -166,14 +174,24 @@ watch(()=>[props.rule?.id,props.applied], async ([id,applied])=>{
     editingScenarios.value = false
     activeComponent.value = rows.value.length===1 ? rows.value[0].uid : undefined
     editingComponent.value = undefined
-    effectiveDate.value = canSave.value ? firstStart.value : ''
+    if (creating.value) {
+      creationCycle.value = data.cycle
+      effectiveDate.value = nextStart(new Date().toISOString(),data.cycle)
+      const options = data.options.scenarios
+      const selected = product===props.rule.productId && options.find(option=>option.code===props.rule.sku)
+      scenarioCodes.value = selected ? [selected.code] : options.length===1 ? [options[0].code] : []
+      addComponent()
+    } else effectiveDate.value = canSave.value ? firstStart.value : ''
   } catch (err) {
     if (request === versionRequest) error.value = err.message
   } finally {
     if (request === versionRequest) loading.value = false
   }
 }, {immediate:true})
-watch([rows,amounts,scenarioCodes], ()=>{
+watch(creationCycle, cycle=>{
+  if (creating.value && cycle) effectiveDate.value = nextStart(new Date().toISOString(),cycle)
+})
+watch([rows,amounts,scenarioCodes,creationCycle,effectiveDate,ruleName], ()=>{
   ++quoteRequest
   previewing.value = false
   quote.value = undefined
@@ -223,7 +241,7 @@ async function preview() {
   previewing.value = true
   try {
     const result = await props.api('/catalog-period-rules/preview',{method:'POST',body:JSON.stringify({
-      baseId:props.rule.id,...componentChanges(),
+      ...(creating.value ? creationInput() : {baseId:props.rule.id,...componentChanges()}),
       receiptsMinor:minor(amounts.value.receipts,'请输入本期实收。'),
       refundsMinor:minor(amounts.value.refunds,'请输入本期退款。'),
       carryInMinor:-minor(amounts.value.carry,'请输入上期未抵扣退款。'),
@@ -234,6 +252,11 @@ async function preview() {
   } finally {
     if (request === quoteRequest) previewing.value = false
   }
+}
+function creationInput() {
+  if (!changed.value || !effectiveDate.value) throw new Error('请填写规则名称、生效日期，并选择参与场景。')
+  return {create:{productId:productId.value,label:ruleName.value.trim(),cycle:creationCycle.value},
+    effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),scenarioCodes:scenarioCodes.value,...componentChanges()}
 }
 async function publish() {
   if (!scenarioCodes.value.length) {
@@ -248,11 +271,13 @@ async function publish() {
   error.value = ''
   try {
     const result = await props.api('/catalog-period-rules',{method:'POST',body:JSON.stringify({
+      ...(creating.value ? creationInput() : {
       baseId:props.rule.id,effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),
       ...componentChanges(),
       ...(scenariosChanged.value ? {scenarioCodes:scenarioCodes.value} : {}),
+      }),
     })})
-    emit('published',result)
+    emit('published',result,creating.value ? productId.value : undefined)
   } catch (err) {
     error.value = err.message
   } finally {
@@ -262,23 +287,37 @@ async function publish() {
 </script>
 
 <template>
-  <a-drawer open :title="applied ? '计提使用的整期规则' : '整期阶梯配置'" width="min(1260px, 100vw)" root-class-name="finance-rule-editor"
+  <a-drawer open :title="creating ? '新增整期规则' : applied ? '计提使用的整期规则' : '整期阶梯配置'" width="min(1260px, 100vw)" root-class-name="finance-rule-editor"
     :closable="!saving && !savingDraft" :mask-closable="!saving && !savingDraft" :keyboard="!saving && !savingDraft" @close="emit('close')">
     <a-alert v-if="error" class="feedback" :message="error" type="error" show-icon/>
+    <a-form v-if="creating" layout="vertical" class="rule-basics" :disabled="saving">
+      <a-form-item label="所属产品" html-for="period-create-product" required>
+        <a-select id="period-create-product" v-model:value="productId" :options="products" placeholder="选择产品"/>
+      </a-form-item>
+      <a-form-item label="规则名称" html-for="period-create-name" required>
+        <a-input id="period-create-name" v-model:value="ruleName" :maxlength="80"/>
+      </a-form-item>
+      <a-form-item label="结算周期" html-for="period-create-cycle" required>
+        <a-select id="period-create-cycle" v-model:value="creationCycle" :options="cycleOptions" :disabled="!sheet"/>
+      </a-form-item>
+      <a-form-item label="生效账期起点" html-for="period-rule-effective" required>
+        <a-input id="period-rule-effective" v-model:value="effectiveDate" type="date" :disabled="!sheet"/>
+      </a-form-item>
+    </a-form>
     <a-spin :spinning="loading">
       <section v-if="sheet">
-        <h2>{{ sheet.label }} <a-tag>v{{ sheet.version }}</a-tag></h2>
+        <h2 v-if="!creating">{{ sheet.label }} <a-tag>v{{ sheet.version }}</a-tag></h2>
         <a-alert v-if="sheet.paused && !applied" class="feedback" type="info" show-icon
           message="当前暂停执行。保存档位新版本后仍维持暂停。"/>
         <a-descriptions size="small" :column="{xs:1,sm:1,md:2}" bordered>
-          <a-descriptions-item label="结算周期">{{ cycleLabels[sheet.cycle] }}</a-descriptions-item>
-          <a-descriptions-item label="有效范围">{{ formatTime(sheet.effectiveFrom) }}<template v-if="sheet.effectiveTo"> 至 {{ formatTime(sheet.effectiveTo) }}</template></a-descriptions-item>
+          <a-descriptions-item v-if="!creating" label="结算周期">{{ cycleLabels[sheet.cycle] }}</a-descriptions-item>
+          <a-descriptions-item v-if="!creating" label="有效范围">{{ formatTime(sheet.effectiveFrom) }}<template v-if="sheet.effectiveTo"> 至 {{ formatTime(sheet.effectiveTo) }}</template></a-descriptions-item>
           <a-descriptions-item label="参与场景" :span="2">
-            <template v-if="editingScenarios">
+            <template v-if="creating || editingScenarios">
               <a-select id="period-rule-scenarios" v-model:value="scenarioCodes" :options="scenarioOptions"
                 mode="multiple" show-search option-filter-prop="label" aria-label="参与场景"
                 placeholder="选择参与整期计提的 SKU" :disabled="saving" class="period-scenario-select"/>
-              <a-button type="link" @click="editingScenarios=false">完成选择</a-button>
+              <a-button v-if="!creating" type="link" @click="editingScenarios=false">完成选择</a-button>
             </template>
             <template v-else>
               <a-tag v-for="code in scenarioCodes" :key="code">{{ scenarioOptions.find(option=>option.value===code)?.label || code }}</a-tag>
@@ -474,7 +513,7 @@ async function publish() {
           <a-descriptions-item label="下期结转退款">{{ formatMoney(-quote.carryForwardMinor) }}</a-descriptions-item>
         </a-descriptions>
         </template>
-        <a-form v-if="canSave" layout="vertical" class="period-quote-result">
+        <a-form v-if="canSave && !creating" layout="vertical" class="period-quote-result">
           <a-form-item label="新版本生效日期（北京时间零点）" html-for="period-rule-effective" :extra="cycleLabels[sheet.cycle]+'的账期起点生效。'">
             <a-input id="period-rule-effective" v-model:value="effectiveDate" type="date" :min="firstStart" :max="cutoff" :disabled="saving"/>
           </a-form-item>
@@ -484,7 +523,7 @@ async function publish() {
     <template #footer>
       <div class="workspace-edit-footer">
         <a-button :disabled="saving" @click="emit('close')">关闭</a-button>
-        <a-button v-if="canSave" type="primary" :disabled="!changed" :loading="saving" @click="publish">保存新版本</a-button>
+        <a-button v-if="canSave" type="primary" :disabled="!changed" :loading="saving" @click="publish">{{ creating ? '保存并生效' : '保存新版本' }}</a-button>
       </div>
     </template>
   </a-drawer>

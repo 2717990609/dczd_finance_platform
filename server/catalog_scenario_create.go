@@ -67,17 +67,7 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 		return result, invalid
 	}
 	if operator := financeUser(ctx); operator != nil {
-		var allowed int
-		err := tx.QueryRow(ctx, `SELECT 1 FROM finance_accounts a WHERE a.id=$1::uuid AND a.enabled AND EXISTS(
-		 SELECT 1 FROM finance_account_rule_grants g WHERE g.account_id=a.id AND g.product_id=$2 AND g.can_publish) FOR SHARE OF a`,
-			operator.ID, input.ProductID).Scan(&allowed)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return result, errRulePermission
-		}
-		if err != nil {
-			return result, err
-		}
-		if err := lockFinanceOperatorSession(ctx, tx, operator); err != nil {
+		if err := lockCatalogProductPublisher(ctx, tx, operator, input.ProductID); err != nil {
 			return result, err
 		}
 	}
@@ -144,4 +134,18 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 		return result, err
 	}
 	return result, enqueueDraftConfiguration(ctx, tx, catalogRateDraftPeriodsSQL, input.ProductID, input.SKU, at, nil, result.ID)
+}
+
+func lockCatalogProductPublisher(ctx context.Context, tx pgx.Tx, operator *financePrincipal, product int64) error {
+	var allowed int
+	err := tx.QueryRow(ctx, `SELECT 1 FROM finance_accounts a WHERE a.id=$1::uuid AND a.enabled AND EXISTS(
+	 SELECT 1 FROM finance_account_rule_grants g WHERE g.account_id=a.id AND g.product_id=$2 AND g.can_publish) FOR SHARE OF a`,
+		operator.ID, product).Scan(&allowed)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return errRulePermission
+	}
+	if err != nil {
+		return err
+	}
+	return lockFinanceOperatorSession(ctx, tx, operator)
 }

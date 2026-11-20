@@ -25,24 +25,30 @@ type catalogPeriodComponentEdit struct {
 }
 
 func editCatalogPeriodComponents(raw json.RawMessage, edits []catalogPeriodComponentEdit, options catalogStructureOptions) (json.RawMessage, error) {
-	if len(edits) == 0 {
-		return nil, errCatalogPeriodComponents
-	}
 	period, err := parseCatalogPeriodRule(raw)
 	if err != nil {
 		return nil, err
+	}
+	return writeCatalogPeriodComponents(raw, period.Items, edits, options)
+}
+
+func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodItem, edits []catalogPeriodComponentEdit,
+	options catalogStructureOptions) (json.RawMessage, error) {
+	if len(edits) == 0 {
+		return nil, errCatalogPeriodComponents
 	}
 	var root map[string]json.RawMessage
 	var actions []map[string]json.RawMessage
 	if json.Unmarshal(raw, &root) != nil || json.Unmarshal(root["benefit_actions"], &actions) != nil {
 		return nil, invalid
 	}
-	positions := make(map[string]int, len(period.Items))
-	for i, item := range period.Items {
+	positions := make(map[string]int, len(original))
+	for i, item := range original {
 		positions[item.ItemKey] = i
 	}
 	next := make([]map[string]json.RawMessage, 0, len(edits))
 	changed := len(edits) != len(actions)
+	var err error
 	for i, edit := range edits {
 		edit.Label = strings.TrimSpace(edit.Label)
 		edit.PoolName = strings.TrimSpace(edit.PoolName)
@@ -60,7 +66,7 @@ func editCatalogPeriodComponents(raw json.RawMessage, edits []catalogPeriodCompo
 				return nil, invalid
 			}
 			delete(positions, edit.ItemKey)
-			before, fields = period.Items[n], actions[n]
+			before, fields = original[n], actions[n]
 			changed = changed || i != n
 		} else {
 			edit.ItemKey = "period-benefit-" + strings.ToLower(rand.Text())
