@@ -216,6 +216,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .organization-person-filters { grid-template-columns: minmax(150px, 240px) minmax(0, 1fr); }
 .organization-person-link.ant-btn { height: auto; padding: 0; text-align: left; white-space: normal; }
 .organization-context { color: var(--muted); font-size: 13px; }
+.practice-roster-field-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 5px; }
+.practice-roster-field .ant-select { width: 100%; }
+.practice-roster-error, .practice-roster-help { display: block; margin-top: 4px; }
+.practice-roster-error { color: #b42318; }
+.practice-roster-help { color: var(--muted); }
 .organization-directory .ant-table-pagination, .draft-report .ant-table-pagination { padding-inline: 12px; }
 .identity-scope { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 14px;
   padding: 9px 14px; border-block: 1px solid var(--line); background: var(--accent-soft); }

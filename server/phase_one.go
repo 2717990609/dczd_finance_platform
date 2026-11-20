@@ -141,6 +141,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.listForAuthorizedProducts(periodsSQL, true)},
 		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createPeriod)},
 		{Method: http.MethodPost, Path: "/api/v1/period-report-month", Handler: submit(s.setPeriodReportMonth)},
+		{Method: http.MethodPost, Path: "/api/v1/period-practice-roster", Handler: submit(s.setPeriodPracticeRoster)},
 		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.listForAuthorizedProducts(rulesSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.listForAuthorizedProducts(catalogRulesSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-rates", Handler: s.getCatalogRuleRates},
@@ -171,6 +172,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/orders/sync", Handler: s.getOrderSyncJobs},
 		{Method: http.MethodPost, Path: "/api/v1/orders/sync", Handler: submit(s.requestOrderSync)},
 		{Method: http.MethodPost, Path: "/api/v1/practice-rosters/pull", Handler: submit(s.pullPracticeRoster)},
+		{Method: http.MethodGet, Path: "/api/v1/practice-rosters/options", Handler: s.listPracticeRosterOptions},
 		{Method: http.MethodGet, Path: "/api/v1/sources", Handler: s.sourceStatuses},
 		{Method: http.MethodGet, Path: "/api/v1/drafts", Handler: s.getDraft},
 		{Method: http.MethodGet, Path: "/api/v1/drafts/rule", Handler: s.getDraftRule},
@@ -295,14 +297,16 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
  p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",
  to_char(` + periodReportMonthSQL + `,'YYYY-MM') AS "reportMonth",to_char(p.report_month,'YYYY-MM') AS "reportMonthOverride",
  (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL) AS "reportMonthEditable",
+ (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL) AS "practiceRosterEditable",
  (pro.period_mode='class' AND p.calendar_month IS NOT NULL) AS "practiceRefundMonth",
  p.source_period_key AS "sourcePeriodKey",roster.starts_at AS "classStartsAt",
+ roster.source_version AS "practiceRosterVersion",roster.attendance_count AS "practiceRosterAttendance",
  coalesce(NOT roster.in_period,false) AS "classStartOutsidePeriod",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
  FROM periods p JOIN products pro ON pro.id=p.product_id
  LEFT JOIN settlements final ON final.period_id=p.id
  LEFT JOIN calculation_drafts frozen ON frozen.period_id=final.period_id AND pro.period_mode='class'
  LEFT JOIN LATERAL (
-  SELECT r.starts_at,(r.starts_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on AS in_period
+  SELECT r.starts_at,r.source_version,r.attendance_count,(r.starts_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on AS in_period
   FROM practice_rosters r WHERE r.period_key=p.source_period_key AND (final.period_id IS NULL OR r.id=frozen.practice_roster_id)
   ORDER BY r.source_version DESC LIMIT 1
  ) roster ON pro.period_mode='class'

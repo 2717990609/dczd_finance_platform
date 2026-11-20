@@ -16,6 +16,7 @@ import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
 import OrderDetails from './OrderDetails.vue'
 import OrderSyncPanel from './OrderSyncPanel.vue'
 import PracticeTierEditor from './PracticeTierEditor.vue'
+import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import { organizationTree } from './organization-tree'
 import { copiedRuleComponents } from './rule-component-form'
 
@@ -263,7 +264,8 @@ const syncStreams = computed(() => data.value.sources
   .filter(entry => entry.configured && (!sourceFilter.value || sourceFilter.value===entry.source))
   .flatMap(entry => options(entry.source.toLowerCase()+'OrderStream')))
 const sourceLabel = key => optionLabel('source',key)?.split(' · ')[0]
-const titles = {product:'新增产品',mapping:'添加来源映射',period:'新建期次',reportMonth:'设置报表月份',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
+const titles = {product:'新增产品',mapping:'添加来源映射',period:'新建期次',periodRoster:'更正签到关联',
+  reportMonth:'设置报表月份',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
 const actions = computed(() => {
   if (current.value === 'products') return tab.value === 'mapping' ? 'mapping' : 'product'
   if (current.value === 'people') return tab.value === 'identity' ? 'identity' : 'person'
@@ -322,7 +324,8 @@ const columns = computed(() => {
   const values = {
     product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['来源映射','mappingCount'],['操作','productAction',160]],
     mapping:[['产品名称','productName'],['业务来源','source'],['业务域','domain'],['来源标识','sourceKey']],
-    period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],['报表月份','reportMonth',115],['适用规则','ruleVersion',200]],
+    period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],
+      ['报表月份','reportMonth',115],['签到名单','practiceRoster',150],['适用规则','ruleVersion',200]],
     rule:[['规则名称','label',200],['所属产品','productName',155],['版本','version',80],
       ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',220],['操作','ruleAction',160]],
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
@@ -628,6 +631,11 @@ function open(kind, row) {
     draft.value.sourceConfigured = row?.sourceConfigured
   }
   if (kind === 'reportMonth') draft.value = {periodId:row.id, periodName:row.name, reportMonth:row.reportMonthOverride || ''}
+  if (kind === 'periodRoster') {
+    draft.value = {periodId:row.id, periodName:row.name, sourcePeriodKey:row.sourcePeriodKey,
+      expectedSourcePeriodKey:row.sourcePeriodKey, startsOn:row.startsOn, endsOn:row.endsOn,
+      expectedStartsOn:row.startsOn, expectedEndsOn:row.endsOn, reportMonthOverride:row.reportMonthOverride}
+  }
   if (kind === 'identity' && row) {
     draft.value = {source:row.source,externalId:row.externalId,previousOwner:row}
   }
@@ -646,6 +654,11 @@ function open(kind, row) {
       draft.value.label = target.name+'分润规则'
     }
   }
+}
+function pickPeriodRoster(roster) {
+  if (!draft.value.startsOn || draft.value.startsOn===draft.value.rosterStartsOn) draft.value.startsOn = roster.startsOn
+  draft.value.rosterStartsOn = roster.startsOn
+  draft.value.pickedRosterKey = roster.key
 }
 function pullFromDetails(order) {
   orderDetails.value = undefined
@@ -807,10 +820,19 @@ function bodyFor(kind,f) {
       const settlementMonth = must(f.settlementMonth)
       return {productId, settlementMonth, name:f.name?.trim() || settlementMonth+(classRefundMonth.value ? ' 退款账期' : ' 账期')}
     }
-    return {productId,name:must(f.name),ordinal:must(f.ordinal),startsOn:must(f.startsOn),endsOn:must(f.endsOn),
-      ...(f.sourcePeriodKey?.trim() ? {sourcePeriodKey:f.sourcePeriodKey.trim()} : {}), ...(classRule.value && f.reportMonth ? {reportMonth:f.reportMonth} : {})}
+    const startsOn = must(f.startsOn)
+    const endsOn = must(f.endsOn)
+    const sourcePeriodKey = f.sourcePeriodKey?.trim()
+    if (sourcePeriodKey && sourcePeriodKey===f.pickedRosterKey && (f.rosterStartsOn < startsOn || f.rosterStartsOn > endsOn)) {
+      throw new Error('所选名单的开班日期不在期次起止日期内。')
+    }
+    return {productId,name:must(f.name),ordinal:must(f.ordinal),startsOn,endsOn,
+      ...(sourcePeriodKey ? {sourcePeriodKey} : {}), ...(classRule.value && f.reportMonth ? {reportMonth:f.reportMonth} : {})}
   }
   if (kind === 'reportMonth') return {periodId:f.periodId,month:f.reportMonth || ''}
+  if (kind === 'periodRoster') return {periodId:f.periodId,sourcePeriodKey:f.sourcePeriodKey?.trim() || '',
+    expectedSourcePeriodKey:f.expectedSourcePeriodKey || '', startsOn:must(f.startsOn), endsOn:must(f.endsOn),
+    expectedStartsOn:f.expectedStartsOn,expectedEndsOn:f.expectedEndsOn}
   if (kind === 'rule') return {productId:must(f.productId),label:must(f.label),
     ...(f.scope === 'period' ? {periodId:must(f.periodId,'请选择适用期次。')} : {}),
     ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal,'请填写适用的起始期数。')} : {}),
@@ -825,7 +847,8 @@ async function save() {
   if (saving.value) return
   const issuedFor = sessionRequest
   const kind = drawer.value
-  const paths = {product:'/products',mapping:'/mappings',period:'/periods',reportMonth:'/period-report-month',rule:'/rules',person:'/people',identity:'/identities',pull:'/orders/pull'}
+  const paths = {product:'/products',mapping:'/mappings',period:'/periods',periodRoster:'/period-practice-roster',
+    reportMonth:'/period-report-month',rule:'/rules',person:'/people',identity:'/identities',pull:'/orders/pull'}
   formError.value = ''
   saving.value = true
   try {
@@ -834,6 +857,7 @@ async function save() {
     if (issuedFor!==sessionRequest) return
     notice.value = kind === 'pull' ? '同步完成，读取 '+result.facts+' 条业务记录，新增 '+result.newVersions+' 个版本。'
       : kind === 'rule' ? '规则 v'+result.version+' 已保存。'
+      : kind === 'periodRoster' ? result.changed ? '签到名单关联已更新，待重新试算。' : '签到名单关联无变化。'
       : kind === 'identity' ? '来源账号归属已保存。' : '保存成功。'
     drawer.value = ''
     rulePreview.value = undefined
@@ -1019,6 +1043,17 @@ async function save() {
                   <a-button v-if="record.reportMonthEditable" type="link" size="small" :title="'设置 '+record.name+' 的报表月份'" @click="open('reportMonth',record)">{{ text }}</a-button>
                   <span v-else>{{ text }}</span>
                 </template>
+                <template v-else-if="column.key==='practiceRoster'">
+                  <template v-if="record.periodMode==='class' && !record.practiceRefundMonth">
+                    <span v-if="record.practiceRosterVersion">v{{ record.practiceRosterVersion }} · {{ record.practiceRosterAttendance }} 人</span>
+                    <span v-else>{{ record.sourcePeriodKey ? '待拉取' : '未关联' }}</span>
+                    <small v-if="record.classStartsAt" class="order-version">{{ formatTime(record.classStartsAt) }}</small>
+                    <div v-if="record.practiceRosterEditable">
+                      <a-button type="link" size="small" @click="open('periodRoster',record)">{{ record.sourcePeriodKey ? '更正签到关联' : '关联签到名单' }}</a-button>
+                    </div>
+                  </template>
+                  <span v-else>—</span>
+                </template>
                 <template v-else-if="column.key==='ruleVersion'">
                   <a-tag v-if="record.practiceRefundMonth" color="blue">按结算时规则</a-tag>
                   <a-tag v-else-if="record.classStartOutsidePeriod" color="orange" :title="formatTime(record.classStartsAt)">开班时间超出本期</a-tag>
@@ -1138,14 +1173,27 @@ async function save() {
         <template v-else>
           <a-form-item label="期次名称" required><a-input v-model:value="draft.name" aria-label="期次名称"/></a-form-item>
           <a-form-item label="期数" required><a-input-number v-model:value="draft.ordinal" aria-label="期数" :min="1" :precision="0"/></a-form-item>
-          <div class="field-grid"><a-form-item label="开始日期" required><a-input v-model:value="draft.startsOn" aria-label="开始日期" type="date"/></a-form-item><a-form-item label="结束日期" required><a-input v-model:value="draft.endsOn" aria-label="结束日期" type="date"/></a-form-item></div>
-          <a-form-item label="来源期次标识" extra="填入子系统已确认签到名单的期次标识。">
-            <a-input v-model:value="draft.sourcePeriodKey" aria-label="来源期次标识" placeholder="PRACTICE:1:1:123" :maxlength="80"/>
+          <a-form-item v-if="classRule">
+            <PracticeRosterSelect v-model:value="draft.sourcePeriodKey" :api="api" :format-time="formatTime" @picked="pickPeriodRoster"/>
           </a-form-item>
+          <div class="field-grid"><a-form-item label="开始日期" required><a-input v-model:value="draft.startsOn" aria-label="开始日期" type="date"/></a-form-item><a-form-item label="结束日期" required><a-input v-model:value="draft.endsOn" aria-label="结束日期" type="date"/></a-form-item></div>
           <a-form-item v-if="classRule" label="报表月份" extra="留空按班次结束日期归月。">
             <a-input v-model:value="draft.reportMonth" aria-label="报表月份" type="month"/>
           </a-form-item>
         </template>
+      </template>
+      <template v-if="drawer==='periodRoster'">
+        <p>{{ draft.periodName }}</p>
+        <a-form-item>
+          <PracticeRosterSelect v-model:value="draft.sourcePeriodKey" :api="api" :format-time="formatTime" :period-id="draft.periodId"/>
+        </a-form-item>
+        <div class="field-grid">
+          <a-form-item label="开始日期" required><a-input v-model:value="draft.startsOn" aria-label="开始日期" type="date"/></a-form-item>
+          <a-form-item label="结束日期" required><a-input v-model:value="draft.endsOn" aria-label="结束日期" type="date"/></a-form-item>
+        </div>
+        <p class="workbench-scope-note">已同步名单的开班日期须在期次起止日期内。保存后重新试算。</p>
+        <p v-if="!draft.reportMonthOverride && draft.endsOn && draft.endsOn.slice(0,7)!==draft.expectedEndsOn.slice(0,7)"
+          class="workbench-scope-note">保存后报表月份将改为 {{ draft.endsOn.slice(0,7) }}。</p>
       </template>
       <template v-if="drawer==='reportMonth'">
         <p>{{ draft.periodName }}</p>
