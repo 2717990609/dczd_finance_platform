@@ -361,10 +361,15 @@ func applyRefundEvents(ctx context.Context, tx pgx.Tx, periodID int64, window pe
 				continue
 			}
 			performanceIssue := recordPerformanceRefund(draft, event, origins, performanceCredited)
+			originals := obligations[event.ID]
+			if catalogTerms != nil && performanceIssue == "" && len(originals) == 0 {
+				// A recognized payment can legitimately have no commission to recover.
+				continue
+			}
 			if practiceMonth && performanceIssue == "" && origins[0].PracticeReplay {
 				replayEvents = append(replayEvents, practiceReplayRefund{event, origins[0].PeriodID, origins[0].SourceVersionID})
 			} else if (catalogTerms == nil && !practiceMonth) || performanceIssue == "" {
-				code, err = applyHistoricalRefund(draft, event, obligations[event.ID], history)
+				code, err = applyHistoricalRefund(draft, event, originals, history)
 				if err != nil {
 					return err
 				}

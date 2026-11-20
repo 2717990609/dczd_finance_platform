@@ -62,11 +62,14 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 	creatorCompleted := createPeriod(creatorID, "2026-09")
 	ambassadorPaid := createPeriod(ambassadorID, "2026-08")
 	observed := time.Date(2026, 9, 3, 9, 0, 0, 0, shanghai)
-	store := func(sourceProduct, rowID string, complete time.Time) {
+	store := func(sourceProduct, rowID string, paid, complete time.Time) {
 		t.Helper()
 		wire := healthCompletionReply(sourceProduct, observed, complete, "42")
 		for i, raw := range wire.Facts {
 			content := strings.NewReplacer("order-42", "order-"+rowID, `"42"`, `"`+rowID+`"`).Replace(string(raw))
+			if !paid.IsZero() {
+				content = strings.ReplaceAll(content, "2026-08-02T12:00:00+08:00", paid.Format(time.RFC3339))
+			}
 			if sourceProduct == "HEALTH_AMBASSADOR" {
 				content = strings.Replace(content, `"1680000"`, `"3980000"`, 1)
 			}
@@ -87,12 +90,13 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 			t.Fatal(err)
 		}
 	}
-	store("HEALTH_CREATOR", "42", observed)
-	store("HEALTH_AMBASSADOR", "43", time.Time{})
+	store("HEALTH_CREATOR", "42", time.Time{}, observed)
+	store("HEALTH_AMBASSADOR", "43", time.Time{}, time.Time{})
 	if _, err := s.db.Exec(ctx, "DELETE FROM draft_refresh_queue"); err != nil {
 		t.Fatal(err)
 	}
 	actor := financeRuleActor{permits: func(int64, bool) bool { return true }}
+	var creatorRule, creatorSales string
 	for _, tc := range []struct {
 		product  int64
 		sku      string
@@ -115,6 +119,9 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 		if err != nil || !sheet.MayPublish || sheet.RequiresCompletion != tc.compound {
 			t.Fatalf("first published version is not editable or has the wrong trigger: %+v %v", sheet, err)
 		}
+		if tc.compound {
+			creatorRule, creatorSales = published.ID, sheet.Components[0].ItemKey
+		}
 		if _, err := s.publishCatalogRates(ctx, input, "fixture"); !errors.Is(err, errCatalogScenarioOccupied) {
 			t.Fatalf("duplicate health rule publication: %v", err)
 		}
@@ -124,6 +131,17 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 		!slices.Equal(queued, []int64{creatorPaid, creatorCompleted, ambassadorPaid}) {
 		t.Fatalf("first publication must queue payment and applicable completion periods: %v %v", queued, err)
 	}
+	rate := int64(1000)
+	cut := time.Date(2026, 8, 3, 0, 0, 0, 0, shanghai)
+	independent, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{BaseID: creatorRule, EffectiveFrom: cut,
+		RemovedItems: []string{creatorSales}, NewItems: []catalogNewBenefitItem{
+			{Label: "直接推荐", catalogBenefitTarget: catalogBenefitTarget{Target: "referrer"},
+				catalogBenefitCalculation: catalogBenefitCalculation{Rate: &rate}},
+		}}, "fixture")
+	if err != nil || independent.Version != 2 {
+		t.Fatalf("could not publish a referral-only creator rule: %+v %v", independent, err)
+	}
+	store("HEALTH_CREATOR", "44", cut.Add(36*time.Hour), observed)
 	for _, tc := range []struct{ period, total int64 }{
 		{creatorPaid, 0}, {creatorCompleted, 168000}, {ambassadorPaid, 398000},
 	} {
@@ -136,5 +154,65 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 			_ = s.db.QueryRow(ctx, "SELECT code FROM calculation_draft_issues WHERE period_id=$1 LIMIT 1", tc.period).Scan(&issue)
 			t.Fatalf("period %d expected total %d, got %+v %s", tc.period, tc.total, got, issue)
 		}
+		if tc.period == creatorCompleted {
+			if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`,
+				tc.period, trial.(draftSummary).Version); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	posting := createPeriod(creatorID, "2026-10")
+	refundedAt := time.Date(2026, 10, 3, 12, 0, 0, 0, shanghai)
+	half := int64(840000)
+	refund := func(record string, amount *int64) sourceFact {
+		order := "order-" + record
+		return sourceFact{Source: "DCAI", Domain: "HEALTH_IDENTITY", SourceKey: "HEALTH_CREATOR", Kind: "REFUND_SUCCEEDED",
+			OrderID: order, RecordKey: "ai_health_ambassador_order:" + record, RefundID: record,
+			Version: "refund", AmountMinor: amount, OccurredAt: refundedAt, UpdatedAt: refundedAt,
+			RefundsPayment: []sourcePaymentReference{{OrderID: order, RecordID: record}}}
+	}
+	putRefunds := func(facts ...sourceFact) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFacts(ctx, tx, facts)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	putRefunds(refund("42", &half), refund("44", &half))
+	trial, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: posting})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := trial.(draftSummary); got.RefundTotal != -84000 || got.RefundCount != 1 || got.IssueCount != 0 {
+		var issue string
+		_ = s.db.QueryRow(ctx, "SELECT code FROM calculation_draft_issues WHERE period_id=$1 LIMIT 1", posting).Scan(&issue)
+		t.Fatalf("only the order that earned commission should reverse commission: %+v %s", got, issue)
+	}
+	var reversedOrders []string
+	var reversedPrincipal int64
+	if err := s.db.QueryRow(ctx, `SELECT array_agg(p.order_id ORDER BY p.order_id),sum((r.fact->>'amountMinor')::bigint)
+	 FROM calculation_draft_performance a JOIN source_order_versions r ON r.id=a.source_version_id
+	 JOIN source_order_versions p ON p.id=a.payment_version_id
+	 JOIN calculation_draft_performance original ON original.source_version_id=p.id AND original.period_id=$1
+	 WHERE a.period_id=$2 AND p.order_id=r.order_id AND original.completion_version_id IS NOT NULL`,
+		creatorCompleted, posting).Scan(&reversedOrders, &reversedPrincipal); err != nil ||
+		!slices.Equal(reversedOrders, []string{"order-42", "order-44"}) || reversedPrincipal != 2*half {
+		t.Fatalf("both refunds must reverse recognized performance from their exact completed orders: %v %d %v",
+			reversedOrders, reversedPrincipal, err)
+	}
+
+	putRefunds(refund("99", &half))
+	trial, err = s.recalculateDraft(ctx, calculateDraftInput{PeriodID: posting})
+	if err != nil || trial.(draftSummary).IssueCount != 1 {
+		t.Fatalf("refunds without recognized performance must remain pending: %+v %v", trial, err)
+	}
+	var issue string
+	if err := s.db.QueryRow(ctx, `SELECT i.code FROM calculation_draft_issues i
+	 JOIN source_order_versions r ON r.id=i.source_version_id WHERE i.period_id=$1 AND r.order_id='order-99'`,
+		posting).Scan(&issue); err != nil || issue != "REFUND_PERFORMANCE_PAYMENT_MISSING" {
+		t.Fatalf("expected a missing original for the unmatched refund: %q %v", issue, err)
 	}
 }
