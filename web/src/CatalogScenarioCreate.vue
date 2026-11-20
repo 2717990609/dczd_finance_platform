@@ -24,6 +24,11 @@ const recognition = computed(() => {
   const selected = skus.value.find(option=>option.value===sku.value)
   return selected ? (selected.requiresCompletion ? '付款后，订单完成时计提' : '付款后计提') : undefined
 })
+const ratePriority = computed(() => {
+  const hasCategories = options.value?.categories.length
+  if (!rates.value.some(row=>row.scope==='general')) return hasCategories ? catalogRatePriorityLabel : ''
+  return hasCategories ? '公司特例 → 销售类别默认 → 通用比例' : '公司特例 → 通用比例'
+})
 const blankRate = scope => newCatalogRateCondition(options.value,scope)
 let optionsRequest = 0
 
@@ -97,11 +102,12 @@ async function publish() {
         <section class="rule-block rule-block-body catalog-first-rates" aria-label="成交销售">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">成交销售</h3>
-            <small v-if="options.categories.length" class="finance-rate-priority">{{ catalogRatePriorityLabel }}</small>
+            <small v-if="ratePriority" class="finance-rate-priority">{{ ratePriority }}</small>
           </div>
           <div v-for="(_,index) in rates" :key="index" class="catalog-add-condition">
-            <CatalogRateCondition v-model="rates[index]" :options="options" :suffix="'-first-'+index" sales-payee/>
-            <a-button v-if="rates.length>1" type="link" @click="rates.splice(index,1)">移除此条件</a-button>
+            <CatalogRateCondition v-model="rates[index]" :options="options" :suffix="'-first-'+index" sales-payee>
+              <a-button v-if="rates.length>1" type="link" danger size="small" @click="rates.splice(index,1)">移除</a-button>
+            </CatalogRateCondition>
           </div>
           <a-space wrap>
             <a-button v-if="options.categories.length" size="small" @click="rates.push(blankRate('category'))">添加类别默认比例</a-button>

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import { catalogRatePriorityLabel } from './rule-component-form'
 
@@ -7,12 +7,17 @@ const props = defineProps({component:Object,index:Number,companies:Array,salesCa
   sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array})
 const emit = defineEmits(['member-change'])
 const categories = computed(() => props.component.companySales.categories)
+const standardScope = ref('category')
+const overrides = computed(() => categories.value.flatMap((category,index)=>
+  category.overrides.map((override,position)=>({category,index,override,position}))))
 const standardGroups = computed(() => [
-  {scope:'category',label:'按销售类别',action:'添加类别标准'},
+  {scope:'category',label:'销售类别默认',action:'添加类别标准'},
   {scope:'companies',label:'公司特例',action:'添加公司特例'},
 ].map(section=>({...section,rows:categories.value.map((standard,index)=>({standard,index}))
   .filter(({standard})=>standard.scope===section.scope)}))
   .filter(section=>section.scope==='companies' || props.salesCategories.length || section.rows.length))
+const activeGroup = computed(() => standardGroups.value.find(group=>group.scope===standardScope.value) || standardGroups.value[0])
+const standardCount = group => group.rows.length + (group.scope==='companies' ? overrides.value.length : 0)
 const payee = computed(() => props.component.companySales.payee)
 const payeeKinds = [
   {value:'sales_company',label:'销售所属公司'},
@@ -66,15 +71,15 @@ watch(amounts, choices => {
 </script>
 
 <template>
-  <div class="company-value company-meta">
+  <div class="company-meta">
     <a-form-item label="适用报名" :html-for="'rule-member-'+index">
-      <a-select :id="'rule-member-'+index" v-model:value="component.classMember" :options="memberChoices" @change="emit('member-change')"/>
+      <a-select :id="'rule-member-'+index" v-model:value="component.classMember" :options="memberChoices" size="small" @change="emit('member-change')"/>
     </a-form-item>
     <a-form-item label="收款安排名称" :html-for="field('label')" required>
-      <a-input :id="field('label')" v-model:value="component.companySales.label" placeholder="输入安排名称" :maxlength="80"/>
+      <a-input :id="field('label')" v-model:value="component.companySales.label" size="small" :maxlength="80"/>
     </a-form-item>
     <a-form-item label="收款对象" :html-for="field('payee')" required>
-      <a-select :id="field('payee')" v-model:value="payee.kind" :options="payeeKinds"/>
+      <a-select :id="field('payee')" v-model:value="payee.kind" :options="payeeKinds" size="small"/>
     </a-form-item>
     <a-form-item v-if="payee.kind==='order_person'" label="从订单取谁" :html-for="field('payee-role')" required>
       <a-select :id="field('payee-role')" v-model:value="payee.role" :options="payeeRoles" show-search :filter-option="byName"/>
@@ -89,57 +94,70 @@ watch(amounts, choices => {
   </div>
   <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
-  <div v-if="standardGroups.length>1" class="company-priority finance-rate-priority">{{ catalogRatePriorityLabel }}</div>
-  <section v-for="group in standardGroups" :key="group.scope" class="company-standard-group">
-    <div class="company-category-title">
-      <h4 class="rule-item-section">{{ group.label }}</h4>
-      <a-button v-if="group.scope==='companies' || salesCategories.length" size="small" @click="addStandard(group.scope)">{{ group.action }}</a-button>
+  <div class="company-standard-toolbar">
+    <a-radio-group v-if="standardGroups.length>1" :value="activeGroup.scope" role="radiogroup" aria-label="查看计提标准"
+      button-style="solid" size="small" @update:value="standardScope=$event">
+      <a-radio-button v-for="group in standardGroups" :key="group.scope" :value="group.scope">
+        <span>{{ group.label }}</span><small v-if="standardCount(group)" class="company-standard-count">{{ standardCount(group) }}</small>
+      </a-radio-button>
+    </a-radio-group>
+    <strong v-else>{{ activeGroup.label }}</strong>
+    <small v-if="standardGroups.length>1" class="finance-rate-priority">{{ catalogRatePriorityLabel }}</small>
+    <a-button v-if="activeGroup.scope==='companies' || salesCategories.length" class="company-standard-add" size="small"
+      @click="addStandard(activeGroup.scope)">{{ activeGroup.action }}</a-button>
+  </div>
+  <section v-for="group in standardGroups" v-show="group.scope===activeGroup.scope" :key="group.scope" :aria-label="group.label"
+    class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':component.classMember==='new'}">
+    <p v-if="!standardCount(group)" class="company-standard-empty">{{ group.scope==='category' ? '暂无类别标准' : '暂无公司特例' }}</p>
+    <div v-else class="company-standard-fields company-standard-column-labels" aria-hidden="true">
+      <span>{{ group.scope==='category' ? '销售类别' : '适用公司' }}</span>
+      <span v-if="amounts.length>1">计算方式</span>
+      <span>{{ amounts.length>1 ? '计提标准' : '按报名净实收（%）' }}</span>
+      <span v-if="component.classMember==='new'">推荐比例（%）</span>
     </div>
-    <div v-for="({standard:category,index:i}) in group.rows" :key="i" class="company-category">
-      <div class="company-standard-fields">
-        <a-form-item v-if="category.scope==='category'" class="company-scope-field" label="销售类别" :html-for="field('sales-category-'+i)" required>
-          <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryIds" :options="salesCategoryOptions(category)" size="small"
-            mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择销售类别"/>
+    <div v-for="({standard:category,index:i}) in group.rows" :key="i" class="company-category company-standard-fields">
+      <a-form-item v-if="category.scope==='category'" class="company-scope-field" label="销售类别" :html-for="field('sales-category-'+i)" required>
+        <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryIds" :options="salesCategoryOptions(category)" size="small"
+          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择销售类别"/>
+      </a-form-item>
+      <a-form-item v-else class="company-scope-field" label="适用公司" :html-for="field('companies-'+i)" required>
+        <a-select :id="field('companies-'+i)" :value="category.companies" :options="availableCompanies(category)" size="small"
+          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司" @change="selectCompanies(category,$event)"/>
+      </a-form-item>
+      <a-form-item v-if="amounts.length>1" label="计算方式" :html-for="field('method-'+i)">
+        <a-select :id="field('method-'+i)" :value="category.mode" :options="amounts" size="small" @change="modeChanged(category,$event)"/>
+      </a-form-item>
+      <a-form-item :label="category.mode==='rate' ? '按报名净实收（%）' : '每份报名（元）'" :html-for="field('value-'+i)" required>
+        <a-input-number :id="field('value-'+i)" v-model:value="category.value" size="small" :min="0"
+          :addon-after="amounts.length>1 ? (category.mode==='rate' ? '%' : '元') : undefined"
+          :max="category.mode==='rate'?100:undefined" :precision="category.mode==='rate'?4:2"/>
+      </a-form-item>
+      <a-form-item v-if="component.classMember==='new'" label="推荐比例（%）" :html-for="field('recommendation-'+i)">
+        <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" size="small" :min="0" :max="100" :precision="4"/>
+      </a-form-item>
+      <a-button v-if="categories.length>1" size="small" type="link" danger class="company-standard-remove" @click="categories.splice(i,1)">移除</a-button>
+    </div>
+    <template v-if="group.scope==='companies'">
+      <div class="company-category company-standard-fields" v-for="({category,index:i,override,position:j}) in overrides" :key="i+'-'+j">
+        <a-form-item class="company-scope-field" label="特例公司" :html-for="field('override-'+i+'-'+j)" required>
+          <a-select :id="field('override-'+i+'-'+j)" v-model:value="override.companyIds"
+            :options="overrideOptions(category,override)" size="small" mode="multiple" :max-tag-count="3" :filter-option="byName"/>
         </a-form-item>
-        <a-form-item v-else class="company-scope-field" label="适用公司" :html-for="field('companies-'+i)" required>
-          <a-select :id="field('companies-'+i)" :value="category.companies" :options="availableCompanies(category)" size="small"
-            mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司" @change="selectCompanies(category,$event)"/>
+        <a-form-item v-if="amounts.length>1" label="计算方式" :html-for="field('override-method-'+i+'-'+j)">
+          <a-select :id="field('override-method-'+i+'-'+j)" :value="override.mode" :options="amounts" size="small" @change="modeChanged(override,$event)"/>
         </a-form-item>
-        <a-form-item v-if="amounts.length>1" label="计算方式" :html-for="field('method-'+i)">
-          <a-select :id="field('method-'+i)" :value="category.mode" :options="amounts" size="small" @change="modeChanged(category,$event)"/>
+        <a-form-item :label="override.mode==='rate' ? '按报名净实收（%）' : '每份报名（元）'" :html-for="field('override-value-'+i+'-'+j)" required>
+          <a-input-number :id="field('override-value-'+i+'-'+j)" v-model:value="override.value" size="small" :min="0"
+            :addon-after="amounts.length>1 ? (override.mode==='rate' ? '%' : '元') : undefined"
+            :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
         </a-form-item>
-        <a-form-item :label="category.mode==='rate' ? '按报名净实收（%）' : '每份报名（元）'" :html-for="field('value-'+i)" required>
-          <a-input-number :id="field('value-'+i)" v-model:value="category.value" size="small" :min="0"
-            :max="category.mode==='rate'?100:undefined" :precision="category.mode==='rate'?4:2"/>
+        <a-form-item v-if="component.classMember==='new'" label="推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)">
+          <a-input-number :id="field('override-recommendation-'+i+'-'+j)" v-model:value="override.recommendationRate"
+            size="small" :min="0" :max="100" :precision="4" :placeholder="'沿用 '+(category.recommendationRate ?? 0)+'%'"/>
         </a-form-item>
-        <a-form-item v-if="component.classMember==='new'" label="推荐比例（%）" :html-for="field('recommendation-'+i)">
-          <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" size="small" :min="0" :max="100" :precision="4"/>
-        </a-form-item>
-        <a-button v-if="categories.length>1" size="small" type="link" danger class="company-standard-remove" @click="categories.splice(i,1)">移除</a-button>
+        <a-button type="link" danger size="small" class="company-standard-remove" @click="category.overrides.splice(j,1)">移除</a-button>
       </div>
-      <a-collapse v-if="category.overrides.length" ghost class="company-advanced">
-        <a-collapse-panel key="overrides" :header="'组内公司特例（'+category.overrides.length+'）'">
-          <div class="company-override company-standard-fields" v-for="(override,j) in category.overrides" :key="j">
-            <a-form-item class="company-scope-field" label="特例公司" :html-for="field('override-'+i+'-'+j)" required>
-              <a-select :id="field('override-'+i+'-'+j)" v-model:value="override.companyIds"
-                :options="overrideOptions(category,override)" size="small" mode="multiple" :max-tag-count="3" :filter-option="byName"/>
-            </a-form-item>
-            <a-form-item v-if="amounts.length>1" label="计算方式" :html-for="field('override-method-'+i+'-'+j)">
-              <a-select :id="field('override-method-'+i+'-'+j)" :value="override.mode" :options="amounts" size="small" @change="modeChanged(override,$event)"/>
-            </a-form-item>
-            <a-form-item :label="override.mode==='rate' ? '按报名净实收（%）' : '每份报名（元）'" :html-for="field('override-value-'+i+'-'+j)" required>
-              <a-input-number :id="field('override-value-'+i+'-'+j)" v-model:value="override.value" size="small" :min="0"
-                :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
-            </a-form-item>
-            <a-form-item v-if="component.classMember==='new'" label="推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)">
-              <a-input-number :id="field('override-recommendation-'+i+'-'+j)" v-model:value="override.recommendationRate"
-                size="small" :min="0" :max="100" :precision="4" placeholder="沿用上方比例"/>
-            </a-form-item>
-            <a-button type="link" danger size="small" class="company-standard-remove" @click="category.overrides.splice(j,1)">移除单独标准</a-button>
-          </div>
-        </a-collapse-panel>
-      </a-collapse>
-    </div>
+    </template>
   </section>
   <a-form-item v-if="hasRecommendations" label="可收推荐分润的公司" :html-for="field('referral-recipients')" required>
     <a-select :id="field('referral-recipients')" v-model:value="component.companySales.recommendationRecipients"
@@ -159,23 +177,32 @@ watch(amounts, choices => {
 </template>
 
 <style scoped>
-.company-standard-group {border-top:1px solid var(--line);margin:2px 0}
-.company-category-title {display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:30px;padding:2px 0}
-.company-category-title h4 {margin:0}
+.company-standard-toolbar {display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;border-top:1px solid var(--line);padding:6px 0}
+.company-standard-add {margin-inline-start:auto}
+.company-standard-count {margin-inline-start:5px;font-size:12px}
+.company-standard-empty {margin:0;padding:3px 0 7px;color:var(--muted);font-size:13px}
+.company-standard-table {container-type:inline-size}
+.company-standard-table.has-method {--company-method-column:minmax(0,1.25fr)}
+.company-standard-table.has-recommendation {--company-recommendation-column:minmax(0,1fr)}
 .company-category {padding:4px 8px 6px;background:#f6f8fb;border-radius:4px;margin-bottom:4px}
-.company-priority {margin:4px 0 6px}
-.company-value {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px}
 .company-meta {display:flex;flex-wrap:wrap;align-items:end;gap:4px 10px;margin-bottom:6px}
 .company-meta :deep(.ant-form-item) {flex:1 1 140px;min-width:0;margin-bottom:0}
-.company-meta :deep(.rule-remove) {margin-bottom:4px}
+.company-meta :deep(.rule-remove) {margin-bottom:0}
 .company-standard-fields {display:flex;flex-wrap:wrap;align-items:end;gap:4px 10px}
+.company-standard-column-labels {display:none;color:var(--muted);font-size:13px;padding:0 8px 4px}
 .company-standard-fields :deep(.ant-form-item) {flex:1 1 130px;min-width:0;margin:0}
 .company-standard-fields :deep(.ant-form-item.company-scope-field) {flex:3 1 220px}
-.company-value :deep(.ant-form-item-label),.company-standard-fields :deep(.ant-form-item-label) {padding-bottom:2px}
+.company-meta :deep(.ant-form-item-label),.company-standard-fields :deep(.ant-form-item-label) {padding-bottom:2px}
 .company-standard-remove {margin:0 0 0 auto}
 .company-advanced :deep(.ant-collapse-header) {padding:4px 0}
 .company-advanced :deep(.ant-collapse-content-box) {padding:4px 0}
-.company-value :deep(.ant-input-number),.company-standard-fields :deep(.ant-input-number) {width:100%}
-.company-override + .company-override {border-top:1px solid var(--line);padding-top:4px;margin-top:4px}
-@media (max-width:520px) { .company-value {grid-template-columns:minmax(0,1fr)} }
+.company-standard-fields :deep(.ant-input-number),.company-standard-fields :deep(.ant-input-number-group-wrapper) {width:100%}
+@container (min-width:760px) {
+  .company-standard-fields {
+    display:grid;align-items:center;
+    grid-template-columns:minmax(0,3fr) var(--company-method-column,) minmax(0,1.25fr) var(--company-recommendation-column,) 48px;
+  }
+  .company-category {padding-block:4px}
+  .company-category :deep(.ant-form-item-label) {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+}
 </style>

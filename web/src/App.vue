@@ -1641,8 +1641,9 @@ async function save() {
         </a-form-item>
       </template>
       <template v-if="drawer==='rule'">
-        <a-alert v-if="draft.copiedFrom" class="feedback" type="info"
-          :message="draft.editBaseId ? '正在编辑 v'+draft.copiedFrom+'，保存后生成新版本。' : '已复制 v'+draft.copiedFrom+' 的收款安排，请核对适用期次。'" show-icon/>
+        <p v-if="draft.editBaseId" class="rule-formula">当前版本 v{{ draft.copiedFrom }} · 保存后生成新版本</p>
+        <a-alert v-else-if="draft.copiedFrom" class="feedback" type="info"
+          :message="'已复制 v'+draft.copiedFrom+' 的收款安排，请核对适用期次。'" show-icon/>
         <div class="rule-basics">
         <a-form-item label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="ruleProductOptions" :disabled="Boolean(draft.copiedFrom || draft.lockedPeriod)"/></a-form-item>
         <a-form-item label="规则名称" required><a-input v-model:value="draft.label" aria-label="规则名称"/></a-form-item>
@@ -1653,7 +1654,7 @@ async function save() {
           <a-select id="rule-activity-type" :value="draft.activityType || 0" :options="practiceActivityTypes"
             :disabled="Boolean(draft.editBaseId)" @update:value="draft.activityType=$event"/>
         </a-form-item>
-        <a-form-item v-if="selectedProduct" label="生效时间" :extra="classRule ? '按北京时间的实际开班时点匹配。留空时作为该适用范围的默认规则。' : '按北京时间和原付款时间匹配。留空时作为该适用范围的默认规则。'">
+        <a-form-item v-if="selectedProduct" label="生效时间" :extra="draft.editBaseId ? undefined : (classRule ? '按北京时间的开班时点匹配，留空为范围默认。' : '按北京时间的付款时点匹配，留空为范围默认。')">
           <span v-if="draft.editBaseId">{{ draft.effectiveFrom ? formatTime(draft.effectiveFrom) : '范围默认' }}</span>
           <a-input v-else v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local" step="1"/>
         </a-form-item>

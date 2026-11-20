@@ -5,7 +5,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
-import { catalogFlatMethods, catalogPayeeComplete, catalogRatePriorityLabel, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogFlatMethods, catalogPayeeComplete, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
@@ -70,7 +70,7 @@ const percent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFraction
 const rateGroups = computed(() => {
   const rows = component.value?.rows || []
   const result = [
-    {key:'default',title:'按销售类别',rows:rows.filter(row=>row.scope==='category')},
+    {key:'default',title:'销售类别默认',rows:rows.filter(row=>row.scope==='category')},
     {key:'company',title:'公司特例',rows:rows.filter(row=>row.scope==='company')},
     {key:'inherited',title:'公司补充比例',rows:rows.filter(row=>row.scope==='inherited')},
     {key:'general',title:'通用比例',rows:rows.filter(row=>row.scope==='general')},
@@ -86,7 +86,8 @@ watch(selected, () => {
   rateGroup.value = rateGroups.value[0]?.key
   more.value = []
 })
-const automaticCategoryRate = computed(() => rateGroups.value.some(group=>group.rows.some(row=>row.scope==='category')))
+const ratePriority = computed(() => ['company','default','inherited','general']
+  .map(key=>rateGroups.value.find(group=>group.key===key)?.title).filter(Boolean).join(' → '))
 const activeRateGroup = computed(() => rateGroups.value.find(group=>group.key===rateGroup.value))
 const displayedRates = computed(() => {
   const term = filter.value.trim().toLowerCase()
@@ -369,11 +370,8 @@ async function publish() {
               </a-radio-group>
               <a-input v-if="component.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
                 placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
-              <small v-if="rateGroups.length>1 && rateGroup!=='inherited'" class="finance-rate-priority">
-                {{ automaticCategoryRate ? catalogRatePriorityLabel : '先匹配公司标准，再取通用比例。' }}
-              </small>
+              <small v-if="rateGroups.length>1" class="finance-rate-priority">匹配顺序 {{ ratePriority }}</small>
             </div>
-            <p v-if="rateGroup==='inherited'" class="catalog-inheritance">公司没有单独比例，也未匹配到类别默认比例时，才使用此处配置。</p>
             <a-table :key="selected + filter + rateGroup" :columns="displayedColumns" :data-source="displayedRates" row-key="row" size="small"
               :scroll="{x:tableWidth}" :pagination="{pageSize:8,showSizeChanger:false,hideOnSinglePage:true}">
               <template #bodyCell="{ column, record }">
@@ -504,7 +502,6 @@ async function publish() {
 .catalog-rate-summary h2 {font-size:18px;margin:0 0 2px}
 .catalog-rate-summary p {margin:0;color:var(--muted);line-height:1.45}
 .catalog-rate-context {font-size:13px}
-.catalog-inheritance {margin:0 0 6px;color:var(--muted);font-size:13px;line-height:1.6}
 .catalog-receipt {margin-bottom:6px}
 .catalog-more {margin:6px 0}
 .catalog-more :deep(.ant-collapse-header) {padding-block:6px}

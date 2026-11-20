@@ -120,8 +120,9 @@ defineExpose({addRecipient,editRateScope})
         </a-form-item>
         <template v-else>
           <div v-for="(_,index) in form.rows" :key="index" class="catalog-add-condition">
-            <CatalogRateCondition v-model="form.rows[index]" :options="options" :suffix="'-'+index"/>
-            <a-button v-if="form.rows.length>1" type="link" @click="form.rows.splice(index,1)">移除此条件</a-button>
+            <CatalogRateCondition v-model="form.rows[index]" :options="options" :suffix="'-'+index">
+              <a-button v-if="form.rows.length>1" type="link" danger size="small" @click="form.rows.splice(index,1)">移除</a-button>
+            </CatalogRateCondition>
           </div>
           <a-button type="dashed" @click="form.rows.push(blankCondition())">再添一个条件</a-button>
         </template>
