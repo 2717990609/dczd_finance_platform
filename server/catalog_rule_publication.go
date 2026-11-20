@@ -39,6 +39,7 @@ type publishCatalogRatesInput struct {
 	RemovedItems     []string                     `json:"removedItems"`
 	RemovedRateRows  []catalogRateRowRemoval      `json:"removedRateRows"`
 	Copy             *catalogScenarioCopy         `json:"copy,omitempty"`
+	Create           *catalogScenarioCreate       `json:"create,omitempty"`
 }
 
 type catalogPublication struct {
@@ -52,7 +53,7 @@ const catalogHealthRateRule = `coalesce((` + catalogHealthRecognitionPlan + `) A
 ),false)`
 
 const catalogRateConfigurationSQL = `coalesce(scope.source_system='DCAI' AND p.scope_type='BUSINESS_SCENARIO'
- AND (` + catalogSplitDraftRule + ` OR ` + catalogHealthRateRule + `),false)`
+ AND (` + catalogSplitDraftRule + ` OR ` + catalogDirectDraftRule + ` OR ` + catalogHealthRateRule + `),false)`
 
 const catalogRateVersionEligibilitySQL = catalogRuleEligible + `
  AND v.definition->'settlement_policy'->>'cycle'=CASE pro.cycle_start_day WHEN 25 THEN 'MONTHLY_25_TO_24' WHEN 1 THEN 'MONTHLY' END
@@ -149,6 +150,13 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 }
 
 func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRatesInput, actor string, refreshDrafts bool) (catalogPublication, error) {
+	if input.Create != nil {
+		if input.BaseID != "" || input.Copy != nil || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges)+
+			len(input.NewRateRows)+len(input.TargetChanges)+len(input.RemovedItems)+len(input.RemovedRateRows) != 0 {
+			return catalogPublication{}, invalid
+		}
+		return createCatalogScenarioRule(ctx, tx, *input.Create, input.EffectiveFrom, input.NewItems, actor, refreshDrafts)
+	}
 	published := catalogPublication{ID: input.BaseID}
 	id, valid := canonicalSourceUUID(input.BaseID)
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
@@ -256,7 +264,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			}
 			scope, throughBase = input.Copy.SKU, nil
 			contentHash := sha256.Sum256(body)
-			published, err = insertCatalogScenarioCopy(ctx, tx, product, *input.Copy, from, actor, hex.EncodeToString(contentHash[:]), body)
+			published, err = insertCatalogScenarioRule(ctx, tx, product, *input.Copy, from, actor, hex.EncodeToString(contentHash[:]), body)
 			if err != nil {
 				return err
 			}

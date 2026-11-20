@@ -19,6 +19,15 @@ type catalogScenarioCopy struct {
 	Label string `json:"label"`
 }
 
+const catalogScenarioOccupiedSQL = `EXISTS (
+ SELECT 1 FROM product_catalog_settings scope
+ JOIN product_rule_packages p ON p.product_id=scope.product_id AND p.project_code=scope.project_code
+ JOIN product_rule_versions v ON v.package_id=p.source_id AND ` + catalogVersionVisible + `
+ WHERE scope.product_id=$1 AND p.scope_type='BUSINESS_SCENARIO' AND p.scope_id=$2
+  AND p.policy_kind='COMPONENT_RULE' AND v.source_status='PUBLISHED'
+  AND (` + catalogRuleExecutionThrough + ` IS NULL OR ` + catalogRuleExecutionThrough + `>$3)
+)`
+
 func checkCatalogScenarioCopy(ctx context.Context, tx pgx.Tx, product int64, source string, target catalogScenarioCopy, from time.Time) error {
 	if !textOK(target.Label, 80) || !textOK(target.SKU, 256) || source == target.SKU {
 		return errCatalogScenarioTarget
@@ -29,16 +38,9 @@ func checkCatalogScenarioCopy(ctx context.Context, tx pgx.Tx, product int64, sou
 	 JOIN catalog_business_routes destination ON destination.product_id=scope.product_id AND destination.observed_at=scope.captured_at
 	 JOIN catalog_business_routes template ON template.product_id=scope.product_id AND template.observed_at=scope.captured_at
 	   AND template.source=destination.source AND template.domain=destination.domain AND template.entity_type=destination.entity_type
-	 WHERE scope.product_id=$1 AND destination.source=scope.source_system AND destination.sku_code=$3 AND template.sku_code=$2
-	  AND destination.effective_from<=$4 AND (destination.effective_to IS NULL OR destination.effective_to>$4)
-	),EXISTS (
-	 SELECT 1 FROM product_catalog_settings scope
-	 JOIN product_rule_packages p ON p.product_id=scope.product_id AND p.project_code=scope.project_code
-	 JOIN product_rule_versions v ON v.package_id=p.source_id AND `+catalogVersionVisible+`
-	 WHERE scope.product_id=$1 AND p.scope_type='BUSINESS_SCENARIO' AND p.scope_id=$3
-	  AND p.policy_kind='COMPONENT_RULE' AND v.source_status='PUBLISHED'
-	  AND (`+catalogRuleExecutionThrough+` IS NULL OR `+catalogRuleExecutionThrough+`>$4)
-	)`, product, source, target.SKU, from).Scan(&mapped, &occupied)
+	 WHERE scope.product_id=$1 AND destination.source=scope.source_system AND destination.sku_code=$2 AND template.sku_code=$4
+	  AND destination.effective_from<=$3 AND (destination.effective_to IS NULL OR destination.effective_to>$3)
+	),`+catalogScenarioOccupiedSQL, product, target.SKU, from, source).Scan(&mapped, &occupied)
 	if err != nil {
 		return err
 	}
@@ -63,7 +65,7 @@ func copyCatalogScenarioDefinition(body json.RawMessage, source, target string) 
 	return json.Marshal(root)
 }
 
-func insertCatalogScenarioCopy(ctx context.Context, tx pgx.Tx, product int64, target catalogScenarioCopy,
+func insertCatalogScenarioRule(ctx context.Context, tx pgx.Tx, product int64, target catalogScenarioCopy,
 	from time.Time, actor, hash string, body json.RawMessage) (catalogPublication, error) {
 	var result catalogPublication
 	err := tx.QueryRow(ctx, `WITH package AS (

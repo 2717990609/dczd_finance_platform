@@ -45,7 +45,9 @@ func (s workspace) getCatalogRulePeople(w http.ResponseWriter, r *http.Request) 
 	}
 	var product int64
 	ruleID := r.URL.Query().Get("ruleId")
-	if r.URL.Query().Get("scope") == "period" {
+	if raw := r.URL.Query().Get("productId"); raw != "" && ruleID == "" {
+		product, err = s.catalogScenarioProduct(r.Context(), raw, actor)
+	} else if r.URL.Query().Get("scope") == "period" {
 		var rule catalogPeriodVersion
 		rule, err = readCatalogPeriodVersion(r.Context(), s.db, ruleID)
 		product = rule.ProductID

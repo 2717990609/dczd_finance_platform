@@ -163,6 +163,11 @@ func (s workspace) getCatalogRuleRates(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
+	if raw := r.URL.Query().Get("productId"); raw != "" {
+		options, err := s.catalogScenarioOptions(r.Context(), raw, actor)
+		respond(w, options, err)
+		return
+	}
 	id, product, err := s.ruleRateProduct(r.Context(), r.URL.Query().Get("ruleId"))
 	if err != nil {
 		respond(w, nil, err)
@@ -188,9 +193,15 @@ func (s workspace) postCatalogRuleRates(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	submitJSON(128<<10, func(ctx context.Context, input publishCatalogRatesInput) (catalogPublication, error) {
-		_, product, err := s.ruleRateProduct(ctx, input.BaseID)
-		if err != nil {
-			return catalogPublication{}, err
+		var product int64
+		if input.Create != nil {
+			product = input.Create.ProductID
+		} else {
+			var err error
+			_, product, err = s.ruleRateProduct(ctx, input.BaseID)
+			if err != nil {
+				return catalogPublication{}, err
+			}
 		}
 		if !actor.permits(product, true) {
 			return catalogPublication{}, errRulePermission

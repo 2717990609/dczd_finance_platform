@@ -5,6 +5,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
+import { rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
@@ -119,12 +120,6 @@ function setRate(value, base, row) {
   const key = cellKey(itemKey,row)
   if (rateAsBasisPoints(value) === base) delete edits.value[key]
   else edits.value[key] = {itemKey, row, value}
-}
-function rateAsBasisPoints(value) {
-  const match = /^(\d{1,3})(?:\.(\d{1,2}))?$/.exec(String(value ?? ''))
-  if (!match) return undefined
-  const rate = Number(match[1])*100 + Number((match[2] || '').padEnd(2,'0'))
-  return rate <= 10000 ? rate : undefined
 }
 function targetName(item) {
   const edit = targetEdits.value.get(item.itemKey)

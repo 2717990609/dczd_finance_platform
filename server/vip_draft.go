@@ -12,14 +12,18 @@ import (
 const catalogSplitDraftRule = `(v.definition->>'recognition_plan' IS NULL
  AND v.definition->'internal_sales_direct_split'->>'mode'='DCAI_INTERNAL_DIRECT')`
 
+const catalogDirectDraftRule = `(v.published_at IS NOT NULL AND v.definition->>'recognition_plan' IS NULL
+ AND v.definition->>'sales_attribution'='ORDER_SELLER')`
+
 const catalogDraftAvailableSQL = `(pro.period_mode='calendar' AND EXISTS(
  SELECT 1 FROM product_catalog_settings c
  JOIN product_rule_packages k ON k.product_id=c.product_id AND k.project_code=c.project_code
- JOIN product_rule_versions v ON v.package_id=k.source_id AND v.observed_at=c.captured_at
+ JOIN product_rule_versions v ON v.package_id=k.source_id AND (v.observed_at=c.captured_at OR v.published_at IS NOT NULL)
  WHERE c.product_id=pro.id AND c.source_system='DCAI'
    AND k.scope_type='BUSINESS_SCENARIO'
    AND EXISTS(SELECT 1 FROM catalog_business_routes m WHERE m.product_id=c.product_id AND m.observed_at=c.captured_at
-    AND (` + catalogSplitDraftRule + ` OR (m.source='DCAI' AND m.domain='HEALTH_IDENTITY' AND m.sku_code=k.scope_id
+    AND (` + catalogSplitDraftRule + ` OR (m.source='DCAI' AND m.domain='VIP' AND m.sku_code=k.scope_id AND ` + catalogDirectDraftRule + `)
+     OR (m.source='DCAI' AND m.domain='HEALTH_IDENTITY' AND m.sku_code=k.scope_id
      AND ` + catalogHealthRecognitionPlan + `)))
 ))`
 
@@ -193,7 +197,8 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 			return err
 		}
 	}
-	if len(row.BenefitParts) == 0 {
+	// A parsed sales-only rule returns an empty, non-nil benefits slice.
+	if row.BenefitParts == nil {
 		issue("", "BENEFIT_RULE_UNSUPPORTED")
 	}
 	for _, part := range row.BenefitParts {

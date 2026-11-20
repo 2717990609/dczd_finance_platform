@@ -1,5 +1,12 @@
 const localTime = value => value ? new Date(Date.parse(value) + 8 * 60 * 60 * 1000).toISOString().slice(0, -1) : undefined
 
+export function rateAsBasisPoints(value) {
+  const match = /^(\d{1,3})(?:\.(\d{1,2}))?$/.exec(String(value ?? ''))
+  if (!match) return undefined
+  const rate = Number(match[1])*100 + Number((match[2] || '').padEnd(2,'0'))
+  return rate <= 10000 ? rate : undefined
+}
+
 export function ruleComponentLabel(component, optionLabel) {
   if (component.companySales?.label != null) return component.companySales.label.trim() || '未命名收款安排'
   const label = component.periodBenefit?.label
