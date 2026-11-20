@@ -45,6 +45,9 @@ const getRoute = key => {
 }
 const current = ref()
 const requestedPeriod = ref()
+const requestedReview = ref(false)
+const orderSyncTarget = ref()
+const orderSyncReturnPeriod = ref()
 const workbenchPeriod = ref()
 const active = computed(() => navigation.find(x => x.key === current.value))
 const workspacePages = computed(() => visibleNavigation.value.filter(page => page.area === active.value?.area))
@@ -333,8 +336,16 @@ function changeRoute() {
   const [key, query] = location.hash.slice(1).split('?', 2)
   current.value = getRoute(key)
   if (active.value) lastWorkspacePages.value[active.value.area] = current.value
-  const periodID = Number(new URLSearchParams(query).get('periodId'))
+  const params = new URLSearchParams(query)
+  const periodID = Number(params.get('periodId'))
   requestedPeriod.value = key === 'settlement' && current.value === key && Number.isSafeInteger(periodID) && periodID > 0 ? periodID : undefined
+  requestedReview.value = Boolean(requestedPeriod.value && params.get('view') === 'review')
+  const returnPeriod = Number(params.get('returnPeriodId'))
+  const isOrders = key === 'orders' && current.value === key
+  const stream = params.get('stream')
+  const fromDate = params.get('fromDate')
+  orderSyncTarget.value = isOrders && stream ? {stream,fromDate} : undefined
+  orderSyncReturnPeriod.value = isOrders && Number.isSafeInteger(returnPeriod) && returnPeriod > 0 ? returnPeriod : undefined
   orderDetails.value = undefined
   if (requestedPeriod.value && productScope.value && data.value.periods.find(period => period.id === requestedPeriod.value)?.productId !== productScope.value) {
     productScope.value = undefined
@@ -359,6 +370,9 @@ function clearWorkspace() {
   lastWorkspacePages.value = {}
   current.value = undefined
   requestedPeriod.value = undefined
+  requestedReview.value = false
+  orderSyncTarget.value = undefined
+  orderSyncReturnPeriod.value = undefined
   workbenchPeriod.value = undefined
   orderDetails.value = undefined
   drawer.value = ''
@@ -730,7 +744,10 @@ async function save() {
         <section class="workspace-page-head">
           <div class="workspace-page-title">
             <h1>{{ active.title }}</h1>
-            <a-button v-if="actions && canOpenAction" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
+            <div v-if="actions && canOpenAction" class="topbar-actions">
+              <a v-if="orderSyncReturnPeriod" :href="'#settlement?periodId='+orderSyncReturnPeriod+'&view=review'">返回结算核对</a>
+              <a-button type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
+            </div>
           </div>
           <nav v-if="workspacePages.length>1" class="workspace-nav" :aria-label="activeWorkspace?.title+'导航'">
             <a v-for="entry in workspacePages" :key="entry.key" :href="'#'+entry.key" :aria-current="current===entry.key ? 'page' : undefined">{{ entry.title }}</a>
@@ -742,7 +759,7 @@ async function save() {
           <DraftWorkbench v-model:period-id="workbenchPeriod" :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
             :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" :requested-period="requestedPeriod"
-            :periods-loading="loading" :month="workspaceMonth"
+            :periods-loading="loading" :month="workspaceMonth" :requested-review="requestedReview"
             @show-order="orderDetails={versionId:$event}" />
         </template>
         <template v-else-if="current==='monthly'">
@@ -767,7 +784,7 @@ async function save() {
           </div>
         </div>
         <OrderSyncPanel v-if="current==='orders' && configurationReady && syncStreams.length"
-          ref="orderSync" :api="api" :streams="syncStreams" :format-time="formatTime" @updated="refresh()"/>
+          ref="orderSync" :api="api" :streams="syncStreams" :format-time="formatTime" :target="orderSyncTarget" @updated="refresh()"/>
         <section class="records">
           <div class="records-head">
             <a-tabs v-if="current==='products'||current==='people'" v-model:active-key="tab" @change="filter=''">

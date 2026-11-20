@@ -32,6 +32,7 @@ type settlementReview struct {
 	PracticeRoster       *practiceClassRosterReview          `json:"practiceRoster,omitempty"`
 	PracticeDependencies []practiceMonthSettlementDependency `json:"practiceDependencies,omitempty"`
 	Token                string                              `json:"reviewToken,omitempty"`
+	MayConfirm           bool                                `json:"mayConfirm"`
 	CanConfirm           bool                                `json:"canConfirm"`
 	Total                int64                               `json:"totalMinor"`
 	Settlement           *settlement                         `json:"settlement,omitempty"`
@@ -121,7 +122,7 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 				review.Token = ""
 			}
 		}
-		if err != nil || review.Token == "" && review.PracticeRoster == nil {
+		if err != nil {
 			return err
 		}
 		pending, err := draftRefreshPending(ctx, tx, periodID)
@@ -148,7 +149,8 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	operator := financeUser(ctx)
-	review.CanConfirm = err == nil && review.Token != "" && operator.permitsSettlement(review.product)
+	review.MayConfirm = operator.permitsSettlement(review.product)
+	review.CanConfirm = err == nil && review.Token != "" && review.MayConfirm
 	if operator != nil && !review.CanConfirm {
 		review.Token = ""
 	}

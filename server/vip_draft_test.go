@@ -452,6 +452,15 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if partialReview := review(finished); partialReview.Token != "" || len(partialReview.Pools) != 1 || partialReview.Pools[0].Unallocated != 182 {
 		t.Fatalf("review should expose the unallocated portion: %+v", partialReview)
 	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO draft_refresh_queue(period_id) VALUES($1)`, periodID); err != nil {
+		t.Fatal(err)
+	}
+	if pending := review(finished); !pending.DraftStale || len(pending.Pools) != 1 || pending.Token != "" {
+		t.Fatalf("review must show the pending draft and pool gap together: %+v", pending)
+	}
+	if _, err := s.db.Exec(ctx, `DELETE FROM draft_refresh_queue WHERE period_id=$1`, periodID); err != nil {
+		t.Fatal(err)
+	}
 	plan.Revision, plan.Retained = 2, 182
 	if _, err := s.savePoolAllocation(ctx, plan); err != nil {
 		t.Fatal(err)

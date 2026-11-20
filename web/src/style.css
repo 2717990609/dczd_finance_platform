@@ -123,10 +123,14 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .workspace-page-body { padding: 10px 10px 24px; }
   .workspace-page-title { padding: 14px 12px 8px; }
   .workspace-page-title h1 { font-size: 20px; }
+  .workspace-page-title .topbar-actions { flex-wrap: wrap; justify-content: flex-end; }
   .workbench-period { flex: 1 1 100%; }
   .workbench-period .ant-select { flex: 1; min-width: 175px; }
   .workbench-totals > div { flex-basis: 120px; }
   .workbench-totals strong { font-size: 17px; }
+  .workbench-tabs .ant-tabs-nav { padding-inline: 9px; }
+  .workbench-tabs .ant-tabs-tab { font-size: 13px; }
+  .workbench-tabs .ant-tabs-tab + .ant-tabs-tab { margin-inline-start: 10px !important; }
   .records-head { flex-wrap: wrap; padding: 8px 11px; gap: 7px; }
   .search { width: 100%; }
   .search .ant-input-search { width: 100%; min-width: 0; }

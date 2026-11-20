@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 
-const props = defineProps({api:Function, streams:Array, formatTime:Function})
+const props = defineProps({api:Function, streams:Array, formatTime:Function, target:Object})
 const emit = defineEmits(['updated'])
 const rows = ref([])
 const selected = ref()
@@ -15,7 +15,8 @@ let closed = false
 
 const busy = row => row.status === 'QUEUED' || row.status === 'RUNNING'
 const label = stream => props.streams.find(item => item.value === stream)?.label || stream
-const visibleRows = computed(() => rows.value.filter(row => props.streams.some(option => option.value === row.stream)))
+const visibleRows = computed(() => rows.value.filter(row => props.streams.some(option => option.value === row.stream))
+  .sort((a,b) => Number(b.stream === props.target?.stream) - Number(a.stream === props.target?.stream)))
 const badge = row => {
   if (!row.sourceMatches) return ['来源连接待核对', 'orange']
   if (row.unverifiedSource) return ['存在未绑定的订单数据', 'orange']
@@ -49,7 +50,11 @@ async function reload() {
 
 function open(row) {
   selected.value = row
-  form.value.fromDate = !row.targetThrough && (!row.initialFrom || row.status === 'FAILED') ? row.requestedFromDate || '' : ''
+  const suggestedDate = row.stream === props.target?.stream ? props.target.fromDate : ''
+  const suggestedStart = Date.parse(suggestedDate+'T00:00:00+08:00')
+  const needsHistory = suggestedStart <= Date.now() && (!row.initialFrom || suggestedStart < Date.parse(row.initialFrom))
+  const retryDate = (!row.initialFrom || row.status === 'FAILED') ? row.requestedFromDate : ''
+  form.value.fromDate = row.targetThrough ? '' : (needsHistory ? suggestedDate : retryDate) || ''
   formError.value = ''
 }
 
@@ -85,7 +90,7 @@ defineExpose({reload})
     <div class="records-head"><h2>订单同步</h2></div>
     <a-alert v-if="loadError" type="error" :message="loadError" show-icon/>
     <ul v-if="visibleRows.length" class="sync-streams">
-      <li v-for="row in visibleRows" :key="row.stream">
+      <li v-for="row in visibleRows" :key="row.stream" :class="{'sync-target':row.stream===target?.stream}">
         <div class="sync-detail">
           <strong>{{ label(row.stream) }}</strong>
           <a-tag :color="badge(row)[1]" aria-live="polite">{{ badge(row)[0] }}</a-tag>
@@ -120,6 +125,7 @@ defineExpose({reload})
 .order-sync { margin-bottom: 16px; }
 .sync-streams { list-style: none; margin: 0; padding: 0; }
 .sync-streams li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 15px; border-top: 1px solid var(--line); }
+.sync-streams li.sync-target { background: var(--accent-soft); }
 .sync-detail { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 9px; min-width: 0; }
 .sync-detail small { color: var(--muted); }
 .sync-detail .sync-message { flex-basis: 100%; color: #a23232; }

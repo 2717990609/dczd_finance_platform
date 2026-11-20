@@ -59,7 +59,7 @@ func verifySettlementHTTP(t *testing.T, ctx context.Context, s workspace, person
 		t.Fatalf("anonymous confirmation: %d %s", w.Code, w.Body)
 	}
 	viewer := login()
-	if r := view(viewer); r.CanConfirm || r.Token != "" {
+	if r := view(viewer); r.MayConfirm || r.CanConfirm || r.Token != "" {
 		t.Fatalf("viewer received confirmation controls: %+v", r)
 	}
 	if w := submit(viewer, token); w.Code != http.StatusForbidden {
@@ -74,7 +74,7 @@ func verifySettlementHTTP(t *testing.T, ctx context.Context, s workspace, person
 	}
 	operator := login()
 	approved := view(operator)
-	if !approved.CanConfirm || approved.Token != token || approved.Total != draft.Total {
+	if !approved.MayConfirm || !approved.CanConfirm || approved.Token != token || approved.Total != draft.Total {
 		t.Fatalf("expected an actionable review: %+v", approved)
 	}
 	w := submit(operator, strings.Repeat("0", 64))

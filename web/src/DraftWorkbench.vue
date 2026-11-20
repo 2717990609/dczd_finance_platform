@@ -9,7 +9,7 @@ import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
   recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
-  requestedPeriod: Number, periodsLoading: Boolean, month: String })
+  requestedPeriod: Number, requestedReview:Boolean, periodsLoading: Boolean, month: String })
 const emit = defineEmits(['show-order'])
 const selected = defineModel('periodId', {type:Number})
 const view = ref('detail')
@@ -171,7 +171,7 @@ async function load(replace = false) {
     const result = await props.api('/drafts?' + params)
     if (request === sequence) {
       draft.value = result
-      if (result.settlement && view.value === 'matching') view.value = 'detail'
+      if (result.settlement && view.value === 'matching' || view.value === 'review' && !hasSettlementReview.value) view.value = 'detail'
     }
   } catch (err) {
     if (request === sequence && err.status !== 404) error.value = err.message
@@ -215,7 +215,7 @@ watch(selected, async () => {
   refreshStatus.value = undefined
   notice.value = ''
   recovery.value = undefined
-  view.value = 'detail'
+  view.value = props.requestedReview && selected.value === props.requestedPeriod ? 'review' : 'detail'
   await load(true)
   if (request === statusSequence) checkRefresh()
 }, {immediate:true})
@@ -223,8 +223,11 @@ watch(options, (values) => {
   if (selected.value && !values.some(option => option.value === selected.value)) selected.value = undefined
   if (values.length === 1 && !selected.value) selected.value = values[0].value
 }, {immediate:true})
-watch(linkedPeriod, period => {
-  if (period) selected.value = period
+watch([linkedPeriod, () => props.requestedReview], ([period, review]) => {
+  if (period) {
+    selected.value = period
+    view.value = review ? 'review' : 'detail'
+  }
 }, {immediate:true})
 watch(() => props.unitId, () => load())
 
@@ -322,10 +325,10 @@ async function loadMore(section, cursorName) {
           show-search option-filter-prop="label" :disabled="calculating || pullingRoster || savingRecovery" />
       </div>
       <div v-if="selected" class="workbench-actions">
-        <a-button v-if="canPullRoster" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
-        <a-button v-if="!matchingOnly && !draft?.settlement" :disabled="loading || pullingRoster" :loading="calculating"
+        <a-button v-if="canPullRoster && (view!=='review' || !draft)" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
+        <a-button v-if="!matchingOnly && !draft?.settlement && (view!=='review' || !draft)" :disabled="loading || pullingRoster" :loading="calculating"
           :type="draft ? 'default' : 'primary'" @click="calculate">{{ draft ? '重新试算' : '生成草稿' }}</a-button>
-        <a-button v-if="!matchingOnly" :disabled="loading || calculating || pullingRoster" @click="load()">刷新结果</a-button>
+        <a-button v-if="!matchingOnly && (view!=='review' || !draft)" :disabled="loading || calculating || pullingRoster" @click="load()">刷新结果</a-button>
         <a-button v-if="hasSettlementReview && !draft?.settlement && view!=='review'" type="primary" :disabled="loading || calculating || pullingRoster" @click="view='review'">去结算核对</a-button>
       </div>
     </div>
@@ -349,7 +352,7 @@ async function loadMore(section, cursorName) {
     <div v-if="draft.correctionCount"><small>受益人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div>
     <div><small>{{ draft.practiceRefundMonth ? '退款及更正' : '计提明细' }}</small><strong>{{ draft.practiceRefundMonth ? draft.refundCount + draft.correctionCount : draft.lineCount }} <span>条</span></strong></div>
   </div>
-  <a-tabs v-if="draft" v-model:active-key="view" class="workbench-tabs">
+  <a-tabs v-if="draft" v-model:active-key="view" :tab-bar-gutter="20" class="workbench-tabs">
     <a-tab-pane key="detail" tab="分润明细"/>
     <a-tab-pane v-if="reportDimensions.length" key="report" tab="业绩与分润"/>
     <a-tab-pane key="issues" :tab="draft.issueCount ? '待核 '+draft.issueCount : draft.advisoryCount ? '处理提示 '+draft.advisoryCount : '待核'"/>
@@ -361,7 +364,8 @@ async function loadMore(section, cursorName) {
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney" :unit-id="unitId"/>
   <DraftPoolAllocations v-if="draft?.poolAllocationAvailable && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
   <DraftSettlementReview v-if="hasSettlementReview && view==='review'" :draft="draft" :period="selectedPeriod" :api="api" :format-money="formatMoney"
-    :format-time="formatTime" :source-streams="sourceStreams" @show-pools="view='pools'" @show-issues="view='issues'" @confirmed="load()"/>
+    :format-time="formatTime" :source-streams="sourceStreams" :working="calculating || pullingRoster" :can-pull-roster="canPullRoster"
+    @show-pools="view='pools'" @show-issues="view='issues'" @recalculate="calculate" @pull-roster="pullRoster" @refresh-draft="load()" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">
   <section v-if="!draft.practiceRefundMonth" class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>
