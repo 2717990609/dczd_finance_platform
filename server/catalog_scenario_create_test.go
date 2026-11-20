@@ -247,28 +247,40 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		t.Fatalf("the refund must recover half of the settled company payout: %d %v", companyDeduction, err)
 	}
 	originalAmount := int64(10000)
-	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		_, err := storeSourceFactsFrom(ctx, tx, []sourceFact{{
-			Source: "DCAI", Domain: "VIP", SourceKey: "new", Kind: "ORDER_PAID", OrderID: "101", PaymentID: "101",
-			RecordKey: "ai_vip_order:101", Version: "2", AmountMinor: &originalAmount,
-			OccurredAt: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), UpdatedAt: refundAt.Add(time.Hour),
-			Classification: sourceClassification{"VIP_ORDER", "dcai:vip:new", "dcai.vip-lifecycle.v1"},
-			VIPClaims:      []vipClaim{{Role: "PID_USER", User: "seller", Company: "seller-company", Relationship: "DIRECT"}},
-			Participants:   []sourceParticipant{{Role: "DIRECT_PID_USER", UserID: "replacement"}},
-		}}, s.dcaiSourceKey())
-		if err != nil {
+	saveReplacement := func(version, memberType string, observed time.Time) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+			_, err := storeSourceFactsFrom(ctx, tx, []sourceFact{{
+				Source: "DCAI", Domain: "VIP", SourceKey: "new", Kind: "ORDER_PAID", OrderID: "101", PaymentID: "101",
+				RecordKey: "ai_vip_order:101", Version: version, AmountMinor: &originalAmount, TransactionType: memberType,
+				OccurredAt: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), UpdatedAt: observed,
+				Classification: sourceClassification{"VIP_ORDER", "dcai:vip:new", "dcai.vip-lifecycle.v1"},
+				VIPClaims:      []vipClaim{{Role: "PID_USER", User: "seller", Company: "seller-company", Relationship: "DIRECT"}},
+				Participants:   []sourceParticipant{{Role: "DIRECT_PID_USER", UserID: "replacement"}},
+			}}, s.dcaiSourceKey())
+			if err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, `UPDATE source_order_versions SET received_at=$1 WHERE source='DCAI' AND order_id='101' AND version=$2`,
+				observed, version)
 			return err
+		}); err != nil {
+			t.Fatal(err)
 		}
-		_, err = tx.Exec(ctx, `UPDATE source_order_versions SET received_at=$1 WHERE source='DCAI' AND order_id='101' AND version='2'`, refundAt.Add(time.Hour))
-		return err
-	}); err != nil {
-		t.Fatal(err)
 	}
+	saveReplacement("2", "", refundAt.Add(time.Hour))
 	corrected, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: postingPeriod})
 	if err != nil || corrected.(draftSummary).IssueCount != 1 || corrected.(draftSummary).CorrectionTotal != 500 {
 		var issue string
 		_ = db.QueryRow(ctx, "SELECT code FROM calculation_draft_issues WHERE period_id=$1 LIMIT 1", postingPeriod).Scan(&issue)
 		t.Fatalf("referrer-only correction may not disturb the other parts: %+v %s %v", corrected, issue, err)
+	}
+	correctionVersion := corrected.(draftSummary).Version
+	saveReplacement("3", "RENEWAL", refundAt.Add(2*time.Hour))
+	corrected, err = s.recalculateDraft(ctx, calculateDraftInput{PeriodID: postingPeriod})
+	if err != nil || corrected.(draftSummary).IssueCount != 1 || corrected.(draftSummary).CorrectionTotal != 500 ||
+		corrected.(draftSummary).Version != correctionVersion {
+		t.Fatalf("adding the missing member type cannot change the pending referrer correction: %+v %v", corrected, err)
 	}
 	var recoveryLine int64
 	if err := db.QueryRow(ctx, `SELECT correction_line_id FROM calculation_draft_issues

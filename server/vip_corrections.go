@@ -217,7 +217,7 @@ func (p vipCorrectionPayment) append(draft *paymentDraft, old, latest catalogPay
 		Paid                              *int64
 		At                                int64
 		Claims                            []vipClaim
-	}{p.Anchor, p.Latest.PaymentID, p.Latest.Domain, p.Latest.SourceKey, p.Latest.TransactionType,
+	}{p.Anchor, p.Latest.PaymentID, p.Latest.Domain, p.Latest.SourceKey, p.transactionTypeForCorrection(),
 		p.Latest.AmountMinor, p.Latest.OccurredAt.UnixMicro(), data.Claims[p.LatestID]})
 	if err != nil {
 		return err
@@ -298,8 +298,18 @@ func (p vipCorrectionPayment) noOutstandingBalance(balances map[int64]*correctio
 func (p vipCorrectionPayment) samePayment() bool {
 	old, latest := p.Original, p.Latest
 	return p.SameClassification && old.PaymentID != "" && old.PaymentID == latest.PaymentID &&
-		old.Domain == latest.Domain && old.SourceKey == latest.SourceKey && old.TransactionType == latest.TransactionType &&
+		old.Domain == latest.Domain && old.SourceKey == latest.SourceKey && old.TransactionType == p.transactionTypeForCorrection() &&
 		old.OccurredAt.Equal(latest.OccurredAt) && old.AmountMinor != nil && latest.AmountMinor != nil && *old.AmountMinor == *latest.AmountMinor
+}
+
+func (p vipCorrectionPayment) transactionTypeForCorrection() string {
+	// Member purchase and renewal share the same scenario. A source revision
+	// can name the subtype after an older payment was settled without it.
+	latest := p.Latest.TransactionType
+	if p.Original.Domain == "VIP" && p.Original.TransactionType == "" && (latest == "NEW" || latest == "RENEWAL") {
+		return ""
+	}
+	return latest
 }
 
 func vipCorrectionQuote(row catalogPaymentMatch, data vipRuntimeData) (map[string]draftLine, error) {
