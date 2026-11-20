@@ -40,8 +40,8 @@ const statuses = {
 }
 const poolColumns = [
   {title:'团队池',dataIndex:'name'},
-  {title:'归集付款笔数',dataIndex:'paymentCount',align:'right'},
-  {title:'付款归集金额',key:'amount',align:'right'},
+  {title:'归集笔数',dataIndex:'paymentCount',align:'right'},
+  {title:'本期归集金额',key:'amount',align:'right'},
 ]
 const memberTypes = {NEW:'新购',RENEWAL:'续费'}
 const memberTypeOptions = [{value:'',label:'全部订单'},
@@ -135,7 +135,12 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
           {{ formatTime(record.paidAt) }}
           <small v-if="record.completedAt" class="order-version">完成 {{ formatTime(record.completedAt) }}<template v-if="record.completionCarried"> · 补入本期</template></small>
         </template>
-        <template v-else-if="column.key==='paidMinor'">{{ formatMoney(record.paidMinor) }}</template>
+        <template v-else-if="column.key==='paidMinor'">
+          {{ formatMoney(record.paidMinor) }}
+          <small v-if="record.recognizedMinor!=null && record.recognizedMinor!==record.paidMinor" class="order-version">
+            计提净额 {{ formatMoney(record.recognizedMinor) }}
+          </small>
+        </template>
         <template v-else-if="column.key==='scenario'">{{ record.scenarioLabel || '—' }}</template>
         <template v-else-if="column.key==='rule'">
           {{ record.ruleVersion ? 'v'+record.ruleVersion+' · '+record.ruleLabel : '—' }}
@@ -169,14 +174,14 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
         </template>
         <a-tag v-else-if="column.key==='status'" :color="record.status==='MATCHED'?'green':'orange'">{{ statuses[record.status] || record.status }}</a-tag>
       </template>
-      <template #emptyText>本期暂无付款记录</template>
+      <template #emptyText>本期暂无匹配订单</template>
     </a-table>
     <a-drawer :open="poolOpen" title="本期团队池归集"
       :width="'min(650px, 100vw)'" @close="poolOpen=false">
-      <p class="draft-report-note">{{ draftAvailable ? '按本期付款归集。退款扣减和实际分配见试算结果。' : '按本期付款核对团队池归集金额。' }}</p>
+      <p v-if="draftAvailable" class="draft-report-note">退款扣减和分配明细见试算结果。</p>
       <a-alert v-if="poolError" type="error" :message="poolError" show-icon/>
       <a-alert v-if="poolReport?.pendingPaymentCount" type="warning" show-icon
-        :message="`${poolReport.pendingPaymentCount} / ${poolReport.paymentCount} 笔付款存在待核归集分项`"/>
+        :message="`${poolReport.pendingPaymentCount} / ${poolReport.paymentCount} 笔订单归集待核`"/>
       <a-table :columns="poolColumns" :data-source="poolReport?.pools || []" :loading="poolLoading" row-key="key"
         size="small" :pagination="false" :scroll="{x:430}">
         <template #bodyCell="{column,record}">

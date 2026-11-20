@@ -54,7 +54,11 @@ func summarizeVIPPools(items []catalogPaymentMatch) (vipPoolReport, error) {
 	index := make(map[string]int)
 	lastPayment := make(map[string]int)
 	for i, item := range items {
-		if item.Status != "MATCHED" || len(item.BenefitParts) == 0 {
+		if item.Status == "COMPOUND_COMPLETION_PENDING" || item.Status == "COMPOUND_COMPLETED_IN_OTHER_PERIOD" {
+			continue
+		}
+		// A supported sales-only rule has an empty, non-nil benefits slice.
+		if item.Status != "MATCHED" || item.BenefitParts == nil {
 			report.PendingPaymentCount++
 			continue
 		}

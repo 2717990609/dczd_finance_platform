@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -62,7 +64,7 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 	creatorCompleted := createPeriod(creatorID, "2026-09")
 	ambassadorPaid := createPeriod(ambassadorID, "2026-08")
 	observed := time.Date(2026, 9, 3, 9, 0, 0, 0, shanghai)
-	store := func(sourceProduct, rowID string, paid, complete time.Time) {
+	store := func(sourceProduct, rowID string, paid, complete time.Time, hasSales bool) {
 		t.Helper()
 		wire := healthCompletionReply(sourceProduct, observed, complete, "42")
 		for i, raw := range wire.Facts {
@@ -73,8 +75,11 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 			if sourceProduct == "HEALTH_AMBASSADOR" {
 				content = strings.Replace(content, `"1680000"`, `"3980000"`, 1)
 			}
-			wire.Facts[i] = []byte(strings.TrimSuffix(content, "}") + `,"attribution_snapshot":{"participants":[
-			 {"source_role_code":"PID_USER","source_user_id":"seller","source_organization_id":"company","source_sales_relationship_code":"DIRECT"}]}}`)
+			if hasSales {
+				content = strings.TrimSuffix(content, "}") + `,"attribution_snapshot":{"participants":[
+				 {"source_role_code":"PID_USER","source_user_id":"seller","source_organization_id":"company","source_sales_relationship_code":"DIRECT"}]}}`
+			}
+			wire.Facts[i] = []byte(content)
 		}
 		wire.Cursor.ID, wire.Gates[0].OrderID = rowID, "order-"+rowID
 		row, err := normalizeDCAIOrderRow(dcaiHealthStream, time.Time{}, wire)
@@ -90,8 +95,8 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 			t.Fatal(err)
 		}
 	}
-	store("HEALTH_CREATOR", "42", time.Time{}, observed)
-	store("HEALTH_AMBASSADOR", "43", time.Time{}, time.Time{})
+	store("HEALTH_CREATOR", "42", time.Time{}, observed, true)
+	store("HEALTH_AMBASSADOR", "43", time.Time{}, time.Time{}, true)
 	if _, err := s.db.Exec(ctx, "DELETE FROM draft_refresh_queue"); err != nil {
 		t.Fatal(err)
 	}
@@ -141,9 +146,83 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 	if err != nil || independent.Version != 2 {
 		t.Fatalf("could not publish a referral-only creator rule: %+v %v", independent, err)
 	}
-	store("HEALTH_CREATOR", "44", cut.Add(36*time.Hour), observed)
+	store("HEALTH_CREATOR", "44", cut.Add(36*time.Hour), observed, false)
+	const company = "ab010000-0000-4000-8000-000000000031"
+	const pool = "ab010000-0000-4000-8000-000000000032"
+	if _, err := s.db.Exec(ctx, `WITH company AS (
+	 INSERT INTO organization_units(id,kind,name,status) VALUES($2,'COMPANY','公司收款验收','ACTIVE') RETURNING id
+	), pool AS (
+	 INSERT INTO organization_units(id,parent_id,kind,name,status)
+	 SELECT $3,id,'DEPARTMENT','团队池归集验收','ACTIVE' FROM company RETURNING id
+	), owners AS (INSERT INTO people(name) VALUES('原团队池负责人'),('接任团队池负责人') RETURNING id,name),
+	 aliases AS (
+	 INSERT INTO catalog_benefit_organizations(source,party_uuid,unit_id,observed_at)
+	 SELECT 'DCAI',id,id,$1::timestamptz FROM company UNION ALL SELECT 'DCAI',id,id,$1::timestamptz FROM pool
+	)
+	 INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,valid_from,valid_to,observed_at)
+	 SELECT gen_random_uuid(),'DCAI',owners.id,'TEAM_LEAD','ORGANIZATION_UNIT',pool.id::text,
+	  CASE WHEN name='原团队池负责人' THEN $1 ELSE $4::timestamptz END,CASE WHEN name='原团队池负责人' THEN $4 END,$1
+	 FROM pool CROSS JOIN owners`, effective, company, pool, observed.Add(24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `UPDATE catalog_sales_context SET benefit_ready=true WHERE source='DCAI'`); err != nil {
+		t.Fatal(err)
+	}
+	sheet, err := s.catalogRuleRateSheet(ctx, independent.ID)
+	if err != nil || len(sheet.Components) != 1 || sheet.Components[0].TargetKind != "referrer" {
+		t.Fatalf("expected the referral-only version before publishing organization benefits: %+v %v", sheet, err)
+	}
+	fixed, poolRate := int64(20000), int64(200)
+	organizationRule, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{
+		BaseID: independent.ID, EffectiveFrom: cut.Add(72 * time.Hour), RemovedItems: []string{sheet.Components[0].ItemKey},
+		NewItems: []catalogNewBenefitItem{
+			{Label: "公司固定金额", catalogBenefitTarget: catalogBenefitTarget{Target: "company", Organization: company},
+				catalogBenefitCalculation: catalogBenefitCalculation{Fixed: &fixed}},
+			{Label: "交付池", catalogBenefitTarget: catalogBenefitTarget{Target: "pool", Organization: pool, Role: "TEAM_LEAD"},
+				catalogBenefitCalculation: catalogBenefitCalculation{Rate: &poolRate}},
+		}}, "fixture")
+	if err != nil || organizationRule.Version != 3 {
+		t.Fatalf("could not publish a company and pool rule without sales: %+v %v", organizationRule, err)
+	}
+	store("HEALTH_CREATOR", "45", cut.Add(84*time.Hour), observed, false)
+	store("HEALTH_CREATOR", "46", cut.Add(96*time.Hour), observed, false)
+	half := int64(840000)
+	refund := func(record string, at time.Time) sourceFact {
+		order := "order-" + record
+		return sourceFact{Source: "DCAI", Domain: "HEALTH_IDENTITY", SourceKey: "HEALTH_CREATOR", Kind: "REFUND_SUCCEEDED",
+			OrderID: order, RecordKey: "ai_health_ambassador_order:" + record, RefundID: record,
+			Version: "refund", AmountMinor: &half, OccurredAt: at, UpdatedAt: at,
+			RefundsPayment: []sourcePaymentReference{{OrderID: order, RecordID: record}}}
+	}
+	putRefunds := func(facts ...sourceFact) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFacts(ctx, tx, facts)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	putRefunds(refund("45", time.Date(2026, 8, 20, 12, 0, 0, 0, shanghai)))
+	matches := httptest.NewRecorder()
+	s.catalogMatches(matches, httptest.NewRequest("GET", "/api/v1/period-rule-matches?periodId="+strconv.FormatInt(creatorCompleted, 10), nil))
+	var report catalogMatchReport
+	if err := json.Unmarshal(matches.Body.Bytes(), &report); err != nil || matches.Code != 200 {
+		t.Fatalf("could not read creator quotes: %d %v", matches.Code, err)
+	}
+	i := slices.IndexFunc(report.Items, func(match catalogPaymentMatch) bool { return match.OrderID == "order-45" })
+	if i < 0 {
+		t.Fatal("the partially refunded order should be recognized in its completion period")
+	}
+	match := report.Items[i]
+	if match.RecognizedMinor == nil || *match.RecognizedMinor != half || len(match.BenefitParts) != 2 ||
+		match.BenefitParts[0].Kind != "company" || match.BenefitParts[0].Amount != 10000 ||
+		match.BenefitParts[1].Kind != "pool" || match.BenefitParts[1].Amount != 16800 ||
+		match.BenefitParts[1].OwnerName != "原团队池负责人" {
+		t.Fatalf("first quote should use the net payment and the configured recipients: %+v", match)
+	}
 	for _, tc := range []struct{ period, total int64 }{
-		{creatorPaid, 0}, {creatorCompleted, 168000}, {ambassadorPaid, 398000},
+		{creatorPaid, 0}, {creatorCompleted, 248400}, {ambassadorPaid, 398000},
 	} {
 		trial, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: tc.period})
 		if err != nil {
@@ -161,35 +240,35 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 			}
 		}
 	}
+	readPools := func(period int64) vipPoolReport {
+		t.Helper()
+		res := httptest.NewRecorder()
+		s.periodPoolContributions(res, httptest.NewRequest("GET", "/api/v1/period-pool-contributions?periodId="+strconv.FormatInt(period, 10), nil))
+		var report vipPoolReport
+		if err := json.Unmarshal(res.Body.Bytes(), &report); err != nil || res.Code != 200 {
+			t.Fatalf("could not read pool totals: %d %v", res.Code, err)
+		}
+		return report
+	}
+	if got := readPools(creatorPaid); got.PaymentCount != 4 || len(got.Pools) != 0 || got.PendingPaymentCount != 0 {
+		t.Fatalf("completed-in-another-period orders should not create pool contributions or issues: %+v", got)
+	}
+	if got := readPools(creatorCompleted); len(got.Pools) != 1 || got.PendingPaymentCount != 0 ||
+		got.Pools[0].Amount != 50400 || got.Pools[0].PaymentCount != 2 {
+		t.Fatalf("completed orders should contribute their recognized principal to the configured pool: %+v", got)
+	}
 
 	posting := createPeriod(creatorID, "2026-10")
 	refundedAt := time.Date(2026, 10, 3, 12, 0, 0, 0, shanghai)
-	half := int64(840000)
-	refund := func(record string, amount *int64) sourceFact {
-		order := "order-" + record
-		return sourceFact{Source: "DCAI", Domain: "HEALTH_IDENTITY", SourceKey: "HEALTH_CREATOR", Kind: "REFUND_SUCCEEDED",
-			OrderID: order, RecordKey: "ai_health_ambassador_order:" + record, RefundID: record,
-			Version: "refund", AmountMinor: amount, OccurredAt: refundedAt, UpdatedAt: refundedAt,
-			RefundsPayment: []sourcePaymentReference{{OrderID: order, RecordID: record}}}
-	}
-	putRefunds := func(facts ...sourceFact) {
-		t.Helper()
-		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-			_, err := storeSourceFacts(ctx, tx, facts)
-			return err
-		}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	putRefunds(refund("42", &half), refund("44", &half))
+	putRefunds(refund("42", refundedAt), refund("44", refundedAt), refund("46", refundedAt))
 	trial, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: posting})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := trial.(draftSummary); got.RefundTotal != -84000 || got.RefundCount != 1 || got.IssueCount != 0 {
+	if got := trial.(draftSummary); got.RefundTotal != -110800 || got.RefundCount != 3 || got.IssueCount != 0 {
 		var issue string
 		_ = s.db.QueryRow(ctx, "SELECT code FROM calculation_draft_issues WHERE period_id=$1 LIMIT 1", posting).Scan(&issue)
-		t.Fatalf("only the order that earned commission should reverse commission: %+v %s", got, issue)
+		t.Fatalf("only orders that earned commission should reverse commission: %+v %s", got, issue)
 	}
 	var reversedOrders []string
 	var reversedPrincipal int64
@@ -199,12 +278,23 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 	 JOIN calculation_draft_performance original ON original.source_version_id=p.id AND original.period_id=$1
 	 WHERE a.period_id=$2 AND p.order_id=r.order_id AND original.completion_version_id IS NOT NULL`,
 		creatorCompleted, posting).Scan(&reversedOrders, &reversedPrincipal); err != nil ||
-		!slices.Equal(reversedOrders, []string{"order-42", "order-44"}) || reversedPrincipal != 2*half {
-		t.Fatalf("both refunds must reverse recognized performance from their exact completed orders: %v %d %v",
+		!slices.Equal(reversedOrders, []string{"order-42", "order-44", "order-46"}) || reversedPrincipal != 3*half {
+		t.Fatalf("later refunds must reverse recognized performance from their exact completed orders: %v %d %v",
 			reversedOrders, reversedPrincipal, err)
 	}
+	var companyDebit, poolDebit int64
+	var owner string
+	if err := s.db.QueryRow(ctx, `SELECT min(r.amount_minor) FILTER(WHERE l.beneficiary_unit_id=$2),
+	 min(r.amount_minor) FILTER(WHERE l.beneficiary_unit_id=$3),
+	 min(p.name) FILTER(WHERE l.beneficiary_unit_id=$3)
+	 FROM calculation_draft_refunds r JOIN calculation_draft_lines l ON l.id=r.original_line_id
+	 LEFT JOIN people p ON p.id=l.allocation_owner_id WHERE r.period_id=$1 AND l.catalog_rule_id=$4`,
+		posting, company, pool, organizationRule.ID).Scan(&companyDebit, &poolDebit, &owner); err != nil ||
+		companyDebit != -10000 || poolDebit != -16800 || owner != "原团队池负责人" {
+		t.Fatalf("refund must reverse the original company and pool owner: %d %d %s %v", companyDebit, poolDebit, owner, err)
+	}
 
-	putRefunds(refund("99", &half))
+	putRefunds(refund("99", refundedAt))
 	trial, err = s.recalculateDraft(ctx, calculateDraftInput{PeriodID: posting})
 	if err != nil || trial.(draftSummary).IssueCount != 1 {
 		t.Fatalf("refunds without recognized performance must remain pending: %+v %v", trial, err)
