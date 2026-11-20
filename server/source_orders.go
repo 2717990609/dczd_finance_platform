@@ -52,6 +52,8 @@ type sourceFact struct {
 	AmountMinor       *int64                   `json:"amountMinor"`
 	OccurredAt        time.Time                `json:"occurredAt"`
 	UpdatedAt         time.Time                `json:"updatedAt"`
+
+	PracticeRegistration *sourcePracticeRegistration `json:"-"`
 }
 
 type sourcePaymentReference struct {
@@ -87,10 +89,11 @@ type sourceDocument struct {
 		UpdatedAt time.Time `json:"updated_at"`
 	} `json:"source_record"`
 	Business struct {
-		Domain          string `json:"source_domain_code"`
-		Entity          string `json:"source_entity_type_code"`
-		Code            string `json:"source_product_code"`
-		TransactionType string `json:"source_transaction_type_code"`
+		Domain          string          `json:"source_domain_code"`
+		Entity          string          `json:"source_entity_type_code"`
+		Code            string          `json:"source_product_code"`
+		TransactionType string          `json:"source_transaction_type_code"`
+		Classification  json.RawMessage `json:"classification_fields"`
 	} `json:"business"`
 	Amounts struct {
 		Paid   string `json:"paid_minor"`
@@ -99,6 +102,9 @@ type sourceDocument struct {
 	Payment struct {
 		ID string `json:"source_payment_id"`
 	} `json:"payment"`
+	Delivery struct {
+		ID string `json:"source_delivery_id"`
+	} `json:"delivery"`
 	Refund struct {
 		ID string    `json:"source_refund_id"`
 		At time.Time `json:"refunded_at"`
@@ -232,7 +238,8 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 		SourceKey: wire.Business.Code, TransactionType: wire.Business.TransactionType, SourceStatus: wire.Order.Status.Code,
 		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, RefundsPayment: refundTargets, ReferrerID: referrer, Participants: participants, SalesCompanyID: company, AmountMinor: amount,
 		ReferrerCompanyID: recommendedCompany, ReferrerConflict: recommendationConflict,
-		OccurredAt: occurredAt, UpdatedAt: wire.Record.UpdatedAt,
+		PracticeRegistration: readSourcePracticeRegistration(source, wire, referrer),
+		OccurredAt:           occurredAt, UpdatedAt: wire.Record.UpdatedAt,
 		Classification: classification, VIPClaims: vipClaims}, nil
 }
 
@@ -456,9 +463,9 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 		}
 		var sourceVersion int64
 		created := false
-		e = tx.QueryRow(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
-		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT DO NOTHING RETURNING id`,
-			f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, f.UpdatedAt, raw, f.OccurredAt).Scan(&sourceVersion)
+		e = tx.QueryRow(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at,practice_registration)
+		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING RETURNING id`,
+			f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, f.UpdatedAt, raw, f.OccurredAt, f.PracticeRegistration).Scan(&sourceVersion)
 		if errors.Is(e, pgx.ErrNoRows) {
 			var same bool
 			e = tx.QueryRow(ctx, `SELECT id,fact=$7::jsonb OR (NOT (fact ? 'participants') AND fact=$7::jsonb - 'participants') FROM source_order_versions
@@ -469,6 +476,11 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 			}
 			if !same {
 				return 0, conflict
+			}
+			if f.PracticeRegistration != nil {
+				if e = fillSourcePracticeRegistration(ctx, tx, sourceVersion, f.PracticeRegistration); e != nil {
+					return 0, e
+				}
 			}
 		} else if e != nil {
 			return 0, e
@@ -605,11 +617,12 @@ func (s workspace) orderVersion(w http.ResponseWriter, r *http.Request) {
 	err = s.db.QueryRow(r.Context(), `SELECT v.fact || jsonb_build_object(
 	 'sourceConfigured',v.source=ANY($2::text[]),'salesAttribution',c.sales_claims,
 	 'salesCompanyId',company.company_id,'salesCompanyName',company_label.label,
-	 'referrerCompanyId',company.recommendation_company_id)
+	 'referrerCompanyId',company.recommendation_company_id,'practiceRegistration',v.practice_registration)
 	 FROM source_order_versions v
 	 LEFT JOIN source_order_classifications c ON c.source_version_id=v.id
 	 LEFT JOIN source_payment_companies company ON company.source_version_id=v.id
-	 LEFT JOIN configuration_options company_label ON company_label.group_key='practiceSalesCompany' AND company_label.option_key=company.company_id
+	 LEFT JOIN configuration_options company_label ON company_label.group_key='practiceSalesCompany'
+	  AND company_label.option_key=coalesce(company.company_id,v.practice_registration->>'companyId')
 	 WHERE v.id=$1`, id, configured).Scan(&result)
 	respond(w, result, err)
 }

@@ -154,6 +154,7 @@ CREATE OR REPLACE VIEW pool_period_order AS
  FROM periods p JOIN products product ON product.id=p.product_id;
 
 ALTER TABLE source_order_versions ADD COLUMN IF NOT EXISTS occurred_at timestamptz;
+ALTER TABLE source_order_versions ADD COLUMN IF NOT EXISTS practice_registration jsonb;
 UPDATE source_order_versions SET occurred_at = (fact->>'occurredAt')::timestamptz WHERE occurred_at IS NULL;
 ALTER TABLE source_order_versions ALTER COLUMN occurred_at SET NOT NULL;
 CREATE INDEX IF NOT EXISTS source_order_versions_payment_date

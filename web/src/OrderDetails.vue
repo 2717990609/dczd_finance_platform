@@ -7,6 +7,7 @@ const emit = defineEmits(['close', 'pull'])
 const order = ref()
 const loading = ref(false)
 const error = ref('')
+const salesCompanyID = computed(() => order.value?.practiceRegistration?.companyId || order.value?.salesCompanyId)
 const recordsHref = computed(() => !loading.value && !error.value && order.value?.orderId
   ? props.recordsLink(order.value) : undefined)
 
@@ -43,7 +44,7 @@ watch(() => props.selection, async (selection, _, onCleanup) => {
           <a-descriptions-item label="业务时间">{{ formatTime(order.occurredAt) }}</a-descriptions-item>
           <a-descriptions-item v-if="order.paymentId" label="付款编号">{{ order.paymentId }}</a-descriptions-item>
           <a-descriptions-item v-if="order.refundId" label="退款编号">{{ order.refundId }}</a-descriptions-item>
-          <a-descriptions-item v-if="order.referrerId" label="来源推荐人 ID">{{ order.referrerId }}</a-descriptions-item>
+          <a-descriptions-item v-if="order.referrerId" :label="order.practiceRegistration ? '报名销售账号' : '来源推荐人 ID'">{{ order.referrerId }}</a-descriptions-item>
           <a-descriptions-item v-if="order.salesAttribution?.length" label="来源销售归属">
             <ul class="order-attribution">
               <li v-for="(claim,index) in order.salesAttribution" :key="index">
@@ -53,11 +54,12 @@ watch(() => props.selection, async (selection, _, onCleanup) => {
               </li>
             </ul>
           </a-descriptions-item>
-          <a-descriptions-item v-if="order.salesCompanyId" label="来源销售公司">
-            <div>{{ order.salesCompanyName || order.salesCompanyId }}
-              <small v-if="order.salesCompanyName" class="order-version">公司标识 {{ order.salesCompanyId }}</small>
+          <a-descriptions-item v-if="salesCompanyID" :label="order.practiceRegistration ? '报名销售公司' : '来源销售公司'">
+            <div>{{ order.salesCompanyName || salesCompanyID }}
+              <small v-if="order.salesCompanyName" class="order-version">公司标识 {{ salesCompanyID }}</small>
             </div>
           </a-descriptions-item>
+          <a-descriptions-item v-if="order.practiceRegistration?.periodKey" label="报名期次">{{ order.practiceRegistration.periodKey }}</a-descriptions-item>
           <a-descriptions-item v-if="order.referrerCompanyId" label="来源推荐公司标识">{{ order.referrerCompanyId }}</a-descriptions-item>
           <a-descriptions-item label="订单版本">{{ order.version }}</a-descriptions-item>
           <a-descriptions-item label="来源更新时间">{{ formatTime(order.updatedAt) }}</a-descriptions-item>
