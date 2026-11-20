@@ -130,13 +130,23 @@ const catalogDisplayedThrough = `least(v.effective_to,(SELECT min(later.effectiv
  WHERE later.package_id=v.package_id AND later.published_at IS NOT NULL AND later.effective_from>v.effective_from))`
 
 func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalogRatesInput, actor string) (catalogPublication, error) {
+	var published catalogPublication
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		var err error
+		published, err = writeCatalogRates(ctx, tx, input, actor, true)
+		return err
+	})
+	return published, err
+}
+
+func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRatesInput, actor string, refreshDrafts bool) (catalogPublication, error) {
 	published := catalogPublication{ID: input.BaseID}
 	id, valid := canonicalSourceUUID(input.BaseID)
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
 	if !valid || from.IsZero() || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 || !textOK(actor, 128) {
 		return published, invalid
 	}
-	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+	err := func() error {
 		if operator := financeUser(ctx); operator != nil {
 			if err := lockCatalogPublisher(ctx, tx, operator, id); err != nil {
 				return err
@@ -209,12 +219,15 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 			pack, from, throughBase, hex.EncodeToString(contentHash[:]), body, actor, id).Scan(&published.ID, &published.Version); err != nil {
 			return err
 		}
+		if !refreshDrafts {
+			return nil
+		}
 		periods := catalogRateDraftPeriodsSQL
 		if compound {
 			periods = catalogHealthRateDraftPeriodsSQL
 		}
 		return enqueueDraftConfiguration(ctx, tx, periods, product, scope, from, throughBase, published.ID)
-	})
+	}()
 	return published, err
 }
 

@@ -120,6 +120,15 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .workbench-tabs .ant-tabs-nav::before { display: none; }
 .workbench-tabs .ant-tabs-tab { padding-block: 9px; }
 .workbench-scope-note { margin: 0 0 10px; color: var(--muted); font-size: 13px; }
+.rule-impact-preview { border-top: 1px solid var(--line); padding-top: 12px; margin-block: 14px; }
+.rule-impact-period { display: flex; align-items: end; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+.rule-impact-period > div { flex: 1 1 205px; min-width: 0; }
+.rule-impact-period label { display: block; margin-bottom: 4px; }
+.rule-impact-period .ant-select { width: 100%; }
+.rule-impact-totals { display: flex; gap: 9px; flex-wrap: wrap; margin-block: 10px; }
+.rule-impact-totals > div { flex: 1 1 115px; background: var(--accent-soft); padding: 8px 10px; border-radius: 5px; }
+.rule-impact-totals small { display: block; color: var(--muted); }
+.rule-impact-totals strong { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .draft-detail-search { margin-bottom: 12px; }
 .draft-detail-fields { display: flex; flex-wrap: wrap; align-items: end; gap: 9px 12px; padding: 11px 14px; }
 .draft-detail-fields > div { min-width: 0; }

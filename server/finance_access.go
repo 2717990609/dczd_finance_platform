@@ -33,12 +33,12 @@ func isLoopbackHost(host string) bool {
 
 func (s workspace) financeRoute(route rest.Route) rest.Route {
 	switch route.Path {
-	case "/api/v1/session", "/api/v1/catalog-rule-rates", "/api/v1/catalog-rule-people":
+	case "/api/v1/session", "/api/v1/catalog-rule-rates", "/api/v1/catalog-rule-people", "/api/v1/catalog-rule-impact":
 		return route
 	}
 	rulesAccess := false
 	switch route.Path {
-	case "/api/v1/configuration-options", "/api/v1/rules", "/api/v1/rule-catalog", "/api/v1/practice-count-openings", "/api/v1/practice-rule-recipients", "/api/v1/practice-pools":
+	case "/api/v1/configuration-options", "/api/v1/rules", "/api/v1/rule-catalog", "/api/v1/practice-count-openings", "/api/v1/practice-rule-recipients", "/api/v1/practice-pools", "/api/v1/rule-impact":
 		rulesAccess = true
 	case "/api/v1/products", "/api/v1/periods":
 		rulesAccess = route.Method == http.MethodGet

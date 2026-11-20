@@ -146,11 +146,13 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.listForAuthorizedProducts(catalogRulesSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-rates", Handler: s.getCatalogRuleRates},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-rule-rates", Handler: s.postCatalogRuleRates},
+		{Method: http.MethodPost, Path: "/api/v1/catalog-rule-impact", Handler: s.postCatalogRuleImpact},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-people", Handler: s.getCatalogRulePeople},
 		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.listForAuthorizedProducts(practiceCountOpeningsSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-rule-recipients", Handler: s.practiceRuleRecipients},
 		{Method: http.MethodPost, Path: "/api/v1/practice-pools", Handler: submit(s.createPracticePool)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
+		{Method: http.MethodPost, Path: "/api/v1/rule-impact", Handler: submitJSON(1<<20, s.postComponentRuleImpact)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-units", Handler: s.list(organizationUnitsSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-assignments", Handler: s.organizationAssignments},
 		{Method: http.MethodGet, Path: "/api/v1/organization-people", Handler: s.organizationPeople},
@@ -299,6 +301,7 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
  (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL) AS "reportMonthEditable",
  (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL) AS "practiceRosterEditable",
  (pro.period_mode='class' AND p.calendar_month IS NOT NULL) AS "practiceRefundMonth",
+ (final.period_id IS NOT NULL) AS settled,
  p.source_period_key AS "sourcePeriodKey",roster.starts_at AS "classStartsAt",
  roster.source_version AS "practiceRosterVersion",roster.attendance_count AS "practiceRosterAttendance",
  coalesce(NOT roster.in_period,false) AS "classStartOutsidePeriod",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
@@ -510,15 +513,31 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 	return map[string]int64{"id": id}, err
 }
 func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, error) {
-	if p.ProductID < 1 || !textOK(p.Label, 80) || (p.PeriodID != nil && *p.PeriodID < 1) || (p.FromOrdinal != nil && *p.FromOrdinal < 1) || (p.PeriodID != nil && p.FromOrdinal != nil) || validateComponents(p.Components) != nil {
+	if !validRulePublication(p) {
 		return nil, invalid
 	}
+	var version int
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		var err error
+		version, err = writeComponentRule(ctx, tx, p, true)
+		return err
+	})
+	return map[string]int{"version": version}, err
+}
+
+func validRulePublication(p publishRuleInput) bool {
+	return p.ProductID > 0 && textOK(p.Label, 80) && (p.PeriodID == nil || *p.PeriodID > 0) &&
+		(p.FromOrdinal == nil || *p.FromOrdinal > 0) && (p.PeriodID == nil || p.FromOrdinal == nil) &&
+		(p.EffectiveFrom == nil || !p.EffectiveFrom.IsZero()) && validateComponents(p.Components) == nil
+}
+
+func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refreshDrafts bool) (int, error) {
 	raw, err := json.Marshal(p.Components)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	var version int
-	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+	err = func() error {
 		var mode string
 		var scenarioRules bool
 		if e := tx.QueryRow(ctx, `SELECT period_mode,EXISTS(SELECT 1 FROM product_catalog_settings WHERE product_id=p.id)
@@ -537,9 +556,6 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 			if month {
 				return invalid
 			}
-		}
-		if p.EffectiveFrom != nil && p.EffectiveFrom.IsZero() {
-			return invalid
 		}
 		var personIDs []int64
 		var companyIDs []string
@@ -673,13 +689,16 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 			p.ProductID, strings.TrimSpace(p.Label), p.PeriodID, p.FromOrdinal, p.EffectiveFrom, raw, publisher).Scan(&version); err != nil {
 			return err
 		}
+		if !refreshDrafts {
+			return nil
+		}
 		refresh := draftRefreshRule
 		if mode == "class" {
 			refresh = draftRefreshClassRule
 		}
 		return enqueueDraftConfiguration(ctx, tx, refresh, p.ProductID, p.PeriodID, p.FromOrdinal, p.EffectiveFrom)
-	})
-	return map[string]int{"version": version}, err
+	}()
+	return version, err
 }
 func (s workspace) createPerson(ctx context.Context, p createPersonInput) (any, error) {
 	if !textOK(p.Name, 80) {

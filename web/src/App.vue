@@ -17,6 +17,7 @@ import OrderDetails from './OrderDetails.vue'
 import OrderSyncPanel from './OrderSyncPanel.vue'
 import PracticeTierEditor from './PracticeTierEditor.vue'
 import PracticeRosterSelect from './PracticeRosterSelect.vue'
+import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { copiedRuleComponents } from './rule-component-form'
 
@@ -85,6 +86,7 @@ const rateRule = ref()
 const ruleDetails = ref()
 const appliedRule = ref()
 const rulePreview = ref()
+const ruleImpactBusy = ref(false)
 const previewPane = ref()
 const viewedRule = computed(() => ruleDetails.value || appliedRule.value?.rule)
 const emptyData = () => ({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
@@ -162,6 +164,12 @@ const companyRecipientOptions = computed(() => classRuleDirectory.value?.units.f
   .map(unit=>({value:unit.id,label:unit.name})) || [])
 const periodOptions = computed(() => data.value.periods.filter(p => p.productId === draft.value.productId && !p.practiceRefundMonth)
   .map(p => ({value:p.id,label:p.name})))
+const previewPeriods = computed(() => {
+  const rule = rulePreview.value
+  return rule ? data.value.periods.filter(period=>period.productId===rule.productId
+    && !period.settled && !period.practiceRefundMonth && (!rule.periodId || period.id===rule.periodId)
+    && (!rule.fromOrdinal || period.ordinal>=rule.fromOrdinal)) : []
+})
 const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
 const calculationPeriods = computed(() => data.value.periods.filter(p =>
   (!productScope.value || p.productId === productScope.value) && (!workspaceMonth.value || p.reportMonth === workspaceMonth.value)))
@@ -703,6 +711,10 @@ function returnToRuleEditor() {
   rulePreview.value = undefined
   nextTick(() => document.getElementById('rule-preview-button')?.focus())
 }
+function compareComponentRule(periodId, signal) {
+  const {productName,periodName,...rule} = rulePreview.value
+  return api('/rule-impact',{method:'POST',body:JSON.stringify({periodId,rule}),signal})
+}
 function must(value, msg = '请补齐必填内容') {
   if (value === undefined || value === null || String(value).trim() === '') throw new Error(msg)
   return value
@@ -1139,6 +1151,8 @@ async function save() {
       <RuleVersionDetails :rule="rulePreview" embedded :recipients="classRuleDirectory"
         :option-label="optionLabel" :people="data.people" :opening-label="savedOpeningLabel"
         :format-time="formatTime" :format-money="formatMoney"/>
+      <RuleImpactPreview v-model:busy="ruleImpactBusy" :periods="previewPeriods" :period-id="rulePreview.periodId"
+        :simulate="compareComponentRule" :format-money="formatMoney"/>
     </div>
     <a-form v-show="!rulePreview" id="finance-edit-form" :model="draft" layout="vertical" @finish="save">
       <template v-if="drawer==='product'">
@@ -1276,7 +1290,7 @@ async function save() {
           <a-button :disabled="saving" @click="close">取消</a-button>
           <a-button v-if="drawer==='rule'" id="rule-preview-button" :disabled="saving" @click="previewRule">预览规则</a-button>
         </template>
-        <a-button html-type="submit" form="finance-edit-form" type="primary" :loading="saving">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':'保存' }}</a-button>
+        <a-button html-type="submit" form="finance-edit-form" type="primary" :loading="saving" :disabled="ruleImpactBusy">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':'保存' }}</a-button>
       </div>
     </template>
   </a-drawer>
@@ -1289,6 +1303,7 @@ async function save() {
   </a-drawer>
   <CatalogRuleRates v-if="(rateRule || appliedRule?.catalog) && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="rateRule" :applied="appliedRule?.catalog ? appliedRule : undefined" :api="api" :format-time="formatTime"
+    :format-money="formatMoney" :periods="data.periods"
     @close="rateRule=undefined; appliedRule=undefined" @published="ratePublished"/>
   <RuleVersionDetails v-if="viewedRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="viewedRule" :can-copy="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId))"

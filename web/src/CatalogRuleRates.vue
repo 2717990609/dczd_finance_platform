@@ -1,8 +1,9 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
+import RuleImpactPreview from './RuleImpactPreview.vue'
 
-const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function })
+const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array })
 const emit = defineEmits(['close', 'published'])
 const sheet = ref()
 const selected = ref()
@@ -15,6 +16,8 @@ const selectedTeam = ref()
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
+const impactInput = ref()
+const impactBusy = ref(false)
 let sequence = 0
 
 const columns = [
@@ -31,6 +34,7 @@ const editable = computed(() => sheet.value?.mayPublish && !saving.value)
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => recipientEdits.value.size + teamEdits.value.size > 0)
 const hasEdits = computed(() => recipientsChanged.value || Object.keys(edits.value).length > 0)
+const impactPeriods = computed(() => (props.periods || []).filter(period=>period.productId===sheet.value?.productId && !period.settled))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
 const rows = computed(() => {
   const term = filter.value.trim().toLowerCase()
@@ -79,6 +83,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   filter.value = ''
   effectiveFrom.value = ''
   error.value = ''
+  impactInput.value = undefined
   if (applied) {
     const result = applied.catalog
     sheet.value = result
@@ -104,25 +109,39 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
 }, {immediate:true})
 watch(selected, () => { filter.value = '' })
 
+function publicationInput() {
+  if (!effectiveFrom.value) throw new Error('请选择生效时间。')
+  const changes = Object.values(edits.value).map(({itemKey,row,value}) => ({itemKey,row,rateBps:rateAsBasisPoints(value)}))
+  if (changes.some(change => change.rateBps === undefined)) throw new Error('请填写 0 至 100 之间的比例，最多保留两位小数。')
+  return {
+    baseId:props.rule.id,
+    effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
+    changes,
+    recipientChanges:Array.from(recipientEdits.value,([itemKey, person])=>({itemKey,personId:person.id})),
+    teamChanges:Array.from(teamEdits.value,([teamKey,changes])=>({
+      teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
+    })),
+  }
+}
+function previewImpact() {
+  error.value = ''
+  try {
+    impactInput.value = publicationInput()
+  } catch (err) {
+    error.value = err.message
+  }
+}
+function compareCatalogRule(periodId, signal) {
+  return props.api('/catalog-rule-impact',{method:'POST',body:JSON.stringify({periodId,rule:impactInput.value}),signal})
+}
 async function publish() {
   if (saving.value || !sheet.value?.mayPublish) return
   error.value = ''
   saving.value = true
   try {
-    if (!effectiveFrom.value) throw new Error('请选择生效时间。')
-    const changes = Object.values(edits.value).map(({itemKey,row,value}) => ({itemKey,row,rateBps:rateAsBasisPoints(value)}))
-    if (changes.some(change => change.rateBps === undefined)) throw new Error('请填写 0 至 100 之间的比例，最多保留两位小数。')
     const result = await props.api('/catalog-rule-rates', {
       method:'POST',
-      body:JSON.stringify({
-        baseId:props.rule.id,
-        effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
-        changes,
-        recipientChanges:Array.from(recipientEdits.value,([itemKey, person])=>({itemKey,personId:person.id})),
-        teamChanges:Array.from(teamEdits.value,([teamKey,changes])=>({
-          teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
-        })),
-      }),
+      body:JSON.stringify(publicationInput()),
     })
     emit('published',result)
   } catch (err) {
@@ -146,7 +165,7 @@ async function publish() {
           生效于 {{ formatTime(sheet.effectiveFrom) }}<span v-if="sheet.effectiveTo"> · 截止 {{ formatTime(sheet.effectiveTo) }}</span>
         </p>
         <p v-if="sheet.requiresCompletion" class="draft-report-note">规则按付款时间匹配。订单确认完成后计提。</p>
-        <a-form layout="vertical" @submit.prevent="publish">
+        <a-form v-show="!impactInput" layout="vertical" @submit.prevent="publish">
           <a-form-item label="分润分项" html-for="catalog-rate-component">
             <a-select id="catalog-rate-component" v-model:value="selected" :options="componentOptions"/>
           </a-form-item>
@@ -211,10 +230,18 @@ async function publish() {
             </a-form-item>
             <div class="form-actions">
               <a-button :disabled="saving" @click="emit('close')">取消</a-button>
+              <a-button :disabled="saving || !hasEdits" @click="previewImpact">预览差额</a-button>
               <a-button html-type="submit" type="primary" :loading="saving" :disabled="!hasEdits">保存并生效</a-button>
             </div>
           </template>
         </a-form>
+        <template v-if="impactInput">
+          <RuleImpactPreview v-model:busy="impactBusy" :periods="impactPeriods" :simulate="compareCatalogRule" :format-money="formatMoney"/>
+          <div class="form-actions">
+            <a-button :disabled="saving" @click="impactInput=undefined; error=''">返回编辑</a-button>
+            <a-button type="primary" :loading="saving" :disabled="impactBusy" @click="publish">保存并生效</a-button>
+          </div>
+        </template>
       </template>
     </a-spin>
     <div v-if="applied" class="form-actions"><a-button @click="emit('close')">关闭</a-button></div>
