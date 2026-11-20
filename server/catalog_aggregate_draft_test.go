@@ -236,6 +236,9 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 		t.Fatal(err)
 	}
 	input.Month = time.Now().In(shanghai).Format("2006-01")
+	if preview := activity(input.Month); len(preview.Groups) != 1 || preview.Groups[0].Refunds != 1000 {
+		t.Fatalf("activity must show the late refund assigned to the current open month before drafting: %+v", preview)
+	}
 	current := open()
 	result, err := s.calculateCurrentDraft(ctx, current, 0)
 	wantIssues := 0
@@ -248,6 +251,10 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 	if err := db.QueryRow(ctx, `SELECT refunds_minor,carry_out_minor FROM catalog_aggregate_draft_groups WHERE period_id=$1`, current).
 		Scan(&carried, &remaining); err != nil || carried != 1000 || remaining != -1000 {
 		t.Fatalf("late refund %d, carry %d: %v", carried, remaining, err)
+	}
+	if preview := activity(input.Month); len(preview.Groups) != 1 || preview.Groups[0].Refunds != carried ||
+		preview.Groups[0].quote().CarryForward != remaining {
+		t.Fatalf("activity after saving the draft must show the same late refund and carry: %+v", preview)
 	}
 	if _, err := db.Exec(ctx, `UPDATE catalog_business_routes SET effective_to='2026-11-01 00:00+08' WHERE product_id=$1`, productID); err != nil {
 		t.Fatal(err)

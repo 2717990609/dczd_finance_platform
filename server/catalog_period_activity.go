@@ -67,10 +67,13 @@ const catalogActivityEventColumns = `v.id,v.source,v.kind,v.occurred_at,v.fact,
 
 const catalogActivityAmountsSQL = `WITH routes AS MATERIALIZED (` + catalogAggregateRoutes + `),
 draft_scope AS (
- SELECT aggregate_package_id,starts_on,ends_on FROM periods WHERE id=$6::bigint
+ SELECT id AS period_id,aggregate_package_id,starts_on,ends_on FROM periods WHERE id=$6::bigint
  UNION ALL
- SELECT NULLIF($8,'')::uuid,($3::timestamptz AT TIME ZONE 'Asia/Shanghai')::date,
-  ($4::timestamptz AT TIME ZONE 'Asia/Shanghai')::date-1 WHERE $6=0 AND $8<>''
+ SELECT opened.id,preview.aggregate_package_id,preview.starts_on,preview.ends_on
+ FROM (SELECT NULLIF($8,'')::uuid AS aggregate_package_id,($3::timestamptz AT TIME ZONE 'Asia/Shanghai')::date AS starts_on,
+  ($4::timestamptz AT TIME ZONE 'Asia/Shanghai')::date-1 AS ends_on WHERE $6=0 AND $8<>'') preview
+ LEFT JOIN periods opened ON opened.aggregate_package_id=preview.aggregate_package_id
+  AND (opened.starts_on,opened.ends_on)=(preview.starts_on,preview.ends_on)
 ),
 closed_windows AS MATERIALIZED (
  SELECT p.id,p.starts_on,p.ends_on FROM draft_scope draft JOIN periods p USING(aggregate_package_id)
@@ -86,8 +89,7 @@ recognition_rules AS MATERIALIZED (
  FROM closed_windows prior CROSS JOIN draft_scope draft
  WHERE prior.ends_on<draft.starts_on AND EXISTS(SELECT 1 FROM recognition_rules)
   AND NOT EXISTS(SELECT 1 FROM closed_windows closed WHERE closed.starts_on=draft.starts_on)
-  AND ($6<>0 OR EXISTS(SELECT 1 FROM periods opened WHERE opened.aggregate_package_id=draft.aggregate_package_id
-   AND (opened.starts_on,opened.ends_on)=(draft.starts_on,draft.ends_on)))
+  AND draft.period_id IS NOT NULL
   AND NOT EXISTS (
    SELECT 1 FROM periods earlier WHERE earlier.aggregate_package_id=draft.aggregate_package_id
     AND earlier.starts_on>prior.ends_on AND earlier.starts_on<draft.starts_on
@@ -154,7 +156,7 @@ recognition_rules AS MATERIALIZED (
   ))
   AND (v.occurred_at>=$3 OR (v.kind IN ('REFUND_SUCCEEDED','REFUND_ADJUSTED') AND EXISTS(
    SELECT 1 FROM draft_scope draft JOIN periods earlier USING(aggregate_package_id) JOIN settlements final ON final.period_id=earlier.id
-   WHERE (booked.reserved_period=$6 OR (booked.reserved_period IS NULL AND
+   WHERE (booked.reserved_period=draft.period_id OR (booked.reserved_period IS NULL AND
      (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN draft.starts_on AND draft.ends_on))
     AND (v.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN earlier.starts_on AND earlier.ends_on
   )))
