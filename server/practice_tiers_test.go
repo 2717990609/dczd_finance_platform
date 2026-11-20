@@ -231,8 +231,9 @@ func TestPracticeTierChangesWithPastRosterAndTimeBoundAccount(t *testing.T) {
 	current := mustID(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "Second", Ordinal: 2, StartsOn: "2026-08-08", EndsOn: "2026-08-08", SourcePeriodKey: "PRACTICE:1:1:11"}))
 	former := mustID(service.createPerson(ctx, createPersonInput{Name: "Former"}))
 	replacement := mustID(service.createPerson(ctx, createPersonInput{Name: "Replacement"}))
+	handover := time.Date(2026, 8, 7, 1, 0, 31, 0, time.UTC)
 	mustID(service.assignIdentity(ctx, assignIdentityInput{PersonID: former, Source: "DCZD", ExternalID: "shared-account", ValidFrom: "2026-06-01T00:00:00+08:00"}))
-	mustID(service.assignIdentity(ctx, assignIdentityInput{PersonID: replacement, Source: "DCZD", ExternalID: "shared-account", ValidFrom: "2026-08-05T00:00:00+08:00"}))
+	mustID(service.assignIdentity(ctx, assignIdentityInput{PersonID: replacement, Source: "DCZD", ExternalID: "shared-account", ValidFrom: handover.Format(time.RFC3339)}))
 	mustID(service.assignIdentity(ctx, assignIdentityInput{PersonID: former, Source: "DCZD", ExternalID: "another-account", ValidFrom: "2026-06-01T00:00:00+08:00"}))
 	publish := func(tiers practiceSalesTiers) {
 		t.Helper()
@@ -249,9 +250,8 @@ func TestPracticeTierChangesWithPastRosterAndTimeBoundAccount(t *testing.T) {
 	}
 	publish(tiers)
 
-	addPayment := func(id, account string, day int, amount int64) {
+	addPayment := func(id, account string, at time.Time, amount int64) {
 		t.Helper()
-		at := time.Date(2026, 8, day, 1, 0, 0, 0, time.UTC)
 		fact := sourceFact{Source: "DCZD", Kind: "ORDER_PAID", OrderID: id, PaymentID: id, RecordKey: id, Version: "1",
 			OccurredAt: at, UpdatedAt: at, Domain: "PRACTICE", SourceKey: "practice", AmountMinor: &amount, ReferrerID: account}
 		_, err := service.db.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
@@ -260,10 +260,11 @@ func TestPracticeTierChangesWithPastRosterAndTimeBoundAccount(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	addPayment("31", "shared-account", 1, 4000)
-	addPayment("32", "shared-account", 1, 6000)
-	addPayment("33", "another-account", 7, 10000)
-	addPayment("34", "shared-account", 7, 10000)
+	firstPayment := time.Date(2026, 8, 1, 1, 0, 0, 0, time.UTC)
+	addPayment("31", "another-account", firstPayment, 4000)
+	addPayment("32", "another-account", firstPayment, 6000)
+	addPayment("33", "shared-account", handover.Add(-time.Second), 10000)
+	addPayment("34", "shared-account", handover, 10000)
 
 	member := func(id string, paid ...string) practiceEnrollmentWire {
 		row := practiceEnrollmentWire{SourceEnrollmentID: id, ParticipantID: id, MembershipType: 3}
@@ -319,6 +320,14 @@ func TestPracticeTierChangesWithPastRosterAndTimeBoundAccount(t *testing.T) {
 		t.Fatalf("backfilled period did not refresh the cumulative tier: version=%d total=%d error=%v", version, total, err)
 	}
 	check(3, 2400, 0)
+	var paidBefore, paidAt int64
+	if err := service.db.QueryRow(ctx, `SELECT
+	 max(l.person_id) FILTER (WHERE p.order_id='33'),
+	 max(l.person_id) FILTER (WHERE p.order_id='34')
+	 FROM calculation_draft_lines l JOIN source_order_versions p ON p.id=l.source_version_id WHERE l.period_id=$1`,
+		current).Scan(&paidBefore, &paidAt); err != nil || paidBefore != former || paidAt != replacement {
+		t.Fatalf("incorrect handover attribution: before=%d at=%d error=%v", paidBefore, paidAt, err)
+	}
 	tiers.PersonCountStarts[0].FromOrdinal = 3
 	publish(tiers)
 	check(4, 3100, 0) // A future reset leaves an already opened period on the default.

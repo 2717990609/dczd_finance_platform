@@ -423,6 +423,8 @@ const actions = computed(() => {
   return {periods:'period',rules:'rule',orders:'pull'}[current.value]
 })
 const formatTime = value => value ? new Intl.DateTimeFormat('zh-CN',{dateStyle:'short',timeStyle:'short',timeZone:'Asia/Shanghai'}).format(new Date(value)) : '—'
+const identityTimeFormat = new Intl.DateTimeFormat('zh-CN',{dateStyle:'short',timeStyle:'medium',timeZone:'Asia/Shanghai'})
+const formatIdentityTime = value => value ? identityTimeFormat.format(new Date(value)) : '—'
 const formatMoney = minor => minor == null ? '—' : new Intl.NumberFormat('zh-CN',{style:'currency',currency:'CNY'}).format(minor/100)
 const practiceOpeningOptions = computed(() => data.value.practiceCountOpenings
   .filter(row => row.productId===draft.value.productId)
@@ -557,7 +559,7 @@ const columns = computed(() => {
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
     person:[['人员名称','name'],['人员 ID','id']],
     identity:[['归属人员','personName',128],['业务来源','source',112],['来源人员 ID','externalId',164],
-      ['生效时间','validFrom',145],['结束时间','validTo',145],['操作','identityAction',192]],
+      ['生效时间','validFrom',158],['结束时间','validTo',158],['操作','identityAction',192]],
   }
   return values[actions.value].map(([title,dataIndex,width]) => ({title,dataIndex,key:dataIndex,width}))
 })
@@ -1243,7 +1245,10 @@ function bodyFor(kind,f) {
     components:f.components.map(ruleComponentBody),
   }
   if (kind === 'person') return {name:must(f.name)}
-  if (kind === 'identity') return {personId:must(f.personId),source:f.source,externalId:must(f.externalId),validFrom:new Date(must(f.validFrom)+'T00:00:00+08:00').toISOString()}
+  if (kind === 'identity') {
+    const validFrom = new Date(must(f.validFrom)+'T'+(f.validTime || '00:00')+'+08:00').toISOString()
+    return {personId:must(f.personId),source:f.source,externalId:must(f.externalId),validFrom}
+  }
   return {source:f.source,stream:f.stream,orderId:must(f.orderId)}
 }
 function orderPullNotice(result) {
@@ -1562,7 +1567,8 @@ async function save() {
                 <template v-else-if="column.key==='kind'"><a-tag>{{ labels[text] || text }}</a-tag></template>
                 <template v-else-if="column.key==='productName'&&current==='orders'"><a-tag v-if="!text" color="orange">待映射</a-tag><span v-else>{{ text }}</span></template>
                 <template v-else-if="column.key==='amountMinor'"><span class="numeric">{{ formatMoney(text) }}</span></template>
-                <template v-else-if="['occurredAt','validFrom','validTo'].includes(column.key)">{{ formatTime(text) }}</template>
+                <template v-else-if="column.key==='occurredAt'">{{ formatTime(text) }}</template>
+                <template v-else-if="['validFrom','validTo'].includes(column.key)">{{ formatIdentityTime(text) }}</template>
               </template>
               <template #emptyText>
                 <div class="empty"><a-empty :image="undefined" :description="(current==='orders' ? orderQuery : filter) ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter && !orderQuery && !identityAccount && configurationReady && canOpenAction" @click="open(actions)">{{ titles[actions] }}</a-button></div>
@@ -1767,16 +1773,20 @@ async function save() {
         </a-form-item>
         <a-form-item v-if="draft.previousOwner" label="上一段归属">
           <strong>{{ draft.previousOwner.personName }}</strong>
-          <small class="order-version">{{ formatTime(draft.previousOwner.validFrom) }} 起</small>
+          <small class="order-version">{{ formatIdentityTime(draft.previousOwner.validFrom) }} 起</small>
         </a-form-item>
         <a-form-item label="归属人员" html-for="identity-person" required>
           <a-select id="identity-person" v-model:value="draft.personId" placeholder="搜索姓名或人员 ID"
             :options="identityPeopleOptions" option-filter-prop="label" show-search/>
         </a-form-item>
-        <a-form-item label="生效日期" required
-          :extra="draft.previousOwner ? '新归属自北京时间零点生效，上一段归属于同一时间结束。' : '自所选日期的北京时间零点生效。'">
-          <a-input v-model:value="draft.validFrom" aria-label="生效日期" type="date"/>
-        </a-form-item>
+        <div class="field-grid">
+          <a-form-item label="生效日期" html-for="identity-date" required>
+            <a-input id="identity-date" v-model:value="draft.validFrom" type="date"/>
+          </a-form-item>
+          <a-form-item label="生效时刻（北京时间）" html-for="identity-time" extra="留空按当天零点">
+            <a-input id="identity-time" v-model:value="draft.validTime" type="time" step="1"/>
+          </a-form-item>
+        </div>
       </template>
       <template v-if="drawer==='pull'">
         <a-alert v-if="!(draft.lockedOrder ? draft.sourceConfigured : data.sources.find(x=>x.source===draft.source)?.configured)"

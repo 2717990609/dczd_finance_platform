@@ -220,7 +220,7 @@ pnpm --dir web dev
 
 组织快照可附带销售公司分类。公司 `units` 记录可含 `salesCompanyType`，取内部 `INTERNAL`、外部 `EXTERNAL` 或待确认 `UNKNOWN`。`salesCategories` 含 `id`、`name` 和 `active`，`salesCategoryHistory` 含 `unitId`、可空的 `categoryId`、`from` 和可空的 `to`。类别历史使用包含起点、排除终点的有效区间，同一公司不能重叠。任职记录可附带 `appointmentType`，保留主要任职或兼任。组织快照可选用 `dutyScopes` 和 `businessDuties` 导入原业务职责。前者含 `id`、`kind`、`code`、`name`、`active`，后者含 `id`、`role`、`scopeId`、`from`、可空的 `to`，并指定 `personId` 或 `unitId`。销售公司目录用于组织查询，分润继续使用各产品实际选中的类别和规则版本。
 
-「系统与数据 → 人员映射」可由姓名或人员 ID 查找人员。在「映射历史」中选择「查看账号历史」，可查看该业务来源与来源人员 ID 的归属时间线。「变更归属」沿用所选来源账号。选择接任人员和生效日期后，上一段归属于该日北京时间零点结束。
+「系统与数据 → 人员映射」可由姓名或人员 ID 查找人员。在「映射历史」中选择「查看账号历史」，可查看该业务来源与来源人员 ID 的归属时间线。「变更归属」沿用所选来源账号。选择接任人员、生效日期和可选的北京时间时刻。时刻留空时按当天零点。上一段归属在接任人生效的同一时刻结束。
 
 可选的 `recommendations` 使用 `companyId`、`referrerCompanyId` 两个公司主键登记已核对的公司推荐关系。明确无推荐关系时填 `"referrerCompanyId": null`。目录变更会标记相关开放草稿重新试算。
 
