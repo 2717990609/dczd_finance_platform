@@ -31,6 +31,8 @@ type publishCatalogRatesInput struct {
 	Changes          []catalogRateChange          `json:"changes"`
 	RecipientChanges []catalogRuleRecipientChange `json:"recipientChanges"`
 	TeamChanges      []catalogTeamRecipientChange `json:"teamChanges"`
+	NewItems         []catalogNewBenefitItem      `json:"newItems"`
+	NewRateRows      []catalogNewRateRow          `json:"newRateRows"`
 }
 
 type catalogPublication struct {
@@ -143,7 +145,8 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 	published := catalogPublication{ID: input.BaseID}
 	id, valid := canonicalSourceUUID(input.BaseID)
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
-	if !valid || from.IsZero() || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 || !textOK(actor, 128) {
+	structureChanged := len(input.NewItems)+len(input.NewRateRows) != 0
+	if !valid || from.IsZero() || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 && !structureChanged || !textOK(actor, 128) {
 		return published, invalid
 	}
 	err := func() error {
@@ -200,13 +203,19 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 				return err
 			}
 		}
-		if !ratesChanged && !recipientsChanged {
+		if structureChanged {
+			body, err = editCatalogStructure(ctx, tx, product, from, body, input.NewItems, input.NewRateRows)
+			if err != nil {
+				return err
+			}
+		}
+		if !ratesChanged && !recipientsChanged && !structureChanged {
 			return nil
 		}
 		if _, _, err := catalogRateActions(body); err != nil {
 			return err
 		}
-		if recipientsChanged {
+		if recipientsChanged || len(input.NewItems) > 0 {
 			if err := validateCatalogRecipientAppointments(ctx, tx, product, from, definition, body); err != nil {
 				return err
 			}
@@ -350,6 +359,9 @@ func internalTeamRatesChanged(before, after vipSalesPolicy) bool {
 	// Valid category IDs are UUIDs. Also check no history, unclassified, and unmatched.
 	categories := map[string]bool{"": true, "unmatched": true}
 	for _, row := range before.Sales {
+		categories[row.Category] = true
+	}
+	for _, row := range after.Sales {
 		categories[row.Category] = true
 	}
 	categoryChecks := []*string{nil}

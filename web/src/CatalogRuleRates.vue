@@ -2,6 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
+import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 
 const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array })
 const emit = defineEmits(['close', 'published'])
@@ -18,13 +19,15 @@ const saving = ref(false)
 const error = ref('')
 const impactInput = ref()
 const impactBusy = ref(false)
+const structure = ref({items:[],rateRows:[]})
+const structureEditing = ref(false)
 let sequence = 0
 
 const columns = [
   {title:'销售公司',key:'company',dataIndex:'company',width:190},
   {title:'销售关系',key:'relationship',dataIndex:'relationship',width:100},
   {title:'销售类别',key:'category',dataIndex:'category',width:170},
-  {title:'比例（%）',key:'rate',width:130},
+  {title:'比例（%）',key:'rate',width:115,fixed:'right'},
 ]
 const componentOptions = computed(() => (sheet.value?.components || []).map(item => ({value:item.itemKey,label:item.label})))
 const component = computed(() => sheet.value?.components.find(item => item.itemKey === selected.value))
@@ -33,7 +36,8 @@ const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTe
 const editable = computed(() => sheet.value?.mayPublish && !saving.value)
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => recipientEdits.value.size + teamEdits.value.size > 0)
-const hasEdits = computed(() => recipientsChanged.value || Object.keys(edits.value).length > 0)
+const hasEdits = computed(() => recipientsChanged.value || Object.keys(edits.value).length > 0 ||
+  structure.value.items.length || structure.value.rateRows.length)
 const impactPeriods = computed(() => (props.periods || []).filter(period=>period.productId===sheet.value?.productId && !period.settled))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
 const rows = computed(() => {
@@ -84,6 +88,8 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   effectiveFrom.value = ''
   error.value = ''
   impactInput.value = undefined
+  structure.value = {items:[],rateRows:[]}
+  structureEditing.value = false
   if (applied) {
     const result = applied.catalog
     sheet.value = result
@@ -110,6 +116,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
 watch(selected, () => { filter.value = '' })
 
 function publicationInput() {
+  if (structureEditing.value) throw new Error('请先暂存正在编辑的配置。')
   if (!effectiveFrom.value) throw new Error('请选择生效时间。')
   const changes = Object.values(edits.value).map(({itemKey,row,value}) => ({itemKey,row,rateBps:rateAsBasisPoints(value)}))
   if (changes.some(change => change.rateBps === undefined)) throw new Error('请填写 0 至 100 之间的比例，最多保留两位小数。')
@@ -121,6 +128,8 @@ function publicationInput() {
     teamChanges:Array.from(teamEdits.value,([teamKey,changes])=>({
       teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
     })),
+    newItems:structure.value.items.map(({personName,...item})=>item),
+    newRateRows:structure.value.rateRows.map(({itemLabel,...row})=>row),
   }
 }
 function previewImpact() {
@@ -175,6 +184,7 @@ async function publish() {
               :disabled="!editable" :placeholder="recipient.id?'输入姓名搜索':recipient.name" @change="setRecipient"/>
             <span v-else>{{ recipient.name }}</span>
           </a-form-item>
+          <a-form-item v-if="component?.targetLabel" label="收款对象">{{ component.targetLabel }}</a-form-item>
           <a-form-item v-if="component?.rateBps != null" label="比例（%）" html-for="catalog-fixed-rate">
             <a-input-number v-if="!applied" id="catalog-fixed-rate" :value="displayRate(component.rateBps)" :disabled="!sheet.mayPublish || saving"
               :min="0" :max="100" :precision="2" string-mode @update:value="setRate($event,component.rateBps)"/>
@@ -185,7 +195,7 @@ async function publish() {
               <a-input id="catalog-rate-filter" v-model:value="filter" placeholder="输入销售公司、关系或类别" allow-clear/>
             </a-form-item>
             <a-table :key="selected + filter" :columns="columns" :data-source="rows" row-key="row" size="small"
-              :scroll="{x:590}" :pagination="{pageSize:8,showSizeChanger:false}">
+              :scroll="{x:575}" :pagination="{pageSize:8,showSizeChanger:false,hideOnSinglePage:true}">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key==='company'">
                   {{ record.company }}<small v-if="record.companyFallback" class="order-version">公司兜底</small>
@@ -221,6 +231,9 @@ async function publish() {
             </a-collapse-panel>
           </a-collapse>
           <template v-if="sheet.mayPublish">
+            <CatalogRuleStructureEditor v-if="sheet.structureOptions" :key="rule.id"
+              v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="component"
+              :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints"/>
             <a-form-item label="生效时间（北京时间）" html-for="catalog-rate-effective-date"
               :extra="recipientsChanged
                 ? '请选择规则生效时间，并在计提任职核对有关人员的有效区间。已结算结果保留确认时的规则。'
@@ -230,8 +243,8 @@ async function publish() {
             </a-form-item>
             <div class="form-actions">
               <a-button :disabled="saving" @click="emit('close')">取消</a-button>
-              <a-button :disabled="saving || !hasEdits" @click="previewImpact">预览差额</a-button>
-              <a-button html-type="submit" type="primary" :loading="saving" :disabled="!hasEdits">保存并生效</a-button>
+              <a-button :disabled="saving || structureEditing || !hasEdits" @click="previewImpact">预览差额</a-button>
+              <a-button html-type="submit" type="primary" :loading="saving" :disabled="structureEditing || !hasEdits">保存并生效</a-button>
             </div>
           </template>
         </a-form>

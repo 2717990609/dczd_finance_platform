@@ -111,14 +111,17 @@ func readDirectSalesPolicy(actions []json.RawMessage) (vipSalesPolicy, bool) {
 	var policy vipSalesPolicy
 	for _, payload := range actions {
 		var identity struct {
-			Item string `json:"item_key"`
-			Role string `json:"role"`
+			Item       string `json:"item_key"`
+			Role       string `json:"role"`
+			Mode       string `json:"beneficiary_mode"`
+			Designated string `json:"designated_party_id"`
+			Company    string `json:"company_beneficiary_party_id"`
 		}
 		if json.Unmarshal(payload, &identity) != nil || identity.Item == "" || items[identity.Item] {
 			return vipSalesPolicy{}, false
 		}
 		items[identity.Item] = true
-		if identity.Role != "SALES" {
+		if identity.Role != "SALES" || identity.Designated != "" || identity.Company != "" || identity.Mode == "TEAM_POOL" {
 			continue
 		}
 		var action struct {
@@ -171,13 +174,17 @@ func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
 }
 
 func resolveVIPRate(rows []vipRateRow, company, relationship string, category *string) (int64, string) {
+	categorized := slices.ContainsFunc(rows, func(r vipRateRow) bool { return r.Category != "" })
+	return resolveVIPRateRows(rows, company, relationship, category, categorized)
+}
+
+func resolveVIPRateRows(rows []vipRateRow, company, relationship string, category *string, categorized bool) (int64, string) {
 	if company == "" {
 		return 0, "SALES_COMPANY_MISSING"
 	}
 	if relationship != "" && relationship != "DIRECT" && relationship != "INDIRECT" && relationship != "NONE" {
 		return 0, "SALES_RELATIONSHIP_MISSING"
 	}
-	categorized := slices.ContainsFunc(rows, func(r vipRateRow) bool { return r.Category != "" })
 	var groups [4][]vipRateRow
 	for _, row := range rows {
 		if row.Company != company && row.Company != "ANY" || row.Relationship != "ANY" && relationship != "" && row.Relationship != relationship ||

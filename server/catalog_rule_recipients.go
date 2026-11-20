@@ -250,7 +250,7 @@ func setCatalogPerson(fields map[string]json.RawMessage, field, key string) bool
 func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, product int64, at time.Time, raw, edited json.RawMessage) error {
 	before, wasValid := readVIPBenefits(raw)
 	after, ok := readVIPBenefits(edited)
-	if !wasValid || !ok || len(before.actions) != len(after.actions) || len(before.split.Teams) != len(after.split.Teams) {
+	if !wasValid || !ok || len(before.actions) > len(after.actions) || len(before.split.Teams) != len(after.split.Teams) {
 		return invalid
 	}
 	type requiredAppointment struct {
@@ -260,8 +260,12 @@ func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, produc
 		Unit  string `json:"unit"`
 	}
 	var requirements []requiredAppointment
-	for i, action := range after.actions {
-		if action.Designated != before.actions[i].Designated {
+	beforePeople := make(map[string]string, len(before.actions))
+	for _, action := range before.actions {
+		beforePeople[action.Item] = action.Designated
+	}
+	for _, action := range after.actions {
+		if action.Designated != "" && action.Designated != beforePeople[action.Item] {
 			requirements = append(requirements, requiredAppointment{Label: action.Label, Key: action.Designated, Role: action.Role})
 		}
 	}

@@ -9,11 +9,12 @@ import (
 )
 
 type catalogRateComponent struct {
-	ItemKey   string             `json:"itemKey"`
-	Label     string             `json:"label"`
-	Rate      *int64             `json:"rateBps,omitempty"`
-	Rows      []catalogRateRow   `json:"rows,omitempty"`
-	Recipient *catalogRulePerson `json:"recipient,omitempty"`
+	ItemKey     string             `json:"itemKey"`
+	Label       string             `json:"label"`
+	Rate        *int64             `json:"rateBps,omitempty"`
+	Rows        []catalogRateRow   `json:"rows,omitempty"`
+	Recipient   *catalogRulePerson `json:"recipient,omitempty"`
+	TargetLabel string             `json:"targetLabel,omitempty"`
 }
 
 type catalogRateRow struct {
@@ -27,19 +28,20 @@ type catalogRateRow struct {
 }
 
 type catalogRateSheet struct {
-	ProductID          int64                  `json:"productId"`
-	ProductName        string                 `json:"productName"`
-	Label              string                 `json:"label"`
-	Version            int                    `json:"version"`
-	EffectiveFrom      time.Time              `json:"effectiveFrom"`
-	EffectiveTo        *time.Time             `json:"effectiveTo"`
-	MayPublish         bool                   `json:"mayPublish"`
-	RequiresCompletion bool                   `json:"requiresCompletion,omitempty"`
-	Components         []catalogRateComponent `json:"components"`
-	Teams              []catalogRuleTeam      `json:"teams,omitempty"`
+	ProductID          int64                    `json:"productId"`
+	ProductName        string                   `json:"productName"`
+	Label              string                   `json:"label"`
+	Version            int                      `json:"version"`
+	EffectiveFrom      time.Time                `json:"effectiveFrom"`
+	EffectiveTo        *time.Time               `json:"effectiveTo"`
+	MayPublish         bool                     `json:"mayPublish"`
+	RequiresCompletion bool                     `json:"requiresCompletion,omitempty"`
+	Components         []catalogRateComponent   `json:"components"`
+	Teams              []catalogRuleTeam        `json:"teams,omitempty"`
+	StructureOptions   *catalogStructureOptions `json:"structureOptions,omitempty"`
 }
 
-func catalogRateComponents(raw json.RawMessage, companies, categories, relationships map[string]string) ([]catalogRateComponent, error) {
+func catalogRateComponents(raw json.RawMessage, companies, categories, relationships, organizations map[string]string) ([]catalogRateComponent, error) {
 	_, actions, err := catalogRateActions(raw)
 	if err != nil {
 		return nil, err
@@ -64,6 +66,18 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		item := catalogRateComponent{ItemKey: action.Item, Label: action.Label, Rate: action.Rate}
 		if item.Label == "" {
 			item.Label = item.ItemKey
+		}
+		if action.Company != "" {
+			item.TargetLabel = organizations[action.Company]
+			if item.TargetLabel == "" {
+				item.TargetLabel = "待核收款公司"
+			}
+		}
+		if action.PoolName != "" {
+			item.TargetLabel = action.PoolName
+			if name := organizations[action.PoolParty]; name != "" {
+				item.TargetLabel += " · " + name
+			}
 		}
 		if len(action.RateTable) > 0 {
 			rows, valid := parseVIPRateTable(action.RateTable)
@@ -117,6 +131,10 @@ func (s workspace) getCatalogRuleRates(w http.ResponseWriter, r *http.Request) {
 	}
 	sheet, err := s.catalogRuleRateSheet(r.Context(), id)
 	sheet.MayPublish = sheet.MayPublish && actor.permits(product, true)
+	if err == nil && sheet.MayPublish {
+		options, optionsErr := readCatalogStructureOptions(r.Context(), s.db)
+		sheet.StructureOptions, err = &options, optionsErr
+	}
 	respond(w, sheet, err)
 }
 
@@ -144,7 +162,7 @@ func (s workspace) postCatalogRuleRates(w http.ResponseWriter, r *http.Request) 
 func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalogRateSheet, error) {
 	var sheet catalogRateSheet
 	var definition json.RawMessage
-	var companyNames, categoryNames, relationshipNames map[string]string
+	var companyNames, categoryNames, relationshipNames, organizationNames map[string]string
 	var supported bool
 	err := s.db.QueryRow(ctx, `WITH rule AS (
 	 SELECT p.product_id,pro.name AS product_name,p.name,v.version_no,v.effective_from,`+catalogDisplayedThrough+` AS effective_to,v.definition,
@@ -159,13 +177,18 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	 SELECT a.company_uuid,min(u.name) AS name FROM rule r JOIN catalog_sales_context c ON c.source=r.source_system
 	 JOIN catalog_sales_company_aliases a ON a.source=c.source AND a.observed_at=c.captured_at
 	 JOIN organization_units u ON u.id=a.company_unit_id GROUP BY a.company_uuid HAVING count(DISTINCT u.name)=1
+	), organizations AS (
+	 SELECT b.party_uuid,min(u.name) AS name FROM rule r JOIN catalog_sales_context c ON c.source=r.source_system
+	 JOIN catalog_benefit_organizations b ON b.source=c.source AND b.observed_at=c.captured_at
+	 JOIN organization_units u ON u.id=b.unit_id GROUP BY b.party_uuid HAVING count(DISTINCT u.id)=1
 	)
 	SELECT r.product_id,r.product_name,r.name,r.version_no,r.effective_from,r.effective_to,r.definition,r.available,r.supported,r.requires_completion,
 	 coalesce((SELECT jsonb_object_agg(company_uuid,name) FROM companies),'{}'),
 	 coalesce((SELECT jsonb_object_agg(option_key,label) FROM configuration_options WHERE group_key='catalogSalesCategory' AND enabled),'{}'),
-	 coalesce((SELECT jsonb_object_agg(option_key,label) FROM configuration_options WHERE group_key='catalogSalesRelationship' AND enabled),'{}')
+	 coalesce((SELECT jsonb_object_agg(option_key,label) FROM configuration_options WHERE group_key='catalogSalesRelationship' AND enabled),'{}'),
+	 coalesce((SELECT jsonb_object_agg(party_uuid,name) FROM organizations),'{}')
 	FROM rule r`, id).Scan(&sheet.ProductID, &sheet.ProductName, &sheet.Label, &sheet.Version, &sheet.EffectiveFrom, &sheet.EffectiveTo,
-		&definition, &sheet.MayPublish, &supported, &sheet.RequiresCompletion, &companyNames, &categoryNames, &relationshipNames)
+		&definition, &sheet.MayPublish, &supported, &sheet.RequiresCompletion, &companyNames, &categoryNames, &relationshipNames, &organizationNames)
 	if err != nil {
 		return sheet, err
 	}
@@ -173,7 +196,7 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 		return sheet, errCatalogRateUnavailable
 	}
 	companyNames["ANY"] = "不限公司"
-	sheet.Components, err = catalogRateComponents(definition, companyNames, categoryNames, relationshipNames)
+	sheet.Components, err = catalogRateComponents(definition, companyNames, categoryNames, relationshipNames, organizationNames)
 	if err == nil {
 		sheet.Teams, err = s.catalogRuleRecipients(ctx, definition, sheet.Components, companyNames)
 	}

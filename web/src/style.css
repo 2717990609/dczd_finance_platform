@@ -129,6 +129,13 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .rule-impact-totals > div { flex: 1 1 115px; background: var(--accent-soft); padding: 8px 10px; border-radius: 5px; }
 .rule-impact-totals small { display: block; color: var(--muted); }
 .rule-impact-totals strong { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.catalog-rule-structure { border-top: 1px solid var(--line); padding-top: 12px; margin-bottom: 14px; }
+.catalog-add-form { padding: 10px; background: var(--accent-soft); border-radius: 6px; }
+.catalog-add-form .ant-select, .catalog-add-form .ant-input-number { width: 100%; }
+.catalog-add-form .field-grid label { display: block; margin-bottom: 4px; }
+.catalog-add-condition { border-bottom: 1px solid var(--line); margin-bottom: 8px; padding-bottom: 8px; }
+.catalog-staged-entries { list-style: none; padding: 0; margin: 8px 0 0; }
+.catalog-staged-entries > li { display: flex; justify-content: space-between; align-items: center; gap: 5px; }
 .draft-detail-search { margin-bottom: 12px; }
 .draft-detail-fields { display: flex; flex-wrap: wrap; align-items: end; gap: 9px 12px; padding: 11px 14px; }
 .draft-detail-fields > div { min-width: 0; }
