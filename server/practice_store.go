@@ -85,7 +85,7 @@ func readPracticeHeader(ctx context.Context, tx pgx.Tx, periodKey string, summar
 	return startsAt, err
 }
 
-const practicePaymentsSQL = `SELECT v.id,v.fact,coalesce(company.company_id,''),
+var practicePaymentsSQL = `SELECT v.id,v.fact,coalesce(company.company_id,''),
  coalesce(company.recommendation_company_id,''),coalesce(company.recommendation_conflict,false)
  FROM source_order_versions v JOIN source_mappings m ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'
  LEFT JOIN source_payment_companies company ON company.source_version_id=v.id
@@ -94,7 +94,7 @@ const practicePaymentsSQL = `SELECT v.id,v.fact,coalesce(company.company_id,''),
    AND NOT EXISTS(
     SELECT 1 FROM source_order_versions newer
     WHERE (newer.source,newer.order_id,newer.line_id,newer.record_key,newer.kind)=(v.source,v.order_id,v.line_id,v.record_key,v.kind)
-      AND (newer.updated_at,newer.id)>(v.updated_at,v.id)
+      AND ` + practicePaymentVersionOrder("newer") + `>` + practicePaymentVersionOrder("v") + `
    )
  ORDER BY v.order_id,v.id LIMIT $3`
 
@@ -125,7 +125,7 @@ SELECT e.id,CASE WHEN booked.id IS NOT NULL THEN '` + practicePaymentAlreadySett
  )`
 
 func readPracticeMembers(ctx context.Context, tx pgx.Tx, rosterIDs []int64, eligibleOnly bool) ([]practiceEnrollment, error) {
-	rows, err := tx.Query(ctx, `SELECT e.id,e.source_enrollment_id,e.participant_id,e.membership_type,e.commission_eligible,e.signed_at,e.paid_order_ids,m.roster_id,first_roster.confirmed_at
+	rows, err := tx.Query(ctx, `SELECT e.id,e.source_enrollment_id,e.participant_id,e.membership_type,e.commission_eligible,e.signed_at,e.paid_order_ids,m.roster_id,first_roster.confirmed_at,e.period_key
 	 FROM practice_roster_members m JOIN practice_enrollments e ON e.id=m.enrollment_id
 	 JOIN LATERAL (SELECT r.confirmed_at FROM practice_rosters r WHERE r.period_key=e.period_key ORDER BY r.source_version LIMIT 1) first_roster ON true
 	 WHERE m.roster_id=ANY($1::bigint[]) AND (NOT $2 OR e.commission_eligible)
@@ -135,7 +135,7 @@ func readPracticeMembers(ctx context.Context, tx pgx.Tx, rosterIDs []int64, elig
 	}
 	members, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (practiceEnrollment, error) {
 		var e practiceEnrollment
-		err := row.Scan(&e.ID, &e.SourceEnrollmentID, &e.ParticipantID, &e.MembershipType, &e.CommissionEligible, &e.SignedAt, &e.PaidOrderIDs, &e.RosterID, &e.ConfirmedAt)
+		err := row.Scan(&e.ID, &e.SourceEnrollmentID, &e.ParticipantID, &e.MembershipType, &e.CommissionEligible, &e.SignedAt, &e.PaidOrderIDs, &e.RosterID, &e.ConfirmedAt, &e.PeriodKey)
 		return e, err
 	})
 	if len(members) > maxDraftPayments {

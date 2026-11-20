@@ -111,7 +111,7 @@ func appendPracticeRegistrationIssues(draft *paymentDraft, ruleID int64, member 
 	var incomplete bool
 	for _, purchase := range purchases {
 		enrollment := purchase.member
-		if purchase.issue != "" || member != "" && member != classMember(enrollment.MembershipType) {
+		if purchase.noReferrer || purchase.issue != "" || member != "" && member != classMember(enrollment.MembershipType) {
 			continue
 		}
 		input, found := inputs[enrollment.ID]

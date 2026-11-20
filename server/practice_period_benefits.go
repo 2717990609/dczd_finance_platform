@@ -328,6 +328,9 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		if !memberMatches {
 			continue
 		}
+		if p.noReferrer && (b.RegistrationScope != nil || len(b.SalesCompanies)+len(b.SalesPeople)+len(b.SalesUnits) != 0) {
+			continue
+		}
 		if scope := b.RegistrationScope; scope != nil {
 			input := runtime.registrations[p.member.ID]
 			if !scope.matches(input.SellerID, input.CompanyID) {

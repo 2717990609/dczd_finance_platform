@@ -45,6 +45,7 @@ watch(() => props.selection, async (selection, _, onCleanup) => {
           <a-descriptions-item v-if="order.paymentId" label="付款编号">{{ order.paymentId }}</a-descriptions-item>
           <a-descriptions-item v-if="order.refundId" label="退款编号">{{ order.refundId }}</a-descriptions-item>
           <a-descriptions-item v-if="order.referrerId" :label="order.practiceRegistration ? '报名销售账号' : '来源推荐人 ID'">{{ order.referrerId }}</a-descriptions-item>
+          <a-descriptions-item v-if="order.practiceNoReferrer" label="来源销售归属">无推荐人</a-descriptions-item>
           <a-descriptions-item v-if="order.salesAttribution?.length" label="来源销售归属">
             <ul class="order-attribution">
               <li v-for="(claim,index) in order.salesAttribution" :key="index">

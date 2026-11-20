@@ -32,6 +32,7 @@ type practicePurchase struct {
 	lateRefunds         []paymentInput
 	companyAward        *practiceCompanyAward
 	companyRoutingIssue string
+	noReferrer          bool
 	replaying           bool
 }
 
@@ -70,6 +71,7 @@ func preparePracticePurchases(members []practiceEnrollment, orders map[string][]
 			}
 		}
 		if purchase.issue == "" {
+			purchase.noReferrer = len(purchase.payments) == 1 && purchase.payments[0].Fact.PracticeNoReferrer.matches(member)
 			purchase.applyRefunds(refunds)
 		}
 		purchases = append(purchases, purchase)
@@ -102,7 +104,9 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		})
 	}
 	for i := range purchases {
-		purchases[i].classifyCompany(runtime.companyOffers, runtime.companyClassifications)
+		if !purchases[i].noReferrer {
+			purchases[i].classifyCompany(runtime.companyOffers, runtime.companyClassifications)
+		}
 	}
 	performancePayments := make(map[paymentKey]int)
 	for _, purchase := range purchases {
@@ -140,7 +144,10 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		}
 		for _, payment := range payments {
 			fact := payment.Fact
-			owner := performanceOwner(fact, &rule, classMember(member.MembershipType), identities)
+			var owner int64
+			if !purchase.noReferrer {
+				owner = performanceOwner(fact, &rule, classMember(member.MembershipType), identities)
+			}
 			if purchase.companyAward != nil {
 				seller, _ := paymentBeneficiary(fact, purchase.companyAward.role, identities)
 				owner = seller.PersonID
@@ -162,7 +169,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				return paymentDraft{}, err
 			}
 		}
-		var matched bool
+		matched := purchase.noReferrer
 		for index, part := range rule.Components {
 			if part.ClassMember != "" && part.ClassMember != classMember(member.MembershipType) {
 				continue
@@ -173,6 +180,9 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 			matched = true
 			if part.PeriodBenefit != nil {
+				continue
+			}
+			if purchase.noReferrer && (part.Type == "sales" || part.Type == "referral") {
 				continue
 			}
 			if part.Type == "sales" && (purchase.companyAward != nil || purchase.companyRoutingIssue != "") {

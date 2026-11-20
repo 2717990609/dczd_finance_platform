@@ -54,6 +54,7 @@ type sourceFact struct {
 	UpdatedAt         time.Time                `json:"updatedAt"`
 
 	PracticeRegistration *sourcePracticeRegistration `json:"-"`
+	PracticeNoReferrer   *sourcePracticeNoReferrer   `json:"practiceNoReferrer,omitempty"`
 }
 
 type sourcePaymentReference struct {
@@ -239,6 +240,7 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, RefundsPayment: refundTargets, ReferrerID: referrer, Participants: participants, SalesCompanyID: company, AmountMinor: amount,
 		ReferrerCompanyID: recommendedCompany, ReferrerConflict: recommendationConflict,
 		PracticeRegistration: readSourcePracticeRegistration(source, wire, referrer),
+		PracticeNoReferrer:   readSourcePracticeNoReferrer(source, wire),
 		OccurredAt:           occurredAt, UpdatedAt: wire.Record.UpdatedAt,
 		Classification: classification, VIPClaims: vipClaims}, nil
 }
