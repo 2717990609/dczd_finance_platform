@@ -186,6 +186,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-people", Handler: s.getCatalogRulePeople},
 		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.listForAuthorizedProducts(practiceCountOpeningsSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-rule-recipients", Handler: s.practiceRuleRecipients},
+		{Method: http.MethodGet, Path: "/api/v1/practice-registration-companies", Handler: s.practiceRegistrationCompanyOptions},
 		{Method: http.MethodPost, Path: "/api/v1/practice-registration-import/preview", Handler: submitJSON(896<<10, s.previewPracticeRegistrationImport)},
 		{Method: http.MethodPost, Path: "/api/v1/practice-pools", Handler: submit(s.createPracticePool)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},

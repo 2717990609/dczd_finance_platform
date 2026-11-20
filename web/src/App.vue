@@ -216,6 +216,9 @@ const visibleProducts = computed(() => {
 const peopleOptions = computed(() => data.value.people.map(p => ({value:p.id,label:p.name})))
 const identityPeopleOptions = computed(() => data.value.people.map(p => ({value:p.id,label:p.name+' · '+p.id})))
 const classRuleDirectory = ref()
+const registrationCompanies = ref()
+const registrationCompaniesLoading = ref(false)
+const registrationCompaniesError = ref('')
 const classPeopleOptions = computed(() => classRuleDirectory.value?.people.map(person=>({value:person.id,label:person.name})) || peopleOptions.value)
 const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({value:unit.id,label:unit.name})) || [])
 const salesUnitOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>['DEPARTMENT','TEAM'].includes(unit.kind))
@@ -882,6 +885,36 @@ watch(() => drawer.value==='rule' && classRule.value ? draft.value.productId : u
     if (current) classRuleDirectory.value = directory
   } catch (err) {
     if (current) formError.value = err.message
+  }
+})
+watch(() => {
+  const saved = viewedRule.value
+  const rule = saved || (drawer.value==='rule' && classRule.value ? draft.value : undefined)
+  if (!rule?.components?.some(part=>part.periodBenefit?.registrationScope)) return
+  const params = new URLSearchParams({productId:rule.productId})
+  if (rule.periodId && (saved || rule.scope==='period')) {
+    params.set('periodId',rule.periodId)
+  } else if (rule.effectiveFrom) {
+    const value = saved || rule.editBaseId ? rule.effectiveFrom : rule.effectiveFrom+'+08:00'
+    const time = Date.parse(value)
+    if (!Number.isFinite(time)) return
+    params.set('effectiveFrom',new Date(time).toISOString())
+  } else return
+  return '/practice-registration-companies?'+params
+}, async (path, _, onCleanup) => {
+  registrationCompanies.value = undefined
+  registrationCompaniesError.value = ''
+  registrationCompaniesLoading.value = Boolean(path)
+  if (!path) return
+  let current = true
+  onCleanup(() => { current = false })
+  try {
+    const companies = await api(path)
+    if (current) registrationCompanies.value = companies
+  } catch (err) {
+    if (current) registrationCompaniesError.value = err.message
+  } finally {
+    if (current) registrationCompaniesLoading.value = false
   }
 })
 function resetOrders() {
@@ -1599,6 +1632,7 @@ async function save() {
     </div>
     <div v-if="rulePreview" ref="previewPane" class="rule-draft-preview" tabindex="-1" aria-label="发布前预览">
       <RuleVersionDetails :rule="rulePreview" embedded :class-product="classRule" :recipients="classRuleDirectory"
+        :registration-companies="registrationCompanies"
         :option-label="optionLabel" :people="data.people" :opening-label="savedOpeningLabel"
         :format-time="formatTime" :format-money="formatMoney"/>
       <RuleImpactPreview v-model:busy="ruleImpactBusy" :periods="previewPeriods" :period-id="rulePreview.periodId"
@@ -1743,6 +1777,7 @@ async function save() {
             :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"
             :retrain-unavailable="draft.components.some(other=>other!==c && other.type==='sales' && matchesPracticeMember(other,'retrain'))"/>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
+            :registration-companies="registrationCompanies" :registration-loading="registrationCompaniesLoading" :registration-error="registrationCompaniesError"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
             :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')" :sales-units="salesUnitOptions"
             :pools="practicePoolOptions" :create-pool="createPracticePool"/>
@@ -1851,7 +1886,7 @@ async function save() {
     :rule="viewedRule" :can-copy="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId))"
     :title="appliedRule?.rule ? (appliedRule.fromIssue ? '试算使用的规则' : '计提使用的规则') : undefined"
     :component="appliedRule?.rule ? appliedRule.component : undefined"
-    :recipients="appliedRule?.directory"
+    :recipients="appliedRule?.directory" :registration-companies="registrationCompanies"
     :class-product="data.products.find(product => product.id===viewedRule.productId)?.periodMode==='class'"
     :api="api" :people="data.people" :option-label="optionLabel" :opening-label="savedOpeningLabel"
     :format-time="formatTime" :format-money="formatMoney" @close="ruleDetails=undefined; appliedRule=undefined" @copy="copyRuleDetails"/>

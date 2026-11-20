@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,15 +56,30 @@ type practiceRegistrationImportPreview struct {
 	Issues     []practiceRegistrationImportIssue `json:"issues"`
 }
 
+type practiceRegistrationCompany struct {
+	Value string `json:"value"`
+	Label string `json:"label"`
+	Unit  string `json:"-"`
+}
+
 // Source-company scopes keep the same business IDs when an alias later expires.
 // Explicitly disabled options are still excluded.
-func readPracticeRegistrationCompanies(ctx context.Context, tx pgx.Tx, ids []string, at *time.Time) (map[string]string, error) {
-	rows, err := tx.Query(ctx, `SELECT wanted.id,coalesce(mapped.unit,'')
-	 FROM (SELECT DISTINCT unnest($1::text[]) AS id) wanted
+func readPracticeRegistrationCompanyOptions(ctx context.Context, tx pgx.Tx, ids []string, at *time.Time) ([]practiceRegistrationCompany, error) {
+	rows, err := tx.Query(ctx, `SELECT wanted.id,coalesce(mapped.unit,''),coalesce(mapped.name,o.label,wanted.id)
+	 FROM (
+	  SELECT unnest($1::text[]) AS id
+	  UNION SELECT option_key FROM configuration_options WHERE $1 IS NULL AND group_key='practiceSalesCompany' AND enabled
+	  UNION SELECT source_company_id FROM organization_company_sources WHERE $1 IS NULL AND source='DCZD'
+	   AND ((valid_from<=coalesce($2::timestamptz,CURRENT_TIMESTAMP)
+	      AND (valid_to IS NULL OR coalesce($2::timestamptz,CURRENT_TIMESTAMP)<valid_to))
+	    OR (valid_from<=CURRENT_TIMESTAMP AND (valid_to IS NULL OR CURRENT_TIMESTAMP<valid_to)))
+	 ) wanted
 	 LEFT JOIN configuration_options o ON o.group_key='practiceSalesCompany' AND o.option_key=wanted.id
 	 LEFT JOIN LATERAL (
 	  SELECT CASE WHEN count(DISTINCT u.id) FILTER (WHERE active.at_start)=1
 	    THEN min(u.id::text) FILTER (WHERE active.at_start) END AS unit,
+	   CASE WHEN count(DISTINCT u.id) FILTER (WHERE active.at_start)=1 THEN min(u.name) FILTER (WHERE active.at_start)
+	    WHEN count(DISTINCT u.id) FILTER (WHERE active.now)=1 THEN min(u.name) FILTER (WHERE active.now) END AS name,
 	   count(DISTINCT u.id) FILTER (WHERE active.now)=1 AS known
 	  FROM organization_company_sources s
 	  JOIN organization_units u ON u.id=s.company_id AND u.status='ACTIVE' AND u.kind='COMPANY'
@@ -72,26 +89,46 @@ func readPracticeRegistrationCompanies(ctx context.Context, tx pgx.Tx, ids []str
 	    CURRENT_TIMESTAMP>=s.valid_from AND (s.valid_to IS NULL OR CURRENT_TIMESTAMP<s.valid_to) AS now
 	  ) active
 	  WHERE s.source='DCZD' AND s.source_company_id=wanted.id
-	 ) mapped ON true WHERE coalesce(o.enabled,mapped.unit IS NOT NULL OR mapped.known)`, ids, at)
+	 ) mapped ON true WHERE coalesce(o.enabled,mapped.unit IS NOT NULL OR mapped.known)
+	 ORDER BY 3,wanted.id`, ids, at)
 	if err != nil {
 		return nil, err
 	}
-	result := make(map[string]string)
-	var id, unit string
-	_, err = pgx.ForEachRow(rows, []any{&id, &unit}, func() error {
-		result[id] = unit
+	result := make([]practiceRegistrationCompany, 0)
+	var option practiceRegistrationCompany
+	_, err = pgx.ForEachRow(rows, []any{&option.Value, &option.Unit, &option.Label}, func() error {
+		result = append(result, option)
 		return nil
 	})
 	return result, err
 }
 
+func readPracticeRegistrationCompanies(ctx context.Context, tx pgx.Tx, ids []string, at *time.Time) (map[string]string, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	options, err := readPracticeRegistrationCompanyOptions(ctx, tx, ids, at)
+	result := make(map[string]string)
+	for _, option := range options {
+		result[option.Value] = option.Unit
+	}
+	return result, err
+}
+
+func practiceRegistrationCompanyTime(ctx context.Context, tx pgx.Tx, product, period int64) (*time.Time, error) {
+	var at time.Time
+	err := tx.QueryRow(ctx, `SELECT coalesce(roster.starts_at,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')
+	 FROM periods p LEFT JOIN LATERAL (
+	  SELECT starts_at FROM practice_rosters WHERE period_key=p.source_period_key ORDER BY source_version DESC LIMIT 1
+	 ) roster ON true WHERE p.id=$1 AND p.product_id=$2 AND p.calendar_month IS NULL`, period, product).Scan(&at)
+	return &at, err
+}
+
 func validatePracticeRegistrationCompanies(ctx context.Context, tx pgx.Tx, rule publishRuleInput, ids []string) error {
 	at := rule.EffectiveFrom
 	if rule.PeriodID != nil {
-		if err := tx.QueryRow(ctx, `SELECT coalesce(roster.starts_at,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')
-		 FROM periods p LEFT JOIN LATERAL (
-		  SELECT starts_at FROM practice_rosters WHERE period_key=p.source_period_key ORDER BY source_version DESC LIMIT 1
-		 ) roster ON true WHERE p.id=$1 AND p.product_id=$2`, *rule.PeriodID, rule.ProductID).Scan(&at); err != nil {
+		var err error
+		if at, err = practiceRegistrationCompanyTime(ctx, tx, rule.ProductID, *rule.PeriodID); err != nil {
 			return err
 		}
 	}
@@ -100,6 +137,54 @@ func validatePracticeRegistrationCompanies(ctx context.Context, tx pgx.Tx, rule 
 		err = errPracticeTierCompany
 	}
 	return err
+}
+
+func (s workspace) practiceRegistrationCompanyOptions(w http.ResponseWriter, r *http.Request) {
+	ctx, query := r.Context(), r.URL.Query()
+	product, err := strconv.ParseInt(query.Get("productId"), 10, 64)
+	if err != nil || product < 1 {
+		respond(w, nil, invalid)
+		return
+	}
+	if actor := financeUser(ctx); actor != nil && !actor.permitsRule(product, false) {
+		respond(w, nil, errFinanceForbidden)
+		return
+	}
+	var period int64
+	var at *time.Time
+	if raw := query.Get("periodId"); raw != "" {
+		period, err = strconv.ParseInt(raw, 10, 64)
+		if err != nil || period < 1 || query.Get("effectiveFrom") != "" {
+			respond(w, nil, invalid)
+			return
+		}
+	} else if raw := query.Get("effectiveFrom"); raw != "" {
+		start, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			respond(w, nil, invalid)
+			return
+		}
+		at = &start
+	}
+	var result []practiceRegistrationCompany
+	err = pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		var isClass bool
+		if err := tx.QueryRow(ctx, "SELECT period_mode='class' FROM products WHERE id=$1", product).Scan(&isClass); err != nil {
+			return err
+		}
+		if !isClass {
+			return invalid
+		}
+		var err error
+		if period != 0 {
+			if at, err = practiceRegistrationCompanyTime(ctx, tx, product, period); err != nil {
+				return err
+			}
+		}
+		result, err = readPracticeRegistrationCompanyOptions(ctx, tx, nil, at)
+		return err
+	})
+	respond(w, result, err)
 }
 
 func (s workspace) previewPracticeRegistrationImport(ctx context.Context, input practiceRegistrationImportInput) (practiceRegistrationImportPreview, error) {

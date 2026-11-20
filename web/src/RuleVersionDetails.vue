@@ -7,7 +7,7 @@ import { catalogRatePriorityLabel, exceptionCompanyIDs, ruleComponentLabel, stan
 const props = defineProps({
   rule: Object, canCopy: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
   formatTime: Function, formatMoney: Function, people: Array, openingLabel: Function, title: String, recipients: Object,
-  embedded: Boolean, component: String,
+  embedded: Boolean, component: String, registrationCompanies: Array,
 })
 const emit = defineEmits(['close','copy'])
 const loadedRecipients = ref()
@@ -30,6 +30,7 @@ const poolName = target => {
   return name+' · 分配负责人 '+personName(target.ownerId)
 }
 const companyName = key => label('practiceSalesCompany', key)
+const registrationCompanyName = key => props.registrationCompanies?.find(company=>company.value===key)?.label || companyName(key)
 function scheduleLabel(schedule) {
   if (schedule.personId) return '个人特例 · '+personName(schedule.personId)
   const companies = exceptionCompanyIDs(schedule)
@@ -200,8 +201,8 @@ onMounted(async () => {
           </template>
           <template v-if="part.periodBenefit">
             <template v-if="part.periodBenefit.registrationScope">
-              <p v-if="part.periodBenefit.registrationScope.sellerId">报名销售本人 {{ part.periodBenefit.registrationScope.sellerId }} · {{ companyName(part.periodBenefit.registrationScope.sellerCompanyId) }}</p>
-              <p v-if="part.periodBenefit.registrationScope.companies?.length">下属公司 {{ part.periodBenefit.registrationScope.companies.map(companyName).join('、') }}</p>
+              <p v-if="part.periodBenefit.registrationScope.sellerId">报名销售本人 {{ part.periodBenefit.registrationScope.sellerId }} · {{ registrationCompanyName(part.periodBenefit.registrationScope.sellerCompanyId) }}</p>
+              <p v-if="part.periodBenefit.registrationScope.companies?.length">下属公司 {{ part.periodBenefit.registrationScope.companies.map(registrationCompanyName).join('、') }}</p>
             </template>
             <p v-if="part.periodBenefit.salesCompanies?.length">销售公司 {{ part.periodBenefit.salesCompanies.map(companyName).join('、') }}</p>
             <p v-if="part.periodBenefit.salesPeople?.length">销售人员 {{ part.periodBenefit.salesPeople.map(personName).join('、') }} · {{ roleName(part.sourceRole) }}</p>

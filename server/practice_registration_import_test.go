@@ -4,13 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"testing"
 	"time"
 )
 
 func TestPracticeRegistrationScopeCanUseCompanyMappedAtItsEffectiveStart(t *testing.T) {
 	ctx := context.Background()
-	s := workspace{db: integrationDB(t)}
+	s := workspace{db: integrationDB(t), development: true}
 	id := func(result any, err error) int64 {
 		t.Helper()
 		if err != nil {
@@ -19,11 +22,12 @@ func TestPracticeRegistrationScopeCanUseCompanyMappedAtItsEffectiveStart(t *test
 		return result.(map[string]int64)["id"]
 	}
 	product := id(s.createProduct(ctx, createProductInput{Code: "REGISTRATION_IMPORT", Name: "班次范围导入验收", PeriodMode: "class"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "PRACTICE:2:4"}))
 	person := id(s.createPerson(ctx, createPersonInput{Name: "收款人"}))
 	if _, err := s.db.Exec(ctx, `INSERT INTO organization_units(id,kind,name,status)
 	 VALUES('45000000-0000-4000-8000-000000000001','COMPANY','历史下属公司','ACTIVE');
 	 INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from,valid_to)
-	 VALUES('DCZD','98812','45000000-0000-4000-8000-000000000001','2020-01-01','2021-01-01');`); err != nil {
+	 VALUES('DCZD','98812','45000000-0000-4000-8000-000000000001','2020-06-08 08:00+08','2021-01-01');`); err != nil {
 		t.Fatal(err)
 	}
 	at := time.Date(2020, 6, 8, 9, 38, 0, 0, shanghai)
@@ -34,6 +38,45 @@ func TestPracticeRegistrationScopeCanUseCompanyMappedAtItsEffectiveStart(t *test
 		}}}}
 	if _, err := s.publishRule(ctx, input); err != nil {
 		t.Fatalf("company mapped at the rule's effective start: %v", err)
+	}
+	var directory http.HandlerFunc
+	for _, route := range s.routes() {
+		if route.Method == "GET" && route.Path == "/api/v1/practice-registration-companies" {
+			directory = route.Handler
+		}
+	}
+	if directory == nil {
+		t.Fatal("the rule editor needs a scoped company directory")
+	}
+	hasHistoricalCompany := func(query string) bool {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		directory(recorder, httptest.NewRequest("GET", "/api/v1/practice-registration-companies?productId="+
+			strconv.FormatInt(product, 10)+"&"+query, nil))
+		var options []struct{ Value, Label string }
+		if err := json.Unmarshal(recorder.Body.Bytes(), &options); err != nil || recorder.Code != http.StatusOK {
+			t.Fatalf("could not read scoped companies: HTTP %d %v", recorder.Code, err)
+		}
+		for _, option := range options {
+			if option.Value == "98812" {
+				return option.Label == "历史下属公司"
+			}
+		}
+		return false
+	}
+	if hasHistoricalCompany("effectiveFrom=2020-06-07T23:59:59Z") ||
+		!hasHistoricalCompany("effectiveFrom=2020-06-08T01:38:00Z") || hasHistoricalCompany("effectiveFrom=2022-06-08T01:38:00Z") {
+		t.Fatal("historical company names must be selectable for the time when their mapping was effective")
+	}
+	const periodKey = "PRACTICE:2:4:95"
+	period := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "旧期次", Ordinal: ordinal,
+		StartsOn: "2020-06-08", EndsOn: "2020-06-08", SourcePeriodKey: periodKey}))
+	if _, err := s.db.Exec(ctx, `INSERT INTO practice_rosters(period_key,source_version,source_hash,starts_at,confirmed_at,attendance_count)
+	 VALUES($1,1,'old-session',$2,$2,0)`, periodKey, at); err != nil {
+		t.Fatal(err)
+	}
+	if !hasHistoricalCompany("periodId=" + strconv.FormatInt(period, 10)) {
+		t.Fatal("a selected old class must offer the company used at that class")
 	}
 	at = at.AddDate(2, 0, 0)
 	if _, err := s.publishRule(ctx, input); !errors.Is(err, errPracticeTierCompany) {

@@ -4,12 +4,13 @@ import PracticePoolFields from './PracticePoolFields.vue'
 
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array,
+  registrationCompanies:Array, registrationLoading:Boolean, registrationError:String,
   recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
 })
 const config = computed(() => props.component.periodBenefit)
 const registration = computed(() => config.value.registrationScope)
 const salesSources = [{value:'payment',label:'付款订单'}, {value:'registration',label:'签到报名'}]
-const registrationCompanies = computed(() => props.companies.filter(option=>/^[1-9]\d*$/.test(option.value)))
+const registrationCompanies = computed(() => (props.registrationCompanies ?? props.companies).filter(option=>/^[1-9]\d*$/.test(option.value)))
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 const field = name => 'practice-benefit-'+props.index+'-'+name
 const calculationMethods = [
@@ -74,6 +75,7 @@ const calculationMethods = [
           @change="config.registrationScope=$event==='registration' ? {} : undefined"/>
       </a-form-item>
       <template v-if="registration">
+        <a-alert v-if="registrationError" type="warning" :message="registrationError" show-icon/>
         <div class="period-fields">
           <a-form-item label="本人销售账号" :html-for="field('registration-seller')">
             <a-input :id="field('registration-seller')" v-model:value="registration.sellerId" inputmode="numeric"
@@ -81,12 +83,12 @@ const calculationMethods = [
           </a-form-item>
           <a-form-item label="本人销售公司" :html-for="field('registration-company')">
             <a-select :id="field('registration-company')" v-model:value="registration.sellerCompanyId" :options="registrationCompanies"
-              show-search allow-clear :filter-option="byName"/>
+              :loading="registrationLoading" show-search allow-clear :filter-option="byName"/>
           </a-form-item>
         </div>
         <a-form-item label="下属公司" :html-for="field('registration-companies')">
           <a-select :id="field('registration-companies')" v-model:value="registration.companies" :options="registrationCompanies"
-            mode="multiple" :max-tag-count="4" allow-clear :filter-option="byName"/>
+            :loading="registrationLoading" mode="multiple" :max-tag-count="4" allow-clear :filter-option="byName"/>
         </a-form-item>
       </template>
       <template v-else>
