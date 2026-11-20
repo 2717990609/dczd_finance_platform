@@ -38,6 +38,7 @@ type catalogConditionInput struct {
 	Category     string   `json:"category,omitempty"`
 	CategoryIDs  []string `json:"categoryIds,omitempty"`
 	Rate         *int64   `json:"rateBps"`
+	Payee        string   `json:"payee,omitempty"`
 }
 
 type catalogNewRateRow struct {
@@ -123,6 +124,7 @@ func (o catalogStructureOptions) condition(row catalogConditionInput) (json.RawM
 	rate := vipRateRow{Company: row.Company, CompanyIDs: row.CompanyIDs, Relationship: row.Relationship,
 		Category: row.Category, CategoryIDs: row.CategoryIDs}
 	if row.Rate == nil || *row.Rate < 0 || *row.Rate > 10000 || !rate.validScope() ||
+		row.Payee != "" && row.Payee != "seller" && row.Payee != vipPayeeSalesCompany ||
 		catalogStructureOptionFor(o.Relationships, row.Relationship).Value == "" {
 		return nil, invalid
 	}
@@ -137,6 +139,9 @@ func (o catalogStructureOptions) condition(row catalogConditionInput) (json.RawM
 		}
 	}
 	rate.Rate = *row.Rate
+	if row.Payee == vipPayeeSalesCompany {
+		rate.Payee = row.Payee
+	}
 	return json.Marshal(rate)
 }
 
@@ -154,6 +159,7 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 	if err != nil {
 		return nil, err
 	}
+	before, _ := readVIPSalesPolicy(raw)
 	positions := make(map[string]int, len(actions))
 	for i, action := range actions {
 		var key string
@@ -165,7 +171,7 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 	tableEdits := make(map[string][]catalogNewRateRow)
 	for _, row := range rateRows {
 		index, found := positions[row.ItemKey]
-		if !found || string(actions[index]["type"]) != `"RATE_TABLE"` {
+		if !found || string(actions[index]["type"]) != `"RATE_TABLE"` || row.Payee != "" && row.ItemKey != before.Item {
 			return nil, invalid
 		}
 		tableEdits[row.ItemKey] = append(tableEdits[row.ItemKey], row)
@@ -207,7 +213,6 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 	if err != nil {
 		return nil, err
 	}
-	before, _ := readVIPSalesPolicy(raw)
 	if err := changeCatalogBenefitTargets(actions, before.Item, targets, options, keys); err != nil {
 		return nil, err
 	}
@@ -267,6 +272,9 @@ func changeCatalogRateRows(existing []json.RawMessage, edits []catalogNewRateRow
 			}
 			if id := prior["id"]; len(id) != 0 {
 				replacement["id"] = id
+			}
+			if payee := prior["sales_payee"]; len(payee) != 0 && edit.Payee == "" {
+				replacement["sales_payee"] = payee
 			}
 			value, err = json.Marshal(replacement)
 			if err != nil {
@@ -356,6 +364,9 @@ func newCatalogBenefitAction(key string,
 	}
 	if action.Type == "RATE_TABLE" {
 		for _, row := range item.Rows {
+			if row.Payee != "" {
+				return nil, invalid
+			}
 			value, err := options.condition(row)
 			if err != nil {
 				return nil, err

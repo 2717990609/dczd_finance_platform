@@ -17,7 +17,10 @@ type vipRateRow struct {
 	CategoryIDs     []string `json:"sales_category_ids,omitempty"`
 	SnapshotDefault bool     `json:"sales_category_snapshot_default"`
 	Rate            int64    `json:"rate_bps"`
+	Payee           string   `json:"sales_payee,omitempty"`
 }
+
+const vipPayeeSalesCompany = "sales_company"
 
 func (r vipRateRow) companies() []string {
 	if len(r.CompanyIDs) != 0 {
@@ -198,14 +201,14 @@ func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(raw, &row) != nil || json.Unmarshal(raw, &fields) != nil ||
 			len(fields["rate_bps"]) == 0 || string(fields["rate_bps"]) == "null" ||
-			!row.validScope() || row.Rate < 0 || row.Rate > 10000 ||
+			!row.validScope() || row.Rate < 0 || row.Rate > 10000 || row.Payee != "" && row.Payee != vipPayeeSalesCompany ||
 			!slices.Contains([]string{"ANY", "DIRECT", "INDIRECT", "NONE"}, row.Relationship) {
 			return nil, false
 		}
 		for key := range fields {
 			switch key {
 			case "id", "rate_bps", "sales_relationship", "sales_organization_party_id", "sales_organization_party_ids",
-				"sales_category_id", "sales_category_ids", "sales_category_snapshot_default":
+				"sales_category_id", "sales_category_ids", "sales_category_snapshot_default", "sales_payee":
 			default:
 				return nil, false
 			}
@@ -216,16 +219,21 @@ func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
 }
 
 func resolveVIPRate(rows []vipRateRow, company, relationship string, category *string) (int64, string) {
+	row, issue := selectVIPRate(rows, company, relationship, category)
+	return row.Rate, issue
+}
+
+func selectVIPRate(rows []vipRateRow, company, relationship string, category *string) (vipRateRow, string) {
 	categorized := slices.ContainsFunc(rows, vipRateRow.hasCategory)
 	return resolveVIPRateRows(rows, company, relationship, category, categorized)
 }
 
-func resolveVIPRateRows(rows []vipRateRow, company, relationship string, category *string, categorized bool) (int64, string) {
+func resolveVIPRateRows(rows []vipRateRow, company, relationship string, category *string, categorized bool) (vipRateRow, string) {
 	if company == "" {
-		return 0, "SALES_COMPANY_MISSING"
+		return vipRateRow{}, "SALES_COMPANY_MISSING"
 	}
 	if relationship != "" && relationship != "DIRECT" && relationship != "INDIRECT" && relationship != "NONE" {
-		return 0, "SALES_RELATIONSHIP_MISSING"
+		return vipRateRow{}, "SALES_RELATIONSHIP_MISSING"
 	}
 	var groups [4][]vipRateRow
 	for _, row := range rows {
@@ -249,18 +257,18 @@ func resolveVIPRateRows(rows []vipRateRow, company, relationship string, categor
 		groups[tier] = append(groups[tier], row)
 	}
 	if categorized && category == nil && len(groups[0])+len(groups[2]) == 0 {
-		return 0, "SALES_CATEGORY_MISSING"
+		return vipRateRow{}, "SALES_CATEGORY_MISSING"
 	}
 	for _, choices := range groups {
 		if len(choices) == 0 {
 			continue
 		}
 		best := -1
-		var rate int64
+		var winner vipRateRow
 		tie := false
 		for _, row := range choices {
 			if relationship == "" && row.Relationship != "ANY" {
-				return 0, "SALES_RELATIONSHIP_MISSING"
+				return vipRateRow{}, "SALES_RELATIONSHIP_MISSING"
 			}
 			score := 0
 			if row.Relationship != "ANY" {
@@ -271,17 +279,17 @@ func resolveVIPRateRows(rows []vipRateRow, company, relationship string, categor
 			}
 			switch {
 			case score > best:
-				best, rate, tie = score, row.Rate, false
+				best, winner, tie = score, row, false
 			case score == best:
 				tie = true
 			}
 		}
-		if tie || rate < 0 || rate > 10000 {
-			return 0, "SALES_RATE_CONFLICT"
+		if tie || winner.Rate < 0 || winner.Rate > 10000 {
+			return vipRateRow{}, "SALES_RATE_CONFLICT"
 		}
-		return rate, ""
+		return winner, ""
 	}
-	return 0, "SALES_RATE_MISSING"
+	return vipRateRow{}, "SALES_RATE_MISSING"
 }
 
 type vipInterval struct {
@@ -311,7 +319,7 @@ type vipSalesData struct {
 
 type vipSalesRequest struct {
 	Order, Product, Project, Seller, Company, Relationship string
-	CompanyUnit                                            string
+	CompanyUnit, CompanyName                               string
 	Category                                               *string // Empty when explicitly unclassified, nil without a history record.
 	Paid, OriginalPaid                                     int64
 	At                                                     time.Time
@@ -319,11 +327,13 @@ type vipSalesRequest struct {
 }
 
 type vipSalesPart struct {
-	Role   string `json:"role"`
-	Person string `json:"-"`
-	Name   string `json:"personName"`
-	Rate   int64  `json:"rate"`
-	Amount int64  `json:"amountMinor"`
+	Role        string `json:"role"`
+	Person      string `json:"-"`
+	Name        string `json:"personName"`
+	Rate        int64  `json:"rate"`
+	Amount      int64  `json:"amountMinor"`
+	CompanyUnit string `json:"-"`
+	CompanyName string `json:"companyName,omitempty"`
 }
 
 const vipSalesAppointmentInactive = "SALES_APPOINTMENT_INACTIVE"
@@ -371,7 +381,8 @@ func calculateVIPSales(policy vipSalesPolicy, req vipSalesRequest, d vipSalesDat
 			return nil, "SALES_COMPANY_REVIEW"
 		}
 	}
-	rate, issue := resolveVIPRate(policy.Sales, req.Company, req.Relationship, req.Category)
+	standard, issue := selectVIPRate(policy.Sales, req.Company, req.Relationship, req.Category)
+	rate := standard.Rate
 	sellerName := d.People[req.Seller]
 	if issue == "" && rate == 0 {
 		// A known zero rate has no payout to qualify or split.
@@ -398,6 +409,15 @@ func calculateVIPSales(policy vipSalesPolicy, req vipSalesRequest, d vipSalesDat
 	amount := calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: rate})
 	parts := []vipSalesPart{{Role: "SALES", Person: req.Seller, Name: sellerName, Rate: rate, Amount: amount}}
 	teamIdx := slices.IndexFunc(policy.Split.Teams, func(t vipInternalTeam) bool { return t.Company == req.Company })
+	if standard.Payee == vipPayeeSalesCompany {
+		if teamIdx >= 0 {
+			return nil, "SALES_TEAM_PENDING"
+		}
+		if req.CompanyUnit == "" || req.CompanyName == "" {
+			return nil, "SALES_COMPANY_MISSING"
+		}
+		parts[0].CompanyUnit, parts[0].CompanyName = req.CompanyUnit, req.CompanyName
+	}
 	if teamIdx < 0 {
 		return parts, ""
 	}

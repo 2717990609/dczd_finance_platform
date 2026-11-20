@@ -23,9 +23,15 @@ export function catalogRateConditionBody(row) {
   const rateBps = rateAsBasisPoints(row.rate)
   if (!row.relationship || rateBps===undefined) throw new Error('请核对销售范围和比例。')
   return {relationship:row.relationship,rateBps,
+    ...(row.payee ? {payee:row.payee} : {}),
     ...(row.companyIds?.length ? {companyIds:row.companyIds} : {company:'ANY'}),
     ...(row.categoryIds?.length ? {categoryIds:row.categoryIds} : {})}
 }
+
+export const catalogSalesPayees = [
+  {value:'seller',label:'销售本人'},
+  {value:'sales_company',label:'销售所属公司'},
+]
 
 export function catalogPayeeComplete(payee) {
   switch (payee.target) {

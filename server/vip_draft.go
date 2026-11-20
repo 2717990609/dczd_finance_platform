@@ -194,7 +194,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 		if len(row.SalesParts) > 1 {
 			key += ":" + part.Role
 		}
-		if err := appendVIPDraftLine(result, row, rule, key, part.Person, "", "", part.Amount, salesRate, data, organizations); err != nil {
+		if err := appendVIPDraftLine(result, row, rule, key, part.Person, part.CompanyUnit, "", part.Amount, salesRate, data, organizations); err != nil {
 			return err
 		}
 	}

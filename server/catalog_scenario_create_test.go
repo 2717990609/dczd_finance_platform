@@ -75,7 +75,7 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		}
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/catalog-rule-rates", strings.NewReader(`{
 		 "effectiveFrom":"2026-10-01T00:00:00+08:00","create":{"productId":950,"sku":"FIRST","label":"首版分润",
-		 "salesRates":[{"company":"ANY","categoryIds":["10000000-0000-4000-8000-000000000957","10000000-0000-4000-8000-000000000958"],"relationship":"ANY","rateBps":1000},
+		 "salesRates":[{"company":"ANY","categoryIds":["10000000-0000-4000-8000-000000000957","10000000-0000-4000-8000-000000000958"],"relationship":"ANY","rateBps":1000,"payee":"sales_company"},
 		 {"companyIds":["10000000-0000-4000-8000-000000000953","10000000-0000-4000-8000-000000000955"],"relationship":"ANY","rateBps":1250}]},
 		 "newItems":[{"label":"公司安排","target":"company","organization":"10000000-0000-4000-8000-000000000954","rateBps":250},
 		 {"label":"固定交付","target":"company","organization":"10000000-0000-4000-8000-000000000954","fixedMinor":501},
@@ -114,6 +114,28 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	}
 	if result := trial.(draftSummary); result.Total != 4752 || result.LineCount != 7 || result.IssueCount != 0 {
 		t.Fatalf("trial must apply the company exception for one order and category default for the other: %+v", result)
+	}
+	var exceptionToSeller, defaultToCompany int
+	if err := db.QueryRow(ctx, `SELECT count(*) FILTER(WHERE src.order_id='101' AND l.person_id=9501 AND l.amount_minor=1250),
+	 count(*) FILTER(WHERE src.order_id='102' AND l.person_id IS NULL AND l.amount_minor=1000
+	  AND l.beneficiary_unit_id='10000000-0000-4000-8000-000000000956' AND perf.person_id=9501)
+	 FROM calculation_draft_lines l JOIN source_order_versions src ON src.id=l.source_version_id
+	 JOIN calculation_draft_performance perf ON (perf.period_id,perf.source_version_id)=(l.period_id,l.source_version_id)
+	 WHERE l.period_id=951 AND l.component_type='sales'`).Scan(&exceptionToSeller, &defaultToCompany); err != nil ||
+		exceptionToSeller != 1 || defaultToCompany != 1 {
+		t.Fatalf("winner must choose the payee and keep actual seller performance: %d %d %v", exceptionToSeller, defaultToCompany, err)
+	}
+	w = httptest.NewRecorder()
+	s.catalogMatches(w, httptest.NewRequest(http.MethodGet, "/api/v1/period-rule-matches?periodId=951", nil))
+	var orderDetails catalogMatchReport
+	if err := json.Unmarshal(w.Body.Bytes(), &orderDetails); err != nil || w.Code != 200 || len(orderDetails.Items) != 2 {
+		t.Fatalf("order match response should contain the two test orders: %d %s %v", w.Code, w.Body, err)
+	}
+	for _, match := range orderDetails.Items {
+		if match.OrderID == "102" && (len(match.SalesParts) != 1 || match.SalesParts[0].CompanyName != "类别默认公司" ||
+			match.SalesParts[0].Name != "成交销售样本") {
+			t.Fatalf("order detail must show both company and actual seller: %+v", match.SalesParts)
+		}
 	}
 	cut := time.Date(2026, 10, 1, 12, 0, 0, 0, shanghai)
 	revisedRate := int64(1250)
@@ -183,6 +205,13 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	}
 	if got := refunded.(draftSummary); got.RefundTotal != -1302 || got.RefundCount != 3 || got.IssueCount != 0 {
 		t.Fatalf("a half refund must recover 302 cents of the original 603-cent award in the refund period: %+v", got)
+	}
+	var companyDeduction int64
+	if err := db.QueryRow(ctx, `SELECT r.amount_minor FROM calculation_draft_refunds r
+	 JOIN calculation_draft_lines l ON l.id=r.original_line_id
+	 WHERE r.period_id=$1 AND l.component_type='sales' AND l.person_id IS NULL
+	  AND l.beneficiary_unit_id='10000000-0000-4000-8000-000000000953'`, postingPeriod).Scan(&companyDeduction); err != nil || companyDeduction != -500 {
+		t.Fatalf("the refund must recover half of the settled company payout: %d %v", companyDeduction, err)
 	}
 	originalAmount := int64(10000)
 	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {

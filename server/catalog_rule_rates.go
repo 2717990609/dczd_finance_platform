@@ -40,6 +40,7 @@ type catalogRateRow struct {
 	Category           string   `json:"category,omitempty"`
 	Scope              string   `json:"scope"`
 	Rate               int64    `json:"rateBps"`
+	Payee              string   `json:"payee,omitempty"`
 	TeamRate           bool     `json:"teamRate,omitempty"`
 	Fallback           bool     `json:"companyFallback,omitempty"`
 	CompanyIDs         []string `json:"companyIds,omitempty"`
@@ -150,7 +151,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 					Category:         joinedCaption(categories, entry.categories(), "销售类别名称待补"),
 					Relationship:     caption(relationships, entry.Relationship, "销售关系待核"),
 					RelationshipCode: entry.Relationship, CompanyIDs: companyIDs, CategoryIDs: categoryIDs,
-					LimitsRelationship: entry.Relationship != "ANY", Rate: entry.Rate, Scope: scope,
+					LimitsRelationship: entry.Relationship != "ANY", Rate: entry.Rate, Payee: entry.Payee, Scope: scope,
 					TeamRate: item.ItemKey == sales.Split.Item && slices.ContainsFunc(sales.Split.Teams, func(team vipInternalTeam) bool {
 						return entry.namesCompany(team.Company)
 					}),

@@ -85,6 +85,14 @@ func TestCatalogStructureCannotChangeInternalSplitViaNewCategory(t *testing.T) {
 	if !internalTeamRatesChanged(compared(base), compared(next)) {
 		t.Fatal("new category overrides the internal team fallback")
 	}
+	next[1].Rate, next[1].Payee = 1000, vipPayeeSalesCompany
+	if !internalTeamRatesChanged(compared(base), compared(next)) {
+		t.Fatal("the same percentage cannot redirect an internal team split to its company")
+	}
+	next[1].Company, next[1].Category = "outside", ""
+	if internalTeamRatesChanged(compared(base), compared(next)) {
+		t.Fatal("a different company may settle directly without changing the internal team split")
+	}
 }
 
 func TestCatalogPayeeEditPreservesRateTableAndOriginalRule(t *testing.T) {

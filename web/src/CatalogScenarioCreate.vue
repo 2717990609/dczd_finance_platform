@@ -97,7 +97,7 @@ async function publish() {
         <section class="rule-block rule-block-body" aria-label="成交销售">
           <h3 class="form-subhead">成交销售</h3>
           <div v-for="(_,index) in rates" :key="index" class="catalog-add-condition">
-            <CatalogRateCondition v-model="rates[index]" :options="options" :suffix="'-first-'+index"/>
+            <CatalogRateCondition v-model="rates[index]" :options="options" :suffix="'-first-'+index" sales-payee/>
             <a-button v-if="rates.length>1" type="link" @click="rates.splice(index,1)">移除此条件</a-button>
           </div>
           <a-button type="dashed" @click="rates.push(blankRate())">添加比例条件</a-button>

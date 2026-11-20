@@ -73,6 +73,7 @@ type vipRuntimeData struct {
 	BenefitReady                          bool
 	Organizations                         []vipBenefitOrganization
 	PersonIDs                             map[string]int64
+	CompanyNames                          map[string]string
 	vipSalesData
 }
 
@@ -152,6 +153,8 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
  'directoryUsers',(SELECT jsonb_agg(to_jsonb(directory_users)-'id') FROM directory_users),
  'companies',(SELECT jsonb_agg(to_jsonb(companies)) FROM companies),
  'directoryCompanies',(SELECT jsonb_agg(to_jsonb(directory_companies)) FROM directory_companies),
+ 'companyNames',(SELECT jsonb_object_agg(u.id,u.name) FROM organization_units u WHERE u.kind='COMPANY'
+  AND u.id IN (SELECT unit FROM companies UNION SELECT unit FROM directory_companies)),
  'directoryAliases',(SELECT jsonb_agg(to_jsonb(directory_aliases)) FROM directory_aliases),
  'categories',(SELECT jsonb_agg(jsonb_build_object('key',h.company_uuid,'value',h.category_uuid,'from',h.valid_from,'to',h.valid_to))
   FROM catalog_sales_categories h WHERE h.source='DCAI' AND h.observed_at=s.captured_at
@@ -261,6 +264,7 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 		return req, "SALES_COMPANY_CONFLICT"
 	}
 	req.Company, req.CompanyUnit = company.Value, company.Unit
+	req.CompanyName = d.CompanyNames[company.Unit]
 	category, conflict := resolveVIPLinkRecord(d.LocalCategories, req.CompanyUnit, sale.PaidAt)
 	if companyFromDirectory {
 		category, conflict = resolveVIPLinkRecord(d.DirectoryCategories, req.CompanyUnit, sale.PaidAt)

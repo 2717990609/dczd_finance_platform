@@ -2,7 +2,7 @@
 import { nextTick, ref, watch } from 'vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
-import { catalogFlatMethods, catalogPayeeComplete, catalogRateConditionBody, moneyAsMinor } from './rule-component-form'
+import { catalogFlatMethods, catalogPayeeComplete, catalogRateConditionBody, catalogSalesPayees, moneyAsMinor } from './rule-component-form'
 
 const props = defineProps({options:Object, component:Object, api:Function, peopleFilters:Object, parseRate:Function})
 const draft = defineModel({type:Object,required:true})
@@ -18,7 +18,8 @@ const percent = basisPoints => (basisPoints/100)+'%'
 function conditionLabel(condition) {
   return [condition.companyIds?.map(id=>labelFor(props.options.companies,id)).join('、') || '不限公司',
     condition.categoryIds?.map(id=>labelFor(props.options.categories,id)).join('、') || '不限类别',
-    labelFor(props.options.relationships,condition.relationship),percent(condition.rateBps)].join(' · ')
+    labelFor(props.options.relationships,condition.relationship),percent(condition.rateBps),
+    condition.payee && labelFor(catalogSalesPayees,condition.payee)].filter(Boolean).join(' · ')
 }
 function itemLabel(item) {
   const recipient = item.target==='referrer' ? '订单直接推荐人'
@@ -44,7 +45,8 @@ function editRateScope(entry, rate) {
   error.value = ''
   form.value = {kind:'row',itemKey:props.component.itemKey,itemLabel:props.component.label,rowNumber:entry.row,
     row:{companyIds:[...(pending?.companyIds || entry.companyIds || [])],categoryIds:[...(pending?.categoryIds || entry.categoryIds || [])],
-      relationship:pending?.relationship || entry.relationshipCode,rate:pending ? String(pending.rateBps/100) : rate}}
+      relationship:pending?.relationship || entry.relationshipCode,payee:pending?.payee || entry.payee,
+      rate:pending ? String(pending.rateBps/100) : rate}}
 }
 function cancel() {
   form.value = undefined
@@ -99,7 +101,7 @@ defineExpose({addRecipient,editRateScope})
       <a-alert v-if="error" :message="error" type="error" show-icon class="feedback"/>
       <template v-if="form.kind==='row'">
         <p class="workbench-scope-note">{{ form.itemLabel }}</p>
-        <CatalogRateCondition v-model="form.row" :options="options" :scope="form.scope"/>
+        <CatalogRateCondition v-model="form.row" :options="options" :scope="form.scope" :sales-payee="component?.targetKind==='seller'"/>
       </template>
       <template v-else>
         <a-form-item label="收款安排名称" html-for="catalog-add-label" required>

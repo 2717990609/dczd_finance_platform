@@ -5,7 +5,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
-import { catalogFlatMethods, catalogPayeeComplete, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogFlatMethods, catalogPayeeComplete, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
@@ -39,11 +39,12 @@ const rateColumns = [
   {title:'销售类别',key:'category',dataIndex:'category',width:170},
   {title:'销售关系',key:'relationship',dataIndex:'relationship',width:110},
   {title:'比例（%）',key:'rate',width:115},
+  {title:'收款方',key:'payee',width:128},
 ]
 const columns = computed(() => sheet.value?.mayPublish && !props.applied ? [...rateColumns,{title:'操作',key:'operation',width:142}] : rateColumns)
 const component = computed(() => sheet.value?.components.find(item => item.itemKey === selected.value))
 const targetKind = computed(() => targetEdits.value.get(selected.value)?.target || component.value?.targetKind)
-const targetKindLabels = {seller:'订单上的成交销售',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人'}
+const targetKindLabels = {seller:'按下表结算',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人'}
 const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人'}
 const teamSplit = computed(() => component.value?.teamSplit)
 const splitRows = computed(() => {
@@ -93,7 +94,8 @@ const displayedRates = computed(() => {
 const displayedColumns = computed(() => columns.value.filter(col=>
   (col.key!=='company' || rateGroup.value!=='default') &&
   (col.key!=='category' || rateGroup.value==='default' || activeRateGroup.value?.rows.some(row=>row.category)) &&
-  (col.key!=='relationship' || activeRateGroup.value?.rows.some(row=>row.limitsRelationship))))
+  (col.key!=='relationship' || activeRateGroup.value?.rows.some(row=>row.limitsRelationship)) &&
+  (col.key!=='payee' || component.value?.targetKind==='seller')))
 const tableWidth = computed(() => displayedColumns.value.reduce((width,column)=>width+column.width,0))
 async function addRecipient() {
   more.value = ['more']
@@ -106,6 +108,8 @@ async function editRateScope(row) {
   structureEditor.value?.editRateScope(row,displayRate(row.rateBps,row.row))
 }
 const pendingScope = (itemKey, row) => row && structure.value.rateRows.find(edit=>edit.itemKey===itemKey && edit.row===row)
+const salesPayeeLabel = row => row.teamRate ? '团队岗位拆分'
+  : catalogSalesPayees.find(choice=>choice.value===(pendingScope(selected.value,row.row)?.payee || row.payee || 'seller'))?.label
 const cellKey = (item, row) => JSON.stringify([item,row || 0])
 function toggleItemRemoval() {
   const key = selected.value
@@ -394,6 +398,7 @@ async function publish() {
                   <span v-else>{{ displayRate(record.rateBps,record.row) }}%</span>
                   <small v-if="record.teamRate" class="order-version">内部团队拆分</small>
                 </template>
+                <span v-else-if="column.key==='payee'">{{ salesPayeeLabel(record) }}</span>
                 <template v-if="column.key==='operation' && !itemRemoved">
                   <a-button v-if="removedRateRows.has(cellKey(selected,record.row))" type="link" size="small"
                     :disabled="saving" @click="toggleRowRemoval(record.row)">撤销删除</a-button>

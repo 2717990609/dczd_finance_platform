@@ -103,7 +103,7 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 		case "RATE_TABLE":
 			var ok bool
 			action.rates, ok = parseVIPRateTable(action.RateTable)
-			if !ok || action.Rate != nil {
+			if !ok || action.Rate != nil || slices.ContainsFunc(action.rates, func(row vipRateRow) bool { return row.Payee != "" }) {
 				return vipBenefitPolicy{}, false
 			}
 		default:

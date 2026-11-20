@@ -17,7 +17,7 @@ var (
 	errCatalogRateUnavailable    = errors.New("此规则未开放费率维护")
 	errCatalogRateDates          = errors.New("生效时间须晚于所选版本的起点")
 	errCatalogConfigurationOwned = errors.New("此产品已在本平台发布规则，请通过规则配置维护")
-	errCatalogTeamRate           = errors.New("此调整会改变内部销售的拆分总比例，请核对对应团队的拆分规则")
+	errCatalogTeamRate           = errors.New("此调整会改变内部团队的拆分比例或收款方式，请核对团队规则")
 	errCatalogRequiredEntry      = errors.New("请保留成交销售分项及其适用费率；费率表至少需要一行")
 )
 
@@ -445,9 +445,9 @@ func internalTeamRatesChanged(before, after vipSalesPolicy) bool {
 	for _, team := range before.Split.Teams {
 		for _, relationship := range []string{"", "DIRECT", "INDIRECT", "NONE"} {
 			for _, category := range categoryChecks {
-				oldRate, oldIssue := resolveVIPRate(before.Sales, team.Company, relationship, category)
-				newRate, newIssue := resolveVIPRate(after.Sales, team.Company, relationship, category)
-				if oldRate != newRate || oldIssue != newIssue {
+				oldRate, oldIssue := selectVIPRate(before.Sales, team.Company, relationship, category)
+				newRate, newIssue := selectVIPRate(after.Sales, team.Company, relationship, category)
+				if oldRate.Rate != newRate.Rate || oldRate.Payee != newRate.Payee || oldIssue != newIssue {
 					return true
 				}
 			}

@@ -1,7 +1,8 @@
 <script setup>
 import { computed } from 'vue'
+import { catalogSalesPayees } from './rule-component-form'
 
-const props = defineProps({options:Object, suffix:{type:String,default:''}, scope:String})
+const props = defineProps({options:Object, suffix:{type:String,default:''}, scope:String, salesPayee:Boolean})
 const value = defineModel({type:Object,required:true})
 const companies = computed(() => props.options.companies.filter(option=>option.value!=='ANY'))
 </script>
@@ -26,6 +27,11 @@ const companies = computed(() => props.options.companies.filter(option=>option.v
     <div>
       <label :for="'catalog-add-rate'+suffix">新增比例（%）</label>
       <a-input-number :id="'catalog-add-rate'+suffix" v-model:value="value.rate" :min="0" :max="100" :precision="2" string-mode/>
+    </div>
+    <div v-if="salesPayee">
+      <label :for="'catalog-add-payee'+suffix">收款方</label>
+      <a-select :id="'catalog-add-payee'+suffix" :value="value.payee || 'seller'" :options="catalogSalesPayees"
+        @update:value="value.payee=$event"/>
     </div>
   </div>
 </template>
