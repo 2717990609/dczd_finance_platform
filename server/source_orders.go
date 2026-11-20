@@ -53,8 +53,9 @@ type sourceFact struct {
 	OccurredAt        time.Time                `json:"occurredAt"`
 	UpdatedAt         time.Time                `json:"updatedAt"`
 
-	PracticeRegistration *sourcePracticeRegistration `json:"-"`
-	PracticeNoReferrer   *sourcePracticeNoReferrer   `json:"practiceNoReferrer,omitempty"`
+	PracticeRegistration    *sourcePracticeRegistration `json:"-"`
+	PracticeNoReferrer      *sourcePracticeSignup       `json:"practiceNoReferrer,omitempty"`
+	PracticeInactiveCompany *sourcePracticeSignup       `json:"practiceInactiveCompany,omitempty"`
 }
 
 type sourcePaymentReference struct {
@@ -234,14 +235,16 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 	if classification.Key != "" && wire.Kind == "ORDER_PAID" {
 		vipClaims = vipSourceClaims(wire.Attribution.Participants)
 	}
+	noReferrer, inactiveCompany := readSourcePracticeSalesExceptions(source, wire)
 	return sourceFact{Source: source, OrderID: orderID, OrderNo: wire.Order.No, LineID: wire.Order.Line,
 		RecordKey: wire.Record.Table + ":" + wire.Record.ID, Version: wire.Record.Version, Kind: wire.Kind, Domain: wire.Business.Domain,
 		SourceKey: wire.Business.Code, TransactionType: wire.Business.TransactionType, SourceStatus: wire.Order.Status.Code,
 		PaymentID: wire.Payment.ID, RefundID: wire.Refund.ID, RefundsPayment: refundTargets, ReferrerID: referrer, Participants: participants, SalesCompanyID: company, AmountMinor: amount,
 		ReferrerCompanyID: recommendedCompany, ReferrerConflict: recommendationConflict,
-		PracticeRegistration: readSourcePracticeRegistration(source, wire, referrer),
-		PracticeNoReferrer:   readSourcePracticeNoReferrer(source, wire),
-		OccurredAt:           occurredAt, UpdatedAt: wire.Record.UpdatedAt,
+		PracticeRegistration:    readSourcePracticeRegistration(source, wire, referrer),
+		PracticeNoReferrer:      noReferrer,
+		PracticeInactiveCompany: inactiveCompany,
+		OccurredAt:              occurredAt, UpdatedAt: wire.Record.UpdatedAt,
 		Classification: classification, VIPClaims: vipClaims}, nil
 }
 
@@ -469,10 +472,13 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING RETURNING id`,
 			f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, f.UpdatedAt, raw, f.OccurredAt, f.PracticeRegistration).Scan(&sourceVersion)
 		if errors.Is(e, pgx.ErrNoRows) {
-			var same bool
-			e = tx.QueryRow(ctx, `SELECT id,fact=$7::jsonb OR (NOT (fact ? 'participants') AND fact=$7::jsonb - 'participants') FROM source_order_versions
+			var same, hasInactiveCompany bool
+			e = tx.QueryRow(ctx, `SELECT id,v.fact=normalized.fact OR (NOT (v.fact ? 'participants') AND v.fact=normalized.fact-'participants'),
+			 v.fact ? 'practiceInactiveCompany' FROM source_order_versions v
+			 CROSS JOIN LATERAL (SELECT CASE WHEN v.fact ? 'practiceInactiveCompany' THEN $7::jsonb
+			  ELSE $7::jsonb-'practiceInactiveCompany' END AS fact) normalized
 			 WHERE source=$1 AND order_id=$2 AND line_id=$3 AND record_key=$4 AND version=$5 AND kind=$6`,
-				f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, raw).Scan(&sourceVersion, &same)
+				f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, raw).Scan(&sourceVersion, &same, &hasInactiveCompany)
 			if e != nil {
 				return 0, e
 			}
@@ -483,6 +489,16 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 				if metadataChanged, e = fillSourcePracticeRegistration(ctx, tx, sourceVersion, f.PracticeRegistration); e != nil {
 					return 0, e
 				}
+			}
+			if f.PracticeInactiveCompany != nil && !hasInactiveCompany {
+				// Backfill the source's display status on versions read by earlier builds.
+				tag, err := tx.Exec(ctx, `UPDATE source_order_versions
+				 SET fact=fact || jsonb_build_object('practiceInactiveCompany',$2::jsonb)
+				 WHERE id=$1 AND NOT (fact ? 'practiceInactiveCompany')`, sourceVersion, f.PracticeInactiveCompany)
+				if err != nil {
+					return 0, err
+				}
+				metadataChanged = metadataChanged || tag.RowsAffected() > 0
 			}
 		} else if e != nil {
 			return 0, e

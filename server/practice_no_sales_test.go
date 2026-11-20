@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -36,7 +37,7 @@ func TestPracticeNoReferrerRequiresValidSourceAndRosterMatch(t *testing.T) {
 		{`"NO_REFERRER"`, `"COMPANY_DISABLED_BEFORE_PAYMENT"`},
 	} {
 		fact, err := normalizeFact("DCZD", "1100", json.RawMessage(strings.Replace(raw, tc.old, tc.replacement, 1)))
-		if err != nil || fact.PracticeNoReferrer != nil {
+		if err != nil || fact.PracticeNoReferrer != nil || fact.PracticeInactiveCompany != nil {
 			t.Fatalf("only a qualified source payment may declare no referrer for %s: %+v %v", tc.replacement, fact.PracticeNoReferrer, err)
 		}
 	}
@@ -116,11 +117,35 @@ func TestPracticeNoReferrerKeepsIndependentBenefitsAndOriginalRefund(t *testing.
 		}
 		return fact
 	}
-	old := fmt.Sprintf(strings.Replace(practiceNoReferrerPayment, `"NO_REFERRER"`, `"COMPANY_DISABLED_BEFORE_PAYMENT"`, 1), revision+1)
-	store(normalize(old))
+	old := fmt.Sprintf(strings.Replace(practiceNoReferrerPayment, `"NO_REFERRER"`, `"COMPANY_DISABLED_BEFORE_PAYMENT",
+	 "inactive_sales_referrer_id":91,"inactive_sales_company_id":30,"inactive_sales_membership_id":1201`, 1), revision+1)
+	marked := normalize(old)
+	legacy := marked
+	legacy.PracticeInactiveCompany = nil
+	store(legacy)
+	store(marked)
+	store(marked)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{legacy})
+		return err
+	}); !errors.Is(err, conflict) {
+		t.Fatalf("an existing diagnostic should not be erased by rereading the same version: %v", err)
+	}
+	var originalVersions int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM source_order_versions
+	 WHERE source='DCZD' AND order_id='1100' AND kind='ORDER_PAID'`).Scan(&originalVersions); err != nil || originalVersions != 1 {
+		t.Fatalf("rereading the same business version should retain one payment version: %d %v", originalVersions, err)
+	}
 	unconfirmed, err := s.calculateCurrentDraft(ctx, period, 0)
 	if err != nil || unconfirmed.IssueCount == 0 || unconfirmed.Total != 400 {
 		t.Fatalf("an unconfirmed source case must retain the sale issue and the independent benefit: %+v %v", unconfirmed, err)
+	}
+	var inactiveIssue bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM calculation_draft_issues i
+	 JOIN source_order_versions v ON v.id=i.source_version_id
+	 WHERE i.period_id=$1 AND i.code='PRACTICE_SALES_COMPANY_INACTIVE' AND v.order_id='1100')`, period).
+		Scan(&inactiveIssue); err != nil || !inactiveIssue {
+		t.Fatalf("the inactive-company issue should open the exact payment version: %t %v", inactiveIssue, err)
 	}
 	store(normalize(raw))
 	lateOlder := fmt.Sprintf(strings.NewReplacer(`"registration_id":1701`, `"registration_id":1709`,

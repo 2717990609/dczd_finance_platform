@@ -59,6 +59,7 @@ watch(() => props.selection, async (selection, _, onCleanup) => {
           <a-descriptions-item v-if="order.referrerId" :label="order.practiceRegistration ? '报名销售账号' : '来源推荐人 ID'">{{ order.referrerId }}</a-descriptions-item>
           <a-descriptions-item v-for="entry in referralAccounts" :key="entry.role" :label="entry.label">{{ entry.accounts.join('、') }}</a-descriptions-item>
           <a-descriptions-item v-if="order.practiceNoReferrer" label="来源销售归属">无推荐人</a-descriptions-item>
+          <a-descriptions-item v-if="order.practiceInactiveCompany" label="来源销售归属">原销售公司在付款前已停用</a-descriptions-item>
           <a-descriptions-item v-if="order.salesAttribution?.length" label="来源销售归属">
             <ul class="order-attribution">
               <li v-for="(claim,index) in order.salesAttribution" :key="index">

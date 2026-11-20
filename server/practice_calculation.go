@@ -36,6 +36,17 @@ type practicePurchase struct {
 	replaying           bool
 }
 
+func (p practicePurchase) salesIssue(code string, rule paymentRule, part string) draftIssue {
+	issue := practiceIssue(code, p.member, rule, part)
+	if (code == "PRACTICE_TIER_COMPANY_MISSING" || code == "MISSING_PARTICIPANT") && len(p.payments) == 1 {
+		payment := p.payments[0]
+		if payment.Fact.PracticeInactiveCompany.matches(p.member) {
+			issue.Code, issue.FactID = "PRACTICE_SALES_COMPANY_INACTIVE", payment.ID
+		}
+	}
+	return issue
+}
+
 type practiceDraftRuntime struct {
 	appointments           map[practiceAppointmentKey][]practiceAppointment
 	registrations          map[int64]practiceRegistrationInput
@@ -162,7 +173,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 		}
 		if purchase.companyRoutingIssue != "" {
-			draft.Issues = append(draft.Issues, practiceIssue(purchase.companyRoutingIssue, member, rule, "company_sales"))
+			draft.Issues = append(draft.Issues, purchase.salesIssue(purchase.companyRoutingIssue, rule, "company_sales"))
 		}
 		if purchase.companyAward != nil {
 			if err := appendPracticeCompanySale(&draft, rule, purchase, runtime, identities); err != nil {
@@ -191,7 +202,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			if len(part.salesCompanies()) != 0 {
 				company, issue := practicePurchaseCompany(payments)
 				if issue != "" {
-					draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+					draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
 					continue
 				}
 				if !slices.Contains(part.salesCompanies(), company) {
@@ -204,7 +215,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 			assignments, issue := practiceBeneficiaries(payments, part.SourceRole, identities)
 			if issue != "" {
-				draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+				draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
 				continue
 			}
 			split, issue := purchase.retrainSplit(part.retrainSplits())

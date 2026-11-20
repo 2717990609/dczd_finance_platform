@@ -128,6 +128,7 @@ const reason = {
   PRACTICE_INVALID_PAYMENT: '付款金额或发生时间不符合签到计提条件',
   PRACTICE_ATTRIBUTION_CONFLICT: '订金与尾款的受益人归属不一致',
   PRACTICE_TIER_COMPANY_MISSING: '付款记录缺少销售公司',
+  PRACTICE_SALES_COMPANY_INACTIVE: '原销售公司在付款前已停用，请在大春之道核对后重新拉取',
   PRACTICE_TIER_COMPANY_CONFLICT: '订金和尾款的销售公司不一致',
   PRACTICE_COMPANY_RECIPIENT_MISSING: '付款时的收款公司映射缺失',
   PRACTICE_COMPANY_RECIPIENT_CONFLICT: '付款时的收款公司映射有冲突',
