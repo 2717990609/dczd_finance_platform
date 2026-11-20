@@ -61,7 +61,7 @@ func buildCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, create 
 		return nil, errCatalogPeriodFirstStart
 	}
 	initial, err := json.Marshal(map[string]any{
-		"schema_version": "1.1", "recognition_trigger": "PAID", "amount_basis": "ACTUAL_RECEIVED",
+		"schema_version": "1.1", "recognition_trigger": catalogPeriodProductRecognition, "amount_basis": "ACTUAL_RECEIVED",
 		"stacking_policy": "SUM", "refund_policy": "PROPORTIONAL",
 		"rounding_policy":   map[string]any{"mode": "HALF_UP", "scale": 2},
 		"settlement_policy": map[string]string{"cycle": create.Cycle, "negative_balance_policy": "CARRY_FORWARD"},

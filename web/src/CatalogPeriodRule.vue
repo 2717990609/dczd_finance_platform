@@ -79,10 +79,11 @@ const performanceChanged = computed(() => JSON.stringify(performanceScope.value)
 const changed = computed(() => creating.value ? Boolean(ruleName.value.trim() && scenarioCodes.value.length && rows.value.length)
   : componentsChanged.value || scenariosChanged.value || performanceChanged.value)
 const scenarioOptions = computed(() => {
-  const available = new Map((sheet.value?.options?.scenarios || []).map(sku=>[sku.code,{value:sku.code,label:sku.label}]))
+  const label = sku => sku.label+(sku.requiresCompletion ? ' · 完成后计提' : '')
+  const available = new Map((sheet.value?.options?.scenarios || []).map(sku=>[sku.code,{value:sku.code,label:label(sku)}]))
   for (const sku of sheet.value?.scenarios || []) {
     if (!available.has(sku.code)) {
-      available.set(sku.code,{value:sku.code,label:sku.mapped ? sku.label : sku.label+'（尚未映射）',disabled:sku.locked})
+      available.set(sku.code,{value:sku.code,label:sku.mapped ? label(sku) : sku.label+'（尚未映射）',disabled:sku.locked})
     }
   }
   return [...available.values()]

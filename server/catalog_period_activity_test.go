@@ -241,3 +241,181 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 		t.Fatal(err)
 	}
 }
+
+func TestCatalogPeriodActivityUsesCreatorCompletionForNewRules(t *testing.T) {
+	ctx := context.Background()
+	db := integrationDB(t)
+	const product = 971
+	const packageID = "10000000-0000-4000-8000-000000000971"
+	const ruleID = "10000000-0000-4000-8000-000000000972"
+	const company = "10000000-0000-4000-8000-000000000973"
+	s := workspace{db: db}
+	for _, query := range []string{
+		`INSERT INTO products(id,code,name,period_mode,cycle_start_day) OVERRIDING SYSTEM VALUE
+		 VALUES(971,'CREATOR_NET','创客整期','calendar',1)`,
+		`INSERT INTO product_catalog_settings(product_id,source_id,source_environment,project_code,source_system,source_key,captured_at,snapshot_digest)
+		 VALUES(971,gen_random_uuid(),'test','DCAI','DCAI','creator','2026-07-01',sha256('fixture'::bytea))`,
+		`INSERT INTO catalog_business_routes(source_id,product_id,source,domain,entity_type,record_table,business_key,
+		  classifier,sku_code,sku_label,mapping_version,effective_from,observed_at,source_product_code) VALUES
+		 (gen_random_uuid(),971,'DCAI','HEALTH_IDENTITY','HEALTH_IDENTITY_ORDER','ai_health_ambassador_order',
+		  'dcai:health-creator:new','dcai.health-identity.v1','SECOND','创客',1,'2026-07-01','2026-07-01','HEALTH_CREATOR')`,
+		`INSERT INTO product_rule_packages(source_id,product_id,code,name,project_code,policy_kind,scope_type,scope_id,paused)
+		 VALUES('` + packageID + `',971,'creator-net','创客整期','DCAI','COMPONENT_RULE','CROSS_SCENARIO_AGGREGATE','CREATOR_NET',false)`,
+		`INSERT INTO organization_units(id,kind,name,status) VALUES('` + company + `','COMPANY','收款公司','ACTIVE')`,
+	} {
+		if _, err := db.Exec(ctx, query); err != nil {
+			t.Fatal(err)
+		}
+	}
+	actor := financeRuleActor{subject: "fixture", permits: func(productID int64, _ bool) bool { return productID == product }}
+	first, _ := calendarWindow("2026-08", 1)
+	definition, err := buildCatalogPeriodRule(ctx, db, catalogPeriodCreate{ProductID: product, Label: "创客整期", Cycle: "MONTHLY"}, first.Start,
+		[]string{"SECOND"}, []catalogPeriodComponentEdit{
+			{Label: "公司收款", TargetKind: "company", OrganizationKey: "unit:" + company, Tiers: []catalogPeriodTier{{Rate: 100}}},
+		}, nil, actor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO product_rule_versions
+	 (source_id,package_id,version_no,source_status,effective_from,content_hash,definition,observed_at)
+	 VALUES($1,$2,1,'PUBLISHED',$3,'fixture',$4,'2026-07-01')`, ruleID, packageID, first.Start, definition); err != nil {
+		t.Fatal(err)
+	}
+	// The September rate applies to new payments, even though the August payment completes in September.
+	if _, err := db.Exec(ctx, `INSERT INTO product_rule_versions
+	 (source_id,package_id,version_no,source_status,effective_from,content_hash,definition,observed_at,published_at,predecessor_id)
+	 VALUES(gen_random_uuid(),$1,2,'PUBLISHED','2026-09-01 00:00+08','v2',
+	 jsonb_set($2::jsonb,'{benefit_actions,0,tier_table,0,rate_bps}','200'),now(),now(),$3)`, packageID, definition, ruleID); err != nil {
+		t.Fatal(err)
+	}
+	write := func(recordID string, observed, completed time.Time) {
+		t.Helper()
+		reply := healthCompletionReply("HEALTH_CREATOR", observed, completed, recordID)
+		reply.Cursor.ID = recordID
+		for i := range reply.Gates {
+			reply.Gates[i].OrderID = "order-" + recordID
+		}
+		for i, fact := range reply.Facts {
+			reply.Facts[i] = json.RawMessage(strings.NewReplacer(
+				"order-42", "order-"+recordID, `"42"`, `"`+recordID+`"`,
+			).Replace(string(fact)))
+		}
+		row, err := normalizeDCAIOrderRow(dcaiHealthStream, time.Time{}, reply)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+			if _, err := storeSourceFacts(ctx, tx, row.Facts); err != nil {
+				return err
+			}
+			return storeDCAIBlockers(ctx, tx, dcaiHealthStream, []orderPageRow{row})
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	open := func(month string) int64 {
+		t.Helper()
+		var period int64
+		err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+			var err error
+			period, err = createCatalogAggregatePeriod(ctx, tx, catalogAggregatePeriodInput{RuleID: ruleID, Month: month}, actor)
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return period
+	}
+	august, september, october := open("2026-08"), open("2026-09"), open("2026-10")
+	read := func(month string, period int64, expectedPaid, expectedRefunds, expectedPriorRefunds int64) {
+		t.Helper()
+		window, _ := calendarWindow(month, 1)
+		err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+			report, err := readCatalogPeriodActivity(ctx, tx, catalogPeriodActivityRequest{
+				ProductID: product, Scenarios: []string{"SECOND"}, Window: window, DraftPeriodID: period,
+				GroupRule: &catalogPeriodVersion{Cycle: "MONTHLY", packageID: packageID},
+			})
+			if err != nil {
+				return err
+			}
+			if report.Receipts != expectedPaid || report.Refunds != expectedRefunds ||
+				report.PriorPeriodRefunds != expectedPriorRefunds || len(report.Issues) != 0 {
+				t.Fatalf("%s: want paid/refunds/prior %d/%d/%d, got %+v",
+					month, expectedPaid, expectedRefunds, expectedPriorRefunds, report)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	pending := time.Date(2026, 8, 3, 0, 0, 0, 0, shanghai)
+	write("42", pending, time.Time{})
+	if _, err := db.Exec(ctx, `INSERT INTO source_order_versions
+	 (source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact) VALUES
+	 ('DCAI','order-42','','fixture_refund:1','1','REFUND_SUCCEEDED','2026-08-15','2026-08-15',
+	  '{"domain":"HEALTH_IDENTITY","sourceKey":"HEALTH_CREATOR","refundId":"r1","amountMinor":80000,"refundsPayment":[{"orderId":"order-42","recordId":"42"}]}')`); err != nil {
+		t.Fatal(err)
+	}
+	read("2026-08", august, 0, 0, 0)
+	closePeriod := func(period int64, expectedTotal int64) {
+		t.Helper()
+		draft, err := s.calculateCurrentDraft(ctx, period, 0)
+		if err != nil || draft.Total != expectedTotal || draft.IssueCount != 0 {
+			t.Fatalf("period %d: expected total %d and no issues, got %+v, %v", period, expectedTotal, draft, err)
+		}
+		if _, err := db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, draft.Version); err != nil {
+			t.Fatal(err)
+		}
+	}
+	closePeriod(august, 0)
+	if _, err := db.Exec(ctx, "DELETE FROM draft_refresh_queue"); err != nil {
+		t.Fatal(err)
+	}
+	completed := time.Date(2026, 9, 1, 0, 0, 0, 0, shanghai)
+	write("42", completed, completed)
+	var queued bool
+	if err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)", september).Scan(&queued); err != nil || !queued {
+		t.Fatalf("completion did not queue September aggregate draft: %v, %v", queued, err)
+	}
+	read("2026-08", august, 0, 0, 0)
+	read("2026-09", september, 1680000, 80000, 0)
+	closePeriod(september, 16000)
+	var completion int64
+	if err := db.QueryRow(ctx, `SELECT a.completion_version_id FROM catalog_aggregate_draft_events a
+	 JOIN source_order_versions v ON v.id=a.completion_version_id WHERE a.period_id=$1 AND a.source_version_id=a.payment_version_id
+	 AND v.kind='ORDER_COMPLETED' AND v.occurred_at=$2`, september, completed).Scan(&completion); err != nil {
+		t.Fatalf("first recognition should link to its own completion fact: %v", err)
+	}
+	corrected := completed.AddDate(0, 1, 0)
+	write("42", corrected, corrected)
+	read("2026-09", 0, 1680000, 80000, 0)
+	read("2026-10", october, 0, 0, 0)
+	if _, err := db.Exec(ctx, `INSERT INTO source_order_versions
+	 (source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact) VALUES
+	 ('DCAI','order-42','','fixture_refund:2','1','REFUND_SUCCEEDED','2026-10-03','2026-10-03',
+	  '{"domain":"HEALTH_IDENTITY","sourceKey":"HEALTH_CREATOR","refundId":"r2","amountMinor":40000,"refundsPayment":[{"orderId":"order-42","recordId":"42"}]}')`); err != nil {
+		t.Fatal(err)
+	}
+	read("2026-10", october, 0, 40000, 40000)
+	draft, err := s.calculateCurrentDraft(ctx, october, 0)
+	if err != nil || draft.IssueCount != 0 {
+		t.Fatalf("refund should use the original confirmed group: %+v, %v", draft, err)
+	}
+	var refundCompletion int64
+	if err := db.QueryRow(ctx, `SELECT completion_version_id FROM catalog_aggregate_draft_events
+	 WHERE period_id=$1 AND source_version_id<>payment_version_id`, october).Scan(&refundCompletion); err != nil || completion != refundCompletion {
+		t.Fatalf("refund should use confirmed completion %d, got %d: %v", completion, refundCompletion, err)
+	}
+	if _, err := db.Exec(ctx, "DELETE FROM draft_refresh_queue"); err != nil {
+		t.Fatal(err)
+	}
+	write("43", corrected.Add(time.Minute), completed.Add(time.Hour))
+	if err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)", october).Scan(&queued); err != nil || !queued {
+		t.Fatalf("late confirmation should queue the first open draft: %v, %v", queued, err)
+	}
+	read("2026-10", october, 1680000, 40000, 40000)
+	read("2026-10", 0, 1680000, 40000, 40000)
+	closePeriod(october, 16400)
+}

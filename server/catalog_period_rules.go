@@ -33,13 +33,15 @@ type catalogPeriodItem struct {
 }
 
 type catalogPeriodDefinition struct {
-	Cycle       string
-	Scenarios   []string
-	Items       []catalogPeriodItem
-	Performance *catalogPerformanceScope
+	Cycle              string
+	Scenarios          []string
+	Items              []catalogPeriodItem
+	Performance        *catalogPerformanceScope
+	ProductRecognition bool
 }
 
 const catalogPeriodUnitPrefix = "unit:"
+const catalogPeriodProductRecognition = "PRODUCT_EVENT"
 
 func catalogPeriodUnit(key string) (string, bool) {
 	raw, direct := strings.CutPrefix(key, catalogPeriodUnitPrefix)
@@ -82,7 +84,8 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		} `json:"benefit_actions"`
 	}
 	var result catalogPeriodDefinition
-	if json.Unmarshal(raw, &stored) != nil || stored.Basis != "ACTUAL_RECEIVED" || stored.Recognition != "PAID" ||
+	if json.Unmarshal(raw, &stored) != nil || stored.Basis != "ACTUAL_RECEIVED" ||
+		(stored.Recognition != "PAID" && stored.Recognition != catalogPeriodProductRecognition) ||
 		stored.Refund != "PROPORTIONAL" || stored.Stacking != "SUM" || !stored.Performance.valid() || stored.Rounding.Mode != "HALF_UP" || stored.Rounding.Scale != 2 ||
 		!slices.Equal(stored.Scope.Sources, []string{"DCAI"}) || !slices.Equal(stored.Scope.Events, []string{"order.paid"}) ||
 		len(stored.Scope.Scenarios) == 0 || len(stored.Actions) == 0 || stored.Settlement.Negative != "CARRY_FORWARD" ||
@@ -91,6 +94,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 	}
 	result.Cycle, result.Scenarios = stored.Settlement.Cycle, stored.Scope.Scenarios
 	result.Performance = stored.Performance
+	result.ProductRecognition = stored.Recognition == catalogPeriodProductRecognition
 	for i, scenario := range result.Scenarios {
 		if !textOK(scenario, 256) || slices.Contains(result.Scenarios[:i], scenario) {
 			return result, errCatalogRateUnavailable

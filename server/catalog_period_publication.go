@@ -42,10 +42,11 @@ type catalogPeriodVersion struct {
 }
 
 type catalogPeriodSKU struct {
-	Code   string `json:"code"`
-	Label  string `json:"label"`
-	Mapped bool   `json:"mapped"`
-	Locked bool   `json:"locked,omitempty"`
+	Code               string `json:"code"`
+	Label              string `json:"label"`
+	Mapped             bool   `json:"mapped"`
+	Locked             bool   `json:"locked,omitempty"`
+	RequiresCompletion bool   `json:"requiresCompletion,omitempty"`
 }
 
 type catalogPeriodPublishInput struct {
@@ -136,17 +137,19 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 		respond(w, nil, err)
 		return
 	}
-	skuLabels := make(map[string]string, len(skus))
+	byCode := make(map[string]catalogPeriodSKU, len(skus))
 	for _, sku := range skus {
-		skuLabels[sku.Code] = sku.Label
+		byCode[sku.Code] = sku.catalogPeriodSKU
 	}
 	err = nameCatalogPeriodTargets(ctx, s.db, rule.Items)
 	for _, code := range period.Scenarios {
-		label := skuLabels[code]
-		if label == "" {
-			label = code
+		sku, mapped := byCode[code]
+		sku.Code, sku.Mapped = code, mapped
+		sku.RequiresCompletion = sku.RequiresCompletion && period.ProductRecognition
+		if !mapped {
+			sku.Label = code
 		}
-		rule.Scenarios = append(rule.Scenarios, catalogPeriodSKU{Code: code, Label: label, Mapped: skuLabels[code] != ""})
+		rule.Scenarios = append(rule.Scenarios, sku)
 	}
 	if err == nil && rule.MayPublish {
 		rule.Options, err = readCatalogPeriodEditorOptions(ctx, s.db)
@@ -156,6 +159,7 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 			eligible, err = readCatalogPeriodScenarioOptions(ctx, s.db, rule.ProductID, &first, rule.Through)
 			for _, sku := range eligible {
 				if sku.canChange(actor) {
+					sku.RequiresCompletion = sku.RequiresCompletion && period.ProductRecognition
 					rule.Options.Scenarios = append(rule.Options.Scenarios, sku.catalogPeriodSKU)
 					continue
 				}

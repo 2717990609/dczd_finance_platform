@@ -22,8 +22,9 @@ type catalogAggregatePeriodInput struct {
 }
 
 type catalogAggregateEventReference struct {
-	EventID, PaymentID int64
-	Scenario           string
+	EventID, PaymentID  int64
+	Scenario            string
+	CompletionVersionID int64 `json:",omitempty"`
 }
 
 type catalogFrozenGroupReference struct {
@@ -354,10 +355,11 @@ func storeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, periodID int64, 
 		return err
 	}
 	_, err = tx.CopyFrom(ctx, pgx.Identifier{"catalog_aggregate_draft_events"},
-		[]string{"period_id", "group_key", "source_version_id", "payment_version_id", "sku_code"},
+		[]string{"period_id", "group_key", "source_version_id", "payment_version_id", "sku_code", "completion_version_id"},
 		pgx.CopyFromSlice(len(events), func(i int) ([]any, error) {
 			e := events[i]
-			return []any{periodID, e.key, e.EventID, e.PaymentID, e.Scenario}, nil
+			return []any{periodID, e.key, e.EventID, e.PaymentID, e.Scenario,
+				pgtype.Int8{Int64: e.CompletionVersionID, Valid: e.CompletionVersionID != 0}}, nil
 		}))
 	return err
 }
@@ -368,9 +370,12 @@ const catalogAggregateDraftEventsSQL = `WITH scope AS (
  WHERE d.period_id=$1 AND d.version=$2 AND g.group_key=$3
 ), page AS (
  SELECT o.id AS "sourceVersionId",o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",
-  o.kind,o.occurred_at AS "occurredAt",coalesce((o.fact->>'amountMinor')::bigint,0) AS "amountMinor"
+  o.kind,o.occurred_at AS "occurredAt",coalesce((o.fact->>'amountMinor')::bigint,0) AS "amountMinor",
+  completed.occurred_at AS "completedAt"
  FROM scope JOIN catalog_aggregate_draft_events a USING(period_id,group_key)
- JOIN source_order_versions o ON o.id=a.source_version_id ORDER BY o.occurred_at,o.id LIMIT 25 OFFSET $4
+ JOIN source_order_versions o ON o.id=a.source_version_id
+ LEFT JOIN source_order_versions completed ON completed.id=a.completion_version_id
+ ORDER BY o.occurred_at,o.id LIMIT 25 OFFSET $4
 )
 SELECT jsonb_build_object('items',coalesce((SELECT jsonb_agg(to_jsonb(page) ORDER BY "occurredAt","sourceVersionId") FROM page),'[]'),
  'total',(SELECT count(*) FROM catalog_aggregate_draft_events e JOIN scope USING(period_id,group_key)))

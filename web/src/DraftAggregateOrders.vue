@@ -37,7 +37,12 @@ watch([()=>props.group,page], async ()=>{
           <small class="order-version">v{{ record.sourceVersion }}</small>
         </template>
         <template v-else-if="column.key==='kind'">{{ record.kind==='ORDER_PAID' ? '收款' : '退款' }}</template>
-        <template v-else-if="column.key==='time'">{{ formatTime(record.occurredAt) }}</template>
+        <template v-else-if="column.key==='time'">
+          {{ formatTime(record.occurredAt) }}
+          <small v-if="record.completedAt && (record.kind==='ORDER_PAID' || record.occurredAt<record.completedAt)" class="order-version">
+            订单完成 {{ formatTime(record.completedAt) }}
+          </small>
+        </template>
         <span v-else class="numeric">{{ formatMoney(record.amountMinor) }}</span>
       </template>
       <template #emptyText><a-empty description="本期没有新交易"/></template>

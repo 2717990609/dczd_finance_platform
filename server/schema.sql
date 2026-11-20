@@ -447,7 +447,7 @@ BEGIN
      OR EXISTS(SELECT 1 FROM calculation_draft_refunds a JOIN settlements s USING(period_id) WHERE a.refund_source_version_id=OLD.id)
      OR EXISTS(SELECT 1 FROM calculation_draft_corrections a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id)
      OR EXISTS(SELECT 1 FROM catalog_aggregate_draft_events a JOIN settlements s USING(period_id)
-       WHERE a.source_version_id=OLD.id OR a.payment_version_id=OLD.id)
+       WHERE a.source_version_id=OLD.id OR a.payment_version_id=OLD.id OR a.completion_version_id=OLD.id)
      OR EXISTS(SELECT 1 FROM catalog_aggregate_draft_groups g JOIN settlements s USING(period_id) WHERE g.anchor_payment_id=OLD.id)
      OR EXISTS(SELECT 1 FROM calculation_draft_practice_changes a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id) THEN
    RAISE EXCEPTION 'source version is referenced by a confirmed calculation' USING ERRCODE='55000';
@@ -1307,8 +1307,11 @@ CREATE TABLE IF NOT EXISTS catalog_aggregate_draft_events (
  PRIMARY KEY(period_id,source_version_id),
  FOREIGN KEY (period_id,group_key) REFERENCES catalog_aggregate_draft_groups(period_id,group_key) ON DELETE CASCADE
 );
+ALTER TABLE catalog_aggregate_draft_events ADD COLUMN IF NOT EXISTS completion_version_id bigint REFERENCES source_order_versions(id);
 CREATE INDEX IF NOT EXISTS catalog_aggregate_events_source ON catalog_aggregate_draft_events(source_version_id,period_id);
 CREATE INDEX IF NOT EXISTS catalog_aggregate_events_payment ON catalog_aggregate_draft_events(payment_version_id,period_id);
+CREATE INDEX IF NOT EXISTS catalog_aggregate_events_completion ON catalog_aggregate_draft_events(completion_version_id)
+ WHERE completion_version_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS catalog_aggregate_events_group ON catalog_aggregate_draft_events(period_id,group_key);
 CREATE INDEX IF NOT EXISTS catalog_aggregate_groups_rule ON catalog_aggregate_draft_groups(rule_id,period_id);
 CREATE OR REPLACE TRIGGER protect_confirmed_aggregate_groups BEFORE INSERT OR UPDATE OR DELETE ON catalog_aggregate_draft_groups

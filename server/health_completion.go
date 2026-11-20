@@ -85,7 +85,38 @@ const healthCompletionAffectedPeriodsSQL = `SELECT target.id FROM health_changes
     WHERE p.product_id=m.product_id AND p.project_code=c.project_code
      AND (v.observed_at=c.captured_at OR v.published_at IS NOT NULL) AND ` + catalogRuleEligible + `
      AND ` + catalogHealthRecognitionPlan + `
- ))`
+ ))
+ UNION ` + healthCompletionAggregatePeriodsSQL
+
+const healthCompletionAggregatePeriodsSQL = `SELECT target.id FROM health_changes x
+ JOIN source_order_versions v ON v.id=x.payment_version_id
+ JOIN source_order_classifications cl ON cl.source_version_id=v.id
+ JOIN catalog_business_routes m ON ` + catalogRouteFactSQL + `
+  AND m.domain='HEALTH_IDENTITY' AND m.source_product_code='HEALTH_CREATOR'
+  AND (m.entity_type,m.business_key,m.classifier)=(cl.entity_type,cl.business_key,cl.classifier)
+  AND m.effective_from<=v.occurred_at AND (m.effective_to IS NULL OR v.occurred_at<m.effective_to)
+ JOIN product_catalog_settings c ON c.product_id=m.product_id AND c.captured_at=m.observed_at
+ JOIN product_catalog_settings scope ON (scope.project_code,scope.source_system)=(c.project_code,c.source_system)
+ JOIN product_rule_packages p ON p.product_id=scope.product_id AND NOT p.paused AND ` + catalogPeriodRuleScope + `
+ JOIN source_order_versions completed ON completed.id IN(x.previous_id,x.current_id) AND completed.source=v.source
+  AND completed.order_id=v.order_id AND completed.kind='ORDER_COMPLETED' AND completed.fact->>'sourceKey'=v.fact->>'sourceKey'
+  AND completed.occurred_at>=v.occurred_at
+ CROSS JOIN LATERAL (SELECT v.occurred_at AS paid_at) payment
+ JOIN periods boundary ON boundary.aggregate_package_id=p.source_id
+  AND (completed.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN boundary.starts_on AND boundary.ends_on
+ JOIN LATERAL (
+  SELECT candidate.id FROM periods candidate WHERE candidate.aggregate_package_id=p.source_id
+   AND candidate.starts_on>=boundary.starts_on AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=candidate.id)
+  ORDER BY candidate.starts_on LIMIT 1
+ ) target ON true
+ WHERE EXISTS(
+  SELECT 1 FROM product_rule_versions v
+  WHERE v.package_id=p.source_id AND v.source_status='PUBLISHED' AND ` + catalogVersionVisible + `
+   AND v.definition->>'recognition_trigger'='` + catalogPeriodProductRecognition + `'
+   AND v.definition->'policy_scope'->'business_sku_codes' ? m.sku_code
+   AND greatest(v.effective_from,p.resume_from)<=payment.paid_at
+   AND (` + catalogDisplayedThrough + ` IS NULL OR payment.paid_at<` + catalogDisplayedThrough + `)
+ )`
 
 const healthCompletionTargetSQL = `JOIN LATERAL (
  SELECT candidate.id FROM periods candidate

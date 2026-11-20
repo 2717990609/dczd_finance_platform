@@ -13,15 +13,17 @@ import (
 )
 
 type catalogActivityEvent struct {
-	EventID      int64
-	PaymentID    int64
-	PaidAt       time.Time
-	Scenario     string
-	Amount       int64
-	Refund       bool
-	originClosed bool
-	selection    *catalogAggregateMatch
-	frozen       catalogFrozenGroupReference
+	EventID             int64
+	PaymentID           int64
+	CompletionVersionID int64
+	PaidAt              time.Time
+	RecognizedAt        time.Time
+	Scenario            string
+	Amount              int64
+	Refund              bool
+	originClosed        bool
+	selection           *catalogAggregateMatch
+	frozen              catalogFrozenGroupReference
 }
 
 type catalogAggregateRule struct {
@@ -264,7 +266,9 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 		}
 		if event.EventID != 0 {
 			posting := &applied.group.posting
-			posting.Events = append(posting.Events, catalogAggregateEventReference{event.EventID, event.PaymentID, event.Scenario})
+			posting.Events = append(posting.Events, catalogAggregateEventReference{
+				EventID: event.EventID, PaymentID: event.PaymentID, Scenario: event.Scenario, CompletionVersionID: event.CompletionVersionID,
+			})
 			if posting.AnchorID == 0 || event.PaymentID < posting.AnchorID {
 				posting.AnchorID = event.PaymentID
 			}
