@@ -1,10 +1,9 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   BankOutlined, CloudSyncOutlined, PlusOutlined, ReloadOutlined, RightOutlined,
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
-import { TreeSelect } from 'ant-design-vue'
 import DraftWorkbench from './DraftWorkbench.vue'
 import MonthlyReport from './MonthlyReport.vue'
 import CatalogRuleRates from './CatalogRuleRates.vue'
@@ -13,12 +12,14 @@ import PracticeRetrainSplitEditor from './PracticeRetrainSplitEditor.vue'
 import PracticeCompanySalesEditor from './PracticeCompanySalesEditor.vue'
 import FinanceLogin from './FinanceLogin.vue'
 import OrganizationDirectory from './OrganizationDirectory.vue'
+import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
 import OrderDetails from './OrderDetails.vue'
 import OrderSyncPanel from './OrderSyncPanel.vue'
 import PracticeTierEditor from './PracticeTierEditor.vue'
 import { organizationTree } from './organization-tree'
 import { copiedRuleComponents } from './rule-component-form'
 
+const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const navigation = [
   {key:'settlement', area:'work', title:'分润试算'},
   {key:'monthly', area:'work', title:'月度汇总'},
@@ -74,6 +75,7 @@ const monthlyDimension = ref()
 const orderSync = ref()
 const orderDetails = ref()
 const rateRule = ref()
+const ruleDetails = ref()
 const emptyData = () => ({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
 const data = ref(emptyData())
 const loading = ref(false)
@@ -273,7 +275,7 @@ const columns = computed(() => {
     mapping:[['产品名称','productName'],['业务来源','source'],['业务域','domain'],['来源标识','sourceKey']],
     period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],['报表月份','reportMonth',115],['适用规则','ruleVersion',200]],
     rule:[['规则名称','label',200],['所属产品','productName',155],['版本','version',80],
-      ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',220],['操作','ruleAction',112]],
+      ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',220],['操作','ruleAction',160]],
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
     person:[['人员名称','name'],['人员 ID','id']],
     identity:[['归属人员','personName'],['业务来源','source'],['来源人员 ID','externalId'],['生效时间','validFrom'],['结束时间','validTo']],
@@ -347,6 +349,7 @@ function changeRoute() {
   orderSyncTarget.value = isOrders && stream ? {stream,fromDate} : undefined
   orderSyncReturnPeriod.value = isOrders && Number.isSafeInteger(returnPeriod) && returnPeriod > 0 ? returnPeriod : undefined
   orderDetails.value = undefined
+  ruleDetails.value = undefined
   if (requestedPeriod.value && productScope.value && data.value.periods.find(period => period.id === requestedPeriod.value)?.productId !== productScope.value) {
     productScope.value = undefined
   }
@@ -378,6 +381,7 @@ function clearWorkspace() {
   drawer.value = ''
   draft.value = {}
   rateRule.value = undefined
+  ruleDetails.value = undefined
   saving.value = false
   formError.value = ''
   globalError.value = ''
@@ -455,6 +459,7 @@ watch(() => drawer.value==='rule' && classRule.value ? draft.value.productId : u
 })
 function resetOrders() { olderThan.value = ''; pageStack.value=[]; refresh() }
 function selectOrganization(unit) {
+  if (unitScope.value === unit) return
   unitScope.value = unit
   if (current.value === 'orders') resetOrders()
 }
@@ -507,6 +512,11 @@ function pullFromDetails() {
   const order = orderDetails.value.order
   orderDetails.value = undefined
   open('pull', order)
+}
+function copyRuleDetails() {
+  const rule = ruleDetails.value
+  ruleDetails.value = undefined
+  open('rule', rule)
 }
 function close() { if (!saving.value) drawer.value = '' }
 function must(value, msg = '请补齐必填内容') {
@@ -708,12 +718,8 @@ async function save() {
     <div class="workspace-body" :class="{ 'with-scope':showScope }">
       <aside v-if="showScope" class="scope-panel" aria-label="筛选范围">
         <h2>范围</h2>
-        <div v-if="usesOrganizationScope" class="scope-organization">
-          <label for="workspace-organization">组织范围</label>
-          <TreeSelect id="workspace-organization" :value="unitScope" :tree-data="scopeTree" :loading="loading && !scopeUnits"
-            aria-label="组织范围" placeholder="全部组织" tree-node-filter-prop="title" show-search allow-clear
-            @change="selectOrganization" />
-        </div>
+        <WorkspaceOrganizationScope v-if="usesOrganizationScope" :selected="unitScope" :nodes="scopeTree"
+          :loading="loading && !scopeUnits" @select="selectOrganization" />
         <template v-if="usesProductScope">
           <label for="scope-product-search" class="desktop-scope scope-title">产品范围</label>
           <div class="desktop-scope">
@@ -832,8 +838,11 @@ async function save() {
                 <template v-else-if="column.key==='ruleAction'">
                   <a-button v-if="record.catalogPending && record.rateConfigAvailable && record.projectMatches && (!session.user || session.user.rules.some(grant=>grant.productId===record.productId))"
                     type="link" size="small" @click="rateRule=record">分润配置</a-button>
-                  <a-button v-else-if="!record.catalogPending && canPublishRule(record.productId)" :disabled="!configurationReady"
-                    type="link" size="small" @click="open('rule',record)">复制配置</a-button>
+                  <template v-else-if="!record.catalogPending">
+                    <a-button type="link" size="small" @click="ruleDetails=record">查看规则</a-button>
+                    <a-button v-if="canPublishRule(record.productId)" :disabled="!configurationReady"
+                      type="link" size="small" @click="open('rule',record)">复制配置</a-button>
+                  </template>
                 </template>
                 <template v-else-if="column.key==='components'">
                   <div v-for="(c,index) in text" :key="index">
@@ -984,5 +993,10 @@ async function save() {
     @close="orderDetails=undefined" @pull="pullFromDetails"/>
   <CatalogRuleRates v-if="rateRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="rateRule" :api="api" :format-time="formatTime" @close="rateRule=undefined" @published="ratePublished"/>
+  <RuleVersionDetails v-if="ruleDetails && active && !sessionError && !sessionChecking && !loginRequested"
+    :rule="ruleDetails" :can-copy="configurationReady && canPublishRule(ruleDetails.productId)"
+    :class-product="data.products.find(product => product.id===ruleDetails.productId)?.periodMode==='class'"
+    :api="api" :people="data.people" :option-label="optionLabel" :opening-label="savedOpeningLabel"
+    :format-time="formatTime" :format-money="formatMoney" @close="ruleDetails=undefined" @copy="copyRuleDetails"/>
 </a-config-provider>
 </template>

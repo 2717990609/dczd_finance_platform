@@ -132,8 +132,8 @@ const lineColumns = [
   { title: '受益对象', key: 'beneficiary', width: 135 },
   { title: '分项', key: 'component', width: 115 },
   { title: '规则版本', key: 'rule', width: 100 },
-  { title: '实付基数', key: 'base', width: 115 },
-  { title: '应计提成', key: 'amount', width: 115 },
+  { title: '实付基数', key: 'base', width: 115, align:'right' },
+  { title: '应计提成', key: 'amount', width: 115, align:'right' },
 ]
 const refundColumns = [
   { title: '原订单', key: 'order', width: 190 },
@@ -318,49 +318,52 @@ async function loadMore(section, cursorName) {
 </script>
 
 <template>
-  <section class="records draft-controls workbench-controls" aria-label="核算操作">
-    <div class="workbench-toolbar">
-      <div class="workbench-period">
-        <label for="draft-period">产品和核算期</label>
-        <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和核算期" :loading="periodsLoading"
-          show-search option-filter-prop="label" :disabled="calculating || pullingRoster || savingRecovery" />
+  <section class="records workbench-controls" aria-label="核算操作">
+    <div class="workbench-selection">
+      <div class="workbench-toolbar">
+        <div class="workbench-period">
+          <label for="draft-period">产品和核算期</label>
+          <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和核算期" :loading="periodsLoading"
+            show-search option-filter-prop="label" :disabled="calculating || pullingRoster || savingRecovery" />
+        </div>
+        <div v-if="selected" class="workbench-actions">
+          <a-button v-if="canPullRoster && (view!=='review' || !draft)" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
+          <a-button v-if="!matchingOnly && !draft?.settlement && (view!=='review' || !draft)" :disabled="loading || pullingRoster" :loading="calculating"
+            :type="draft ? 'default' : 'primary'" @click="calculate">{{ draft ? '重新试算' : '生成草稿' }}</a-button>
+          <a-button v-if="!matchingOnly && (view!=='review' || !draft)" :disabled="loading || calculating || pullingRoster" @click="load()">刷新结果</a-button>
+          <a-button v-if="hasSettlementReview && !draft?.settlement && view!=='review'" type="primary" :disabled="loading || calculating || pullingRoster" @click="view='review'">去结算核对</a-button>
+        </div>
       </div>
-      <div v-if="selected" class="workbench-actions">
-        <a-button v-if="canPullRoster && (view!=='review' || !draft)" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
-        <a-button v-if="!matchingOnly && !draft?.settlement && (view!=='review' || !draft)" :disabled="loading || pullingRoster" :loading="calculating"
-          :type="draft ? 'default' : 'primary'" @click="calculate">{{ draft ? '重新试算' : '生成草稿' }}</a-button>
-        <a-button v-if="!matchingOnly && (view!=='review' || !draft)" :disabled="loading || calculating || pullingRoster" @click="load()">刷新结果</a-button>
-        <a-button v-if="hasSettlementReview && !draft?.settlement && view!=='review'" type="primary" :disabled="loading || calculating || pullingRoster" @click="view='review'">去结算核对</a-button>
-      </div>
+      <p v-if="selectedPeriod" class="draft-context">
+        <a-tag :color="draft?.settlement ? 'green' : draft ? 'blue' : 'default'">{{ draft?.settlement ? '已结算' : draft ? '草稿 v'+draft.version : '未试算' }}</a-tag>
+        <strong class="mobile-period-name">{{ selectedPeriod.name }}</strong>
+        {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
+        <span v-if="draft?.practiceRosterVersion"> · 签到名单 v{{ draft.practiceRosterVersion }} · 到课 {{ draft.attendanceCount }} 人</span>
+        <span v-if="draft?.settlement"> · 确认于 {{ formatTime(draft.settlement.confirmedAt) }}</span>
+        <span v-else-if="draft"> · 试算于 {{ formatTime(draft.calculatedAt) }}</span>
+        <span v-if="!draft?.settlement && refreshStatus?.pending && !refreshStatus.message"> · 有变更待试算</span>
+        <span v-if="view==='pools' && newerDraft"> · 草稿已更新，请刷新结果后核对分配</span>
+      </p>
     </div>
-    <p v-if="selectedPeriod" class="draft-context">
-      <a-tag :color="draft?.settlement ? 'green' : draft ? 'blue' : 'default'">{{ draft?.settlement ? '已结算' : draft ? '草稿 v'+draft.version : '未试算' }}</a-tag>
-      {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
-      <span v-if="draft?.practiceRosterVersion"> · 签到名单 v{{ draft.practiceRosterVersion }} · 到课 {{ draft.attendanceCount }} 人</span>
-      <span v-if="draft?.settlement"> · 确认于 {{ formatTime(draft.settlement.confirmedAt) }}</span>
-      <span v-else-if="draft"> · 试算于 {{ formatTime(draft.calculatedAt) }}</span>
-      <span v-if="!draft?.settlement && refreshStatus?.pending && !refreshStatus.message"> · 有变更待试算</span>
-      <span v-if="view==='pools' && newerDraft"> · 草稿已更新，请刷新结果后核对分配</span>
-    </p>
+    <div v-if="draft" class="workbench-totals">
+      <div v-if="draft.refundsReady" class="workbench-net"><small>{{ draft.practiceRosterVersion ? '本班净分润' : '本期净分润' }}</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div>
+      <div v-if="!draft.practiceRefundMonth && (!draft.practiceRosterVersion || draft.correctionCount || !draft.refundsReady)"><small>计提分润</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div>
+      <div v-if="!draft.practiceRosterVersion"><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div>
+      <div v-if="draft.correctionCount"><small>受益人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div>
+      <div><small>{{ draft.practiceRefundMonth ? '退款及更正' : '计提明细' }}</small><strong>{{ draft.practiceRefundMonth ? draft.refundCount + draft.correctionCount : draft.lineCount }} <span>条</span></strong></div>
+    </div>
+    <a-tabs v-if="draft" v-model:active-key="view" :tab-bar-gutter="20" class="workbench-tabs">
+      <a-tab-pane key="detail" tab="分润明细"/>
+      <a-tab-pane v-if="reportDimensions.length" key="report" tab="业绩与分润"/>
+      <a-tab-pane key="issues" :tab="draft.issueCount ? '待核 '+draft.issueCount : draft.advisoryCount ? '处理提示 '+draft.advisoryCount : '待核'"/>
+      <a-tab-pane v-if="draft.poolAllocationAvailable" key="pools" tab="团队池分配"/>
+      <a-tab-pane v-if="hasSettlementReview" key="review" tab="结算核对"/>
+      <a-tab-pane v-if="hasMatching" key="matching" tab="订单规则匹配"/>
+    </a-tabs>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
   <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon />
   <a-alert v-if="!draft?.settlement && refreshStatus?.message" class="feedback" type="warning" :message="refreshStatus.message" show-icon/>
-  <div v-if="draft" class="records workbench-totals">
-    <div v-if="draft.refundsReady" class="workbench-net"><small>{{ draft.practiceRosterVersion ? '本班净分润' : '本期净分润' }}</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div>
-    <div v-if="!draft.practiceRefundMonth && (!draft.practiceRosterVersion || draft.correctionCount || !draft.refundsReady)"><small>计提分润</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div>
-    <div v-if="!draft.practiceRosterVersion"><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div>
-    <div v-if="draft.correctionCount"><small>受益人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div>
-    <div><small>{{ draft.practiceRefundMonth ? '退款及更正' : '计提明细' }}</small><strong>{{ draft.practiceRefundMonth ? draft.refundCount + draft.correctionCount : draft.lineCount }} <span>条</span></strong></div>
-  </div>
-  <a-tabs v-if="draft" v-model:active-key="view" :tab-bar-gutter="20" class="workbench-tabs">
-    <a-tab-pane key="detail" tab="分润明细"/>
-    <a-tab-pane v-if="reportDimensions.length" key="report" tab="业绩与分润"/>
-    <a-tab-pane key="issues" :tab="draft.issueCount ? '待核 '+draft.issueCount : draft.advisoryCount ? '处理提示 '+draft.advisoryCount : '待核'"/>
-    <a-tab-pane v-if="draft.poolAllocationAvailable" key="pools" tab="团队池分配"/>
-    <a-tab-pane v-if="hasSettlementReview" key="review" tab="结算核对"/>
-    <a-tab-pane v-if="hasMatching" key="matching" tab="订单规则匹配"/>
-  </a-tabs>
   <p v-if="unitId && draft" class="workbench-scope-note">明细与汇总按组织筛选，合计及结算核对为全期</p>
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney" :unit-id="unitId"/>
   <DraftPoolAllocations v-if="draft?.poolAllocationAvailable && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
@@ -383,7 +386,7 @@ async function loadMore(section, cursorName) {
             <small v-else-if="record.beneficiaryKind==='company'" class="order-version">{{ record.beneficiaryUnitKind==='DEPARTMENT' ? '部门分润' : '公司分润' }}</small>
           </template>
           <template v-else-if="column.key === 'component'">{{ salesRoles[record.componentRole] || record.componentLabel || componentLabel(record.component) }}</template>
-          <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}<small v-if="record.ruleLabel" class="order-version">{{ record.ruleLabel }}</small></template>
+          <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}<small v-if="record.ruleLabel" class="order-version rule-reference" :title="record.ruleLabel">{{ record.ruleLabel }}</small></template>
           <template v-else-if="column.key === 'base'">
             {{ formatMoney(record.baseMinor) }}<small v-if="record.classRefundMinor>0" class="order-version">已扣退款 {{ formatMoney(record.classRefundMinor) }}</small>
           </template>
