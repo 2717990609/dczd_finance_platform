@@ -1,6 +1,10 @@
 package main
 
-import "github.com/jackc/pgx/v5/pgtype"
+import (
+	"slices"
+
+	"github.com/jackc/pgx/v5/pgtype"
+)
 
 func classMember(kind int) string {
 	if kind == 3 {
@@ -67,9 +71,6 @@ func preparePracticePurchases(members []practiceEnrollment, orders map[string][]
 		if purchase.issue == "" {
 			purchase.applyRefunds(refunds)
 		}
-		if replaying && purchase.issue == "" && len(purchase.payments) == 0 {
-			continue
-		}
 		purchases = append(purchases, purchase)
 	}
 	return purchases, nil
@@ -82,6 +83,22 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 	purchases, err := preparePracticePurchases(members, orders, blocked, refunds, history.replaying)
 	if err != nil {
 		return draft, err
+	}
+	var fullyRefunded []practicePurchase
+	if history.replaying {
+		keepForClassFixed := slices.ContainsFunc(rule.Components, func(part component) bool {
+			return part.PeriodBenefit != nil && part.PeriodBenefit.FixedPerClass
+		})
+		purchases = slices.DeleteFunc(purchases, func(p practicePurchase) bool {
+			if p.issue != "" || len(p.payments) != 0 {
+				return false
+			}
+			// A fully refunded signup still contributes its original weight to a fixed class award.
+			if keepForClassFixed {
+				fullyRefunded = append(fullyRefunded, p)
+			}
+			return true
+		})
 	}
 	for i := range purchases {
 		purchases[i].classifyCompany(runtime.companyOffers, runtime.companyClassifications)
@@ -228,7 +245,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_MEMBER_RULE_MISSING", member, rule, ""))
 		}
 	}
-	if err := appendPracticePeriodBenefits(&draft, rule, purchases, runtime, identities, performancePayments); err != nil {
+	if err := appendPracticePeriodBenefits(&draft, rule, purchases, fullyRefunded, runtime, identities, performancePayments); err != nil {
 		return paymentDraft{}, err
 	}
 	return draft, nil

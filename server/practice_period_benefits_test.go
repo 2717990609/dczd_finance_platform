@@ -62,6 +62,55 @@ func TestPracticeFixedSignupBenefitKeepsOriginalPaymentShares(t *testing.T) {
 	}
 }
 
+func TestPracticeFixedClassBenefitDoesNotRedistributeFullRefund(t *testing.T) {
+	var part component
+	if err := json.Unmarshal([]byte(`{"type":"delivery","mode":"period_rate",
+	 "periodBenefit":{"label":"整班交付","personId":1,"fixedMinor":10001,"fixedPerClass":true}}`), &part); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateComponents([]component{part}); err != nil {
+		t.Fatal(err)
+	}
+	members := []practiceEnrollment{
+		{ID: 1, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"1", "2"}},
+		{ID: 2, MembershipType: 2, CommissionEligible: true, PaidOrderIDs: []string{"3"}},
+	}
+	orders := map[string][]paymentInput{}
+	for i, amount := range []int64{4000, 6000, 30000} {
+		id := int64(i + 1)
+		order := strconv.FormatInt(id, 10)
+		orders[order] = []paymentInput{{ID: id, Fact: sourceFact{Source: "DCZD", PaymentID: order, OrderID: order, AmountMinor: &amount}}}
+	}
+	for _, tc := range []struct {
+		name          string
+		fullyRefunded bool
+		want          [3]int64
+	}{
+		{"whole class with split and single payment", false, [3]int64{1000, 1500, 7501}},
+		{"both payments on one enrollment fully refunded", true, [3]int64{0, 0, 7501}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			refunds := map[int64][]practiceRefundMatch{}
+			if tc.fullyRefunded {
+				refunds[1] = []practiceRefundMatch{{event: orders["1"][0]}}
+				refunds[2] = []practiceRefundMatch{{event: orders["2"][0]}}
+			}
+			draft, err := calculatePracticeDraft(members, paymentRule{ID: 1, Components: []component{part}},
+				orders, nil, nil, practiceTierHistory{replaying: tc.fullyRefunded}, refunds, practiceDraftRuntime{})
+			if err != nil || len(draft.Issues) != 0 {
+				t.Fatalf("fixed class draft: %+v %v", draft.Issues, err)
+			}
+			var got [3]int64
+			for _, line := range draft.Lines {
+				got[line.FactID-1] += line.Amount
+			}
+			if got != tc.want || draft.Total != tc.want[0]+tc.want[1]+tc.want[2] {
+				t.Fatalf("payment shares %v, total %d, want %v", got, draft.Total, tc.want)
+			}
+		})
+	}
+}
+
 func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
@@ -266,6 +315,9 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 	if !errors.Is(validateComponents([]component{bad}), invalid) {
 		t.Fatal("fixed amount must exclude ratio and tier configuration")
 	}
+	classFixed := int64(2000)
+	scoped.Components = append(scoped.Components, component{Type: "delivery", Mode: "period_rate",
+		PeriodBenefit: &practicePeriodBenefit{Label: "整班固定交付", PersonID: manager, FixedMinor: &classFixed, FixedPerClass: true}})
 	scoped.EditBaseID = &ruleID
 	for _, invalidUnit := range []string{company, "40000000-0000-4000-8000-000000000008"} {
 		benefit := scoped.Components[1].PeriodBenefit
@@ -287,8 +339,8 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 		t.Fatal(err)
 	}
 	summary = result.(draftSummary)
-	if summary.Total != 1242 || summary.LineCount != 4 || summary.IssueCount != 0 {
-		t.Fatalf("fixed delivery adds one award for the two-leg new signup, alongside the previous awards: %+v", summary)
+	if summary.Total != 3242 || summary.LineCount != 7 || summary.IssueCount != 0 {
+		t.Fatalf("signup and whole-class fixed awards each contribute their configured total: %+v", summary)
 	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, summary.Version); err != nil {
 		t.Fatal(err)
@@ -302,13 +354,13 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 			return err
 		}
 		beforeRefund, err := replay.calculate()
-		if err != nil || beforeRefund.Total != 1242 {
+		if err != nil || beforeRefund.Total != 3242 {
 			t.Fatalf("replay must use original scope after organization change: %d %v", beforeRefund.Total, err)
 		}
 		deposit := replay.payments["31"][0].ID
 		replay.refunds[deposit] = append(replay.refunds[deposit], practiceRefundMatch{event: paymentInput{Fact: fact("refund", 1000, at)}})
 		afterRefund, err := replay.calculate()
-		if err != nil || afterRefund.Total != 1192 {
+		if err != nil || afterRefund.Total != 3142 {
 			t.Fatalf("refund must reselect tier using the whole class and apply it to the frozen scope: %d %v", afterRefund.Total, err)
 		}
 		var tail int64
@@ -319,6 +371,13 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 		}
 		if tail != 666 {
 			t.Fatalf("the original fixed share of the unrefunded balance is 666 cents, got %d", tail)
+		}
+		balance := replay.payments["32"][0].ID
+		replay.refunds[deposit] = append(replay.refunds[deposit], practiceRefundMatch{event: paymentInput{Fact: fact("rest", 9001, at)}})
+		replay.refunds[balance] = append(replay.refunds[balance], practiceRefundMatch{event: paymentInput{Fact: fact("balance", 20002, at)}})
+		afterFull, err := replay.calculate()
+		if err != nil || afterFull.Total != 500 || len(afterFull.Lines) != 1 || afterFull.Lines[0].FactID != replay.payments["33"][0].ID {
+			t.Fatalf("fully refunded new signup must leave the retrain payment's original whole-class share: %+v %v", afterFull, err)
 		}
 		return nil
 	}); err != nil {

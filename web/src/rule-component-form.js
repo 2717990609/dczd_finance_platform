@@ -54,7 +54,8 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
       form.periodBenefit = {...periodBenefit,
         recipient:periodBenefit.pool ? 'pool' : periodBenefit.unitId ? 'unit' : 'person',
         pool:periodBenefit.pool || {},
-        method:periodBenefit.fixedMinor != null ? 'fixed' : periodBenefit.tiers?.length ? 'tiers' : 'rate',
+        method:periodBenefit.fixedMinor != null ? (periodBenefit.fixedPerClass ? 'class_fixed' : 'fixed')
+          : periodBenefit.tiers?.length ? 'tiers' : 'rate',
         fixedAmount:periodBenefit.fixedMinor == null ? undefined : periodBenefit.fixedMinor / 100,
         tiers:periodBenefit.tiers?.map(row => ({from:row.from / 100,
           through:row.through == null ? undefined : row.through / 100, value:row.value / 10000})) || [{from:0}],

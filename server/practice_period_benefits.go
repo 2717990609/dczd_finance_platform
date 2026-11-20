@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"math/big"
+	"math/bits"
 	"net/http"
 	"slices"
 	"sort"
@@ -125,6 +126,7 @@ type practicePeriodBenefit struct {
 	AppointmentUnitID string               `json:"appointmentUnitId,omitempty"`
 	AppointmentKind   string               `json:"appointmentKind,omitempty"`
 	FixedMinor        *int64               `json:"fixedMinor,omitempty"`
+	FixedPerClass     bool                 `json:"fixedPerClass,omitempty"`
 	TierOnWholeClass  bool                 `json:"tierOnWholeClass,omitempty"`
 	Tiers             []practicePeriodRate `json:"tiers,omitempty"`
 	Pool              *practicePoolTarget  `json:"pool,omitempty"`
@@ -186,6 +188,9 @@ func validPracticePeriodBenefit(c component) bool {
 	}
 	if b.FixedMinor != nil {
 		return c.Value == 0 && *b.FixedMinor >= 0 && *b.FixedMinor <= 100000000000 && len(b.Tiers) == 0 && !b.TierOnWholeClass
+	}
+	if b.FixedPerClass {
+		return false
 	}
 	if len(b.Tiers) == 0 {
 		return !b.TierOnWholeClass
@@ -413,19 +418,28 @@ func practicePeriodComponentKey(part component, index int) string {
 	return "period:" + part.Type + ":" + strconv.Itoa(index)
 }
 
-func allocatePracticeFixedSignup(shares []practiceBenefitShare, award int64) (int64, error) {
+func allocatePracticeFixedBenefit(shares []practiceBenefitShare, award int64, perClass bool) (int64, error) {
+	if perClass {
+		if err := splitPracticeFixedClass(shares, award); err != nil {
+			return 0, err
+		}
+	}
 	var total int64
 	for i := range shares {
 		share := &shares[i]
-		var gross int64
-		for _, payment := range share.payments {
-			gross += *payment.Fact.AmountMinor
+		if !perClass {
+			var gross int64
+			for _, payment := range share.payments {
+				gross += *payment.Fact.AmountMinor
+			}
+			share.fixed = practiceGrossShares(gross, share.payments, award)
 		}
-		amounts := practiceGrossShares(gross, share.payments, award)
 		for n, payment := range share.payments {
 			paid := *payment.Fact.AmountMinor
 			refunded := paid - share.purchase.netAmount(payment)
-			share.fixed[n] = amounts[n] - prorateMinor(amounts[n], refunded, paid)
+			if refunded != 0 {
+				share.fixed[n] -= prorateMinor(share.fixed[n], refunded, paid)
+			}
 			var err error
 			total, err = addMinor(total, share.fixed[n])
 			if err != nil {
@@ -436,8 +450,51 @@ func allocatePracticeFixedSignup(shares []practiceBenefitShare, award int64) (in
 	return total, nil
 }
 
-func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchases []practicePurchase,
+func splitPracticeFixedClass(shares []practiceBenefitShare, award int64) error {
+	type paymentShare struct {
+		amount   *int64
+		paid, id int64
+		rem      uint64
+	}
+	payments := make([]paymentShare, 0, len(shares))
+	var gross int64
+	for i := range shares {
+		for n, payment := range shares[i].payments {
+			paid := *payment.Fact.AmountMinor
+			var err error
+			gross, err = addMinor(gross, paid)
+			if err != nil {
+				return err
+			}
+			payments = append(payments, paymentShare{amount: &shares[i].fixed[n], paid: paid, id: payment.ID})
+		}
+	}
+	remaining := award
+	for i := range payments {
+		p := &payments[i]
+		high, low := bits.Mul64(uint64(award), uint64(p.paid))
+		amount, rem := bits.Div64(high, low, uint64(gross))
+		*p.amount, p.rem = int64(amount), rem
+		remaining -= *p.amount
+	}
+	if remaining != 0 {
+		sort.Slice(payments, func(i, j int) bool {
+			a, b := payments[i], payments[j]
+			if a.rem == b.rem {
+				return a.id < b.id
+			}
+			return a.rem > b.rem
+		})
+		for i := int64(0); i < remaining; i++ {
+			*payments[i].amount += 1
+		}
+	}
+	return nil
+}
+
+func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchases, fullyRefunded []practicePurchase,
 	runtime practiceDraftRuntime, identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int) error {
+	classPurchases := append(purchases, fullyRefunded...)
 	for index, part := range rule.Components {
 		b := part.PeriodBenefit
 		if b == nil {
@@ -458,7 +515,11 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 			draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, Component: key, Code: "PRACTICE_PERIOD_APPOINTMENT_MISSING"})
 			continue
 		}
-		shares, basis, issue, err := collectPracticeBenefitShares(part, purchases, validAppointments, identities, paymentCounts, runtime.salesOrganizations)
+		participants := purchases
+		if b.FixedPerClass {
+			participants = classPurchases
+		}
+		shares, basis, issue, err := collectPracticeBenefitShares(part, participants, validAppointments, identities, paymentCounts, runtime.salesOrganizations)
 		if err != nil {
 			return err
 		}
@@ -471,7 +532,7 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		}
 		var total int64
 		if b.FixedMinor != nil {
-			total, err = allocatePracticeFixedSignup(shares, *b.FixedMinor)
+			total, err = allocatePracticeFixedBenefit(shares, *b.FixedMinor, b.FixedPerClass)
 		} else {
 			rate, found := b.rate(part.Value, basis)
 			if !found {

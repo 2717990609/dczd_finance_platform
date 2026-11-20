@@ -12,6 +12,7 @@ const field = name => 'practice-benefit-'+props.index+'-'+name
 const calculationMethods = [
   {value:'rate',label:'按净实收比例'},
   {value:'fixed',label:'每份报名固定金额'},
+  {value:'class_fixed',label:'整班固定金额'},
   {value:'tiers',label:'按净实收阶梯'},
 ]
 </script>
@@ -41,7 +42,8 @@ const calculationMethods = [
   <a-form-item v-if="config.method==='rate'" label="班次计提比例（%）" required>
     <a-input-number v-model:value="component.amount" aria-label="班次计提比例（%）" :min="0" :max="100" :precision="4"/>
   </a-form-item>
-  <a-form-item v-else-if="config.method==='fixed'" label="每份报名（元）" :html-for="field('fixed')" required>
+  <a-form-item v-else-if="config.method==='fixed' || config.method==='class_fixed'"
+    :label="config.method==='class_fixed' ? '整班金额（元）' : '每份报名（元）'" :html-for="field('fixed')" required>
     <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
   </a-form-item>
   <template v-else-if="config.method==='tiers'">

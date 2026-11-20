@@ -1026,7 +1026,8 @@ function ruleComponentBody(row) {
       ...(b.recipient==='person' && b.appointmentUnitId ? {
         appointmentUnitId:b.appointmentUnitId,appointmentKind:must(b.appointmentKind,'请选择任职方式'),
       } : {}),
-      ...(b.method==='fixed' ? {fixedMinor:minor(must(b.fixedAmount,'请填写每份报名金额'))} : {}),
+      ...(b.method==='fixed' || b.method==='class_fixed' ? {fixedMinor:minor(must(b.fixedAmount,'请填写固定金额'))} : {}),
+      ...(b.method==='class_fixed' ? {fixedPerClass:true} : {}),
       ...(b.method==='tiers' ? {tierOnWholeClass:b.tierOnWholeClass || false,tiers:b.tiers.map(t=>({
         from:minor(must(t.from,'请填写净实收档位下限')),
         ...(t.through != null ? {through:minor(t.through)} : {}),

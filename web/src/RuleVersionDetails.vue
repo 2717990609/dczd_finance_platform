@@ -53,7 +53,8 @@ function recipient(part) {
 }
 function formula(part) {
   if (part.mode==='period_rate') {
-    if (part.periodBenefit?.fixedMinor != null) return props.formatMoney(part.periodBenefit.fixedMinor)+' / 报名'
+    if (part.periodBenefit?.fixedMinor != null) return props.formatMoney(part.periodBenefit.fixedMinor)+
+      (part.periodBenefit.fixedPerClass ? ' / 班次' : ' / 报名')
     return '本班适用报名净实收 × '+(part.periodBenefit?.tiers?.length ? '档位比例' : rate(part.value,10000))
   }
   if (part.companySales) return '按销售类别或公司标准计提'
