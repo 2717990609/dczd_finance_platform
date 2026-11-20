@@ -50,13 +50,23 @@ type catalogAggregateDirectory struct {
 }
 
 type catalogPeriodGroupReport struct {
-	Paused          bool                 `json:"paused,omitempty"`
-	TrialOnPaused   bool                 `json:"trialOnPaused,omitempty"`
-	PriorUnsettled  bool                 `json:"priorUnsettled,omitempty"`
-	Groups          []catalogPeriodGroup `json:"groups"`
-	Issues          map[string]int       `json:"issues"`
+	Paused          bool                       `json:"paused,omitempty"`
+	TrialOnPaused   bool                       `json:"trialOnPaused,omitempty"`
+	PriorUnsettled  bool                       `json:"priorUnsettled,omitempty"`
+	Groups          []catalogPeriodGroup       `json:"groups"`
+	Issues          map[string]int             `json:"issues"`
+	TargetIssues    []catalogPeriodTargetIssue `json:"targetIssues,omitempty"`
 	carryFromPeriod int64
 	postingIssues   []draftIssue
+}
+
+type catalogPeriodTargetIssue struct {
+	RuleID  string `json:"ruleId"`
+	Version int    `json:"version"`
+	ItemKey string `json:"itemKey"`
+	Label   string `json:"label"`
+	Code    string `json:"code"`
+	Count   int    `json:"count"`
 }
 
 type catalogPeriodGroup struct {
@@ -206,11 +216,14 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 	frozen map[catalogFrozenGroupReference]catalogPeriodGroup) (catalogPeriodGroupReport, error) {
 	report := catalogPeriodGroupReport{Groups: []catalogPeriodGroup{}, Issues: map[string]int{}}
 	type assignment struct {
-		group *catalogPeriodGroup
-		issue string
+		group       *catalogPeriodGroup
+		issue       string
+		targetIssue *catalogPeriodTargetIssue
 	}
 	byPayment := make(map[int64]assignment)
 	groups := make(map[string]*catalogPeriodGroup)
+	type targetIssueKey struct{ rule, item, code string }
+	targetIssues := make(map[targetIssueKey]*catalogPeriodTargetIssue)
 	for _, event := range events {
 		applied, found := byPayment[event.PaymentID]
 		if !found && event.frozen.PeriodID != 0 {
@@ -244,6 +257,14 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					target, key, issue := directory.groupTarget(item, event.PaidAt)
 					if issue != "" {
 						applied.issue = issue
+						issueKey := targetIssueKey{rule.ID, item.ItemKey, issue}
+						problem := targetIssues[issueKey]
+						if problem == nil {
+							problem = &catalogPeriodTargetIssue{RuleID: rule.ID, Version: rule.Version,
+								ItemKey: item.ItemKey, Label: item.Label, Code: issue}
+							targetIssues[issueKey] = problem
+						}
+						applied.targetIssue = problem
 						break
 					}
 					targets, keys = append(targets, target), append(keys, key)
@@ -270,6 +291,9 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 		}
 		if applied.issue != "" {
 			report.Issues[applied.issue]++
+			if applied.targetIssue != nil {
+				applied.targetIssue.Count++
+			}
 			if event.EventID != 0 {
 				report.postingIssues = append(report.postingIssues, draftIssue{FactID: event.EventID, Code: applied.issue})
 			}
@@ -310,6 +334,12 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 		}
 		report.Groups = append(report.Groups, *group)
 	}
+	for _, problem := range targetIssues {
+		report.TargetIssues = append(report.TargetIssues, *problem)
+	}
+	slices.SortFunc(report.TargetIssues, func(a, b catalogPeriodTargetIssue) int {
+		return cmp.Or(cmp.Compare(a.Version, b.Version), cmp.Compare(a.ItemKey, b.ItemKey), cmp.Compare(a.Code, b.Code))
+	})
 	return report, nil
 }
 

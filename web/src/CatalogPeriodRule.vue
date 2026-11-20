@@ -1,10 +1,10 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
 const props = defineProps({rule:Object, applied:Object, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
-const emit = defineEmits(['close','published','open-draft','copy'])
+const emit = defineEmits(['close','published','open-draft','copy','open-version'])
 const creating = computed(() => Boolean(props.rule?.create))
 const copiedFrom = computed(() => props.rule?.copiedFrom)
 const productId = ref(props.rule?.productId || (props.products?.length===1 ? props.products[0].value : undefined))
@@ -27,10 +27,15 @@ const saving = ref(false)
 const previewing = ref(false)
 const error = ref('')
 const quote = ref()
-const activityMonth = ref(new Date(Date.now()+8*3600000).toISOString().slice(0,7))
+const activityMonth = ref(props.rule?.reviewMonth || new Date(Date.now()+8*3600000).toISOString().slice(0,7))
 const reviewingActivity = ref(false)
 const activity = ref()
 const showsPriorCarry = computed(() => activity.value?.grouping?.groups.some(group=>group.carryInMinor<0))
+const otherGroupingIssues = computed(() => {
+  const totals = {...activity.value?.grouping?.issues}
+  for (const issue of activity.value?.grouping?.targetIssues || []) totals[issue.code] -= issue.count
+  return Object.entries(totals).filter(([,count])=>count>0)
+})
 const activityError = ref('')
 const savingDraft = ref(false)
 let versionRequest = 0
@@ -199,6 +204,20 @@ function removeComponent(row) {
   activeComponent.value = rows.value[Math.min(index,rows.value.length-1)].uid
   editingComponent.value = undefined
 }
+async function openArrangement(itemKey) {
+  const item = rows.value.find(row=>row.itemKey===itemKey)
+  if (!item) return
+  activeComponent.value = item.uid
+  editingComponent.value = canSave.value ? item.uid : undefined
+  await nextTick()
+  const heading = document.getElementById('period-rule-control-'+item.uid)
+  heading?.scrollIntoView({block:'start'})
+  heading?.focus({preventScroll:true})
+}
+function followTargetIssue(issue) {
+  if (issue.ruleId===props.rule.id) return openArrangement(issue.itemKey)
+  emit('open-version',{ruleId:issue.ruleId,itemKey:issue.itemKey,month:activityMonth.value})
+}
 function minor(value, message) {
   if (value == null || !Number.isSafeInteger(Math.round(value*100)) || value < 0) throw new Error(message)
   return Math.round(value*100)
@@ -249,6 +268,7 @@ watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,pro
     editingComponent.value = undefined
     if (creating.value) initializeCreation(data,product)
     else effectiveDate.value = canSave.value ? firstStart.value : ''
+    if (props.rule?.focusItemKey) void openArrangement(props.rule.focusItemKey)
   } catch (err) {
     if (request === versionRequest) error.value = err.message
   } finally {
@@ -447,7 +467,7 @@ async function publish() {
             <a-button v-if="canSave" :disabled="saving" @click="addComponent">添加收款安排</a-button>
           </div>
         <section v-for="item in rows" :key="item.uid" class="rule-block">
-          <button type="button" class="rule-block-header" :aria-expanded="activeComponent===item.uid"
+          <button type="button" class="rule-block-header" :id="'period-rule-control-'+item.uid" :aria-expanded="activeComponent===item.uid"
             :aria-controls="'period-rule-part-'+item.uid" @click="activeComponent=activeComponent===item.uid ? undefined : item.uid">
             <DownOutlined aria-hidden="true"/>
             <strong>{{ item.label || '新收款安排' }}</strong>
@@ -619,7 +639,12 @@ async function publish() {
                 </div>
                 <p v-else class="rule-formula">本期没有可归组的交易。</p>
                 <ul v-if="Object.keys(activity.grouping.issues).length" class="period-activity-issues" aria-label="待核分组">
-                  <li v-for="(count,issue) in activity.grouping.issues" :key="issue">{{ groupingIssueLabels[issue] || issue }} · {{ count }} 笔</li>
+                  <li v-for="issue in activity.grouping.targetIssues || []" :key="issue.ruleId+'-'+issue.itemKey+'-'+issue.code">
+                    <strong>{{ issue.label }}</strong> · v{{ issue.version }} · {{ groupingIssueLabels[issue.code] || issue.code }} · {{ issue.count }} 笔
+                    <a-button type="link" size="small" :disabled="saving || (issue.ruleId!==rule.id ? changed : !rows.some(item=>item.itemKey===issue.itemKey))"
+                      @click="followTargetIssue(issue)">{{ issue.ruleId!==rule.id ? '查看规则 v'+issue.version : canSave ? '编辑收款安排' : '查看收款安排' }}</a-button>
+                  </li>
+                  <li v-for="[issue,count] in otherGroupingIssues" :key="issue">{{ groupingIssueLabels[issue] || issue }} · {{ count }} 笔</li>
                 </ul>
               </template>
             </section>

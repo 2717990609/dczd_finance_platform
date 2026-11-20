@@ -68,8 +68,24 @@ func TestCatalogPeriodGroupsKeepOriginalRuleAndSplitOnPoolMembership(t *testing.
 	}
 	owners.Organizations = nil
 	owners.InactiveUnits = map[string]bool{"unit": true}
+	onlyFirst[1].EventID = 3101
 	report, err = groupCatalogPeriodEvents(onlyFirst, versions, owners, nil)
 	if err != nil || len(report.Groups) != 0 || report.Issues["BENEFIT_ORG_INACTIVE"] != 1 {
 		t.Fatalf("a missing mapping for a known inactive unit needs the specific warning: %+v %v", report, err)
+	}
+	var response struct {
+		TargetIssues []struct {
+			RuleID, ItemKey, Label, Code string
+			Version, Count               int
+		}
+	}
+	encoded, err := json.Marshal(report)
+	if err != nil || json.Unmarshal(encoded, &response) != nil || len(response.TargetIssues) != 1 {
+		t.Fatalf("activity should identify the exact blocked receipt arrangement: %s, %v", encoded, err)
+	}
+	issue := response.TargetIssues[0]
+	if issue.RuleID != "previous" || issue.Version != 1 || issue.ItemKey != "ops" || issue.Label != "运营" ||
+		issue.Code != "BENEFIT_ORG_INACTIVE" || issue.Count != 1 || len(report.postingIssues) != 1 || report.postingIssues[0].Code != issue.Code {
+		t.Fatalf("warning should trace to original version, blocked item and draft warning: %+v %+v", issue, report.postingIssues)
 	}
 }
