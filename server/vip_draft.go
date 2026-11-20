@@ -171,7 +171,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	}
 	if row.SalesStatus == "" {
 		issue("sales", "VIP_SALES_RULE_UNSUPPORTED")
-	} else if row.SalesStatus != "CALCULATED" {
+	} else if row.SalesStatus != "CALCULATED" && row.SalesStatus != vipSalesAppointmentInactive {
 		issue("sales", row.SalesStatus)
 	}
 	var salesRate int64

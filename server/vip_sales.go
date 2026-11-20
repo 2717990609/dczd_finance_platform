@@ -250,7 +250,7 @@ type vipRole struct {
 }
 
 type vipMembership struct {
-	Person, Unit string
+	Person, Unit, Kind, UnitKind string
 	vipInterval
 }
 
@@ -276,6 +276,8 @@ type vipSalesPart struct {
 	Amount int64  `json:"amountMinor"`
 }
 
+const vipSalesAppointmentInactive = "SALES_APPOINTMENT_INACTIVE"
+
 func (d vipSalesData) holder(role, unit string, at time.Time) string {
 	var id string
 	for _, a := range d.Roles {
@@ -290,33 +292,61 @@ func (d vipSalesData) holder(role, unit string, at time.Time) string {
 	return id
 }
 
+func (d vipSalesData) hasMatchingSalesCompanyMembership(req vipSalesRequest) bool {
+	if req.CompanyUnit == "" {
+		return false
+	}
+	var unit string
+	for _, membership := range d.Memberships {
+		if membership.Person != req.Seller || membership.UnitKind != "COMPANY" || !membership.contains(req.At) {
+			continue
+		}
+		switch membership.Kind {
+		case "MEMBER", "MANAGER", "OWNER":
+			if unit != "" {
+				return false
+			}
+			unit = membership.Unit
+		}
+	}
+	return unit == req.CompanyUnit
+}
+
 func calculateVIPSales(policy vipSalesPolicy, req vipSalesRequest, d vipSalesData) ([]vipSalesPart, string) {
+	if req.Order == "" || req.Paid < 0 {
+		return nil, "INVALID_PAYMENT"
+	}
 	for _, review := range policy.Split.Reviews {
 		if req.Order == review.Order && (req.Company != review.Company || req.Seller != review.Seller) {
 			return nil, "SALES_COMPANY_REVIEW"
 		}
 	}
-	if req.Seller == "" || d.People[req.Seller] == "" {
+	rate, issue := resolveVIPRate(policy.Sales, req.Company, req.Relationship, req.Category)
+	sellerName := d.People[req.Seller]
+	if issue == "" && rate == 0 {
+		// A known zero rate has no payout to qualify or split.
+		if req.Seller == "" || sellerName == "" {
+			return nil, ""
+		}
+		return []vipSalesPart{{Role: "SALES", Person: req.Seller, Name: sellerName}}, ""
+	}
+	if req.Seller == "" || sellerName == "" {
 		return nil, "SALES_PERSON_MISSING"
 	}
 	if !slices.ContainsFunc(d.Roles, func(a vipRole) bool {
 		return a.Role == "SALES" && a.Person == req.Seller && a.contains(req.At) &&
 			(a.Scope == "PRODUCT" && a.Key == req.Product || a.Scope == "PROJECT" && a.Key == req.Project)
 	}) {
+		if issue == "" && d.hasMatchingSalesCompanyMembership(req) {
+			return nil, vipSalesAppointmentInactive
+		}
 		return nil, "SALES_APPOINTMENT_MISSING"
 	}
-	rate, issue := resolveVIPRate(policy.Sales, req.Company, req.Relationship, req.Category)
 	if issue != "" {
 		return nil, issue
 	}
-	if req.Order == "" || req.Paid < 0 {
-		return nil, "INVALID_PAYMENT"
-	}
 	amount := calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: rate})
-	parts := []vipSalesPart{{Role: "SALES", Person: req.Seller, Name: d.People[req.Seller], Rate: rate, Amount: amount}}
-	if rate == 0 {
-		return parts, ""
-	}
+	parts := []vipSalesPart{{Role: "SALES", Person: req.Seller, Name: sellerName, Rate: rate, Amount: amount}}
 	teamIdx := slices.IndexFunc(policy.Split.Teams, func(t vipInternalTeam) bool { return t.Company == req.Company })
 	if teamIdx < 0 {
 		return parts, ""

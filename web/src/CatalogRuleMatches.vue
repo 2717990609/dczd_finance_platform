@@ -137,12 +137,13 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
             </div>
           </details>
           <small v-else-if="record.benefitStatus" class="order-version">{{ benefitStatus[record.benefitStatus] }}</small>
-          <details v-if="record.salesStatus==='CALCULATED'" class="rule-count-review">
+          <details v-if="record.salesStatus==='CALCULATED' && record.salesParts?.length" class="rule-count-review">
             <summary>查看销售分项</summary>
             <div v-for="part in record.salesParts" :key="part.role" class="order-version">
               {{ salesRoles[part.role] }} · {{ part.personName }} · {{ formatMoney(part.amountMinor) }}
             </div>
           </details>
+          <small v-else-if="record.salesStatus==='CALCULATED'" class="order-version">销售分润 {{ formatMoney(0) }}</small>
           <small v-else-if="record.salesStatus" class="order-version">{{ salesStatus[record.salesStatus] || '销售分项待核' }}</small>
         </template>
         <a-tag v-else-if="column.key==='status'" :color="record.status==='MATCHED'?'green':'orange'">{{ statuses[record.status] || record.status }}</a-tag>

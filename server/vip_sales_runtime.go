@@ -130,9 +130,10 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
  'categories',(SELECT jsonb_agg(jsonb_build_object('key',h.company_uuid,'value',h.category_uuid,'from',h.valid_from,'to',h.valid_to))
   FROM catalog_sales_categories h WHERE h.source='DCAI' AND h.observed_at=s.captured_at AND h.company_uuid IN (SELECT value FROM companies)),
  'roles',(SELECT jsonb_agg(to_jsonb(roles)-'id' ORDER BY person,role,scope,key,"from","to") FROM roles),
- 'memberships',(SELECT jsonb_agg(jsonb_build_object('person',` + vipPersonKey + `,'unit',a.unit_id,'from',a.valid_from,'to',a.valid_to)
-   ORDER BY p.id,a.unit_id,a.valid_from,a.valid_to)
-  FROM organization_assignments a JOIN people p ON p.id=a.person_id WHERE p.id IN (SELECT id FROM users)),
+ 'memberships',(SELECT jsonb_agg(jsonb_build_object('person',` + vipPersonKey + `,'unit',a.unit_id,'kind',a.kind,'unitKind',u.kind,'from',a.valid_from,'to',a.valid_to)
+   ORDER BY p.id,a.unit_id,a.kind,a.valid_from,a.valid_to)
+  FROM organization_assignments a JOIN people p ON p.id=a.person_id JOIN organization_units u ON u.id=a.unit_id
+  WHERE p.id IN (SELECT id FROM users)),
  'people',(SELECT jsonb_object_agg(key,name) FROM persons),
  'personIds',(SELECT jsonb_object_agg(key,id) FROM persons))
 FROM scope s`
