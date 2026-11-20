@@ -1741,7 +1741,7 @@ async function save() {
           <button type="button" class="rule-block-header" :aria-expanded="activeRuleComponent===i"
             :aria-controls="'practice-rule-part-'+i" @click="activeRuleComponent=activeRuleComponent===i ? undefined : i">
             <DownOutlined aria-hidden="true"/>
-            <strong>{{ c.periodBenefit ? c.periodBenefit.label || '未命名收款安排' : ruleComponentLabel(c,optionLabel) }}</strong>
+            <strong>{{ c.periodBenefit && !c.periodBenefit.label?.trim() ? '未命名收款安排' : ruleComponentLabel(c,optionLabel) }}</strong>
             <span v-if="classRule" class="rule-block-badge">{{ tierIncludesRetrain(c) ? '新报和复训' : c.classMember ? optionLabel('classMember',c.classMember) : '通用报名' }}</span>
             <small>{{ ruleRecipientSummary(c) }}</small>
           </button>

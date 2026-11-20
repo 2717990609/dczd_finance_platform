@@ -402,7 +402,7 @@ async function publish() {
             <span v-if="sheet.requiresCompletion">订单确认完成后计提</span>
           </div>
         </header>
-        <a-form v-show="!impactInput" id="catalog-rate-form" layout="vertical" @submit.prevent="publish">
+        <a-form v-show="!impactInput" id="catalog-rate-form" layout="vertical" size="small" @submit.prevent="publish">
           <div class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
@@ -556,14 +556,16 @@ async function publish() {
             </Teleport>
             <a-collapse v-model:active-key="more" ghost class="catalog-more">
               <a-collapse-panel key="more" header="更多配置">
-                <a-form-item v-if="component && !itemRemoved" label="收款安排名称" html-for="catalog-rate-label" class="catalog-rate-label">
-                  <a-input id="catalog-rate-label" :value="labelEdits.get(component.itemKey) ?? component.label" :maxlength="80"
-                    :disabled="!editable || structureEditing || !!targetDraft" @update:value="setLabel(component,$event)"/>
-                </a-form-item>
-                <div class="topbar-actions">
-                  <a-button v-if="component && !component.teamSplit" :danger="!itemRemoved" :disabled="structureEditing || saving"
-                    @click="toggleItemRemoval">{{ itemRemoved ? '撤销删除分项' : '删除分项' }}</a-button>
-                  <a-button v-if="targetSkus.length && !copy" :disabled="saving" @click="copy={}">复制到其他 SKU</a-button>
+                <div class="catalog-rate-options">
+                  <a-form-item v-if="component && !itemRemoved" label="收款安排名称" html-for="catalog-rate-label" class="catalog-rate-label">
+                    <a-input id="catalog-rate-label" :value="labelEdits.get(component.itemKey) ?? component.label" :maxlength="80"
+                      :disabled="!editable || structureEditing || !!targetDraft" @update:value="setLabel(component,$event)"/>
+                  </a-form-item>
+                  <a-space wrap :size="4">
+                    <a-button v-if="component && !component.teamSplit" size="small" :danger="!itemRemoved" :disabled="structureEditing || saving"
+                      @click="toggleItemRemoval">{{ itemRemoved ? '撤销删除分项' : '删除分项' }}</a-button>
+                    <a-button v-if="targetSkus.length && !copy" size="small" :disabled="saving" @click="copy={}">复制到其他 SKU</a-button>
+                  </a-space>
                 </div>
               </a-collapse-panel>
             </a-collapse>
@@ -624,7 +626,9 @@ async function publish() {
 .catalog-rate-effective :deep(.ant-input) {width:min(100%,280px)}
 .catalog-receipt {margin-bottom:6px}
 .catalog-more {margin:6px 0}
-.catalog-rate-label {max-width:380px}
+.catalog-rate-options {display:flex;flex-wrap:wrap;align-items:end;gap:4px 8px}
+.catalog-rate-options .catalog-rate-label {flex:1 1 180px;max-width:380px;margin-bottom:0}
 .catalog-more :deep(.ant-collapse-header) {padding-block:6px}
+.catalog-more :deep(.ant-collapse-content-box) {padding-block:4px}
 .catalog-copy {padding:16px;margin:12px 0;border:1px solid var(--line);border-radius:8px}
 </style>

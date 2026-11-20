@@ -421,7 +421,7 @@ async function resumeRule() {
   <a-drawer open :title="copiedFrom ? '复制整期规则' : creating ? '新增整期规则' : applied ? '计提使用的整期规则' : '整期分润配置'" width="min(1260px, 100vw)" root-class-name="finance-rule-editor"
     :closable="!saving && !savingDraft" :mask-closable="!saving && !savingDraft" :keyboard="!saving && !savingDraft" @close="emit('close')">
     <a-alert v-if="error" class="feedback" :message="error" type="error" show-icon/>
-    <a-form v-if="creating" layout="vertical" class="rule-basics" :disabled="saving">
+    <a-form v-if="creating" layout="vertical" size="small" class="rule-basics" :disabled="saving">
       <a-form-item label="所属产品" html-for="period-create-product" required>
         <a-select id="period-create-product" v-model:value="productId" :options="products" :disabled="!!copiedFrom" placeholder="选择产品"/>
       </a-form-item>
@@ -508,7 +508,7 @@ async function resumeRule() {
         <div class="rule-blocks period-component-layout" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
-            <a-button v-if="canSave" :disabled="saving" @click="addComponent">添加收款安排</a-button>
+            <a-button v-if="canSave" size="small" :disabled="saving" @click="addComponent">添加收款安排</a-button>
           </div>
         <section v-for="item in rows" :key="item.uid" class="rule-block">
           <button type="button" class="rule-block-header" :id="'period-rule-control-'+item.uid" :aria-expanded="activeComponent===item.uid"
@@ -527,7 +527,7 @@ async function resumeRule() {
               <a-button v-if="rows.length>1" type="link" danger :disabled="saving" @click="removeComponent(item)">移除此安排</a-button>
             </div>
           </div>
-          <a-form v-if="canSave && editingComponent===item.uid" layout="vertical" class="rule-basics">
+          <a-form v-if="canSave && editingComponent===item.uid" layout="vertical" size="small" class="rule-basics">
             <a-form-item label="收款安排名称" html-for="period-benefit-label">
               <a-input id="period-benefit-label" v-model:value="item.label" :maxlength="80" :disabled="saving"/>
             </a-form-item>
