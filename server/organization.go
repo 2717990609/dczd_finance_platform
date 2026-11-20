@@ -208,11 +208,19 @@ const importOrganizationPeopleSQL = `INSERT INTO people(name,legacy_party_id)
  FROM jsonb_to_recordset($1) AS incoming(id uuid,name text)
  ON CONFLICT(legacy_party_id) DO UPDATE SET name=excluded.name`
 
+const importedCompanyTypeChange = `excluded.sales_company_type IS NOT NULL
+ AND organization_units.sales_company_type IS DISTINCT FROM excluded.sales_company_type
+ AND NOT EXISTS(SELECT 1 FROM organization_sales_company_type_changes ch WHERE ch.unit_id=organization_units.id)`
+
 const importOrganizationUnitsSQL = `INSERT INTO organization_units(id,parent_id,name,kind,status,sort_order,sales_company_type)
  SELECT id,"parentId",name,kind,status,coalesce("sortOrder",100),"salesCompanyType"
  FROM jsonb_to_recordset($1) AS incoming(id uuid,"parentId" uuid,name text,kind text,status text,"sortOrder" integer,"salesCompanyType" text)
  ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,name=excluded.name,kind=excluded.kind,status=excluded.status,
- sort_order=excluded.sort_order,sales_company_type=coalesce(excluded.sales_company_type,organization_units.sales_company_type)`
+ sort_order=excluded.sort_order,
+ sales_company_type=CASE WHEN ` + importedCompanyTypeChange + `
+  THEN excluded.sales_company_type ELSE organization_units.sales_company_type END,
+ sales_company_type_version=organization_units.sales_company_type_version +
+  CASE WHEN ` + importedCompanyTypeChange + ` THEN 1 ELSE 0 END`
 
 const importOrganizationAssignmentsSQL = `INSERT INTO organization_assignments(id,person_id,unit_id,kind,position,valid_from,valid_to,appointment_type)
  SELECT i.id,p.id,i."unitId",i.kind,coalesce(i.position,''),i."from",i."to",i."appointmentType"

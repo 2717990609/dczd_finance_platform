@@ -155,6 +155,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/rule-impact", Handler: submitJSON(1<<20, s.postComponentRuleImpact)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-units", Handler: s.list(organizationUnitsSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-sales-companies", Handler: s.organizationCompanies},
+		{Method: http.MethodGet, Path: "/api/v1/organization-sales-company-types", Handler: s.organizationCompanyType},
+		{Method: http.MethodPost, Path: "/api/v1/organization-sales-company-types", Handler: submitJSON(32<<10, s.updateOrganizationCompanyType)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-sales-company-categories", Handler: s.organizationCompanyCategoryHistory},
 		{Method: http.MethodGet, Path: "/api/v1/organization-sales-categories", Handler: s.list(organizationCategoryListSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/organization-sales-categories", Handler: submitJSON(32<<10, s.createOrganizationCategory)},
@@ -267,7 +269,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusConflict, err.Error()
 	case errors.Is(err, errCalculationOverflow):
 		code, message = http.StatusConflict, "试算金额超出范围，请核对原单和规则"
-	case errors.Is(err, errOrganizationCategoryChanged), errors.Is(err, errOrganizationCategoryInUse),
+	case errors.Is(err, errOrganizationCompanyTypeChanged), errors.Is(err, errOrganizationCategoryChanged), errors.Is(err, errOrganizationCategoryInUse),
 		errors.Is(err, errOrganizationCategoryName), errors.Is(err, errOrganizationCategoryTarget):
 		code, message = http.StatusConflict, err.Error()
 	case errors.Is(err, conflict), errors.Is(err, errAppointmentOverlap), errors.Is(err, errBusinessDutyOverlap), errors.Is(err, errAppointmentChanged), errors.Is(err, errAppointmentUnitInactive),

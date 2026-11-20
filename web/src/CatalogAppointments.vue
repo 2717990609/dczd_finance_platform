@@ -38,8 +38,8 @@ const columns = computed(() => [
   {title:'人员',dataIndex:'personName',key:'personName',width:140},
   {title:'计提角色',dataIndex:'role',key:'role',width:150},
   {title:'适用范围',dataIndex:'scopeName',key:'scope',width:195},
-  {title:'生效时间',dataIndex:'validFrom',key:'date',width:155},
-  {title:'结束时间',dataIndex:'validTo',key:'date',width:155},
+  {title:'生效时间',dataIndex:'validFrom',key:'validFrom',width:155},
+  {title:'结束时间',dataIndex:'validTo',key:'validTo',width:155},
   ...(props.canWrite ? [{title:'操作',key:'actions',width:128}] : []),
 ])
 const pagination = computed(() => ({current:page.value,pageSize:25,total:entries.value.total,showSizeChanger:false,hideOnSinglePage:true}))
@@ -169,7 +169,7 @@ defineExpose({refresh})
         <template #bodyCell="{column,record,text}">
           <template v-if="column.key==='role'">{{ roleLabel(text) }}</template>
           <template v-if="column.key==='scope'">{{ text }}<small class="order-version">{{ scopeLabel(record.scope) }}</small></template>
-          <span v-if="column.key==='date'" class="numeric">{{ formatTime(text) }}</span>
+          <span v-if="column.key==='validFrom'||column.key==='validTo'" class="numeric">{{ formatTime(text) }}</span>
           <a-space v-if="column.key==='actions'" :size="1">
             <a-button type="link" size="small" @click="open('transfer',record)">交接</a-button>
             <a-button type="link" size="small" @click="open('end',record)">结束</a-button>

@@ -2,6 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RadioGroup } from 'ant-design-vue'
 import OrganizationCategoryEditor from './OrganizationCategoryEditor.vue'
+import OrganizationCompanyType from './OrganizationCompanyType.vue'
 
 const props = defineProps({api:Function,formatTime:Function,canWrite:Boolean})
 const emit = defineEmits(['show-appointments','show-duties'])
@@ -14,6 +15,7 @@ const result = ref({items:[],categories:[],total:0})
 const loading = ref(false)
 const error = ref('')
 const history = ref()
+const companyTypeDetails = ref()
 const manageCategories = ref(false)
 const selectedIds = ref([])
 const assignment = ref()
@@ -157,7 +159,10 @@ defineExpose({refresh})
       <a-table :columns="columns" :data-source="result.items" :loading="loading" row-key="id" :pagination="pagination"
         :scroll="{x:canWrite ? 970 : 938}" :row-selection="selection" @change="changePage">
         <template #bodyCell="{column,record}">
-          <a-tag v-if="column.key==='type'" :color="record.companyType==='UNKNOWN' ? 'orange' : 'blue'">{{ typeLabels[record.companyType] }}</a-tag>
+          <button v-if="column.key==='type'" type="button" class="order-link" :aria-label="'查看'+record.name+'的公司类型'"
+            @click="companyTypeDetails=record">
+            <a-tag :color="record.companyType==='UNKNOWN' ? 'orange' : 'blue'">{{ typeLabels[record.companyType] }}</a-tag>
+          </button>
           <template v-else-if="column.key==='category'">
             <button v-if="canWrite && record.status==='ACTIVE'" type="button" class="order-link"
               :aria-label="'调整'+record.name+'的销售类别'" @click="openAssignment([record])">{{ record.categoryName || '未分类' }}</button>
@@ -175,6 +180,8 @@ defineExpose({refresh})
       </a-table>
     </div>
   </section>
+  <OrganizationCompanyType v-if="companyTypeDetails" :api="api" :company="companyTypeDetails" :can-write="canWrite"
+    :format-time="formatTime" :types="types" @close="companyTypeDetails=undefined" @changed="refresh"/>
   <OrganizationCategoryEditor v-if="manageCategories" :api="api" @close="manageCategories=false" @changed="refresh"/>
   <a-drawer v-if="assignment" :open="true" title="调整销售类别" width="min(520px, 100vw)"
     :closable="!assignmentSaving" :mask-closable="!assignmentSaving" :keyboard="!assignmentSaving" @close="assignment=undefined">

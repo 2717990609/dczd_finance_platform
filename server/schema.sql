@@ -1313,3 +1313,15 @@ CREATE OR REPLACE VIEW catalog_sales_category_options AS
  UNION ALL
  SELECT option_key,label,enabled FROM configuration_options o WHERE group_key='catalogSalesCategory'
  AND NOT EXISTS(SELECT 1 FROM organization_sales_categories c WHERE c.id::text=o.option_key);
+
+ALTER TABLE organization_units ADD COLUMN IF NOT EXISTS sales_company_type_version bigint NOT NULL DEFAULT 1;
+
+CREATE TABLE IF NOT EXISTS organization_sales_company_type_changes (
+ unit_id uuid NOT NULL REFERENCES organization_units(id),
+ version bigint NOT NULL CHECK (version>1),
+ previous_type text NOT NULL CHECK (previous_type IN ('INTERNAL','EXTERNAL','UNKNOWN')),
+ company_type text NOT NULL CHECK (company_type IN ('INTERNAL','EXTERNAL') AND company_type<>previous_type),
+ changed_at timestamptz NOT NULL,
+ changed_by uuid REFERENCES finance_accounts(id),
+ PRIMARY KEY(unit_id,version)
+);
