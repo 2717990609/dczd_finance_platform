@@ -329,14 +329,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 			continue
 		}
 		if scope := b.RegistrationScope; scope != nil {
-			input, found := runtime.registrations[p.member.ID]
-			if !found {
-				issue := draftIssue{Code: "PRACTICE_REGISTRATION_ATTRIBUTION_MISSING", EnrollmentID: p.member.ID}
-				if len(p.payments) > 0 {
-					issue.FactID = p.payments[0].ID
-				}
-				return nil, 0, issue, nil
-			}
+			input := runtime.registrations[p.member.ID]
 			if !scope.matches(input.SellerID, input.CompanyID) {
 				continue
 			}
@@ -512,6 +505,7 @@ func splitPracticeFixedClass(shares []practiceBenefitShare, award int64) error {
 func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchases, fullyRefunded []practicePurchase,
 	runtime practiceDraftRuntime, identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int) error {
 	classPurchases := append(purchases, fullyRefunded...)
+	reportedRegistrations := make(map[int64]bool)
 	for index, part := range rule.Components {
 		b := part.PeriodBenefit
 		if b == nil {
@@ -535,6 +529,10 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		participants := purchases
 		if b.FixedPerClass {
 			participants = classPurchases
+		}
+		if b.RegistrationScope != nil &&
+			appendPracticeRegistrationIssues(draft, rule.ID, part.ClassMember, participants, runtime.registrations, reportedRegistrations) {
+			continue
 		}
 		shares, basis, issue, err := collectPracticeBenefitShares(part, participants, validAppointments, identities, paymentCounts, runtime)
 		if err != nil {

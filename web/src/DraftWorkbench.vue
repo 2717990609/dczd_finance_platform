@@ -148,7 +148,10 @@ const reason = {
   PRACTICE_PERIOD_APPOINTMENT_MISSING: '找不到分项指定的组织任职记录',
   PRACTICE_SALES_ORGANIZATION_MISSING: '无法确认付款时的销售部门或小组',
   PRACTICE_PERIOD_BENEFIT_INCOMPLETE: '适用报名或付款待核，暂未汇总此分项',
-  PRACTICE_REGISTRATION_ATTRIBUTION_MISSING: '本期报名的销售归属待核，请在大春之道更正后重新拉取',
+  PRACTICE_REGISTRATION_ATTENDANCE_MISSING: '缺少本期报名的签到记录，请重新拉取大春之道订单',
+  PRACTICE_REGISTRATION_ORDER_MISMATCH: '签到关联订单与确认名单不一致，请到大春之道核对',
+  PRACTICE_REGISTRATION_PERIOD_MISMATCH: '签到班次或时间与确认名单不一致，请到大春之道核对',
+  PRACTICE_REGISTRATION_ATTRIBUTION_MISSING: '报名缺少销售账号或公司，请在大春之道更正后重新拉取',
   PRACTICE_PERIOD_BENEFIT_TIER_MISSING: '净实收金额没有匹配的班次档位',
 }
 const lineColumns = computed(() => [

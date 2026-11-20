@@ -82,6 +82,15 @@ func TestPracticeRegistrationBenefitMatchesConfirmedSignupAndKeepsRefundPayee(t 
 		if i == 1 {
 			signup.OccurredAt = at.AddDate(0, 2, 0)
 		}
+		if i == 2 {
+			signup.PracticeRegistration = nil
+		}
+		if i == 3 {
+			signup.RecordKey = "dc_offline_order_log_t:996"
+		}
+		if i == 4 {
+			signup.OrderID = "9991005"
+		}
 		facts = append(facts, signup)
 	}
 	save := func(items []sourceFact, withRoster bool) {
@@ -100,12 +109,26 @@ func TestPracticeRegistrationBenefitMatchesConfirmedSignupAndKeepsRefundPayee(t 
 	}
 	save(facts, true)
 	preview, err := s.calculateCurrentDraft(ctx, period, 0)
-	if err != nil || preview.IssueCount != 2 || preview.Total != 0 {
-		t.Fatalf("different legacy sign time must prevent guessing a registration, got %+v %v", preview, err)
+	if err != nil || preview.IssueCount != 4 || preview.Total != 0 {
+		t.Fatalf("all invalid signups must be listed once and prevent guessing, got %+v %v", preview, err)
+	}
+	var issues []string
+	if err := s.db.QueryRow(ctx, `SELECT array_agg(v.order_id||':'||i.code ORDER BY v.order_id)
+	 FROM calculation_draft_issues i JOIN source_order_versions v ON v.id=i.source_version_id
+	 WHERE i.period_id=$1`, period).Scan(&issues); err != nil || len(issues) != 4 ||
+		issues[0] != "1002:PRACTICE_REGISTRATION_PERIOD_MISMATCH" || issues[1] != "1003:PRACTICE_REGISTRATION_ATTRIBUTION_MISSING" ||
+		issues[2] != "1004:PRACTICE_REGISTRATION_ATTENDANCE_MISSING" || issues[3] != "1005:PRACTICE_REGISTRATION_ORDER_MISMATCH" {
+		t.Fatalf("expected separate actionable signup issues, got %v %v", issues, err)
 	}
 	fix := facts[3]
 	fix.Version, fix.OccurredAt, fix.UpdatedAt = "2", at, at.Add(time.Hour)
-	save([]sourceFact{fix}, false)
+	fixedCompany := facts[5]
+	fixedCompany.PracticeRegistration = &sourcePracticeRegistration{CompanyID: "30", PeriodKey: key}
+	fixedAttendance := facts[7]
+	fixedAttendance.RecordKey = "dc_offline_order_log_t:704"
+	fixedOrder := facts[9]
+	fixedOrder.OrderID, fixedOrder.UpdatedAt = "1005", at.Add(time.Hour)
+	save([]sourceFact{fix, fixedCompany, fixedAttendance, fixedOrder}, false)
 	var queued bool
 	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, period).Scan(&queued); err != nil || !queued {
 		t.Fatalf("receiving a corrected attendance event should queue the affected draft: %v %v", queued, err)

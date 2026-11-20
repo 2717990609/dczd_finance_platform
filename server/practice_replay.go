@@ -73,7 +73,9 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 	if len(runtime.registrations) != 0 {
 		inputs.RegistrationVersions = make(map[int64]int64, len(runtime.registrations))
 		for enrollment, input := range runtime.registrations {
-			inputs.RegistrationVersions[enrollment] = input.VersionID
+			if input.Issue == "" {
+				inputs.RegistrationVersions[enrollment] = input.VersionID
+			}
 		}
 	}
 	if runtime.companyOffers.usesCategories() {
