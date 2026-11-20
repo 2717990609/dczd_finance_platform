@@ -50,7 +50,7 @@ function removeCompany(index) {
         <a-input-number id="tier-start-ordinal" v-model:value="config.countFromOrdinal" :min="1" :precision="0"/>
       </a-form-item>
       <a-form-item v-else-if="config.startMode==='opening'" html-for="tier-opening" label="冻结期初"
-        :extra="openings.length ? '从冻结截止时刻之后开始追加新报。' : '当前产品暂无导入的冻结期初。'" required>
+        :extra="openings.length ? '从冻结截止时刻之后开始追加新报。' : '当前产品尚未登记累计期初。'" required>
         <a-select id="tier-opening" v-model:value="config.openingId" :options="openings" />
       </a-form-item>
       <a-form-item v-else html-for="tier-start-time" label="起始开班时间" extra="使用北京时间。" required>

@@ -42,7 +42,7 @@ func TestRefundDeltaUsesFrozenPolicyAndAccumulatesUntilFull(t *testing.T) {
 		})
 	}
 	if _, err := refundDelta(component{Mode: "rate", Value: 1000}, 1000, 100, 200, 0); !errors.Is(err, errRefundPolicy) {
-		t.Fatalf("legacy rule inferred a refund policy: %v", err)
+		t.Fatalf("inferred a refund policy for a rule without one: %v", err)
 	}
 	if _, err := refundDelta(component{Mode: "rate", Value: 1000, RefundPolicy: "proportional"}, 1000, 100, 1001, 0); !errors.Is(err, errRefundAmount) {
 		t.Fatalf("excess refund accepted: %v", err)

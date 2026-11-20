@@ -61,7 +61,7 @@ const reason = {
   UNCONFIGURED_COMPONENT: '此分项尚未配置可用的来源角色或计算方式',
   MISSING_PAYMENT_ID: '缺少原付款 ID',
   DUPLICATE_PAYMENT: '同一付款出现多条记录，需核对商品行及金额分摊',
-  PAYMENT_ALREADY_SETTLED: '此付款已在其他账期结算，请核对原账与来源变更',
+  PAYMENT_ALREADY_SETTLED: '此付款已在其他账期结算，请核对已结算明细和订单变更',
   MISSING_PAID_AMOUNT: '缺少有效的实付金额',
   MISSING_EFFECTIVE_RULE: '付款时点没有有效规则',
   AMBIGUOUS_PARTICIPANT: '同一来源角色有多名受益人',
