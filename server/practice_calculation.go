@@ -37,6 +37,7 @@ type practicePurchase struct {
 
 type practiceDraftRuntime struct {
 	appointments           map[practiceAppointmentKey][]practiceAppointment
+	registrations          map[int64]practiceRegistrationInput
 	salesOrganizations     practiceSalesOrganizations
 	companyOffers          *practiceCompanyOffers
 	companyClassifications map[string]string

@@ -1053,15 +1053,16 @@ function ruleComponentBody(row) {
   }
   if (row.mode === 'period_rate') {
     const b = row.periodBenefit
+    const registration = b.registrationScope
     must(b.recipient,'请选择收款对象')
     component.value = b.method==='rate' ? periodRate(row.amount) : 0
     component.periodBenefit = {
       label:must(b.label?.trim(),'请填写收款安排名称'),
       ...(b.recipient==='pool' ? {pool:practicePoolBody(b.pool)} : b.recipient==='unit'
         ? {unitId:must(b.unitId,'请选择收款组织')} : {personId:must(b.personId,'请选择收款人员')}),
-      ...(b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
-      ...(b.salesPeople?.length ? {salesPeople:b.salesPeople} : {}),
-      ...(b.salesUnits?.length ? {salesUnits:b.salesUnits} : {}),
+      ...(!registration && b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
+      ...(!registration && b.salesPeople?.length ? {salesPeople:b.salesPeople} : {}),
+      ...(!registration && b.salesUnits?.length ? {salesUnits:b.salesUnits} : {}),
       ...(b.recipient==='person' && b.appointmentUnitId ? {
         appointmentUnitId:b.appointmentUnitId,appointmentKind:must(b.appointmentKind,'请选择任职方式'),
       } : {}),
@@ -1073,7 +1074,18 @@ function ruleComponentBody(row) {
         value:periodRate(t.value),
       })).sort((a,b)=>a.from-b.from)} : {}),
     }
-    if (b.salesPeople?.length || b.salesUnits?.length) must(sourceRole,'请选择销售人员的来源角色')
+    if (registration) {
+      const sellerId = registration.sellerId?.trim()
+      const sellerCompanyId = registration.sellerCompanyId
+      const companies = registration.companies || []
+      if ((sellerId || sellerCompanyId) && (!/^[1-9]\d*$/.test(sellerId || '') || !sellerCompanyId)) {
+        throw new Error('请同时填写本人销售账号和销售公司。')
+      }
+      if (!sellerId && !companies.length) throw new Error('请选择本人和所属公司，或添加下属公司。')
+      if (companies.includes(sellerCompanyId)) throw new Error('本人销售公司不能同时选作下属公司。')
+      component.periodBenefit.registrationScope = {...(sellerId ? {sellerId,sellerCompanyId} : {}), ...(companies.length ? {companies} : {})}
+      delete component.sourceRole
+    } else if (b.salesPeople?.length || b.salesUnits?.length) must(sourceRole,'请选择销售人员的来源角色')
     return component
   }
   if (row.mode !== 'tiered') {

@@ -74,19 +74,19 @@ func sourceRegistrationPeriodKey(fields map[string]json.RawMessage) string {
 	return "PRACTICE:" + strconv.FormatInt(activityType, 10) + ":" + strconv.FormatInt(strategy, 10) + ":" + strconv.FormatInt(id, 10)
 }
 
-func fillSourcePracticeRegistration(ctx context.Context, tx pgx.Tx, version int64, registration *sourcePracticeRegistration) error {
+func fillSourcePracticeRegistration(ctx context.Context, tx pgx.Tx, version int64, registration *sourcePracticeRegistration) (bool, error) {
 	tag, err := tx.Exec(ctx, `UPDATE source_order_versions SET practice_registration=$2
 	 WHERE id=$1 AND practice_registration IS NULL`, version, registration)
 	if err != nil || tag.RowsAffected() != 0 {
-		return err
+		return err == nil, err
 	}
 	var same bool
 	if err := tx.QueryRow(ctx, `SELECT practice_registration=$2::jsonb FROM source_order_versions WHERE id=$1`,
 		version, registration).Scan(&same); err != nil {
-		return err
+		return false, err
 	}
 	if !same {
-		return conflict
+		return false, conflict
 	}
-	return nil
+	return false, nil
 }

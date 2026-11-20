@@ -131,7 +131,7 @@ func validateComponents(items []component) error {
 			return invalid
 		}
 	}
-	return nil
+	return checkPracticeRegistrationScopes(items)
 }
 
 func migrate(ctx context.Context, db *pgxpool.Pool) error {
@@ -281,7 +281,8 @@ func respond(w http.ResponseWriter, result any, err error) {
 	case errors.Is(err, errFinanceLoginBusy):
 		code, message = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope),
-		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany):
+		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany),
+		errors.Is(err, errPracticeRegistrationOverlap):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod),
@@ -706,6 +707,12 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			}
 			if benefit := c.PeriodBenefit; benefit != nil {
 				companyIDs = append(companyIDs, benefit.SalesCompanies...)
+				if scope := benefit.RegistrationScope; scope != nil {
+					companyIDs = append(companyIDs, scope.Companies...)
+					if scope.SellerCompanyID != "" {
+						companyIDs = append(companyIDs, scope.SellerCompanyID)
+					}
+				}
 				personIDs = append(personIDs, benefit.SalesPeople...)
 				salesUnitIDs = append(salesUnitIDs, benefit.SalesUnits...)
 				if benefit.PersonID != 0 {

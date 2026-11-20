@@ -161,6 +161,8 @@ CREATE INDEX IF NOT EXISTS source_order_versions_payment_date
  ON source_order_versions(source, (fact->>'domain'), (fact->>'sourceKey'), occurred_at) WHERE kind = 'ORDER_PAID';
 CREATE INDEX IF NOT EXISTS source_order_versions_payment_identity
  ON source_order_versions(source, (fact->>'domain'), (fact->>'paymentId'), line_id) WHERE kind = 'ORDER_PAID';
+CREATE INDEX IF NOT EXISTS source_order_versions_practice_attendance
+ ON source_order_versions(record_key,updated_at DESC,id DESC) WHERE source='DCZD' AND kind='DELIVERY_COMPLETED';
 
 CREATE TABLE IF NOT EXISTS source_write_state (
  source text PRIMARY KEY,
@@ -452,6 +454,12 @@ BEGIN
      OR EXISTS(SELECT 1 FROM catalog_aggregate_draft_groups g JOIN settlements s USING(period_id) WHERE g.anchor_payment_id=OLD.id)
      OR EXISTS(SELECT 1 FROM calculation_draft_practice_changes a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id) THEN
    RAISE EXCEPTION 'source version is referenced by a confirmed calculation' USING ERRCODE='55000';
+  END IF;
+  IF OLD.kind='DELIVERY_COMPLETED' AND EXISTS(
+   SELECT 1 FROM calculation_drafts d JOIN settlements s USING(period_id)
+   CROSS JOIN LATERAL jsonb_each_text(d.practice_replay_inputs->'registrationVersions') ref
+   WHERE ref.value=OLD.id::text) THEN
+   RAISE EXCEPTION 'attendance version is referenced by a confirmed calculation' USING ERRCODE='55000';
   END IF;
  ELSE
   IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.rule_id=OLD.id)

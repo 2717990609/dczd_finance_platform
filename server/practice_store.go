@@ -352,6 +352,12 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	}
 	runtime := practiceDraftRuntime{appointments: appointments, salesOrganizations: salesOrganizations, companyOffers: companyOffers,
 		companyClassifications: companyClassifications, companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
+	if usesPracticeRegistrations(rule) {
+		runtime.registrations, err = readPracticeRegistrationInputs(ctx, tx, *summary.PracticeRosterID, true, nil)
+		if err != nil {
+			return paymentDraft{}, nil, err
+		}
+	}
 	result, err := calculatePracticeDraft(members, rule, orders, identities, blocked, history, matchPracticeRefunds(refunds, orders), runtime)
 	if err != nil {
 		return paymentDraft{}, nil, err

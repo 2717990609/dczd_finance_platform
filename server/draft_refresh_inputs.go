@@ -25,9 +25,9 @@ const draftRefreshFacts = `WITH keys AS (
  LEFT JOIN source_payment_companies pv ON pv.source_version_id=previous.id
  WHERE current.id=ANY($2::bigint[]) OR (current.id=ANY($1::bigint[]) AND (
   previous.id IS NULL OR (current.fact-` + draftDisplayFactFields + `,cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,
-   cv.company_id,cv.recommendation_company_id,cv.recommendation_conflict)
+   cv.company_id,cv.recommendation_company_id,cv.recommendation_conflict,current.practice_registration)
   IS DISTINCT FROM (previous.fact-` + draftDisplayFactFields + `,pc.entity_type,pc.business_key,pc.classifier,pc.sales_claims,
-   pv.company_id,pv.recommendation_company_id,pv.recommendation_conflict)))
+   pv.company_id,pv.recommendation_company_id,pv.recommendation_conflict,previous.practice_registration)))
 ), events AS MATERIALIZED (
  SELECT v.id,v.source,v.fact,v.order_id,v.kind,v.record_key,v.occurred_at FROM changed c
  JOIN source_order_versions v ON v.id=c.current_id OR v.id=c.previous_id
@@ -139,6 +139,13 @@ UNION SELECT posted.period_id FROM refund_versions v JOIN calculation_draft_perf
 UNION SELECT posted.period_id FROM corrected_originals o JOIN calculation_draft_corrections posted ON posted.original_line_id=o.id
 UNION SELECT issue.period_id FROM corrected_originals o JOIN calculation_draft_issues issue ON issue.correction_line_id=o.id
 UNION SELECT id FROM classes
+UNION SELECT p.id FROM changed c JOIN source_order_versions v ON v.id=c.current_id
+ JOIN practice_enrollments e ON e.source_enrollment_id=split_part(v.record_key,':',2) AND e.commission_eligible
+ JOIN periods p ON p.source_period_key=e.period_key
+ JOIN LATERAL (SELECT id FROM practice_rosters r WHERE r.period_key=e.period_key ORDER BY r.source_version DESC LIMIT 1) latest ON true
+ JOIN practice_roster_members member ON member.roster_id=latest.id AND member.enrollment_id=e.id
+ WHERE v.source='DCZD' AND v.kind='DELIVERY_COMPLETED' AND split_part(v.record_key,':',1)='dc_offline_order_log_t'
+ AND EXISTS(SELECT 1 FROM rule_versions rv WHERE ` + matchingRuleScope + ` AND rv.components @>'[{"periodBenefit":{"registrationScope":{}}}]')
 UNION SELECT id FROM practice_refund_months
 UNION SELECT p.id FROM practice_changed_classes c JOIN periods p USING(product_id) WHERE p.calendar_month IS NOT NULL
  AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on

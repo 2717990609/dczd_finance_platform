@@ -123,6 +123,10 @@ onMounted(async () => {
             </template>
           </template>
           <template v-if="part.periodBenefit">
+            <template v-if="part.periodBenefit.registrationScope">
+              <p v-if="part.periodBenefit.registrationScope.sellerId">报名销售本人 {{ part.periodBenefit.registrationScope.sellerId }} · {{ companyName(part.periodBenefit.registrationScope.sellerCompanyId) }}</p>
+              <p v-if="part.periodBenefit.registrationScope.companies?.length">下属公司 {{ part.periodBenefit.registrationScope.companies.map(companyName).join('、') }}</p>
+            </template>
             <p v-if="part.periodBenefit.salesCompanies?.length">销售公司 {{ part.periodBenefit.salesCompanies.map(companyName).join('、') }}</p>
             <p v-if="part.periodBenefit.salesPeople?.length">销售人员 {{ part.periodBenefit.salesPeople.map(personName).join('、') }} · {{ roleName(part.sourceRole) }}</p>
             <p v-if="part.periodBenefit.salesUnits?.length">业绩部门或小组 {{ part.periodBenefit.salesUnits.map(unitName).join('、') }} · {{ roleName(part.sourceRole) }}</p>
@@ -130,7 +134,7 @@ onMounted(async () => {
             <ul v-if="part.periodBenefit.tiers?.length">
               <li v-for="row in part.periodBenefit.tiers" :key="row.from">{{ range(row,false) }} · {{ rate(row.value,10000) }}</li>
             </ul>
-            <p v-if="!part.periodBenefit.salesCompanies?.length && !part.periodBenefit.salesPeople?.length && !part.periodBenefit.salesUnits?.length && !part.periodBenefit.appointmentUnitId && !part.periodBenefit.tiers?.length">按本班符合条件的净实收计提</p>
+            <p v-if="!part.periodBenefit.registrationScope && !part.periodBenefit.salesCompanies?.length && !part.periodBenefit.salesPeople?.length && !part.periodBenefit.salesUnits?.length && !part.periodBenefit.appointmentUnitId && !part.periodBenefit.tiers?.length">按本班符合条件的净实收计提</p>
           </template>
           <template v-if="part.companySales">
             <p v-if="part.companySales.internalCompanies?.length">内部销售公司 {{ part.companySales.internalCompanies.map(companyName).join('、') }}</p>

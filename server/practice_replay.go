@@ -16,6 +16,7 @@ type practiceReplayInputs struct {
 	IndependentRefunds     bool                                 `json:"independentRefunds,omitempty"`
 	PriorCounts            map[int64]int64                      `json:"priorCounts,omitempty"`
 	Identities             map[string][]identityAssignment      `json:"identities,omitempty"`
+	RegistrationVersions   map[int64]int64                      `json:"registrationVersions,omitempty"`
 	Appointments           map[int][]practiceAppointment        `json:"appointments,omitempty"`
 	SalesOrganizations     practiceSalesOrganizations           `json:"salesOrganizations,omitempty"`
 	Companies              map[string][]companySourceAssignment `json:"companies,omitempty"`
@@ -68,6 +69,12 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 	}
 	if len(runtime.salesOrganizations) != 0 {
 		inputs.SalesOrganizations = make(practiceSalesOrganizations)
+	}
+	if len(runtime.registrations) != 0 {
+		inputs.RegistrationVersions = make(map[int64]int64, len(runtime.registrations))
+		for enrollment, input := range runtime.registrations {
+			inputs.RegistrationVersions[enrollment] = input.VersionID
+		}
 	}
 	if runtime.companyOffers.usesCategories() {
 		inputs.CompanyClassifications = make(map[string]string)
@@ -217,6 +224,15 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 		recommendations: practiceCompanyRecommendations{
 			directory: make(map[pgtype.UUID]pgtype.UUID), explicit: values.ReferrerCompanies,
 		},
+	}
+	if usesPracticeRegistrations(replay.rule) {
+		replay.runtime.registrations, err = readPracticeRegistrationInputs(ctx, tx, rosterID, false, values.RegistrationVersions)
+		if err != nil {
+			return replay, err
+		}
+		if len(replay.runtime.registrations) != len(values.RegistrationVersions) {
+			return replay, errPracticeRefundReplay
+		}
 	}
 	for index, assignments := range values.Appointments {
 		if index < 0 || index >= len(replay.rule.Components) || replay.rule.Components[index].PeriodBenefit == nil {

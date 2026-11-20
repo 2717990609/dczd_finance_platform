@@ -117,19 +117,20 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 }
 
 type practicePeriodBenefit struct {
-	Label             string               `json:"label"`
-	PersonID          int64                `json:"personId,omitempty"`
-	UnitID            string               `json:"unitId,omitempty"`
-	SalesCompanies    []string             `json:"salesCompanies,omitempty"`
-	SalesPeople       []int64              `json:"salesPeople,omitempty"`
-	SalesUnits        []string             `json:"salesUnits,omitempty"`
-	AppointmentUnitID string               `json:"appointmentUnitId,omitempty"`
-	AppointmentKind   string               `json:"appointmentKind,omitempty"`
-	FixedMinor        *int64               `json:"fixedMinor,omitempty"`
-	FixedPerClass     bool                 `json:"fixedPerClass,omitempty"`
-	TierOnWholeClass  bool                 `json:"tierOnWholeClass,omitempty"`
-	Tiers             []practicePeriodRate `json:"tiers,omitempty"`
-	Pool              *practicePoolTarget  `json:"pool,omitempty"`
+	Label             string                     `json:"label"`
+	PersonID          int64                      `json:"personId,omitempty"`
+	UnitID            string                     `json:"unitId,omitempty"`
+	SalesCompanies    []string                   `json:"salesCompanies,omitempty"`
+	SalesPeople       []int64                    `json:"salesPeople,omitempty"`
+	SalesUnits        []string                   `json:"salesUnits,omitempty"`
+	RegistrationScope *practiceRegistrationScope `json:"registrationScope,omitempty"`
+	AppointmentUnitID string                     `json:"appointmentUnitId,omitempty"`
+	AppointmentKind   string                     `json:"appointmentKind,omitempty"`
+	FixedMinor        *int64                     `json:"fixedMinor,omitempty"`
+	FixedPerClass     bool                       `json:"fixedPerClass,omitempty"`
+	TierOnWholeClass  bool                       `json:"tierOnWholeClass,omitempty"`
+	Tiers             []practicePeriodRate       `json:"tiers,omitempty"`
+	Pool              *practicePoolTarget        `json:"pool,omitempty"`
 }
 
 type practicePeriodRate struct {
@@ -174,6 +175,9 @@ func validPracticePeriodBenefit(c component) bool {
 		}
 	}
 	if b.AppointmentKind != "" && !validSourceRole(b.AppointmentKind) {
+		return false
+	}
+	if s := b.RegistrationScope; s != nil && (!s.valid() || len(b.SalesCompanies)+len(b.SalesPeople)+len(b.SalesUnits) != 0) {
 		return false
 	}
 	for _, company := range b.SalesCompanies {
@@ -296,7 +300,7 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 }
 
 func collectPracticeBenefitShares(part component, purchases []practicePurchase, assignments []practiceAppointment,
-	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int, organizations practiceSalesOrganizations) ([]practiceBenefitShare, int64, string, error) {
+	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int, runtime practiceDraftRuntime) ([]practiceBenefitShare, int64, draftIssue, error) {
 	b := part.PeriodBenefit
 	var eligible []practiceBenefitShare
 	var tierBase int64
@@ -310,7 +314,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		})
 		if p.issue != "" || repeatedPayment {
 			if memberMatches || b.TierOnWholeClass {
-				return nil, 0, "PRACTICE_PERIOD_BENEFIT_INCOMPLETE", nil
+				return nil, 0, draftIssue{Code: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"}, nil
 			}
 			continue
 		}
@@ -318,28 +322,41 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 			var err error
 			tierBase, err = addMinor(tierBase, p.base)
 			if err != nil {
-				return nil, 0, "", err
+				return nil, 0, draftIssue{}, err
 			}
 		}
 		if !memberMatches {
 			continue
 		}
+		if scope := b.RegistrationScope; scope != nil {
+			input, found := runtime.registrations[p.member.ID]
+			if !found {
+				issue := draftIssue{Code: "PRACTICE_REGISTRATION_ATTRIBUTION_MISSING", EnrollmentID: p.member.ID}
+				if len(p.payments) > 0 {
+					issue.FactID = p.payments[0].ID
+				}
+				return nil, 0, issue, nil
+			}
+			if !scope.matches(input.SellerID, input.CompanyID) {
+				continue
+			}
+		}
 		payments := p.payments
 		if b.FixedMinor != nil && len(p.originalPayments) != 0 {
 			payments = p.originalPayments
 		}
-		if len(payments) == 2 {
+		if len(payments) == 2 && b.RegistrationScope == nil {
 			left, right := payments[0].Fact, payments[1].Fact
 			if left.SalesCompanyID != right.SalesCompanyID ||
 				(left.ReferrerID != "" && right.ReferrerID != "" && left.ReferrerID != right.ReferrerID) {
-				return nil, 0, "PRACTICE_PERIOD_BENEFIT_INCOMPLETE", nil
+				return nil, 0, draftIssue{Code: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"}, nil
 			}
 		}
 		share := practiceBenefitShare{purchase: p}
 		for _, payment := range payments {
-			yes, issue := b.eligiblePayment(payment, part.SourceRole, assignments, identities, organizations)
+			yes, issue := b.eligiblePayment(payment, part.SourceRole, assignments, identities, runtime.salesOrganizations)
 			if issue != "" {
-				return nil, 0, issue, nil
+				return nil, 0, draftIssue{Code: issue}, nil
 			}
 			if yes {
 				share.payments = append(share.payments, payment)
@@ -357,12 +374,12 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 			var err error
 			tierBase, err = addMinor(tierBase, share.net)
 			if err != nil {
-				return nil, 0, "", err
+				return nil, 0, draftIssue{}, err
 			}
 		}
 		eligible = append(eligible, share)
 	}
-	return eligible, tierBase, "", nil
+	return eligible, tierBase, draftIssue{}, nil
 }
 
 func (b practicePeriodBenefit) rate(configured, basis int64) (int64, bool) {
@@ -519,12 +536,13 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		if b.FixedPerClass {
 			participants = classPurchases
 		}
-		shares, basis, issue, err := collectPracticeBenefitShares(part, participants, validAppointments, identities, paymentCounts, runtime.salesOrganizations)
+		shares, basis, issue, err := collectPracticeBenefitShares(part, participants, validAppointments, identities, paymentCounts, runtime)
 		if err != nil {
 			return err
 		}
-		if issue != "" {
-			draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, Component: key, Code: issue})
+		if issue.Code != "" {
+			issue.RuleID, issue.Component = rule.ID, key
+			draft.Issues = append(draft.Issues, issue)
 			continue
 		}
 		if len(shares) == 0 {

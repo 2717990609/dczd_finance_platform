@@ -7,6 +7,9 @@ const props = defineProps({
   recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
 })
 const config = computed(() => props.component.periodBenefit)
+const registration = computed(() => config.value.registrationScope)
+const salesSources = [{value:'payment',label:'付款订单'}, {value:'registration',label:'签到报名'}]
+const registrationCompanies = computed(() => props.companies.filter(option=>/^[1-9]\d*$/.test(option.value)))
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 const field = name => 'practice-benefit-'+props.index+'-'+name
 const calculationMethods = [
@@ -66,6 +69,27 @@ const calculationMethods = [
   </template>
   <a-collapse ghost class="period-scope">
     <a-collapse-panel key="scope" header="哪些业绩参与">
+      <a-form-item label="业绩来源" :html-for="field('sales-source')">
+        <a-select :id="field('sales-source')" :value="registration ? 'registration' : 'payment'" :options="salesSources"
+          @change="config.registrationScope=$event==='registration' ? {} : undefined"/>
+      </a-form-item>
+      <template v-if="registration">
+        <div class="period-fields">
+          <a-form-item label="本人销售账号" :html-for="field('registration-seller')">
+            <a-input :id="field('registration-seller')" v-model:value="registration.sellerId" inputmode="numeric"
+              :maxlength="19" placeholder="大春之道销售账号" allow-clear/>
+          </a-form-item>
+          <a-form-item label="本人销售公司" :html-for="field('registration-company')">
+            <a-select :id="field('registration-company')" v-model:value="registration.sellerCompanyId" :options="registrationCompanies"
+              show-search allow-clear :filter-option="byName"/>
+          </a-form-item>
+        </div>
+        <a-form-item label="下属公司" :html-for="field('registration-companies')">
+          <a-select :id="field('registration-companies')" v-model:value="registration.companies" :options="registrationCompanies"
+            mode="multiple" :max-tag-count="4" allow-clear :filter-option="byName"/>
+        </a-form-item>
+      </template>
+      <template v-else>
       <a-form-item label="销售公司" :html-for="field('companies')">
         <a-select :id="field('companies')" v-model:value="config.salesCompanies" :options="companies"
           mode="multiple" allow-clear :filter-option="byName" placeholder="全部销售公司"/>
@@ -81,6 +105,7 @@ const calculationMethods = [
       <a-form-item v-if="config.salesPeople?.length || config.salesUnits?.length" label="销售来源角色" :html-for="field('role')" required>
         <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
       </a-form-item>
+      </template>
       <template v-if="config.recipient==='person'">
         <a-form-item label="任职组织" :html-for="field('appointment')" extra="填写后，仅计提任职有效期间的付款。">
           <a-select :id="field('appointment')" v-model:value="config.appointmentUnitId" :options="units"

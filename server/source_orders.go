@@ -462,7 +462,7 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 			return 0, e
 		}
 		var sourceVersion int64
-		created := false
+		var created, metadataChanged bool
 		e = tx.QueryRow(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at,practice_registration)
 		 VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT DO NOTHING RETURNING id`,
 			f.Source, f.OrderID, f.LineID, f.RecordKey, f.Version, f.Kind, f.UpdatedAt, raw, f.OccurredAt, f.PracticeRegistration).Scan(&sourceVersion)
@@ -478,7 +478,7 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 				return 0, conflict
 			}
 			if f.PracticeRegistration != nil {
-				if e = fillSourcePracticeRegistration(ctx, tx, sourceVersion, f.PracticeRegistration); e != nil {
+				if metadataChanged, e = fillSourcePracticeRegistration(ctx, tx, sourceVersion, f.PracticeRegistration); e != nil {
 					return 0, e
 				}
 			}
@@ -488,13 +488,12 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 			insertedIDs = append(insertedIDs, sourceVersion)
 			created = true
 		}
-		metadataChanged := false
 		if f.Classification.Key != "" {
 			changed, e := storeSourceClassification(ctx, tx, sourceVersion, f.Classification, f.VIPClaims, created)
 			if e != nil {
 				return 0, e
 			}
-			metadataChanged = changed
+			metadataChanged = metadataChanged || changed
 		}
 		if f.SalesCompanyID != "" {
 			changed, e := storeSourcePaymentCompany(ctx, tx, sourceVersion, f)
