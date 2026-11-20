@@ -533,3 +533,33 @@ func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *test
 		t.Fatalf("refund should reverse the original company, got %s: %v", originalCompany, err)
 	}
 }
+func TestPracticeCompanyMultiSelectAndExceptionsUseOneStandard(t *testing.T) {
+	const first = "41000000-0000-4000-8000-000000000001"
+	const second = "41000000-0000-4000-8000-000000000002"
+	var part component
+	if err := json.Unmarshal([]byte(`{"type":"company_sales","mode":"company_sales","classMember":"new","sourceRole":"DIRECT_REFERRER",
+	 "companySales":{"categories":[{"salesCategoryIds":["`+first+`","`+second+`"],"companies":[],"mode":"rate","value":100000,
+	 "overrides":[{"companyIds":["special-1","special-2"],"mode":"rate","value":200000}]},
+	 {"companies":["named-1","named-2"],"mode":"rate","value":300000}]}}`), &part); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateComponents([]component{part}); err != nil {
+		t.Fatalf("grouped categories and unnamed company exceptions should publish: %v", err)
+	}
+	offers := practiceCompanyStandards(paymentRule{Components: []component{part}})
+	for _, tc := range []struct {
+		company, category string
+		want              int64
+	}{
+		{"ordinary-1", first, 100000}, {"ordinary-2", second, 100000}, {"special-1", first, 200000},
+		{"special-2", second, 200000}, {"named-1", first, 300000}, {"named-2", second, 300000},
+	} {
+		purchase := practicePurchase{member: practiceEnrollment{MembershipType: 3}, payments: []paymentInput{
+			{Fact: sourceFact{PaymentID: "payment", SalesCompanyID: tc.company}},
+		}}
+		purchase.classifyCompany(offers, map[string]string{"payment": tc.category})
+		if purchase.companyRoutingIssue != "" || purchase.companyAward == nil || purchase.companyAward.Value != tc.want {
+			t.Fatalf("%s should use exactly %d, got %+v %q", tc.company, tc.want, purchase.companyAward, purchase.companyRoutingIssue)
+		}
+	}
+}

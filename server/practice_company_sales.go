@@ -66,6 +66,7 @@ type practiceCompanyValue struct {
 type practiceCompanyCategory struct {
 	Label              string                    `json:"label,omitempty"`
 	SalesCategoryID    string                    `json:"salesCategoryId,omitempty"`
+	SalesCategoryIDs   []string                  `json:"salesCategoryIds,omitempty"`
 	Companies          []string                  `json:"companies"`
 	Overrides          []practiceCompanyOverride `json:"overrides,omitempty"`
 	RecommendationRate *int64                    `json:"recommendationRate,omitempty"`
@@ -73,9 +74,24 @@ type practiceCompanyCategory struct {
 }
 
 type practiceCompanyOverride struct {
-	CompanyID          string `json:"companyId"`
-	RecommendationRate *int64 `json:"recommendationRate,omitempty"`
+	CompanyID          string   `json:"companyId,omitempty"`
+	CompanyIDs         []string `json:"companyIds,omitempty"`
+	RecommendationRate *int64   `json:"recommendationRate,omitempty"`
 	practiceCompanyValue
+}
+
+func (c practiceCompanyCategory) categoryIDs() []string {
+	if c.SalesCategoryID != "" {
+		return []string{c.SalesCategoryID}
+	}
+	return c.SalesCategoryIDs
+}
+
+func (o practiceCompanyOverride) companyIDs() []string {
+	if o.CompanyID != "" {
+		return []string{o.CompanyID}
+	}
+	return o.CompanyIDs
 }
 
 func (v practiceCompanyValue) valid(member string) bool {
@@ -117,13 +133,15 @@ func validPracticeCompanySales(c component) bool {
 			(rate == nil || *rate == 0 || len(c.CompanySales.RecommendationRecipients) != 0)
 	}
 	for _, category := range c.CompanySales.Categories {
-		if category.SalesCategoryID == "" && (!textOK(category.Label, 80) || len(category.Companies) == 0) ||
+		categoryIDs := category.categoryIDs()
+		if (len(categoryIDs) == 0) == (len(category.Companies) == 0) ||
+			category.SalesCategoryID != "" && len(category.SalesCategoryIDs) != 0 || category.Label != "" && !textOK(category.Label, 80) ||
 			!category.practiceCompanyValue.valid(c.ClassMember) || !validRate(category.RecommendationRate) {
 			return false
 		}
-		if id := category.SalesCategoryID; id != "" {
+		for _, id := range categoryIDs {
 			normalized, ok := canonicalSourceUUID(id)
-			if !ok || normalized != id || seenCategories[id] || len(category.Companies) != 0 {
+			if !ok || normalized != id || seenCategories[id] {
 				return false
 			}
 			seenCategories[id] = true
@@ -136,12 +154,18 @@ func validPracticeCompanySales(c component) bool {
 			seen[company], member[company] = true, true
 		}
 		for _, override := range category.Overrides {
-			if !(member[override.CompanyID] || category.SalesCategoryID != "" && textOK(override.CompanyID, 128) && !seen[override.CompanyID]) || !override.practiceCompanyValue.valid(c.ClassMember) ||
-				!validRate(override.RecommendationRate) {
+			companyIDs := override.companyIDs()
+			if len(companyIDs) == 0 || override.CompanyID != "" && len(override.CompanyIDs) != 0 ||
+				!override.practiceCompanyValue.valid(c.ClassMember) || !validRate(override.RecommendationRate) {
 				return false
 			}
-			seen[override.CompanyID] = true
-			delete(member, override.CompanyID)
+			for _, id := range companyIDs {
+				if !(member[id] || len(categoryIDs) != 0 && textOK(id, 128) && !seen[id]) {
+					return false
+				}
+				seen[id] = true
+				delete(member, id)
+			}
 		}
 	}
 	return true
@@ -158,7 +182,7 @@ func validPracticeCompanyScopes(items []component) bool {
 			for _, category := range s.Categories {
 				external = append(external, category.Companies...)
 				for _, override := range category.Overrides {
-					external = append(external, override.CompanyID)
+					external = append(external, override.companyIDs()...)
 				}
 			}
 		}
@@ -217,8 +241,8 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 			if category.RecommendationRate != nil {
 				award.recommendationRate = *category.RecommendationRate
 			}
-			if category.SalesCategoryID != "" {
-				offers.categories[part.ClassMember][category.SalesCategoryID] = award
+			for _, id := range category.categoryIDs() {
+				offers.categories[part.ClassMember][id] = award
 			}
 			for _, company := range category.Companies {
 				standards[company] = award
@@ -229,7 +253,9 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 				if override.RecommendationRate != nil {
 					custom.recommendationRate = *override.RecommendationRate
 				}
-				standards[override.CompanyID] = custom
+				for _, id := range override.companyIDs() {
+					standards[id] = custom
+				}
 			}
 		}
 	}

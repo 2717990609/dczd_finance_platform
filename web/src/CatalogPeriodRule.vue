@@ -262,7 +262,7 @@ async function publish() {
 </script>
 
 <template>
-  <a-drawer open :title="applied ? '计提使用的整期规则' : '整期阶梯配置'" width="min(1260px, 100vw)"
+  <a-drawer open :title="applied ? '计提使用的整期规则' : '整期阶梯配置'" width="min(1260px, 100vw)" root-class-name="finance-rule-editor"
     :closable="!saving && !savingDraft" :mask-closable="!saving && !savingDraft" :keyboard="!saving && !savingDraft" @close="emit('close')">
     <a-alert v-if="error" class="feedback" :message="error" type="error" show-icon/>
     <a-spin :spinning="loading">

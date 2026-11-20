@@ -284,7 +284,7 @@ function updateAmountMode(row, mode) {
   if (mode==='company_sales' && !row.companySales) {
     row.sourceRole = row.sourceRole || firstOption('practicePeriodSourceRole')
     row.companySales = {label:'',internalCompanies:[],payee:{kind:'sales_company',pool:{}},
-      categories:[{mode:baseModes.value[0]?.value,companies:[],overrides:[],
+      categories:[{mode:baseModes.value[0]?.value,companies:[],salesCategoryIds:[],overrides:[],
       scope:options('practiceSalesCategory').length ? 'category' : 'companies'}]}
   }
   if (mode === 'tiered' && !row.tierConfig) {
@@ -1012,18 +1012,20 @@ function ruleComponentBody(row) {
     component.companySales = {label:must(sales.label?.trim(),'请填写收款安排名称'),payee,
       internalCompanies:sales.internalCompanies,categories:sales.categories.map(category=>{
       const byCategory = category.scope==='category'
-      const overrides = category.overrides.filter(override=>byCategory || !override.companyId || category.companies.includes(override.companyId))
+      const companies = byCategory ? [] : category.companies
+      if (byCategory ? !category.salesCategoryIds.length : !companies.length) {
+        throw new Error(byCategory ? '请选择销售类别' : '请选择特例公司')
+      }
       return {
-        ...(byCategory
-          ? {salesCategoryId:must(category.salesCategoryId,'请选择销售类别'),companies:[]}
-          : {label:must(category.label?.trim(),'请填写公司范围名称'),companies:category.companies}),
+        companies,
+        ...(byCategory ? {salesCategoryIds:category.salesCategoryIds} : category.label ? {label:category.label} : {}),
         ...value(category),
-        ...(overrides.length ? {overrides:overrides.map(override=>({
-          companyId:must(override.companyId,'请选择采用单独标准的公司'), ...value(override),
-        }))} : {}),
+        ...(category.overrides.length ? {overrides:category.overrides.map(override=>{
+          if (!override.companyIds?.length) throw new Error('请选择采用单独标准的公司')
+          return {companyIds:override.companyIds,...value(override)}
+        })} : {}),
       }
     })}
-    if (component.companySales.categories.some(category=>!category.salesCategoryId && !category.companies.length)) throw new Error('请选择适用公司')
     if (component.companySales.categories.some(category=>category.recommendationRate>0 ||
       category.overrides?.some(override=>override.recommendationRate>0))) {
       if (!row.companySales.recommendationRecipients?.length) throw new Error('请选择可直接收取推荐分润的公司')
@@ -1459,6 +1461,7 @@ async function save() {
     </div>
   </div>
   <a-drawer v-if="active && !sessionError && !sessionChecking && !loginRequested" :open="Boolean(drawer)"
+    :root-class-name="drawer==='rule' ? 'finance-rule-editor' : undefined"
     :title="rulePreview ? '预览分润规则' : drawer==='rule' && draft.editBaseId ? '编辑分润规则'
       : drawer==='rule' && draft.copiedFrom ? '复制分润规则'
       : drawer==='periodRoster' && !draft.expectedSourcePeriodKey ? '关联签到名单'

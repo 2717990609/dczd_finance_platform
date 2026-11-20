@@ -50,6 +50,9 @@ function companyValue(row) {
     recommendationRate:row.recommendationRate == null ? undefined : row.recommendationRate / 10000}
 }
 
+export const standardCategoryIDs = row => row.salesCategoryIds || (row.salesCategoryId ? [row.salesCategoryId] : [])
+export const exceptionCompanyIDs = row => row.companyIds || (row.companyId ? [row.companyId] : [])
+
 export function copiedRuleComponents(savedComponents, optionLabel) {
   const components = JSON.parse(JSON.stringify(savedComponents))
   return components.map(component => {
@@ -73,8 +76,9 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
         internalCompanies:companySales.internalCompanies || [],
         payee:{kind:'sales_company',...companySales.payee,pool:companySales.payee?.pool || {}},
         categories:companySales.categories.map(category => ({...companyValue(category),
-          scope:category.salesCategoryId ? 'category' : 'companies', companies:category.companies || [],
-          overrides:(category.overrides || []).map(companyValue),
+          salesCategoryIds:standardCategoryIDs(category),
+          scope:standardCategoryIDs(category).length ? 'category' : 'companies', companies:category.companies || [],
+          overrides:(category.overrides || []).map(row=>({...companyValue(row),companyIds:exceptionCompanyIDs(row)})),
         })),
       }
     }

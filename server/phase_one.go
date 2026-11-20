@@ -654,10 +654,10 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				}
 				for _, category := range c.CompanySales.Categories {
 					companyIDs = append(companyIDs, category.Companies...)
-					if category.SalesCategoryID != "" {
-						categoryIDs = append(categoryIDs, category.SalesCategoryID)
+					if ids := category.categoryIDs(); len(ids) != 0 {
+						categoryIDs = append(categoryIDs, ids...)
 						for _, override := range category.Overrides {
-							companyIDs = append(companyIDs, override.CompanyID)
+							companyIDs = append(companyIDs, override.companyIDs()...)
 						}
 					}
 				}

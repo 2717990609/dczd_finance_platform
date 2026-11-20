@@ -74,7 +74,8 @@ async function publish() {
 </script>
 
 <template>
-  <a-drawer open title="新增逐单规则" width="min(1120px, 100vw)" :closable="!publishing" :mask-closable="!publishing"
+  <a-drawer open title="新增逐单规则" width="min(1120px, 100vw)" root-class-name="finance-rule-editor"
+    :closable="!publishing" :mask-closable="!publishing" :keyboard="!publishing"
     @close="emit('close')">
     <a-alert v-if="error" type="error" :message="error" show-icon class="feedback"/>
     <a-form layout="vertical" :disabled="publishing">

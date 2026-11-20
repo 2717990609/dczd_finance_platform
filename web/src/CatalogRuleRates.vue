@@ -258,7 +258,7 @@ async function publish() {
 </script>
 
 <template>
-  <a-drawer :open="!!(rule || applied)" :width="'min(1260px, 100vw)'" :title="applied ? '计提使用的规则' : '产品分润配置'"
+  <a-drawer :open="!!(rule || applied)" :width="'min(1260px, 100vw)'" :title="applied ? '计提使用的规则' : '产品分润配置'" root-class-name="finance-rule-editor"
     :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="emit('close')">
     <section :aria-label="applied ? '计提使用的规则' : '产品分润配置'">
     <a-alert v-if="error" type="error" :message="error" show-icon class="feedback"/>

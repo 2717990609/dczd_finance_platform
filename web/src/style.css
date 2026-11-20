@@ -120,6 +120,14 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .rule-item-heading .ant-input-number { width: 100%; }
 .rule-item-section { margin: 0 0 8px; font-size: 14px; }
 .rule-formula { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
+.finance-rule-editor .ant-drawer-body { padding:16px 20px; }
+.finance-rule-editor .rule-basics .ant-form-item,
+.finance-rule-editor .component-editor .ant-form-item { margin-bottom:10px; }
+.finance-rule-editor .rule-blocks { gap:8px; }
+.finance-rule-editor .rule-block-header { min-height:42px; padding:8px 12px; }
+.finance-rule-editor .rule-block-body { padding:12px; }
+.finance-rule-editor .rule-formula { margin-bottom:8px; }
+@media (max-width:700px) { .finance-rule-editor .ant-drawer-body { padding:12px; } }
 .order-link { color: var(--accent); border: 0; background: none; cursor: pointer; padding: 0; text-align: left; overflow-wrap: anywhere; }
 .order-link:hover { text-decoration: underline; }
 .order-version { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }

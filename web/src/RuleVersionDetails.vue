@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { ruleComponentLabel } from './rule-component-form'
+import { exceptionCompanyIDs, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
   rule: Object, canCopy: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
@@ -76,7 +76,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <component :is="embedded ? 'div' : Drawer" v-bind="embedded ? {} : {open:true,title:title || '查看规则',width:'min(1120px, 100vw)'}" @close="emit('close')">
+  <component :is="embedded ? 'div' : Drawer" v-bind="embedded ? {} : {open:true,title:title || '查看规则',width:'min(1120px, 100vw)',rootClassName:'finance-rule-editor'}" @close="emit('close')">
     <section aria-label="规则详情" class="rule-preview">
       <h2>{{ rule.label }} <a-tag>{{ embedded ? '待发布' : 'v'+rule.version }}</a-tag></h2>
       <a-alert v-if="directoryError" class="feedback" :message="directoryError" type="warning" show-icon/>
@@ -132,11 +132,11 @@ onMounted(async () => {
           <template v-if="part.companySales">
             <p v-if="part.companySales.internalCompanies?.length">内部销售公司 {{ part.companySales.internalCompanies.map(companyName).join('、') }}</p>
             <p v-if="part.companySales.recommendationRecipients?.length">公司推荐收款范围 {{ part.companySales.recommendationRecipients.map(unitName).join('、') }}</p>
-            <template v-for="group in part.companySales.categories" :key="group.salesCategoryId || group.label">
-              <h4>{{ group.salesCategoryId ? label('practiceSalesCategory',group.salesCategoryId) : group.label }} · {{ standard(group,10000) }}<template v-if="group.recommendationRate!=null"> · 推荐 {{ rate(group.recommendationRate,10000) }}</template></h4>
-              <p v-if="group.companies?.length">{{ group.companies.map(companyName).join('、') }}</p>
+            <template v-for="(group,index) in part.companySales.categories" :key="index">
+              <h4>{{ standardCategoryIDs(group).length ? standardCategoryIDs(group).map(id=>label('practiceSalesCategory',id)).join('、') :
+                '公司特例 · '+group.companies?.map(companyName).join('、') }} · {{ standard(group,10000) }}<template v-if="group.recommendationRate!=null"> · 推荐 {{ rate(group.recommendationRate,10000) }}</template></h4>
               <ul v-if="group.overrides?.length">
-                <li v-for="row in group.overrides" :key="row.companyId">{{ companyName(row.companyId) }} · {{ standard(row,10000) }}<template v-if="row.recommendationRate!=null"> · 推荐 {{ rate(row.recommendationRate,10000) }}</template></li>
+                <li v-for="(row,index) in group.overrides" :key="index">公司特例 · {{ exceptionCompanyIDs(row).map(companyName).join('、') }} · {{ standard(row,10000) }}<template v-if="row.recommendationRate!=null"> · 推荐 {{ rate(row.recommendationRate,10000) }}</template></li>
               </ul>
             </template>
           </template>
