@@ -55,6 +55,7 @@ const activityIssueLabels = {
   SALES_PERSON_MISSING:'原付款缺少销售人员', SALES_PERSON_CONFLICT:'销售人员无法唯一确定',
   SALES_SOURCE_CONFLICT:'订单销售归属冲突', SALES_COMPANY_CONFLICT:'销售公司无法唯一确定',
   AGGREGATE_SALES_ORGANIZATION_MISSING:'原付款缺少有效的部门或小组归属',
+  AGGREGATE_PERFORMANCE_APPOINTMENT_MISSING:'缺少规则指定的任职记录',
   SALES_ORGANIZATION_SCOPE_CONFLICT:'付款时的销售归属存在重叠，无法确认是否计入所选范围',
 }
 const groupingIssueLabels = {

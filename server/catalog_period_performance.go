@@ -274,10 +274,14 @@ func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPe
 	if event.originClosed {
 		return catalogPerformanceDecision{excluded: true}
 	}
-	if duty := scope.Appointment; duty != nil && !slices.ContainsFunc(d.duties[*duty], func(v vipInterval) bool {
-		return v.contains(event.PaidAt)
-	}) {
-		return catalogPerformanceDecision{excluded: true}
+	if duty := scope.Appointment; duty != nil {
+		intervals := d.duties[*duty]
+		if len(intervals) == 0 {
+			return catalogPerformanceDecision{issue: "AGGREGATE_PERFORMANCE_APPOINTMENT_MISSING"}
+		}
+		if !slices.ContainsFunc(intervals, func(v vipInterval) bool { return v.contains(event.PaidAt) }) {
+			return catalogPerformanceDecision{excluded: true}
+		}
 	}
 	if len(scope.UnitIDs) == 0 {
 		return catalogPerformanceDecision{}

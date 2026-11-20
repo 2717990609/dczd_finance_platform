@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -182,6 +183,37 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	if scoped.Total != 2800 || scoped.LineCount != 2 || scoped.IssueCount != 0 {
 		t.Fatalf("count the seller's in-company team at appointment start and the direct team once each, without blocking on an unrelated seller: %+v", scoped)
 	}
+	if _, err := db.Exec(ctx, `UPDATE catalog_sales_context SET appointments_at='2026-11-02T00:00Z' WHERE source='DCAI'`); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	s.getCatalogPeriodActivity(w, httptest.NewRequest(http.MethodGet,
+		"/api/v1/catalog-period-activity?ruleId="+published.ID+"&month=2026-10", nil))
+	var missingAppointment catalogPeriodActivity
+	if err := json.Unmarshal(w.Body.Bytes(), &missingAppointment); err != nil || w.Code != 200 ||
+		missingAppointment.OutsideScope != nil || missingAppointment.Issues["AGGREGATE_PERFORMANCE_APPOINTMENT_MISSING"] != 5 {
+		t.Fatalf("a missing appointment history must be reported separately from a real out-of-scope payment: %d %s %v", w.Code, w.Body.String(), err)
+	}
+	trial, err = s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: published.ID, Month: "2026-10"})
+	if err != nil || trial.(draftSummary).IssueCount != 5 || trial.(draftSummary).Total != 0 {
+		t.Fatalf("missing appointment history must prevent settlement instead of producing an empty valid draft: %+v %v", trial, err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE products SET settlement_enabled=true WHERE id=980`); err != nil {
+		t.Fatal(err)
+	}
+	blocked := trial.(draftSummary)
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: blocked.PeriodID, ExpectedVersion: blocked.Version},
+		"fixture"); !errors.Is(err, errSettlementPending) {
+		t.Fatalf("the unresolved appointment must prevent confirmation: %v", err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE catalog_sales_context SET appointments_at=NULL WHERE source='DCAI'`); err != nil {
+		t.Fatal(err)
+	}
+	trial, err = s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: published.ID, Month: "2026-10"})
+	if err != nil || trial.(draftSummary).Total != 2800 || trial.(draftSummary).IssueCount != 0 {
+		t.Fatalf("restored appointment history should restore the original trial: %+v %v", trial, err)
+	}
+	scoped = trial.(draftSummary)
 	for _, tc := range []struct {
 		label, selection string
 		wantTotal        int64
@@ -208,7 +240,6 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		}
 	}
 	for _, sql := range []string{
-		`UPDATE products SET settlement_enabled=true WHERE id=980`,
 		`UPDATE source_write_state SET provider_key=$1 WHERE source='DCAI'`,
 		`INSERT INTO dcai_order_sync(stream,source_key,initial_from,next_updated_at,next_id,completed_through,last_success_at)
 		 VALUES('VIP_ORDERS',$1,'2026-09-01','2026-09-01','0',now(),now())`,
@@ -249,6 +280,9 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	outsideScope.AmountMinor = &outsideAmount
 	outsideScope.RefundsPayment = []sourcePaymentReference{{OrderID: "102", RecordID: "102"}}
 	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `UPDATE catalog_sales_context SET appointments_at='2026-11-02T00:00Z' WHERE source='DCAI'`); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx, `UPDATE organization_assignments SET unit_id=CASE WHEN valid_to IS NOT NULL
 		 THEN '10000000-0000-4000-8000-000000000983'::uuid ELSE '10000000-0000-4000-8000-000000000984'::uuid END
 		 WHERE person_id=9802 AND kind='MEMBER'`); err != nil {
