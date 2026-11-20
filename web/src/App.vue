@@ -1,5 +1,5 @@
 <script setup>
-import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
   BankOutlined, CloudSyncOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined,
 } from '@ant-design/icons-vue'
@@ -64,7 +64,8 @@ const productScope = ref()
 const unitScope = ref()
 const usesOrganizationScope = computed(() => ['orders','settlement','monthly'].includes(current.value))
 const scopeSearch = ref('')
-const productScopedPages = new Set(['products','periods','rules','settlement','monthly'])
+const configProductPages = new Set(['products','periods','rules'])
+const productScopedPages = new Set([...configProductPages,'settlement','monthly'])
 const usesProductScope = computed(() => productScopedPages.has(current.value))
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
 const organization = ref()
@@ -81,6 +82,8 @@ const orderDetails = ref()
 const rateRule = ref()
 const ruleDetails = ref()
 const appliedRule = ref()
+const rulePreview = ref()
+const previewPane = ref()
 const viewedRule = computed(() => ruleDetails.value || appliedRule.value?.rule)
 const emptyData = () => ({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
 const data = ref(emptyData())
@@ -89,6 +92,7 @@ const saving = ref(false)
 const globalError = ref('')
 const notice = ref('')
 const formError = ref('')
+const formFeedback = ref()
 const drawer = ref('')
 const tab = ref('main')
 const draft = ref({})
@@ -122,8 +126,9 @@ function matchesOption(option, periodMode, type, member) {
     (!scope.classMembers || scope.classMembers.includes(member))
 }
 const productOptions = computed(() => data.value.products.map(p => ({value:p.id,label:p.name})))
-const scopedProducts = computed(() => data.value.products.filter(p => current.value !== 'rules' ||
-  !session.value?.user || session.value.user.rules.some(rule=>rule.productId===p.id)))
+const canReadRules = productId => session.value?.user
+  ? session.value.user.rules.some(rule=>rule.productId===productId) : session.value?.development
+const scopedProducts = computed(() => data.value.products.filter(p => current.value !== 'rules' || canReadRules(p.id)))
 const scopeProductOptions = computed(() => scopedProducts.value.map(p=>({value:p.id,label:p.name})))
 const canPublishRule = productId => session.value?.user
   ? session.value.user.rules.some(rule => rule.productId===productId && rule.publish) : session.value?.development
@@ -150,6 +155,23 @@ watch(() => data.value.periods.find(period => period.id === requestedPeriod.valu
 })
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
 const classRefundMonth = computed(() => classRule.value && draft.value.practicePeriodKind === 'refund_month')
+const calendarPeriod = computed(() => classRefundMonth.value || !classRule.value && !!selectedProduct.value?.cycleStartDay)
+const calendarDates = computed(() => {
+  const month = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(draft.value.settlementMonth || '')
+  if (!calendarPeriod.value || !month || Number(month[1]) < 1) return
+  const defaultRefundDay = options('practiceRefundCalendar').find(option=>/^(?:[1-9]|1\d|2[0-8])$/.test(option.value))?.value
+  const day = Number(selectedProduct.value?.cycleStartDay ?? defaultRefundDay)
+  if (!Number.isInteger(day) || day < 1 || day > 28) return
+  const date = (monthNumber, dateNumber) => {
+    const value = new Date(0)
+    value.setUTCFullYear(Number(month[1]), monthNumber-1, dateNumber)
+    return value.toISOString().slice(0,10)
+  }
+  const monthNumber = Number(month[2])
+  const startsOn = date(day===1 ? monthNumber : monthNumber-1, day)
+  const endsOn = date(day===1 ? monthNumber+1 : monthNumber, day-1)
+  return startsOn+' 至 '+endsOn
+})
 const periodBenefitMode = computed(() => options('amountMode').find(option=>option.value==='period_rate'))
 const isPeriodBenefit = type => classRule.value && ['manager','delivery'].includes(type)
 const companySalesMode = computed(() => options('amountMode').find(option=>option.value==='company_sales'))
@@ -279,7 +301,7 @@ const mainRows = computed(() => {
 })
 const columns = computed(() => {
   const values = {
-    product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['来源映射','mappingCount']],
+    product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['来源映射','mappingCount'],['操作','productAction',160]],
     mapping:[['产品名称','productName'],['业务来源','source'],['业务域','domain'],['来源标识','sourceKey']],
     period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],['报表月份','reportMonth',115],['适用规则','ruleVersion',200]],
     rule:[['规则名称','label',200],['所属产品','productName',155],['版本','version',80],
@@ -331,7 +353,12 @@ async function refresh(reloadOptions = false) {
         configuration.value = result.value
         configurationReady.value = true
       } else if (key === 'scopeUnits') scopeUnits.value = result.value
-      else data.value[key] = result.value
+      else {
+        data.value[key] = result.value
+        if (key === 'products' && productScope.value && !result.value.some(product=>product.id===productScope.value)) {
+          productScope.value = undefined
+        }
+      }
     } else globalError.value ||= result.reason.message
   })
   loading.value = false
@@ -348,6 +375,10 @@ function changeRoute() {
   current.value = getRoute(key)
   if (active.value) lastWorkspacePages.value[active.value.area] = current.value
   const params = new URLSearchParams(query)
+  const productID = Number(params.get('productId'))
+  if (current.value === key && configProductPages.has(key) && Number.isSafeInteger(productID) && productID > 0) {
+    productScope.value = productID
+  }
   const periodID = Number(params.get('periodId'))
   requestedPeriod.value = key === 'settlement' && current.value === key && Number.isSafeInteger(periodID) && periodID > 0 ? periodID : undefined
   requestedReview.value = Boolean(requestedPeriod.value && params.get('view') === 'review')
@@ -378,6 +409,7 @@ function changeRoute() {
   rateRule.value = undefined
   ruleDetails.value = undefined
   appliedRule.value = undefined
+  rulePreview.value = undefined
   if (requestedPeriod.value && productScope.value && data.value.periods.find(period => period.id === requestedPeriod.value)?.productId !== productScope.value) {
     productScope.value = undefined
   }
@@ -414,6 +446,7 @@ function clearWorkspace() {
   rateRule.value = undefined
   ruleDetails.value = undefined
   appliedRule.value = undefined
+  rulePreview.value = undefined
   saving.value = false
   formError.value = ''
   globalError.value = ''
@@ -495,6 +528,16 @@ function selectOrganization(unit) {
   unitScope.value = unit
   if (current.value === 'orders') resetOrders()
 }
+function selectProduct(product) {
+  productScope.value = product
+  const [key, search] = location.hash.slice(1).split('?', 2)
+  if (key !== current.value || !configProductPages.has(key)) return
+  const params = new URLSearchParams(search)
+  if (product) params.set('productId', product)
+  else params.delete('productId')
+  const query = params.toString()
+  history.replaceState(history.state, '', '#'+key+(query ? '?'+query : ''))
+}
 async function createPracticePool(name, unitId) {
   const productId = draft.value.productId
   const result = await api('/practice-pools', {method:'POST',body:JSON.stringify({productId,name,unitId})})
@@ -522,6 +565,7 @@ function open(kind, row) {
   if (!configurationReady.value) return
   formError.value = ''
   notice.value = ''
+  rulePreview.value = undefined
   drawer.value = kind
   draft.value = {
     periodMode:firstOption('periodMode'),practicePeriodKind:firstOption('practicePeriodKind'),source:row?.source || firstOption('source'),
@@ -563,7 +607,30 @@ async function showAppliedRule(selection) {
     if (appliedRule.value === request) appliedRule.value = {error:err.message}
   }
 }
-function close() { if (!saving.value) drawer.value = '' }
+function close() {
+  if (saving.value) return
+  drawer.value = ''
+  rulePreview.value = undefined
+}
+function showFormError(error) {
+  formError.value = error.message
+  nextTick(() => formFeedback.value?.focus())
+}
+function previewRule() {
+  formError.value = ''
+  try {
+    const rule = bodyFor('rule', draft.value)
+    rulePreview.value = {...rule,productName:selectedProduct.value?.name,
+      periodName:periodOptions.value.find(option=>option.value===rule.periodId)?.label}
+    nextTick(() => previewPane.value?.focus())
+  } catch (err) {
+    showFormError(err)
+  }
+}
+function returnToRuleEditor() {
+  rulePreview.value = undefined
+  nextTick(() => document.getElementById('rule-preview-button')?.focus())
+}
 function must(value, msg = '请补齐必填内容') {
   if (value === undefined || value === null || String(value).trim() === '') throw new Error(msg)
   return value
@@ -677,7 +744,7 @@ function bodyFor(kind,f) {
   if (kind === 'mapping') return {productId:must(f.productId),source:f.source,domain:must(f.domain),sourceKey:must(f.sourceKey)}
   if (kind === 'period') {
     const productId = must(f.productId)
-    if (classRefundMonth.value || (!classRule.value && selectedProduct.value?.cycleStartDay)) {
+    if (calendarPeriod.value) {
       const settlementMonth = must(f.settlementMonth)
       return {productId, settlementMonth, name:f.name?.trim() || settlementMonth+(classRefundMonth.value ? ' 退款账期' : ' 账期')}
     }
@@ -709,6 +776,7 @@ async function save() {
     notice.value = kind === 'pull' ? '同步完成，读取 '+result.facts+' 条业务记录，新增 '+result.newVersions+' 个版本。'
       : kind === 'rule' ? '规则 v'+result.version+' 已保存。' : '保存成功。'
     drawer.value = ''
+    rulePreview.value = undefined
     if (kind === 'pull') {
       if (current.value === 'settlement') await workbench.value?.checkRefresh()
       if (current.value === 'orders') {
@@ -718,7 +786,7 @@ async function save() {
       }
     } else refresh()
   } catch (err) {
-    if (issuedFor===sessionRequest) formError.value = err.message
+    if (issuedFor===sessionRequest) showFormError(err)
   } finally {
     if (issuedFor===sessionRequest) saving.value = false
   }
@@ -773,13 +841,13 @@ async function save() {
           <div class="desktop-scope">
             <a-input id="scope-product-search" v-model:value="scopeSearch" placeholder="搜索产品名称或编码" allow-clear/>
             <div class="scope-options" aria-label="产品范围">
-              <button type="button" :aria-pressed="!productScope" @click="productScope=undefined">全部产品</button>
-              <button v-for="p in visibleProducts" :key="p.id" type="button" :aria-pressed="p.id===productScope" @click="productScope=p.id">{{ p.name }}</button>
+              <button type="button" :aria-pressed="!productScope" @click="selectProduct()">全部产品</button>
+              <button v-for="p in visibleProducts" :key="p.id" type="button" :aria-pressed="p.id===productScope" @click="selectProduct(p.id)">{{ p.name }}</button>
             </div>
           </div>
           <div class="mobile-scope">
             <label for="scope-product">产品范围</label>
-            <a-select id="scope-product" v-model:value="productScope" placeholder="全部产品" :options="scopeProductOptions" allow-clear/>
+            <a-select id="scope-product" :value="productScope" placeholder="全部产品" :options="scopeProductOptions" allow-clear @change="selectProduct"/>
           </div>
         </template>
         <template v-else>
@@ -863,6 +931,12 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ optionLabel('periodMode',text) }}</a-tag></template>
                 <template v-else-if="column.key==='mappingCount'">{{ data.mappings.filter(x=>x.productId===record.id).length }}</template>
+                <template v-else-if="column.key==='productAction'">
+                  <div class="product-links">
+                    <a :href="'#periods?productId='+record.id" :aria-label="record.name+' 的核算期次'">核算期次</a>
+                    <a v-if="canReadRules(record.id)" :href="'#rules?productId='+record.id" :aria-label="record.name+' 的产品规则'">产品规则</a>
+                  </div>
+                </template>
                 <template v-else-if="column.key==='reportMonth'">
                   <a-button v-if="record.reportMonthEditable" type="link" size="small" :title="'设置 '+record.name+' 的报表月份'" @click="open('reportMonth',record)">{{ text }}</a-button>
                   <span v-else>{{ text }}</span>
@@ -937,13 +1011,23 @@ async function save() {
       </main>
     </div>
   </div>
-  <a-drawer v-if="active && !sessionError && !sessionChecking && !loginRequested" :open="Boolean(drawer)" :title="drawer==='rule' && draft.copiedFrom ? '复制分润规则' : titles[drawer]" :width="drawer==='rule' ? 'min(620px, 100vw)' : 'min(510px, 100vw)'" @close="close">
-    <a-alert v-if="formError" class="feedback" type="error" :message="formError" show-icon/>
-    <a-form id="finance-edit-form" :model="draft" layout="vertical" @finish="save">
+  <a-drawer v-if="active && !sessionError && !sessionChecking && !loginRequested" :open="Boolean(drawer)"
+    :title="rulePreview ? '预览分润规则' : drawer==='rule' && draft.copiedFrom ? '复制分润规则' : titles[drawer]"
+    :width="drawer==='rule' ? 'min(620px, 100vw)' : 'min(510px, 100vw)'"
+    :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="close">
+    <div v-if="formError" ref="formFeedback" tabindex="-1">
+      <a-alert class="feedback" type="error" :message="formError" show-icon/>
+    </div>
+    <div v-if="rulePreview" ref="previewPane" class="rule-draft-preview" tabindex="-1" aria-label="发布前预览">
+      <RuleVersionDetails :rule="rulePreview" embedded :recipients="classRuleDirectory"
+        :option-label="optionLabel" :people="data.people" :opening-label="savedOpeningLabel"
+        :format-time="formatTime" :format-money="formatMoney"/>
+    </div>
+    <a-form v-show="!rulePreview" id="finance-edit-form" :model="draft" layout="vertical" @finish="save">
       <template v-if="drawer==='product'">
         <a-form-item label="产品名称" required><a-input v-model:value="draft.name" aria-label="产品名称" :maxlength="80"/></a-form-item>
         <a-form-item label="产品编码" required><a-input v-model:value="draft.code" aria-label="产品编码" :maxlength="48"/></a-form-item>
-        <a-form-item label="核算方式"><a-select v-model:value="draft.periodMode" aria-label="核算方式" :options="options('periodMode')"/></a-form-item>
+        <a-form-item label="核算方式" html-for="product-period-mode"><a-select id="product-period-mode" v-model:value="draft.periodMode" :options="options('periodMode')"/></a-form-item>
         <a-form-item v-if="draft.periodMode==='calendar'" label="每月开始日" extra="填 1 表示自然月。填 25 表示上月 25 日至本月 24 日。" required><a-input-number v-model:value="draft.cycleStartDay" aria-label="每月开始日" :min="1" :max="28" :precision="0"/></a-form-item>
         <a-form-item v-if="draft.periodMode==='class'" label="退款账期每月开始日" :extra="firstOption('practiceRefundCalendar') ? '留空使用每月 '+firstOption('practiceRefundCalendar')+' 日开始。' : ''">
           <a-input-number v-model:value="draft.cycleStartDay" aria-label="退款账期每月开始日" :min="1" :max="28" :precision="0"/>
@@ -959,8 +1043,11 @@ async function save() {
         <a-form-item v-if="classRule" label="核算类型" html-for="practice-period-kind">
           <a-select id="practice-period-kind" v-model:value="draft.practicePeriodKind" :options="options('practicePeriodKind')"/>
         </a-form-item>
-        <template v-if="classRefundMonth || (!classRule && selectedProduct?.cycleStartDay)">
+        <template v-if="calendarPeriod">
           <a-form-item label="结算月份" required><a-input v-model:value="draft.settlementMonth" aria-label="结算月份" type="month"/></a-form-item>
+          <p v-if="calendarDates" class="period-window-preview" role="status">
+            <span>核算日期</span><strong>{{ calendarDates }}</strong>
+          </p>
           <a-form-item label="账期名称"><a-input v-model:value="draft.name" aria-label="账期名称" placeholder="默认使用结算月份"/></a-form-item>
         </template>
         <template v-else>
@@ -1038,7 +1125,14 @@ async function save() {
       </template>
     </a-form>
     <template #footer>
-      <div class="workspace-edit-footer"><a-button :disabled="saving" @click="close">取消</a-button><a-button html-type="submit" form="finance-edit-form" type="primary" :loading="saving">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':'保存' }}</a-button></div>
+      <div class="workspace-edit-footer">
+        <a-button v-if="rulePreview" :disabled="saving" @click="returnToRuleEditor">返回编辑</a-button>
+        <template v-else>
+          <a-button :disabled="saving" @click="close">取消</a-button>
+          <a-button v-if="drawer==='rule'" id="rule-preview-button" :disabled="saving" @click="previewRule">预览规则</a-button>
+        </template>
+        <a-button html-type="submit" form="finance-edit-form" type="primary" :loading="saving">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':'保存' }}</a-button>
+      </div>
     </template>
   </a-drawer>
   <OrderDetails v-if="orderDetails" :selection="orderDetails" :api="api" :format-money="formatMoney" :format-time="formatTime" :source-label="sourceLabel"

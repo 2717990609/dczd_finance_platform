@@ -1,12 +1,15 @@
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { Drawer } from 'ant-design-vue'
 
 const props = defineProps({
   rule: Object, canCopy: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
   formatTime: Function, formatMoney: Function, people: Array, openingLabel: Function, title: String, recipients: Object,
+  embedded: Boolean,
 })
 const emit = defineEmits(['close','copy'])
-const directory = ref(props.recipients)
+const loadedRecipients = ref()
+const directory = computed(() => loadedRecipients.value ?? props.recipients)
 const label = (group, key) => props.optionLabel(group, key) || key
 const roleName = key => label('orderAttributionRole', key) !== key
   ? label('orderAttributionRole', key) : label('practicePeriodSourceRole', key)
@@ -38,7 +41,7 @@ function recipient(part) {
 onMounted(async () => {
   if (!props.classProduct || !props.canCopy || !props.rule.components.some(part=>part.periodBenefit || part.retrainSplits?.length || part.tiers?.personCountStarts?.length)) return
   try {
-    directory.value = await props.api('/practice-rule-recipients?productId='+props.rule.productId)
+    loadedRecipients.value = await props.api('/practice-rule-recipients?productId='+props.rule.productId)
   } catch {
     // The stored IDs remain available if the directory cannot be loaded.
   }
@@ -46,9 +49,9 @@ onMounted(async () => {
 </script>
 
 <template>
-  <a-drawer open :title="title || '查看规则'" :width="'min(660px, 100vw)'" @close="emit('close')">
+  <component :is="embedded ? 'div' : Drawer" v-bind="embedded ? {} : {open:true,title:title || '查看规则',width:'min(660px, 100vw)'}" @close="emit('close')">
     <section aria-label="规则详情" class="rule-preview">
-      <h2>{{ rule.label }} <a-tag>v{{ rule.version }}</a-tag></h2>
+      <h2>{{ rule.label }} <a-tag>{{ embedded ? '待发布' : 'v'+rule.version }}</a-tag></h2>
       <a-descriptions bordered size="small" :column="1" class="rule-preview-scope">
         <a-descriptions-item label="产品">{{ rule.productName }}</a-descriptions-item>
         <a-descriptions-item label="适用范围">{{ scope }}</a-descriptions-item>
@@ -113,12 +116,12 @@ onMounted(async () => {
           </ul>
         </details>
       </article>
-      <div class="workspace-edit-footer">
+      <div v-if="!embedded" class="workspace-edit-footer">
         <a-button @click="emit('close')">关闭</a-button>
         <a-button v-if="canCopy" type="primary" @click="emit('copy')">复制配置</a-button>
       </div>
     </section>
-  </a-drawer>
+  </component>
 </template>
 
 <style scoped>

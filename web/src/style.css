@@ -77,6 +77,12 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .feedback { margin-bottom: 15px; }
 .form-actions { display: flex; justify-content: flex-end; gap: 10px; padding-top: 18px; }
 .workspace-edit-footer { display: flex; justify-content: flex-end; gap: 8px; }
+.product-links { display: flex; flex-wrap: wrap; gap: 4px 12px; }
+.product-links a { color: var(--accent); white-space: nowrap; text-decoration: none; }
+.product-links a:hover { text-decoration: underline; }
+.rule-draft-preview { outline: none; }
+.period-window-preview { display: flex; flex-wrap: wrap; gap: 5px 10px; padding: 9px 11px; margin: 0 0 16px; background: var(--accent-soft); border-radius: 5px; }
+.period-window-preview span { color: var(--muted); }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .form-subhead { margin: 0 0 10px; font-size: 15px; }
 .component-editor { padding: 12px; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 6px; background: #fcfdff; }
