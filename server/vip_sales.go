@@ -313,7 +313,7 @@ type vipSalesRequest struct {
 	Order, Product, Project, Seller, Company, Relationship string
 	CompanyUnit                                            string
 	Category                                               *string // Empty when explicitly unclassified, nil without a history record.
-	Paid                                                   int64
+	Paid, OriginalPaid                                     int64
 	At                                                     time.Time
 }
 

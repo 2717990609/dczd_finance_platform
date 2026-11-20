@@ -5,7 +5,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
-import { rateAsBasisPoints } from './rule-component-form'
+import { catalogFlatMethods, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
@@ -121,6 +121,24 @@ const displayRate = (rate, row, item=selected.value) => {
   const key = cellKey(item,row)
   return Object.hasOwn(edits.value,key) ? edits.value[key].value : (rate/100).toFixed(2)
 }
+const savedMethod = item => item.fixedMinor == null ? 'rate' : 'fixed'
+const flatMethod = item => edits.value[cellKey(item.itemKey)]?.method || savedMethod(item)
+const flatValue = item => {
+  const edit = edits.value[cellKey(item.itemKey)]
+  return edit ? edit.value : ((item.fixedMinor ?? item.rateBps)/100).toFixed(2)
+}
+function setFlat(item, method, value) {
+  const key = cellKey(item.itemKey)
+  const parsed = method==='fixed' ? moneyAsMinor(value) : rateAsBasisPoints(value)
+  if (method===savedMethod(item) && parsed===(item.fixedMinor ?? item.rateBps)) delete edits.value[key]
+  else edits.value[key] = {itemKey:item.itemKey,method,value}
+}
+function componentStandard(item) {
+  if (item.rows?.length) return '按销售条件取比例'
+  if (item.fixedMinor == null && item.rateBps == null) return ''
+  const value = flatValue(item)
+  return value == null || value==='' ? '' : value+(flatMethod(item)==='fixed' ? ' 元/笔' : '%')
+}
 function setRate(value, base, row) {
   const itemKey = selected.value
   const key = cellKey(itemKey,row)
@@ -216,8 +234,16 @@ function publicationInput() {
   if (copy.value && (!copy.value.sku || !copy.value.label?.trim())) throw new Error('请选择目标 SKU，并填写规则名称。')
   const changes = Object.values(edits.value)
     .filter(({itemKey,row})=>!removedItems.value.has(itemKey) && !removedRateRows.value.has(cellKey(itemKey,row)) && !pendingScope(itemKey,row))
-    .map(({itemKey,row,value}) => ({itemKey,row,rateBps:rateAsBasisPoints(value)}))
-  if (changes.some(change => change.rateBps === undefined)) throw new Error('请填写 0 至 100 之间的比例，最多保留两位小数。')
+    .map(({itemKey,row,value,method}) => {
+      if (method==='fixed') {
+        const fixedMinor = moneyAsMinor(value)
+        if (fixedMinor===undefined) throw new Error('请填写有效金额，最多保留两位小数。')
+        return {itemKey,fixedMinor}
+      }
+      const rateBps = rateAsBasisPoints(value)
+      if (rateBps===undefined) throw new Error('请填写 0 至 100 之间的比例，最多保留两位小数。')
+      return {itemKey,row,rateBps}
+    })
   return {
     baseId:props.rule.id,
     copy:copy.value,
@@ -296,8 +322,7 @@ async function publish() {
             <DownOutlined aria-hidden="true"/>
             <strong>{{ item.label }}</strong>
             <span class="rule-block-badge">{{ removedItems.has(item.itemKey) ? '待删除' : targetShortLabels[targetEdits.get(item.itemKey)?.target || item.targetKind] }}</span>
-            <small>{{ [targetName(item),
-              item.rows?.length ? '按销售条件取比例' : item.rateBps != null ? displayRate(item.rateBps,undefined,item.itemKey)+'%' : ''].filter(Boolean).join(' · ') }}</small>
+            <small>{{ [targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}</small>
           </button>
           <div v-if="selected===item.itemKey" :id="'catalog-rate-'+item.itemKey" class="rule-block-body">
           <a-alert v-if="itemRemoved" type="warning" message="此分项将从新版移除" show-icon class="feedback"/>
@@ -323,14 +348,26 @@ async function publish() {
             新销售关联来源账号并登记销售岗位后，自动沿用这条规则。按付款当天的岗位记录判断。
           </p>
           <h4 class="rule-item-section">提成怎么算</h4>
-          <p v-if="component?.rateBps != null || component?.rows?.length" class="rule-formula">
-            每笔付款实收 × {{ component.rows?.length ? '适用比例' : '下方比例' }}
+          <p v-if="component?.rows?.length" class="rule-formula">
+            每笔付款实收 × 适用比例
           </p>
-          <a-form-item v-if="component?.rateBps != null" label="比例（%）" html-for="catalog-fixed-rate">
-            <a-input-number v-if="!applied" id="catalog-fixed-rate" :value="displayRate(component.rateBps)" :disabled="!editable"
-              :min="0" :max="100" :precision="2" string-mode @update:value="setRate($event,component.rateBps)"/>
-            <span v-else>{{ displayRate(component.rateBps) }}%</span>
-          </a-form-item>
+          <template v-if="item.fixedMinor != null || item.rateBps != null">
+            <div v-if="!applied && sheet.mayPublish" class="rule-basics">
+              <a-form-item label="计提方式" html-for="catalog-flat-method">
+                <a-select id="catalog-flat-method" :value="flatMethod(item)" :options="catalogFlatMethods" :disabled="!editable"
+                  @update:value="setFlat(item,$event,$event===savedMethod(item) ? (item.fixedMinor ?? item.rateBps)/100 : undefined)"/>
+              </a-form-item>
+              <a-form-item v-if="flatMethod(item)==='fixed'" label="金额（元/笔）" html-for="catalog-fixed-amount">
+                <a-input-number id="catalog-fixed-amount" aria-label="金额（元/笔）" :value="flatValue(item)" :disabled="!editable"
+                  :min="0" :precision="2" string-mode @update:value="setFlat(item,'fixed',$event)"/>
+              </a-form-item>
+              <a-form-item v-else label="比例（%）" html-for="catalog-fixed-rate">
+                <a-input-number id="catalog-fixed-rate" :value="flatValue(item)" :disabled="!editable"
+                  :min="0" :max="100" :precision="2" string-mode @update:value="setFlat(item,'rate',$event)"/>
+              </a-form-item>
+            </div>
+            <p v-else class="rule-formula">{{ componentStandard(item) }}</p>
+          </template>
           <template v-if="component?.rows?.length">
             <div class="catalog-rate-toolbar">
               <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" aria-label="查看比例">

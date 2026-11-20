@@ -21,6 +21,7 @@ type vipBenefitAction struct {
 	PoolName   string            `json:"pool_name"`
 	OwnerRole  string            `json:"allocation_owner_role"`
 	Rate       *int64            `json:"rate_bps"`
+	Fixed      *int64            `json:"amount_minor,omitempty"`
 	RateTable  []json.RawMessage `json:"rate_table"`
 	rates      []vipRateRow
 }
@@ -85,7 +86,14 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 		if dec.Decode(&action) != nil || action.Label == "" || action.Role == "" || !action.validTarget() {
 			return vipBenefitPolicy{}, false
 		}
+		if (action.Type == "FIXED") != (action.Fixed != nil) {
+			return vipBenefitPolicy{}, false
+		}
 		switch action.Type {
+		case "FIXED":
+			if *action.Fixed < 0 || action.Rate != nil || len(action.RateTable) != 0 {
+				return vipBenefitPolicy{}, false
+			}
 		case "RATE":
 			if action.Rate == nil || *action.Rate < 0 || *action.Rate > 10000 || len(action.RateTable) != 0 {
 				return vipBenefitPolicy{}, false
@@ -127,7 +135,7 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 	out := make([]vipBenefitPart, 0, len(policy.actions))
 	for _, a := range policy.actions {
 		line := vipBenefitPart{Item: a.Item, Label: a.Label, Role: a.Role, Kind: a.targetKind()}
-		rate, issue := a.effectiveRate(req, sourceIssue)
+		rate, amount, issue := a.quote(req, sourceIssue)
 		switch {
 		case req.Paid == 0:
 			line.Status = "ZERO"
@@ -135,13 +143,12 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 			line.Status = "BENEFIT_CONTEXT_MISSING"
 		case issue != "":
 			line.Status = issue
-		case rate == 0:
+		case a.Fixed == nil && rate == 0 || a.Fixed != nil && amount == 0:
 			line.Status = "ZERO"
 		default:
 			bindVIPBenefit(&line, a, req, data)
 			if line.Status == "CALCULATED" {
-				line.Rate = rate
-				line.Amount = calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: rate})
+				line.Rate, line.Amount = rate, amount
 			}
 		}
 		out = append(out, line)
@@ -159,14 +166,22 @@ func (a vipBenefitAction) targetKind() string {
 	return "company"
 }
 
-func (a vipBenefitAction) effectiveRate(req vipSalesRequest, sourceIssue string) (int64, string) {
+func (a vipBenefitAction) quote(req vipSalesRequest, sourceIssue string) (rate, amount int64, issue string) {
+	if a.Fixed != nil {
+		amount = *a.Fixed
+		if req.Paid > 0 && req.OriginalPaid > req.Paid {
+			amount -= prorateMinor(amount, req.OriginalPaid-req.Paid, req.OriginalPaid)
+		}
+		return 0, amount, ""
+	}
 	if a.Rate != nil {
-		return *a.Rate, ""
+		rate = *a.Rate
+	} else if sourceIssue != "" {
+		return 0, 0, sourceIssue
+	} else {
+		rate, issue = resolveVIPRate(a.rates, req.Company, req.Relationship, req.Category)
 	}
-	if sourceIssue != "" {
-		return 0, sourceIssue
-	}
-	return resolveVIPRate(a.rates, req.Company, req.Relationship, req.Category)
+	return rate, calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: rate}), issue
 }
 
 func bindVIPBenefit(line *vipBenefitPart, a vipBenefitAction, req vipSalesRequest, data vipRuntimeData) {

@@ -61,8 +61,9 @@ type catalogBenefitTargetChange struct {
 type catalogNewBenefitItem struct {
 	Label string `json:"label"`
 	catalogBenefitTarget
-	Rate *int64                  `json:"rateBps,omitempty"`
-	Rows []catalogConditionInput `json:"rows,omitempty"`
+	Rate  *int64                  `json:"rateBps,omitempty"`
+	Fixed *int64                  `json:"fixedMinor,omitempty"`
+	Rows  []catalogConditionInput `json:"rows,omitempty"`
 }
 
 const catalogSalesCompanyKeysSQL = `SELECT a.company_uuid AS key,a.company_unit_id AS unit
@@ -337,15 +338,23 @@ func changeCatalogBenefitTargets(actions []map[string]json.RawMessage, salesKey 
 func newCatalogBenefitAction(key string,
 	item catalogNewBenefitItem, options catalogStructureOptions, people map[int64]string) (map[string]json.RawMessage, error) {
 	label := strings.TrimSpace(item.Label)
-	if !textOK(label, 80) || (item.Rate == nil) == (len(item.Rows) == 0) || item.Rate != nil && (*item.Rate < 0 || *item.Rate > 10000) {
+	if !textOK(label, 80) {
 		return nil, invalid
 	}
 	action := vipBenefitAction{Item: key, Label: label, Type: "RATE", Rate: item.Rate}
+	switch {
+	case item.Rate != nil && item.Fixed == nil && len(item.Rows) == 0 && *item.Rate >= 0 && *item.Rate <= 10000:
+	case item.Fixed != nil && item.Rate == nil && len(item.Rows) == 0 && *item.Fixed >= 0:
+		action.Type, action.Fixed = "FIXED", item.Fixed
+	case item.Rate == nil && item.Fixed == nil && len(item.Rows) != 0:
+		action.Type = "RATE_TABLE"
+	default:
+		return nil, invalid
+	}
 	if err := configureCatalogBenefitTarget(&action, item.catalogBenefitTarget, options, people); err != nil {
 		return nil, err
 	}
-	if len(item.Rows) != 0 {
-		action.Type = "RATE_TABLE"
+	if action.Type == "RATE_TABLE" {
 		for _, row := range item.Rows {
 			value, err := options.condition(row)
 			if err != nil {

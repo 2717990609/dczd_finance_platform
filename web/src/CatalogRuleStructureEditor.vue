@@ -2,7 +2,7 @@
 import { nextTick, ref, watch } from 'vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
-import { catalogRateConditionBody } from './rule-component-form'
+import { catalogFlatMethods, catalogRateConditionBody, moneyAsMinor } from './rule-component-form'
 
 const props = defineProps({options:Object, component:Object, api:Function, peopleFilters:Object, parseRate:Function})
 const draft = defineModel({type:Object,required:true})
@@ -10,7 +10,7 @@ const editing = defineModel('editing', {type:Boolean,default:false})
 const form = ref()
 const itemName = ref()
 const error = ref('')
-const formats = [{value:'fixed',label:'统一比例'},{value:'table',label:'按类别或公司设置比例'}]
+const formats = [...catalogFlatMethods,{value:'table',label:'按类别或公司设置比例'}]
 const blankCondition = () => ({companyIds:[],categoryIds:[],
   relationship:props.options.relationships.find(option=>option.value==='ANY')?.value || props.options.relationships[0]?.value})
 const labelFor = (choices,value) => choices.find(option=>option.value===value)?.label || value
@@ -22,12 +22,14 @@ function conditionLabel(condition) {
 }
 function itemLabel(item) {
   const recipient = item.target==='person' ? item.personName : labelFor(props.options.organizations,item.organization)
-  return [item.label,recipient,item.rows?.length ? item.rows.length+' 条费率条件' : percent(item.rateBps)].join(' · ')
+  const standard = item.rows?.length ? item.rows.length+' 条费率条件'
+    : item.fixedMinor != null ? (item.fixedMinor/100).toFixed(2)+' 元/笔' : percent(item.rateBps)
+  return [item.label,recipient,standard].join(' · ')
 }
 function begin(kind,scope) {
   error.value = ''
   form.value = kind==='item'
-    ? {kind,target:'person',format:'fixed',rows:[blankCondition()]}
+    ? {kind,target:'person',format:'rate',rows:[blankCondition()]}
     : {kind,scope,itemKey:props.component.itemKey,itemLabel:props.component.label,
       row:blankCondition()}
 }
@@ -66,9 +68,12 @@ function stage() {
       }
       const item = {label,target:staged.target,role:staged.role,personId:staged.personId,
         personName:staged.personName,organization:staged.organization}
-      if (staged.format==='fixed') {
+      if (staged.format==='rate') {
         item.rateBps = props.parseRate(staged.rate)
         if (item.rateBps===undefined) throw new Error('请填写有效比例。')
+      } else if (staged.format==='fixed') {
+        item.fixedMinor = moneyAsMinor(staged.amount)
+        if (item.fixedMinor===undefined) throw new Error('请填写有效金额，最多保留两位小数。')
       } else item.rows = staged.rows.map(catalogRateConditionBody)
       draft.value.items.push(item)
     }
@@ -103,12 +108,16 @@ defineExpose({addRecipient,editRateScope})
         <h3 class="form-subhead">发给谁</h3>
         <CatalogPayeeFields v-model="form" prefix="catalog-add" :options="options" :api="api" :people-filters="peopleFilters"/>
         <h3 class="form-subhead">提成怎么算</h3>
-        <a-form-item label="计提方式" html-for="catalog-add-format" extra="按每笔付款实收乘以适用比例。">
+        <a-form-item label="计提方式" html-for="catalog-add-format">
           <a-select id="catalog-add-format" v-model:value="form.format" :options="formats"/>
         </a-form-item>
-        <a-form-item v-if="form.format==='fixed'" label="新增比例（%）" html-for="catalog-add-fixed" required>
+        <a-form-item v-if="form.format==='rate'" label="新增比例（%）" html-for="catalog-add-fixed" required>
           <a-input-number id="catalog-add-fixed" aria-label="新增比例（%）" v-model:value="form.rate"
             :min="0" :max="100" :precision="2" string-mode/>
+        </a-form-item>
+        <a-form-item v-else-if="form.format==='fixed'" label="金额（元/笔）" html-for="catalog-add-amount" required>
+          <a-input-number id="catalog-add-amount" aria-label="金额（元/笔）" v-model:value="form.amount"
+            :min="0" :precision="2" string-mode/>
         </a-form-item>
         <template v-else>
           <div v-for="(_,index) in form.rows" :key="index" class="catalog-add-condition">

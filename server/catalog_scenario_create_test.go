@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v4"
+	"github.com/jackc/pgx/v5"
 )
 
 func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
@@ -58,7 +60,8 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	s := workspace{db: db, development: true, ruleAuth: catalogRuleAuth{issuer: "finance-test", key: []byte("isolated-finance-scenario-test-key")}}
+	s := workspace{db: db, development: true, ruleAuth: catalogRuleAuth{issuer: "finance-test", key: []byte("isolated-finance-scenario-test-key")},
+		sources: map[string]sourceConfig{"DCAI": {BaseURL: "https://fixture.invalid", Token: "fixture"}}}
 	post := func(productGrant int64) *httptest.ResponseRecorder {
 		t.Helper()
 		claims := catalogRuleClaims{RegisteredClaims: jwt.RegisteredClaims{Issuer: s.ruleAuth.issuer, Subject: "fixture",
@@ -72,7 +75,8 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		 "effectiveFrom":"2026-10-01T00:00:00+08:00","create":{"productId":950,"sku":"FIRST","label":"首版分润",
 		 "salesRates":[{"company":"ANY","categoryIds":["10000000-0000-4000-8000-000000000957","10000000-0000-4000-8000-000000000958"],"relationship":"ANY","rateBps":1000},
 		 {"companyIds":["10000000-0000-4000-8000-000000000953","10000000-0000-4000-8000-000000000955"],"relationship":"ANY","rateBps":1250}]},
-		 "newItems":[{"label":"公司安排","target":"company","organization":"10000000-0000-4000-8000-000000000954","rateBps":250}]}`))
+		 "newItems":[{"label":"公司安排","target":"company","organization":"10000000-0000-4000-8000-000000000954","rateBps":250},
+		 {"label":"固定交付","target":"company","organization":"10000000-0000-4000-8000-000000000954","fixedMinor":501}]}`))
 		r.Header.Set("Authorization", "Bearer "+token)
 		r.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -90,30 +94,91 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		t.Fatalf("the new SKU must reach regular trial calculation: queued=%t supported=%t err=%v", queued, supported, err)
 	}
 	sheet, err := s.catalogRuleRateSheet(ctx, published.ID)
-	if err != nil || len(sheet.Components) != 2 || len(sheet.Components[0].Rows) != 2 || sheet.Components[0].Rows[1].Rate != 1250 ||
+	if err != nil || len(sheet.Components) != 3 || len(sheet.Components[0].Rows) != 2 || sheet.Components[0].Rows[1].Rate != 1250 ||
 		sheet.Components[0].Rows[0].Category != "类别甲、类别乙" || sheet.Components[0].Rows[1].Company != "收款公司样本、特例乙" {
 		t.Fatalf("the first rule must be editable: %+v %v", sheet, err)
+	}
+	fixedKey := sheet.Components[2].ItemKey
+	var details map[string]any
+	body, err := json.Marshal(sheet.Components[2])
+	if err != nil || json.Unmarshal(body, &details) != nil || details["fixedMinor"] != float64(501) {
+		t.Fatalf("fixed award must round trip through the editor: %s %v", body, err)
 	}
 	trial, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: 951})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result := trial.(draftSummary); result.Total != 2750 || result.LineCount != 4 || result.IssueCount != 0 {
+	if result := trial.(draftSummary); result.Total != 3752 || result.LineCount != 6 || result.IssueCount != 0 {
 		t.Fatalf("trial must apply the company exception for one order and category default for the other: %+v", result)
 	}
 	cut := time.Date(2026, 10, 1, 12, 0, 0, 0, shanghai)
 	revisedRate := int64(1250)
-	if _, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{BaseID: published.ID, EffectiveFrom: cut,
-		RemovedItems: []string{sheet.Components[1].ItemKey}, NewRateRows: []catalogNewRateRow{{ItemKey: sheet.Components[0].ItemKey, Row: 2,
-			catalogConditionInput: catalogConditionInput{CompanyIDs: []string{"10000000-0000-4000-8000-000000000955"}, Relationship: "ANY", Rate: &revisedRate}}}}, "fixture"); err != nil {
+	var revision publishCatalogRatesInput
+	if err := json.Unmarshal([]byte(`{"changes":[{"itemKey":"`+fixedKey+`","fixedMinor":603}]}`), &revision); err != nil {
+		t.Fatal(err)
+	}
+	revision.BaseID, revision.EffectiveFrom = published.ID, cut
+	revision.RemovedItems = []string{sheet.Components[1].ItemKey}
+	revision.NewRateRows = []catalogNewRateRow{{ItemKey: sheet.Components[0].ItemKey, Row: 2,
+		catalogConditionInput: catalogConditionInput{CompanyIDs: []string{"10000000-0000-4000-8000-000000000955"}, Relationship: "ANY", Rate: &revisedRate}}}
+	updated, err := s.publishCatalogRates(ctx, revision, "fixture")
+	if err != nil {
 		t.Fatal(err)
 	}
 	trial, err = s.recalculateDraft(ctx, calculateDraftInput{PeriodID: 951})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result := trial.(draftSummary); result.Total != 2000 || result.LineCount != 2 || result.IssueCount != 0 {
+	result := trial.(draftSummary)
+	if result.Total != 3206 || result.LineCount != 4 || result.IssueCount != 0 {
 		t.Fatalf("editing the special scope must let the removed company inherit its category rate: %+v", result)
+	}
+	if _, err := db.Exec(ctx, `UPDATE products SET settlement_enabled=true WHERE id=950`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE source_write_state SET provider_key=$1 WHERE source='DCAI'`, s.dcaiSourceKey()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO dcai_order_sync(stream,source_key,initial_from,next_updated_at,next_id,completed_through,last_success_at)
+	 VALUES('VIP_ORDERS',$1,'2026-09-01','2026-09-01','0',now(),now())`, s.dcaiSourceKey()); err != nil {
+		t.Fatal(err)
+	}
+	w = httptest.NewRecorder()
+	s.getSettlementReview(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/settlement-review?periodId=951&version=%d", result.Version), nil))
+	var review settlementReview
+	if err := json.Unmarshal(w.Body.Bytes(), &review); err != nil || w.Code != 200 || review.Token == "" {
+		t.Fatalf("original draft must be available for settlement: %d %s %v", w.Code, w.Body.String(), err)
+	}
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: 951, ExpectedVersion: result.Version, ReviewToken: review.Token}, "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{BaseID: updated.ID,
+		EffectiveFrom: cut.AddDate(0, 1, 0), RemovedItems: []string{fixedKey}}, "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	next, err := s.createPeriod(ctx, createPeriodInput{ProductID: 950, SettlementMonth: "2026-11", Name: "退款账期"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refundAt := time.Date(2026, 11, 3, 0, 0, 0, 0, shanghai)
+	amount := int64(5000)
+	refund := sourceFact{Source: "DCAI", Domain: "VIP", SourceKey: "new", Kind: "REFUND_SUCCEEDED",
+		OrderID: "101", RecordKey: "ai_vip_order:partial-101", Version: "1", RefundID: "partial-101",
+		AmountMinor: &amount, OccurredAt: refundAt, UpdatedAt: refundAt,
+		RefundsPayment: []sourcePaymentReference{{OrderID: "101", RecordID: "101"}}}
+	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		_, err := storeSourceFactsFrom(ctx, tx, []sourceFact{refund}, s.dcaiSourceKey())
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	postingPeriod := next.(map[string]int64)["id"]
+	refunded, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: postingPeriod})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := refunded.(draftSummary); got.RefundTotal != -802 || got.RefundCount != 2 || got.IssueCount != 0 {
+		t.Fatalf("a half refund must recover 302 cents of the original 603-cent award in the refund period: %+v", got)
 	}
 	if duplicate := post(950); duplicate.Code != 409 {
 		t.Fatalf("duplicate rule must be rejected: %d %s", duplicate.Code, duplicate.Body)

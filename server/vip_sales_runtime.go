@@ -218,7 +218,8 @@ func resolveVIPLinkRecord(values []vipLink, key string, at time.Time) (selected 
 }
 
 func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesRequest, string) {
-	req := vipSalesRequest{Order: sale.OrderID, At: sale.PaidAt, Paid: sale.commissionBasis(), Product: d.Product, Project: d.Project}
+	req := vipSalesRequest{Order: sale.OrderID, At: sale.PaidAt, Paid: sale.commissionBasis(), OriginalPaid: *sale.PaidMinor,
+		Product: d.Product, Project: d.Project}
 	src, ok := d.Claims[sale.SourceVersionID]
 	if !ok {
 		return req, "SALES_SOURCE_MISSING"

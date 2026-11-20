@@ -25,6 +25,7 @@ type catalogRateChange struct {
 	ItemKey string `json:"itemKey"`
 	Row     *int   `json:"row,omitempty"` // One-based within the selected version's rate table.
 	Rate    *int64 `json:"rateBps"`
+	Fixed   *int64 `json:"fixedMinor,omitempty"`
 }
 
 type publishCatalogRatesInput struct {
@@ -343,12 +344,14 @@ func editCatalogRates(raw json.RawMessage, changes []catalogRateChange) (json.Ra
 	changed := false
 	for _, change := range changes {
 		action := items[change.ItemKey]
-		if action == nil || change.Rate == nil || *change.Rate < 0 || *change.Rate > 10000 {
+		if action == nil || (change.Rate == nil) == (change.Fixed == nil) ||
+			change.Rate != nil && (*change.Rate < 0 || *change.Rate > 10000) ||
+			change.Fixed != nil && (*change.Fixed < 0 || change.Row != nil) {
 			return nil, false, invalid
 		}
 		var mode string
 		if json.Unmarshal(action["type"], &mode) != nil ||
-			change.Row == nil && mode != "RATE" || change.Row != nil && mode != "RATE_TABLE" {
+			change.Row == nil && mode != "RATE" && mode != "FIXED" || change.Row != nil && mode != "RATE_TABLE" {
 			return nil, false, invalid
 		}
 		rowNum := 0
@@ -368,13 +371,28 @@ func editCatalogRates(raw json.RawMessage, changes []catalogRateChange) (json.Ra
 			fields = rows[rowNum-1]
 		}
 		target := cell{change.ItemKey, rowNum}
-		var existing int64
-		if seen[target] || json.Unmarshal(fields["rate_bps"], &existing) != nil {
+		field, desiredMode, desired := "rate_bps", "RATE", change.Rate
+		if change.Fixed != nil {
+			field, desiredMode, desired = "amount_minor", "FIXED", change.Fixed
+		}
+		if seen[target] {
 			return nil, false, invalid
 		}
 		seen[target] = true
-		if *change.Rate != existing {
-			fields["rate_bps"], _ = json.Marshal(*change.Rate)
+		if rowNum == 0 && mode != desiredMode {
+			delete(fields, "rate_bps")
+			delete(fields, "amount_minor")
+			fields["type"], _ = json.Marshal(desiredMode)
+			fields[field], _ = json.Marshal(*desired)
+			changed = true
+			continue
+		}
+		var existing int64
+		if json.Unmarshal(fields[field], &existing) != nil {
+			return nil, false, invalid
+		}
+		if *desired != existing {
+			fields[field], _ = json.Marshal(*desired)
 			changed = true
 		}
 	}

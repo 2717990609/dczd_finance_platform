@@ -7,6 +7,18 @@ export function rateAsBasisPoints(value) {
   return rate <= 10000 ? rate : undefined
 }
 
+export const catalogFlatMethods = [
+  {value:'rate',label:'统一比例'},
+  {value:'fixed',label:'每笔付款固定金额'},
+]
+
+export function moneyAsMinor(value) {
+  const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value ?? ''))
+  if (!match) return undefined
+  const minor = Number(match[1])*100 + Number((match[2] || '').padEnd(2,'0'))
+  return Number.isSafeInteger(minor) ? minor : undefined
+}
+
 export function catalogRateConditionBody(row) {
   const rateBps = rateAsBasisPoints(row.rate)
   if (!row.relationship || rateBps===undefined) throw new Error('请核对销售范围和比例。')

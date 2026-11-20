@@ -13,6 +13,7 @@ type catalogRateComponent struct {
 	ItemKey     string             `json:"itemKey"`
 	Label       string             `json:"label"`
 	Rate        *int64             `json:"rateBps,omitempty"`
+	Fixed       *int64             `json:"fixedMinor,omitempty"`
 	Rows        []catalogRateRow   `json:"rows,omitempty"`
 	Recipient   *catalogRulePerson `json:"recipient,omitempty"`
 	TargetKind  string             `json:"targetKind"`
@@ -92,7 +93,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		if err := json.Unmarshal(rawAction, &action); err != nil {
 			return nil, err
 		}
-		item := catalogRateComponent{ItemKey: action.Item, Label: action.Label, Rate: action.Rate, TargetKind: action.targetKind()}
+		item := catalogRateComponent{ItemKey: action.Item, Label: action.Label, Rate: action.Rate, Fixed: action.Fixed, TargetKind: action.targetKind()}
 		if item.ItemKey == sales.Item {
 			item.TargetKind = "seller"
 			if split := sales.Split; len(split.Teams) != 0 {

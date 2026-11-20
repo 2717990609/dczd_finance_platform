@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -98,5 +99,33 @@ func TestVIPPoolSummaryCountsEachPaymentOncePerPool(t *testing.T) {
 	if err != nil || got.PendingPaymentCount != 2 || got.PaymentCount != 4 || len(got.Pools) != 1 ||
 		got.Pools[0].Amount != 75 || got.Pools[0].PaymentCount != 2 {
 		t.Fatalf("pool report includes gross configured pool inputs only: %+v, %v", got, err)
+	}
+}
+
+func TestVIPFixedBenefitUsesRecognizedBalanceAfterPriorRefund(t *testing.T) {
+	definition := strings.Replace(testVIPBenefits, `"type":"RATE","beneficiary_mode":"PARTY","role":"TECHNOLOGY","company_beneficiary_party_id":"tech","rate_bps":200`,
+		`"type":"FIXED","beneficiary_mode":"PARTY","role":"TECHNOLOGY","company_beneficiary_party_id":"tech","amount_minor":501`, 1)
+	policy, ok := readVIPBenefits(json.RawMessage(definition))
+	if !ok {
+		t.Fatal("the fixed company award must be supported")
+	}
+	data := vipRuntimeData{BenefitReady: true, Organizations: []vipBenefitOrganization{{Party: "tech", Unit: "company", Name: "技术公司"}}}
+	gross := int64(1000)
+	row := catalogPaymentMatch{OrderID: "completed-order", PaidMinor: &gross}
+	for _, tc := range []struct {
+		recognized int64
+		amount     int64
+		status     string
+	}{
+		{1000, 501, "CALCULATED"},
+		{500, 250, "CALCULATED"},
+		{0, 0, "ZERO"},
+	} {
+		row.RecognizedMinor = &tc.recognized
+		req, issue := vipPaymentInputs(row, data)
+		part := quoteVIPBenefits(req, issue, policy, data)[1]
+		if part.Amount != tc.amount || part.Status != tc.status {
+			t.Fatalf("recognized=%d: got %+v, expected %d/%s", tc.recognized, part, tc.amount, tc.status)
+		}
 	}
 }
