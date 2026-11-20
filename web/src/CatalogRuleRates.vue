@@ -4,6 +4,7 @@ import { DownOutlined } from '@ant-design/icons-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
+import CatalogPayeeFields from './CatalogPayeeFields.vue'
 
 const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
@@ -12,7 +13,8 @@ const selected = ref()
 const filter = ref('')
 const effectiveFrom = ref('')
 const edits = ref({})
-const recipientEdits = ref(new Map())
+const targetEdits = ref(new Map())
+const targetDraft = ref()
 const teamEdits = ref(new Map())
 const selectedTeam = ref()
 const loading = ref(false)
@@ -39,7 +41,7 @@ const rateColumns = [
 ]
 const columns = computed(() => sheet.value?.mayPublish && !props.applied ? [...rateColumns,{title:'操作',key:'operation',width:85}] : rateColumns)
 const component = computed(() => sheet.value?.components.find(item => item.itemKey === selected.value))
-const targetKind = computed(() => component.value?.targetKind || (component.value?.recipient ? 'person' : ''))
+const targetKind = computed(() => targetEdits.value.get(selected.value)?.target || component.value?.targetKind)
 const targetKindLabels = {seller:'订单上的成交销售',person:'指定个人',company:'指定公司',pool:'团队池'}
 const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池'}
 const teamSplit = computed(() => component.value?.teamSplit)
@@ -57,7 +59,7 @@ const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTe
 const itemRemoved = computed(() => removedItems.value.has(selected.value))
 const editable = computed(() => sheet.value?.mayPublish && !saving.value && !itemRemoved.value)
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
-const recipientsChanged = computed(() => recipientEdits.value.size + teamEdits.value.size > 0)
+const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
 const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
   structure.value.items.length || structure.value.rateRows.length || removedItems.value.size || removedRateRows.value.size)
 const impactPeriods = computed(() => (props.periods || []).filter(period=>period.productId===sheet.value?.productId && !period.settled))
@@ -124,10 +126,35 @@ function rateAsBasisPoints(value) {
   const rate = Number(match[1])*100 + Number((match[2] || '').padEnd(2,'0'))
   return rate <= 10000 ? rate : undefined
 }
-const recipient = computed(() => recipientEdits.value.get(selected.value) || component.value?.recipient)
-function setRecipient(id, option) {
-  if (id===component.value.recipient.id) recipientEdits.value.delete(selected.value)
-  else recipientEdits.value.set(selected.value,{id,name:option.name})
+function targetName(item) {
+  const edit = targetEdits.value.get(item.itemKey)
+  if (!edit) return item.recipient?.name || item.targetLabel
+  if (edit.target==='person') return edit.personName
+  return sheet.value.structureOptions.organizations.find(org=>org.value===edit.organization)?.label
+}
+function originalTarget(item) {
+  return {target:item.targetKind,role:item.targetRole,organization:item.targetOrganization,
+    personId:item.recipient?.id,personName:item.recipient?.name}
+}
+function beginTarget() {
+  error.value = ''
+  targetDraft.value = {...(targetEdits.value.get(selected.value) || originalTarget(component.value))}
+}
+function stageTarget() {
+  const payee = targetDraft.value
+  if (payee.target==='person' && (!payee.personId || !payee.role) ||
+    payee.target!=='person' && !payee.organization || payee.target==='pool' && !payee.role) {
+    error.value = '请选择收款对象并填写对应岗位。'
+    return
+  }
+  const original = originalTarget(component.value)
+  if (['target','role','organization','personId'].every(field=>payee[field]===original[field])) {
+    targetEdits.value.delete(selected.value)
+  } else {
+    targetEdits.value.set(selected.value,payee)
+  }
+  targetDraft.value = undefined
+  error.value = ''
 }
 const teamPerson = field => teamEdits.value.get(selectedTeam.value)?.[field] || team.value?.[field]
 function setTeamPerson(field, id, option) {
@@ -147,7 +174,8 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   edits.value = {}
   removedItems.value.clear()
   removedRateRows.value.clear()
-  recipientEdits.value.clear()
+  targetEdits.value.clear()
+  targetDraft.value = undefined
   teamEdits.value.clear()
   selectedTeam.value = undefined
   filter.value = ''
@@ -182,7 +210,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
 watch(selected, () => { filter.value = '' })
 
 function publicationInput() {
-    if (structureEditing.value) throw new Error('请先完成正在添加的配置。')
+  if (structureEditing.value || targetDraft.value) throw new Error('请先完成正在编辑的配置。')
   if (!effectiveFrom.value) throw new Error('请选择生效时间。')
   if (copy.value && (!copy.value.sku || !copy.value.label?.trim())) throw new Error('请选择目标 SKU，并填写规则名称。')
   const changes = Object.values(edits.value)
@@ -194,7 +222,7 @@ function publicationInput() {
     copy:copy.value,
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
     changes,
-    recipientChanges:Array.from(recipientEdits.value,([itemKey, person])=>({itemKey,personId:person.id}))
+    targetChanges:Array.from(targetEdits.value,([itemKey, {personName,...payee}])=>({itemKey,...payee}))
       .filter(({itemKey})=>!removedItems.value.has(itemKey)),
     teamChanges:Array.from(teamEdits.value,([teamKey,changes])=>({
       teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
@@ -256,35 +284,42 @@ async function publish() {
           <div class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
-            <a-button v-if="sheet.mayPublish && !applied && sheet.structureOptions" :disabled="saving || structureEditing"
+            <a-button v-if="sheet.mayPublish && !applied && sheet.structureOptions" :disabled="saving || structureEditing || !!targetDraft"
               @click="addRecipient">添加收款安排</a-button>
           </div>
           <section v-for="item in sheet.components" :key="item.itemKey" class="rule-block">
-          <button type="button" class="rule-block-header" :disabled="saving || structureEditing"
+          <button type="button" class="rule-block-header" :disabled="saving || structureEditing || !!targetDraft"
             :aria-expanded="selected===item.itemKey" :aria-controls="'catalog-rate-'+item.itemKey"
             @click="selected=selected===item.itemKey ? undefined : item.itemKey">
             <DownOutlined aria-hidden="true"/>
             <strong>{{ item.label }}</strong>
-            <span class="rule-block-badge">{{ removedItems.has(item.itemKey) ? '待删除' : targetShortLabels[item.targetKind] }}</span>
-            <small>{{ [recipientEdits.get(item.itemKey)?.name || item.recipient?.name || item.targetLabel,
+            <span class="rule-block-badge">{{ removedItems.has(item.itemKey) ? '待删除' : targetShortLabels[targetEdits.get(item.itemKey)?.target || item.targetKind] }}</span>
+            <small>{{ [targetName(item),
               item.rows?.length ? '按销售条件取比例' : item.rateBps != null ? displayRate(item.rateBps,undefined,item.itemKey)+'%' : ''].filter(Boolean).join(' · ') }}</small>
           </button>
           <div v-if="selected===item.itemKey" :id="'catalog-rate-'+item.itemKey" class="rule-block-body">
           <a-alert v-if="itemRemoved" type="warning" message="此分项将从新版移除" show-icon class="feedback"/>
-          <h4 class="rule-item-section">发给谁</h4>
-          <p v-if="targetKind && !recipient && !component?.targetLabel" class="rule-formula">
-            {{ targetKindLabels[targetKind] }}<template v-if="teamSplit"> · 指定内部团队按岗位拆分</template>
+          <div class="rule-blocks-heading">
+            <h4 class="rule-item-section">发给谁</h4>
+            <a-button v-if="!applied && sheet.structureOptions && targetKind!=='seller' && !targetDraft"
+              :disabled="!editable || structureEditing" @click="beginTarget">编辑收款对象</a-button>
+          </div>
+          <template v-if="targetDraft">
+            <div class="rule-basics">
+              <CatalogPayeeFields v-model="targetDraft" prefix="catalog-edit" :options="sheet.structureOptions" :api="api"
+                :people-filters="peopleFilters" :disabled="saving"/>
+            </div>
+            <a-space class="feedback">
+              <a-button @click="targetDraft=undefined; error=''">取消修改</a-button>
+              <a-button type="primary" @click="stageTarget">确认收款对象</a-button>
+            </a-space>
+          </template>
+          <p v-else class="rule-formula">
+            {{ targetKindLabels[targetKind] }}<template v-if="targetName(item)"> · {{ targetName(item) }}</template><template v-if="teamSplit"> · 指定内部团队按岗位拆分</template>
           </p>
           <p v-if="targetKind==='seller'" class="catalog-inheritance">
             新销售关联来源账号并登记销售岗位后，自动沿用这条规则。按付款当天的岗位记录判断。
           </p>
-          <a-form-item v-if="recipient" label="指定收款人" html-for="catalog-benefit-person">
-            <AppointmentPersonSelect v-if="sheet.mayPublish" id="catalog-benefit-person" :key="selected"
-              :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="recipient" :value="recipient.id"
-              :disabled="!editable" :placeholder="recipient.id?'输入姓名搜索':recipient.name" @change="setRecipient"/>
-            <span v-else>{{ recipient.name }}</span>
-          </a-form-item>
-          <a-form-item v-if="component?.targetLabel" :label="targetKindLabels[targetKind] || '收款对象'">{{ component.targetLabel }}</a-form-item>
           <h4 class="rule-item-section">提成怎么算</h4>
           <p v-if="component?.rateBps != null || component?.rows?.length" class="rule-formula">
             每笔付款实收 × {{ component.rows?.length ? '适用比例' : '下方比例' }}
@@ -412,9 +447,9 @@ async function publish() {
       </div>
       <div class="workspace-edit-footer" v-else>
         <a-button :disabled="saving" @click="emit('close')">取消</a-button>
-        <a-button :disabled="saving || structureEditing || !hasEdits" @click="previewImpact">预览差额</a-button>
+        <a-button :disabled="saving || structureEditing || !!targetDraft || !hasEdits" @click="previewImpact">预览差额</a-button>
         <a-button html-type="submit" form="catalog-rate-form" type="primary" :loading="saving"
-          :disabled="structureEditing || !hasEdits">保存并生效</a-button>
+          :disabled="structureEditing || !!targetDraft || !hasEdits">保存并生效</a-button>
       </div>
     </template>
   </a-drawer>

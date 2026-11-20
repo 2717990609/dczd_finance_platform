@@ -7,7 +7,7 @@ const props = defineProps({component:Object,index:Number,companies:Array,salesCa
 const categories = computed(() => props.component.companySales.categories)
 const payee = computed(() => props.component.companySales.payee)
 const payeeKinds = [
-  {value:'sales_company',label:'订单上的成交公司'},
+  {value:'sales_company',label:'销售所属公司'},
   {value:'order_person',label:'订单上的人员'},
   {value:'person',label:'指定个人'},
   {value:'company',label:'指定公司'},
@@ -58,28 +58,13 @@ watch(amounts, choices => {
 </script>
 
 <template>
-  <a-form-item label="收款安排名称" :html-for="field('label')">
-    <a-input :id="field('label')" v-model:value="component.companySales.label" placeholder="按销售类别或公司计算" :maxlength="80"/>
+  <a-form-item label="收款安排名称" :html-for="field('label')" required>
+    <a-input :id="field('label')" v-model:value="component.companySales.label" placeholder="输入安排名称" :maxlength="80"/>
   </a-form-item>
-  <h4 class="rule-item-section">发给谁</h4>
-  <div class="company-value">
-    <a-form-item label="收款对象" :html-for="field('payee')">
-      <a-select :id="field('payee')" v-model:value="payee.kind" :options="payeeKinds"/>
-    </a-form-item>
-    <a-form-item v-if="payee.kind==='order_person'" label="从订单取谁" :html-for="field('payee-role')" required>
-      <a-select :id="field('payee-role')" v-model:value="payee.role" :options="payeeRoles" show-search :filter-option="byName"/>
-    </a-form-item>
-    <a-form-item v-if="payee.kind==='person'" label="收款人" :html-for="field('payee-person')" required>
-      <a-select :id="field('payee-person')" v-model:value="payee.personId" :options="people" show-search :filter-option="byName"/>
-    </a-form-item>
-    <a-form-item v-if="payee.kind==='company'" label="收款公司" :html-for="field('payee-company')" required>
-      <a-select :id="field('payee-company')" v-model:value="payee.companyId" :options="recipients" show-search :filter-option="byName"/>
-    </a-form-item>
-  </div>
-  <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
-    :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
+  <a-form-item label="结算对象">
+    {{ payee.kind==='sales_company' ? '销售所属外部公司' : payeeKinds.find(option=>option.value===payee.kind)?.label }}
+  </a-form-item>
   <h4 class="rule-item-section">提成怎么算</h4>
-  <p class="rule-formula">按订单成交公司的销售类别或单独约定取标准。新公司登记到已有类别后，自动沿用该类别标准。</p>
   <section v-for="(category,i) in categories" :key="i" class="company-category">
     <div class="company-category-title">
       <strong>{{ category.scope==='category' ? salesCategories.find(option=>option.value===category.salesCategoryId)?.label || '新的类别标准' : category.label || '公司单独标准' }}</strong>
@@ -113,8 +98,7 @@ watch(amounts, choices => {
     <a-collapse v-if="category.scope==='category' || category.companies.length" ghost>
       <a-collapse-panel v-if="component.classMember==='new'" key="recommendation"
         :header="category.recommendationRate > 0 ? '推荐公司分润 · '+category.recommendationRate+'%' : '推荐公司分润'">
-        <a-form-item label="公司推荐比例（%）" :html-for="field('recommendation-'+i)"
-          extra="按报名净实收计提给推荐公司。留空或填 0 时不计提。">
+        <a-form-item label="新报推荐比例（%）" :html-for="field('recommendation-'+i)">
           <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" :min="0" :max="100" :precision="4"/>
         </a-form-item>
       </a-collapse-panel>
@@ -133,8 +117,8 @@ watch(amounts, choices => {
                 :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
             </a-form-item>
           </div>
-          <a-form-item v-if="component.classMember==='new'" label="公司单独推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)"
-            extra="留空沿用类别比例，填 0 时此公司不计提推荐分润。">
+          <a-form-item v-if="component.classMember==='new'" label="新报单独推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)"
+            extra="留空沿用类别比例">
             <a-input-number :id="field('override-recommendation-'+i+'-'+j)" v-model:value="override.recommendationRate"
               :min="0" :max="100" :precision="4"/>
           </a-form-item>
@@ -147,17 +131,32 @@ watch(amounts, choices => {
   </section>
   <a-button type="dashed" block @click="categories.push({mode:amounts[0]?.value,companies:[],overrides:[],
     scope:salesCategories.length ? 'category' : 'companies'})">添加公司标准</a-button>
-  <a-form-item v-if="hasRecommendations" label="推荐分润直收公司" :html-for="field('referral-recipients')" required
-    extra="可从公司目录选择多个。系统按订单或公司关系确定实际收款公司。">
+  <a-form-item v-if="hasRecommendations" label="可收推荐分润的公司" :html-for="field('referral-recipients')" required>
     <a-select :id="field('referral-recipients')" v-model:value="component.companySales.recommendationRecipients"
       :options="recipients" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
   </a-form-item>
   <a-collapse ghost>
     <a-collapse-panel key="advanced" header="更多配置">
+      <div class="company-value">
+        <a-form-item label="收款对象" :html-for="field('payee')" required>
+          <a-select :id="field('payee')" v-model:value="payee.kind" :options="payeeKinds"/>
+        </a-form-item>
+        <a-form-item v-if="payee.kind==='order_person'" label="从订单取谁" :html-for="field('payee-role')" required>
+          <a-select :id="field('payee-role')" v-model:value="payee.role" :options="payeeRoles" show-search :filter-option="byName"/>
+        </a-form-item>
+        <a-form-item v-if="payee.kind==='person'" label="收款人" :html-for="field('payee-person')" required>
+          <a-select :id="field('payee-person')" v-model:value="payee.personId" :options="people" show-search :filter-option="byName"/>
+        </a-form-item>
+        <a-form-item v-if="payee.kind==='company'" label="收款公司" :html-for="field('payee-company')" required>
+          <a-select :id="field('payee-company')" v-model:value="payee.companyId" :options="recipients" show-search :filter-option="byName"/>
+        </a-form-item>
+      </div>
+      <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
+        :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
       <a-form-item label="业绩归给订单里的谁" :html-for="field('role')" required>
         <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
       </a-form-item>
-      <a-form-item label="沿用个人提成的内部公司" :html-for="field('internal')" extra="新报和复训共用。">
+      <a-form-item label="沿用个人提成的内部公司" :html-for="field('internal')">
         <a-select :id="field('internal')" v-model:value="component.companySales.internalCompanies" :options="internalOptions"
           mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
       </a-form-item>

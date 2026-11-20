@@ -684,9 +684,18 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	save("before-new-rate", "1", 10000, newAt.Add(-time.Second), newAt, "VIP_ORDER")
 	save("new-rate", "1", 10000, newAt, newAt, "VIP_ORDER")
 	prior := draftAt(next)
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_units(id,kind,name,status) VALUES($1,'COMPANY','规则新收款公司','ACTIVE')`, id(71)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO catalog_benefit_organizations(source,party_uuid,unit_id,observed_at)
+	 SELECT source,$1,$2,captured_at FROM catalog_sales_context WHERE source='DCAI'`, id(72), id(71)); err != nil {
+		t.Fatal(err)
+	}
 	newRate, newSalesRate, salesRow := int64(900), int64(1100), 1
 	inputRates := publishCatalogRatesInput{BaseID: id(4), EffectiveFrom: newAt, Changes: []catalogRateChange{
 		{ItemKey: "owner", Rate: &newRate}, {ItemKey: "sales", Row: &salesRow, Rate: &newSalesRate},
+	}, TargetChanges: []catalogBenefitTargetChange{
+		{ItemKey: id(14), catalogBenefitTarget: catalogBenefitTarget{Target: "company", Organization: id(72)}},
 	}}
 	published, err := s.publishCatalogRates(ctx, inputRates, "finance-fixture")
 	if err != nil || published.ID == id(4) || published.Version != 3 {
@@ -714,6 +723,14 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	var matched int
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM calculation_draft_lines WHERE period_id=$1 AND catalog_rule_id=$2::uuid`, next, published.ID).Scan(&matched); err != nil || matched != 5 {
 		t.Fatalf("only payments at or after effective time should use the new rule: %d %v", matched, err)
+	}
+	var oldPayee, newPayee string
+	if err := s.db.QueryRow(ctx, `SELECT min(l.beneficiary_unit_id::text) FILTER(WHERE o.order_id='before-new-rate'),
+	 min(l.beneficiary_unit_id::text) FILTER(WHERE o.order_id='new-rate')
+	 FROM calculation_draft_lines l JOIN source_order_versions o ON o.id=l.source_version_id
+	 WHERE l.period_id=$1 AND l.component_type=$2 AND l.amount_minor=200`, next, id(14)).
+		Scan(&oldPayee, &newPayee); err != nil || oldPayee != id(17) || newPayee != id(71) {
+		t.Fatalf("same rate must pay the configured company only after its effective time: %s %s %v", oldPayee, newPayee, err)
 	}
 	march := createPeriod("2032-03", "后续规则验证")
 	marchAt := newAt.AddDate(0, 1, 0)

@@ -46,7 +46,7 @@ function recipient(part) {
     if (payee?.kind==='person') return personName(payee.personId)
     if (payee?.kind==='company') return unitName(payee.companyId)
     if (payee?.kind==='pool') return poolName(payee.pool)
-    return '订单上的成交公司'
+    return '销售所属公司'
   }
   const source = roleName(part.sourceRole)
   return part.retrainSplits?.length ? [source, '拆分指定的服务人员及团队池'].filter(Boolean).join('、') : source || '—'
@@ -55,7 +55,7 @@ function formula(part) {
   if (part.mode==='period_rate') {
     return '本班适用报名净实收 × '+(part.periodBenefit?.tiers?.length ? '档位比例' : rate(part.value,10000))
   }
-  if (part.companySales) return '按成交公司的类别或单独标准计提'
+  if (part.companySales) return '按销售类别或公司标准计提'
   if (part.tiers) return '按累计人数或本班业绩匹配档位'
   if (part.mode==='rate') return (props.classProduct ? '报名净实收' : '付款实收')+' × '+standard(part)
   return standard(part)+fixedUnit.value
@@ -90,7 +90,7 @@ onMounted(async () => {
           @click="activePart=activePart===index ? undefined : index">
           <DownOutlined aria-hidden="true"/>
           <strong>{{ ruleComponentLabel(part,label) }}</strong>
-          <span v-if="part.classMember" class="rule-block-badge">{{ label('classMember',part.classMember) }}</span>
+          <span v-if="classProduct" class="rule-block-badge">{{ part.classMember ? label('classMember',part.classMember) : '通用报名' }}</span>
           <small>{{ recipient(part) }}</small>
         </button>
         <div v-if="activePart===index" :id="'rule-preview-'+index" class="rule-block-body rule-preview-part">

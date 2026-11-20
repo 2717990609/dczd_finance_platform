@@ -1,7 +1,7 @@
 const localTime = value => value ? new Date(Date.parse(value) + 8 * 60 * 60 * 1000).toISOString().slice(0, -1) : undefined
 
 export function ruleComponentLabel(component, optionLabel) {
-  if (component.companySales?.label?.trim()) return component.companySales.label.trim()
+  if (component.companySales?.label != null) return component.companySales.label.trim() || '未命名收款安排'
   const label = component.periodBenefit?.label
   const type = optionLabel('component',component.type) || '分润分项'
   if (!label) return type
@@ -43,7 +43,7 @@ function companyValue(row) {
     recommendationRate:row.recommendationRate == null ? undefined : row.recommendationRate / 10000}
 }
 
-export function copiedRuleComponents(savedComponents) {
+export function copiedRuleComponents(savedComponents, optionLabel) {
   const components = JSON.parse(JSON.stringify(savedComponents))
   return components.map(component => {
     const {tiers, periodBenefit, companySales, retrainSplits, value, ...form} = component
@@ -59,7 +59,8 @@ export function copiedRuleComponents(savedComponents) {
       }
     }
     if (companySales) {
-      form.companySales = {...companySales, internalCompanies:companySales.internalCompanies || [],
+      form.companySales = {...companySales, label:ruleComponentLabel(component,optionLabel),
+        internalCompanies:companySales.internalCompanies || [],
         payee:{kind:'sales_company',...companySales.payee,pool:companySales.payee?.pool || {}},
         categories:companySales.categories.map(category => ({...companyValue(category),
           scope:category.salesCategoryId ? 'category' : 'companies', companies:category.companies || [],

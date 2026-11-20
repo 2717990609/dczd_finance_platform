@@ -35,6 +35,7 @@ type publishCatalogRatesInput struct {
 	TeamChanges      []catalogTeamRecipientChange `json:"teamChanges"`
 	NewItems         []catalogNewBenefitItem      `json:"newItems"`
 	NewRateRows      []catalogNewRateRow          `json:"newRateRows"`
+	TargetChanges    []catalogBenefitTargetChange `json:"targetChanges"`
 	RemovedItems     []string                     `json:"removedItems"`
 	RemovedRateRows  []catalogRateRowRemoval      `json:"removedRateRows"`
 	Copy             *catalogScenarioCopy         `json:"copy,omitempty"`
@@ -151,7 +152,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 	published := catalogPublication{ID: input.BaseID}
 	id, valid := canonicalSourceUUID(input.BaseID)
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
-	structureChanged := len(input.NewItems)+len(input.NewRateRows) != 0
+	structureChanged := len(input.NewItems)+len(input.NewRateRows)+len(input.TargetChanges) != 0
 	removals := len(input.RemovedItems)+len(input.RemovedRateRows) != 0
 	if !valid || from.IsZero() || input.Copy == nil && len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 &&
 		!structureChanged && !removals || !textOK(actor, 128) {
@@ -224,7 +225,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			}
 		}
 		if structureChanged {
-			body, err = editCatalogStructure(ctx, tx, product, from, body, input.NewItems, input.NewRateRows)
+			body, err = editCatalogStructure(ctx, tx, body, input.NewItems, input.NewRateRows, input.TargetChanges)
 			if err != nil {
 				return err
 			}
@@ -243,7 +244,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 		if _, _, err := catalogRateActions(body); err != nil {
 			return err
 		}
-		if recipientsChanged || len(input.NewItems) > 0 {
+		if recipientsChanged || len(input.NewItems)+len(input.TargetChanges) > 0 {
 			if err := validateCatalogRecipientAppointments(ctx, tx, product, from, definition, body); err != nil {
 				return err
 			}

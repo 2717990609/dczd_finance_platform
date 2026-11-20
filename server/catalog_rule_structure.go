@@ -43,14 +43,23 @@ type catalogNewRateRow struct {
 	catalogConditionInput
 }
 
+type catalogBenefitTarget struct {
+	Target       string `json:"target"`
+	Role         string `json:"role,omitempty"`
+	PersonID     int64  `json:"personId,omitempty"`
+	Organization string `json:"organization,omitempty"`
+}
+
+type catalogBenefitTargetChange struct {
+	ItemKey string `json:"itemKey"`
+	catalogBenefitTarget
+}
+
 type catalogNewBenefitItem struct {
-	Label        string                  `json:"label"`
-	Target       string                  `json:"target"`
-	Role         string                  `json:"role,omitempty"`
-	PersonID     int64                   `json:"personId,omitempty"`
-	Organization string                  `json:"organization,omitempty"`
-	Rate         *int64                  `json:"rateBps,omitempty"`
-	Rows         []catalogConditionInput `json:"rows,omitempty"`
+	Label string `json:"label"`
+	catalogBenefitTarget
+	Rate *int64                  `json:"rateBps,omitempty"`
+	Rows []catalogConditionInput `json:"rows,omitempty"`
 }
 
 const catalogSalesCompanyKeysSQL = `SELECT a.company_uuid AS key,a.company_unit_id AS unit
@@ -116,8 +125,8 @@ func (o catalogStructureOptions) condition(row catalogConditionInput) (json.RawM
 	return json.Marshal(vipRateRow{Company: row.Company, Relationship: row.Relationship, Category: row.Category, Rate: *row.Rate})
 }
 
-func editCatalogStructure(ctx context.Context, tx pgx.Tx, product int64, at time.Time, raw json.RawMessage,
-	items []catalogNewBenefitItem, rateRows []catalogNewRateRow) (json.RawMessage, error) {
+func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
+	items []catalogNewBenefitItem, rateRows []catalogNewRateRow, targets []catalogBenefitTargetChange) (json.RawMessage, error) {
 	if _, err := tx.Exec(ctx, `SELECT source FROM catalog_sales_context WHERE source='DCAI' FOR SHARE`); err != nil {
 		return nil, err
 	}
@@ -170,8 +179,17 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, product int64, at time
 			people = append(people, catalogRuleRecipientChange{PersonID: item.PersonID})
 		}
 	}
+	for _, target := range targets {
+		if target.Target == "person" {
+			people = append(people, catalogRuleRecipientChange{PersonID: target.PersonID})
+		}
+	}
 	keys, err := catalogNewRecipientKeys(ctx, tx, people, nil)
 	if err != nil {
+		return nil, err
+	}
+	before, _ := readVIPSalesPolicy(raw)
+	if err := changeCatalogBenefitTargets(actions, before.Item, targets, options, keys); err != nil {
 		return nil, err
 	}
 	for _, item := range items {
@@ -182,7 +200,7 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, product int64, at time
 				break
 			}
 		}
-		fields, err := newCatalogBenefitAction(ctx, tx, product, at, key, item, options, keys)
+		fields, err := newCatalogBenefitAction(key, item, options, keys)
 		if err != nil {
 			return nil, err
 		}
@@ -197,7 +215,6 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, product int64, at time
 	if err != nil {
 		return nil, err
 	}
-	before, _ := readVIPSalesPolicy(raw)
 	after, ok := readVIPSalesPolicy(body)
 	if !ok {
 		return nil, errCatalogRateUnavailable
@@ -208,38 +225,61 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, product int64, at time
 	return body, nil
 }
 
-func newCatalogBenefitAction(ctx context.Context, tx pgx.Tx, product int64, at time.Time, key string,
+func changeCatalogBenefitTargets(actions []map[string]json.RawMessage, salesKey string, edits []catalogBenefitTargetChange,
+	options catalogStructureOptions, people map[int64]string) error {
+	if len(edits) == 0 {
+		return nil
+	}
+	byKey := make(map[string]map[string]json.RawMessage, len(actions))
+	for _, fields := range actions {
+		var key string
+		if err := json.Unmarshal(fields["item_key"], &key); err != nil {
+			return err
+		}
+		byKey[key] = fields
+	}
+	for _, edit := range edits {
+		fields := byKey[edit.ItemKey]
+		if fields == nil || edit.ItemKey == salesKey {
+			return invalid
+		}
+		delete(byKey, edit.ItemKey)
+		body, err := json.Marshal(fields)
+		if err != nil {
+			return err
+		}
+		var action vipBenefitAction
+		if err := json.Unmarshal(body, &action); err != nil {
+			return err
+		}
+		if err := configureCatalogBenefitTarget(&action, edit.catalogBenefitTarget, options, people); err != nil {
+			return err
+		}
+		for key, value := range map[string]string{
+			"role": action.Role, "beneficiary_mode": action.Mode, "designated_party_id": action.Designated,
+			"company_beneficiary_party_id": action.Company, "pool_party_id": action.PoolParty,
+			"pool_organization_unit_id": action.PoolUnit, "pool_code": action.PoolCode, "pool_name": action.PoolName,
+			"allocation_owner_role": action.OwnerRole,
+		} {
+			if value == "" {
+				delete(fields, key)
+			} else {
+				fields[key], _ = json.Marshal(value)
+			}
+		}
+	}
+	return nil
+}
+
+func newCatalogBenefitAction(key string,
 	item catalogNewBenefitItem, options catalogStructureOptions, people map[int64]string) (map[string]json.RawMessage, error) {
 	label := strings.TrimSpace(item.Label)
 	if !textOK(label, 80) || (item.Rate == nil) == (len(item.Rows) == 0) || item.Rate != nil && (*item.Rate < 0 || *item.Rate > 10000) {
 		return nil, invalid
 	}
-	action := vipBenefitAction{Item: key, Label: label, Type: "RATE", Mode: "PARTY", Rate: item.Rate}
-	org := catalogStructureOptionFor(options.Organizations, item.Organization)
-	role := catalogStructureOptionFor(options.Roles, item.Role)
-	switch item.Target {
-	case "person":
-		if item.Organization != "" || !role.Personal || people[item.PersonID] == "" {
-			return nil, invalid
-		}
-		action.Role, action.Designated = role.Value, people[item.PersonID]
-	case "company":
-		if item.PersonID != 0 || item.Role != "" || org.Kind != "COMPANY" {
-			return nil, invalid
-		}
-		action.Role, action.Company = "COMPANY", org.Value
-	case "pool":
-		if item.PersonID != 0 || org.Value == "" || role.Value == "" {
-			return nil, invalid
-		}
-		if err := validateCatalogPoolAppointment(ctx, tx, product, at, org.UnitID, role.Value); err != nil {
-			return nil, err
-		}
-		action.Role, action.OwnerRole = role.Value, role.Value
-		action.Mode, action.PoolParty, action.PoolUnit = "TEAM_POOL", org.Value, org.UnitID
-		action.PoolCode, action.PoolName = key, label
-	default:
-		return nil, invalid
+	action := vipBenefitAction{Item: key, Label: label, Type: "RATE", Rate: item.Rate}
+	if err := configureCatalogBenefitTarget(&action, item.catalogBenefitTarget, options, people); err != nil {
+		return nil, err
 	}
 	if len(item.Rows) != 0 {
 		action.Type = "RATE_TABLE"
@@ -261,6 +301,44 @@ func newCatalogBenefitAction(ctx context.Context, tx pgx.Tx, product int64, at t
 	var fields map[string]json.RawMessage
 	err = json.Unmarshal(body, &fields)
 	return fields, err
+}
+
+func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenefitTarget,
+	options catalogStructureOptions, people map[int64]string) error {
+	before := *action
+	action.Mode, action.Role = "PARTY", ""
+	action.Designated, action.Company = "", ""
+	action.PoolParty, action.PoolUnit, action.PoolCode, action.PoolName, action.OwnerRole = "", "", "", "", ""
+	org := catalogStructureOptionFor(options.Organizations, target.Organization)
+	role := catalogStructureOptionFor(options.Roles, target.Role)
+	switch target.Target {
+	case "person":
+		if target.Organization != "" || !role.Personal || people[target.PersonID] == "" {
+			return invalid
+		}
+		action.Role, action.Designated = role.Value, people[target.PersonID]
+	case "company":
+		if target.PersonID != 0 || target.Role != "" || org.Kind != "COMPANY" {
+			return invalid
+		}
+		action.Role, action.Company = "COMPANY", org.Value
+		if before.Company != "" {
+			action.Role = before.Role
+		}
+	case "pool":
+		if target.PersonID != 0 || org.Value == "" || role.Value == "" {
+			return invalid
+		}
+		action.Mode, action.PoolParty, action.PoolUnit = "TEAM_POOL", org.Value, org.UnitID
+		action.Role, action.OwnerRole = role.Value, role.Value
+		action.PoolCode, action.PoolName = action.Item, action.Label
+		if before.Mode == "TEAM_POOL" {
+			action.Role, action.PoolCode, action.PoolName = before.Role, before.PoolCode, before.PoolName
+		}
+	default:
+		return invalid
+	}
+	return nil
 }
 
 func validateCatalogPoolAppointment(ctx context.Context, tx pgx.Tx, product int64, at time.Time, unit, role string) error {

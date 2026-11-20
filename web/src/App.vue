@@ -162,7 +162,7 @@ const optionLabel = (group, value) => options(group).find(option => option.value
 const orderRoleLabel = role => role==='SALES_COMPANY' ? '销售公司' : optionLabel('orderAttributionRole',role)
 const scopeTree = computed(() => organizationTree(scopeUnits.value || [],kind=>optionLabel('organizationKind',kind)))
 const sources = computed(() => options('source'))
-const classMembers = computed(() => options('classMember'))
+const classMembers = computed(() => options('classMember').map(option=>option.value ? option : {...option,label:'通用报名（新报和复训）'}))
 function componentSourceRoles(saved) {
   const configured = options('orderAttributionRole')
   return saved && !configured.some(option => option.value === saved)
@@ -274,11 +274,12 @@ const amountModes = row => {
 function updateAmountMode(row, mode) {
   row.mode = mode
   if (mode==='period_rate' && !row.periodBenefit) {
-    row.periodBenefit = {recipient:firstOption('practicePeriodRecipient'),pool:{},tiers:[{from:0}],useTiers:false}
+    row.periodBenefit = {label:'',pool:{},tiers:[{from:0}],useTiers:false}
   }
   if (mode==='company_sales' && !row.companySales) {
     row.sourceRole = row.sourceRole || firstOption('practicePeriodSourceRole')
-    row.companySales = {internalCompanies:[],payee:{kind:'sales_company',pool:{}},categories:[{mode:baseModes.value[0]?.value,companies:[],overrides:[],
+    row.companySales = {label:'',internalCompanies:[],payee:{kind:'sales_company',pool:{}},
+      categories:[{mode:baseModes.value[0]?.value,companies:[],overrides:[],
       scope:options('practiceSalesCategory').length ? 'category' : 'companies'}]}
   }
   if (mode === 'tiered' && !row.tierConfig) {
@@ -294,9 +295,6 @@ function updateAmountMode(row, mode) {
   }
 }
 function resetAmountMode(row) {
-  if (row.type==='company_sales' && !availableClassMembers(row).some(member=>member.value===row.classMember)) {
-    row.classMember = availableClassMembers(row)[0]?.value
-  }
   const modes = amountModes(row)
   if (!modes.some(option => option.value === row.mode)) updateAmountMode(row,modes[0]?.value)
 }
@@ -304,12 +302,13 @@ const componentTypes = computed(() => options('component').filter(option=>
   matchesOption(option,selectedProduct.value?.periodMode) &&
   (!isPeriodBenefit(option.value) || !!periodBenefitMode.value?.scope?.componentTypes?.includes(option.value)) &&
   (option.value!=='company_sales' || !!companySalesMode.value)))
-function availableClassMembers(row,type = row.type) {
+function classMemberChoices(row,type = row.type) {
   if (isPeriodBenefit(type)) return classMembers.value
-  return classMembers.value.filter(member =>
-    (type!=='company_sales' || companySalesMode.value?.scope?.classMembers?.includes(member.value)) &&
-    !draft.value.components.some(c =>
-      c !== row && c.type === type && (!c.classMember || !member.value || c.classMember === member.value)))
+  return classMembers.value.filter(member=>type!=='company_sales' || companySalesMode.value?.scope?.classMembers?.includes(member.value)).map(member=>{
+    const occupied = draft.value.components.some(c=>c!==row && c.type===type &&
+      (!c.classMember || !member.value || c.classMember===member.value))
+    return occupied ? {...member,disabled:true,label:member.label+'（已配置）'} : member
+  })
 }
 const recipientChoices = computed(() => {
   if (drawer.value!=='rule' || !selectedProduct.value) return []
@@ -317,16 +316,17 @@ const recipientChoices = computed(() => {
     {type:'sales',label:'订单上的成交销售'},
     {type:'referral',label:'订单上的推荐人'},
     ...(classRule.value ? [
-      {type:'company_sales',label:'按销售类别或公司计算'},
-      {type:'manager',label:'指定个人、组织或团队池'},
+      {type:'company_sales',label:'外部销售提成'},
+      {type:'manager',label:'独立收款安排'},
     ] : []),
   ]
-  return choices.filter(choice=>componentTypes.value.some(type=>type.value===choice.type) &&
-    (classRule.value ? availableClassMembers({},choice.type).length :
-      !draft.value.components.some(row=>row.type===choice.type)))
+  return choices.filter(choice=>componentTypes.value.some(type=>type.value===choice.type)).map(choice=>({
+    ...choice,disabled:classRule.value ? classMemberChoices({},choice.type).every(member=>member.disabled) :
+      draft.value.components.some(row=>row.type===choice.type),
+  }))
 })
 function addRuleComponent(type) {
-  const row = {type,classMember:classRule.value ? availableClassMembers({},type)[0]?.value : undefined,
+  const row = {type,classMember:classRule.value ? classMemberChoices({},type).find(member=>!member.disabled)?.value : undefined,
     mode:baseModes.value[0]?.value}
   resetAmountMode(row)
   draft.value.components.push(row)
@@ -337,11 +337,12 @@ function ruleRecipientSummary(row) {
     const benefit = row.periodBenefit
     if (benefit.recipient==='pool') return practicePoolOptions.value.find(option=>option.value===benefit.pool?.poolId)?.label || '团队池'
     if (benefit.recipient==='unit') return unitOptions.value.find(option=>option.value===benefit.unitId)?.label || '指定组织'
-    return classPeopleOptions.value.find(option=>option.value===benefit.personId)?.label || '指定个人'
+    if (benefit.recipient==='person') return classPeopleOptions.value.find(option=>option.value===benefit.personId)?.label || '指定个人'
+    return '选择收款对象'
   }
   if (row.mode==='company_sales') {
     const payee = row.companySales?.payee
-    let who = '成交公司'
+    let who = payee?.kind==='sales_company' ? '销售所属公司' : '选择收款对象'
     if (payee?.kind==='order_person') who = optionLabel('orderAttributionRole',payee.role) || '订单上的人员'
     if (payee?.kind==='person') who = classPeopleOptions.value.find(option=>option.value===payee.personId)?.label || '指定个人'
     if (payee?.kind==='company') who = companyRecipientOptions.value.find(option=>option.value===payee.companyId)?.label || '指定公司'
@@ -881,7 +882,7 @@ function open(kind, row, edit = false) {
       activeRuleComponent.value = undefined
       draft.value = {productId:row.productId, label:row.label, copiedFrom:row.version,
         scope:row.periodId ? 'period' : row.fromOrdinal ? 'ordinal' : 'default',
-        components:copiedRuleComponents(row.components),
+        components:copiedRuleComponents(row.components,optionLabel),
       }
     } else draft.value.components = [newRuleComponent()]
     if (edit) {
@@ -989,7 +990,8 @@ function ruleComponentBody(row) {
       return {mode,value:mode==='rate' ? periodRate(item.value) : minor(must(item.value,'请填写计提金额')),
         ...(row.classMember==='new' && item.recommendationRate != null ? {recommendationRate:periodRate(item.recommendationRate)} : {})}
     }
-    component.companySales = {label:sales.label?.trim() || undefined,payee,internalCompanies:sales.internalCompanies,categories:sales.categories.map(category=>{
+    component.companySales = {label:must(sales.label?.trim(),'请填写收款安排名称'),payee,
+      internalCompanies:sales.internalCompanies,categories:sales.categories.map(category=>{
       const byCategory = category.scope==='category'
       const overrides = category.overrides.filter(override=>byCategory || !override.companyId || category.companies.includes(override.companyId))
       return {
@@ -1012,9 +1014,10 @@ function ruleComponentBody(row) {
   }
   if (row.mode === 'period_rate') {
     const b = row.periodBenefit
+    must(b.recipient,'请选择收款对象')
     component.value = b.useTiers ? 0 : periodRate(row.amount)
     component.periodBenefit = {
-      label:must(b.label?.trim(),'请填写分项名称'),
+      label:must(b.label?.trim(),'请填写收款安排名称'),
       ...(b.recipient==='pool' ? {pool:practicePoolBody(b.pool)} : b.recipient==='unit'
         ? {unitId:must(b.unitId,'请选择收款组织')} : {personId:must(b.personId,'请选择收款人员')}),
       ...(b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
@@ -1532,7 +1535,9 @@ async function save() {
               <a-button>添加收款安排 <DownOutlined aria-hidden="true"/></a-button>
               <template #overlay>
                 <a-menu @click="({key})=>addRuleComponent(key)">
-                  <a-menu-item v-for="choice in recipientChoices" :key="choice.type">{{ choice.label }}</a-menu-item>
+                  <a-menu-item v-for="choice in recipientChoices" :key="choice.type" :disabled="choice.disabled">
+                    {{ choice.label }}<small v-if="choice.disabled">（已配置）</small>
+                  </a-menu-item>
                 </a-menu>
               </template>
             </a-dropdown>
@@ -1541,14 +1546,14 @@ async function save() {
           <button type="button" class="rule-block-header" :aria-expanded="activeRuleComponent===i"
             :aria-controls="'practice-rule-part-'+i" @click="activeRuleComponent=activeRuleComponent===i ? undefined : i">
             <DownOutlined aria-hidden="true"/>
-            <strong>{{ c.periodBenefit ? c.periodBenefit.label || '班次分润' : ruleComponentLabel(c,optionLabel) }}</strong>
-            <span v-if="classRule" class="rule-block-badge">{{ optionLabel('classMember',c.classMember || '') }}</span>
+            <strong>{{ c.periodBenefit ? c.periodBenefit.label || '未命名收款安排' : ruleComponentLabel(c,optionLabel) }}</strong>
+            <span v-if="classRule" class="rule-block-badge">{{ c.classMember ? optionLabel('classMember',c.classMember) : '通用报名' }}</span>
             <small>{{ ruleRecipientSummary(c) }}</small>
           </button>
           <div v-if="i===activeRuleComponent" :id="'practice-rule-part-'+i" class="rule-block-body component-editor">
           <div class="rule-item-heading">
             <a-form-item v-if="classRule" :html-for="'rule-member-'+i" label="适用报名">
-              <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="availableClassMembers(c)" @change="resetAmountMode(c)"/>
+              <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="classMemberChoices(c)" @change="resetAmountMode(c)"/>
             </a-form-item>
             <a-button v-if="draft.components.length>1" type="link" danger class="rule-remove"
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>

@@ -258,7 +258,7 @@ func setCatalogPerson(fields map[string]json.RawMessage, field, key string) bool
 func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, product int64, at time.Time, raw, edited json.RawMessage) error {
 	before, wasValid := readVIPBenefits(raw)
 	after, ok := readVIPBenefits(edited)
-	if !wasValid || !ok || len(before.actions) > len(after.actions) || len(before.split.Teams) != len(after.split.Teams) {
+	if !wasValid || !ok || len(before.split.Teams) != len(after.split.Teams) {
 		return invalid
 	}
 	type requiredAppointment struct {
@@ -268,13 +268,19 @@ func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, produc
 		Unit  string `json:"unit"`
 	}
 	var requirements []requiredAppointment
-	beforePeople := make(map[string]string, len(before.actions))
+	beforePayees := make(map[string]vipBenefitAction, len(before.actions))
 	for _, action := range before.actions {
-		beforePeople[action.Item] = action.Designated
+		beforePayees[action.Item] = action
 	}
 	for _, action := range after.actions {
-		if action.Designated != "" && action.Designated != beforePeople[action.Item] {
+		original := beforePayees[action.Item]
+		if action.Designated != "" && (action.Designated != original.Designated || action.Role != original.Role) {
 			requirements = append(requirements, requiredAppointment{Label: action.Label, Key: action.Designated, Role: action.Role})
+		}
+		if action.Mode == "TEAM_POOL" && (action.PoolUnit != original.PoolUnit || action.OwnerRole != original.OwnerRole) {
+			if err := validateCatalogPoolAppointment(ctx, tx, product, at, action.PoolUnit, action.OwnerRole); err != nil {
+				return fmt.Errorf("%w，请核对「%s」", err, action.Label)
+			}
 		}
 	}
 	for i, team := range after.split.Teams {

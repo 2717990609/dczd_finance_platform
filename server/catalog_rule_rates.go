@@ -16,6 +16,8 @@ type catalogRateComponent struct {
 	Recipient   *catalogRulePerson `json:"recipient,omitempty"`
 	TargetKind  string             `json:"targetKind"`
 	TargetLabel string             `json:"targetLabel,omitempty"`
+	TargetOrg   string             `json:"targetOrganization,omitempty"`
+	TargetRole  string             `json:"targetRole,omitempty"`
 	TeamSplit   *catalogSplitRates `json:"teamSplit,omitempty"`
 }
 
@@ -93,16 +95,21 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 			item.Label = item.ItemKey
 		}
 		if action.Company != "" {
+			item.TargetOrg = action.Company
 			item.TargetLabel = organizations[action.Company]
 			if item.TargetLabel == "" {
 				item.TargetLabel = "待核收款公司"
 			}
 		}
 		if item.TargetKind == "pool" {
+			item.TargetOrg, item.TargetRole = action.PoolParty, action.OwnerRole
 			item.TargetLabel = action.PoolName
 			if name := organizations[action.PoolParty]; name != "" {
 				item.TargetLabel += " · " + name
 			}
+		}
+		if item.TargetKind == "person" {
+			item.TargetRole = action.Role
 		}
 		if len(action.RateTable) > 0 {
 			rows, valid := parseVIPRateTable(action.RateTable)

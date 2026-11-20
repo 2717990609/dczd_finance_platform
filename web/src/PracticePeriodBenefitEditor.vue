@@ -17,8 +17,8 @@ const field = name => 'practice-benefit-'+props.index+'-'+name
   </a-form-item>
   <h4 class="rule-item-section">发给谁</h4>
   <div class="period-fields">
-    <a-form-item label="收款对象" :html-for="field('recipient')">
-      <a-select :id="field('recipient')" v-model:value="config.recipient" :options="recipientTypes"/>
+    <a-form-item label="收款对象" :html-for="field('recipient')" required>
+      <a-select :id="field('recipient')" v-model:value="config.recipient" :options="recipientTypes" placeholder="选择收款对象"/>
     </a-form-item>
     <a-form-item v-if="config.recipient==='unit'" label="收款组织" :html-for="field('unit')" required>
       <a-select :id="field('unit')" v-model:value="config.unitId" :options="units" show-search :filter-option="byName"/>
@@ -30,7 +30,6 @@ const field = name => 'practice-benefit-'+props.index+'-'+name
   <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <h4 class="rule-item-section">提成怎么算</h4>
-  <p class="rule-formula">本班符合条件的报名净实收 × 计提比例。</p>
   <a-form-item>
     <a-checkbox v-model:checked="config.useTiers">按净实收阶梯选比例</a-checkbox>
   </a-form-item>

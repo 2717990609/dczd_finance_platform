@@ -1,6 +1,6 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
-import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
+import { nextTick, ref, watch } from 'vue'
+import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 
 const props = defineProps({options:Object, component:Object, api:Function, peopleFilters:Object, parseRate:Function})
@@ -9,10 +9,7 @@ const editing = defineModel('editing', {type:Boolean,default:false})
 const form = ref()
 const itemName = ref()
 const error = ref('')
-const targets = [{value:'person',label:'个人'},{value:'company',label:'公司'},{value:'pool',label:'团队池'}]
 const formats = [{value:'fixed',label:'统一比例'},{value:'table',label:'按类别或公司设置比例'}]
-const organizations = computed(() => props.options.organizations.filter(option=>form.value?.target!=='company' || option.kind==='COMPANY'))
-const roles = computed(() => props.options.roles.filter(option=>form.value?.target==='pool' || option.personal))
 const blankCondition = () => ({company:'ANY',
   relationship:props.options.relationships.find(option=>option.value==='ANY')?.value || props.options.relationships[0]?.value})
 const labelFor = (choices,value) => choices.find(option=>option.value===value)?.label || value
@@ -36,12 +33,6 @@ async function addRecipient() {
   begin('item')
   await nextTick()
   itemName.value?.focus()
-}
-function changeTarget() {
-  form.value.role = undefined
-  form.value.personId = undefined
-  form.value.personName = ''
-  form.value.organization = undefined
 }
 function cancel() {
   form.value = undefined
@@ -102,21 +93,7 @@ defineExpose({addRecipient})
           <a-input id="catalog-add-label" ref="itemName" v-model:value="form.label" :maxlength="80"/>
         </a-form-item>
         <h3 class="form-subhead">发给谁</h3>
-        <a-form-item label="收款对象" html-for="catalog-add-target">
-          <a-select id="catalog-add-target" v-model:value="form.target" :options="targets" @change="changeTarget"/>
-        </a-form-item>
-        <a-form-item v-if="form.target!=='company'" :label="form.target==='pool'?'谁负责分配':'收款人须担任的岗位'"
-          html-for="catalog-add-role" required>
-          <a-select id="catalog-add-role" v-model:value="form.role" :options="roles" show-search option-filter-prop="label"/>
-        </a-form-item>
-        <a-form-item v-if="form.target==='person'" label="指定收款人" html-for="catalog-add-person" required>
-          <AppointmentPersonSelect id="catalog-add-person" v-model:value="form.personId" :api="api" endpoint="/catalog-rule-people"
-            :filters="peopleFilters" @change="(_,option)=>form.personName=option.name"/>
-        </a-form-item>
-        <a-form-item v-else :label="form.target==='pool'?'归集组织':'收款公司'" html-for="catalog-add-organization" required>
-          <a-select id="catalog-add-organization" v-model:value="form.organization" :options="organizations"
-            show-search option-filter-prop="label" placeholder="从组织目录选择"/>
-        </a-form-item>
+        <CatalogPayeeFields v-model="form" prefix="catalog-add" :options="options" :api="api" :people-filters="peopleFilters"/>
         <h3 class="form-subhead">提成怎么算</h3>
         <a-form-item label="计提方式" html-for="catalog-add-format" extra="按每笔付款实收乘以适用比例。">
           <a-select id="catalog-add-format" v-model:value="form.format" :options="formats"/>
