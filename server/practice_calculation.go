@@ -31,11 +31,12 @@ type practicePurchase struct {
 }
 
 type practiceDraftRuntime struct {
-	appointments      map[practiceAppointmentKey][]practiceAppointment
-	companyOffers     practiceCompanyOffers
-	companyRecipients map[string][]companySourceAssignment
-	recommendations   practiceCompanyRecommendations
-	poolUnits         map[int64]pgtype.UUID
+	appointments       map[practiceAppointmentKey][]practiceAppointment
+	salesOrganizations practiceSalesOrganizations
+	companyOffers      practiceCompanyOffers
+	companyRecipients  map[string][]companySourceAssignment
+	recommendations    practiceCompanyRecommendations
+	poolUnits          map[int64]pgtype.UUID
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -225,7 +226,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_MEMBER_RULE_MISSING", member, rule, ""))
 		}
 	}
-	if err := appendPracticePeriodBenefits(&draft, rule, purchases, runtime.appointments, identities, performancePayments, runtime.poolUnits); err != nil {
+	if err := appendPracticePeriodBenefits(&draft, rule, purchases, runtime, identities, performancePayments); err != nil {
 		return paymentDraft{}, err
 	}
 	return draft, nil

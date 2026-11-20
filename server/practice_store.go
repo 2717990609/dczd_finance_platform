@@ -321,6 +321,10 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
+	salesOrganizations, err := loadPracticeSalesOrganizations(ctx, tx, rule, members, orders, identities)
+	if err != nil {
+		return paymentDraft{}, nil, err
+	}
 	companyOffers := practiceCompanyStandards(rule)
 	companyRecipients, err := loadPracticeCompanyRecipients(ctx, tx, companyOffers)
 	if err != nil {
@@ -334,7 +338,8 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	runtime := practiceDraftRuntime{appointments: appointments, companyOffers: companyOffers, companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
+	runtime := practiceDraftRuntime{appointments: appointments, salesOrganizations: salesOrganizations, companyOffers: companyOffers,
+		companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
 	result, err := calculatePracticeDraft(members, rule, orders, identities, blocked, history, matchPracticeRefunds(refunds, orders), runtime)
 	if err != nil {
 		return paymentDraft{}, nil, err

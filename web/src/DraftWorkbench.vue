@@ -134,6 +134,7 @@ const reason = {
   PRACTICE_TIER_NOT_MATCHED: '本笔没有匹配的累计人数档或实付档',
   PRACTICE_TIER_EXCEEDS_PAYMENT: '命中的档位计提超过实付金额',
   PRACTICE_PERIOD_APPOINTMENT_MISSING: '找不到分项指定的组织任职记录',
+  PRACTICE_SALES_ORGANIZATION_MISSING: '无法确认付款时的销售部门或小组',
   PRACTICE_PERIOD_BENEFIT_INCOMPLETE: '适用报名或付款待核，暂未汇总此分项',
   PRACTICE_PERIOD_BENEFIT_TIER_MISSING: '净实收金额没有匹配的班次档位',
 }

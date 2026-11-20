@@ -101,7 +101,7 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 		}
 		policy.actions = append(policy.actions, action)
 	}
-	return policy, items[salesItem] && len(policy.actions) > 0
+	return policy, items[salesItem]
 }
 
 func (a vipBenefitAction) validTarget() bool {

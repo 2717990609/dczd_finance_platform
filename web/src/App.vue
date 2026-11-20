@@ -182,6 +182,16 @@ const identityPeopleOptions = computed(() => data.value.people.map(p => ({value:
 const classRuleDirectory = ref()
 const classPeopleOptions = computed(() => classRuleDirectory.value?.people.map(person=>({value:person.id,label:person.name})) || peopleOptions.value)
 const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({value:unit.id,label:unit.name})) || [])
+const salesUnitOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>['DEPARTMENT','TEAM'].includes(unit.kind))
+  .map(unit=>({value:unit.id,label:unit.name+' · '+optionLabel('organizationKind',unit.kind)})) || [])
+const ruleEditVersionIDs = computed(() => {
+  const latest = new Map()
+  for (const rule of data.value.rules) {
+    const scope = JSON.stringify([rule.productId,rule.periodId,rule.fromOrdinal,rule.effectiveFrom])
+    if (!latest.has(scope) || latest.get(scope).version < rule.version) latest.set(scope,rule)
+  }
+  return new Set([...latest.values()].map(rule=>rule.id))
+})
 const practicePoolOptions = computed(() => classRuleDirectory.value?.pools?.map(pool=>({value:pool.id,label:pool.name+' · '+pool.unitName})) || [])
 const companyRecipientOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>unit.kind==='COMPANY')
   .map(unit=>({value:unit.id,label:unit.name})) || [])
@@ -740,7 +750,7 @@ function newRuleComponent() {
   return {type:componentTypes.value[0]?.value, classMember:classRule.value ? firstOption('classMember') : undefined,
     mode:baseModes.value[0]?.value, amount:0}
 }
-function open(kind, row) {
+function open(kind, row, edit = false) {
   if (!configurationReady.value) return
   formError.value = ''
   notice.value = ''
@@ -774,7 +784,12 @@ function open(kind, row) {
         components:copiedRuleComponents(row.components),
       }
     } else draft.value.components = [newRuleComponent()]
-    if (target) {
+    if (edit) {
+      draft.value.editBaseId = row.id
+      draft.value.periodId = row.periodId
+      draft.value.fromOrdinal = row.fromOrdinal
+      draft.value.effectiveFrom = row.effectiveFrom
+    } else if (target) {
       draft.value.scope = 'period'
       draft.value.periodId = target.id
       draft.value.lockedPeriod = true
@@ -887,6 +902,7 @@ function ruleComponentBody(row) {
         ? {unitId:must(b.unitId,'请选择收款组织')} : {personId:must(b.personId,'请选择收款人员')}),
       ...(b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
       ...(b.salesPeople?.length ? {salesPeople:b.salesPeople} : {}),
+      ...(b.salesUnits?.length ? {salesUnits:b.salesUnits} : {}),
       ...(b.recipient==='person' && b.appointmentUnitId ? {
         appointmentUnitId:b.appointmentUnitId,appointmentKind:must(b.appointmentKind,'请选择任职方式'),
       } : {}),
@@ -896,7 +912,7 @@ function ruleComponentBody(row) {
         value:periodRate(t.value),
       })).sort((a,b)=>a.from-b.from)} : {}),
     }
-    if (b.salesPeople?.length) must(sourceRole,'请选择销售人员的来源角色')
+    if (b.salesPeople?.length || b.salesUnits?.length) must(sourceRole,'请选择销售人员的来源角色')
     return component
   }
   if (row.mode !== 'tiered') {
@@ -967,7 +983,8 @@ function bodyFor(kind,f) {
   if (kind === 'rule') return {productId:must(f.productId),label:must(f.label),
     ...(f.scope === 'period' ? {periodId:must(f.periodId,'请选择适用期次。')} : {}),
     ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal,'请填写适用的起始期数。')} : {}),
-    ...(f.effectiveFrom ? {effectiveFrom:new Date(f.effectiveFrom+'+08:00').toISOString()} : {}),
+    ...(f.editBaseId ? {editBaseId:f.editBaseId, effectiveFrom:f.effectiveFrom} :
+      f.effectiveFrom ? {effectiveFrom:new Date(f.effectiveFrom+'+08:00').toISOString()} : {}),
     components:f.components.map(ruleComponentBody),
   }
   if (kind === 'person') return {name:must(f.name)}
@@ -1230,6 +1247,8 @@ async function save() {
                     type="link" size="small" @click="rateRule=record">分润配置</a-button>
                   <template v-else-if="!record.catalogPending">
                     <a-button type="link" size="small" @click="ruleDetails=record">查看规则</a-button>
+                    <a-button v-if="canPublishRule(record.productId) && ruleEditVersionIDs.has(record.id)" :disabled="!configurationReady"
+                      type="link" size="small" @click="open('rule',record,true)">编辑规则</a-button>
                     <a-button v-if="canPublishRule(record.productId)" :disabled="!configurationReady"
                       type="link" size="small" @click="open('rule',record)">复制配置</a-button>
                   </template>
@@ -1276,7 +1295,8 @@ async function save() {
     </div>
   </div>
   <a-drawer v-if="active && !sessionError && !sessionChecking && !loginRequested" :open="Boolean(drawer)"
-    :title="rulePreview ? '预览分润规则' : drawer==='rule' && draft.copiedFrom ? '复制分润规则'
+    :title="rulePreview ? '预览分润规则' : drawer==='rule' && draft.editBaseId ? '编辑分润规则'
+      : drawer==='rule' && draft.copiedFrom ? '复制分润规则'
       : drawer==='periodRoster' && !draft.expectedSourcePeriodKey ? '关联签到名单'
       : drawer==='identity' && draft.previousOwner ? '变更来源账号归属' : titles[drawer]"
     :width="drawer==='rule' ? 'min(620px, 100vw)' : 'min(510px, 100vw)'"
@@ -1353,13 +1373,15 @@ async function save() {
         </a-form-item>
       </template>
       <template v-if="drawer==='rule'">
-        <a-alert v-if="draft.copiedFrom" class="feedback" type="info" :message="'已带入 v'+draft.copiedFrom+' 的组件配置，请核对本次适用范围和生效时间。'" show-icon/>
+        <a-alert v-if="draft.copiedFrom" class="feedback" type="info"
+          :message="draft.editBaseId ? '编辑 v'+draft.copiedFrom+'，保存后生成新版本。已结算记录继续引用原规则。' : '已带入 v'+draft.copiedFrom+' 的组件配置，请核对本次适用范围和生效时间。'" show-icon/>
         <a-form-item label="规则名称" required><a-input v-model:value="draft.label" aria-label="规则名称"/></a-form-item>
-        <a-form-item html-for="rule-scope" label="适用范围"><a-select id="rule-scope" v-model:value="draft.scope" :options="options('ruleScope')" :disabled="draft.lockedPeriod"/></a-form-item>
-        <a-form-item v-if="draft.scope==='period'" html-for="rule-period" label="指定期次" required><a-select id="rule-period" v-model:value="draft.periodId" :options="periodOptions" :disabled="draft.lockedPeriod"/></a-form-item>
-        <a-form-item v-if="draft.scope==='ordinal'" label="起始期数" required><a-input-number v-model:value="draft.fromOrdinal" aria-label="起始期数" :min="1" :precision="0"/></a-form-item>
+        <a-form-item html-for="rule-scope" label="适用范围"><a-select id="rule-scope" v-model:value="draft.scope" :options="options('ruleScope')" :disabled="Boolean(draft.lockedPeriod || draft.editBaseId)"/></a-form-item>
+        <a-form-item v-if="draft.scope==='period'" html-for="rule-period" label="指定期次" required><a-select id="rule-period" v-model:value="draft.periodId" :options="periodOptions" :disabled="Boolean(draft.lockedPeriod || draft.editBaseId)"/></a-form-item>
+        <a-form-item v-if="draft.scope==='ordinal'" label="起始期数" required><a-input-number v-model:value="draft.fromOrdinal" aria-label="起始期数" :min="1" :precision="0" :disabled="Boolean(draft.editBaseId)"/></a-form-item>
         <a-form-item v-if="selectedProduct" label="生效时间" :extra="classRule ? '按北京时间的实际开班时点匹配。留空时作为该适用范围的默认规则。' : '按北京时间和原付款时间匹配。留空时作为该适用范围的默认规则。'">
-          <a-input v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local"/>
+          <span v-if="draft.editBaseId">{{ draft.effectiveFrom ? formatTime(draft.effectiveFrom) : '范围默认' }}</span>
+          <a-input v-else v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local"/>
         </a-form-item>
         <h3 class="form-subhead">分润分项</h3>
         <div v-for="(c,i) in draft.components" :key="i" class="component-editor">
@@ -1370,7 +1392,7 @@ async function save() {
             <a-form-item v-if="classRule" :html-for="'rule-member-'+i" label="报名类型">
               <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="availableClassMembers(c)" @change="resetAmountMode(c)"/>
             </a-form-item>
-            <a-button v-if="draft.components.length>1" type="link" danger @click="draft.components.splice(i,1)">移除</a-button>
+            <a-button v-if="draft.components.length>1" type="link" danger @click="draft.components.splice(i,1)">删除分项</a-button>
           </div>
           <template v-if="['sales','referral'].includes(c.type)">
             <h4 class="rule-item-section">发给谁</h4>
@@ -1396,7 +1418,7 @@ async function save() {
           </template>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
-            :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')"
+            :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')" :sales-units="salesUnitOptions"
             :pools="practicePoolOptions" :create-pool="createPracticePool"/>
           <PracticeRetrainSplitEditor v-if="classRule && c.type==='sales' && c.mode==='fixed' && c.classMember==='retrain'"
             :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"

@@ -4,7 +4,7 @@ import PracticePoolFields from './PracticePoolFields.vue'
 
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array,
-  recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array, pools:Array, createPool:Function,
+  recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
 })
 const config = computed(() => props.component.periodBenefit)
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
@@ -65,7 +65,11 @@ const field = name => 'practice-benefit-'+props.index+'-'+name
         <a-select :id="field('sales')" v-model:value="config.salesPeople" :options="people"
           mode="multiple" allow-clear :filter-option="byName" placeholder="全部销售人员"/>
       </a-form-item>
-      <a-form-item v-if="config.salesPeople?.length" label="销售来源角色" :html-for="field('role')" required>
+      <a-form-item label="业绩部门或小组" :html-for="field('sales-units')" extra="按付款时的归属匹配任一所选部门或小组。同一笔付款只计一次。">
+        <a-select :id="field('sales-units')" v-model:value="config.salesUnits" :options="salesUnits"
+          mode="multiple" allow-clear :filter-option="byName" placeholder="全部部门和小组"/>
+      </a-form-item>
+      <a-form-item v-if="config.salesPeople?.length || config.salesUnits?.length" label="销售来源角色" :html-for="field('role')" required>
         <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
       </a-form-item>
       <template v-if="config.recipient==='person'">

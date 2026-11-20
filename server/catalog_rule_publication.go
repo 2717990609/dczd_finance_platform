@@ -17,6 +17,7 @@ var (
 	errCatalogRateDates          = errors.New("生效时间须晚于所选版本的起点")
 	errCatalogConfigurationOwned = errors.New("此产品已在本平台发布规则，请通过规则配置维护")
 	errCatalogTeamRate           = errors.New("此调整会改变内部销售的拆分总比例，请核对对应团队的拆分规则")
+	errCatalogRequiredEntry      = errors.New("请保留成交销售分项及其适用费率；费率表至少需要一行")
 )
 
 type catalogRateChange struct {
@@ -33,6 +34,8 @@ type publishCatalogRatesInput struct {
 	TeamChanges      []catalogTeamRecipientChange `json:"teamChanges"`
 	NewItems         []catalogNewBenefitItem      `json:"newItems"`
 	NewRateRows      []catalogNewRateRow          `json:"newRateRows"`
+	RemovedItems     []string                     `json:"removedItems"`
+	RemovedRateRows  []catalogRateRowRemoval      `json:"removedRateRows"`
 }
 
 type catalogPublication struct {
@@ -146,7 +149,8 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 	id, valid := canonicalSourceUUID(input.BaseID)
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
 	structureChanged := len(input.NewItems)+len(input.NewRateRows) != 0
-	if !valid || from.IsZero() || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 && !structureChanged || !textOK(actor, 128) {
+	removals := len(input.RemovedItems)+len(input.RemovedRateRows) != 0
+	if !valid || from.IsZero() || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 && !structureChanged && !removals || !textOK(actor, 128) {
 		return published, invalid
 	}
 	err := func() error {
@@ -209,7 +213,15 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 				return err
 			}
 		}
-		if !ratesChanged && !recipientsChanged && !structureChanged {
+		if removals {
+			// Apply the changes indexed by the base table before removing any
+			// rows. Appended rows do not change the base row numbers.
+			body, err = removeCatalogEntries(body, input.RemovedItems, input.RemovedRateRows)
+			if err != nil {
+				return err
+			}
+		}
+		if !ratesChanged && !recipientsChanged && !structureChanged && !removals {
 			return nil
 		}
 		if _, _, err := catalogRateActions(body); err != nil {

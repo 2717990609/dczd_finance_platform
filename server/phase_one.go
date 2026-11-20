@@ -40,6 +40,7 @@ type component struct {
 var errPracticeTierCompany = errors.New("规则引用的销售公司未配置或已停用")
 
 var errPracticeCountPerson = errors.New("个人累计起点引用的人员不存在")
+var errRuleEditStale = errors.New("此范围已有更新的规则版本，请打开最新版本编辑")
 
 var invalid = errors.New("请核对名称、范围与必填配置")
 var conflict = errors.New("记录与现有配置冲突，请重新读取")
@@ -255,7 +256,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap),
 		errors.Is(err, errPracticeMonthSettlementDependency),
 		errors.Is(err, errCatalogRateStale), errors.Is(err, errCatalogRateUnavailable), errors.Is(err, errCatalogRateDates), errors.Is(err, errCatalogTeamRate),
-		errors.Is(err, errCatalogRateConditions),
+		errors.Is(err, errCatalogRateConditions), errors.Is(err, errCatalogRequiredEntry),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
 		errors.Is(err, errSettlementUnsupported),
 		errors.Is(err, errDraftChanged),
@@ -272,7 +273,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 	case errors.Is(err, errOrganizationCompanyTypeChanged), errors.Is(err, errOrganizationCategoryChanged), errors.Is(err, errOrganizationCategoryInUse),
 		errors.Is(err, errOrganizationCategoryName), errors.Is(err, errOrganizationCategoryTarget):
 		code, message = http.StatusConflict, err.Error()
-	case errors.Is(err, conflict), errors.Is(err, errAppointmentOverlap), errors.Is(err, errBusinessDutyOverlap), errors.Is(err, errAppointmentChanged), errors.Is(err, errAppointmentUnitInactive),
+	case errors.Is(err, conflict), errors.Is(err, errRuleEditStale), errors.Is(err, errAppointmentOverlap), errors.Is(err, errBusinessDutyOverlap), errors.Is(err, errAppointmentChanged), errors.Is(err, errAppointmentUnitInactive),
 		errors.Is(err, errCatalogAppointmentContext), errors.Is(err, errCatalogAppointmentOverlap), errors.Is(err, errCatalogAppointmentHolder),
 		errors.Is(err, errCatalogRecipientAppointment):
 		code, message = 409, err.Error()
@@ -401,6 +402,7 @@ type createPeriodInput struct {
 }
 type publishRuleInput struct {
 	ProductID     int64
+	EditBaseID    *int64
 	Label         string
 	PeriodID      *int64
 	FromOrdinal   *int
@@ -543,7 +545,7 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 }
 
 func validRulePublication(p publishRuleInput) bool {
-	return p.ProductID > 0 && textOK(p.Label, 80) && (p.PeriodID == nil || *p.PeriodID > 0) &&
+	return p.ProductID > 0 && (p.EditBaseID == nil || *p.EditBaseID > 0) && textOK(p.Label, 80) && (p.PeriodID == nil || *p.PeriodID > 0) &&
 		(p.FromOrdinal == nil || *p.FromOrdinal > 0) && (p.PeriodID == nil || p.FromOrdinal == nil) &&
 		(p.EffectiveFrom == nil || !p.EffectiveFrom.IsZero()) && validateComponents(p.Components) == nil
 }
@@ -564,6 +566,20 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 		if scenarioRules && mode != "class" {
 			return errProductRuleUnavailable
 		}
+		if p.EditBaseID != nil {
+			err := tx.QueryRow(ctx, `SELECT b.period_id,b.from_ordinal,b.effective_from FROM rule_versions b
+			 WHERE b.id=$1 AND b.product_id=$2 AND NOT EXISTS (
+			  SELECT 1 FROM rule_versions n WHERE n.product_id=b.product_id AND n.version>b.version
+			   AND n.period_id IS NOT DISTINCT FROM b.period_id AND n.from_ordinal IS NOT DISTINCT FROM b.from_ordinal
+			   AND n.effective_from IS NOT DISTINCT FROM b.effective_from)`, *p.EditBaseID, p.ProductID).
+				Scan(&p.PeriodID, &p.FromOrdinal, &p.EffectiveFrom)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return errRuleEditStale
+			}
+			if err != nil {
+				return err
+			}
+		}
 		if p.PeriodID != nil && mode == "class" {
 			var month bool
 			if err := tx.QueryRow(ctx, `SELECT calendar_month IS NOT NULL FROM periods WHERE id=$1 AND product_id=$2`,
@@ -576,7 +592,7 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 		}
 		var personIDs []int64
 		var companyIDs []string
-		var unitIDs, appointmentKinds, recommendationRecipients []string
+		var unitIDs, appointmentKinds, recommendationRecipients, salesUnitIDs []string
 		poolIDs := make(map[int64]int64)
 		for _, target := range practicePoolTargets(p.Components) {
 			if owner := poolIDs[target.PoolID]; owner != 0 && owner != target.OwnerID {
@@ -622,6 +638,7 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			if benefit := c.PeriodBenefit; benefit != nil {
 				companyIDs = append(companyIDs, benefit.SalesCompanies...)
 				personIDs = append(personIDs, benefit.SalesPeople...)
+				salesUnitIDs = append(salesUnitIDs, benefit.SalesUnits...)
 				if benefit.PersonID != 0 {
 					personIDs = append(personIDs, benefit.PersonID)
 				}
@@ -684,13 +701,15 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				return errPracticeCountPerson
 			}
 		}
-		if len(unitIDs) != 0 {
+		if len(unitIDs)+len(salesUnitIDs) != 0 {
 			var missing bool
 			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM unnest($1::text[]) AS wanted(id)
 			 WHERE NOT EXISTS(SELECT 1 FROM organization_units u WHERE u.id=wanted.id::uuid))
 			 OR EXISTS(SELECT 1 FROM unnest($2::text[]) AS wanted(kind)
-			 WHERE NOT EXISTS(SELECT 1 FROM configuration_options o WHERE o.group_key='appointmentKind' AND o.option_key=wanted.kind AND o.enabled))`,
-				unitIDs, appointmentKinds).Scan(&missing); err != nil {
+			 WHERE NOT EXISTS(SELECT 1 FROM configuration_options o WHERE o.group_key='appointmentKind' AND o.option_key=wanted.kind AND o.enabled))
+			 OR EXISTS(SELECT 1 FROM unnest($3::text[]) AS wanted(id)
+			 WHERE NOT EXISTS(SELECT 1 FROM organization_units u WHERE u.id=wanted.id::uuid AND u.kind IN ('DEPARTMENT','TEAM')))`,
+				unitIDs, appointmentKinds, salesUnitIDs).Scan(&missing); err != nil {
 				return err
 			}
 			if missing {

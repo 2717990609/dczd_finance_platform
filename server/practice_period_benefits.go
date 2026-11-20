@@ -84,6 +84,7 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 			people = append(people, benefit.PersonID)
 			people = append(people, benefit.SalesPeople...)
 			units = append(units, benefit.UnitID, benefit.AppointmentUnitID)
+			units = append(units, benefit.SalesUnits...)
 		}
 		if part.Tiers != nil {
 			for _, start := range part.Tiers.PersonCountStarts {
@@ -116,6 +117,7 @@ type practicePeriodBenefit struct {
 	UnitID            string               `json:"unitId,omitempty"`
 	SalesCompanies    []string             `json:"salesCompanies,omitempty"`
 	SalesPeople       []int64              `json:"salesPeople,omitempty"`
+	SalesUnits        []string             `json:"salesUnits,omitempty"`
 	AppointmentUnitID string               `json:"appointmentUnitId,omitempty"`
 	AppointmentKind   string               `json:"appointmentKind,omitempty"`
 	TierOnWholeClass  bool                 `json:"tierOnWholeClass,omitempty"`
@@ -149,7 +151,7 @@ func validPracticePeriodBenefit(c component) bool {
 	}
 	if !textOK(b.Label, 80) || b.PersonID < 0 || recipients != 1 ||
 		(b.AppointmentUnitID == "") != (b.AppointmentKind == "") || b.AppointmentUnitID != "" && b.PersonID == 0 ||
-		len(b.SalesPeople) != 0 && !validSourceRole(c.SourceRole) {
+		len(b.SalesPeople)+len(b.SalesUnits) != 0 && !validSourceRole(c.SourceRole) {
 		return false
 	}
 	for _, unit := range []string{b.UnitID, b.AppointmentUnitID} {
@@ -157,6 +159,11 @@ func validPracticePeriodBenefit(c component) bool {
 			if normalized, ok := canonicalSourceUUID(unit); !ok || normalized != unit {
 				return false
 			}
+		}
+	}
+	for index, unit := range b.SalesUnits {
+		if normalized, ok := canonicalSourceUUID(unit); !ok || normalized != unit || slices.Contains(b.SalesUnits[:index], unit) {
+			return false
 		}
 	}
 	if b.AppointmentKind != "" && !validSourceRole(b.AppointmentKind) {
@@ -238,8 +245,9 @@ type practiceBenefitShare struct {
 	rem      int64
 }
 
-func (b practicePeriodBenefit) eligiblePayment(f sourceFact, role string, assignments []practiceAppointment,
-	identities map[identityKey][]identityAssignment) (bool, string) {
+func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string, assignments []practiceAppointment,
+	identities map[identityKey][]identityAssignment, organizations practiceSalesOrganizations) (bool, string) {
+	f := payment.Fact
 	if b.AppointmentUnitID != "" && !slices.ContainsFunc(assignments, func(a practiceAppointment) bool {
 		return !f.OccurredAt.Before(a.From) && (a.To == nil || f.OccurredAt.Before(*a.To))
 	}) {
@@ -253,15 +261,28 @@ func (b practicePeriodBenefit) eligiblePayment(f sourceFact, role string, assign
 			return false, ""
 		}
 	}
-	if len(b.SalesPeople) == 0 {
+	if len(b.SalesPeople)+len(b.SalesUnits) == 0 {
 		return true, ""
 	}
 	seller, issue := paymentBeneficiary(f, role, identities)
-	return slices.Contains(b.SalesPeople, seller.PersonID), issue
+	if issue != "" {
+		return false, issue
+	}
+	if len(b.SalesPeople) != 0 && !slices.Contains(b.SalesPeople, seller.PersonID) {
+		return false, ""
+	}
+	if len(b.SalesUnits) == 0 {
+		return true, ""
+	}
+	organization, ok := organizations[payment.ID][role]
+	if !ok || organization.PersonID != seller.PersonID || organization.SourceCompany != f.SalesCompanyID {
+		return false, "PRACTICE_SALES_ORGANIZATION_MISSING"
+	}
+	return slices.Contains(b.SalesUnits, organization.Department) || slices.Contains(b.SalesUnits, organization.Group), ""
 }
 
 func collectPracticeBenefitShares(part component, purchases []practicePurchase, assignments []practiceAppointment,
-	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int) ([]practiceBenefitShare, int64, string, error) {
+	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int, organizations practiceSalesOrganizations) ([]practiceBenefitShare, int64, string, error) {
 	b := part.PeriodBenefit
 	var eligible []practiceBenefitShare
 	var tierBase int64
@@ -298,7 +319,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		}
 		share := practiceBenefitShare{purchase: p}
 		for _, payment := range p.payments {
-			yes, issue := b.eligiblePayment(payment.Fact, part.SourceRole, assignments, identities)
+			yes, issue := b.eligiblePayment(payment, part.SourceRole, assignments, identities, organizations)
 			if issue != "" {
 				return nil, 0, issue, nil
 			}
@@ -380,8 +401,7 @@ func practicePeriodComponentKey(part component, index int) string {
 }
 
 func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchases []practicePurchase,
-	appointments map[practiceAppointmentKey][]practiceAppointment, identities map[identityKey][]identityAssignment,
-	paymentCounts map[paymentKey]int, poolUnits map[int64]pgtype.UUID) error {
+	runtime practiceDraftRuntime, identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int) error {
 	for index, part := range rule.Components {
 		b := part.PeriodBenefit
 		if b == nil {
@@ -390,19 +410,19 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		key := practicePeriodComponentKey(part, index)
 		var unit *pgtype.UUID
 		if b.Pool != nil {
-			sink := poolUnits[b.Pool.PoolID]
+			sink := runtime.poolUnits[b.Pool.PoolID]
 			if !sink.Valid {
 				draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, Component: key, Code: "PRACTICE_POOL_MISSING"})
 				continue
 			}
 			unit = &sink
 		}
-		validAppointments := appointments[b.appointmentKey()]
+		validAppointments := runtime.appointments[b.appointmentKey()]
 		if b.AppointmentUnitID != "" && len(validAppointments) == 0 {
 			draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, Component: key, Code: "PRACTICE_PERIOD_APPOINTMENT_MISSING"})
 			continue
 		}
-		shares, basis, issue, err := collectPracticeBenefitShares(part, purchases, validAppointments, identities, paymentCounts)
+		shares, basis, issue, err := collectPracticeBenefitShares(part, purchases, validAppointments, identities, paymentCounts, runtime.salesOrganizations)
 		if err != nil {
 			return err
 		}

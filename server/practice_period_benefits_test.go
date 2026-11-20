@@ -167,4 +167,95 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 			t.Fatalf("%s report total=%d and error=%v", dimension, total, err)
 		}
 	}
+
+	seller := id(s.createPerson(ctx, createPersonInput{Name: "成交销售"}))
+	const nextDepartment = "40000000-0000-4000-8000-000000000006"
+	const nextGroup = "40000000-0000-4000-8000-000000000007"
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_units(id,parent_id,kind,name,status) VALUES
+	 ($1,$3,'DEPARTMENT','新部门','ACTIVE'),($2,$1,'TEAM','新小组','ACTIVE')`, nextDepartment, nextGroup, company); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from,valid_to) VALUES
+	 (gen_random_uuid(),$1,$2,'PRIMARY',$4,$5),(gen_random_uuid(),$1,$3,'PRIMARY',$5,NULL)`, seller, group, nextGroup, at.Add(-time.Hour), at); err != nil {
+		t.Fatal(err)
+	}
+	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: seller, Source: "DCZD", ExternalID: "10", ValidFrom: at.Add(-time.Hour).Format(time.RFC3339)}))
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
+	 VALUES('DCZD','1',$1,$2)`, company, at.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		payments := []sourceFact{fact("31", 10001, at.Add(-time.Minute)), fact("32", 20002, at)}
+		for i := range payments {
+			payments[i].Version = "2"
+			payments[i].UpdatedAt = at.Add(time.Hour)
+			payments[i].ReferrerID = "10"
+		}
+		_, err := storeSourceFacts(ctx, tx, payments)
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parts := def["components"].([]any)
+	line := parts[1].(map[string]any)
+	line["sourceRole"] = "DIRECT_REFERRER"
+	line["periodBenefit"].(map[string]any)["salesUnits"] = []string{department, group}
+	raw, err = json.Marshal(def)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var scoped publishRuleInput
+	if err := json.Unmarshal(raw, &scoped); err != nil {
+		t.Fatal(err)
+	}
+	scoped.EditBaseID = &ruleID
+	for _, invalidUnit := range []string{company, "40000000-0000-4000-8000-000000000008"} {
+		benefit := scoped.Components[1].PeriodBenefit
+		valid := benefit.SalesUnits
+		benefit.SalesUnits = []string{invalidUnit}
+		if _, err := s.publishRule(ctx, scoped); !errors.Is(err, invalid) {
+			t.Fatalf("source scope accepted a non-department/group %q: %v", invalidUnit, err)
+		}
+		benefit.SalesUnits = valid
+	}
+	if _, err := s.publishRule(ctx, scoped); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.publishRule(ctx, scoped); !errors.Is(err, errRuleEditStale) {
+		t.Fatalf("a concurrent edit based on a superseded version was accepted: %v", err)
+	}
+	result, err = s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary = result.(draftSummary)
+	if summary.Total != 242 || summary.LineCount != 2 || summary.IssueCount != 0 {
+		t.Fatalf("old-group deposit earns 22 once; new-group balance is out of scope; manager earns 220: %+v", summary)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, summary.Version); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE organization_assignments SET unit_id=$2 WHERE person_id=$1 AND valid_to IS NOT NULL", seller, nextGroup); err != nil {
+		t.Fatal(err)
+	}
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		replay, err := readPracticeReplay(ctx, tx, period)
+		if err != nil {
+			return err
+		}
+		beforeRefund, err := replay.calculate()
+		if err != nil || beforeRefund.Total != 242 {
+			t.Fatalf("replay must use original scope after organization change: %d %v", beforeRefund.Total, err)
+		}
+		deposit := replay.payments["31"][0].ID
+		replay.refunds[deposit] = append(replay.refunds[deposit], practiceRefundMatch{event: paymentInput{Fact: fact("refund", 1000, at)}})
+		afterRefund, err := replay.calculate()
+		if err != nil || afterRefund.Total != 225 {
+			t.Fatalf("refund must reselect tier using the whole class and apply it to the frozen scope: %d %v", afterRefund.Total, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }

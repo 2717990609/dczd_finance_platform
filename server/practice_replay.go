@@ -17,6 +17,7 @@ type practiceReplayInputs struct {
 	PriorCounts        map[int64]int64                      `json:"priorCounts,omitempty"`
 	Identities         map[string][]identityAssignment      `json:"identities,omitempty"`
 	Appointments       map[int][]practiceAppointment        `json:"appointments,omitempty"`
+	SalesOrganizations practiceSalesOrganizations           `json:"salesOrganizations,omitempty"`
 	Companies          map[string][]companySourceAssignment `json:"companies,omitempty"`
 	ReferrerCompanies  map[string][]companySourceAssignment `json:"referrerCompanies,omitempty"`
 	Recommendations    map[string]pgtype.UUID               `json:"recommendations,omitempty"`
@@ -64,6 +65,9 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 		PaymentCompanies: make(map[string]practiceReplayCompany), Recommendations: make(map[string]pgtype.UUID),
 		Companies: runtime.companyRecipients, ReferrerCompanies: runtime.recommendations.explicit, PoolUnits: runtime.poolUnits,
 	}
+	if len(runtime.salesOrganizations) != 0 {
+		inputs.SalesOrganizations = make(practiceSalesOrganizations)
+	}
 	current := make(map[int64]bool, len(draft.Performance))
 	for _, posting := range draft.Performance {
 		if posting.PaymentVersionID == 0 {
@@ -75,6 +79,9 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 			continue
 		}
 		f := payment.Fact
+		if captured := runtime.salesOrganizations[payment.ID]; len(captured) != 0 {
+			inputs.SalesOrganizations[payment.ID] = captured
+		}
 		if company := (practiceReplayCompany{f.SalesCompanyID, f.ReferrerCompanyID, f.ReferrerConflict}); company != (practiceReplayCompany{}) {
 			inputs.PaymentCompanies[f.OrderID] = company
 		}
@@ -198,7 +205,8 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 	replay.history = practiceTierHistory{replaying: true, frozenPrior: values.PriorCounts}
 	replay.runtime = practiceDraftRuntime{
 		appointments: make(map[practiceAppointmentKey][]practiceAppointment), companyOffers: practiceCompanyStandards(replay.rule),
-		companyRecipients: values.Companies, poolUnits: values.PoolUnits,
+		salesOrganizations: values.SalesOrganizations,
+		companyRecipients:  values.Companies, poolUnits: values.PoolUnits,
 		recommendations: practiceCompanyRecommendations{
 			directory: make(map[pgtype.UUID]pgtype.UUID), explicit: values.ReferrerCompanies,
 		},
