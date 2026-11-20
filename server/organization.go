@@ -99,6 +99,8 @@ type organizationSnapshot struct {
 	Recommendations      json.RawMessage
 	SalesCategories      json.RawMessage
 	SalesCategoryHistory json.RawMessage
+	DutyScopes           json.RawMessage
+	BusinessDuties       json.RawMessage
 }
 
 func importOrganization(ctx context.Context, cfg config, path string) error {
@@ -133,7 +135,7 @@ func storeOrganizationSnapshot(ctx context.Context, db transactionBeginner, raw 
 			return invalid
 		}
 	}
-	for _, rows := range []json.RawMessage{snapshot.Companies, snapshot.Recommendations, snapshot.SalesCategories, snapshot.SalesCategoryHistory} {
+	for _, rows := range []json.RawMessage{snapshot.Companies, snapshot.Recommendations, snapshot.SalesCategories, snapshot.SalesCategoryHistory, snapshot.DutyScopes, snapshot.BusinessDuties} {
 		if len(rows) != 0 && rows[0] != '[' {
 			return invalid
 		}
@@ -177,6 +179,9 @@ func storeOrganizationSnapshot(ctx context.Context, db transactionBeginner, raw 
 		}
 		if err := importOrganizationSalesCategories(ctx, tx, snapshot); err != nil {
 			return fmt.Errorf("write organization sales categories: %w", err)
+		}
+		if err := importOrganizationDuties(ctx, tx, snapshot); err != nil {
+			return fmt.Errorf("write organization business duties: %w", err)
 		}
 		var cyclic bool
 		if err := tx.QueryRow(ctx, `WITH RECURSIVE ancestry(id,parent_id) AS (

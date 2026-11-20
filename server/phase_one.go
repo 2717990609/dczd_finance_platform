@@ -158,6 +158,11 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/organization-sales-company-categories", Handler: s.organizationCompanyCategoryHistory},
 		{Method: http.MethodGet, Path: "/api/v1/organization-assignments", Handler: s.organizationAssignments},
 		{Method: http.MethodGet, Path: "/api/v1/organization-people", Handler: s.organizationPeople},
+		{Method: http.MethodGet, Path: "/api/v1/organization-business-duties", Handler: s.organizationBusinessDuties},
+		{Method: http.MethodGet, Path: "/api/v1/organization-duty-scopes", Handler: s.list(organizationDutyScopesSQL)},
+		{Method: http.MethodPost, Path: "/api/v1/organization-business-duties", Handler: submitJSON(32<<10, s.addBusinessDuty)},
+		{Method: http.MethodPost, Path: "/api/v1/organization-business-duties/end", Handler: submitJSON(32<<10, s.endBusinessDuty)},
+		{Method: http.MethodPost, Path: "/api/v1/organization-business-duties/transfer", Handler: submitJSON(32<<10, s.transferBusinessDuty)},
 		{Method: http.MethodPost, Path: "/api/v1/organization-assignments", Handler: submitJSON(32<<10, s.addOrganizationAssignment)},
 		{Method: http.MethodPost, Path: "/api/v1/organization-assignments/end", Handler: submitJSON(32<<10, s.endOrganizationAssignment)},
 		{Method: http.MethodPost, Path: "/api/v1/organization-assignments/transfer", Handler: submitJSON(32<<10, s.transferOrganizationAssignment)},
@@ -258,7 +263,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusConflict, err.Error()
 	case errors.Is(err, errCalculationOverflow):
 		code, message = http.StatusConflict, "试算金额超出范围，请核对原单和规则"
-	case errors.Is(err, conflict), errors.Is(err, errAppointmentOverlap), errors.Is(err, errAppointmentChanged), errors.Is(err, errAppointmentUnitInactive),
+	case errors.Is(err, conflict), errors.Is(err, errAppointmentOverlap), errors.Is(err, errBusinessDutyOverlap), errors.Is(err, errAppointmentChanged), errors.Is(err, errAppointmentUnitInactive),
 		errors.Is(err, errCatalogAppointmentContext), errors.Is(err, errCatalogAppointmentOverlap), errors.Is(err, errCatalogAppointmentHolder),
 		errors.Is(err, errCatalogRecipientAppointment):
 		code, message = 409, err.Error()

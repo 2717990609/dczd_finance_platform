@@ -4,6 +4,7 @@ import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
 import CatalogAppointments from './CatalogAppointments.vue'
 import OrganizationCompanies from './OrganizationCompanies.vue'
+import OrganizationDuties from './OrganizationDuties.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
 import { organizationTree } from './organization-tree'
 
@@ -26,6 +27,8 @@ const notice = ref('')
 const panel = ref('organization')
 const catalog = ref()
 const companies = ref()
+const duties = ref()
+const dutySubject = ref()
 const person = ref()
 const personPage = ref(1)
 const personEntries = ref({total:0,items:[]})
@@ -131,11 +134,17 @@ function changePersonPage(pagination) {
 function refresh() {
   if (panel.value==='catalog') return catalog.value?.refresh()
   if (panel.value==='companies') return companies.value?.refresh()
+  if (panel.value==='duties') return duties.value?.refresh()
   return Promise.all([loadUnits(),loadEntries()])
 }
 function showCompanyAppointments(id) {
   unitId.value = id
   panel.value = 'organization'
+}
+function showDuties(subject) {
+  closePersonHistory()
+  dutySubject.value = subject
+  panel.value = 'duties'
 }
 function filterEntries() {
   page.value = 1
@@ -167,6 +176,7 @@ defineExpose({refresh})
   <a-tabs v-model:active-key="panel" class="workbench-tabs">
     <a-tab-pane key="organization" tab="组织任职"/>
     <a-tab-pane key="companies" tab="销售公司"/>
+    <a-tab-pane key="duties" tab="业务职责"/>
     <a-tab-pane key="catalog" tab="计提任职"/>
   </a-tabs>
   <KeepAlive>
@@ -175,7 +185,11 @@ defineExpose({refresh})
   </KeepAlive>
   <KeepAlive>
     <OrganizationCompanies v-if="panel==='companies'" ref="companies" :api="api" :format-time="formatTime"
-      @show-appointments="showCompanyAppointments"/>
+      @show-appointments="showCompanyAppointments" @show-duties="showDuties"/>
+  </KeepAlive>
+  <KeepAlive>
+    <OrganizationDuties v-if="panel==='duties'" ref="duties" :api="api" :format-time="formatTime" :can-write="canWrite"
+      :units="units" :subject="dutySubject" @clear-subject="dutySubject=undefined"/>
   </KeepAlive>
   <div v-show="panel==='organization'">
     <a-alert v-if="unitsError || entriesError" class="feedback" type="error" :message="unitsError || entriesError" show-icon/>
@@ -224,6 +238,7 @@ defineExpose({refresh})
     :tree="appointmentTree" :kinds="appointmentKinds" :unit-id="selectedUnit?.status==='ACTIVE' ? unitId : undefined"
     @saved="saved" @close="editor=undefined"/>
   <a-drawer v-if="person" :title="person.personName+' · 组织任职历史'" :open="true" width="min(720px, 100vw)" @close="closePersonHistory">
+    <a-button class="feedback" @click="showDuties({personId:person.personId,name:person.personName})">查看业务职责</a-button>
     <a-alert v-if="personError" class="feedback" type="error" :message="personError" show-icon>
       <template #action><a-button size="small" @click="loadPersonHistory">重试</a-button></template>
     </a-alert>

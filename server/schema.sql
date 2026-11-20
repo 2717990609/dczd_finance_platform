@@ -1269,3 +1269,33 @@ CREATE TABLE IF NOT EXISTS organization_sales_category_history (
 
 ALTER TABLE organization_assignments ADD COLUMN IF NOT EXISTS appointment_type text
  CHECK (appointment_type IN ('PRIMARY','CONCURRENT'));
+
+CREATE TABLE IF NOT EXISTS organization_duty_scopes (
+ id uuid PRIMARY KEY,
+ kind text NOT NULL CHECK (kind IN ('PROJECT','PRODUCT','ORGANIZATION_UNIT')),
+ code text NOT NULL CHECK (btrim(code)<>''),
+ name text NOT NULL CHECK (btrim(name)<>''),
+ active boolean NOT NULL,
+ UNIQUE(kind,code)
+);
+
+CREATE TABLE IF NOT EXISTS organization_business_duties (
+ id uuid PRIMARY KEY,
+ role text NOT NULL,
+ scope_id uuid NOT NULL REFERENCES organization_duty_scopes(id),
+ person_id bigint REFERENCES people(id),
+ unit_id uuid REFERENCES organization_units(id),
+ valid_from timestamptz NOT NULL,
+ valid_to timestamptz CHECK (valid_to > valid_from),
+ changed_at timestamptz,
+ changed_by uuid REFERENCES finance_accounts(id),
+ CHECK ((person_id IS NULL)<>(unit_id IS NULL))
+);
+CREATE INDEX IF NOT EXISTS organization_duties_scope_role ON organization_business_duties(scope_id,role,valid_from);
+CREATE INDEX IF NOT EXISTS organization_duties_person ON organization_business_duties(person_id,valid_from) WHERE person_id IS NOT NULL;
+
+INSERT INTO configuration_options(group_key,option_key,label,display_order,applies_to) VALUES
+ ('organizationDuty','PRACTICE_AGENT_RECOMMENDATION','实战班代理推荐',10,'{"scopes":["PRODUCT","PROJECT"],"subjects":["PERSON","ORGANIZATION"]}'),
+ ('organizationDuty','PRACTICE_RESOURCE_RECOMMENDATION','实战班资源推荐',20,'{"scopes":["PRODUCT","PROJECT"],"subjects":["PERSON","ORGANIZATION"]}'),
+ ('organizationDuty','PRACTICE_TEAM_DIRECTOR','实战班团队总监',30,'{"scopes":["PRODUCT","PROJECT"],"subjects":["PERSON","ORGANIZATION"]}')
+ ON CONFLICT DO NOTHING;

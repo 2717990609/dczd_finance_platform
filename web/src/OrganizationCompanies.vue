@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RadioGroup } from 'ant-design-vue'
 
 const props = defineProps({api:Function,formatTime:Function})
-const emit = defineEmits(['show-appointments'])
+const emit = defineEmits(['show-appointments','show-duties'])
 const type = ref('')
 const name = ref('')
 const search = ref('')
@@ -26,7 +26,7 @@ const columns = [
   {title:'销售类别',key:'category',width:145},
   {title:'上级组织',key:'parent',width:170},
   {title:'状态',key:'status',width:82},
-  {title:'操作',key:'actions',width:165},
+  {title:'操作',key:'actions',width:238},
 ]
 const historyColumns = [
   {title:'销售类别',key:'category',width:160},
@@ -103,7 +103,7 @@ defineExpose({refresh})
     </div>
     <div class="table-container">
       <a-table :columns="columns" :data-source="result.items" :loading="loading" row-key="id" :pagination="pagination"
-        :scroll="{x:865}" @change="changePage">
+        :scroll="{x:938}" @change="changePage">
         <template #bodyCell="{column,record}">
           <a-tag v-if="column.key==='type'" :color="record.companyType==='UNKNOWN' ? 'orange' : 'blue'">{{ typeLabels[record.companyType] }}</a-tag>
           <span v-else-if="column.key==='category'">{{ record.categoryName || '未分类' }}</span>
@@ -112,6 +112,7 @@ defineExpose({refresh})
           <template v-else-if="column.key==='actions'">
             <a-button type="link" size="small" @click="emit('show-appointments',record.id)">查看任职</a-button>
             <a-button type="link" size="small" @click="openHistory(record)">类别历史</a-button>
+            <a-button type="link" size="small" @click="emit('show-duties',{unitId:record.id,name:record.name})">业务职责</a-button>
           </template>
         </template>
         <template #emptyText>{{ error ? '销售公司读取失败' : '暂无符合条件的销售公司' }}</template>
