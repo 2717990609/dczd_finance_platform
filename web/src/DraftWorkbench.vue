@@ -220,8 +220,9 @@ watch(selected, async () => {
   if (request === statusSequence) checkRefresh()
 }, {immediate:true})
 watch(options, (values) => {
-  if (selected.value && !values.some(option => option.value === selected.value)) selected.value = undefined
-  if (values.length === 1 && !selected.value) selected.value = values[0].value
+  if (!values.some(option => option.value === selected.value)) {
+    selected.value = values.length === 1 ? values[0].value : undefined
+  }
 }, {immediate:true})
 watch([linkedPeriod, () => props.requestedReview], ([period, review]) => {
   if (period) {

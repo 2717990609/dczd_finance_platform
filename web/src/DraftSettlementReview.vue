@@ -167,7 +167,7 @@ onBeforeUnmount(() => { sequence++ })
               <div class="settlement-check-head"><h3>签到名单</h3>
                 <a-tag :color="review.practiceRoster.sourceStatus==='READY' ? 'green' : 'orange'">{{ review.practiceRoster.sourceStatus==='READY' ? '已核对' : '待处理' }}</a-tag>
               </div>
-              <p>{{ rosterStatus[review.practiceRoster.sourceStatus] || rosterStatus.NOT_CONFIGURED }}</p>
+              <p v-if="review.practiceRoster.sourceStatus!=='READY'">{{ rosterStatus[review.practiceRoster.sourceStatus] || rosterStatus.NOT_CONFIGURED }}</p>
               <p class="review-meta">
                 试算名单 v{{ review.practiceRoster.version }} · 到课 {{ review.practiceRoster.attendance }} 人
                 <template v-if="review.practiceRoster.latestVersion !== review.practiceRoster.version"> · 已导入 v{{ review.practiceRoster.latestVersion }}</template>
