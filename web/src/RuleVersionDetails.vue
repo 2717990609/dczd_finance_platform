@@ -25,6 +25,11 @@ const poolName = target => {
   return name+' · 分配负责人 '+personName(target.ownerId)
 }
 const companyName = key => label('practiceSalesCompany', key)
+function scheduleLabel(schedule) {
+  if (schedule.personId) return '个人特例 · '+personName(schedule.personId)
+  const companies = exceptionCompanyIDs(schedule)
+  return companies.length ? '公司档位 · '+companies.map(companyName).join('、') : '通用阶梯'
+}
 const rate = (value, scale = 100) => (value / scale)+'%'
 const standard = (row, scale) => row.mode==='rate' ? rate(row.value,scale) : props.formatMoney(row.value)
 const fixedUnit = computed(() => props.classProduct ? ' / 报名' : ' / 付款')
@@ -117,10 +122,10 @@ onMounted(async () => {
             <ul v-if="part.tiers.personCountStarts?.length">
               <li v-for="start in part.tiers.personCountStarts" :key="start.personId">{{ personName(start.personId) }} · 从 {{ countStart(start) }} 起</li>
             </ul>
-            <template v-for="schedule in [part.tiers, ...(part.tiers.companySchedules || []), ...(part.tiers.personSchedules || [])]"
-              :key="schedule.personId ? 'person-'+schedule.personId : schedule.companyId || ''">
+            <template v-for="(schedule, index) in [part.tiers, ...(part.tiers.companySchedules || []), ...(part.tiers.personSchedules || [])]"
+              :key="index">
               <h4 v-if="schedule.count?.length || schedule.performance?.length">
-                {{ schedule.personId ? '个人特例 · '+personName(schedule.personId) : schedule.companyId ? companyName(schedule.companyId) : '通用阶梯' }}
+                {{ scheduleLabel(schedule) }}
               </h4>
               <ul>
                 <li v-for="row in schedule.count" :key="'count-'+row.from">

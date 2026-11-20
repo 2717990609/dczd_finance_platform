@@ -79,9 +79,17 @@ type practiceTierSchedule struct {
 }
 
 type practiceCompanySchedule struct {
-	CompanyID   string         `json:"companyId"`
+	CompanyID   string         `json:"companyId,omitempty"`
+	CompanyIDs  []string       `json:"companyIds,omitempty"`
 	Count       []practiceTier `json:"count,omitempty"`
 	Performance []practiceTier `json:"performance,omitempty"`
+}
+
+func (s practiceCompanySchedule) companyIDs() []string {
+	if s.CompanyID != "" {
+		return []string{s.CompanyID}
+	}
+	return s.CompanyIDs
 }
 
 type practicePersonSchedule struct {
@@ -103,7 +111,10 @@ func (t practiceSalesTiers) schedules() practiceTierScheduleIndex {
 		result.companies[""] = practiceTierSchedule{Count: t.Count, Performance: t.Performance}
 	}
 	for _, schedule := range t.CompanySchedules {
-		result.companies[schedule.CompanyID] = practiceTierSchedule{Count: schedule.Count, Performance: schedule.Performance}
+		tiers := practiceTierSchedule{Count: schedule.Count, Performance: schedule.Performance}
+		for _, company := range schedule.companyIDs() {
+			result.companies[company] = tiers
+		}
 	}
 	for _, schedule := range t.PersonSchedules {
 		result.people[schedule.PersonID] = schedule.practiceTierSchedule
@@ -186,30 +197,28 @@ func validPracticeSalesTiers(part component) bool {
 	}
 	companies := make(map[string]bool, len(tiers.CompanySchedules))
 	for _, company := range tiers.CompanySchedules {
-		if !textOK(company.CompanyID, 128) || companies[company.CompanyID] || len(company.Count)+len(company.Performance) == 0 {
+		ids := company.companyIDs()
+		schedule := practiceTierSchedule{Count: company.Count, Performance: company.Performance}
+		if len(ids) == 0 || company.CompanyID != "" && len(company.CompanyIDs) != 0 ||
+			len(schedule.Count)+len(schedule.Performance) == 0 || !schedule.valid(tiers.IncludeRetrain) {
 			return false
 		}
-		companies[company.CompanyID] = true
+		for _, id := range ids {
+			if !textOK(id, 128) || companies[id] {
+				return false
+			}
+			companies[id] = true
+		}
 	}
 	clear(seen)
 	for _, person := range tiers.PersonSchedules {
-		if person.PersonID < 1 || seen[person.PersonID] || len(person.Count)+len(person.Performance) == 0 {
+		if person.PersonID < 1 || seen[person.PersonID] || len(person.Count)+len(person.Performance) == 0 ||
+			!person.practiceTierSchedule.valid(tiers.IncludeRetrain) {
 			return false
 		}
 		seen[person.PersonID] = true
 	}
-	index := tiers.schedules()
-	for _, schedule := range index.companies {
-		if !schedule.valid(tiers.IncludeRetrain) {
-			return false
-		}
-	}
-	for _, schedule := range index.people {
-		if !schedule.valid(tiers.IncludeRetrain) {
-			return false
-		}
-	}
-	return true
+	return (practiceTierSchedule{Count: tiers.Count, Performance: tiers.Performance}).valid(tiers.IncludeRetrain)
 }
 
 func (s practiceTierSchedule) valid(includeRetrain bool) bool {

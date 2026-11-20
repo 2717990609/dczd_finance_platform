@@ -22,13 +22,15 @@ function sectionsFor(metric) {
   return result
 }
 const sections = computed(() => sectionsFor(props.config.metric))
+const assignedCompanies = computed(() => new Set(props.config.companies.flatMap(row=>row.companyIds || [])))
+const canAddCompany = computed(() => props.companies.some(company=>!assignedCompanies.value.has(company.value)))
 function eligiblePeople(rows, row) {
   return props.people.filter(person =>
     !rows.some(other => other !== row && other.personId === person.value))
 }
 function eligibleCompanies(row) {
   return props.companies.filter(company =>
-    !props.config.companies.some(other => other !== row && other.companyId === company.value))
+    row.companyIds?.includes(company.value) || !assignedCompanies.value.has(company.value))
 }
 function newSchedule() {
   const mode = props.amounts[0]?.value
@@ -95,16 +97,17 @@ function removeSchedule(schedules, index) {
     <PracticeTierRanges v-if="!config.onlyOverrides" :config="config" :sections="sections" :amounts="amounts" :include-retrain="config.includeRetrain"/>
     <details class="tier-person-starts">
       <summary>按销售公司配置档位</summary>
-      <p class="tier-note">按原付款中的销售公司选档，同一人的累计在所选公司间合并。</p>
+      <p class="tier-note">一套档位可选多家公司。按原付款的销售公司选档，累计人数按销售人员计算。</p>
       <div v-for="(company,index) in config.companies" :key="index" class="tier-range">
         <a-form-item :html-for="'tier-company-'+index" label="销售公司" required>
-          <a-select :id="'tier-company-'+index" v-model:value="company.companyId" :options="eligibleCompanies(company)" show-search option-filter-prop="label"/>
+          <a-select :id="'tier-company-'+index" v-model:value="company.companyIds" :options="eligibleCompanies(company)"
+            mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label"/>
         </a-form-item>
         <PracticeTierRanges :config="company" :sections="sections" :amounts="amounts"
           :include-retrain="config.includeRetrain" :prefix="'company-'+index+'-'"/>
         <a-button type="link" danger @click="removeSchedule(config.companies,index)">移除公司档位</a-button>
       </div>
-      <a-button v-if="config.companies.length<companies.length" type="dashed" block @click="config.companies.push(newSchedule())">添加公司档位</a-button>
+      <a-button v-if="canAddCompany" type="dashed" block @click="config.companies.push({companyIds:[],...newSchedule()})">添加公司档位</a-button>
       <p v-else-if="!companies.length" class="tier-note">暂无可选销售公司。</p>
     </details>
     <details class="tier-person-starts">

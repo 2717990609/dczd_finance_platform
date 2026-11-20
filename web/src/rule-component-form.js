@@ -96,7 +96,7 @@ function tierForm(tiers) {
     count:tierRows(tiers.count,1), performance:tierRows(tiers.performance,100),
     personCountStarts:(tiers.personCountStarts || []).map(start => ({personId:start.personId, ...countStart(start)})),
     companies:schedules.map(schedule => ({
-      companyId:schedule.companyId, count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
+      companyIds:[...exceptionCompanyIDs(schedule)], count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
     })),
     people:(tiers.personSchedules || []).map(schedule => ({
       personId:schedule.personId, metric:tierMetric([schedule]),

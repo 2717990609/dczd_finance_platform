@@ -30,6 +30,46 @@ func TestCompanyPolicyUsesPersonalCountAndPerformanceAcrossCompanies(t *testing.
 	}
 }
 
+func TestPracticeTierCompaniesCanShareOneSchedule(t *testing.T) {
+	var tiers practiceSalesTiers
+	err := json.Unmarshal([]byte(`{"countFromOrdinal":1,
+	 "performance":[{"from":0,"mode":"rate","value":700}],
+	 "companySchedules":[
+	  {"companyIds":["first","second"],"count":[{"from":2,"mode":"rate","value":1900}],
+	   "performance":[{"from":0,"mode":"rate","value":1200}]},
+	  {"companyId":"legacy","performance":[{"from":0,"mode":"rate","value":900}]}],
+	 "personSchedules":[{"personId":99,"performance":[{"from":0,"mode":"rate","value":1700}]}]}`), &tiers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := component{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER", Tiers: &tiers}
+	if !validPracticeSalesTiers(part) {
+		t.Fatal("expected a shared company schedule and an older single-company schedule to be valid together")
+	}
+	at := time.Date(2026, 10, 8, 2, 0, 0, 0, time.UTC)
+	purchases := []practiceTierPurchase{
+		{EnrollmentID: 1, SequenceKey: "11", PaidAt: at, PersonID: 9, Base: 10000, CompanyID: "first"},
+		{EnrollmentID: 2, SequenceKey: "12", PaidAt: at, PersonID: 9, Base: 10000, CompanyID: "second"},
+		{EnrollmentID: 3, SequenceKey: "13", PaidAt: at, PersonID: 9, Base: 10000, CompanyID: "first"},
+		{EnrollmentID: 4, SequenceKey: "14", PaidAt: at, PersonID: 8, Base: 10000, CompanyID: "other"},
+		{EnrollmentID: 5, SequenceKey: "15", PaidAt: at, PersonID: 7, Base: 10000, CompanyID: "legacy"},
+		{EnrollmentID: 6, SequenceKey: "16", PaidAt: at, PersonID: 99, Base: 10000, CompanyID: "second"},
+	}
+	got, err := choosePracticeSalesTiers(tiers, purchases, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []int64{1200, 1200, 1900, 700, 900, 1700} {
+		if actual := got[int64(i+1)].Value; actual != want {
+			t.Fatalf("enrollment %d matched value %d, want %d", i+1, actual, want)
+		}
+	}
+	tiers.CompanySchedules[1].CompanyID = "second"
+	if validPracticeSalesTiers(part) {
+		t.Fatal("a company cannot use two competing company schedules")
+	}
+}
+
 func TestPracticePaymentUsesExplicitSalesCompanyWithoutChangingReferrer(t *testing.T) {
 	raw := json.RawMessage(`{"fact_schema_version":"source.order-fact/1.0","fact_type":"ORDER_PAID","occurred_at":"2026-10-01T00:00:00Z","order":{"source_order_id":"o1"},"source_record":{"source_table":"orders","record_id":"r1","record_version":"v1","updated_at":"2026-10-01T00:00:00Z"},"business":{"source_domain_code":"CAMP"},"amounts":{"paid_minor":"10000"},"attribution_snapshot":{"participants":[{"source_role_code":"DIRECT_REFERRER","source_user_id":"person","source_organization_id":"secondary-reference"},{"source_role_code":"DIRECT_COMPANY","source_company_id":"real-company"},{"source_role_code":"SECONDARY_COMPANY","source_company_id":"other-company"}]}}`)
 	fact, err := normalizeFact("DCZD", "o1", raw)

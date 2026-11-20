@@ -1197,10 +1197,14 @@ function ruleComponentBody(row) {
     }))
   }
   if (form.onlyOverrides && !form.companies.length && !form.people.length) throw new Error('请添加公司或个人档位')
-  if (form.companies.length) component.tiers.companySchedules = form.companies.map(company => ({
-    companyId:must(company.companyId,'请选择销售公司'),
-    ...scheduleBody(company,form.metric),
-  }))
+  if (form.companies.length) component.tiers.companySchedules = form.companies.map(company => {
+    const ids = company.companyIds || []
+    if (!ids.length) throw new Error('请选择销售公司')
+    return {
+      ...(ids.length===1 ? {companyId:ids[0]} : {companyIds:ids}),
+      ...scheduleBody(company,form.metric),
+    }
+  })
   if (form.people.length) component.tiers.personSchedules = form.people.map(person => ({
     personId:must(person.personId,'请选择个人档位对应的销售人员'),
     ...scheduleBody(person,must(person.metric,'请选择个人阶梯指标')),
