@@ -43,6 +43,7 @@ type draftLine struct {
 	Component                            string
 	organization                         reportOrganization
 	reportUnit                           pgtype.UUID
+	practiceProportionalRefund           bool
 	Base, Amount                         int64
 	Catalog                              *catalogDraftBenefit `json:",omitempty"`
 	BeneficiaryUnit                      *pgtype.UUID         `json:",omitempty"`

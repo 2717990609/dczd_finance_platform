@@ -137,14 +137,6 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 	if err != nil {
 		return err
 	}
-	if !replay.independent && !replay.independentRefunds {
-		if err := replay.loadSettledRefunds(ctx, tx, classID); err != nil {
-			return err
-		}
-		for _, refund := range b.refunds {
-			replay.addRefund(refund.PaymentVersionID, refundFacts[refund.SourceVersionID])
-		}
-	}
 	for _, id := range slices.Sorted(maps.Keys(b.booked)) {
 		for user, assignments := range b.booked[id].Identities {
 			key := identityKey{"DCZD", user}
@@ -175,7 +167,7 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 			change.Identities[user] = practiceIdentitiesAt(replay.identities[key], change.Fact.OccurredAt)
 		}
 	}
-	revised, err := replay.calculate()
+	revised, err := replay.calculateCorrectionLines(ctx, tx, classID, b.refunds, refundFacts)
 	if errors.Is(err, errPracticeRefundReplay) {
 		return issue("PRACTICE_CORRECTION_REPLAY_REQUIRED")
 	}
@@ -205,7 +197,7 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 	if err != nil {
 		return err
 	}
-	target, ok := practiceCorrectedLines(original, revised.Lines)
+	target, ok := practiceCorrectedLines(original, revised)
 	if !ok {
 		return issue("PRACTICE_CORRECTION_LINKED_REVIEW")
 	}
@@ -245,6 +237,46 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 	}
 	draft.practiceChanges = append(draft.practiceChanges, b.revisions...)
 	return nil
+}
+
+func (r practiceReplay) calculateCorrectionLines(ctx context.Context, tx pgx.Tx, classID int64,
+	refunds []draftPerformance, facts map[int64]paymentInput) ([]draftLine, error) {
+	classRefunds := r.refunds
+	if !r.independent && !r.independentRefunds {
+		r.refunds = maps.Clone(classRefunds)
+		if err := r.loadSettledRefunds(ctx, tx, classID); err != nil {
+			return nil, err
+		}
+		for _, refund := range refunds {
+			if err := r.addLateRefund(refund.PaymentVersionID, facts[refund.SourceVersionID]); err != nil {
+				return nil, err
+			}
+		}
+	}
+	revised, err := r.calculate()
+	if err != nil || len(r.lateRefunded) == 0 {
+		return revised.Lines, err
+	}
+
+	// Price the revised recipients before post-settlement refunds for the
+	// percentage lines. Linked tiers still use the replayed class balance.
+	r.refunds = classRefunds
+	baseline, err := r.calculate()
+	if err != nil {
+		return nil, err
+	}
+	lines := slices.DeleteFunc(revised.Lines, func(line draftLine) bool { return line.practiceProportionalRefund })
+	for _, line := range baseline.Lines {
+		if !line.practiceProportionalRefund {
+			continue
+		}
+		line.Amount, err = practiceRefundRemaining(line.Base, line.Amount, r.lateRefunded[line.FactID])
+		if err != nil {
+			return nil, err
+		}
+		lines = append(lines, line)
+	}
+	return lines, nil
 }
 
 func applyIndependentPracticeCorrectionRefunds(replay practiceReplay, original []practiceReplayOriginal, target []draftLine,

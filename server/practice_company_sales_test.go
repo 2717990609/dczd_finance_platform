@@ -423,6 +423,12 @@ func TestPracticeCorporateAndIndividualClaimsCannotPayTheSamePayment(t *testing.
 }
 
 func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *testing.T) {
+	t.Run("公司比例", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false) })
+	t.Run("公司比例和整班阶梯", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, false) })
+	t.Run("仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true) })
+}
+
+func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment bool) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
 	id := func(value any, err error) int64 {
@@ -456,6 +462,13 @@ func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *test
 					{SalesCategoryID: first, practiceCompanyValue: practiceCompanyValue{"rate", 400000}},
 					{SalesCategoryID: second, practiceCompanyValue: practiceCompanyValue{"rate", 100000}},
 				}}}}}
+	if withTier {
+		delivery := id(s.createPerson(ctx, createPersonInput{Name: "整班交付"}))
+		through := int64(29499)
+		rule.Components = append(rule.Components, component{Type: "delivery", Mode: "period_rate",
+			PeriodBenefit: &practicePeriodBenefit{Label: "交付阶梯", PersonID: delivery, TierOnWholeClass: true,
+				Tiers: []practicePeriodRate{{Through: &through, Value: 10000}, {From: 29500, Value: 20000}}}})
+	}
 	if _, err := s.publishRule(ctx, rule); err != nil {
 		t.Fatal(err)
 	}
@@ -473,23 +486,34 @@ func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *test
 		amount := int64(10000)
 		if order == "31" {
 			amount = 9999
+			if splitPayment {
+				amount = 3999
+			}
+		} else if order == "34" {
+			amount = 6000
 		}
 		return sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: "category", Kind: "ORDER_PAID", OrderID: order, PaymentID: order,
 			RecordKey: "payment:" + order, Version: "1", SalesCompanyID: company, AmountMinor: &amount, OccurredAt: at, UpdatedAt: at,
 			ReferrerID: "new-seller"}
 	}
 	start := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	firstPurchase := []string{"31"}
+	payments := []sourceFact{pay("31", "new-company", 6), pay("32", "new-company", 7), pay("33", "new-internal", 7)}
+	if splitPayment {
+		firstPurchase = append(firstPurchase, "34")
+		payments = append(payments, pay("34", "new-company", 6))
+	}
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: "PRACTICE:1:1:1", Hash: "category", SourceVersion: 1, StartsAt: start, ConfirmedAt: start.Add(time.Hour),
 			Enrollments: []practiceEnrollment{
-				{SourceEnrollmentID: "1", ParticipantID: "11", MembershipType: 3, CommissionEligible: true, SignedAt: start, PaidOrderIDs: []string{"31"}, ContentHash: "ab"},
+				{SourceEnrollmentID: "1", ParticipantID: "11", MembershipType: 3, CommissionEligible: true, SignedAt: start, PaidOrderIDs: firstPurchase, ContentHash: "ab"},
 				{SourceEnrollmentID: "2", ParticipantID: "12", MembershipType: 3, CommissionEligible: true, SignedAt: start, PaidOrderIDs: []string{"32"}, ContentHash: "cd"},
 				{SourceEnrollmentID: "3", ParticipantID: "13", MembershipType: 3, CommissionEligible: true, SignedAt: start, PaidOrderIDs: []string{"33"}, ContentHash: "ef"},
 			}})
 		if err != nil {
 			return err
 		}
-		_, err = storeSourceFacts(ctx, tx, []sourceFact{pay("31", "new-company", 6), pay("32", "new-company", 7), pay("33", "new-internal", 7)})
+		_, err = storeSourceFacts(ctx, tx, payments)
 		return err
 	}); err != nil {
 		t.Fatal(err)
@@ -506,7 +530,18 @@ func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *test
 		}
 		return summary
 	}
-	settled := checkDraft(class, 6000, 3)
+	settlementAmount, settlementLines := int64(6000), 3
+	firstAmount, nextAmount, fullAmount := int64(-200), int64(-50), int64(-3800)
+	firstLines, nextLines, fullLines := 1, 1, 2
+	if withTier {
+		settlementAmount, settlementLines = 6600, 6
+		firstAmount, nextAmount, fullAmount = -505, -51, -3895
+		firstLines, nextLines, fullLines = 4, 2, 2
+	}
+	if splitPayment {
+		settlementLines, firstLines = 8, 5
+	}
+	settled := checkDraft(class, settlementAmount, settlementLines)
 	var earnings int64
 	if err := s.db.QueryRow(ctx, `SELECT amount_minor FROM calculation_draft_lines WHERE period_id=$1 AND person_id=$2`,
 		class, seller).Scan(&earnings); err != nil || earnings != 1000 {
@@ -530,22 +565,39 @@ func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *test
 		}
 	}
 	refund("31", time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC), 501)
-	partial := checkDraft(month, -200, 0)
-	if partial.RefundCount != 1 {
-		t.Fatalf("expected one refund in September: %+v", partial)
+	partial := checkDraft(month, firstAmount, 0)
+	if partial.RefundCount != firstLines {
+		t.Fatalf("unexpected September refund lines: %+v", partial)
 	}
 	var originalCompany string
+	var companyDebit int64
 	if err := s.db.QueryRow(ctx, `SELECT l.beneficiary_unit_id::text FROM calculation_draft_refunds r
-	 JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1`, month).Scan(&originalCompany); err != nil || originalCompany != company {
+	 JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1 AND l.component_type='period:company_sales:1'`, month).
+		Scan(&originalCompany); err != nil || originalCompany != company {
 		t.Fatalf("refund should reverse the original company, got %s: %v", originalCompany, err)
+	}
+	if err := s.db.QueryRow(ctx, `SELECT sum(r.amount_minor) FROM calculation_draft_refunds r
+	 JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1 AND l.component_type='period:company_sales:1'`, month).
+		Scan(&companyDebit); err != nil || companyDebit != -200 {
+		t.Fatalf("company reversal must follow the original rounded payout: %d %v", companyDebit, err)
+	}
+	if splitPayment {
+		var charged []string
+		if err := s.db.QueryRow(ctx, `SELECT array_agg(p.order_id ORDER BY p.order_id) FROM calculation_draft_refunds r
+		 JOIN calculation_draft_lines l ON l.id=r.original_line_id JOIN source_order_versions p ON p.id=l.source_version_id
+		 WHERE r.period_id=$1 AND l.component_type='period:company_sales:1'`, month).Scan(&charged); err != nil ||
+			len(charged) != 1 || charged[0] != "31" {
+			t.Fatalf("a deposit refund may only reverse the deposit's original company share: %+v %v", charged, err)
+		}
+		return
 	}
 	mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES ($1,$2,'fixture')`, month, partial.Version)
 	refund("31-partial", time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC), 125)
-	if next := checkDraft(nextMonth, -50, 0); next.RefundCount != 1 {
-		t.Fatalf("expected cumulative reversal of 250 cents, got %+v", next)
+	if next := checkDraft(nextMonth, nextAmount, 0); next.RefundCount != nextLines {
+		t.Fatalf("unexpected cumulative reversal: %+v", next)
 	}
 	refund("31-complete", time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC), 9373)
-	if complete := checkDraft(nextMonth, -3800, 0); complete.RefundCount != 2 {
+	if complete := checkDraft(nextMonth, fullAmount, 0); complete.RefundCount != fullLines {
 		t.Fatalf("full refund should recover the rest of the original company award: %+v", complete)
 	}
 }

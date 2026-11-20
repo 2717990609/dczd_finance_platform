@@ -131,6 +131,7 @@ type practiceReplay struct {
 	members            []practiceEnrollment
 	payments           map[string][]paymentInput
 	refunds            map[int64][]practiceRefundMatch
+	lateRefunded       map[int64]int64
 	identities         map[identityKey][]identityAssignment
 	history            practiceTierHistory
 	runtime            practiceDraftRuntime
@@ -176,6 +177,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 	}
 	replay.payments = make(map[string][]paymentInput)
 	replay.refunds = make(map[int64][]practiceRefundMatch)
+	replay.lateRefunded = make(map[int64]int64)
 	replay.posted = make(map[int64]practiceReplayPosting)
 	rows, err := tx.Query(ctx, `SELECT v.id,v.fact,coalesce(p.payment_version_id,0),coalesce(p.person_id,0),
 	 coalesce(c.company_id,''),coalesce(c.recommendation_company_id,''),coalesce(c.recommendation_conflict,false)

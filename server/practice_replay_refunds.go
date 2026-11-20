@@ -23,6 +23,7 @@ type practiceReplayLineKey struct {
 type practiceReplayOriginal struct {
 	practiceReplayLineKey
 	id, base, amount, recovered int64
+	proportionalRefund          bool
 }
 
 func applyPracticeReplayRefunds(ctx context.Context, tx pgx.Tx, draft *paymentDraft, events []practiceReplayRefund) error {
@@ -75,7 +76,9 @@ func replayPracticeRefunds(ctx context.Context, tx pgx.Tx, classID int64, events
 		events = events[n:]
 		anchors := make(map[int64]practiceReplayRefund)
 		for _, event := range group {
-			replay.addRefund(event.paymentID, paymentInput{ID: event.ID, Fact: event.Fact})
+			if err := replay.addLateRefund(event.paymentID, paymentInput{ID: event.ID, Fact: event.Fact}); err != nil {
+				return nil, err
+			}
 			anchors[event.paymentID] = event
 		}
 		result, err := replay.calculate()
@@ -88,7 +91,14 @@ func replayPracticeRefunds(ctx context.Context, tx pgx.Tx, classID int64, events
 		}
 		for i := range originals {
 			line := &originals[i]
-			delta := line.amount - line.recovered - target[line.practiceReplayLineKey].Amount
+			remaining := target[line.practiceReplayLineKey].Amount
+			if line.proportionalRefund {
+				remaining, err = practiceRefundRemaining(line.base, line.amount, replay.lateRefunded[line.payment])
+				if err != nil {
+					return nil, err
+				}
+			}
+			delta := line.amount - line.recovered - remaining
 			if delta <= 0 {
 				continue
 			}
@@ -132,11 +142,14 @@ func readVerifiedPracticeReplay(ctx context.Context, tx pgx.Tx, classID int64) (
 			return replay, nil, errPracticeRefundReplay
 		}
 	}
-	for _, line := range originals {
-		if value, found := before[line.practiceReplayLineKey]; !found || value.Amount != line.amount || value.Base != line.base ||
+	for i := range originals {
+		line := &originals[i]
+		value, found := before[line.practiceReplayLineKey]
+		if !found || value.Amount != line.amount || value.Base != line.base ||
 			line.recovered < 0 || line.recovered > line.amount {
 			return replay, nil, errPracticeRefundReplay
 		}
+		line.proportionalRefund = value.practiceProportionalRefund
 	}
 	return replay, originals, nil
 }
@@ -178,8 +191,30 @@ func readPracticeReplayOriginals(ctx context.Context, tx pgx.Tx, classID int64) 
 	})
 }
 
-func (r practiceReplay) addRefund(paymentID int64, item paymentInput) {
+// Late refunds use the net payment and benefit that were valid at settlement.
+// Class-internal refunds have already reduced both amounts in that baseline.
+func practiceRefundRemaining(base, amount, principal int64) (int64, error) {
+	if principal == 0 {
+		return amount, nil
+	}
+	change, err := refundDelta(component{RefundPolicy: "proportional"}, base, amount, principal, 0)
+	if err != nil {
+		return 0, errors.Join(errPracticeRefundReplay, err)
+	}
+	return amount + change, nil
+}
+
+func (r practiceReplay) addLateRefund(paymentID int64, item paymentInput) error {
+	if item.Fact.AmountMinor == nil || *item.Fact.AmountMinor <= 0 {
+		return errPracticeRefundReplay
+	}
+	refunded, err := addMinor(r.lateRefunded[paymentID], *item.Fact.AmountMinor)
+	if err != nil {
+		return err
+	}
+	r.lateRefunded[paymentID] = refunded
 	r.refunds[paymentID] = append(r.refunds[paymentID], practiceRefundMatch{event: item})
+	return nil
 }
 
 func (r practiceReplay) loadSettledRefunds(ctx context.Context, tx pgx.Tx, classID int64) error {
@@ -195,8 +230,7 @@ func (r practiceReplay) loadSettledRefunds(ctx context.Context, tx pgx.Tx, class
 	var paymentID int64
 	var item paymentInput
 	_, err = pgx.ForEachRow(rows, []any{&item.ID, &item.Fact, &paymentID}, func() error {
-		r.addRefund(paymentID, item)
-		return nil
+		return r.addLateRefund(paymentID, item)
 	})
 	return err
 }

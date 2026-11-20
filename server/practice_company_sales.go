@@ -478,7 +478,8 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		draft.Issues = append(draft.Issues, practiceIssue(issue, p.member, rule, award.key))
 		return nil
 	}
-	line := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: award.key}
+	line := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: award.key,
+		practiceProportionalRefund: award.Mode == "rate"}
 	var salesCompany pgtype.UUID
 	var companyIssue string
 	kind := award.payee.kind()
@@ -539,7 +540,8 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 			pending.FactID = p.payments[0].ID
 			draft.Issues = append(draft.Issues, pending)
 		} else if parent.Valid {
-			referral := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: key, BeneficiaryUnit: &parent}
+			referral := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: key, BeneficiaryUnit: &parent,
+				practiceProportionalRefund: true}
 			return appendPracticeCompanyShare(draft, p, referral, practiceCompanyRate(p.base, award.recommendationRate))
 		}
 	}

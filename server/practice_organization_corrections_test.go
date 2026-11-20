@@ -80,7 +80,7 @@ func verifyPracticeOrganizationCorrection(t *testing.T, withPool bool) {
 			t.Fatal(err)
 		}
 	}
-	amount := int64(10000)
+	amount := int64(9998)
 	payment := sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: "fixture", Kind: "ORDER_PAID", OrderID: "moving",
 		RecordKey: "payment:moving", PaymentID: "moving", Version: "1", AmountMinor: &amount, OccurredAt: paidAt, UpdatedAt: paidAt,
 		ReferrerID: "seller", SalesCompanyID: "old-company"}
@@ -140,7 +140,7 @@ func verifyPracticeOrganizationCorrection(t *testing.T, withPool bool) {
 			t.Fatalf("company-only rules must be able to post the two signed company amounts: %+v", changed)
 		}
 		freeze(changed)
-		refundAmount := int64(2000)
+		refundAmount := int64(2001)
 		store(sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: "fixture", Kind: "REFUND_SUCCEEDED",
 			OrderID: "moving", RecordKey: "refund:1", RefundID: "r1", Version: "1", AmountMinor: &refundAmount,
 			OccurredAt: refundAt, UpdatedAt: refundAt, RefundsPayment: []sourcePaymentReference{{OrderID: "moving", RecordID: "moving"}}}, refundAt)
@@ -212,7 +212,7 @@ func verifyPracticeOrganizationCorrection(t *testing.T, withPool bool) {
 		t.Fatalf("expected unrelated pool credit: %+v", laterDraft)
 	}
 	freeze(laterDraft)
-	refundAmount := int64(2000)
+	refundAmount := int64(2001)
 	store(sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: "fixture", Kind: "REFUND_SUCCEEDED",
 		OrderID: "moving", RecordKey: "refund:1", RefundID: "r1", Version: "1", AmountMinor: &refundAmount,
 		OccurredAt: refundAt, UpdatedAt: refundAt, RefundsPayment: []sourcePaymentReference{{OrderID: "moving", RecordID: "moving"}}}, refundAt)
