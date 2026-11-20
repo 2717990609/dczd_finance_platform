@@ -316,9 +316,11 @@ const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'
  (l.product_id IS NOT NULL) AS "catalogPending",
  coalesce(l.source_system='DCAI' AND p.period_mode='calendar' AND p.cycle_start_day IN (1,25),false) AS "catalogPeriodRule",
  coalesce((
-  SELECT jsonb_agg(jsonb_build_object('code',sku_code,'label',label,'vipPaymentRule',vip_payment_rule) ORDER BY label,sku_code)
+  SELECT jsonb_agg(jsonb_build_object('code',sku_code,'label',label,'paymentRule',payment_rule) ORDER BY label,sku_code)
   FROM (
-   SELECT sku_code,min(sku_label) AS label,bool_and(r.source='DCAI' AND r.domain='VIP') AS vip_payment_rule FROM catalog_business_routes r
+   SELECT sku_code,min(sku_label) AS label,
+    (bool_and(` + catalogScenarioSupportedRoute + `) AND count(DISTINCT ` + catalogScenarioCompletion + `)=1) AS payment_rule
+   FROM catalog_business_routes r
    WHERE r.product_id=p.id AND r.observed_at=l.captured_at GROUP BY sku_code
   ) business
  ),'[]') AS "businessSkus"

@@ -90,6 +90,7 @@ const healthCompletionAffectedPeriodsSQL = `SELECT target.id FROM health_changes
 const healthCompletionTargetSQL = `JOIN LATERAL (
  SELECT candidate.id FROM periods candidate
  WHERE candidate.product_id=boundary.product_id AND candidate.starts_on>=boundary.starts_on
+  AND candidate.aggregate_package_id IS NULL
   AND (dates.completion OR candidate.id=boundary.id)
   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=candidate.id)
  ORDER BY candidate.starts_on LIMIT 1

@@ -202,7 +202,7 @@ const ruleTargetPeriod = computed(() => {
 const ruleProductOptions = computed(() => data.value.products.filter(p=>(!p.catalogPending || p.periodMode==='class') && canPublishRule(p.id))
   .map(p=>({value:p.id,label:p.name})))
 const catalogScenarioProducts = computed(() => current.value==='rules' ? data.value.products
-  .filter(p=>(!productScope.value || p.id===productScope.value) && canPublishRule(p.id) && p.businessSkus?.some(sku=>sku.vipPaymentRule))
+  .filter(p=>(!productScope.value || p.id===productScope.value) && canPublishRule(p.id) && p.businessSkus?.some(sku=>sku.paymentRule))
   .map(p=>({value:p.id,label:p.name})) : [])
 const catalogPeriodProducts = computed(() => current.value==='rules' ? data.value.products
   .filter(p=>(!productScope.value || p.id===productScope.value) && canPublishRule(p.id) && p.catalogPeriodRule)

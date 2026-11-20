@@ -282,11 +282,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 		if !refreshDrafts {
 			return nil
 		}
-		periods := catalogRateDraftPeriodsSQL
-		if compound {
-			periods = catalogHealthRateDraftPeriodsSQL
-		}
-		return enqueueDraftConfiguration(ctx, tx, periods, product, scope, from, throughBase, published.ID)
+		return enqueueCatalogScenarioDrafts(ctx, tx, product, scope, from, throughBase, published.ID, compound)
 	}()
 	return published, err
 }
@@ -305,6 +301,15 @@ func lockCatalogPublisher(ctx context.Context, tx pgx.Tx, operator *financePrinc
 		return err
 	}
 	return lockFinanceOperatorSession(ctx, tx, operator)
+}
+
+func enqueueCatalogScenarioDrafts(ctx context.Context, tx pgx.Tx, product int64, sku string, from time.Time,
+	through *time.Time, version string, requiresCompletion bool) error {
+	periods := catalogRateDraftPeriodsSQL
+	if requiresCompletion {
+		periods = catalogHealthRateDraftPeriodsSQL
+	}
+	return enqueueDraftConfiguration(ctx, tx, periods, product, sku, from, through, version)
 }
 
 func catalogRateActions(raw json.RawMessage) (map[string]json.RawMessage, []map[string]json.RawMessage, error) {

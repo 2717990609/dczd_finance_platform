@@ -20,6 +20,10 @@ const loading = ref(false)
 const publishing = ref(false)
 const error = ref('')
 const peopleFilters = computed(() => ({productId:productId.value}))
+const recognition = computed(() => {
+  const selected = skus.value.find(option=>option.value===sku.value)
+  return selected ? (selected.requiresCompletion ? '付款后，订单完成时计提' : '付款后计提') : undefined
+})
 const blankRate = () => ({companyIds:[],categoryIds:[],relationship:'ANY'})
 let optionsRequest = 0
 
@@ -37,7 +41,7 @@ watch(productId, async id=>{
     const result = await props.api('/catalog-rule-rates?'+new URLSearchParams({productId:id}))
     if (request!==optionsRequest) return
     options.value = result.options
-    skus.value = result.skus.map(row=>({value:row.code,label:row.label}))
+    skus.value = result.skus.map(row=>({value:row.code,label:row.label,requiresCompletion:row.requiresCompletion}))
     sku.value = skus.value.some(row=>row.value===props.initialSku) && id===props.initialProduct
       ? props.initialSku : skus.value.length===1 ? skus.value[0].value : undefined
     rates.value = [blankRate()]
@@ -79,7 +83,7 @@ async function publish() {
         <a-form-item label="所属产品" html-for="scenario-create-product" required>
           <a-select id="scenario-create-product" v-model:value="productId" :options="products" placeholder="选择产品"/>
         </a-form-item>
-        <a-form-item label="业务 SKU" html-for="scenario-create-sku" required>
+        <a-form-item label="业务 SKU" html-for="scenario-create-sku" :extra="recognition" required>
           <a-select id="scenario-create-sku" v-model:value="sku" :options="skus" :loading="loading" placeholder="选择业务 SKU" show-search option-filter-prop="label"/>
         </a-form-item>
         <a-form-item label="规则名称" html-for="scenario-create-name" required>

@@ -22,7 +22,8 @@ const catalogDraftAvailableSQL = `(pro.period_mode='calendar' AND EXISTS(
  WHERE c.product_id=pro.id AND c.source_system='DCAI'
    AND k.scope_type='BUSINESS_SCENARIO'
    AND EXISTS(SELECT 1 FROM catalog_business_routes m WHERE m.product_id=c.product_id AND m.observed_at=c.captured_at
-    AND (` + catalogSplitDraftRule + ` OR (m.source='DCAI' AND m.domain='VIP' AND m.sku_code=k.scope_id AND ` + catalogDirectDraftRule + `)
+    AND (` + catalogSplitDraftRule + ` OR (m.source='DCAI' AND m.sku_code=k.scope_id AND ` + catalogDirectDraftRule + `
+      AND (m.domain='VIP' OR (m.domain='HEALTH_IDENTITY' AND m.source_product_code='HEALTH_AMBASSADOR')))
      OR (m.source='DCAI' AND m.domain='HEALTH_IDENTITY' AND m.sku_code=k.scope_id
      AND ` + catalogHealthRecognitionPlan + `)))
 ))`

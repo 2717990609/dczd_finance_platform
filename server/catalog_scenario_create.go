@@ -20,16 +20,28 @@ type catalogScenarioCreate struct {
 }
 
 type catalogScenarioSetup struct {
-	SKUs    []catalogPeriodSKU      `json:"skus"`
+	SKUs    []catalogScenarioSKU    `json:"skus"`
 	Options catalogStructureOptions `json:"options"`
+}
+
+type catalogScenarioSKU struct {
+	Code               string `json:"code"`
+	Label              string `json:"label"`
+	RequiresCompletion bool   `json:"requiresCompletion"`
 }
 
 const catalogScenarioCreationProducts = `FROM products pro JOIN product_catalog_settings c ON c.product_id=pro.id
  WHERE pro.id=$1 AND c.source_system='DCAI' AND pro.period_mode='calendar' AND pro.cycle_start_day IN (1,25)`
 
+const catalogScenarioSupportedRoute = `r.source='DCAI' AND (r.domain='VIP' OR (
+ r.domain='HEALTH_IDENTITY' AND r.record_table='ai_health_ambassador_order'
+ AND r.source_product_code IN ('HEALTH_CREATOR','HEALTH_AMBASSADOR')))`
+
+const catalogScenarioCompletion = `(r.domain='HEALTH_IDENTITY' AND r.source_product_code='HEALTH_CREATOR')`
+
 const catalogScenarioCreationRoutes = `FROM catalog_business_routes r
  JOIN product_catalog_settings c ON c.product_id=r.product_id AND c.captured_at=r.observed_at
- WHERE r.product_id=$1 AND r.source=c.source_system AND r.domain='VIP'`
+ WHERE r.product_id=$1 AND r.source=c.source_system AND ` + catalogScenarioSupportedRoute
 
 func (s workspace) catalogScenarioProduct(ctx context.Context, raw string, actor financeRuleActor) (int64, error) {
 	product, err := strconv.ParseInt(raw, 10, 64)
@@ -49,8 +61,11 @@ func (s workspace) catalogScenarioOptions(ctx context.Context, raw string, actor
 	if err != nil {
 		return result, err
 	}
-	err = s.db.QueryRow(ctx, `SELECT coalesce(jsonb_agg(jsonb_build_object('code',sku_code,'label',label) ORDER BY label,sku_code),'[]')
-	 FROM (SELECT r.sku_code,min(r.sku_label) AS label `+catalogScenarioCreationRoutes+` GROUP BY r.sku_code) choices`, product).Scan(&result.SKUs)
+	err = s.db.QueryRow(ctx, `SELECT coalesce(jsonb_agg(jsonb_build_object('code',sku_code,'label',label,
+	   'requiresCompletion',requires_completion) ORDER BY label,sku_code),'[]')
+	 FROM (SELECT r.sku_code,min(r.sku_label) AS label,bool_or(`+catalogScenarioCompletion+`) AS requires_completion
+	   `+catalogScenarioCreationRoutes+` GROUP BY r.sku_code HAVING count(DISTINCT `+catalogScenarioCompletion+`)=1) choices`,
+		product).Scan(&result.SKUs)
 	if err != nil {
 		return result, err
 	}
@@ -75,10 +90,11 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	if err := tx.QueryRow(ctx, `SELECT pro.cycle_start_day `+catalogScenarioCreationProducts+` FOR UPDATE OF pro`, input.ProductID).Scan(&cycleStart); err != nil {
 		return result, err
 	}
-	var mapped, occupied bool
-	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 `+catalogScenarioCreationRoutes+`
-	 AND r.sku_code=$2 AND r.effective_from<=$3 AND (r.effective_to IS NULL OR r.effective_to>$3)),`+catalogScenarioOccupiedSQL,
-		input.ProductID, input.SKU, at).Scan(&mapped, &occupied); err != nil {
+	var mapped, compound, occupied bool
+	if err := tx.QueryRow(ctx, `SELECT count(DISTINCT `+catalogScenarioCompletion+`)=1,
+	 coalesce(bool_or(`+catalogScenarioCompletion+`),false),`+catalogScenarioOccupiedSQL+` `+catalogScenarioCreationRoutes+`
+	 AND r.sku_code=$2 AND r.effective_from<=$3 AND (r.effective_to IS NULL OR r.effective_to>$3)`,
+		input.ProductID, input.SKU, at).Scan(&mapped, &compound, &occupied); err != nil {
 		return result, err
 	}
 	if !mapped {
@@ -106,15 +122,23 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	if cycleStart == 25 {
 		cycle = "MONTHLY_25_TO_24"
 	}
-	base, err := json.Marshal(map[string]any{
+	scope := map[string][]string{"sales_systems": {"DCAI"}, "business_sku_codes": {input.SKU}, "financial_event_types": {"order.paid"}}
+	definition := map[string]any{
 		"schema_version": "1.1", "recognition_trigger": "PAID", "sales_attribution": "ORDER_SELLER",
 		"amount_basis": "ACTUAL_RECEIVED", "stacking_policy": "SUM", "refund_policy": "PROPORTIONAL",
 		"rounding_policy":   map[string]any{"mode": "HALF_UP", "scale": 2},
 		"settlement_policy": map[string]string{"cycle": cycle},
-		"policy_scope":      map[string][]string{"sales_systems": {"DCAI"}, "business_sku_codes": {input.SKU}, "financial_event_types": {"order.paid"}},
+		"policy_scope":      scope,
 		"benefit_actions": []map[string]any{{"item_key": "sales", "label": "成交销售", "role": "SALES", "type": "RATE_TABLE",
 			"beneficiary_mode": "PARTY", "rate_table": rates}},
-	})
+	}
+	if compound {
+		definition["schema_version"] = "1.2"
+		definition["recognition_plan"] = map[string]any{"mode": "ALL_OF", "contract_version": "finance.compound-recognition/1.0",
+			"required_event_types": []string{"ORDER_PAID", "ORDER_COMPLETED"}}
+		scope["financial_event_types"] = append(scope["financial_event_types"], "order.completed")
+	}
+	base, err := json.Marshal(definition)
 	if err != nil {
 		return result, err
 	}
@@ -133,7 +157,7 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	if err != nil || !refreshDrafts {
 		return result, err
 	}
-	return result, enqueueDraftConfiguration(ctx, tx, catalogRateDraftPeriodsSQL, input.ProductID, input.SKU, at, nil, result.ID)
+	return result, enqueueCatalogScenarioDrafts(ctx, tx, input.ProductID, input.SKU, at, nil, result.ID, compound)
 }
 
 func lockCatalogProductPublisher(ctx context.Context, tx pgx.Tx, operator *financePrincipal, product int64) error {

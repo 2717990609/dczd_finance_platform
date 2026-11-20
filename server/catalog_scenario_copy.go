@@ -38,6 +38,7 @@ func checkCatalogScenarioCopy(ctx context.Context, tx pgx.Tx, product int64, sou
 	 JOIN catalog_business_routes destination ON destination.product_id=scope.product_id AND destination.observed_at=scope.captured_at
 	 JOIN catalog_business_routes template ON template.product_id=scope.product_id AND template.observed_at=scope.captured_at
 	   AND template.source=destination.source AND template.domain=destination.domain AND template.entity_type=destination.entity_type
+	   AND (template.domain<>'HEALTH_IDENTITY' OR template.source_product_code=destination.source_product_code)
 	 WHERE scope.product_id=$1 AND destination.source=scope.source_system AND destination.sku_code=$2 AND template.sku_code=$4
 	  AND destination.effective_from<=$3 AND (destination.effective_to IS NULL OR destination.effective_to>$3)
 	),`+catalogScenarioOccupiedSQL, product, target.SKU, from, source).Scan(&mapped, &occupied)
