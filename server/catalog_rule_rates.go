@@ -184,7 +184,7 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	)
 	SELECT r.product_id,r.product_name,r.name,r.version_no,r.effective_from,r.effective_to,r.definition,r.available,r.supported,r.requires_completion,
 	 coalesce((SELECT jsonb_object_agg(company_uuid,name) FROM companies),'{}'),
-	 coalesce((SELECT jsonb_object_agg(option_key,label) FROM configuration_options WHERE group_key='catalogSalesCategory' AND enabled),'{}'),
+	 coalesce((SELECT jsonb_object_agg(key,label) FROM catalog_sales_category_options),'{}'),
 	 coalesce((SELECT jsonb_object_agg(option_key,label) FROM configuration_options WHERE group_key='catalogSalesRelationship' AND enabled),'{}'),
 	 coalesce((SELECT jsonb_object_agg(party_uuid,name) FROM organizations),'{}')
 	FROM rule r`, id).Scan(&sheet.ProductID, &sheet.ProductName, &sheet.Label, &sheet.Version, &sheet.EffectiveFrom, &sheet.EffectiveTo,

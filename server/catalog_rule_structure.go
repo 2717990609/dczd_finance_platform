@@ -67,14 +67,15 @@ const catalogStructureOptionsSQL = `WITH companies AS (
   'personal',group_key='catalogAppointmentRole' AND (NOT applies_to ? 'scopes' OR applies_to->'scopes' ?| ARRAY['PRODUCT','PROJECT']))
    ORDER BY display_order,option_key) AS items
  FROM configuration_options
- WHERE enabled AND group_key IN ('catalogSalesCategory','catalogSalesRelationship','catalogAppointmentRole')
+ WHERE enabled AND group_key IN ('catalogSalesRelationship','catalogAppointmentRole')
  GROUP BY group_key
 )
 SELECT jsonb_build_object(
  'companies',jsonb_build_array(jsonb_build_object('value','ANY','label','不限公司'))||
   coalesce((SELECT jsonb_agg(to_jsonb(c) ORDER BY label,value) FROM companies c),'[]'),
  'organizations',coalesce((SELECT jsonb_agg(to_jsonb(o) ORDER BY label,value) FROM organizations o),'[]'),
- 'categories',coalesce((SELECT items FROM configured WHERE group_key='catalogSalesCategory'),'[]'),
+ 'categories',coalesce((SELECT jsonb_agg(jsonb_build_object('value',key,'label',label) ORDER BY label,key)
+  FROM catalog_sales_category_options WHERE active),'[]'),
  'relationships',coalesce((SELECT items FROM configured WHERE group_key='catalogSalesRelationship'),'[]'),
  'roles',coalesce((SELECT items FROM configured WHERE group_key='catalogAppointmentRole'),'[]'))`
 

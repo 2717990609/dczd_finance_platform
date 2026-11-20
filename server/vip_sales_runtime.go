@@ -67,6 +67,7 @@ type vipRuntimeData struct {
 	Claims                       map[int64][]vipClaim
 	Definitions                  map[string]json.RawMessage
 	Users, Companies, Categories []vipLink
+	LocalCategories              []vipLink
 	BenefitReady                 bool
 	Organizations                []vipBenefitOrganization
 	PersonIDs                    map[string]int64
@@ -129,6 +130,8 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
  'companies',(SELECT jsonb_agg(to_jsonb(companies)) FROM companies),
  'categories',(SELECT jsonb_agg(jsonb_build_object('key',h.company_uuid,'value',h.category_uuid,'from',h.valid_from,'to',h.valid_to))
   FROM catalog_sales_categories h WHERE h.source='DCAI' AND h.observed_at=s.captured_at AND h.company_uuid IN (SELECT value FROM companies)),
+ 'localCategories',(SELECT jsonb_agg(jsonb_build_object('key',h.unit_id,'value',h.category_id,'from',h.valid_from,'to',h.valid_to))
+  FROM organization_sales_category_history h WHERE h.recorded_at IS NOT NULL AND h.unit_id IN (SELECT unit FROM companies)),
  'roles',(SELECT jsonb_agg(to_jsonb(roles)-'id' ORDER BY person,role,scope,key,"from","to") FROM roles),
  'memberships',(SELECT jsonb_agg(jsonb_build_object('person',` + vipPersonKey + `,'unit',a.unit_id,'kind',a.kind,'unitKind',u.kind,'from',a.valid_from,'to',a.valid_to)
    ORDER BY p.id,a.unit_id,a.kind,a.valid_from,a.valid_to)
@@ -213,7 +216,10 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 		return req, "SALES_COMPANY_CONFLICT"
 	}
 	req.Company, req.CompanyUnit = company.Value, company.Unit
-	category, conflict := resolveVIPLinkRecord(d.Categories, req.Company, sale.PaidAt)
+	category, conflict := resolveVIPLinkRecord(d.LocalCategories, req.CompanyUnit, sale.PaidAt)
+	if category.Key == "" && !conflict {
+		category, conflict = resolveVIPLinkRecord(d.Categories, req.Company, sale.PaidAt)
+	}
 	if conflict {
 		return req, "SALES_CATEGORY_CONFLICT"
 	}

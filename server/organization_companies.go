@@ -11,10 +11,10 @@ import (
 
 const organizationCompaniesSQL = `WITH matched AS (
  SELECT u.id,u.name,u.sales_company_type AS "companyType",u.status,parent.name AS "parentName",
-  c.name AS "categoryName",c.id AS "categoryId"
+  c.name AS "categoryName",c.id AS "categoryId",h.valid_from AS "categoryFrom"
  FROM organization_units u LEFT JOIN organization_units parent ON parent.id=u.parent_id
  LEFT JOIN LATERAL (
-  SELECT h.category_id FROM organization_sales_category_history h
+  SELECT h.category_id,h.valid_from FROM organization_sales_category_history h
   WHERE h.unit_id=u.id AND h.valid_from<=statement_timestamp() AND (h.valid_to IS NULL OR h.valid_to>statement_timestamp())
   ORDER BY h.valid_from DESC LIMIT 1
  ) h ON true LEFT JOIN organization_sales_categories c ON c.id=h.category_id
@@ -59,7 +59,7 @@ func (s workspace) organizationCompanyCategoryHistory(w http.ResponseWriter, r *
 	}
 	var result json.RawMessage
 	err := s.db.QueryRow(r.Context(), `SELECT coalesce(jsonb_agg(jsonb_build_object('categoryName',coalesce(c.name,''),
-	 'validFrom',h.valid_from,'validTo',h.valid_to) ORDER BY h.valid_from DESC),'[]')
+	 'validFrom',h.valid_from,'validTo',h.valid_to,'locallyAssigned',h.recorded_at IS NOT NULL) ORDER BY h.valid_from DESC),'[]')
 	 FROM organization_sales_category_history h LEFT JOIN organization_sales_categories c ON c.id=h.category_id WHERE h.unit_id=$1`, unit).Scan(&result)
 	respond(w, result, err)
 }
@@ -68,7 +68,9 @@ func importOrganizationSalesCategories(ctx context.Context, tx pgx.Tx, snapshot 
 	if len(snapshot.SalesCategories) != 0 {
 		if _, err := tx.Exec(ctx, `INSERT INTO organization_sales_categories(id,name,active)
 		 SELECT id,name,active FROM jsonb_to_recordset($1) AS i(id uuid,name text,active boolean)
-		 ON CONFLICT(id) DO UPDATE SET name=excluded.name,active=excluded.active`, snapshot.SalesCategories); err != nil {
+		 ON CONFLICT(id) DO UPDATE SET name=excluded.name,active=excluded.active,version=organization_sales_categories.version+1
+		 WHERE organization_sales_categories.recorded_at IS NULL
+		  AND (organization_sales_categories.name,organization_sales_categories.active) IS DISTINCT FROM (excluded.name,excluded.active)`, snapshot.SalesCategories); err != nil {
 			return err
 		}
 	}
@@ -76,9 +78,12 @@ func importOrganizationSalesCategories(ctx context.Context, tx pgx.Tx, snapshot 
 		return nil
 	}
 	if _, err := tx.Exec(ctx, `INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from,valid_to)
-	 SELECT u.id,i."categoryId",i."from",i."to"
+	 SELECT u.id,i."categoryId",i."from",least(i."to", managed.starts_at)
 	 FROM jsonb_to_recordset($1) AS i("unitId" uuid,"categoryId" uuid,"from" timestamptz,"to" timestamptz)
 	 LEFT JOIN organization_units u ON u.id=i."unitId" AND u.sales_company_type IS NOT NULL
+	 LEFT JOIN LATERAL (SELECT min(valid_from) AS starts_at FROM organization_sales_category_history h
+	  WHERE h.unit_id=u.id AND h.recorded_at IS NOT NULL) managed ON true
+	 WHERE managed.starts_at IS NULL OR i."from"<managed.starts_at
 	 ON CONFLICT(unit_id,valid_from) DO UPDATE SET category_id=excluded.category_id,valid_to=excluded.valid_to`, snapshot.SalesCategoryHistory); err != nil {
 		return err
 	}

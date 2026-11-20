@@ -184,7 +184,7 @@ defineExpose({refresh})
       :format-time="formatTime" :scopes="catalogScopes" :roles="catalogRoles"/>
   </KeepAlive>
   <KeepAlive>
-    <OrganizationCompanies v-if="panel==='companies'" ref="companies" :api="api" :format-time="formatTime"
+    <OrganizationCompanies v-if="panel==='companies'" ref="companies" :api="api" :format-time="formatTime" :can-write="canWrite"
       @show-appointments="showCompanyAppointments" @show-duties="showDuties"/>
   </KeepAlive>
   <KeepAlive>

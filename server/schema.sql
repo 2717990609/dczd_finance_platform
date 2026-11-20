@@ -1299,3 +1299,17 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('organizationDuty','PRACTICE_RESOURCE_RECOMMENDATION','实战班资源推荐',20,'{"scopes":["PRODUCT","PROJECT"],"subjects":["PERSON","ORGANIZATION"]}'),
  ('organizationDuty','PRACTICE_TEAM_DIRECTOR','实战班团队总监',30,'{"scopes":["PRODUCT","PROJECT"],"subjects":["PERSON","ORGANIZATION"]}')
  ON CONFLICT DO NOTHING;
+
+ALTER TABLE organization_sales_categories
+ ADD COLUMN IF NOT EXISTS version bigint NOT NULL DEFAULT 1,
+ ADD COLUMN IF NOT EXISTS recorded_at timestamptz,
+ ADD COLUMN IF NOT EXISTS recorded_by uuid REFERENCES finance_accounts(id);
+ALTER TABLE organization_sales_category_history
+ ADD COLUMN IF NOT EXISTS recorded_at timestamptz,
+ ADD COLUMN IF NOT EXISTS recorded_by uuid REFERENCES finance_accounts(id);
+
+CREATE OR REPLACE VIEW catalog_sales_category_options AS
+ SELECT id::text AS key,name AS label,active FROM organization_sales_categories
+ UNION ALL
+ SELECT option_key,label,enabled FROM configuration_options o WHERE group_key='catalogSalesCategory'
+ AND NOT EXISTS(SELECT 1 FROM organization_sales_categories c WHERE c.id::text=o.option_key);
