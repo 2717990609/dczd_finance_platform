@@ -188,6 +188,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .catalog-add-condition { border-bottom: 1px solid var(--line); margin-bottom: 6px; padding-bottom: 6px; }
 .catalog-staged-entries { list-style: none; padding: 0; }
 .catalog-staged-entries > li { display: flex; justify-content: space-between; align-items: center; gap: 5px; }
+.catalog-staged-entries > li > div:first-child { min-width: 0; overflow-wrap: anywhere; }
+.catalog-staged-entries .order-version { display: inline; margin-inline-start: 6px; white-space: nowrap; }
 .draft-detail-search { margin-bottom: 12px; }
 .draft-detail-fields { display: flex; flex-wrap: wrap; align-items: end; gap: 9px 12px; padding: 11px 14px; }
 .draft-detail-fields > div { min-width: 0; }

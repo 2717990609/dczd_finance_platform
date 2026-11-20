@@ -1,5 +1,5 @@
 <script setup>
-import { nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import { catalogFlatMethods, catalogPayeeComplete, catalogRateConditionBody, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
@@ -9,6 +9,7 @@ const emit = defineEmits(['rate-staged'])
 const draft = defineModel({type:Object,required:true})
 const editing = defineModel('editing', {type:Boolean,default:false})
 const form = ref()
+const revising = computed(() => form.value?.itemIndex!=null || form.value?.rowNumber || form.value?.draftKey)
 const itemName = ref()
 const error = ref('')
 let nextDraftKey = 0
@@ -32,6 +33,23 @@ function begin(kind,scope) {
 }
 async function addRecipient() {
   begin('item')
+  await nextTick()
+  itemName.value?.focus()
+}
+async function editRecipient(index) {
+  const {fixedMinor,rateBps,rows,...payee} = draft.value.items[index]
+  error.value = ''
+  form.value = {
+    ...payee,kind:'item',itemIndex:index,
+    format:rows?.length ? 'table' : fixedMinor!=null ? 'fixed' : 'rate',
+    rate:rateBps==null ? undefined : String(rateBps/100),
+    amount:fixedMinor==null ? undefined : String(fixedMinor/100),
+    rows:rows?.map(row=>({
+      scope:row.companyIds?.length ? 'company' : row.categoryIds?.length ? 'category' : 'general',
+      companyIds:[...(row.companyIds || [])],categoryIds:[...(row.categoryIds || [])],
+      relationship:row.relationship,payee:row.payee,rate:String(row.rateBps/100),
+    })) || [blankCondition()],
+  }
   await nextTick()
   itemName.value?.focus()
 }
@@ -72,7 +90,8 @@ function stage() {
         item.fixedMinor = moneyAsMinor(staged.amount)
         if (item.fixedMinor===undefined) throw new Error('请填写有效金额，最多保留两位小数。')
       } else item.rows = staged.rows.map(row=>catalogRateConditionBody(row))
-      draft.value.items.push(item)
+      if (staged.itemIndex==null) draft.value.items.push(item)
+      else draft.value.items.splice(staged.itemIndex,1,item)
     }
     cancel()
   } catch (err) {
@@ -100,8 +119,8 @@ defineExpose({addRecipient,editRateScope,addRateCondition:scope=>begin('row',sco
         <a-form-item label="计提方式" html-for="catalog-add-format">
           <a-select id="catalog-add-format" v-model:value="form.format" :options="formats"/>
         </a-form-item>
-        <a-form-item v-if="form.format==='rate'" label="新增比例（%）" html-for="catalog-add-fixed" required>
-          <a-input-number id="catalog-add-fixed" aria-label="新增比例（%）" v-model:value="form.rate"
+        <a-form-item v-if="form.format==='rate'" label="比例（%）" html-for="catalog-add-fixed" required>
+          <a-input-number id="catalog-add-fixed" aria-label="比例（%）" v-model:value="form.rate"
             :min="0" :max="100" :precision="2" string-mode/>
         </a-form-item>
         <a-form-item v-else-if="form.format==='fixed'" label="金额（元/笔）" html-for="catalog-add-amount" required>
@@ -118,13 +137,22 @@ defineExpose({addRecipient,editRateScope,addRateCondition:scope=>begin('row',sco
         </template>
       </template>
       <div class="form-actions">
-        <a-button @click="cancel">取消添加</a-button>
-        <a-button type="primary" @click="stage">{{ form.kind==='item' ? '加入规则' : form.rowNumber || form.draftKey ? '应用修改' : '加入比例表' }}</a-button>
+        <a-button @click="cancel">{{ revising ? '取消编辑' : '取消添加' }}</a-button>
+        <a-button type="primary" @click="stage">
+          {{ revising ? '应用修改' : form.kind==='item' ? '加入规则' : '加入比例表' }}
+        </a-button>
       </div>
     </div>
     <ul v-if="draft.items.length" class="catalog-staged-entries" aria-label="待发布新增配置">
       <li v-for="(item,index) in draft.items" :key="'item-'+index">
-        <span>{{ itemLabel(item) }}</span><a-button type="link" size="small" @click="draft.items.splice(index,1)">移除</a-button>
+        <div>
+          <span>{{ itemLabel(item) }}</span>
+          <small class="order-version">未保存</small>
+        </div>
+        <a-space :size="0">
+          <a-button type="link" size="small" :disabled="!!form" @click="editRecipient(index)">编辑</a-button>
+          <a-button type="link" size="small" danger :disabled="!!form" @click="draft.items.splice(index,1)">移除</a-button>
+        </a-space>
       </li>
     </ul>
   </section>
