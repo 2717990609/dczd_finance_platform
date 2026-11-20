@@ -1,12 +1,15 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { RadioGroup } from 'ant-design-vue'
 
-const props = defineProps({ api:Function, formatMoney:Function, productId:Number, views:Array, dimensions:Array, unitId:String, month:String })
+const props = defineProps({ api:Function, formatMoney:Function, productId:Number, views:Array, dimensions:Array,
+  unitId:String, unitName:String, month:String, resume:Object })
 const month = computed(() => props.month)
 const view = defineModel('view', {type:String})
 const dimension = defineModel('dimension', {type:String})
-const page = ref(1)
-const snapshot = ref('')
+const page = ref(props.resume?.page ?? 1)
+const snapshot = ref(props.resume?.snapshot ?? '')
+const periodsOpen = ref(props.resume?.periodsOpen ?? false)
 const report = ref()
 const loading = ref(false)
 const error = ref('')
@@ -14,13 +17,13 @@ let sequence = 0
 
 const dimensionLabel = computed(() => props.dimensions.find(option => option.value === dimension.value)?.label)
 const columns = computed(() => [
-  {title:dimensionLabel.value,dataIndex:'name',key:'name',width:175},
-  {title:'净业绩',dataIndex:'performanceMinor',key:'performanceMinor',width:120,align:'right'},
+  {title:dimensionLabel.value,dataIndex:'name',key:'name',width:135},
+  {title:'净业绩',dataIndex:'performanceMinor',key:'performanceMinor',width:108,align:'right'},
+  {title:'净分润',dataIndex:'totalMinor',key:'totalMinor',width:108,align:'right'},
   {title:'计提分润',dataIndex:'accruedMinor',key:'accruedMinor',width:115,align:'right'},
   {title:'退款扣减',dataIndex:'refundMinor',key:'refundMinor',width:110,align:'right'},
   {title:'受益人更正',dataIndex:'correctionMinor',key:'correctionMinor',width:120,align:'right'},
   {title:'团队池分配',dataIndex:'allocationMinor',key:'allocationMinor',width:120,align:'right'},
-  {title:'净分润',dataIndex:'totalMinor',key:'totalMinor',width:120,align:'right'},
 ])
 const periodColumns = [
   {title:'产品',dataIndex:'productName',key:'product',width:150},
@@ -37,7 +40,7 @@ const periodKinds = {calendar:'固定账期', class:'开班期次', refund_month
 const pendingCount = computed(() => report.value?.periods.filter(period => period.status === 'PENDING' || period.status === 'NOT_CALCULATED').length || 0)
 const unresolvedCount = computed(() => report.value?.periods.filter(period => period.issueCount>0 && period.status !== 'SETTLED').length || 0)
 const includedCount = computed(() => report.value?.periods.filter(period => period.version != null).length || 0)
-const pagination = computed(() => ({current:page.value,pageSize:25,total:report.value?.total || 0,showSizeChanger:false}))
+const pagination = computed(() => ({current:page.value,pageSize:25,total:report.value?.total || 0,showSizeChanger:false,hideOnSinglePage:true}))
 
 async function load() {
   const request = ++sequence
@@ -87,7 +90,9 @@ watch(() => props.dimensions, choices => {
 }, {immediate:true})
 watch([month,view,() => props.productId,() => props.unitId,dimension], (values, previous) => {
   report.value = undefined
-  if (values.slice(0,4).some((value,index) => value!==previous[index])) {
+  if (!previous.length && props.resume) {
+    load()
+  } else if (values.slice(0,4).some((value,index) => value!==previous[index])) {
     refresh()
   } else {
     page.value = 1
@@ -95,7 +100,10 @@ watch([month,view,() => props.productId,() => props.unitId,dimension], (values, 
   }
 }, {immediate:true})
 onBeforeUnmount(() => { sequence++ })
-defineExpose({refresh})
+function browseState() {
+  return {page:page.value,snapshot:snapshot.value,periodsOpen:periodsOpen.value}
+}
+defineExpose({refresh,browseState})
 </script>
 
 <template>
@@ -103,11 +111,17 @@ defineExpose({refresh})
     <div class="draft-toolbar monthly-filters">
       <label for="monthly-report-view">结果范围</label>
       <a-select id="monthly-report-view" v-model:value="view" :options="views"/>
-      <label for="monthly-report-dimension">汇总维度</label>
-      <a-select id="monthly-report-dimension" v-model:value="dimension" :options="dimensions"/>
+      <div class="monthly-dimensions">
+        <span id="monthly-dimension-label">汇总维度</span>
+        <RadioGroup v-model:value="dimension" :options="dimensions" option-type="button" button-style="solid"
+          role="radiogroup" aria-labelledby="monthly-dimension-label"/>
+      </div>
+      <span v-if="unitName" class="monthly-scope">组织范围 · {{ unitName }}</span>
     </div>
   </section>
-  <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon/>
+  <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon>
+    <template #action><a-button size="small" @click="refresh">刷新汇总</a-button></template>
+  </a-alert>
   <template v-if="report">
     <a-alert v-if="pendingCount" class="feedback" type="warning" :message="
       pendingCount+' 个核算期待试算。尚无草稿的期次暂无金额，已有草稿的期次显示最近一次结果。'" show-icon/>
@@ -127,7 +141,7 @@ defineExpose({refresh})
     <section class="records">
       <div class="records-head"><h2>{{ dimensionLabel }}汇总</h2></div>
       <a-table :columns="columns" :data-source="report.items" :loading="loading" :pagination="pagination" row-key="id"
-        :scroll="{x:880}" @change="changePage">
+        :scroll="{x:816}" @change="changePage">
         <template #bodyCell="{column,text,record}">
           <template v-if="column.key==='name'">{{ text }}<small v-if="record.subtitle" class="order-version">{{ record.subtitle }}</small></template>
           <strong v-else-if="column.key==='totalMinor'" class="numeric">{{ formatMoney(text) }}</strong>
@@ -136,11 +150,11 @@ defineExpose({refresh})
         <template #emptyText>本月暂无汇总记录</template>
       </a-table>
     </section>
-    <details v-if="report.periods.length" class="records monthly-periods">
+    <details v-if="report.periods.length" :open="periodsOpen" class="records monthly-periods" @toggle="periodsOpen=$event.currentTarget.open">
       <summary>核算范围（{{ report.periods.length }} 期）</summary>
       <a-table :columns="periodColumns" :data-source="report.periods" row-key="id" :pagination="{pageSize:10,showSizeChanger:false}" :scroll="{x:785}">
         <template #bodyCell="{column,record,text}">
-          <template v-if="column.key==='name'"><a :href="'#settlement?periodId='+record.id">{{ text }}</a><small class="order-version">{{ periodKinds[record.kind] }}</small></template>
+          <template v-if="column.key==='name'"><a :href="'#settlement?periodId='+record.id+'&from=monthly'">{{ text }}</a><small class="order-version">{{ periodKinds[record.kind] }}</small></template>
           <span v-else-if="column.key==='dates'">{{ record.startsOn }} 至 {{ record.endsOn }}</span>
           <template v-else-if="column.key==='status'">
             <a-tag :color="statuses[record.status].color">{{ statuses[record.status].label }}</a-tag>
@@ -158,6 +172,9 @@ defineExpose({refresh})
 
 <style scoped>
 .monthly-filters .ant-select { min-width: 108px; }
+.monthly-dimensions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.monthly-scope { color: var(--muted); font-size: 13px; margin-inline-start: auto; }
 .monthly-periods { margin-top: 16px; }
 .monthly-periods > summary { padding: 12px 16px; cursor: pointer; font-weight: 600; }
+@media (max-width: 680px) { .monthly-scope { margin-inline-start: 0; } }
 </style>

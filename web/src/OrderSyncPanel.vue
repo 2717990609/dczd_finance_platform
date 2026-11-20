@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 
 const props = defineProps({api:Function, streams:Array, formatTime:Function, target:Object})
 const emit = defineEmits(['updated'])
@@ -9,6 +9,7 @@ const form = ref({fromDate:''})
 const submitting = ref(false)
 const formError = ref('')
 const loadError = ref('')
+const expanded = ref(false)
 let readSequence = 0
 let timer
 let closed = false
@@ -17,6 +18,8 @@ const busy = row => row.status === 'QUEUED' || row.status === 'RUNNING'
 const label = stream => props.streams.find(item => item.value === stream)?.label || stream
 const visibleRows = computed(() => rows.value.filter(row => props.streams.some(option => option.value === row.stream))
   .sort((a,b) => Number(b.stream === props.target?.stream) - Number(a.stream === props.target?.stream)))
+const activeCount = computed(() => visibleRows.value.filter(busy).length)
+watch(() => props.target, target => { expanded.value = Boolean(target?.stream) }, {immediate:true})
 const badge = row => {
   if (!row.sourceMatches) return ['来源连接待核对', 'orange']
   if (row.unverifiedSource) return ['存在未绑定的订单数据', 'orange']
@@ -87,23 +90,34 @@ defineExpose({reload})
 
 <template>
   <section class="records order-sync" aria-label="订单同步">
-    <div class="records-head"><h2>订单同步</h2></div>
-    <a-alert v-if="loadError" type="error" :message="loadError" show-icon/>
-    <ul v-if="visibleRows.length" class="sync-streams">
-      <li v-for="row in visibleRows" :key="row.stream" :class="{'sync-target':row.stream===target?.stream}">
-        <div class="sync-detail">
-          <strong>{{ label(row.stream) }}</strong>
-          <a-tag :color="badge(row)[1]" aria-live="polite">{{ badge(row)[0] }}</a-tag>
-          <small v-if="row.completedThrough">同步至 {{ formatTime(row.completedThrough) }}</small>
-          <small v-if="row.targetThrough && row.scannedOrders">已读取 {{ row.scannedOrders }} {{ row.source==='DCZD' ? '条业务记录' : '笔订单' }}</small>
-          <small v-if="row.status === 'SUCCEEDED' && row.sourceMatches">{{ row.newVersions ? '新增 '+row.newVersions+' 个版本' : '订单版本无变化' }}</small>
-          <small v-if="row.message" class="sync-message">{{ row.message }}</small>
-        </div>
-        <a-button :disabled="busy(row) || !row.sourceMatches || row.unverifiedSource" @click="open(row)">
-          {{ row.targetThrough || row.status === 'FAILED' || row.lastSyncFailed ? '继续同步' : '同步订单' }}
-        </a-button>
-      </li>
-    </ul>
+    <div class="records-head">
+      <div class="sync-header">
+        <h2>订单同步</h2>
+        <span v-if="loadError" class="sync-header-status" role="status">状态读取失败</span>
+        <span v-else-if="activeCount" class="sync-header-status" role="status">{{ activeCount }} 项同步任务处理中</span>
+      </div>
+      <a-button size="small" :aria-expanded="expanded" aria-controls="order-sync-streams" @click="expanded=!expanded">
+        {{ expanded ? '收起同步管理' : '展开同步管理' }}
+      </a-button>
+    </div>
+    <div v-show="expanded" id="order-sync-streams">
+      <a-alert v-if="loadError" type="error" :message="loadError" show-icon/>
+      <ul v-if="visibleRows.length" class="sync-streams">
+        <li v-for="row in visibleRows" :key="row.stream" :class="{'sync-target':row.stream===target?.stream}">
+          <div class="sync-detail">
+            <strong>{{ label(row.stream) }}</strong>
+            <a-tag :color="badge(row)[1]" aria-live="polite">{{ badge(row)[0] }}</a-tag>
+            <small v-if="row.completedThrough">同步至 {{ formatTime(row.completedThrough) }}</small>
+            <small v-if="row.targetThrough && row.scannedOrders">已读取 {{ row.scannedOrders }} {{ row.source==='DCZD' ? '条业务记录' : '笔订单' }}</small>
+            <small v-if="row.status === 'SUCCEEDED' && row.sourceMatches">{{ row.newVersions ? '新增 '+row.newVersions+' 个版本' : '订单版本无变化' }}</small>
+            <small v-if="row.message" class="sync-message">{{ row.message }}</small>
+          </div>
+          <a-button :disabled="busy(row) || !row.sourceMatches || row.unverifiedSource" @click="open(row)">
+            {{ row.targetThrough || row.status === 'FAILED' || row.lastSyncFailed ? '继续同步' : '同步订单' }}
+          </a-button>
+        </li>
+      </ul>
+    </div>
   </section>
   <a-drawer :open="!!selected" title="同步订单" :width="'min(440px, 100vw)'" @close="!submitting && (selected = undefined)">
     <div v-if="selected" role="dialog" aria-label="同步订单">
@@ -123,6 +137,8 @@ defineExpose({reload})
 
 <style scoped>
 .order-sync { margin-bottom: 16px; }
+.sync-header { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.sync-header-status { color: var(--muted); font-size: 13px; }
 .sync-streams { list-style: none; margin: 0; padding: 0; }
 .sync-streams li { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 15px; border-top: 1px solid var(--line); }
 .sync-streams li.sync-target { background: var(--accent-soft); }

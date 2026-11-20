@@ -1,7 +1,7 @@
 <script setup>
 import { computed, defineAsyncComponent, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  BankOutlined, CloudSyncOutlined, PlusOutlined, ReloadOutlined, RightOutlined,
+  BankOutlined, CloudSyncOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined,
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import DraftWorkbench from './DraftWorkbench.vue'
@@ -73,6 +73,9 @@ const workspaceMonth = ref(new Intl.DateTimeFormat('sv-SE', {year:'numeric',mont
 const usesWorkspaceMonth = computed(() => ['settlement','monthly'].includes(current.value))
 const monthlyView = ref()
 const monthlyDimension = ref()
+const periodFromMonthly = ref(false)
+const monthlyReturn = ref()
+const monthlyResume = ref()
 const orderSync = ref()
 const orderDetails = ref()
 const rateRule = ref()
@@ -98,6 +101,7 @@ let sessionRequest = 0
 const configuration = ref({})
 const configurationReady = ref(false)
 const scopeUnits = ref()
+const selectedUnit = computed(() => scopeUnits.value?.find(unit=>unit.id===unitScope.value))
 const options = group => configuration.value[group] || []
 const firstOption = group => options(group)[0]?.value
 const optionLabel = (group, value) => options(group).find(option => option.value === value)?.label || value
@@ -339,6 +343,7 @@ function refreshWorkspace() {
   orderSync.value?.reload()
 }
 function changeRoute() {
+  const previous = current.value
   const [key, query] = location.hash.slice(1).split('?', 2)
   current.value = getRoute(key)
   if (active.value) lastWorkspacePages.value[active.value.area] = current.value
@@ -346,6 +351,23 @@ function changeRoute() {
   const periodID = Number(params.get('periodId'))
   requestedPeriod.value = key === 'settlement' && current.value === key && Number.isSafeInteger(periodID) && periodID > 0 ? periodID : undefined
   requestedReview.value = Boolean(requestedPeriod.value && params.get('view') === 'review')
+  const fromMonthly = Boolean(requestedPeriod.value && params.get('from') === 'monthly')
+  monthlyResume.value = undefined
+  if (fromMonthly && previous === 'monthly') {
+    monthlyReturn.value = {month:workspaceMonth.value,view:monthlyView.value,dimension:monthlyDimension.value,
+      product:productScope.value,unit:unitScope.value,browse:monthlyReport.value?.browseState()}
+  }
+  if (current.value === 'monthly' && previous === 'settlement' && periodFromMonthly.value && monthlyReturn.value) {
+    const saved = monthlyReturn.value
+    workspaceMonth.value = saved.month
+    monthlyView.value = saved.view
+    monthlyDimension.value = saved.dimension
+    productScope.value = saved.product
+    unitScope.value = saved.unit
+    monthlyResume.value = saved.browse
+  }
+  if (!fromMonthly) monthlyReturn.value = undefined
+  periodFromMonthly.value = fromMonthly
   const returnPeriod = Number(params.get('returnPeriodId'))
   const isOrders = key === 'orders' && current.value === key
   const stream = params.get('stream')
@@ -383,6 +405,9 @@ function clearWorkspace() {
   orderSyncTarget.value = undefined
   orderSyncReturnPeriod.value = undefined
   workbenchPeriod.value = undefined
+  periodFromMonthly.value = false
+  monthlyReturn.value = undefined
+  monthlyResume.value = undefined
   orderDetails.value = undefined
   drawer.value = ''
   draft.value = {}
@@ -773,8 +798,9 @@ async function save() {
         <section class="workspace-page-head">
           <div class="workspace-page-title">
             <h1>{{ active.title }}</h1>
+            <a v-if="periodFromMonthly" class="workspace-return" href="#monthly"><LeftOutlined aria-hidden="true"/>返回月度汇总</a>
             <div v-if="actions && canOpenAction" class="topbar-actions">
-              <a v-if="orderSyncReturnPeriod" :href="'#settlement?periodId='+orderSyncReturnPeriod+'&view=review'">返回结算核对</a>
+              <a v-if="orderSyncReturnPeriod" class="workspace-return" :href="'#settlement?periodId='+orderSyncReturnPeriod+'&view=review'"><LeftOutlined aria-hidden="true"/>返回结算核对</a>
               <a-button type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
             </div>
           </div>
@@ -796,7 +822,8 @@ async function save() {
         <template v-else-if="current==='monthly'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <MonthlyReport ref="monthlyReport" :month="workspaceMonth" v-model:view="monthlyView" v-model:dimension="monthlyDimension"
-            :api="api" :format-money="formatMoney" :product-id="productScope" :unit-id="unitScope"
+            :api="api" :format-money="formatMoney" :product-id="productScope" :unit-id="unitScope" :unit-name="selectedUnit?.name"
+            :resume="monthlyResume"
             :views="options('monthlyReportView')" :dimensions="options('draftReportDimension')"/>
         </template>
         <template v-else-if="current==='organization'">
