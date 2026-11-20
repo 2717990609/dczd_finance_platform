@@ -7,11 +7,14 @@ import { catalogRatePriorityLabel, exceptionCompanyIDs, ruleComponentLabel, stan
 const props = defineProps({
   rule: Object, canCopy: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
   formatTime: Function, formatMoney: Function, people: Array, openingLabel: Function, title: String, recipients: Object,
-  embedded: Boolean,
+  embedded: Boolean, component: String,
 })
 const emit = defineEmits(['close','copy'])
 const loadedRecipients = ref()
-const activePart = ref(props.embedded || props.rule.components.length===1 ? 0 : undefined)
+const match = /^period:([^:]+):(\d+)$/.exec(props.component || '')
+const selectedPart = match ? Number(match[2]) : undefined
+const activePart = ref(match && props.rule.components[selectedPart]?.type===match[1]
+  ? selectedPart : props.embedded || props.rule.components.length===1 ? 0 : undefined)
 const directoryError = ref('')
 const directory = computed(() => loadedRecipients.value ?? props.recipients)
 const label = (group, key) => props.optionLabel(group, key) || key

@@ -704,6 +704,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
    CASE WHEN o.id IS NULL THEN e.paid_order_ids END AS "enrollmentOrderIds",
    CASE WHEN r.id IS NOT NULL AND starts_with(i.component_type,'period:')
      THEN r.components->(split_part(i.component_type,':',3)::int)->'periodBenefit'->>'label' END AS "componentLabel",
+   CASE WHEN starts_with(i.component_type,'period:') THEN r.version END AS "ruleVersion",
    CASE WHEN i.recovery_person_id IS NOT NULL THEN jsonb_build_object(
      'personName',recipient.name,'personId',recipient.id,'amountMinor',i.recovery_minor,'originalPeriod',original_period.name,
      'ruleVersion',coalesce(original_rule.version,original_catalog_rule.version_no))
@@ -789,7 +790,12 @@ const draftRuleReferenceSQL = `SELECT rule_id,catalog_rule_id::text,component_ty
  UNION ALL
  SELECT l.rule_id,l.catalog_rule_id::text,l.component_type,false FROM calculation_draft_corrections c
  JOIN calculation_draft_lines l ON l.id=c.original_line_id
- WHERE $3::text='corrections' AND c.period_id=$1 AND c.id=$2`
+ WHERE $3::text='corrections' AND c.period_id=$1 AND c.id=$2
+ UNION ALL
+ SELECT d.rule_id,NULL::text,i.component_type,false FROM calculation_draft_issues i
+ JOIN calculation_drafts d ON d.period_id=i.period_id
+ WHERE $3::text='issues' AND i.period_id=$1 AND i.id=$2 AND d.rule_id IS NOT NULL
+  AND starts_with(i.component_type,'period:')`
 
 type draftRuleDetails struct {
 	Rule      json.RawMessage       `json:"rule,omitempty"`
@@ -805,7 +811,7 @@ func (s workspace) getDraftRule(w http.ResponseWriter, r *http.Request) {
 	rowID, rowErr := strconv.ParseInt(query.Get("rowId"), 10, 64)
 	section := query.Get("section")
 	if periodErr != nil || periodID < 1 || rowErr != nil || rowID < 1 ||
-		section != "lines" && section != "refunds" && section != "corrections" {
+		section != "lines" && section != "refunds" && section != "corrections" && section != "issues" {
 		respond(w, nil, invalid)
 		return
 	}

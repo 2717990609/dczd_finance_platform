@@ -1019,7 +1019,7 @@ async function showAppliedRule(selection) {
   const request = appliedRule.value
   try {
     const result = await api('/drafts/rule?'+new URLSearchParams(selection))
-    if (appliedRule.value === request) appliedRule.value = result
+    if (appliedRule.value === request) appliedRule.value = {...result,fromIssue:selection.section==='issues'}
   } catch (err) {
     if (appliedRule.value === request) appliedRule.value = {error:err.message}
   }
@@ -1845,7 +1845,8 @@ async function save() {
     @close="catalogScenarioCreation=undefined" @published="catalogScenarioPublished"/>
   <RuleVersionDetails v-if="viewedRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="viewedRule" :can-copy="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId))"
-    :title="appliedRule?.rule ? '计提使用的规则' : undefined"
+    :title="appliedRule?.rule ? (appliedRule.fromIssue ? '试算使用的规则' : '计提使用的规则') : undefined"
+    :component="appliedRule?.rule ? appliedRule.component : undefined"
     :recipients="appliedRule?.directory"
     :class-product="data.products.find(product => product.id===viewedRule.productId)?.periodMode==='class'"
     :api="api" :people="data.people" :option-label="optionLabel" :opening-label="savedOpeningLabel"

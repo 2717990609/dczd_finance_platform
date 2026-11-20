@@ -442,6 +442,47 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 		}
 	}
 
+	const appointmentID = "40000000-0000-4000-8000-000000000004"
+	if _, err := s.db.Exec(ctx, "DELETE FROM organization_assignments WHERE id=$1", appointmentID); err != nil {
+		t.Fatal(err)
+	}
+	result, err = s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var detail struct {
+		Issues []struct {
+			ID, RuleVersion                 int64
+			Code, Component, ComponentLabel string
+		}
+	}
+	if err := s.db.QueryRow(ctx, draftDetailSQL, period, 0, 0, result.(draftSummary).Version, 0, 0).Scan(&detail); err != nil {
+		t.Fatal(err)
+	}
+	if len(detail.Issues) != 1 || detail.Issues[0].Code != "PRACTICE_PERIOD_APPOINTMENT_MISSING" ||
+		detail.Issues[0].ComponentLabel != "小组负责人" || detail.Issues[0].RuleVersion != 1 {
+		t.Fatalf("unexpected saved practice issue: %+v", detail.Issues)
+	}
+	response := httptest.NewRecorder()
+	params := "?section=issues&periodId=" + strconv.FormatInt(period, 10) + "&rowId=" + strconv.FormatInt(detail.Issues[0].ID, 10)
+	s.getDraftRule(response, httptest.NewRequest(http.MethodGet, "/api/v1/drafts/rule"+params, nil))
+	var applied struct {
+		Component string
+		Rule      struct {
+			ID         int64
+			Components []component
+		}
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &applied); err != nil || response.Code != http.StatusOK ||
+		applied.Rule.ID != ruleID || applied.Component != "period:manager:0" ||
+		len(applied.Rule.Components) != 3 || applied.Rule.Components[0].PeriodBenefit.Label != "小组负责人" {
+		t.Fatalf("could not open the saved issue's arrangement: %d %s (%v)", response.Code, response.Body.String(), err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from)
+	 VALUES($1,$2,$3,'MANAGER',$4)`, appointmentID, manager, group, at); err != nil {
+		t.Fatal(err)
+	}
+
 	seller := id(s.createPerson(ctx, createPersonInput{Name: "成交销售"}))
 	const nextDepartment = "40000000-0000-4000-8000-000000000006"
 	const nextGroup = "40000000-0000-4000-8000-000000000007"

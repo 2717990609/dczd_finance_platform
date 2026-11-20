@@ -591,7 +591,10 @@ async function loadMore(section, cursorName) {
           <template v-else-if="column.key === 'reason'">
             <a-tag v-if="record.advisory" color="blue">提示</a-tag>{{ reason[record.code] || record.code }}
             <small v-if="record.code==='SALES_COMPANY_REVIEW'" class="order-version">请在大春 AI 核对成交人和销售公司，更正后重新拉取。</small>
-            <small v-if="issueRuleLink && ruleIssues.has(record.code)" class="order-version"><a :href="issueRuleLink">查看产品规则</a></small>
+            <small v-if="record.componentLabel && record.ruleVersion" class="order-version">
+              <button type="button" class="order-link" @click="showAppliedRule('issues',record)">查看试算规则 v{{ record.ruleVersion }}</button>
+            </small>
+            <small v-else-if="issueRuleLink && ruleIssues.has(record.code)" class="order-version"><a :href="issueRuleLink">查看产品规则</a></small>
             <template v-if="record.recovery">
               <small class="order-version">{{ record.recovery.personName }}（人员 {{ record.recovery.personId }}） · {{ formatMoney(-record.recovery.amountMinor) }}</small>
               <a-button v-if="canReviewRecovery" type="link" size="small" :disabled="refreshStatus?.pending || calculating || savingRecovery" @click="openRecovery(record)">登记扣回处理</a-button>
