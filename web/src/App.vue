@@ -1097,7 +1097,7 @@ function ruleComponentBody(row) {
       }
       return {
         companies,
-        ...(byCategory ? {salesCategoryIds:category.salesCategoryIds} : category.label ? {label:category.label} : {}),
+        ...(byCategory ? {salesCategoryIds:category.salesCategoryIds} : {}),
         ...value(category),
         ...(category.overrides.length ? {overrides:category.overrides.map(override=>{
           if (!override.companyIds?.length) throw new Error('请选择采用单独标准的公司')
@@ -1590,7 +1590,8 @@ async function save() {
       <RuleImpactPreview v-model:busy="ruleImpactBusy" :periods="previewPeriods" :period-id="rulePreview.periodId"
         :simulate="compareComponentRule" :format-money="formatMoney"/>
     </div>
-    <a-form v-show="!rulePreview" id="finance-edit-form" :model="draft" layout="vertical" @finish="save">
+    <a-form v-show="!rulePreview" id="finance-edit-form" :model="draft" layout="vertical"
+      :size="drawer==='rule' ? 'small' : 'middle'" @finish="save">
       <template v-if="drawer==='product'">
         <a-form-item label="产品名称" required><a-input v-model:value="draft.name" aria-label="产品名称" :maxlength="80"/></a-form-item>
         <a-form-item label="产品编码" required><a-input v-model:value="draft.code" aria-label="产品编码" :maxlength="48"/></a-form-item>
@@ -1674,7 +1675,7 @@ async function save() {
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
             <a-dropdown v-if="recipientChoices.length" :trigger="['click']">
-              <a-button>添加收款安排 <DownOutlined aria-hidden="true"/></a-button>
+              <a-button size="small">添加收款安排 <DownOutlined aria-hidden="true"/></a-button>
               <template #overlay>
                 <a-menu @click="({key})=>addRuleComponent(key)">
                   <a-menu-item v-for="choice in recipientChoices" :key="choice.type" :disabled="choice.disabled">
@@ -1701,11 +1702,7 @@ async function save() {
             <a-form-item v-if="classRule" :html-for="'rule-member-'+i" label="适用报名">
               <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="classMemberChoices(c)" @change="resetAmountMode(c)"/>
             </a-form-item>
-            <a-button v-if="draft.components.length>1" type="link" danger class="rule-remove"
-              @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
-          </div>
-          <div v-if="['sales','referral'].includes(c.type)" class="rule-item-heading">
-            <a-form-item :html-for="'rule-source-role-'+i" label="从订单取收款人" required>
+            <a-form-item v-if="['sales','referral'].includes(c.type)" :html-for="'rule-source-role-'+i" label="从订单取收款人" required>
               <a-select :id="'rule-source-role-'+i" v-model:value="c.sourceRole" :options="componentSourceRoles(c.sourceRole)"
                 placeholder="选择订单角色" show-search option-filter-prop="label"/>
             </a-form-item>
@@ -1714,9 +1711,7 @@ async function save() {
               <a-select :id="'rule-sales-companies-'+i" v-model:value="c.salesCompanies" :options="options('practiceSalesCompany')"
                 mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label" placeholder="不限公司"/>
             </a-form-item>
-          </div>
-          <template v-if="!['period_rate','company_sales'].includes(c.mode)">
-            <div class="rule-item-heading">
+            <template v-if="c.mode!=='period_rate'">
               <a-form-item :html-for="'rule-mode-'+i" label="计算方式">
                 <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
               </a-form-item>
@@ -1725,13 +1720,14 @@ async function save() {
                 <a-input-number :id="'rule-amount-'+i" v-model:value="c.amount"
                   :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
               </a-form-item>
-            </div>
-            <p v-if="c.mode==='rate'" class="rule-formula">{{ classRule ? '报名净实收' : '付款实收' }} × 计提比例</p>
-            <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')"
-              :start-modes="options('tierStartMode')" :amounts="baseModes" :people="classPeopleOptions"
-              :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"
-              :retrain-unavailable="draft.components.some(other=>other!==c && other.type==='sales' && matchesPracticeMember(other,'retrain'))"/>
-          </template>
+            </template>
+            <a-button v-if="draft.components.length>1" type="link" danger class="rule-remove"
+              @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
+          </div>
+          <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')"
+            :start-modes="options('tierStartMode')" :amounts="baseModes" :people="classPeopleOptions"
+            :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"
+            :retrain-unavailable="draft.components.some(other=>other!==c && other.type==='sales' && matchesPracticeMember(other,'retrain'))"/>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
             :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')" :sales-units="salesUnitOptions"

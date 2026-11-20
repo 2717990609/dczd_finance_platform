@@ -11,13 +11,20 @@ const scopes = computed(() => [
   {value:'company',label:'公司特例'},
   {value:'general',label:'不限公司和类别'},
 ])
+
+function changeScope(next) {
+  if (value.value.scope===next) return
+  value.value.scope = next
+  value.value.companyIds = []
+  value.value.categoryIds = []
+}
 </script>
 
 <template>
   <div class="field-grid catalog-rate-fields">
     <div v-if="value.scope && !props.scope">
       <label :for="'catalog-add-scope'+suffix">适用范围</label>
-      <a-select :id="'catalog-add-scope'+suffix" v-model:value="value.scope" :options="scopes" size="small"/>
+      <a-select :id="'catalog-add-scope'+suffix" :value="scope" :options="scopes" size="small" @update:value="changeScope"/>
     </div>
     <div v-if="scope!=='category' && scope!=='general'" class="catalog-rate-selector">
       <label :for="'catalog-add-company'+suffix">特例公司</label>

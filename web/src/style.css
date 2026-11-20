@@ -118,6 +118,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .rule-item-heading { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
 .rule-item-heading > .ant-form-item { flex: 1 1 140px; min-width: 0; }
 .rule-item-heading .ant-input-number { width: 100%; }
+.finance-rule-editor .rule-item-heading { align-items: end; gap: 0 10px; }
+.finance-rule-editor .rule-item-heading .rule-remove { margin-bottom: 6px; }
 .rule-item-section { margin: 0 0 8px; font-size: 14px; }
 .rule-formula { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
 .finance-rule-editor .ant-drawer-header,
@@ -173,8 +175,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .rule-impact-totals > div { flex: 1 1 115px; background: var(--accent-soft); padding: 8px 10px; border-radius: 5px; }
 .rule-impact-totals small { display: block; color: var(--muted); }
 .rule-impact-totals strong { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.catalog-rule-structure:not(:empty) { margin:6px 0; }
 .catalog-add-form { padding: 10px; background: var(--accent-soft); border-radius: 6px; }
+.catalog-add-form,.catalog-staged-entries { margin:6px 0; }
 .catalog-add-form .ant-select, .catalog-add-form .ant-input-number { width: 100%; }
 .catalog-add-form .field-grid label { display: block; margin-bottom: 4px; }
 .catalog-first-rates { margin-bottom:8px; }
@@ -184,7 +186,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .catalog-rate-fields label { display:block; margin-bottom:2px; }
 .catalog-rate-fields .ant-select,.catalog-rate-fields .ant-input-number { width:100%; }
 .catalog-add-condition { border-bottom: 1px solid var(--line); margin-bottom: 6px; padding-bottom: 6px; }
-.catalog-staged-entries { list-style: none; padding: 0; margin: 8px 0 0; }
+.catalog-staged-entries { list-style: none; padding: 0; }
 .catalog-staged-entries > li { display: flex; justify-content: space-between; align-items: center; gap: 5px; }
 .draft-detail-search { margin-bottom: 12px; }
 .draft-detail-fields { display: flex; flex-wrap: wrap; align-items: end; gap: 9px 12px; padding: 11px 14px; }

@@ -67,15 +67,18 @@ const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.
 const impactPeriods = computed(() => (props.periods || []).filter(period=>period.productId===sheet.value?.productId && !period.settled))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
 const percent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
+const canAddRates = computed(() => sheet.value?.mayPublish && !props.applied && !!sheet.value.structureOptions && !itemRemoved.value)
 const rateGroups = computed(() => {
   const rows = component.value?.rows || []
-  const result = [
-    {key:'default',title:'销售类别默认',rows:rows.filter(row=>row.scope==='category')},
-    {key:'company',title:'公司特例',rows:rows.filter(row=>row.scope==='company')},
-    {key:'inherited',title:'公司补充比例',rows:rows.filter(row=>row.scope==='inherited')},
-    {key:'general',title:'通用比例',rows:rows.filter(row=>row.scope==='general')},
+  const mayAdd = canAddRates.value
+  return [
+    {key:'category',title:'销售类别默认',add:mayAdd && sheet.value.structureOptions.categories.length && '添加类别默认比例'},
+    {key:'company',title:'公司特例',add:mayAdd && '添加公司特例'},
+    {key:'inherited',title:'公司补充比例'},
+    {key:'general',title:'通用比例',add:mayAdd && '添加通用比例'},
   ]
-  return result.filter(group=>group.rows.length)
+    .map(group=>({...group,rows:rows.filter(row=>row.scope===group.key)}))
+    .filter(group=>group.add || group.rows.length)
 })
 const rateGroup = ref()
 const rateEditorTarget = computed(() => '#'+CSS.escape('catalog-rates-edit-'+selected.value))
@@ -86,8 +89,13 @@ watch(selected, () => {
   rateGroup.value = rateGroups.value[0]?.key
   more.value = []
 })
-const ratePriority = computed(() => ['company','default','inherited','general']
-  .map(key=>rateGroups.value.find(group=>group.key===key)?.title).filter(Boolean).join(' → '))
+const ratePriority = computed(() => {
+  const titles = ['company','category','inherited','general']
+    .map(key=>rateGroups.value.find(group=>group.key===key))
+    .filter(group=>group && (group.rows.length || group.key!=='general'))
+    .map(group=>group.title)
+  return titles.length>1 ? titles.join(' → ') : ''
+})
 const activeRateGroup = computed(() => rateGroups.value.find(group=>group.key===rateGroup.value))
 const displayedRates = computed(() => {
   const term = filter.value.trim().toLowerCase()
@@ -231,7 +239,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
     if (request === sequence) loading.value = false
   }
 }, {immediate:true})
-watch(selected, () => { filter.value = '' })
+watch([selected, rateGroup], () => { filter.value = '' })
 
 function publicationInput() {
   if (structureEditing.value || targetDraft.value) throw new Error('请先完成正在编辑的配置。')
@@ -317,7 +325,7 @@ async function publish() {
           <div class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
-            <a-button v-if="sheet.mayPublish && !applied && sheet.structureOptions" :disabled="saving || structureEditing || !!targetDraft"
+            <a-button v-if="sheet.mayPublish && !applied && sheet.structureOptions" size="small" :disabled="saving || structureEditing || !!targetDraft"
               @click="addRecipient">添加收款安排</a-button>
           </div>
           <section v-for="item in sheet.components" :key="item.itemKey" class="rule-block">
@@ -365,14 +373,20 @@ async function publish() {
           </template>
           <template v-if="component?.rows?.length">
             <div class="catalog-rate-toolbar">
-              <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" size="small" aria-label="查看比例">
+              <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" size="small"
+                :disabled="structureEditing" role="radiogroup" aria-label="查看比例">
                 <a-radio-button v-for="group in rateGroups" :key="group.key" :value="group.key">{{ group.title }}</a-radio-button>
               </a-radio-group>
-              <a-input v-if="component.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
+              <strong v-else-if="activeRateGroup">{{ activeRateGroup.title }}</strong>
+              <small v-if="ratePriority" class="finance-rate-priority">优先匹配 {{ ratePriority }}</small>
+              <a-input v-if="activeRateGroup?.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
                 placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
-              <small v-if="rateGroups.length>1" class="finance-rate-priority">匹配顺序 {{ ratePriority }}</small>
+              <a-button v-if="activeRateGroup?.add" class="catalog-rate-add" size="small" :disabled="!editable || structureEditing || !!targetDraft"
+                @click="structureEditor?.addRateCondition(activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
             </div>
-            <a-table :key="selected + filter + rateGroup" :columns="displayedColumns" :data-source="displayedRates" row-key="row" size="small"
+            <p v-if="!activeRateGroup?.rows.length" class="catalog-rate-empty">暂无{{ activeRateGroup?.title }}</p>
+            <a-table v-else :key="selected + filter + rateGroup" class="catalog-rate-table"
+              :columns="displayedColumns" :data-source="displayedRates" row-key="row" size="small"
               :scroll="{x:tableWidth}" :pagination="{pageSize:8,showSizeChanger:false,hideOnSinglePage:true}">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key==='company'">
@@ -497,7 +511,12 @@ async function publish() {
 
 <style scoped>
 .catalog-rate-toolbar {display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-bottom:6px}
-.catalog-rate-toolbar :deep(.ant-input-affix-wrapper) {width:min(100%,260px)}
+.catalog-rate-toolbar :deep(.ant-radio-group) {display:flex;flex-wrap:wrap}
+.catalog-rate-toolbar :deep(.ant-input-affix-wrapper) {width:min(100%,190px)}
+.catalog-rate-add {margin-inline-start:auto}
+.catalog-rate-empty {margin:0;padding:5px 0;color:var(--muted);font-size:13px}
+.catalog-rate-table :deep(.ant-table.ant-table-small .ant-table-tbody > tr > .ant-table-cell) {padding-block:4px}
+.catalog-rate-table :deep(.ant-table-pagination) {margin-block:6px}
 .catalog-rate-summary {display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 12px;padding:0 0 8px;margin-bottom:8px;border-bottom:1px solid var(--line)}
 .catalog-rate-summary h2 {font-size:18px;margin:0 0 2px}
 .catalog-rate-summary p {margin:0;color:var(--muted);line-height:1.45}

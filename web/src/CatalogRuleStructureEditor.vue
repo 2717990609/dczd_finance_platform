@@ -15,9 +15,10 @@ const blankCondition = scope => newCatalogRateCondition(props.options,scope)
 const labelFor = (choices,value) => choices.find(option=>option.value===value)?.label || value
 const percent = basisPoints => (basisPoints/100)+'%'
 function conditionLabel(condition) {
-  return [condition.companyIds?.map(id=>labelFor(props.options.companies,id)).join('、') || '不限公司',
-    condition.categoryIds?.map(id=>labelFor(props.options.categories,id)).join('、') || '不限类别',
-    labelFor(props.options.relationships,condition.relationship),percent(condition.rateBps),
+  const company = condition.companyIds?.map(id=>labelFor(props.options.companies,id)).join('、')
+  const category = condition.categoryIds?.map(id=>labelFor(props.options.categories,id)).join('、')
+  return [company || category || '通用比例',company && category,
+    condition.relationship!=='ANY' && labelFor(props.options.relationships,condition.relationship),percent(condition.rateBps),
     condition.payee && labelFor(catalogSalesPayees,condition.payee)].filter(Boolean).join(' · ')
 }
 function itemLabel(item) {
@@ -83,18 +84,11 @@ function stage() {
   }
 }
 watch(form, value => { editing.value = !!value })
-defineExpose({addRecipient,editRateScope})
+defineExpose({addRecipient,editRateScope,addRateCondition:scope=>begin('row',scope)})
 </script>
 
 <template>
   <section class="catalog-rule-structure" aria-label="分润分项和费率条件">
-    <div v-if="!form" class="topbar-actions">
-      <template v-if="component?.rows?.length">
-        <a-button v-if="options.categories.length" size="small" @click="begin('row','category')">添加类别默认比例</a-button>
-        <a-button size="small" @click="begin('row','company')">添加公司特例</a-button>
-        <a-button size="small" @click="begin('row','general')">添加通用比例</a-button>
-      </template>
-    </div>
     <div v-if="form" class="catalog-add-form">
       <a-alert v-if="error" :message="error" type="error" show-icon class="feedback"/>
       <template v-if="form.kind==='row'">
