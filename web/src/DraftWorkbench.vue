@@ -71,6 +71,7 @@ const reason = {
   AGGREGATE_SCENARIO_UNMAPPED: '参与场景缺少本期订单映射',
   AGGREGATE_PRIOR_UNSETTLED: '上一账期尚未确认，结转退款待核',
   AGGREGATE_ORIGINAL_AMOUNT_CHANGED: '已结算的原付款金额有变更',
+  AGGREGATE_SALES_ORGANIZATION_MISSING: '原付款缺少有效的部门或小组归属',
   REFUND_ADJUSTMENT: '来源退款更正待核对',
   REFUND_ORIGIN_MISSING: '退款未能唯一关联原付款',
   REFUND_EXCEEDS_PAYMENT: '累计退款超出原实收',

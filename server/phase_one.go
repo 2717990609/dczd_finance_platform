@@ -256,7 +256,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, errFinanceLoginBusy):
 		code, message = http.StatusTooManyRequests, err.Error()
-	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart),
+	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope),
 		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),

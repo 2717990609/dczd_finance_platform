@@ -33,9 +33,10 @@ type catalogPeriodItem struct {
 }
 
 type catalogPeriodDefinition struct {
-	Cycle     string
-	Scenarios []string
-	Items     []catalogPeriodItem
+	Cycle       string
+	Scenarios   []string
+	Items       []catalogPeriodItem
+	Performance *catalogPerformanceScope
 }
 
 const catalogPeriodUnitPrefix = "unit:"
@@ -54,10 +55,11 @@ func catalogPeriodUnit(key string) (string, bool) {
 
 func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error) {
 	var stored struct {
-		Basis       string `json:"amount_basis"`
-		Recognition string `json:"recognition_trigger"`
-		Refund      string `json:"refund_policy"`
-		Stacking    string `json:"stacking_policy"`
+		Basis       string                   `json:"amount_basis"`
+		Recognition string                   `json:"recognition_trigger"`
+		Refund      string                   `json:"refund_policy"`
+		Stacking    string                   `json:"stacking_policy"`
+		Performance *catalogPerformanceScope `json:"performance_scope"`
 		Rounding    struct {
 			Mode  string `json:"mode"`
 			Scale int    `json:"scale"`
@@ -81,13 +83,14 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 	}
 	var result catalogPeriodDefinition
 	if json.Unmarshal(raw, &stored) != nil || stored.Basis != "ACTUAL_RECEIVED" || stored.Recognition != "PAID" ||
-		stored.Refund != "PROPORTIONAL" || stored.Stacking != "SUM" || stored.Rounding.Mode != "HALF_UP" || stored.Rounding.Scale != 2 ||
+		stored.Refund != "PROPORTIONAL" || stored.Stacking != "SUM" || !stored.Performance.valid() || stored.Rounding.Mode != "HALF_UP" || stored.Rounding.Scale != 2 ||
 		!slices.Equal(stored.Scope.Sources, []string{"DCAI"}) || !slices.Equal(stored.Scope.Events, []string{"order.paid"}) ||
 		len(stored.Scope.Scenarios) == 0 || len(stored.Actions) == 0 || stored.Settlement.Negative != "CARRY_FORWARD" ||
 		(stored.Settlement.Cycle != "MONTHLY" && stored.Settlement.Cycle != "MONTHLY_25_TO_24") {
 		return result, errCatalogRateUnavailable
 	}
 	result.Cycle, result.Scenarios = stored.Settlement.Cycle, stored.Scope.Scenarios
+	result.Performance = stored.Performance
 	for i, scenario := range result.Scenarios {
 		if !textOK(scenario, 256) || slices.Contains(result.Scenarios[:i], scenario) {
 			return result, errCatalogRateUnavailable

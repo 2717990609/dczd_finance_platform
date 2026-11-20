@@ -15,6 +15,9 @@ const activeComponent = ref()
 const editingComponent = ref()
 const scenarioCodes = ref([])
 const editingScenarios = ref(false)
+const performanceScope = ref({unitIds:[]})
+const appointmentName = ref('')
+const editingPerformance = ref(false)
 let newComponentID = 0
 const effectiveDate = ref('')
 const amounts = ref({receipts:0,refunds:0,carry:0})
@@ -38,6 +41,9 @@ const activityIssueLabels = {
   REFUND_ADJUSTMENT:'退款更正待核对', INVALID_EVENT:'交易编号或金额缺失', DUPLICATE_EVENT:'交易编号重复',
   REFUND_ORIGIN_MISSING:'退款未能唯一关联原付款', UNCLASSIFIED:'原付款未分类', MAPPING_MISSING:'缺少场景映射',
   MAPPING_CONFLICT:'场景映射冲突', INVALID_PAYMENT:'原付款信息不完整', REFUND_EXCEEDS_PAYMENT:'累计退款超过原付款',
+  SALES_PERSON_MISSING:'原付款缺少销售人员', SALES_PERSON_CONFLICT:'销售人员无法唯一确定',
+  SALES_SOURCE_CONFLICT:'订单销售归属冲突', SALES_COMPANY_CONFLICT:'销售公司无法唯一确定',
+  AGGREGATE_SALES_ORGANIZATION_MISSING:'原付款缺少有效的部门或小组归属',
 }
 const groupingIssueLabels = {
   ORIGINAL_RULE_MISSING:'原付款时没有适用规则',
@@ -69,8 +75,9 @@ const scenariosChanged = computed(() => {
   const published = sheet.value?.scenarios || []
   return scenarioCodes.value.length !== published.length || !published.every(sku=>scenarioCodes.value.includes(sku.code))
 })
+const performanceChanged = computed(() => JSON.stringify(performanceScope.value) !== JSON.stringify(performanceForm(sheet.value?.performanceScope)))
 const changed = computed(() => creating.value ? Boolean(ruleName.value.trim() && scenarioCodes.value.length && rows.value.length)
-  : componentsChanged.value || scenariosChanged.value)
+  : componentsChanged.value || scenariosChanged.value || performanceChanged.value)
 const scenarioOptions = computed(() => {
   const available = new Map((sheet.value?.options?.scenarios || []).map(sku=>[sku.code,{value:sku.code,label:sku.label}]))
   for (const sku of sheet.value?.scenarios || []) {
@@ -92,6 +99,28 @@ function editableRows(items) {
 const targetTypes = [{value:'person',label:'指定个人'},{value:'company',label:'指定公司'},{value:'pool',label:'团队池'}]
 const targetLabels = {person:'个人',company:'公司',pool:'团队池'}
 const peopleFilters = computed(() => creating.value ? {productId:productId.value,scope:'period'} : {ruleId:props.rule?.id,scope:'period'})
+function performanceForm(scope) {
+  const duty = scope?.appointment
+  return {unitIds:[...(scope?.unitIds || [])],appointment:duty ? {personId:duty.personId,unitId:duty.unitId,role:duty.role} : undefined}
+}
+const unitOptions = computed(() => {
+  const choices = new Map((sheet.value?.options?.organizations || []).map(unit=>[unit.unitId,{value:unit.unitId,label:unit.label,kind:unit.kind}]))
+  for (const [id,label] of Object.entries(sheet.value?.scopeLabels?.units || {})) {
+    if (!choices.has(id)) choices.set(id,{value:id,label})
+  }
+  return Array.from(choices.values())
+})
+const sourceUnitOptions = computed(() => unitOptions.value.filter(unit=>
+  ['DEPARTMENT','TEAM'].includes(unit.kind) || performanceScope.value.unitIds.includes(unit.value)))
+const unitLabel = id => unitOptions.value.find(unit=>unit.value===id)?.label || '组织待核'
+function performanceChanges() {
+  if (!performanceChanged.value) return {}
+  const {unitIds,appointment} = performanceScope.value
+  if (appointment && (!appointment.personId || !appointment.unitId || !appointment.role)) {
+    throw new Error('请选择人员、任职组织和岗位。')
+  }
+  return {performanceScope:{unitIds,appointment}}
+}
 function targetLabel(item) {
   if (item.targetKind==='person') return item.personName || '待选择收款人'
   const name = availableOrganizations(item).find(org=>org.value===item.organizationKey)?.label ||
@@ -172,6 +201,9 @@ watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,pro
     rows.value = editableRows(data.items)
     scenarioCodes.value = data.scenarios.map(sku=>sku.code)
     editingScenarios.value = false
+    performanceScope.value = performanceForm(data.performanceScope)
+    appointmentName.value = data.scopeLabels?.person || ''
+    editingPerformance.value = false
     activeComponent.value = rows.value.length===1 ? rows.value[0].uid : undefined
     editingComponent.value = undefined
     if (creating.value) {
@@ -191,7 +223,7 @@ watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,pro
 watch(creationCycle, cycle=>{
   if (creating.value && cycle) effectiveDate.value = nextStart(new Date().toISOString(),cycle)
 })
-watch([rows,amounts,scenarioCodes,creationCycle,effectiveDate,ruleName], ()=>{
+watch([rows,amounts,scenarioCodes,creationCycle,effectiveDate,ruleName,performanceScope], ()=>{
   ++quoteRequest
   previewing.value = false
   quote.value = undefined
@@ -241,7 +273,7 @@ async function preview() {
   previewing.value = true
   try {
     const result = await props.api('/catalog-period-rules/preview',{method:'POST',body:JSON.stringify({
-      ...(creating.value ? creationInput() : {baseId:props.rule.id,...componentChanges()}),
+      ...(creating.value ? creationInput() : {baseId:props.rule.id,...componentChanges(),...performanceChanges()}),
       receiptsMinor:minor(amounts.value.receipts,'请输入本期实收。'),
       refundsMinor:minor(amounts.value.refunds,'请输入本期退款。'),
       carryInMinor:-minor(amounts.value.carry,'请输入上期未抵扣退款。'),
@@ -256,7 +288,8 @@ async function preview() {
 function creationInput() {
   if (!changed.value || !effectiveDate.value) throw new Error('请填写规则名称、生效日期，并选择参与场景。')
   return {create:{productId:productId.value,label:ruleName.value.trim(),cycle:creationCycle.value},
-    effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),scenarioCodes:scenarioCodes.value,...componentChanges()}
+    effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),scenarioCodes:scenarioCodes.value,
+    ...componentChanges(),...performanceChanges()}
 }
 async function publish() {
   if (!scenarioCodes.value.length) {
@@ -274,6 +307,7 @@ async function publish() {
       ...(creating.value ? creationInput() : {
       baseId:props.rule.id,effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),
       ...componentChanges(),
+      ...performanceChanges(),
       ...(scenariosChanged.value ? {scenarioCodes:scenarioCodes.value} : {}),
       }),
     })})
@@ -322,6 +356,45 @@ async function publish() {
             <template v-else>
               <a-tag v-for="code in scenarioCodes" :key="code">{{ scenarioOptions.find(option=>option.value===code)?.label || code }}</a-tag>
               <a-button v-if="canSave" type="link" :disabled="saving" @click="editingScenarios=true">编辑参与场景</a-button>
+            </template>
+          </a-descriptions-item>
+          <a-descriptions-item label="业绩范围" :span="2">
+            <template v-if="editingPerformance">
+              <a-form layout="vertical" class="rule-basics">
+                <a-form-item label="部门、小组" html-for="period-scope-units">
+                  <a-select id="period-scope-units" v-model:value="performanceScope.unitIds" :options="sourceUnitOptions"
+                    mode="multiple" show-search option-filter-prop="label" aria-label="部门、小组" placeholder="不限部门和小组" :disabled="saving"/>
+                </a-form-item>
+                <a-form-item>
+                  <a-checkbox :checked="!!performanceScope.appointment" :disabled="saving"
+                    @update:checked="performanceScope.appointment=$event ? {} : undefined">仅在任职期间计提</a-checkbox>
+                </a-form-item>
+                <template v-if="performanceScope.appointment">
+                  <a-form-item label="任职人员" html-for="period-scope-person">
+                    <AppointmentPersonSelect id="period-scope-person" v-model:value="performanceScope.appointment.personId"
+                      :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters"
+                      :current="performanceScope.appointment.personId ? {id:performanceScope.appointment.personId,name:appointmentName} : undefined"
+                      :disabled="saving" @change="(_,option)=>appointmentName=option.name"/>
+                  </a-form-item>
+                  <a-form-item label="任职组织" html-for="period-scope-appointment-unit">
+                    <a-select id="period-scope-appointment-unit" v-model:value="performanceScope.appointment.unitId" :options="unitOptions"
+                      show-search option-filter-prop="label" :disabled="saving"/>
+                  </a-form-item>
+                  <a-form-item label="任职岗位" html-for="period-scope-appointment-role">
+                    <a-select id="period-scope-appointment-role" v-model:value="performanceScope.appointment.role"
+                      :options="availableRoles(performanceScope.appointment.role)" :disabled="saving"/>
+                  </a-form-item>
+                </template>
+              </a-form>
+              <a-button type="link" @click="editingPerformance=false">完成选择</a-button>
+            </template>
+            <template v-else>
+              <a-tag v-for="id in performanceScope.unitIds" :key="id">{{ unitLabel(id) }}</a-tag>
+              <span v-if="!performanceScope.unitIds.length">全部部门和小组</span>
+              <a-tag v-if="performanceScope.appointment" class="period-appointment-caption">{{ appointmentName || '人员待核' }} ·
+                {{ unitLabel(performanceScope.appointment.unitId) }} ·
+                {{ optionLabel('catalogAppointmentRole',performanceScope.appointment.role) || '岗位待选' }}任职期间</a-tag>
+              <a-button v-if="canSave" type="link" :disabled="saving" @click="editingPerformance=true">编辑业绩范围</a-button>
             </template>
           </a-descriptions-item>
         </a-descriptions>
@@ -536,6 +609,7 @@ async function publish() {
 .period-tier-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:8px; align-items:center; margin-bottom:8px; }
 .period-tier-header { color:var(--muted); font-size:12px; }
 .period-tier-grid :deep(.ant-input-number),.period-quote-inputs :deep(.ant-input-number) { width:100%; }
+.period-appointment-caption { max-width:100%; white-space:normal; vertical-align:middle; }
 .period-quote-inputs { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
 .period-quote-result { margin-top:12px; }
 .period-activity-query,.period-activity-result { margin-bottom:14px; }

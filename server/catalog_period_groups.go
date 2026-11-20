@@ -13,14 +13,15 @@ import (
 )
 
 type catalogActivityEvent struct {
-	EventID   int64
-	PaymentID int64
-	PaidAt    time.Time
-	Scenario  string
-	Amount    int64
-	Refund    bool
-	selection *catalogAggregateMatch
-	frozen    catalogFrozenGroupReference
+	EventID      int64
+	PaymentID    int64
+	PaidAt       time.Time
+	Scenario     string
+	Amount       int64
+	Refund       bool
+	originClosed bool
+	selection    *catalogAggregateMatch
+	frozen       catalogFrozenGroupReference
 }
 
 type catalogAggregateRule struct {

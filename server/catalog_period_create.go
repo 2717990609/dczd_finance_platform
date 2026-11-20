@@ -50,7 +50,7 @@ func (s workspace) catalogPeriodSetup(ctx context.Context, raw string, actor fin
 }
 
 func buildCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, create catalogPeriodCreate, at time.Time,
-	scenarios []string, components []catalogPeriodComponentEdit, actor financeRuleActor) (json.RawMessage, error) {
+	scenarios []string, components []catalogPeriodComponentEdit, performance *catalogPerformanceScope, actor financeRuleActor) (json.RawMessage, error) {
 	if !actor.permits(create.ProductID, true) {
 		return nil, errRulePermission
 	}
@@ -72,6 +72,10 @@ func buildCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, create 
 		return nil, err
 	}
 	initial, err = editCatalogPeriodScenarioScope(ctx, db, initial, catalogPeriodVersion{ProductID: create.ProductID}, nil, scenarios, at, actor)
+	if err != nil {
+		return nil, err
+	}
+	initial, err = editCatalogPerformanceScope(ctx, db, initial, nil, performance)
 	if err != nil {
 		return nil, err
 	}
@@ -114,7 +118,7 @@ func createCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriod
 	if _, err := tx.Exec(ctx, `SELECT source FROM catalog_sales_context WHERE source='DCAI' FOR SHARE`); err != nil {
 		return result, err
 	}
-	body, err := buildCatalogPeriodRule(ctx, tx, create, at, input.ScenarioCodes, input.Components, actor)
+	body, err := buildCatalogPeriodRule(ctx, tx, create, at, input.ScenarioCodes, input.Components, input.Performance, actor)
 	if err != nil {
 		return result, err
 	}

@@ -22,18 +22,20 @@ const catalogPeriodRuleScope = `scope.source_system='DCAI' AND p.project_code=sc
  AND p.policy_kind='COMPONENT_RULE' AND p.scope_type='CROSS_SCENARIO_AGGREGATE'`
 
 type catalogPeriodVersion struct {
-	ProductID   int64                 `json:"productId"`
-	ProductName string                `json:"productName"`
-	Label       string                `json:"label"`
-	Version     int                   `json:"version"`
-	From        time.Time             `json:"effectiveFrom"`
-	Through     *time.Time            `json:"effectiveTo"`
-	MayPublish  bool                  `json:"mayPublish"`
-	Paused      bool                  `json:"paused"`
-	Cycle       string                `json:"cycle"`
-	Scenarios   []catalogPeriodSKU    `json:"scenarios"`
-	Items       []catalogPeriodItem   `json:"items"`
-	Options     *catalogPeriodOptions `json:"options,omitempty"`
+	ProductID   int64                     `json:"productId"`
+	ProductName string                    `json:"productName"`
+	Label       string                    `json:"label"`
+	Version     int                       `json:"version"`
+	From        time.Time                 `json:"effectiveFrom"`
+	Through     *time.Time                `json:"effectiveTo"`
+	MayPublish  bool                      `json:"mayPublish"`
+	Paused      bool                      `json:"paused"`
+	Cycle       string                    `json:"cycle"`
+	Scenarios   []catalogPeriodSKU        `json:"scenarios"`
+	Items       []catalogPeriodItem       `json:"items"`
+	Options     *catalogPeriodOptions     `json:"options,omitempty"`
+	Performance *catalogPerformanceScope  `json:"performanceScope,omitempty"`
+	ScopeLabels *catalogPerformanceLabels `json:"scopeLabels,omitempty"`
 	packageID   string
 	retiredFrom *time.Time
 	raw         json.RawMessage
@@ -53,12 +55,14 @@ type catalogPeriodPublishInput struct {
 	Edits         []catalogPeriodTierEdit      `json:"edits"`
 	Components    []catalogPeriodComponentEdit `json:"components"`
 	ScenarioCodes []string                     `json:"scenarioCodes,omitempty"`
+	Performance   *catalogPerformanceScope     `json:"performanceScope,omitempty"`
 }
 
 type catalogPeriodQuoteInput struct {
 	Create        *catalogPeriodCreate         `json:"create,omitempty"`
 	EffectiveFrom time.Time                    `json:"effectiveFrom"`
 	ScenarioCodes []string                     `json:"scenarioCodes,omitempty"`
+	Performance   *catalogPerformanceScope     `json:"performanceScope,omitempty"`
 	BaseID        string                       `json:"baseId"`
 	Edits         []catalogPeriodTierEdit      `json:"edits"`
 	Components    []catalogPeriodComponentEdit `json:"components"`
@@ -121,6 +125,12 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 	}
 	rule.MayPublish = rule.MayPublish && actor.permits(rule.ProductID, true)
 	rule.Cycle, rule.Items = period.Cycle, period.Items
+	rule.Performance = period.Performance
+	rule.ScopeLabels, err = nameCatalogPerformanceScope(ctx, s.db, period.Performance)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
 	skus, err := readCatalogPeriodScenarioOptions(ctx, s.db, rule.ProductID, nil, nil)
 	if err != nil {
 		respond(w, nil, err)
@@ -171,7 +181,7 @@ func (s workspace) postCatalogPeriodQuote(w http.ResponseWriter, r *http.Request
 			if input.BaseID != "" || len(input.Edits) != 0 {
 				return catalogPeriodQuote{}, invalid
 			}
-			body, err := buildCatalogPeriodRule(ctx, s.db, *input.Create, input.EffectiveFrom, input.ScenarioCodes, input.Components, actor)
+			body, err := buildCatalogPeriodRule(ctx, s.db, *input.Create, input.EffectiveFrom, input.ScenarioCodes, input.Components, input.Performance, actor)
 			if err != nil {
 				return catalogPeriodQuote{}, err
 			}
@@ -181,12 +191,22 @@ func (s workspace) postCatalogPeriodQuote(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return catalogPeriodQuote{}, err
 		}
-		if !actor.permits(rule.ProductID, len(input.Edits) != 0 || input.Components != nil) {
+		if !actor.permits(rule.ProductID, len(input.Edits) != 0 || input.Components != nil || input.Performance != nil) {
 			return catalogPeriodQuote{}, errRulePermission
 		}
 		regulated, err := applyCatalogPeriodChanges(ctx, s.db, rule.raw, input.Edits, input.Components)
 		if err != nil {
 			return catalogPeriodQuote{}, err
+		}
+		if input.Performance != nil {
+			base, err := parseCatalogPeriodRule(rule.raw)
+			if err != nil {
+				return catalogPeriodQuote{}, err
+			}
+			regulated, err = editCatalogPerformanceScope(ctx, s.db, regulated, base.Performance, input.Performance)
+			if err != nil {
+				return catalogPeriodQuote{}, err
+			}
 		}
 		return quoteCatalogPeriodDefinition(regulated, input)
 	})(w, r)
@@ -254,7 +274,7 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 		return result, err
 	}
 	at := input.EffectiveFrom.In(shanghai)
-	if !base.MayPublish || (len(input.Edits) == 0 && input.Components == nil && input.ScenarioCodes == nil) || !validCatalogPeriodStart(at, period.Cycle) || !at.After(base.From) ||
+	if !base.MayPublish || (len(input.Edits) == 0 && input.Components == nil && input.ScenarioCodes == nil && input.Performance == nil) || !validCatalogPeriodStart(at, period.Cycle) || !at.After(base.From) ||
 		base.Through != nil && !at.Before(*base.Through) {
 		return result, errCatalogPeriodStart
 	}
@@ -284,6 +304,10 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 		if err != nil {
 			return result, err
 		}
+	}
+	body, err = editCatalogPerformanceScope(ctx, tx, body, period.Performance, input.Performance)
+	if err != nil {
+		return result, err
 	}
 	if bytes.Equal(body, base.raw) {
 		return catalogPublication{ID: input.BaseID, Version: base.Version}, nil

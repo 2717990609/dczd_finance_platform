@@ -60,7 +60,16 @@ const catalogActivityEventColumns = `v.id,v.source,v.kind,v.occurred_at,v.fact,
   CASE WHEN jsonb_typeof(v.fact->'amountMinor')='number' THEN (v.fact->>'amountMinor')::bigint END AS amount`
 
 const catalogActivityAmountsSQL = `WITH routes AS MATERIALIZED (` + catalogAggregateRoutes + `),
-draft_scope AS (SELECT aggregate_package_id,starts_on,ends_on FROM periods WHERE id=$6::bigint),
+draft_scope AS (
+ SELECT aggregate_package_id,starts_on,ends_on FROM periods WHERE id=$6::bigint
+ UNION ALL
+ SELECT NULLIF($8,'')::uuid,($3::timestamptz AT TIME ZONE 'Asia/Shanghai')::date,
+  ($4::timestamptz AT TIME ZONE 'Asia/Shanghai')::date-1 WHERE $6=0 AND $8<>''
+),
+closed_windows AS MATERIALIZED (
+ SELECT p.starts_on,p.ends_on FROM draft_scope draft JOIN periods p USING(aggregate_package_id)
+ JOIN settlements final ON final.period_id=p.id
+),
 current_events AS MATERIALIZED (
  SELECT ` + catalogActivityEventColumns + `,true AS in_scope,coalesce(booked.changed,false) AS booked_changed
  FROM source_order_versions v
@@ -158,6 +167,10 @@ current_events AS MATERIALIZED (
 ), assessed AS (
  SELECT e.*,CASE WHEN p.matches=1 THEN p.sku END AS sku,p.occurred_at AS paid_at,p.amount AS original_amount,
   p.payment_version_id AS frozen_payment_id,p.period_id AS frozen_period_id,p.group_key AS frozen_group_key,
+  p.payment_version_id IS NULL AND EXISTS(
+   SELECT 1 FROM closed_windows prior
+   WHERE (p.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN prior.starts_on AND prior.ends_on
+  ) AS origin_closed,
   CASE
    WHEN e.kind='REFUND_ADJUSTED' OR e.booked_changed THEN 'REFUND_ADJUSTMENT'
    WHEN coalesce(e.event_id,'')='' OR e.amount IS NULL OR e.amount<0 THEN 'INVALID_EVENT'
@@ -176,8 +189,8 @@ current_events AS MATERIALIZED (
  SELECT *,sum(amount) FILTER(WHERE kind='REFUND_SUCCEEDED' AND issue='') OVER (PARTITION BY payment_id) AS linked_refunds
  FROM assessed
 )
-SELECT id,coalesce(sku,''),kind,coalesce(amount,0),coalesce(paid_at<$3,false),
- coalesce(frozen_payment_id,payment_id,0),coalesce(paid_at,occurred_at),coalesce(frozen_period_id,0),coalesce(frozen_group_key,''),
+SELECT id,coalesce(sku,''),kind,coalesce(amount,0),
+ coalesce(frozen_payment_id,payment_id,0),coalesce(paid_at,occurred_at),coalesce(frozen_period_id,0),coalesce(frozen_group_key,''),coalesce(origin_closed,false),
  CASE WHEN issue='' AND kind='REFUND_SUCCEEDED' AND linked_refunds>original_amount THEN 'REFUND_EXCEEDS_PAYMENT' ELSE issue END
 FROM capped WHERE in_scope LIMIT $5`
 
@@ -264,17 +277,19 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 		return result, err
 	}
 	var retiredFrom *time.Time
+	var packageID string
 	if in.GroupRule != nil {
 		retiredFrom = in.GroupRule.retiredFrom
+		packageID = in.GroupRule.packageID
 	}
 	rows, err = tx.Query(ctx, catalogActivityAmountsSQL, in.ProductID, in.Scenarios, in.Window.Start, in.Window.Through,
-		maxDraftPayments+1, in.DraftPeriodID, retiredFrom)
+		maxDraftPayments+1, in.DraftPeriodID, retiredFrom, packageID)
 	if err != nil {
 		return result, err
 	}
 	var kind, issue string
 	var amount int64
-	var prior bool
+	var originClosed bool
 	var eventID, paymentID int64
 	var paidAt time.Time
 	var frozen catalogFrozenGroupReference
@@ -282,13 +297,13 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 	selections := make(map[int64]*catalogAggregateMatch)
 	firstPayment := in.Window.Start
 	seen := 0
-	_, err = pgx.ForEachRow(rows, []any{&eventID, &code, &kind, &amount, &prior, &paymentID, &paidAt, &frozen.PeriodID, &frozen.Key, &issue}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&eventID, &code, &kind, &amount, &paymentID, &paidAt, &frozen.PeriodID, &frozen.Key, &originClosed, &issue}, func() error {
 		seen++
 		if seen > maxDraftPayments {
 			return errDraftLimit
 		}
 		event := catalogActivityEvent{PaymentID: paymentID, PaidAt: paidAt, Scenario: code,
-			Amount: amount, Refund: kind != "ORDER_PAID", frozen: frozen}
+			Amount: amount, Refund: kind != "ORDER_PAID", frozen: frozen, originClosed: originClosed}
 		if in.DraftPeriodID != 0 {
 			event.EventID = eventID
 		}
@@ -311,38 +326,70 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 			}
 			return nil
 		}
-		item := byCode[code]
-		if item == nil && frozen.PeriodID != 0 {
-			result.Scenarios = append(result.Scenarios, catalogPeriodScenarioActivity{Code: code, Mapped: true})
-			for i := range result.Scenarios {
-				byCode[result.Scenarios[i].Code] = &result.Scenarios[i]
-			}
-			item = byCode[code]
-		}
-		if item == nil {
-			return errProductConfigConflict
-		}
-		if groupPayments {
-			events = append(events, event)
-			if paidAt.Before(firstPayment) {
-				firstPayment = paidAt
-			}
-		}
-		if kind == "ORDER_PAID" {
-			item.Payments++
-			return addCatalogActivityAmount(amount, &item.ReceiptsMinor, &result.Receipts)
-		}
-		item.Refunds++
-		if err := addCatalogActivityAmount(amount, &item.RefundsMinor, &result.Refunds); err != nil {
-			return err
-		}
-		if prior {
-			return addCatalogActivityAmount(amount, &item.PriorRefundsMinor, &result.PriorPeriodRefunds)
-		}
+		events = append(events, event)
 		return nil
 	})
 	if err != nil {
 		return result, err
+	}
+	var performance catalogPerformanceDirectory
+	var decisions map[int64]catalogPerformanceDecision
+	if groupPayments && slices.ContainsFunc(rules, func(rule catalogAggregateRule) bool { return rule.Definition.Performance.active() }) {
+		performance, err = readCatalogPerformanceDirectory(ctx, tx, events)
+		if err != nil {
+			return result, err
+		}
+		decisions = make(map[int64]catalogPerformanceDecision)
+	}
+	selected := events[:0]
+	for _, event := range events {
+		if decisions != nil {
+			decision, known := decisions[event.PaymentID]
+			if !known {
+				decision = performance.match(event)
+				decisions[event.PaymentID] = decision
+			}
+			if decision.excluded {
+				continue
+			}
+			if decision.issue != "" {
+				result.Issues[decision.issue]++
+				if in.DraftPeriodID != 0 {
+					result.postingIssues = append(result.postingIssues, draftIssue{FactID: event.EventID, Code: decision.issue})
+				}
+				continue
+			}
+		}
+		item := byCode[event.Scenario]
+		if item == nil && event.frozen.PeriodID != 0 {
+			result.Scenarios = append(result.Scenarios, catalogPeriodScenarioActivity{Code: event.Scenario, Mapped: true})
+			for i := range result.Scenarios {
+				byCode[result.Scenarios[i].Code] = &result.Scenarios[i]
+			}
+			item = byCode[event.Scenario]
+		}
+		if item == nil {
+			return result, errProductConfigConflict
+		}
+		if groupPayments {
+			selected = append(selected, event)
+			if event.PaidAt.Before(firstPayment) {
+				firstPayment = event.PaidAt
+			}
+		}
+		if !event.Refund {
+			item.Payments++
+			err = addCatalogActivityAmount(event.Amount, &item.ReceiptsMinor, &result.Receipts)
+		} else {
+			item.Refunds++
+			err = addCatalogActivityAmount(event.Amount, &item.RefundsMinor, &result.Refunds)
+			if err == nil && event.PaidAt.Before(in.Window.Start) {
+				err = addCatalogActivityAmount(event.Amount, &item.PriorRefundsMinor, &result.PriorPeriodRefunds)
+			}
+		}
+		if err != nil {
+			return result, err
+		}
 	}
 	if in.GroupRule != nil {
 		if !groupPayments {
@@ -352,11 +399,11 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 			if err != nil {
 				return result, err
 			}
-			original, err := readFrozenCatalogAggregateGroups(ctx, tx, events)
+			original, err := readFrozenCatalogAggregateGroups(ctx, tx, selected, in.DraftPeriodID == 0)
 			if err != nil {
 				return result, err
 			}
-			grouping, err := groupCatalogPeriodEvents(events, rules, directory, original)
+			grouping, err := groupCatalogPeriodEvents(selected, rules, directory, original)
 			if err != nil {
 				return result, err
 			}

@@ -49,7 +49,7 @@ func catalogAggregateWindow(month string, cycle string) (periodWindow, error) {
 	return calendarWindow(month, day)
 }
 
-func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []catalogActivityEvent) (map[catalogFrozenGroupReference]catalogPeriodGroup, error) {
+func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []catalogActivityEvent, display bool) (map[catalogFrozenGroupReference]catalogPeriodGroup, error) {
 	var ids []int64
 	var keys []string
 	seen := make(map[catalogFrozenGroupReference]bool)
@@ -63,10 +63,18 @@ func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []c
 	if len(ids) == 0 {
 		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `SELECT g.period_id,g.group_key,g.rule_id::text,g.targets,v.version_no,v.definition
+	rows, err := tx.Query(ctx, `SELECT g.period_id,g.group_key,g.rule_id::text,g.targets,v.version_no,v.definition,
+	 CASE WHEN $3 THEN (
+	  SELECT jsonb_agg(jsonb_build_object('itemKey',a->>'Item','name',coalesce(person.name,u.name,''),
+	   'ownerName',coalesce(owner.name,''),'memberCount',coalesce(jsonb_array_length(nullif(a->'Members','null')),0)) ORDER BY n)
+	  FROM jsonb_array_elements(g.targets) WITH ORDINALITY AS chosen(a,n)
+	  LEFT JOIN people person ON person.id=(a->>'person')::bigint
+	  LEFT JOIN people owner ON owner.id=(a->>'Owner')::bigint
+	  LEFT JOIN organization_units u ON u.id=NULLIF(a->>'Unit','')::uuid
+	 ) END
 	 FROM unnest($1::bigint[],$2::text[]) q(period_id,group_key)
 	 JOIN catalog_aggregate_draft_groups g USING(period_id,group_key)
-	 JOIN settlements s USING(period_id) JOIN product_rule_versions v ON v.source_id=g.rule_id`, ids, keys)
+	 JOIN settlements s USING(period_id) JOIN product_rule_versions v ON v.source_id=g.rule_id`, ids, keys, display)
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +83,7 @@ func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []c
 	var group catalogPeriodGroup
 	var raw json.RawMessage
 	definitions := make(map[string]catalogPeriodDefinition)
-	_, err = pgx.ForEachRow(rows, []any{&ref.PeriodID, &ref.Key, &group.RuleID, &group.posting.Targets, &group.Version, &raw}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&ref.PeriodID, &ref.Key, &group.RuleID, &group.posting.Targets, &group.Version, &raw, &group.Targets}, func() error {
 		definition, known := definitions[group.RuleID]
 		if !known {
 			var err error
@@ -86,8 +94,16 @@ func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []c
 			definitions[group.RuleID] = definition
 		}
 		group.ID, group.items = ref.Key, definition.Items
+		for i, target := range group.Targets {
+			for _, item := range group.items {
+				if target.ItemKey == item.ItemKey && item.PoolName != "" {
+					group.Targets[i].Name = item.PoolName
+					break
+				}
+			}
+		}
 		result[ref] = group
-		group.posting.Targets = nil
+		group.Targets, group.posting.Targets = nil, nil
 		return nil
 	})
 	return result, err
