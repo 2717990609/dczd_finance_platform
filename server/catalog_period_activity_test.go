@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -172,6 +174,47 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 		t.Fatal(err)
 	}
 
+	s := workspace{db: db, development: true}
+	requestTrial := func(base, from, changes string) catalogPeriodActivity {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/catalog-period-activity", strings.NewReader(`{
+		  "baseId":"`+base+`","effectiveFrom":"`+from+`T00:00:00+08:00",`+changes+`}`))
+		request.Header.Set("Content-Type", "application/json")
+		response := httptest.NewRecorder()
+		s.postCatalogPeriodActivity(response, request)
+		var trial catalogPeriodActivity
+		if err := json.Unmarshal(response.Body.Bytes(), &trial); err != nil || response.Code != 200 || trial.Grouping == nil {
+			t.Fatalf("order trial failed: %d %s %v", response.Code, response.Body.String(), err)
+		}
+		return trial
+	}
+	trial := requestTrial(ruleID, "2026-10-01", `"scenarioCodes":["FIRST"],"edits":[{"itemKey":"operations","tiers":[{"rate_bps":1000}]}]`)
+	if trial.Receipts != 12000 || trial.Refunds != 3000 || len(trial.Grouping.Groups) != 2 {
+		t.Fatalf("edited rule should use the remaining SKU and retain the historical refund: %+v", trial)
+	}
+	for _, group := range trial.Grouping.Groups {
+		if group.RuleID == ruleID {
+			if group.Refunds != 3000 || group.quote().CarryForward != -3000 {
+				t.Fatalf("historical refund was repriced: %+v", group)
+			}
+		} else if group.RuleID != "" || group.quote().Total != 1200 {
+			t.Fatalf("order trial did not apply the edited tier to the new group: %+v", group)
+		}
+	}
+	unchanged := requestTrial(ruleID, "2026-10-01", `"scenarioCodes":["FIRST","SECOND"]`)
+	if unchanged.Receipts != 32000 || len(unchanged.Grouping.Groups) != 2 {
+		t.Fatalf("unedited scenarios should keep the published groups: %+v", unchanged)
+	}
+	for _, group := range unchanged.Grouping.Groups {
+		if group.RuleID != ruleID {
+			t.Fatalf("an unchanged definition must keep its stored version and carry identity: %+v", group)
+		}
+	}
+	var versions int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM product_rule_versions WHERE package_id=$1`, packageID).Scan(&versions); err != nil || versions != 1 {
+		t.Fatalf("order trial must leave published versions unchanged: %d %v", versions, err)
+	}
+
 	const nextID = "10000000-0000-4000-8000-000000000105"
 	nextRule := strings.Replace(rule, `["FIRST","SECOND"]`, `["FIRST"]`, 1)
 	if _, err := db.Exec(ctx, `INSERT INTO product_rule_versions
@@ -239,6 +282,22 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	const scheduledID = "10000000-0000-4000-8000-000000000106"
+	scheduledAt := window.Through.AddDate(0, 0, 10)
+	if _, err := db.Exec(ctx, `INSERT INTO product_rule_versions
+	 (source_id,package_id,version_no,source_status,effective_from,content_hash,definition,observed_at,published_at,predecessor_id)
+	 VALUES($1,$2,3,'PUBLISHED',$3,'scheduled',$4,now(),now(),$5)`,
+		scheduledID, packageID, scheduledAt, json.RawMessage(nextRule), nextID); err != nil {
+		t.Fatal(err)
+	}
+	insert(payment("nov-late", "VIP", "vip", 30000, scheduledAt), "VIP")
+	overlap := requestTrial(nextID, "2026-11-01", `"edits":[{"itemKey":"operations","tiers":[{"rate_bps":1000}]}]`)
+	if groups := overlap.Grouping.Groups; overlap.Receipts != 70000 || len(groups) != 2 ||
+		groups[0].RuleID != "" || groups[0].quote().Total != 4000 ||
+		groups[1].RuleID != scheduledID || groups[1].quote().Total != 300 {
+		t.Fatalf("trial must leave the already scheduled version active at its later cutoff: %+v", overlap)
 	}
 }
 

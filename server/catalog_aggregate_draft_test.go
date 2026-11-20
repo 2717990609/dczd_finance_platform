@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,6 +173,17 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 		t.Fatal(err)
 	}
 	freeze(september, refunds.Version)
+	trialWorkspace := s
+	trialWorkspace.development = true
+	trialRequest := httptest.NewRequest(http.MethodPost, "/api/v1/catalog-period-activity", strings.NewReader(`{
+	 "baseId":"`+versionID+`","effectiveFrom":"2026-09-01T00:00:00+08:00",
+	 "edits":[{"itemKey":"ops","tiers":[{"rate_bps":2000}]}]}`))
+	trialRequest.Header.Set("Content-Type", "application/json")
+	trialResponse := httptest.NewRecorder()
+	trialWorkspace.postCatalogPeriodActivity(trialResponse, trialRequest)
+	if trialResponse.Code != http.StatusConflict || !strings.Contains(trialResponse.Body.String(), errSettlementClosed.Error()) {
+		t.Fatalf("trial must respect the confirmed period: %d %s", trialResponse.Code, trialResponse.Body.String())
+	}
 	if _, err := db.Exec(ctx, `DELETE FROM settlements WHERE period_id=$1`, periodID); err == nil {
 		t.Fatal("a preceding settlement referenced by a subsequent settlement cannot be removed")
 	}

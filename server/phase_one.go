@@ -180,6 +180,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/catalog-period-rules/preview", Handler: s.postCatalogPeriodQuote},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-period-rules/resume", Handler: s.postCatalogPeriodResume},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-period-activity", Handler: s.getCatalogPeriodActivity},
+		{Method: http.MethodPost, Path: "/api/v1/catalog-period-activity", Handler: s.postCatalogPeriodActivity},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-aggregate-drafts", Handler: submit(s.openCatalogAggregateDraft)},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-aggregate-drafts/events", Handler: s.getCatalogAggregateDraftEvents},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-people", Handler: s.getCatalogRulePeople},

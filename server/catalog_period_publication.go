@@ -274,38 +274,13 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 	if err != nil {
 		return result, err
 	}
-	period, err := parseCatalogPeriodRule(base.raw)
-	if err != nil {
-		return result, err
-	}
 	at := input.EffectiveFrom.In(shanghai)
-	if !base.MayPublish || (len(input.Edits) == 0 && input.Components == nil && input.ScenarioCodes == nil && input.Performance == nil) || !validCatalogPeriodStart(at, period.Cycle) || !at.After(base.From) ||
-		base.Through != nil && !at.Before(*base.Through) {
-		return result, errCatalogPeriodStart
-	}
-	active, err := catalogPeriodVersionAt(ctx, tx, base.packageID, at)
-	if errors.Is(err, pgx.ErrNoRows) || err == nil && active != input.BaseID {
-		return result, errCatalogRateStale
-	}
-	if err != nil {
-		return result, err
-	}
 	if input.Components != nil {
 		if _, err := tx.Exec(ctx, `SELECT source FROM catalog_sales_context WHERE source='DCAI' FOR SHARE`); err != nil {
 			return result, err
 		}
 	}
-	body, err := applyCatalogPeriodChanges(ctx, tx, base.raw, input.Edits, input.Components)
-	if err != nil {
-		return result, err
-	}
-	if input.ScenarioCodes != nil {
-		body, err = editCatalogPeriodScenarioScope(ctx, tx, body, base, period.Scenarios, input.ScenarioCodes, at, actor)
-		if err != nil {
-			return result, err
-		}
-	}
-	body, err = editCatalogPerformanceScope(ctx, tx, body, period.Performance, input.Performance)
+	body, err := prepareCatalogPeriodRevision(ctx, tx, base, input, actor)
 	if err != nil {
 		return result, err
 	}
@@ -324,6 +299,37 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 	}
 	return result, enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods WHERE aggregate_package_id=$1::uuid
 	 AND $2<(ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'`, base.packageID, at)
+}
+
+func prepareCatalogPeriodRevision(ctx context.Context, db catalogPeriodReader, base catalogPeriodVersion,
+	input catalogPeriodPublishInput, actor financeRuleActor) (json.RawMessage, error) {
+	period, err := parseCatalogPeriodRule(base.raw)
+	if err != nil {
+		return nil, err
+	}
+	at := input.EffectiveFrom.In(shanghai)
+	if !base.MayPublish || (len(input.Edits) == 0 && input.Components == nil && input.ScenarioCodes == nil && input.Performance == nil) ||
+		!validCatalogPeriodStart(at, period.Cycle) || !at.After(base.From) || base.Through != nil && !at.Before(*base.Through) {
+		return nil, errCatalogPeriodStart
+	}
+	active, err := catalogPeriodVersionAt(ctx, db, base.packageID, at)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && active != input.BaseID {
+		return nil, errCatalogRateStale
+	}
+	if err != nil {
+		return nil, err
+	}
+	body, err := applyCatalogPeriodChanges(ctx, db, base.raw, input.Edits, input.Components)
+	if err != nil {
+		return nil, err
+	}
+	if input.ScenarioCodes != nil {
+		body, err = editCatalogPeriodScenarioScope(ctx, db, body, base, period.Scenarios, input.ScenarioCodes, at, actor)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return editCatalogPerformanceScope(ctx, db, body, period.Performance, input.Performance)
 }
 
 func catalogPeriodVersionAt(ctx context.Context, db catalogPeriodReader, packageID string, at time.Time) (string, error) {

@@ -33,6 +33,7 @@ const quote = ref()
 const activityMonth = ref(props.rule?.reviewMonth || new Date(Date.now()+8*3600000).toISOString().slice(0,7))
 const reviewingActivity = ref(false)
 const activity = ref()
+const activityMode = ref()
 const showsPriorCarry = computed(() => activity.value?.grouping?.groups.some(group=>group.carryInMinor<0))
 const otherGroupingIssues = computed(() => {
   const totals = {...activity.value?.grouping?.issues}
@@ -227,7 +228,7 @@ async function openArrangement(itemKey) {
   heading?.focus({preventScroll:true})
 }
 function followTargetIssue(issue) {
-  if (issue.ruleId===props.rule.id) return openArrangement(issue.itemKey)
+  if (!issue.ruleId || issue.ruleId===props.rule.id) return openArrangement(issue.itemKey)
   emit('open-version',{ruleId:issue.ruleId,itemKey:issue.itemKey,month:activityMonth.value})
 }
 function minor(value, message) {
@@ -295,22 +296,33 @@ watch([rows,amounts,scenarioCodes,creationCycle,effectiveDate,ruleName,performan
   previewing.value = false
   quote.value = undefined
 }, {deep:true})
-watch([activityMonth,()=>props.rule?.id], ()=>{
+function clearActivity() {
   ++activityRequest
   activity.value = undefined
+  activityMode.value = undefined
   activityError.value = ''
   reviewingActivity.value = false
-})
+}
+watch([activityMonth,()=>props.rule?.id], clearActivity)
+watch([rows,scenarioCodes,creationCycle,effectiveDate,ruleName,performanceScope], ()=>{
+  if (activityMode.value==='edits') clearActivity()
+},{deep:true})
 
-async function readActivity(trialPaused = false) {
+async function readActivity(mode = 'published') {
   const request = ++activityRequest
   reviewingActivity.value = true
   activityError.value = ''
   activity.value = undefined
+  activityMode.value = mode
   try {
-    const query = new URLSearchParams({ruleId:props.rule.id,month:activityMonth.value})
-    if (trialPaused) query.set('trialPaused','1')
-    const result = await props.api('/catalog-period-activity?'+query)
+    let result
+    if (mode==='edits') {
+      result = await props.api('/catalog-period-activity',{method:'POST',body:JSON.stringify(versionInput())})
+    } else {
+      const query = new URLSearchParams({ruleId:props.rule.id,month:activityMonth.value})
+      if (mode==='paused') query.set('trialPaused','1')
+      result = await props.api('/catalog-period-activity?'+query)
+    }
     if (request === activityRequest) activity.value = result
   } catch (err) {
     if (request === activityRequest) activityError.value = err.message
@@ -360,26 +372,19 @@ function creationInput() {
     effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),scenarioCodes:scenarioCodes.value,
     ...componentChanges(),...performanceChanges()}
 }
+function versionInput() {
+  if (creating.value) return creationInput()
+  if (!scenarioCodes.value.length) throw new Error('请至少选择一个参与场景。')
+  if (!effectiveDate.value) throw new Error('请选择新版本的生效日期。')
+  return {baseId:props.rule.id,effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),
+    ...componentChanges(),...performanceChanges(),
+    ...(scenariosChanged.value ? {scenarioCodes:scenarioCodes.value} : {})}
+}
 async function publish() {
-  if (!scenarioCodes.value.length) {
-    error.value = '请至少选择一个参与场景。'
-    return
-  }
-  if (!effectiveDate.value) {
-    error.value = '请选择新版本的生效日期。'
-    return
-  }
   saving.value = true
   error.value = ''
   try {
-    const result = await props.api('/catalog-period-rules',{method:'POST',body:JSON.stringify({
-      ...(creating.value ? creationInput() : {
-      baseId:props.rule.id,effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),
-      ...componentChanges(),
-      ...performanceChanges(),
-      ...(scenariosChanged.value ? {scenarioCodes:scenarioCodes.value} : {}),
-      }),
-    })})
+    const result = await props.api('/catalog-period-rules',{method:'POST',body:JSON.stringify(versionInput())})
     emit('published',result,creating.value ? productId.value : undefined)
   } catch (err) {
     error.value = err.message
@@ -591,19 +596,23 @@ async function resumeRule() {
         </div>
         <template v-if="canReviewActivity">
           <h3 class="form-subhead">订单和退款核对</h3>
-          <p class="rule-formula">读取已同步的收退款。按原付款时已发布的规则和有效任职确定收款对象。</p>
           <a-form layout="inline" class="period-activity-query">
-            <a-form-item label="核对账期" html-for="period-activity-month">
+            <a-form-item v-if="!creating" label="核对账期" html-for="period-activity-month">
               <a-input id="period-activity-month" v-model:value="activityMonth" type="month"/>
             </a-form-item>
             <a-form-item>
-              <a-button :disabled="!activityMonth || savingDraft" :loading="reviewingActivity" @click="readActivity()">读取已同步数据</a-button>
-              <a-button v-if="sheet.paused" :disabled="!activityMonth || reviewingActivity" @click="readActivity(true)">试算暂停规则</a-button>
-              <a-button v-else :disabled="!activityMonth || reviewingActivity" :loading="savingDraft" @click="openDraft">打开整期草稿</a-button>
+              <a-button v-if="!creating" :disabled="!activityMonth || savingDraft || reviewingActivity"
+                :loading="reviewingActivity && activityMode==='published'" @click="readActivity()">读取已同步数据</a-button>
+              <a-button v-if="!creating && sheet.paused" :disabled="!activityMonth || reviewingActivity"
+                :loading="reviewingActivity && activityMode==='paused'" @click="readActivity('paused')">试算暂停规则</a-button>
+              <a-button v-else-if="!creating" :disabled="!activityMonth || reviewingActivity" :loading="savingDraft" @click="openDraft">打开整期草稿</a-button>
+              <a-button v-if="canSave" :disabled="!changed || !effectiveDate || saving || savingDraft || reviewingActivity"
+                :loading="reviewingActivity && activityMode==='edits'" @click="readActivity('edits')">用订单试算</a-button>
             </a-form-item>
           </a-form>
           <a-alert v-if="activityError" class="feedback" :message="activityError" type="error" show-icon/>
           <section v-if="activity" class="period-activity-result" aria-label="已同步数据核对结果">
+            <p v-if="activityMode==='edits'" class="rule-formula" role="status">按待发布配置试算首个生效账期。</p>
             <p class="rule-formula">{{ formatTime(activity.start) }} 至 {{ formatTime(activity.through) }}（截止时刻不含）</p>
             <div class="period-activity-source">
               <a-tag v-for="source in activity.sources" :key="source.stream" :color="source.status==='READY'?'green':'orange'">
@@ -641,7 +650,9 @@ async function resumeRule() {
               <h4 class="form-subhead">按原付款分组</h4>
               <p v-if="activity.grouping.paused && !activity.grouping.trialOnPaused" class="rule-formula">规则包已暂停，本次仅核对场景收退款。</p>
               <template v-else>
-                <p v-if="activity.grouping.trialOnPaused" class="rule-formula">按已发布的暂停规则试算，规则仍保持暂停。</p>
+                <p v-if="activity.grouping.trialOnPaused" class="rule-formula">
+                  {{ activityMode==='edits' ? '规则包目前暂停。' : '按已发布的暂停规则试算，规则仍保持暂停。' }}
+                </p>
                 <p v-if="activity.grouping.priorUnsettled" class="rule-formula" role="status">上一账期尚未确认，暂显示结转前试算。</p>
                 <div v-if="activity.grouping.groups.length" class="period-activity-table">
                   <table>
@@ -650,7 +661,7 @@ async function resumeRule() {
                       <th>{{ activity.grouping.priorUnsettled ? '结转前试算' : '分润试算' }}</th></tr></thead>
                     <tbody>
                       <tr v-for="group in activity.grouping.groups" :key="group.id">
-                        <td>v{{ group.version }}</td>
+                        <td>{{ group.ruleId ? 'v'+group.version : '待发布' }}</td>
                         <td>
                           <div v-for="target in group.targets" :key="target.itemKey">
                             {{ target.name }}
@@ -676,9 +687,10 @@ async function resumeRule() {
                 <p v-else class="rule-formula">本期没有可归组的交易。</p>
                 <ul v-if="Object.keys(activity.grouping.issues).length" class="period-activity-issues" aria-label="待核分组">
                   <li v-for="issue in activity.grouping.targetIssues || []" :key="issue.ruleId+'-'+issue.itemKey+'-'+issue.code">
-                    <strong>{{ issue.label }}</strong> · v{{ issue.version }} · {{ groupingIssueLabels[issue.code] || issue.code }} · {{ issue.count }} 笔
-                    <a-button type="link" size="small" :disabled="saving || (issue.ruleId!==rule.id ? changed : !rows.some(item=>item.itemKey===issue.itemKey))"
-                      @click="followTargetIssue(issue)">{{ issue.ruleId!==rule.id ? '查看规则 v'+issue.version : canSave ? '编辑收款安排' : '查看收款安排' }}</a-button>
+                    <strong>{{ issue.label }}</strong> · {{ issue.ruleId ? 'v'+issue.version : '待发布' }} · {{ groupingIssueLabels[issue.code] || issue.code }} · {{ issue.count }} 笔
+                    <a-button v-if="issue.ruleId || rows.some(item=>item.itemKey===issue.itemKey)" type="link" size="small"
+                      :disabled="saving || (issue.ruleId && issue.ruleId!==rule.id ? changed : !rows.some(item=>item.itemKey===issue.itemKey))"
+                      @click="followTargetIssue(issue)">{{ issue.ruleId && issue.ruleId!==rule.id ? '查看规则 v'+issue.version : canSave ? '编辑收款安排' : '查看收款安排' }}</a-button>
                   </li>
                   <li v-for="[issue,count] in otherGroupingIssues" :key="issue">{{ groupingIssueLabels[issue] || issue }} · {{ count }} 笔</li>
                 </ul>

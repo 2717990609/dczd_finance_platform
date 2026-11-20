@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"slices"
 	"time"
@@ -18,6 +20,7 @@ type catalogPeriodActivityRequest struct {
 	GroupRule     *catalogPeriodVersion
 	TrialPaused   bool
 	DraftPeriodID int64
+	ProposedRule  *catalogAggregateRule
 }
 
 type catalogActivityRecognitionWindow struct {
@@ -322,11 +325,7 @@ func (s workspace) getCatalogPeriodActivity(w http.ResponseWriter, r *http.Reque
 			return err
 		}
 		rule.Cycle = definition.Cycle
-		day := 1
-		if definition.Cycle == "MONTHLY_25_TO_24" {
-			day = 25
-		}
-		window, err := calendarWindow(r.URL.Query().Get("month"), day)
+		window, err := catalogAggregateWindow(r.URL.Query().Get("month"), definition.Cycle)
 		if err != nil {
 			return err
 		}
@@ -338,15 +337,99 @@ func (s workspace) getCatalogPeriodActivity(w http.ResponseWriter, r *http.Reque
 	respond(w, result, err)
 }
 
+// Quote the proposed version in its first effective period using a single
+// source and configuration snapshot. The synthetic version has no stored ID.
+func (s workspace) postCatalogPeriodActivity(w http.ResponseWriter, r *http.Request) {
+	actor := financeRuleActor{permits: func(int64, bool) bool { return s.development }}
+	if principal := financeUser(r.Context()); principal != nil {
+		if !principal.Workspace {
+			respond(w, nil, errFinanceForbidden)
+			return
+		}
+		actor.permits = principal.permitsRule
+	}
+	submitJSON(128<<10, func(ctx context.Context, input catalogPeriodPublishInput) (catalogPeriodActivity, error) {
+		var report catalogPeriodActivity
+		err := pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			var base catalogPeriodVersion
+			var body json.RawMessage
+			var err error
+			at := input.EffectiveFrom.In(shanghai)
+			if input.Create != nil {
+				if input.BaseID != "" || len(input.Edits) != 0 {
+					return invalid
+				}
+				base.ProductID = input.Create.ProductID
+				body, err = buildCatalogPeriodRule(ctx, tx, *input.Create, at, input.ScenarioCodes, input.Components, input.Performance, actor)
+			} else {
+				id, ok := canonicalSourceUUID(input.BaseID)
+				if !ok {
+					return invalid
+				}
+				input.BaseID = id
+				base, err = readCatalogPeriodVersion(ctx, tx, id)
+				if err != nil {
+					return err
+				}
+				if !actor.permits(base.ProductID, true) {
+					return errRulePermission
+				}
+				body, err = prepareCatalogPeriodRevision(ctx, tx, base, input, actor)
+			}
+			if err != nil {
+				return err
+			}
+			proposal, err := parseCatalogPeriodRule(body)
+			if err != nil {
+				return err
+			}
+			base.Cycle = proposal.Cycle
+			window := periodWindow{Start: at, Through: at.AddDate(0, 1, 0)}
+			if base.packageID != "" {
+				var closed bool
+				err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM periods p JOIN settlements final ON final.period_id=p.id
+				 WHERE p.aggregate_package_id=$1::uuid AND (p.starts_on,p.ends_on)=($2::date,$3::date))`,
+					base.packageID, window.Start.Format(time.DateOnly), window.Through.AddDate(0, 0, -1).Format(time.DateOnly)).Scan(&closed)
+				if err != nil {
+					return err
+				}
+				if closed {
+					return errSettlementClosed
+				}
+			}
+			var proposed *catalogAggregateRule
+			if !bytes.Equal(body, base.raw) {
+				proposed = &catalogAggregateRule{From: at, Through: base.Through, Definition: proposal}
+			}
+			report, err = readCatalogPeriodActivity(ctx, tx, catalogPeriodActivityRequest{ProductID: base.ProductID,
+				Scenarios: proposal.Scenarios, Window: window, Provider: s.dcaiSourceKey(), MaxAge: s.settlementSyncMaxAge,
+				GroupRule: &base, TrialPaused: true, ProposedRule: proposed})
+			return err
+		})
+		return report, err
+	})(w, r)
+}
+
 func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodActivityRequest) (catalogPeriodActivity, error) {
 	var rules []catalogAggregateRule
 	recognition := make([]catalogActivityRecognitionWindow, 0)
 	groupPayments := in.GroupRule != nil && (!in.GroupRule.Paused || in.TrialPaused)
 	if groupPayments {
-		var err error
-		rules, err = readCatalogAggregateVersions(ctx, tx, in.GroupRule.packageID, in.Window.Through, in.GroupRule.Cycle)
-		if err != nil {
-			return catalogPeriodActivity{}, err
+		if in.GroupRule.packageID != "" {
+			var err error
+			rules, err = readCatalogAggregateVersions(ctx, tx, in.GroupRule.packageID, in.Window.Through, in.GroupRule.Cycle)
+			if err != nil {
+				return catalogPeriodActivity{}, err
+			}
+		}
+		if proposed := in.ProposedRule; proposed != nil {
+			for i := range rules {
+				rule := &rules[i]
+				if !rule.From.After(proposed.From) && (rule.Through == nil || proposed.From.Before(*rule.Through)) {
+					rule.Through = &proposed.From
+				}
+			}
+			rules = append(rules, *proposed)
 		}
 		in.Scenarios = slices.Clone(in.Scenarios)
 		for _, rule := range rules {
@@ -515,7 +598,7 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 				return result, err
 			}
 			resumed := in.GroupRule.ResumeFrom != nil && in.GroupRule.ResumeFrom.Equal(in.Window.Start)
-			if resumed || slices.ContainsFunc(rules, func(rule catalogAggregateRule) bool { return rule.From.Before(in.Window.Start) }) {
+			if packageID != "" && (resumed || slices.ContainsFunc(rules, func(rule catalogAggregateRule) bool { return rule.From.Before(in.Window.Start) })) {
 				if err := readCatalogAggregateCarry(ctx, tx, &grouping, packageID, in.Window.Start, in.DraftPeriodID == 0, resumed); err != nil {
 					return result, err
 				}

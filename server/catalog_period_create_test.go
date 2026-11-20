@@ -106,6 +106,18 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	if err := db.QueryRow(ctx, `SELECT count(*) FROM product_rule_packages WHERE product_id=980`).Scan(&packages); err != nil || packages != 0 {
 		t.Fatalf("preview should not publish a package: %d %v", packages, err)
 	}
+	actual := submit(0, "/api/v1/catalog-period-activity", s.postCatalogPeriodActivity, input)
+	var actualReport catalogPeriodActivity
+	if err := json.Unmarshal(actual.Body.Bytes(), &actualReport); err != nil || actual.Code != 200 ||
+		actualReport.Receipts != 40000 || actualReport.Grouping == nil || len(actualReport.Grouping.Groups) != 1 ||
+		actualReport.Grouping.Groups[0].quote().Total != 8000 {
+		t.Fatalf("new definition should group both real inputs without publishing: %d %s %v", actual.Code, actual.Body.String(), err)
+	}
+	var writes int
+	if err := db.QueryRow(ctx, `SELECT (SELECT count(*) FROM product_rule_packages WHERE product_id=980)
+		+(SELECT count(*) FROM periods WHERE product_id=980)`).Scan(&writes); err != nil || writes != 0 {
+		t.Fatalf("order trial must not persist a rule or period: %d %v", writes, err)
+	}
 	if bad := submit(980, path, s.postCatalogPeriodRule, strings.Replace(input, "2026-09-25", "2026-09-24", 1)); bad.Code != 400 {
 		t.Fatalf("creation accepted a date outside the selected cycle: %d %s", bad.Code, bad.Body.String())
 	}
