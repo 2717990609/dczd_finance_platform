@@ -128,6 +128,9 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 		action.Mode, action.Company = "TEAM_POOL", ""
 		action.Role, action.OwnerRole = edit.MemberRole, edit.OwnerRole
 		action.PoolUnit, action.PoolParty, action.PoolName = org.UnitID, org.Value, edit.PoolName
+		if _, direct := catalogPeriodUnit(org.Value); direct {
+			action.PoolUnit = ""
+		}
 		if json.Unmarshal(fields["pool_code"], &action.PoolCode) != nil || action.PoolCode == "" {
 			action.PoolCode = edit.ItemKey
 		}

@@ -333,14 +333,19 @@ const catalogAggregateDutySQL = `SELECT a.scope_key,a.role,person.id,person.name
 
 func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catalogAggregateRule, from, through time.Time) (catalogAggregateDirectory, error) {
 	directory := catalogAggregateDirectory{Duties: map[catalogAggregateDutyKey][]catalogAggregateDuty{}, InactiveUnits: make(map[string]bool)}
-	var parties, units, roles []string
+	var parties, units, directUnits, targetUnits, roles []string
 	var people []int64
 	for _, version := range rules {
 		for _, item := range version.Definition.Items {
 			if item.PersonID > 0 {
 				people = append(people, item.PersonID)
+			} else if unit, direct := catalogPeriodUnit(item.OrganizationKey); direct {
+				directUnits = append(directUnits, unit)
 			} else {
 				parties = append(parties, item.OrganizationKey)
+			}
+			if item.unit != "" {
+				targetUnits = append(targetUnits, item.unit)
 			}
 			if item.TargetKind == "pool" {
 				units = append(units, item.unit)
@@ -367,7 +372,9 @@ func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catal
 	 FROM catalog_benefit_organizations b JOIN catalog_sales_context c ON c.source=b.source AND c.captured_at=b.observed_at
 	 JOIN organization_units o ON o.id=b.unit_id
 	 WHERE b.source='DCAI' AND c.benefit_ready AND b.party_uuid::text=ANY($1)
-	 UNION ALL SELECT '',o.id::text,o.name FROM organization_units o WHERE o.id::text=ANY($2) AND o.status='INACTIVE'`, parties, units)
+	 UNION ALL SELECT '',o.id::text,o.name FROM organization_units o WHERE o.id::text=ANY($2) AND o.status='INACTIVE'
+	 UNION ALL SELECT $4 || o.id::text,o.id::text,o.name FROM organization_units o WHERE o.id=ANY($3::uuid[]) AND o.status='ACTIVE'`,
+		parties, targetUnits, directUnits, catalogPeriodUnitPrefix)
 	if err != nil {
 		return directory, err
 	}

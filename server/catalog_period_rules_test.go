@@ -20,6 +20,82 @@ const twoTierPeriodRule = `{
  "tier_table":[{"id":"original-1","rate_bps":0,"max_exclusive":10001},{"id":"original-2","rate_bps":100,"min_inclusive":10001}]}]
 }`
 
+func TestCatalogPeriodRulesUseOrganizationDirectoryWithoutImportedAliases(t *testing.T) {
+	ctx := context.Background()
+	db := integrationDB(t)
+	const company = "41000000-0000-4000-8000-000000000111"
+	const team = "41000000-0000-4000-8000-000000000112"
+	const disabled = "41000000-0000-4000-8000-000000000113"
+	if _, err := db.Exec(ctx, `INSERT INTO organization_units(id,parent_id,name,kind,status) VALUES
+	 ($1,NULL,'新公司','COMPANY','ACTIVE'),($2,$1,'新交付组','TEAM','ACTIVE'),($3,$1,'旧组','TEAM','INACTIVE')`, company, team, disabled); err != nil {
+		t.Fatal(err)
+	}
+	base := json.RawMessage(twoTierPeriodRule)
+	edits := []catalogPeriodComponentEdit{
+		{Label: "公司收款", TargetKind: "company", OrganizationKey: "unit:" + company, Tiers: []catalogPeriodTier{{Rate: 250}}},
+		{Label: "团队收款", TargetKind: "pool", OrganizationKey: "unit:" + team, PoolName: "交付池",
+			OwnerRole: "SERVICE_DELIVERY", MemberRole: "DELIVERY_TEAM", Tiers: []catalogPeriodTier{{Rate: 125}}},
+	}
+	updated, err := applyCatalogPeriodChanges(ctx, db, base, nil, edits)
+	if err != nil {
+		t.Fatalf("active organizations from the directory must be configurable: %v", err)
+	}
+	rule, err := parseCatalogPeriodRule(updated)
+	if err != nil || len(rule.Items) != 2 || rule.Items[0].unit != company || rule.Items[1].unit != team {
+		t.Fatalf("published recipients must keep both selected organization IDs: %+v %v", rule.Items, err)
+	}
+	if err := nameCatalogPeriodTargets(ctx, db, rule.Items); err != nil || rule.Items[0].TargetName != "新公司" || rule.Items[1].TargetName != "新交付组" {
+		t.Fatalf("the rule must display the referenced organizations: %+v %v", rule.Items, err)
+	}
+	at := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		directory, err := readCatalogAggregateDirectory(ctx, tx, []catalogAggregateRule{{Definition: rule}}, at, at.Add(time.Hour))
+		if err != nil {
+			return err
+		}
+		if _, key, issue := directory.groupTarget(rule.Items[0], at); key.Unit != company || issue != "" {
+			t.Fatalf("wrong company payout: %+v %s", key, issue)
+		}
+		if _, key, issue := directory.groupTarget(rule.Items[1], at); key.Unit != team || issue != "BENEFIT_POOL_OWNER_MISSING" {
+			t.Fatalf("the team resolves by ID and still needs a dated owner: %+v %s", key, issue)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO catalog_sales_context(source,captured_at,snapshot_digest,benefit_ready)
+	 VALUES('DCAI','2026-09-01',sha256('fixture'::bytea),false);
+	 INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES(9101,'交付负责人'),(9102,'交付成员')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `WITH memberships AS (
+	 INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from)
+	 SELECT gen_random_uuid(),id,$1::uuid,'PRIMARY','2026-09-01' FROM people WHERE id IN (9101,9102)
+	 RETURNING person_id
+	 ) INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,valid_from,observed_at)
+	 SELECT gen_random_uuid(),'DCAI',person_id,CASE person_id WHEN 9101 THEN 'SERVICE_DELIVERY' ELSE 'DELIVERY_TEAM' END,
+	 'ORGANIZATION_UNIT',$1::uuid::text,'2026-09-01','2026-09-01' FROM memberships`, team); err != nil {
+		t.Fatal(err)
+	}
+	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		directory, err := readCatalogAggregateDirectory(ctx, tx, []catalogAggregateRule{{Definition: rule}}, at, at.Add(time.Hour))
+		if err != nil {
+			return err
+		}
+		_, key, issue := directory.groupTarget(rule.Items[1], at)
+		if key.Unit != team || key.Owner != 9101 || len(key.Members) != 1 || key.Members[0] != 9102 || issue != "" {
+			t.Fatalf("the selected team uses payment-date membership even without a source alias: %+v %s", key, issue)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	edits[1].OrganizationKey = "unit:" + disabled
+	if _, err := applyCatalogPeriodChanges(ctx, db, base, nil, edits); !errors.Is(err, errCatalogPeriodRecipient) {
+		t.Fatalf("accepted a disabled organization: %v", err)
+	}
+}
+
 func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t *testing.T) {
 	choices := catalogStructureOptions{
 		Organizations: []catalogStructureOption{{Value: "company", UnitID: "company-unit", Kind: "COMPANY"}, {Value: "pool", UnitID: "pool-unit", Kind: "TEAM"}},

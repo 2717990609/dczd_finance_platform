@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strconv"
 	"time"
 
@@ -130,8 +131,12 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 	}
 	if err == nil && rule.MayPublish {
 		var options catalogStructureOptions
-		options, err = readCatalogStructureOptions(ctx, s.db)
-		rule.Options = &catalogPeriodOptions{Organizations: options.Organizations, Roles: options.Roles}
+		options, err = readCatalogPeriodStructureOptions(ctx, s.db)
+		organizations := slices.DeleteFunc(options.Organizations, func(org catalogStructureOption) bool {
+			_, direct := catalogPeriodUnit(org.Value)
+			return !direct
+		})
+		rule.Options = &catalogPeriodOptions{Organizations: organizations, Roles: options.Roles}
 		if err == nil {
 			first := firstCatalogPeriodChange(rule.From, rule.Cycle)
 			var eligible []catalogPeriodScenarioOption
@@ -299,19 +304,35 @@ func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, raw 
 			return nil, errCatalogPeriodRecipient
 		}
 	}
-	options, err := readCatalogStructureOptions(ctx, db)
+	options, err := readCatalogPeriodStructureOptions(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 	return editCatalogPeriodComponents(raw, components, options)
 }
 
+func readCatalogPeriodStructureOptions(ctx context.Context, db catalogPeriodReader) (catalogStructureOptions, error) {
+	options, err := readCatalogStructureOptions(ctx, db)
+	if err != nil {
+		return options, err
+	}
+	var direct []catalogStructureOption
+	err = db.QueryRow(ctx, `SELECT coalesce(jsonb_agg(jsonb_build_object(
+	 'value',$1 || u.id::text,'label',concat_ws(' / ',p.name,u.name),'unitId',u.id::text,'kind',u.kind)
+	 ORDER BY u.name,u.id),'[]') FROM organization_units u LEFT JOIN organization_units p ON p.id=u.parent_id
+	 WHERE u.status='ACTIVE'`, catalogPeriodUnitPrefix).Scan(&direct)
+	options.Organizations = append(direct, options.Organizations...)
+	return options, err
+}
+
 func nameCatalogPeriodTargets(ctx context.Context, db catalogPeriodReader, items []catalogPeriodItem) error {
-	var organizations []string
+	var organizations, units []string
 	var people []int64
 	for _, item := range items {
 		if item.PersonID > 0 {
 			people = append(people, item.PersonID)
+		} else if item.unit != "" {
+			units = append(units, item.unit)
 		} else {
 			organizations = append(organizations, item.OrganizationKey)
 		}
@@ -322,13 +343,18 @@ func nameCatalogPeriodTargets(ctx context.Context, db catalogPeriodReader, items
 	 JOIN catalog_sales_context c ON c.source=b.source AND c.captured_at=b.observed_at
 	 JOIN organization_units u ON u.id=b.unit_id
 	 WHERE b.source='DCAI' AND b.party_uuid::text=ANY($1) GROUP BY b.party_uuid HAVING count(DISTINCT b.unit_id)=1
-	 UNION ALL SELECT id::text,name FROM people WHERE id=ANY($2::bigint[])) targets`, organizations, people).Scan(&names); err != nil {
+	 UNION ALL SELECT id::text,name FROM people WHERE id=ANY($2::bigint[])
+	 UNION ALL SELECT $4 || id::text,name || CASE WHEN status='INACTIVE' THEN '（已停用）' ELSE '' END
+	 FROM organization_units WHERE id::text=ANY($3)) targets`,
+		organizations, people, units, catalogPeriodUnitPrefix).Scan(&names); err != nil {
 		return err
 	}
 	for i := range items {
 		key := items[i].OrganizationKey
 		if items[i].PersonID > 0 {
 			key = strconv.FormatInt(items[i].PersonID, 10)
+		} else if items[i].unit != "" {
+			key = catalogPeriodUnitPrefix + items[i].unit
 		}
 		items[i].TargetName = names[key]
 	}

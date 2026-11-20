@@ -38,6 +38,20 @@ type catalogPeriodDefinition struct {
 	Items     []catalogPeriodItem
 }
 
+const catalogPeriodUnitPrefix = "unit:"
+
+func catalogPeriodUnit(key string) (string, bool) {
+	raw, direct := strings.CutPrefix(key, catalogPeriodUnitPrefix)
+	if !direct {
+		return "", false
+	}
+	id, valid := canonicalSourceUUID(raw)
+	if !valid || id != raw {
+		return "", true
+	}
+	return id, true
+}
+
 func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error) {
 	var stored struct {
 		Basis       string `json:"amount_basis"`
@@ -81,13 +95,26 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 	}
 	items := make(map[string]bool)
 	for _, action := range stored.Actions {
+		org := action.Company
+		unit := action.PoolUnit
+		if action.Mode == "TEAM_POOL" {
+			org = action.PoolParty
+		}
+		if directUnit, direct := catalogPeriodUnit(org); direct {
+			if directUnit == "" || unit != "" && unit != directUnit {
+				return result, errCatalogRateUnavailable
+			}
+			unit = directUnit
+			if action.Mode == "TEAM_POOL" {
+				action.PoolUnit = directUnit
+			}
+		}
 		if action.Item == "" || items[action.Item] || action.Label == "" || !action.validTarget() ||
 			action.Type != "TIER_RATE" || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" ||
 			!validCatalogPeriodTiers(action.Tiers) {
 			return result, errCatalogRateUnavailable
 		}
 		items[action.Item] = true
-		org := action.Company
 		memberRole := ""
 		var personID int64
 		if action.Designated != "" {
@@ -99,12 +126,11 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			personID = id
 		}
 		if action.Mode == "TEAM_POOL" {
-			org = action.PoolParty
 			memberRole = catalogAggregateMemberRole(action.Role, action.EligibilityRole)
 		}
 		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: action.targetKind(),
 			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
-			MemberRole: memberRole, unit: action.PoolUnit})
+			MemberRole: memberRole, unit: unit})
 	}
 	return result, nil
 }
