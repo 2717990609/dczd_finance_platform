@@ -3,9 +3,53 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
+
+func TestCatalogRateRenamePreservesPoolAndOriginalDefinition(t *testing.T) {
+	definition := creatorBenefitDefinition(creatorActionsFixture, "")
+	var changes []catalogRateChange
+	if err := json.Unmarshal([]byte(`[{"itemKey":"delivery","label":"  新交付安排  "}]`), &changes); err != nil {
+		t.Fatal(err)
+	}
+	body, changed, err := editCatalogRates(definition, changes)
+	if err != nil || !changed {
+		t.Fatalf("rename changed=%t err=%v", changed, err)
+	}
+	before, beforeOK := readVIPBenefits(definition)
+	after, afterOK := readVIPBenefits(body)
+	if !beforeOK || !afterOK || len(before.actions) == 0 || len(before.actions) != len(after.actions) {
+		t.Fatalf("invalid original or revised policy: before=%t after=%t", beforeOK, afterOK)
+	}
+	delivery := len(before.actions) - 1
+	if before.actions[delivery].Item != "delivery" || before.actions[delivery].Label != "交付" || after.actions[delivery].Label != "新交付安排" {
+		t.Fatalf("old and new labels were not preserved: before=%+v after=%+v", before.actions, after.actions)
+	}
+	before.actions[delivery].Label = "新交付安排"
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("renaming changed the benefit's calculation or payee")
+	}
+	if _, again, err := editCatalogRates(body, changes); again || err != nil {
+		t.Fatalf("unchanged rename changed=%t err=%v", again, err)
+	}
+	for _, input := range []string{
+		`[{"itemKey":"delivery","label":" "}]`,
+		`[{"itemKey":"missing","label":"新名称"}]`,
+		`[{"itemKey":"delivery","row":1,"label":"新名称"}]`,
+		`[{"itemKey":"delivery","rateBps":300,"label":"新名称"}]`,
+		`[{"itemKey":"delivery","label":"名称甲"},{"itemKey":"delivery","label":"名称乙"}]`,
+	} {
+		if err := json.Unmarshal([]byte(input), &changes); err != nil {
+			t.Fatal(err)
+		}
+		if _, _, err := editCatalogRates(definition, changes); !errors.Is(err, invalid) {
+			t.Fatalf("rename %s returned %v", input, err)
+		}
+		changes = nil
+	}
+}
 
 func TestChangingSalesRatesPreservesInternalTeamSplit(t *testing.T) {
 	definition := json.RawMessage(strings.NewReplacer(

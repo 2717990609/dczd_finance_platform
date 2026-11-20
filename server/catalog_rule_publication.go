@@ -22,10 +22,11 @@ var (
 )
 
 type catalogRateChange struct {
-	ItemKey string `json:"itemKey"`
-	Row     *int   `json:"row,omitempty"` // One-based within the selected version's rate table.
-	Rate    *int64 `json:"rateBps"`
-	Fixed   *int64 `json:"fixedMinor,omitempty"`
+	ItemKey string  `json:"itemKey"`
+	Row     *int    `json:"row,omitempty"` // One-based within the selected version's rate table.
+	Rate    *int64  `json:"rateBps"`
+	Fixed   *int64  `json:"fixedMinor,omitempty"`
+	Label   *string `json:"label,omitempty"`
 }
 
 type publishCatalogRatesInput struct {
@@ -346,10 +347,30 @@ func editCatalogRates(raw json.RawMessage, changes []catalogRateChange) (json.Ra
 		Row  int
 	}
 	seen := make(map[cell]bool, len(changes))
+	renamed := make(map[string]bool)
 	changed := false
 	for _, change := range changes {
 		action := items[change.ItemKey]
-		if action == nil || (change.Rate == nil) == (change.Fixed == nil) ||
+		if action == nil {
+			return nil, false, invalid
+		}
+		if change.Label != nil {
+			label := strings.TrimSpace(*change.Label)
+			if change.Row != nil || change.Rate != nil || change.Fixed != nil || renamed[change.ItemKey] || !textOK(label, 80) {
+				return nil, false, invalid
+			}
+			renamed[change.ItemKey] = true
+			var previous string
+			if len(action["label"]) > 0 && json.Unmarshal(action["label"], &previous) != nil {
+				return nil, false, invalid
+			}
+			if label != previous {
+				action["label"], _ = json.Marshal(label)
+				changed = true
+			}
+			continue
+		}
+		if (change.Rate == nil) == (change.Fixed == nil) ||
 			change.Rate != nil && (*change.Rate < 0 || *change.Rate > 10000) ||
 			change.Fixed != nil && (*change.Fixed < 0 || change.Row != nil) {
 			return nil, false, invalid

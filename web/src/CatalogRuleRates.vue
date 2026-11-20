@@ -14,6 +14,7 @@ const selected = ref()
 const filter = ref('')
 const effectiveFrom = ref('')
 const edits = ref({})
+const labelEdits = ref(new Map())
 const targetEdits = ref(new Map())
 const targetDraft = ref()
 const teamEdits = ref(new Map())
@@ -62,7 +63,7 @@ const itemRemoved = computed(() => removedItems.value.has(selected.value))
 const editable = computed(() => sheet.value?.mayPublish && !saving.value && !itemRemoved.value)
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
-const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
+const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 || labelEdits.value.size ||
   structure.value.items.length || structure.value.rateRows.length || removedItems.value.size || removedRateRows.value.size)
 const impactPeriods = computed(() => (props.periods || []).filter(period=>period.productId===sheet.value?.productId && !period.settled))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
@@ -193,6 +194,10 @@ function componentStandard(item) {
   const value = flatValue(item)
   return value == null || value==='' ? '' : value+(flatMethod(item)==='fixed' ? ' 元/笔' : '%')
 }
+function setLabel(item, label) {
+  if (label.trim()===item.label) labelEdits.value.delete(item.itemKey)
+  else labelEdits.value.set(item.itemKey,label)
+}
 function setRate(value, base, row) {
   const itemKey = selected.value
   const key = cellKey(itemKey,row)
@@ -244,6 +249,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   copy.value = undefined
   more.value = []
   edits.value = {}
+  labelEdits.value.clear()
   removedItems.value.clear()
   removedRateRows.value.clear()
   targetEdits.value.clear()
@@ -297,6 +303,12 @@ function publicationInput() {
       if (rateBps===undefined) throw new Error('请填写 0 至 100 之间的比例，最多保留两位小数。')
       return {itemKey,row,rateBps}
     })
+  for (const [itemKey,value] of labelEdits.value) {
+    if (removedItems.value.has(itemKey)) continue
+    const label = value.trim()
+    if (!label) throw new Error('请填写收款安排名称。')
+    changes.push({itemKey,label})
+  }
   return {
     baseId:props.rule.id,
     copy:copy.value,
@@ -373,7 +385,7 @@ async function publish() {
             :aria-expanded="selected===item.itemKey" :aria-controls="'catalog-rate-'+item.itemKey"
             @click="selected=selected===item.itemKey ? undefined : item.itemKey">
             <DownOutlined aria-hidden="true"/>
-            <strong>{{ item.label }}</strong>
+            <strong>{{ labelEdits.get(item.itemKey)?.trim() || item.label }}</strong>
             <span class="rule-block-badge">{{ removedItems.has(item.itemKey) ? '待删除' : targetShortLabels[targetEdits.get(item.itemKey)?.target || item.targetKind] }}</span>
             <small>{{ [targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}</small>
           </button>
@@ -501,6 +513,10 @@ async function publish() {
             </Teleport>
             <a-collapse v-model:active-key="more" ghost class="catalog-more">
               <a-collapse-panel key="more" header="更多配置">
+                <a-form-item v-if="component && !itemRemoved" label="收款安排名称" html-for="catalog-rate-label" class="catalog-rate-label">
+                  <a-input id="catalog-rate-label" :value="labelEdits.get(component.itemKey) ?? component.label" :maxlength="80"
+                    :disabled="!editable || structureEditing || !!targetDraft" @update:value="setLabel(component,$event)"/>
+                </a-form-item>
                 <div class="topbar-actions">
                   <a-button v-if="component && targetKind!=='seller'" :danger="!itemRemoved" :disabled="structureEditing || saving"
                     @click="toggleItemRemoval">{{ itemRemoved ? '撤销删除分项' : '删除分项' }}</a-button>
@@ -567,6 +583,7 @@ async function publish() {
 .catalog-rate-context {font-size:13px}
 .catalog-receipt {margin-bottom:6px}
 .catalog-more {margin:6px 0}
+.catalog-rate-label {max-width:380px}
 .catalog-more :deep(.ant-collapse-header) {padding-block:6px}
 .catalog-copy {padding:16px;margin:12px 0;border:1px solid var(--line);border-radius:8px}
 </style>
