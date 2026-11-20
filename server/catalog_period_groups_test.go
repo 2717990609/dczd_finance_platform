@@ -57,4 +57,19 @@ func TestCatalogPeriodGroupsKeepOriginalRuleAndSplitOnPoolMembership(t *testing.
 		totals[[2]int{2, 2}] != [4]int64{50000, 2000, 48000, 2} || report.Issues["ORIGINAL_RULE_MISSING"] != 1 {
 		t.Fatalf("unexpected grouping totals=%v issues=%v", totals, report.Issues)
 	}
+	versions[1].Definition.Scenarios = []string{"FIRST"}
+	onlyFirst := []catalogActivityEvent{
+		{PaymentID: 30, PaidAt: month, Scenario: "SECOND", Amount: 30000},
+		{PaymentID: 31, PaidAt: month.Add(-time.Second), Scenario: "SECOND", Amount: 6000, Refund: true},
+	}
+	report, err = groupCatalogPeriodEvents(onlyFirst, versions, owners)
+	if err != nil || len(report.Groups) != 1 || len(report.Issues) != 0 || report.Groups[0].Version != 1 || report.Groups[0].Refunds != 6000 {
+		t.Fatalf("a removed scenario still contributes its refunds on old eligible orders: %+v %v", report, err)
+	}
+	owners.Organizations = nil
+	owners.InactiveUnits = map[string]bool{"unit": true}
+	report, err = groupCatalogPeriodEvents(onlyFirst, versions, owners)
+	if err != nil || len(report.Groups) != 0 || report.Issues["BENEFIT_ORG_INACTIVE"] != 1 {
+		t.Fatalf("a missing mapping for a known inactive unit needs the specific warning: %+v %v", report, err)
+	}
 }

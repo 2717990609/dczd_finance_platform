@@ -153,13 +153,89 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 				t.Fatalf("wrong group membership: %+v", group)
 			}
 			if group.Targets[0].OwnerName == "上期负责人" && group.Receipts == 0 && group.Refunds == 3000 {
+				if group.BeforeCarry.Total != 0 || group.BeforeCarry.CarryForward != -3000 {
+					t.Fatalf("refund-only group must stay negative before prior carry: %+v", group.BeforeCarry)
+				}
 				continue
 			}
 			if group.Targets[0].OwnerName != "本期负责人" || group.Receipts != 32000 || group.Refunds != 0 {
 				t.Fatalf("wrong owner or amount at appointment boundary: %+v", group)
 			}
+			if group.BeforeCarry.Basis != 32000 || group.BeforeCarry.Total != 320 ||
+				len(group.BeforeCarry.Awards) != 1 || group.BeforeCarry.Awards[0].Rate != 100 {
+				t.Fatalf("each group must select a tier using its own net receipts: %+v", group.BeforeCarry)
+			}
 		}
 		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const nextID = "10000000-0000-4000-8000-000000000105"
+	nextRule := strings.Replace(rule, `["FIRST","SECOND"]`, `["FIRST"]`, 1)
+	if _, err := db.Exec(ctx, `INSERT INTO product_rule_versions
+	 (source_id,package_id,version_no,source_status,effective_from,content_hash,definition,observed_at,published_at,predecessor_id)
+	 VALUES($1,$2,2,'PUBLISHED',$3,'next',$4,now(),now(),$5)`,
+		nextID, packageID, window.Start, json.RawMessage(nextRule), ruleID); err != nil {
+		t.Fatal(err)
+	}
+	in.Scenarios = []string{"FIRST"}
+	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		report, err := readCatalogPeriodActivity(ctx, tx, in)
+		if err != nil {
+			return err
+		}
+		if report.Receipts != 12000 || report.Refunds != 3000 || report.Issues["REFUND_EXCEEDS_PAYMENT"] != 1 {
+			t.Fatalf("removed SKU must not contribute new sales or their invalid refunds: %+v", report)
+		}
+		if len(report.Grouping.Groups) != 2 || report.Grouping.Groups[0].RuleID != ruleID ||
+			report.Grouping.Groups[0].Refunds != 3000 || report.Grouping.Groups[1].RuleID != nextID {
+			t.Fatalf("new sales and earlier refunds must use their respective versions: %+v", report.Grouping)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.GroupRule.Paused = true
+	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		paused, err := readCatalogPeriodActivity(ctx, tx, in)
+		if err != nil {
+			return err
+		}
+		if !paused.Grouping.Paused || paused.Grouping.TrialOnPaused || len(paused.Grouping.Groups) != 0 {
+			t.Fatalf("a normal read must show that the rule is paused: %+v", paused.Grouping)
+		}
+		in.TrialPaused = true
+		trial, err := readCatalogPeriodActivity(ctx, tx, in)
+		if err != nil {
+			return err
+		}
+		if !trial.Grouping.Paused || !trial.Grouping.TrialOnPaused || len(trial.Grouping.Groups) != 2 ||
+			trial.Grouping.Groups[1].BeforeCarry.Total != 120 {
+			t.Fatalf("explicit trial should price actual orders while preserving pause status: %+v", trial.Grouping)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO catalog_business_routes(source_id,product_id,source,domain,entity_type,record_table,business_key,
+	 classifier,sku_code,sku_label,mapping_version,effective_from,observed_at,source_product_code)
+	 SELECT gen_random_uuid(),product_id,source,domain,entity_type,record_table,business_key,
+	  classifier,'AAA','冲突场景',mapping_version,effective_from,observed_at,source_product_code
+	 FROM catalog_business_routes WHERE sku_code='SECOND'`); err != nil {
+		t.Fatal(err)
+	}
+	insert(refund("health-duplicate-1", "health-duplicate", health, 100), "")
+	insert(refund("health-duplicate-2", "health-duplicate", health, 100), "")
+	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		report, err := readCatalogPeriodActivity(ctx, tx, in)
+		if err == nil && (report.Issues["DUPLICATE_EVENT"] != 4 || report.Issues["MAPPING_CONFLICT"] == 0) {
+			t.Fatalf("a conflicting mapping must not conceal duplicate events: %+v", report.Issues)
+		}
+		return err
 	})
 	if err != nil {
 		t.Fatal(err)

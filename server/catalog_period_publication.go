@@ -37,8 +37,10 @@ type catalogPeriodVersion struct {
 }
 
 type catalogPeriodSKU struct {
-	Code  string `json:"code"`
-	Label string `json:"label"`
+	Code   string `json:"code"`
+	Label  string `json:"label"`
+	Mapped bool   `json:"mapped"`
+	Locked bool   `json:"locked,omitempty"`
 }
 
 type catalogPeriodPublishInput struct {
@@ -46,6 +48,7 @@ type catalogPeriodPublishInput struct {
 	EffectiveFrom time.Time                    `json:"effectiveFrom"`
 	Edits         []catalogPeriodTierEdit      `json:"edits"`
 	Components    []catalogPeriodComponentEdit `json:"components"`
+	ScenarioCodes []string                     `json:"scenarioCodes,omitempty"`
 }
 
 type catalogPeriodQuoteInput struct {
@@ -64,6 +67,7 @@ type catalogPeriodReader interface {
 type catalogPeriodOptions struct {
 	Organizations []catalogStructureOption `json:"organizations"`
 	Roles         []catalogStructureOption `json:"roles"`
+	Scenarios     []catalogPeriodSKU       `json:"scenarios"`
 }
 
 func readCatalogPeriodVersion(ctx context.Context, db catalogPeriodReader, id string) (catalogPeriodVersion, error) {
@@ -109,25 +113,29 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 	for _, item := range rule.Items {
 		organizations = append(organizations, item.OrganizationKey)
 	}
-	var skuLabels, organizationNames map[string]string
+	skus, err := readCatalogPeriodScenarioOptions(ctx, s.db, rule.ProductID, nil, nil)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	skuLabels := make(map[string]string, len(skus))
+	for _, sku := range skus {
+		skuLabels[sku.Code] = sku.Label
+	}
+	var organizationNames map[string]string
 	err = s.db.QueryRow(ctx, `SELECT coalesce((
-		SELECT jsonb_object_agg(sku_code,label) FROM (
-		 SELECT r.sku_code,min(r.sku_label) AS label FROM catalog_business_routes r
-		 JOIN product_catalog_settings c ON c.product_id=r.product_id AND c.captured_at=r.observed_at
-		 WHERE r.source='DCAI' AND r.sku_code=ANY($1) GROUP BY r.sku_code
-		) labels),'{}'),coalesce((
 		SELECT jsonb_object_agg(party_uuid,name) FROM (
 		 SELECT b.party_uuid,min(u.name) AS name FROM catalog_benefit_organizations b
 		 JOIN catalog_sales_context c ON c.source=b.source AND c.captured_at=b.observed_at
 		 JOIN organization_units u ON u.id=b.unit_id
-		 WHERE b.source='DCAI' AND b.party_uuid::text=ANY($2) GROUP BY b.party_uuid HAVING count(DISTINCT b.unit_id)=1
-		) orgs),'{}')`, period.Scenarios, organizations).Scan(&skuLabels, &organizationNames)
+		 WHERE b.source='DCAI' AND b.party_uuid::text=ANY($1) GROUP BY b.party_uuid HAVING count(DISTINCT b.unit_id)=1
+		) orgs),'{}')`, organizations).Scan(&organizationNames)
 	for _, code := range period.Scenarios {
 		label := skuLabels[code]
 		if label == "" {
 			label = code
 		}
-		rule.Scenarios = append(rule.Scenarios, catalogPeriodSKU{Code: code, Label: label})
+		rule.Scenarios = append(rule.Scenarios, catalogPeriodSKU{Code: code, Label: label, Mapped: skuLabels[code] != ""})
 	}
 	for i := range rule.Items {
 		rule.Items[i].TargetName = organizationNames[rule.Items[i].OrganizationKey]
@@ -136,6 +144,22 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 		var options catalogStructureOptions
 		options, err = readCatalogStructureOptions(ctx, s.db)
 		rule.Options = &catalogPeriodOptions{Organizations: options.Organizations, Roles: options.Roles}
+		if err == nil {
+			first := firstCatalogPeriodChange(rule.From, rule.Cycle)
+			var eligible []catalogPeriodScenarioOption
+			eligible, err = readCatalogPeriodScenarioOptions(ctx, s.db, rule.ProductID, &first, rule.Through)
+			for _, sku := range eligible {
+				if sku.canChange(actor) {
+					rule.Options.Scenarios = append(rule.Options.Scenarios, sku.catalogPeriodSKU)
+					continue
+				}
+				for i := range rule.Scenarios {
+					if rule.Scenarios[i].Code == sku.Code {
+						rule.Scenarios[i].Locked = true
+					}
+				}
+			}
+		}
 	}
 	respond(w, rule, err)
 }
@@ -215,7 +239,7 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 		return result, err
 	}
 	at := input.EffectiveFrom.In(shanghai)
-	if !base.MayPublish || (len(input.Edits) == 0 && input.Components == nil) || !validCatalogPeriodStart(at, period.Cycle) || !at.After(base.From) ||
+	if !base.MayPublish || (len(input.Edits) == 0 && input.Components == nil && input.ScenarioCodes == nil) || !validCatalogPeriodStart(at, period.Cycle) || !at.After(base.From) ||
 		base.Through != nil && !at.Before(*base.Through) {
 		return result, errCatalogPeriodStart
 	}
@@ -239,6 +263,12 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 	body, err := applyCatalogPeriodChanges(ctx, tx, base.raw, input.Edits, input.Components)
 	if err != nil {
 		return result, err
+	}
+	if input.ScenarioCodes != nil {
+		body, err = editCatalogPeriodScenarioScope(ctx, tx, body, base, period.Scenarios, input.ScenarioCodes, at, actor)
+		if err != nil {
+			return result, err
+		}
 	}
 	if bytes.Equal(body, base.raw) {
 		return catalogPublication{ID: input.BaseID, Version: base.Version}, nil

@@ -10,12 +10,13 @@ import (
 )
 
 type catalogPeriodActivityRequest struct {
-	ProductID int64
-	Scenarios []string
-	Window    periodWindow
-	Provider  string
-	MaxAge    time.Duration
-	GroupRule *catalogPeriodVersion
+	ProductID   int64
+	Scenarios   []string
+	Window      periodWindow
+	Provider    string
+	MaxAge      time.Duration
+	GroupRule   *catalogPeriodVersion
+	TrialPaused bool
 }
 
 type catalogPeriodScenarioActivity struct {
@@ -106,7 +107,7 @@ current_events AS MATERIALIZED (
    AND m.effective_from<=v.occurred_at AND (m.effective_to IS NULL OR v.occurred_at<m.effective_to)
  ) m ON true
 ), assessed AS (
- SELECT e.*,p.sku,p.occurred_at AS paid_at,p.amount AS original_amount,
+ SELECT e.*,CASE WHEN p.matches=1 THEN p.sku END AS sku,p.occurred_at AS paid_at,p.amount AS original_amount,
   CASE
    WHEN e.kind='REFUND_ADJUSTED' THEN 'REFUND_ADJUSTMENT'
    WHEN coalesce(e.event_id,'')='' OR e.amount IS NULL OR e.amount<0 THEN 'INVALID_EVENT'
@@ -167,7 +168,8 @@ func (s workspace) getCatalogPeriodActivity(w http.ResponseWriter, r *http.Reque
 			return err
 		}
 		result, err = readCatalogPeriodActivity(ctx, tx, catalogPeriodActivityRequest{ProductID: rule.ProductID,
-			Scenarios: definition.Scenarios, Window: window, Provider: s.dcaiSourceKey(), MaxAge: s.settlementSyncMaxAge, GroupRule: &rule})
+			Scenarios: definition.Scenarios, Window: window, Provider: s.dcaiSourceKey(), MaxAge: s.settlementSyncMaxAge, GroupRule: &rule,
+			TrialPaused: r.URL.Query().Get("trialPaused") == "1"})
 		return err
 	})
 	respond(w, result, err)
@@ -175,7 +177,8 @@ func (s workspace) getCatalogPeriodActivity(w http.ResponseWriter, r *http.Reque
 
 func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodActivityRequest) (catalogPeriodActivity, error) {
 	var rules []catalogAggregateRule
-	if in.GroupRule != nil && !in.GroupRule.Paused {
+	groupPayments := in.GroupRule != nil && (!in.GroupRule.Paused || in.TrialPaused)
+	if groupPayments {
 		var err error
 		rules, err = readCatalogAggregateVersions(ctx, tx, in.GroupRule.packageID, in.Window.Through, in.GroupRule.Cycle)
 		if err != nil {
@@ -218,12 +221,27 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 	var paymentID int64
 	var paidAt time.Time
 	var events []catalogActivityEvent
+	selections := make(map[int64]*catalogAggregateMatch)
 	firstPayment := in.Window.Start
 	seen := 0
 	_, err = pgx.ForEachRow(rows, []any{&code, &kind, &amount, &prior, &paymentID, &paidAt, &issue}, func() error {
 		seen++
 		if seen > maxDraftPayments {
 			return errDraftLimit
+		}
+		event := catalogActivityEvent{PaymentID: paymentID, PaidAt: paidAt, Scenario: code,
+			Amount: amount, Refund: kind != "ORDER_PAID"}
+		if groupPayments && paymentID != 0 && code != "" {
+			selected := selections[paymentID]
+			if selected == nil {
+				newMatch := matchCatalogAggregateRule(rules, event)
+				selected = &newMatch
+				selections[paymentID] = selected
+			}
+			if selected.excluded {
+				return nil
+			}
+			event.selection = selected
 		}
 		if issue != "" {
 			result.Issues[issue]++
@@ -233,9 +251,8 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 		if item == nil {
 			return errProductConfigConflict
 		}
-		if in.GroupRule != nil && !in.GroupRule.Paused {
-			events = append(events, catalogActivityEvent{PaymentID: paymentID, PaidAt: paidAt, Scenario: code,
-				Amount: amount, Refund: kind != "ORDER_PAID"})
+		if groupPayments {
+			events = append(events, event)
 			if paidAt.Before(firstPayment) {
 				firstPayment = paidAt
 			}
@@ -257,7 +274,7 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 		return result, err
 	}
 	if in.GroupRule != nil {
-		if in.GroupRule.Paused {
+		if !groupPayments {
 			result.Grouping = &catalogPeriodGroupReport{Paused: true, Groups: []catalogPeriodGroup{}, Issues: map[string]int{}}
 		} else {
 			directory, err := readCatalogAggregateDirectory(ctx, tx, rules, firstPayment, in.Window.Through)
@@ -268,6 +285,7 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 			if err != nil {
 				return result, err
 			}
+			grouping.Paused, grouping.TrialOnPaused = in.GroupRule.Paused, in.GroupRule.Paused && in.TrialPaused
 			result.Grouping = &grouping
 		}
 	}

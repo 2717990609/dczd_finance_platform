@@ -102,6 +102,16 @@ func TestCatalogPeriodPublicationIsScopedVersionedAndKeepsNextRule(t *testing.T)
 		VALUES(801,'10000000-0000-4000-8000-000000000011','test','DCAI','DCAI','fixture','2026-10-01','\x1234567890123456789012345678901234567890123456789012345678901234')`,
 		`INSERT INTO product_rule_packages(source_id,product_id,code,name,project_code,policy_kind,scope_type,scope_id,paused)
 		VALUES('10000000-0000-4000-8000-000000000001',801,'fixture','月度运营','DCAI','COMPONENT_RULE','CROSS_SCENARIO_AGGREGATE','aggregate',true)`,
+		`INSERT INTO products(id,code,name,period_mode,cycle_start_day) OVERRIDING SYSTEM VALUE VALUES
+		(802,'DCAI_RENEWAL','续费样本','calendar',25),(803,'ANOTHER_PROJECT','其他项目','calendar',25)`,
+		`INSERT INTO product_catalog_settings(product_id,source_id,source_environment,project_code,source_system,source_key,captured_at,snapshot_digest) VALUES
+		(802,gen_random_uuid(),'test','DCAI','DCAI','renewal','2026-10-01',sha256('renewal'::bytea)),
+		(803,gen_random_uuid(),'test','ANOTHER','DCAI','foreign','2026-10-01',sha256('foreign'::bytea))`,
+		`INSERT INTO catalog_business_routes(source_id,product_id,source,domain,entity_type,record_table,business_key,
+		 classifier,sku_code,sku_label,mapping_version,effective_from,effective_to,observed_at,source_product_code) VALUES
+		(gen_random_uuid(),802,'DCAI','VIP','ORDER','vip','new','VIP','NEW','新增场景',1,'2026-08-31 16:00Z',NULL,'2026-10-01','renewal'),
+		(gen_random_uuid(),802,'DCAI','VIP','ORDER','vip','old','VIP','ENDED','已截止场景',1,'2026-01-01','2026-08-31 16:00Z','2026-10-01','renewal'),
+		(gen_random_uuid(),803,'DCAI','VIP','ORDER','vip','foreign','VIP','FOREIGN','其他项目场景',1,'2026-01-01',NULL,'2026-10-01','foreign')`,
 	} {
 		if _, err := db.Exec(ctx, statement); err != nil {
 			t.Fatal(err)
@@ -122,17 +132,29 @@ func TestCatalogPeriodPublicationIsScopedVersionedAndKeepsNextRule(t *testing.T)
 		})
 		return result, err
 	}
-	actor := financeRuleActor{subject: "fixture", permits: func(id int64, publish bool) bool { return id == product && publish }}
+	actor := financeRuleActor{subject: "fixture", permits: func(id int64, publish bool) bool { return (id == product || id == 802) && publish }}
+	anchorOnly := financeRuleActor{subject: "anchor", permits: func(id int64, publish bool) bool { return id == product && publish }}
 	input := catalogPeriodPublishInput{BaseID: baseline, EffectiveFrom: time.Date(2026, 9, 1, 0, 0, 0, 0, shanghai),
-		Edits: []catalogPeriodTierEdit{{ItemKey: "operations", Tiers: []catalogPeriodTier{{From: 0, Rate: 120}}}}}
+		Edits:         []catalogPeriodTierEdit{{ItemKey: "operations", Tiers: []catalogPeriodTier{{From: 0, Rate: 120}}}},
+		ScenarioCodes: []string{"FIRST", "NEW"}}
 	reader := financeRuleActor{permits: func(int64, bool) bool { return false }}
 	if _, err := post(reader, input); !errors.Is(err, errRulePermission) {
 		t.Fatalf("unauthorized publication: %v", err)
+	}
+	if _, err := post(anchorOnly, input); !errors.Is(err, errRulePermission) {
+		t.Fatalf("the anchor grant must not allow adding another product: %v", err)
 	}
 	invalidStart := input
 	invalidStart.EffectiveFrom = input.EffectiveFrom.Add(time.Hour)
 	if _, err := post(actor, invalidStart); !errors.Is(err, errCatalogPeriodStart) {
 		t.Fatalf("mid-period publication: %v", err)
+	}
+	for _, choices := range [][]string{{}, {"FIRST", "FIRST"}, {"FIRST", "FOREIGN"}, {"FIRST", "ENDED"}} {
+		bad := input
+		bad.ScenarioCodes = choices
+		if _, err := post(actor, bad); !errors.Is(err, errCatalogPeriodScenarios) {
+			t.Fatalf("invalid scenario selection %v accepted: %v", choices, err)
+		}
 	}
 	published, err := post(actor, input)
 	if err != nil || published.Version != 3 {
@@ -147,9 +169,21 @@ func TestCatalogPeriodPublicationIsScopedVersionedAndKeepsNextRule(t *testing.T)
 		if err != nil || len(rule.Items[0].Tiers) != count || !version.Paused {
 			t.Fatalf("rule %s changed unexpectedly: %v %v", id, rule.Items, err)
 		}
+		expected := "SECOND"
+		if id == published.ID {
+			expected = "NEW"
+		}
+		if len(rule.Scenarios) != 2 || rule.Scenarios[0] != "FIRST" || rule.Scenarios[1] != expected {
+			t.Fatalf("unexpected scenario scope for %s: %v", id, rule.Scenarios)
+		}
 	}
 	if _, err := post(actor, input); err == nil {
 		t.Fatal("reused superseded version")
+	}
+	remove := catalogPeriodPublishInput{BaseID: published.ID, ScenarioCodes: []string{"FIRST"},
+		EffectiveFrom: time.Date(2026, 10, 1, 0, 0, 0, 0, shanghai)}
+	if _, err := post(anchorOnly, remove); !errors.Is(err, errRulePermission) {
+		t.Fatalf("the anchor grant must not allow removing another product: %v", err)
 	}
 }
 

@@ -7,6 +7,8 @@ const sheet = ref()
 const rows = ref([])
 const activeComponent = ref()
 const editingComponent = ref()
+const scenarioCodes = ref([])
+const editingScenarios = ref(false)
 let newComponentID = 0
 const effectiveDate = ref('')
 const amounts = ref({receipts:0,refunds:0,carry:0})
@@ -32,7 +34,8 @@ const activityIssueLabels = {
 const groupingIssueLabels = {
   ORIGINAL_RULE_MISSING:'原付款时没有适用规则',
   ORIGINAL_RULE_CONFLICT:'原付款时有多个适用版本',
-  BENEFIT_ORG_MISSING:'缺少收款组织',
+  BENEFIT_ORG_MISSING:'缺少收款组织映射',
+  BENEFIT_ORG_INACTIVE:'收款组织当前停用',
   BENEFIT_ORG_CONFLICT:'收款组织无法唯一确定',
   BENEFIT_POOL_OWNER_MISSING:'付款时缺少池负责人',
   BENEFIT_POOL_OWNER_CONFLICT:'付款时有多位池负责人',
@@ -52,7 +55,21 @@ const firstStart = computed(() => {
 const cutoff = computed(() => sheet.value?.effectiveTo
   ? localDate(new Date(Date.parse(sheet.value.effectiveTo)-86400000).toISOString()) : undefined)
 const canSave = computed(() => sheet.value?.mayPublish && (!cutoff.value || firstStart.value<=cutoff.value))
-const changed = computed(() => JSON.stringify(rows.value) !== JSON.stringify(editableRows(sheet.value?.items || [])))
+const componentsChanged = computed(() => JSON.stringify(rows.value) !== JSON.stringify(editableRows(sheet.value?.items || [])))
+const scenariosChanged = computed(() => {
+  const published = sheet.value?.scenarios || []
+  return scenarioCodes.value.length !== published.length || !published.every(sku=>scenarioCodes.value.includes(sku.code))
+})
+const changed = computed(() => componentsChanged.value || scenariosChanged.value)
+const scenarioOptions = computed(() => {
+  const available = new Map((sheet.value?.options?.scenarios || []).map(sku=>[sku.code,{value:sku.code,label:sku.label}]))
+  for (const sku of sheet.value?.scenarios || []) {
+    if (!available.has(sku.code)) {
+      available.set(sku.code,{value:sku.code,label:sku.mapped ? sku.label : sku.label+'（尚未映射）',disabled:sku.locked})
+    }
+  }
+  return [...available.values()]
+})
 
 function editableRows(items) {
   return items.map(item => ({uid:item.itemKey,itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,
@@ -97,7 +114,7 @@ function minor(value, message) {
   return Math.round(value*100)
 }
 function componentChanges() {
-  if (!canSave.value || !changed.value) return {}
+  if (!canSave.value || !componentsChanged.value) return {}
   return {components:rows.value.map(item=>{
     if (!item.label.trim() || !item.organizationKey) throw new Error('请填写分项名称和收款组织。')
     if (item.targetKind==='pool' && (!item.poolName?.trim() || !item.ownerRole || !item.memberRole)) {
@@ -128,6 +145,8 @@ watch(()=>props.rule.id, async id=>{
     if (request !== versionRequest) return
     sheet.value = data
     rows.value = editableRows(data.items)
+    scenarioCodes.value = data.scenarios.map(sku=>sku.code)
+    editingScenarios.value = false
     activeComponent.value = rows.value[0]?.uid
     editingComponent.value = undefined
     effectiveDate.value = canSave.value ? firstStart.value : ''
@@ -137,7 +156,7 @@ watch(()=>props.rule.id, async id=>{
     if (request === versionRequest) loading.value = false
   }
 }, {immediate:true})
-watch([rows,amounts], ()=>{
+watch([rows,amounts,scenarioCodes], ()=>{
   ++quoteRequest
   previewing.value = false
   quote.value = undefined
@@ -149,13 +168,14 @@ watch([activityMonth,()=>props.rule.id], ()=>{
   reviewingActivity.value = false
 })
 
-async function readActivity() {
+async function readActivity(trialPaused = false) {
   const request = ++activityRequest
   reviewingActivity.value = true
   activityError.value = ''
   activity.value = undefined
   try {
     const query = new URLSearchParams({ruleId:props.rule.id,month:activityMonth.value})
+    if (trialPaused) query.set('trialPaused','1')
     const result = await props.api('/catalog-period-activity?'+query)
     if (request === activityRequest) activity.value = result
   } catch (err) {
@@ -185,6 +205,10 @@ async function preview() {
   }
 }
 async function publish() {
+  if (!scenarioCodes.value.length) {
+    error.value = '请至少选择一个参与场景。'
+    return
+  }
   if (!effectiveDate.value) {
     error.value = '请选择新版本的生效日期。'
     return
@@ -195,6 +219,7 @@ async function publish() {
     const result = await props.api('/catalog-period-rules',{method:'POST',body:JSON.stringify({
       baseId:props.rule.id,effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),
       ...componentChanges(),
+      ...(scenariosChanged.value ? {scenarioCodes:scenarioCodes.value} : {}),
     })})
     emit('published',result)
   } catch (err) {
@@ -217,8 +242,17 @@ async function publish() {
         <a-descriptions size="small" :column="{xs:1,sm:1,md:2}" bordered>
           <a-descriptions-item label="结算周期">{{ cycleLabels[sheet.cycle] }}</a-descriptions-item>
           <a-descriptions-item label="有效范围">{{ formatTime(sheet.effectiveFrom) }}<template v-if="sheet.effectiveTo"> 至 {{ formatTime(sheet.effectiveTo) }}</template></a-descriptions-item>
-          <a-descriptions-item label="参与场景">
-            <a-tag v-for="sku in sheet.scenarios" :key="sku.code" :title="sku.code">{{ sku.label }}</a-tag>
+          <a-descriptions-item label="参与场景" :span="2">
+            <template v-if="editingScenarios">
+              <a-select id="period-rule-scenarios" v-model:value="scenarioCodes" :options="scenarioOptions"
+                mode="multiple" show-search option-filter-prop="label" aria-label="参与场景"
+                placeholder="选择参与整期计提的 SKU" :disabled="saving" class="period-scenario-select"/>
+              <a-button type="link" @click="editingScenarios=false">完成选择</a-button>
+            </template>
+            <template v-else>
+              <a-tag v-for="code in scenarioCodes" :key="code">{{ scenarioOptions.find(option=>option.value===code)?.label || code }}</a-tag>
+              <a-button v-if="canSave" type="link" :disabled="saving" @click="editingScenarios=true">编辑参与场景</a-button>
+            </template>
           </a-descriptions-item>
         </a-descriptions>
         <div class="rule-edit-layout period-component-layout">
@@ -291,13 +325,14 @@ async function publish() {
         </div>
         <template v-if="canReviewActivity">
           <h3 class="form-subhead">订单和退款核对</h3>
-          <p class="rule-formula">读取本地已同步的收退款。分组使用原付款时适用的规则和任职。</p>
+          <p class="rule-formula">读取已同步的收退款。按原付款时已发布的规则和有效任职确定收款对象。</p>
           <a-form layout="inline" class="period-activity-query">
             <a-form-item label="核对账期" html-for="period-activity-month">
               <a-input id="period-activity-month" v-model:value="activityMonth" type="month"/>
             </a-form-item>
             <a-form-item>
-              <a-button :disabled="!activityMonth" :loading="reviewingActivity" @click="readActivity">读取已同步数据</a-button>
+              <a-button :disabled="!activityMonth" :loading="reviewingActivity" @click="readActivity()">读取已同步数据</a-button>
+              <a-button v-if="sheet.paused" :disabled="!activityMonth || reviewingActivity" @click="readActivity(true)">试算暂停规则</a-button>
             </a-form-item>
           </a-form>
           <a-alert v-if="activityError" class="feedback" :message="activityError" type="error" show-icon/>
@@ -314,7 +349,7 @@ async function publish() {
                 <thead><tr><th>场景</th><th>已匹配收款</th><th>已匹配退款</th><th>其中跨期原付款退款</th></tr></thead>
                 <tbody>
                   <tr v-for="scope in activity.scenarios" :key="scope.code">
-                    <th scope="row">{{ sheet.scenarios.find(sku=>sku.code===scope.code)?.label || scope.code }}
+                    <th scope="row">{{ scenarioOptions.find(option=>option.value===scope.code)?.label || scope.code }}
                       <small v-if="!scope.mapped" class="order-version">本期缺少映射</small>
                     </th>
                     <td>
@@ -337,12 +372,13 @@ async function publish() {
             </ul>
             <section v-if="activity.grouping" aria-label="按原付款分组">
               <h4 class="form-subhead">按原付款分组</h4>
-              <p v-if="activity.grouping.paused" class="rule-formula">规则包已暂停，本次仅核对场景收退款。</p>
+              <p v-if="activity.grouping.paused && !activity.grouping.trialOnPaused" class="rule-formula">规则包已暂停，本次仅核对场景收退款。</p>
               <template v-else>
-                <p class="rule-formula">下表净额为本期收款减退款。正式计提还需核对上期结转。</p>
+                <p v-if="activity.grouping.trialOnPaused" class="rule-formula">按已发布的暂停规则试算，规则仍保持暂停。</p>
+                <p class="rule-formula">各组按本期净额选档。试算额尚未抵扣上期结转退款。</p>
                 <div v-if="activity.grouping.groups.length" class="period-activity-table">
                   <table>
-                    <thead><tr><th>规则版本</th><th>收款对象</th><th>本期收款</th><th>本期退款</th><th>本期净额</th></tr></thead>
+                    <thead><tr><th>规则版本</th><th>收款对象</th><th>本期收款</th><th>本期退款</th><th>本期净额</th><th>结转前试算</th></tr></thead>
                     <tbody>
                       <tr v-for="group in activity.grouping.groups" :key="group.id">
                         <td>v{{ group.version }}</td>
@@ -355,6 +391,14 @@ async function publish() {
                         <td>{{ formatMoney(group.receiptsMinor) }}</td>
                         <td>{{ formatMoney(group.refundsMinor) }}</td>
                         <td>{{ formatMoney(group.netMinor) }}</td>
+                        <td>
+                          <div v-for="award in group.beforeCarry.awards" :key="award.itemKey">
+                            {{ formatMoney(award.amountMinor) }} <small>· {{ award.label }} {{ award.rateBps/100 }}%</small>
+                          </div>
+                          <small v-if="group.beforeCarry.carryForwardMinor<0" class="order-version">
+                            本期未抵扣退款 {{ formatMoney(-group.beforeCarry.carryForwardMinor) }}
+                          </small>
+                        </td>
                       </tr>
                     </tbody>
                   </table>
@@ -407,6 +451,7 @@ async function publish() {
 
 <style scoped>
 .period-component-layout { margin:16px 0 22px; }
+.period-scenario-select { width:min(100%,720px); }
 .period-tier-item { padding:18px; border:1px solid var(--line); border-radius:8px; }
 .period-component-heading { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
 .period-tier-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:8px; align-items:center; margin-bottom:8px; }

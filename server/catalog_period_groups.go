@@ -18,6 +18,7 @@ type catalogActivityEvent struct {
 	Scenario  string
 	Amount    int64
 	Refund    bool
+	selection *catalogAggregateMatch
 }
 
 type catalogAggregateRule struct {
@@ -39,23 +40,26 @@ type catalogAggregateDuty struct {
 type catalogAggregateDirectory struct {
 	Organizations []vipBenefitOrganization
 	Duties        map[catalogAggregateDutyKey][]catalogAggregateDuty
+	InactiveUnits map[string]bool
 }
 
 type catalogPeriodGroupReport struct {
-	Paused bool                 `json:"paused,omitempty"`
-	Groups []catalogPeriodGroup `json:"groups"`
-	Issues map[string]int       `json:"issues"`
+	Paused        bool                 `json:"paused,omitempty"`
+	TrialOnPaused bool                 `json:"trialOnPaused,omitempty"`
+	Groups        []catalogPeriodGroup `json:"groups"`
+	Issues        map[string]int       `json:"issues"`
 }
 
 type catalogPeriodGroup struct {
-	ID       string                     `json:"id"`
-	RuleID   string                     `json:"ruleId"`
-	Version  int                        `json:"version"`
-	Targets  []catalogPeriodGroupTarget `json:"targets"`
-	Receipts int64                      `json:"receiptsMinor"`
-	Refunds  int64                      `json:"refundsMinor"`
-	Net      int64                      `json:"netMinor"`
-	Payments int                        `json:"paymentCount"`
+	ID          string                     `json:"id"`
+	RuleID      string                     `json:"ruleId"`
+	Version     int                        `json:"version"`
+	Targets     []catalogPeriodGroupTarget `json:"targets"`
+	Receipts    int64                      `json:"receiptsMinor"`
+	Refunds     int64                      `json:"refundsMinor"`
+	Net         int64                      `json:"netMinor"`
+	Payments    int                        `json:"paymentCount"`
+	BeforeCarry catalogPeriodQuote         `json:"beforeCarry"`
 }
 
 type catalogPeriodGroupTarget struct {
@@ -106,6 +110,9 @@ func (d catalogAggregateDirectory) groupTarget(item catalogPeriodItem, at time.T
 		}
 	}
 	if key.Unit == "" {
+		if d.InactiveUnits[item.unit] {
+			return target, key, "BENEFIT_ORG_INACTIVE"
+		}
 		return target, key, "BENEFIT_ORG_MISSING"
 	}
 	if item.TargetKind != "pool" {
@@ -135,23 +142,36 @@ func (d catalogAggregateDirectory) groupTarget(item catalogPeriodItem, at time.T
 	return target, key, ""
 }
 
-func matchCatalogAggregateRule(rules []catalogAggregateRule, event catalogActivityEvent) (*catalogAggregateRule, string) {
-	var selected *catalogAggregateRule
+type catalogAggregateMatch struct {
+	rule     *catalogAggregateRule
+	issue    string
+	excluded bool
+}
+
+func matchCatalogAggregateRule(rules []catalogAggregateRule, event catalogActivityEvent) catalogAggregateMatch {
+	var result catalogAggregateMatch
+	hasRuleAtPayment := false
 	for i := range rules {
 		rule := &rules[i]
-		if event.PaidAt.Before(rule.From) || rule.Through != nil && !event.PaidAt.Before(*rule.Through) ||
-			!slices.Contains(rule.Definition.Scenarios, event.Scenario) {
+		if event.PaidAt.Before(rule.From) || rule.Through != nil && !event.PaidAt.Before(*rule.Through) {
 			continue
 		}
-		if selected != nil {
-			return nil, "ORIGINAL_RULE_CONFLICT"
+		hasRuleAtPayment = true
+		if !slices.Contains(rule.Definition.Scenarios, event.Scenario) {
+			continue
 		}
-		selected = rule
+		if result.rule != nil {
+			return catalogAggregateMatch{issue: "ORIGINAL_RULE_CONFLICT"}
+		}
+		result.rule = rule
 	}
-	if selected == nil {
-		return nil, "ORIGINAL_RULE_MISSING"
+	if result.rule == nil {
+		result.excluded = hasRuleAtPayment
+		if !result.excluded {
+			result.issue = "ORIGINAL_RULE_MISSING"
+		}
 	}
-	return selected, ""
+	return result
 }
 
 func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggregateRule, directory catalogAggregateDirectory) (catalogPeriodGroupReport, error) {
@@ -162,11 +182,24 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 	}
 	byPayment := make(map[int64]assignment)
 	groups := make(map[string]*catalogPeriodGroup)
+	ruleItems := make(map[string][]catalogPeriodItem, len(rules))
+	for _, rule := range rules {
+		ruleItems[rule.ID] = rule.Definition.Items
+	}
 	for _, event := range events {
 		applied, found := byPayment[event.PaymentID]
 		if !found {
-			var rule *catalogAggregateRule
-			rule, applied.issue = matchCatalogAggregateRule(rules, event)
+			var selected catalogAggregateMatch
+			if event.selection != nil {
+				selected = *event.selection
+			} else {
+				selected = matchCatalogAggregateRule(rules, event)
+			}
+			if selected.excluded {
+				continue
+			}
+			rule := selected.rule
+			applied.issue = selected.issue
 			if rule != nil {
 				targets := make([]catalogPeriodGroupTarget, 0, len(rule.Definition.Items))
 				keys := make([]catalogGroupTargetKey, 0, len(rule.Definition.Items))
@@ -220,6 +253,11 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 	for _, key := range keys {
 		group := groups[key]
 		group.Net = group.Receipts - group.Refunds
+		var err error
+		group.BeforeCarry, err = quoteCatalogPeriod(ruleItems[group.RuleID], group.Receipts, group.Refunds, 0)
+		if err != nil {
+			return report, err
+		}
 		report.Groups = append(report.Groups, *group)
 	}
 	return report, nil
@@ -260,7 +298,7 @@ const catalogAggregateDutySQL = `SELECT a.scope_key,a.role,person.id,person.name
  ORDER BY a.scope_key,a.role,person.id`
 
 func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catalogAggregateRule, from, through time.Time) (catalogAggregateDirectory, error) {
-	directory := catalogAggregateDirectory{Duties: map[catalogAggregateDutyKey][]catalogAggregateDuty{}}
+	directory := catalogAggregateDirectory{Duties: map[catalogAggregateDutyKey][]catalogAggregateDuty{}, InactiveUnits: make(map[string]bool)}
 	var parties, units, roles []string
 	for _, version := range rules {
 		for _, item := range version.Definition.Items {
@@ -274,14 +312,19 @@ func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catal
 	rows, err := tx.Query(ctx, `SELECT b.party_uuid::text,o.id::text,o.name
 	 FROM catalog_benefit_organizations b JOIN catalog_sales_context c ON c.source=b.source AND c.captured_at=b.observed_at
 	 JOIN organization_units o ON o.id=b.unit_id
-	 WHERE b.source='DCAI' AND c.benefit_ready AND b.party_uuid::text=ANY($1)`, parties)
+	 WHERE b.source='DCAI' AND c.benefit_ready AND b.party_uuid::text=ANY($1)
+	 UNION ALL SELECT '',o.id::text,o.name FROM organization_units o WHERE o.id::text=ANY($2) AND o.status='INACTIVE'`, parties, units)
 	if err != nil {
 		return directory, err
 	}
-	directory.Organizations, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (vipBenefitOrganization, error) {
-		var org vipBenefitOrganization
-		err := row.Scan(&org.Party, &org.Unit, &org.Name)
-		return org, err
+	var org vipBenefitOrganization
+	_, err = pgx.ForEachRow(rows, []any{&org.Party, &org.Unit, &org.Name}, func() error {
+		if org.Party == "" {
+			directory.InactiveUnits[org.Unit] = true
+		} else {
+			directory.Organizations = append(directory.Organizations, org)
+		}
+		return nil
 	})
 	if err != nil || len(units) == 0 {
 		return directory, err
