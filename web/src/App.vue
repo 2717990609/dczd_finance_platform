@@ -6,6 +6,7 @@ import {
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import DraftWorkbench from './DraftWorkbench.vue'
 import MonthlyReport from './MonthlyReport.vue'
+import PeriodTasks from './PeriodTasks.vue'
 import CatalogRuleRates from './CatalogRuleRates.vue'
 import PracticePeriodBenefitEditor from './PracticePeriodBenefitEditor.vue'
 import PracticeRetrainSplitEditor from './PracticeRetrainSplitEditor.vue'
@@ -23,6 +24,7 @@ import { copiedRuleComponents } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const navigation = [
+  {key:'tasks', area:'work', title:'待办'},
   {key:'settlement', area:'work', title:'分润试算'},
   {key:'monthly', area:'work', title:'月度汇总'},
   {key:'orders', area:'work', title:'来源订单'},
@@ -78,16 +80,20 @@ const productScope = computed({
   get: () => activeProductScope.value.value,
   set: value => { activeProductScope.value.value = value },
 })
-const productScopedPages = new Set([...configProductPages,'settlement','monthly'])
+const productScopedPages = new Set([...configProductPages,'tasks','settlement','monthly'])
 const usesProductScope = computed(() => productScopedPages.has(current.value))
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
 const organization = ref()
 const monthlyReport = ref()
+const periodTasks = ref()
+const tasksMode = ref('pending')
+const tasksReturn = ref()
 const workspaceMonth = ref(new Intl.DateTimeFormat('sv-SE', {year:'numeric',month:'2-digit',timeZone:'Asia/Shanghai'}).format(new Date()))
-const usesWorkspaceMonth = computed(() => ['settlement','monthly'].includes(current.value))
+const usesWorkspaceMonth = computed(() => ['tasks','settlement','monthly'].includes(current.value))
 const monthlyView = ref()
 const monthlyDimension = ref()
-const periodFromMonthly = ref(false)
+const periodOrigin = ref()
+const periodOrigins = {monthly:'月度汇总',tasks:'待办'}
 const monthlyReturn = ref()
 const monthlyResume = ref()
 const orderSync = ref()
@@ -153,7 +159,7 @@ function classRuleSetupLink(period, fromWorkbench = false) {
       && !period.ruleVersion && canPublishRule(period.productId)) {
     const params = new URLSearchParams({productId:period.productId,periodId:period.id})
     if (fromWorkbench) params.set('from','settlement')
-    if (fromWorkbench && periodFromMonthly.value) params.set('returnFrom','monthly')
+    if (fromWorkbench && periodOrigin.value) params.set('returnFrom',periodOrigin.value)
     return '#rules?'+params
   }
 }
@@ -381,7 +387,7 @@ async function refresh(reloadOptions = false) {
   if (orderQuery.value) params.set('orderId',orderQuery.value)
   if (olderThan.value) params.set('beforeId',olderThan.value)
   if (unitScope.value) params.set('unitId',unitScope.value)
-  const sections = {settlement:['products','periods'], monthly:['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
+  const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
   if (requests.identities && identityAccount.value) {
     const {source,externalId} = identityAccount.value
@@ -434,14 +440,15 @@ function changeListTab() {
 }
 function refreshWorkspace() {
   refresh(true)
+  periodTasks.value?.refresh()
   organization.value?.refresh()
   monthlyReport.value?.refresh()
   orderSync.value?.reload()
 }
-function settlementLink(periodId, view, fromMonthly) {
+function settlementLink(periodId, view, origin) {
   const params = new URLSearchParams({periodId})
   if (view) params.set('view',view)
-  if (fromMonthly) params.set('from','monthly')
+  if (origin) params.set('from',origin)
   return '#settlement?'+params
 }
 function orderRecordsLink(order) {
@@ -450,13 +457,13 @@ function orderRecordsLink(order) {
   if (current.value==='settlement' && workbenchPeriod.value) {
     params.set('returnPeriodId',workbenchPeriod.value)
     params.set('returnView',workbenchView.value)
-    if (periodFromMonthly.value) params.set('returnFrom','monthly')
+    if (periodOrigin.value) params.set('returnFrom',periodOrigin.value)
   }
   return '#orders?'+params
 }
 function changeRoute() {
   const previous = current.value
-  const wasFromMonthly = periodFromMonthly.value
+  const previousOrigin = periodOrigin.value
   const [key, query] = location.hash.slice(1).split('?', 2)
   current.value = getRoute(key)
   if (active.value) lastWorkspacePages.value[active.value.area] = current.value
@@ -470,13 +477,14 @@ function changeRoute() {
   requestedPeriod.value = key === 'settlement' && current.value === key && Number.isSafeInteger(periodID) && periodID > 0 ? periodID : undefined
   const view = params.get('view')
   requestedView.value = requestedPeriod.value && Object.hasOwn(draftViews,view) ? view : undefined
-  const fromMonthly = Boolean(requestedPeriod.value && params.get('from') === 'monthly')
+  const origin = params.get('from')
+  periodOrigin.value = requestedPeriod.value && Object.hasOwn(periodOrigins,origin) ? origin : undefined
   monthlyResume.value = undefined
-  if (fromMonthly && previous === 'monthly') {
+  if (periodOrigin.value==='monthly' && previous === 'monthly') {
     monthlyReturn.value = {month:workspaceMonth.value,view:monthlyView.value,dimension:monthlyDimension.value,
       product:productScope.value,unit:unitScope.value,browse:monthlyReport.value?.browseState()}
   }
-  if (current.value === 'monthly' && previous === 'settlement' && periodFromMonthly.value && monthlyReturn.value) {
+  if (current.value === 'monthly' && previous === 'settlement' && previousOrigin==='monthly' && monthlyReturn.value) {
     const saved = monthlyReturn.value
     workspaceMonth.value = saved.month
     monthlyView.value = saved.view
@@ -486,10 +494,20 @@ function changeRoute() {
     monthlyResume.value = saved.browse
   }
   if (current.value==='monthly') monthlyReturn.value = undefined
-  periodFromMonthly.value = fromMonthly
-  const returnFromMonthly = params.get('returnFrom')==='monthly' || previous==='settlement' && wasFromMonthly
+  if (periodOrigin.value==='tasks' && previous==='tasks') {
+    tasksReturn.value = {month:workspaceMonth.value,product:productScope.value}
+  }
+  if (current.value==='tasks') {
+    if (previous==='settlement' && previousOrigin==='tasks' && tasksReturn.value) {
+      workspaceMonth.value = tasksReturn.value.month
+      productScope.value = tasksReturn.value.product
+    }
+    tasksReturn.value = undefined
+  }
+  const returnFrom = params.get('returnFrom')
+  const returnOrigin = Object.hasOwn(periodOrigins,returnFrom) ? returnFrom : previous==='settlement' ? previousOrigin : undefined
   ruleReturn.value = requestedRulePeriod.value && params.get('from')==='settlement'
-    ? settlementLink(requestedRulePeriod.value,undefined,returnFromMonthly) : undefined
+    ? settlementLink(requestedRulePeriod.value,undefined,returnOrigin) : undefined
   const returnPeriod = Number(params.get('returnPeriodId'))
   const isOrders = key === 'orders' && current.value === key
   const stream = params.get('stream')
@@ -498,7 +516,7 @@ function changeRoute() {
   const returnView = params.get('returnView')
   const orderReturnView = Object.hasOwn(draftViews,returnView) ? returnView : 'review'
   orderReturn.value = isOrders && Number.isSafeInteger(returnPeriod) && returnPeriod > 0
-    ? {href:settlementLink(returnPeriod,orderReturnView,returnFromMonthly),label:'返回'+draftViews[orderReturnView]} : undefined
+    ? {href:settlementLink(returnPeriod,orderReturnView,returnOrigin),label:'返回'+draftViews[orderReturnView]} : undefined
   orderDetails.value = undefined
   rateRule.value = undefined
   ruleDetails.value = undefined
@@ -538,7 +556,9 @@ function clearWorkspace() {
   workbenchPeriod.value = undefined
   workbenchView.value = 'detail'
   workbenchQuery.value = {}
-  periodFromMonthly.value = false
+  periodOrigin.value = undefined
+  tasksMode.value = 'pending'
+  tasksReturn.value = undefined
   monthlyReturn.value = undefined
   monthlyResume.value = undefined
   orderDetails.value = undefined
@@ -1027,7 +1047,7 @@ async function save() {
         <section class="workspace-page-head">
           <div class="workspace-page-title">
             <h1>{{ active.title }}</h1>
-            <a v-if="periodFromMonthly" class="workspace-return" href="#monthly"><LeftOutlined aria-hidden="true"/>返回月度汇总</a>
+            <a v-if="periodOrigin" class="workspace-return" :href="'#'+periodOrigin"><LeftOutlined aria-hidden="true"/>返回{{ periodOrigins[periodOrigin] }}</a>
             <a v-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
             <div v-if="actions && canOpenAction && !identityAccount" class="topbar-actions">
               <a v-if="orderReturn" class="workspace-return" :href="orderReturn.href"><LeftOutlined aria-hidden="true"/>{{ orderReturn.label }}</a>
@@ -1039,7 +1059,12 @@ async function save() {
           </nav>
         </section>
         <div class="workspace-page-body">
-        <template v-if="current==='settlement'">
+        <template v-if="current==='tasks'">
+          <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
+          <PeriodTasks ref="periodTasks" v-model="tasksMode" :api="api" :month="workspaceMonth" :product-id="productScope"
+            :periods="calculationPeriods" :periods-loading="loading" :period-link="settlementLink"/>
+        </template>
+        <template v-else-if="current==='settlement'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
           <DraftWorkbench ref="workbench" v-model:period-id="workbenchPeriod" v-model:view="workbenchView" v-model:detail-query="workbenchQuery"
@@ -1047,8 +1072,9 @@ async function save() {
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
             :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" :requested-period="requestedPeriod"
             :rule-setup-link="classRuleSetupLink(calculationPeriods.find(period=>period.id===workbenchPeriod), true)"
-            :periods-loading="loading" :month="workspaceMonth" :requested-view="requestedView"
+            :periods-loading="loading" :month="workspaceMonth" :requested-view="requestedView" :roster-edit-ready="configurationReady"
             @show-order="orderDetails={versionId:$event}" @show-issue-order="orderDetails={versionId:$event,allowPull:true}"
+            @show-roster="open('periodRoster',$event)"
             @show-applied-rule="showAppliedRule" />
         </template>
         <template v-else-if="current==='monthly'">
@@ -1215,6 +1241,7 @@ async function save() {
   </div>
   <a-drawer v-if="active && !sessionError && !sessionChecking && !loginRequested" :open="Boolean(drawer)"
     :title="rulePreview ? '预览分润规则' : drawer==='rule' && draft.copiedFrom ? '复制分润规则'
+      : drawer==='periodRoster' && !draft.expectedSourcePeriodKey ? '关联签到名单'
       : drawer==='identity' && draft.previousOwner ? '变更来源账号归属' : titles[drawer]"
     :width="drawer==='rule' ? 'min(620px, 100vw)' : 'min(510px, 100vw)'"
     :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="close">

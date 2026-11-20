@@ -9,8 +9,8 @@ import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
   recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
-  requestedPeriod: Number, requestedView:String, ruleSetupLink:String, periodsLoading: Boolean, month: String })
-const emit = defineEmits(['show-order', 'show-issue-order', 'show-applied-rule'])
+  requestedPeriod: Number, requestedView:String, ruleSetupLink:String, periodsLoading: Boolean, month: String, rosterEditReady:Boolean })
+const emit = defineEmits(['show-order', 'show-issue-order', 'show-applied-rule', 'show-roster'])
 const selected = defineModel('periodId', {type:Number})
 const view = defineModel('view', {type:String})
 const detailQuery = defineModel('detailQuery', {type:Object})
@@ -40,6 +40,8 @@ const options = computed(() => props.periods.map(period => ({
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
 const linkedPeriod = computed(() => props.periods.find(period => period.id === props.requestedPeriod)?.id)
 const canPullRoster = computed(() => selectedPeriod.value?.periodMode === 'class' && selectedPeriod.value.sourcePeriodKey && !draft.value?.settlement)
+const needsRosterEdit = computed(() => selectedPeriod.value?.practiceRosterEditable &&
+  (!selectedPeriod.value.sourcePeriodKey || selectedPeriod.value.classStartOutsidePeriod))
 const canReviewRecovery = computed(() => !draft.value?.settlement && props.recoveryOptions?.length && props.settlementProducts?.includes(selectedPeriod.value?.productId))
 const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable && !draft.value?.settlement)
 const hasSettlementReview = computed(() => draft.value?.settlementReviewAvailable ?? (draft.value?.catalog && draft.value?.refundsReady))
@@ -371,6 +373,8 @@ async function loadMore(section, cursorName) {
             show-search option-filter-prop="label" :disabled="calculating || pullingRoster || savingRecovery" />
         </div>
         <div v-if="selected" class="workbench-actions">
+          <a-button v-if="needsRosterEdit" :disabled="!rosterEditReady || loading || pullingRoster || calculating"
+            @click="emit('show-roster',selectedPeriod)">{{ selectedPeriod.sourcePeriodKey ? '更正签到关联' : '关联签到名单' }}</a-button>
           <a-button v-if="canPullRoster && (view!=='review' || !draft)" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
           <a-button v-if="!matchingOnly && !draft?.settlement && (view!=='review' || !draft)" :disabled="loading || pullingRoster" :loading="calculating"
             :type="draft ? 'default' : 'primary'" @click="calculate">{{ draft ? '重新试算' : '生成草稿' }}</a-button>
