@@ -777,8 +777,10 @@ ON CONFLICT DO NOTHING;
 ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS performance_ready boolean NOT NULL DEFAULT false;
 ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES organization_units(id);
 ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS department_id uuid REFERENCES organization_units(id);
+ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS group_id uuid REFERENCES organization_units(id);
 ALTER TABLE calculation_draft_corrections ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES organization_units(id);
 ALTER TABLE calculation_draft_corrections ADD COLUMN IF NOT EXISTS department_id uuid REFERENCES organization_units(id);
+ALTER TABLE calculation_draft_corrections ADD COLUMN IF NOT EXISTS group_id uuid REFERENCES organization_units(id);
 ALTER TABLE calculation_draft_corrections
  ALTER COLUMN person_id DROP NOT NULL,
  ADD COLUMN IF NOT EXISTS beneficiary_unit_id uuid REFERENCES organization_units(id);
@@ -819,6 +821,8 @@ CREATE TABLE IF NOT EXISTS calculation_draft_performance (
  CHECK (source_version_id<>payment_version_id)
 );
 CREATE INDEX IF NOT EXISTS calculation_performance_source ON calculation_draft_performance(source_version_id);
+ALTER TABLE calculation_draft_performance ADD COLUMN IF NOT EXISTS group_id uuid REFERENCES organization_units(id);
+CREATE INDEX IF NOT EXISTS organization_units_parent ON organization_units(parent_id);
 ALTER TABLE calculation_draft_performance ADD COLUMN IF NOT EXISTS completion_version_id bigint REFERENCES source_order_versions(id);
 ALTER TABLE calculation_draft_performance ADD COLUMN IF NOT EXISTS prior_refund_version_id bigint REFERENCES source_order_versions(id)
  CHECK(prior_refund_version_id IS NULL OR completion_version_id IS NOT NULL);

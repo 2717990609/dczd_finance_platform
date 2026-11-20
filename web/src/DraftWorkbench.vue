@@ -8,7 +8,7 @@ import DraftSettlementReview from './DraftSettlementReview.vue'
 import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
-  recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function })
+  recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function, unitId: String })
 const selected = ref()
 const view = ref('detail')
 const draft = ref()
@@ -163,7 +163,9 @@ async function load(replace = false) {
   }
   loading.value = true
   try {
-    const result = await props.api('/drafts?periodId=' + selected.value)
+    const params = new URLSearchParams({periodId:selected.value})
+    if (props.unitId) params.set('unitId',props.unitId)
+    const result = await props.api('/drafts?' + params)
     if (request === sequence) {
       draft.value = result
       if (result.settlement && view.value === 'matching') view.value = 'detail'
@@ -217,6 +219,7 @@ watch(selected, async () => {
 watch(options, (values) => {
   if (selected.value && !values.some(option => option.value === selected.value)) selected.value = undefined
 })
+watch(() => props.unitId, () => load())
 
 async function calculate() {
   if (!selected.value || calculating.value) return
@@ -286,6 +289,7 @@ async function loadMore(section, cursorName) {
   const current = draft.value
   const cursor = current[section].at(-1).id
   const params = new URLSearchParams({ periodId: selected.value, version: current.version, [cursorName]: cursor })
+  if (props.unitId) params.set('unitId',props.unitId)
   loading.value = true
   error.value = ''
   try {
@@ -321,6 +325,7 @@ async function loadMore(section, cursorName) {
       <span v-else-if="draft"> · 草稿 v{{ draft.version }} · {{ formatTime(draft.calculatedAt) }}</span>
       <span v-if="!draft?.settlement && refreshStatus?.pending && !refreshStatus.message"> · 有变更待试算</span>
       <span v-if="view==='pools' && newerDraft"> · 草稿已更新，请刷新结果后核对分配</span>
+      <span v-if="unitId && draft"> · 明细与汇总按组织筛选，合计及结算核对为全期</span>
     </p>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
@@ -339,7 +344,7 @@ async function loadMore(section, cursorName) {
     <a-tab-pane v-if="hasSettlementReview" key="review" tab="结算核对"/>
     <a-tab-pane v-if="hasMatching" key="matching" tab="订单规则匹配"/>
   </a-tabs>
-  <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney"/>
+  <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney" :unit-id="unitId"/>
   <DraftPoolAllocations v-if="draft?.poolAllocationAvailable && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
   <DraftSettlementReview v-if="hasSettlementReview && view==='review'" :draft="draft" :period="selectedPeriod" :api="api" :format-money="formatMoney"
     :format-time="formatTime" :source-streams="sourceStreams" @show-pools="view='pools'" @show-issues="view='detail'" @confirmed="load()"/>
@@ -368,9 +373,9 @@ async function loadMore(section, cursorName) {
         <template #emptyText><a-empty description="本期没有可计提明细" /></template>
       </a-table>
     </div>
-    <div v-if="draft.lineCount > draft.lines.length" class="paging"><a-button :loading="loading" @click="loadMore('lines', 'afterLineId')">加载下一页</a-button></div>
+    <div v-if="(draft.scopeLineCount ?? draft.lineCount) > draft.lines.length" class="paging"><a-button :loading="loading" @click="loadMore('lines', 'afterLineId')">加载下一页</a-button></div>
   </section>
-  <section v-if="draft?.refundCount" class="records draft-issues">
+  <section v-if="draft.scopeRefundCount ?? draft.refundCount" class="records draft-issues">
     <div class="records-head"><h2>退款扣减明细</h2></div>
     <div class="table-container">
       <a-table :columns="refundColumns" :data-source="draft.refunds" :pagination="false" row-key="id" :scroll="{ x: 840 }">
@@ -390,9 +395,9 @@ async function loadMore(section, cursorName) {
         </template>
       </a-table>
     </div>
-    <div v-if="draft.refundCount > draft.refunds.length" class="paging"><a-button :loading="loading" @click="loadMore('refunds', 'afterRefundId')">加载下一页</a-button></div>
+    <div v-if="(draft.scopeRefundCount ?? draft.refundCount) > draft.refunds.length" class="paging"><a-button :loading="loading" @click="loadMore('refunds', 'afterRefundId')">加载下一页</a-button></div>
   </section>
-  <section v-if="draft?.correctionCount" class="records draft-issues">
+  <section v-if="draft.scopeCorrectionCount ?? draft.correctionCount" class="records draft-issues">
     <div class="records-head"><h2>受益人更正明细</h2></div>
     <div class="table-container">
       <a-table :columns="correctionColumns" :data-source="draft.corrections" :pagination="false" row-key="id" :scroll="{x:710}">
@@ -408,7 +413,7 @@ async function loadMore(section, cursorName) {
         </template>
       </a-table>
     </div>
-    <div v-if="draft.correctionCount > draft.corrections.length" class="paging"><a-button :loading="loading" @click="loadMore('corrections','afterCorrectionId')">加载下一页</a-button></div>
+    <div v-if="(draft.scopeCorrectionCount ?? draft.correctionCount) > draft.corrections.length" class="paging"><a-button :loading="loading" @click="loadMore('corrections','afterCorrectionId')">加载下一页</a-button></div>
   </section>
   <section v-if="draft?.issueCount || draft?.advisoryCount" class="records draft-issues">
     <div class="records-head"><h2>{{ draft.issueCount ? (draft.advisoryCount ? '待核项与处理提示' : '待核项') : '处理提示' }}</h2></div>

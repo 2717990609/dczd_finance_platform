@@ -157,6 +157,9 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 			if organizations.ancestors(org.Department).Company != company {
 				org.Department = pgtype.UUID{}
 			}
+			if org.Group != nil && organizations.ancestors(*org.Group).Company != company {
+				org.Group = nil
+			}
 		}
 	}
 	result.Performance = append(result.Performance, draftPerformance{SourceVersionID: row.SourceVersionID, Principal: row.commissionBasis(),

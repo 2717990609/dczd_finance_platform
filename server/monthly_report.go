@@ -16,7 +16,7 @@ const periodReportMonthSQL = `coalesce(p.report_month,p.calendar_month,date_trun
 
 // Read exactly one current or confirmed result per registered scope. Monetary
 // rows still come from the same postings used by the single-period report.
-const monthlyReportSQL = `WITH scopes AS MATERIALIZED (
+var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, scopes AS MATERIALIZED (
  SELECT p.id AS period_id,pro.name AS product_name,p.name,p.starts_on,p.ends_on,
   CASE WHEN pro.period_mode='calendar' THEN 'calendar' WHEN p.calendar_month IS NOT NULL THEN 'refund_month' ELSE 'class' END AS kind,
   d.version,d.calculated_at,d.issue_count,
@@ -32,20 +32,22 @@ const monthlyReportSQL = `WITH scopes AS MATERIALIZED (
  SELECT period_id,version,performance_ready FROM scopes WHERE version IS NOT NULL
 ), current_pool_allocations AS MATERIALIZED (` + currentReportPoolAllocationsSQL + `
 ), stamp AS (
- SELECT md5(jsonb_build_array($1::date,$2::bigint,$3::text,
+ SELECT md5(jsonb_build_array($1::date,$2::bigint,$3::text,{{unit}},
+  (SELECT array_agg(id ORDER BY id) FROM organization_scope),
   (SELECT jsonb_agg(jsonb_build_array(period_id,product_name,name,starts_on,ends_on,version,calculated_at,issue_count,settlement_id,generation)
    ORDER BY period_id) FROM scopes),
   (SELECT jsonb_agg(jsonb_build_array(id,revision) ORDER BY id) FROM current_pool_allocations))::text) AS snapshot
 ), performance_events AS MATERIALIZED (
- SELECT v.source,v.fact->>'domain' AS domain,v.kind,v.line_id,
+ SELECT d.period_id,v.source,v.fact->>'domain' AS domain,v.kind,v.line_id,
   coalesce(nullif(CASE WHEN a.payment_version_id IS NULL THEN v.fact->>'paymentId' ELSE v.fact->>'refundId' END,''),'') AS financial_id,
-  v.order_id,v.record_key,a.person_id,a.company_id,a.department_id,
+  v.order_id,v.record_key,a.person_id,a.company_id,a.department_id,a.group_id,
   ` + performancePostingMinorSQL + ` AS principal
  FROM calculation_draft_performance a JOIN selected_draft d USING(period_id)
  JOIN source_order_versions v ON v.id=a.source_version_id
  LEFT JOIN source_order_versions prior ON prior.id=a.prior_refund_version_id
 ), performance_groups AS MATERIALIZED (
  SELECT min(person_id) AS person_id,min(company_id::text)::uuid AS company_id,min(department_id::text)::uuid AS department_id,
+  CASE WHEN count(DISTINCT group_id)=1 THEN min(group_id::text)::uuid END AS group_id,min(period_id) AS period_id,
   min(principal) AS performance,count(*) AS entries,count(DISTINCT (person_id,company_id,department_id,principal)) AS choices
  FROM performance_events GROUP BY source,domain,kind,financial_id,
   CASE WHEN financial_id='' THEN order_id END,CASE WHEN financial_id='' THEN line_id END,CASE WHEN financial_id='' THEN record_key END
@@ -62,8 +64,12 @@ const monthlyReportSQL = `WITH scopes AS MATERIALIZED (
  FROM performance_status
 ), postings AS (` + commissionReportPostingsSQL + `
  UNION ALL
- SELECT person_id,company_id,department_id,performance,0,0,0,0,'person'
+ SELECT period_id,person_id,company_id,department_id,group_id,performance,0,0,0,0,'person'
  FROM performance_groups CROSS JOIN coverage WHERE coverage.performance_ready
+), scoped_postings AS (
+ SELECT * FROM postings WHERE ` + reportInOrganization + `
+), period_amounts AS (
+ SELECT period_id,sum(amount_minor+refund+correction+allocation) AS commission FROM scoped_postings GROUP BY period_id
 ), matching AS (
  SELECT CASE $4::text
   WHEN 'person' THEN coalesce(person_id::text,nullif(beneficiary_kind,'person'))
@@ -72,7 +78,7 @@ const monthlyReportSQL = `WITH scopes AS MATERIALIZED (
    WHEN company_id IS NOT NULL AND beneficiary_kind='company' THEN 'company-direct/'||company_id
    WHEN company_id IS NOT NULL AND (beneficiary_kind IN ('pool','retained') OR allocation<>0) THEN 'pool-direct/'||company_id END)
   END AS id,company_id,performance,amount_minor,refund,correction,allocation
- FROM postings WHERE performance<>0 OR amount_minor<>0 OR refund<>0 OR correction<>0 OR allocation<>0
+ FROM scoped_postings WHERE performance<>0 OR amount_minor<>0 OR refund<>0 OR correction<>0 OR allocation<>0
 ), totals AS MATERIALIZED (
  SELECT id,CASE WHEN count(DISTINCT company_id)=1 THEN min(company_id::text)::uuid END AS company_id,
   sum(performance) AS performance_minor,sum(amount_minor) AS accrued_minor,
@@ -101,12 +107,15 @@ SELECT jsonb_build_object('snapshot',stamp.snapshot,'total',(SELECT count(*) FRO
  'commissionMinor',(SELECT coalesce(sum(net_minor),0) FROM totals),'duplicateFacts',coverage.duplicate_facts,
  'conflictingPerformance',coverage.conflicting_performance,
  'periods',coalesce((SELECT jsonb_agg(jsonb_build_object('id',period_id,'productName',product_name,
-  'name',name,'startsOn',starts_on,'endsOn',ends_on,'kind',kind,'version',version,'commissionMinor',commission,'issueCount',issue_count,
+  'name',name,'startsOn',starts_on,'endsOn',ends_on,'kind',kind,'version',version,'commissionMinor',CASE WHEN {{unit}} IS NULL THEN scopes.commission ELSE period_amounts.commission END,'issueCount',issue_count,
   'status',CASE WHEN settlement_id IS NOT NULL THEN 'SETTLED' WHEN version IS NULL THEN 'NOT_CALCULATED'
    WHEN generation IS NOT NULL THEN 'PENDING' WHEN issue_count>0 THEN 'NEEDS_REVIEW' ELSE 'DRAFT' END)
-  ORDER BY product_name,ends_on,period_id) FROM scopes),'[]'),
+  ORDER BY product_name,ends_on,period_id) FROM scopes LEFT JOIN period_amounts USING(period_id)
+  WHERE {{unit}} IS NULL OR period_amounts.period_id IS NOT NULL),'[]'),
  'items',coalesce((SELECT jsonb_agg(to_jsonb(labeled) ORDER BY "performanceMinor" DESC,"totalMinor" DESC,id) FROM labeled),'[]'))
 FROM stamp CROSS JOIN coverage WHERE $6='' OR stamp.snapshot=$6`
+
+var scopedMonthlyReportSQL = organizationScopeQuery(monthlyReportTemplateSQL, "$7")
 
 func parseReportMonth(value string) (time.Time, error) {
 	month, err := time.Parse("2006-01", value)
@@ -185,8 +194,13 @@ func (s workspace) monthlyReport(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	unit, err := parseOrganizationScope(query.Get("unitId"))
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), monthlyReportSQL, month, product, view, dimension, offset, snapshot).Scan(&result)
+	err = s.db.QueryRow(r.Context(), scopedMonthlyReportSQL, month, product, view, dimension, offset, snapshot, unit).Scan(&result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = conflict
 	}

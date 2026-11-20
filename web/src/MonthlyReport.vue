@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
-const props = defineProps({ api:Function, formatMoney:Function, productId:Number, views:Array, dimensions:Array })
+const props = defineProps({ api:Function, formatMoney:Function, productId:Number, views:Array, dimensions:Array, unitId:String })
 const month = ref(new Intl.DateTimeFormat('sv-SE', {year:'numeric',month:'2-digit',timeZone:'Asia/Shanghai'}).format(new Date()))
 const view = ref()
 const dimension = ref()
@@ -50,6 +50,7 @@ async function load() {
   loading.value = true
   const params = new URLSearchParams({month:month.value,view:view.value,dimension:dimension.value,page:page.value})
   if (props.productId) params.set('productId',props.productId)
+  if (props.unitId) params.set('unitId',props.unitId)
   if (snapshot.value) params.set('snapshot',snapshot.value)
   try {
     const result = await props.api('/monthly-report?'+params)
@@ -84,9 +85,9 @@ watch(() => props.views, choices => {
 watch(() => props.dimensions, choices => {
   if (!choices.some(option => option.value===dimension.value)) dimension.value = choices[0]?.value
 }, {immediate:true})
-watch([month,view,() => props.productId,dimension], (values, previous) => {
+watch([month,view,() => props.productId,() => props.unitId,dimension], (values, previous) => {
   report.value = undefined
-  if (values.slice(0,3).some((value,index) => value!==previous[index])) {
+  if (values.slice(0,4).some((value,index) => value!==previous[index])) {
     refresh()
   } else {
     page.value = 1

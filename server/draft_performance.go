@@ -51,7 +51,7 @@ const performanceRefundOriginsSQL = `SELECT q.id,a.source_version_id,coalesce(a.
  JOIN settlements closed ON closed.period_id=prior.period_id
  JOIN source_order_versions rv ON rv.id=prior.source_version_id
  WHERE prior.payment_version_id=a.source_version_id),0)::bigint,
- a.period_id,` + practiceRefundReplaySQL + `
+ a.period_id,` + practiceRefundReplaySQL + `,a.group_id
  FROM jsonb_to_recordset($1::jsonb) AS q(id bigint,source text,order_id text,line_id text,record_id text)
  JOIN source_order_versions p ON p.source=q.source AND p.order_id=q.order_id AND p.kind='ORDER_PAID'
   AND (q.line_id='' OR p.line_id=q.line_id)
@@ -76,7 +76,7 @@ func loadPerformanceRefundOrigins(ctx context.Context, tx pgx.Tx, periodID int64
 	var refundID int64
 	var origin performanceRefundOrigin
 	_, err = pgx.ForEachRow(rows, []any{&refundID, &origin.SourceVersionID, &origin.PersonID, &origin.Principal,
-		&origin.Organization.Company, &origin.Organization.Department, &origin.PreviouslyRefunded, &origin.PeriodID, &origin.PracticeReplay}, func() error {
+		&origin.Organization.Company, &origin.Organization.Department, &origin.PreviouslyRefunded, &origin.PeriodID, &origin.PracticeReplay, &origin.Organization.Group}, func() error {
 		out[refundID] = append(out[refundID], origin)
 		return nil
 	})
@@ -142,7 +142,7 @@ func storeDraftPerformance(ctx context.Context, tx pgx.Tx, periodID int64, posti
 		return nil
 	}
 	_, err := tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_performance"},
-		[]string{"period_id", "source_version_id", "payment_version_id", "person_id", "company_id", "department_id", "completion_version_id", "prior_refund_version_id"},
+		[]string{"period_id", "source_version_id", "payment_version_id", "person_id", "company_id", "department_id", "completion_version_id", "prior_refund_version_id", "group_id"},
 		pgx.CopyFromSlice(len(postings), func(i int) ([]any, error) {
 			p := postings[i]
 			var payment, person, completion, priorRefund *int64
@@ -158,7 +158,7 @@ func storeDraftPerformance(ctx context.Context, tx pgx.Tx, periodID int64, posti
 			if p.PriorRefundVersionID != 0 {
 				priorRefund = &p.PriorRefundVersionID
 			}
-			return []any{periodID, p.SourceVersionID, payment, person, p.Organization.Company, p.Organization.Department, completion, priorRefund}, nil
+			return []any{periodID, p.SourceVersionID, payment, person, p.Organization.Company, p.Organization.Department, completion, priorRefund, p.Organization.groupID()}, nil
 		}))
 	return err
 }

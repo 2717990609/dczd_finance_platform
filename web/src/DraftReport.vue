@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
-const props = defineProps({draft:Object, api:Function, formatMoney:Function, dimensions:Array})
+const props = defineProps({draft:Object, api:Function, formatMoney:Function, dimensions:Array, unitId:String})
 const rows = ref([])
 const dimension = ref()
 const performanceReady = ref(false)
@@ -34,6 +34,7 @@ async function load() {
   total.value = 0
   loading.value = true
   const params = new URLSearchParams({periodId:props.draft.periodId,version:props.draft.version,page:page.value,dimension:dimension.value})
+  if (props.unitId) params.set('unitId',props.unitId)
   try {
     const result = await props.api('/draft-report?'+params)
     if (request===sequence) {
@@ -59,7 +60,7 @@ function changePage(next) {
 watch(() => props.dimensions, choices => {
   if (!choices.some(item=>item.value===dimension.value)) dimension.value=choices[0]?.value
 }, {immediate:true})
-watch([() => props.draft,dimension], () => { page.value = 1; load() }, {immediate:true})
+watch([() => props.draft,() => props.unitId,dimension], () => { page.value = 1; load() }, {immediate:true})
 onBeforeUnmount(() => { sequence++ })
 </script>
 
@@ -73,7 +74,7 @@ onBeforeUnmount(() => { sequence++ })
       </div>
     </div>
     <p v-if="!loading && !error" class="draft-report-note">
-      <template v-if="performanceReady">{{ draft.refundsReady ? '全期净业绩' : '全期实收业绩' }} <strong>{{ formatMoney(periodPerformance) }}</strong></template>
+      <template v-if="performanceReady">{{ unitId ? '所选组织' : '全期' }}{{ draft.refundsReady ? '净业绩' : '实收业绩' }} <strong>{{ formatMoney(periodPerformance) }}</strong></template>
       <template v-else>该版本尚无业绩统计。</template>
     </p>
     <a-alert v-if="error" type="error" :message="error" show-icon/>

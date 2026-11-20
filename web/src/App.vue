@@ -5,6 +5,7 @@ import {
   FileSearchOutlined, LinkOutlined, PlusOutlined, ProfileOutlined, ReloadOutlined, TeamOutlined,
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
+import { TreeSelect } from 'ant-design-vue'
 import DraftWorkbench from './DraftWorkbench.vue'
 import MonthlyReport from './MonthlyReport.vue'
 import CatalogRuleRates from './CatalogRuleRates.vue'
@@ -15,6 +16,7 @@ import FinanceLogin from './FinanceLogin.vue'
 import OrganizationDirectory from './OrganizationDirectory.vue'
 import OrderSyncPanel from './OrderSyncPanel.vue'
 import PracticeTierEditor from './PracticeTierEditor.vue'
+import { organizationTree } from './organization-tree'
 
 const navigation = [
   {key:'settlement', title:'分润试算', icon:CalculatorOutlined},
@@ -43,6 +45,8 @@ const current = ref()
 const active = computed(() => navigation.find(x => x.key === current.value))
 const theme = {token:{colorPrimary:'#315ab2', colorLink:'#315ab2', colorText:'#253044', borderRadius:6, fontSize:14, controlHeight:34}}
 const productScope = ref()
+const unitScope = ref()
+const usesOrganizationScope = computed(() => ['orders','settlement','monthly'].includes(current.value))
 const scopeSearch = ref('')
 const productScopedPages = new Set(['products','periods','rules','settlement','monthly'])
 const usesProductScope = computed(() => productScopedPages.has(current.value))
@@ -69,9 +73,11 @@ let requestVersion = 0
 let sessionRequest = 0
 const configuration = ref({})
 const configurationReady = ref(false)
+const scopeUnits = ref()
 const options = group => configuration.value[group] || []
 const firstOption = group => options(group)[0]?.value
 const optionLabel = (group, value) => options(group).find(option => option.value === value)?.label || value
+const scopeTree = computed(() => organizationTree(scopeUnits.value || [],kind=>optionLabel('organizationKind',kind)))
 const sources = computed(() => options('source'))
 const classMembers = computed(() => options('classMember'))
 const baseModes = computed(() => options('amountMode').filter(option => !option.scope?.componentTypes))
@@ -270,12 +276,14 @@ async function refresh(reloadOptions = false) {
   if (sourceFilter.value) params.set('source',sourceFilter.value)
   if (filter.value.trim()) params.set('orderId',filter.value.trim())
   if (olderThan.value) params.set('beforeId',olderThan.value)
+  if (unitScope.value) params.set('unitId',unitScope.value)
   const sections = {settlement:['products','periods'], monthly:['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
   if (requests.catalogRules) requests.catalogRules = '/rule-catalog'
   if (requests.practiceCountOpenings) requests.practiceCountOpenings = '/practice-count-openings'
   if (!wholeWorkspace.value) delete requests.people
   if (!configurationReady.value || reloadOptions) requests.configuration = '/configuration-options'
+  if (usesOrganizationScope.value && (!scopeUnits.value || reloadOptions)) requests.scopeUnits = '/organization-units'
   const entries = Object.entries(requests)
   const results = await Promise.allSettled(entries.map(([,url]) => api(url)))
   if (version !== requestVersion) return
@@ -285,7 +293,8 @@ async function refresh(reloadOptions = false) {
       if (key === 'configuration') {
         configuration.value = result.value
         configurationReady.value = true
-      } else data.value[key] = result.value
+      } else if (key === 'scopeUnits') scopeUnits.value = result.value
+      else data.value[key] = result.value
     } else globalError.value ||= result.reason.message
   })
   loading.value = false
@@ -313,6 +322,8 @@ function clearWorkspace() {
   ++requestVersion
   data.value = emptyData()
   productScope.value = undefined
+  unitScope.value = undefined
+  scopeUnits.value = undefined
   current.value = undefined
   drawer.value = ''
   draft.value = {}
@@ -393,6 +404,10 @@ watch(() => drawer.value==='rule' && classRule.value ? draft.value.productId : u
   }
 })
 function resetOrders() { olderThan.value = ''; pageStack.value=[]; refresh() }
+function selectOrganization(unit) {
+  unitScope.value = unit
+  if (current.value === 'orders') resetOrders()
+}
 async function createPracticePool(name, unitId) {
   const productId = draft.value.productId
   const result = await api('/practice-pools', {method:'POST',body:JSON.stringify({productId,name,unitId})})
@@ -624,6 +639,12 @@ async function save() {
     </nav>
     <div class="workspace-body" :class="{ 'with-scope':showScope }">
       <aside v-if="showScope" class="scope-panel" aria-label="筛选范围">
+        <div v-if="usesOrganizationScope" class="scope-organization">
+          <label for="workspace-organization">组织范围</label>
+          <TreeSelect id="workspace-organization" :value="unitScope" :tree-data="scopeTree" :loading="loading && !scopeUnits"
+            aria-label="组织范围" placeholder="全部组织" tree-node-filter-prop="title" show-search allow-clear
+            @change="selectOrganization" />
+        </div>
         <template v-if="usesProductScope">
           <label for="scope-product-search" class="desktop-scope scope-title">产品范围</label>
           <div class="desktop-scope">
@@ -655,11 +676,11 @@ async function save() {
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <DraftWorkbench :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
-            :api="api" :format-money="formatMoney" :format-time="formatTime" />
+            :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" />
         </template>
         <template v-else-if="current==='monthly'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
-          <MonthlyReport ref="monthlyReport" :api="api" :format-money="formatMoney" :product-id="productScope"
+          <MonthlyReport ref="monthlyReport" :api="api" :format-money="formatMoney" :product-id="productScope" :unit-id="unitScope"
             :views="options('monthlyReportView')" :dimensions="options('draftReportDimension')"/>
         </template>
         <template v-else-if="current==='organization'">

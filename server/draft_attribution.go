@@ -10,10 +10,18 @@ import (
 
 type reportOrganization struct {
 	Company, Department pgtype.UUID
+	Group               *pgtype.UUID `json:",omitempty"`
+}
+
+func (o reportOrganization) groupID() pgtype.UUID {
+	if o.Group == nil {
+		return pgtype.UUID{}
+	}
+	return *o.Group
 }
 
 func (o reportOrganization) present() *reportOrganization {
-	if o.Company.Valid || o.Department.Valid {
+	if o.Company.Valid || o.Department.Valid || o.Group != nil {
 		return &o
 	}
 	return nil
@@ -131,18 +139,22 @@ func (u uniqueUnit) value() pgtype.UUID {
 
 func (i reportAttribution) ancestors(id pgtype.UUID) reportOrganization {
 	var out reportOrganization
-	for depth := 0; id.Valid && depth < len(i.Units); depth++ {
-		unit := i.Units[id]
+	if id.Valid && i.Units[id].Kind != "COMPANY" && i.Units[id].Kind != "DEPARTMENT" {
+		out.Group = &id
+	}
+	node := id
+	for depth := 0; node.Valid && depth < len(i.Units); depth++ {
+		unit := i.Units[node]
 		switch unit.Kind {
 		case "COMPANY":
-			out.Company = id
+			out.Company = node
 			return out
 		case "DEPARTMENT":
 			if !out.Department.Valid {
-				out.Department = id
+				out.Department = node
 			}
 		}
-		id = unit.Parent
+		node = unit.Parent
 	}
 	return out
 }
@@ -189,7 +201,29 @@ func (i reportAttribution) resolve(person int64, at time.Time, sourceCompany ide
 			department = pgtype.UUID{}
 		}
 	}
-	return reportOrganization{Company: company, Department: department}
+	var primaryGroup, concurrentGroup uniqueUnit
+	for _, assignment := range i.Assignments[person] {
+		if at.Before(assignment.From) || assignment.To != nil && !at.Before(*assignment.To) {
+			continue
+		}
+		unit := i.ancestors(assignment.Unit)
+		if unit.Group == nil || company.Valid && unit.Company != company || department.Valid && unit.Department != department {
+			continue
+		}
+		if assignment.Kind == "PRIMARY" {
+			primaryGroup.add(*unit.Group)
+		} else {
+			concurrentGroup.add(*unit.Group)
+		}
+	}
+	if !primaryGroup.ID.Valid {
+		primaryGroup = concurrentGroup
+	}
+	result := reportOrganization{Company: company, Department: department}
+	if group := primaryGroup.value(); group.Valid {
+		result.Group = &group
+	}
+	return result
 }
 
 func attachReportOrganizations(ctx context.Context, tx pgx.Tx, draft *paymentDraft, payments []paymentInput) error {
@@ -278,7 +312,8 @@ func attributeCorrections(ctx context.Context, tx pgx.Tx, corrections []correcti
 	}
 	rows, err := tx.Query(ctx, `SELECT q.n,p.occurred_at,origin.same,
 	 previous.found,CASE WHEN origin.same THEN l.company_id ELSE previous.company_id END,
-	 CASE WHEN origin.same THEN l.department_id ELSE previous.department_id END
+	 CASE WHEN origin.same THEN l.department_id ELSE previous.department_id END,
+	 CASE WHEN origin.same THEN l.group_id ELSE previous.group_id END
 	 FROM unnest($1::bigint[],$2::bigint[],$3::uuid[]) WITH ORDINALITY AS q(line_id,person_id,unit_id,n)
 	 JOIN calculation_draft_lines l ON l.id=q.line_id
 	 JOIN source_order_versions p ON p.id=l.source_version_id
@@ -286,7 +321,7 @@ func attributeCorrections(ctx context.Context, tx pgx.Tx, corrections []correcti
 	  SELECT (nullif(q.person_id,0),q.unit_id) IS NOT DISTINCT FROM (l.person_id,l.beneficiary_unit_id) AS same
 	 ) origin
 	 LEFT JOIN LATERAL (
-	  SELECT true AS found,c.company_id,c.department_id FROM calculation_draft_corrections c
+	  SELECT true AS found,c.company_id,c.department_id,c.group_id FROM calculation_draft_corrections c
 	  JOIN settlements settled USING(period_id)
 	  WHERE c.original_line_id=l.id AND (c.person_id,c.beneficiary_unit_id) IS NOT DISTINCT FROM (nullif(q.person_id,0),q.unit_id)
 	   AND c.amount_minor>0
@@ -300,7 +335,7 @@ func attributeCorrections(ctx context.Context, tx pgx.Tx, corrections []correcti
 	var original bool
 	var prior *bool
 	var org reportOrganization
-	_, err = pgx.ForEachRow(rows, []any{&n, &at, &original, &prior, &org.Company, &org.Department}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&n, &at, &original, &prior, &org.Company, &org.Department, &org.Group}, func() error {
 		c := &corrections[n-1]
 		c.organization = org
 		if !original && prior == nil && c.Unit.Valid {

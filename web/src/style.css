@@ -29,6 +29,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .workspace-body.with-scope { display: grid; grid-template-columns: 232px minmax(0, 1fr); min-height: calc(100vh - 109px); }
 .scope-panel { min-width: 0; padding: 18px 15px; background: var(--panel); border-right: 1px solid var(--line); }
 .scope-title { display: block; font-size: 13px; font-weight: 650; color: var(--muted); margin-bottom: 10px; }
+.scope-organization { display: grid; gap: 8px; margin-bottom: 15px; }
+.scope-organization label { font-size: 13px; font-weight: 650; color: var(--muted); }
+.scope-organization .ant-select { width: 100%; min-width: 0; }
 .scope-options { display: grid; gap: 4px; margin-top: 10px; max-height: min(65vh, 620px); overflow: auto; }
 .scope-options button { display: block; padding: 7px 11px; min-height: 35px; width: 100%; text-align: left; color: var(--ink); background: transparent; border: 1px solid transparent; border-radius: 5px; cursor: pointer; overflow-wrap: anywhere; }
 .scope-options button:hover { background: #f4f7fb; }
@@ -91,6 +94,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .workspace-nav a { padding-inline: 8px; font-size: 13px; }
   .workspace-body.with-scope { display: block; }
   .scope-panel { border-right: 0; border-bottom: 1px solid var(--line); padding: 8px 12px; }
+  .scope-organization { grid-template-columns: auto minmax(0,1fr); align-items: center; margin-bottom: 8px; }
   .desktop-scope { display: none; }
   .mobile-scope { display: flex; align-items: center; gap: 9px; }
   .mobile-scope .ant-select { flex: 1; min-width: 0; }

@@ -525,15 +525,15 @@ func storeSourcePaymentCompany(ctx context.Context, tx pgx.Tx, version int64, f 
 	return false, nil
 }
 
-const ordersSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
+const ordersTemplateSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
  SELECT v.id,v.fact || jsonb_build_object('id',v.id,'productName',p.name,'mapped',p.id IS NOT NULL) AS data
  FROM (
   SELECT * FROM (
-   SELECT DISTINCT ON(source,order_id,line_id,record_key,kind) id,source,record_key,occurred_at,fact FROM source_order_versions
+   SELECT DISTINCT ON(source,order_id,line_id,record_key,kind) id,source,order_id,line_id,kind,record_key,occurred_at,fact FROM source_order_versions
    WHERE ($1='' OR source=$1) AND ($2='' OR order_id=$2)
    ORDER BY source,order_id,line_id,record_key,kind,updated_at DESC,id DESC
   ) latest
-  WHERE ($3::bigint=0 OR latest.id<$3) ORDER BY latest.id DESC LIMIT 50
+  WHERE ($3::bigint=0 OR latest.id<$3) /* org scope */ ORDER BY latest.id DESC LIMIT 50
  ) v
  LEFT JOIN source_mappings m ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'
  LEFT JOIN source_order_classifications classification ON classification.source_version_id=v.id
@@ -547,6 +547,9 @@ const ordersSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FR
  ) route ON true
  LEFT JOIN products p ON p.id=CASE WHEN ` + catalogSourceReservedSQL + ` THEN route.product_id ELSE m.product_id END
  ) q`
+
+var scopedOrdersSQL = organizationScopeQuery("WITH RECURSIVE "+organizationScopeCTE+" "+
+	strings.Replace(ordersTemplateSQL, "/* org scope */", "AND "+orderInOrganization, 1), "$4")
 
 func (s workspace) orders(w http.ResponseWriter, r *http.Request) {
 	params := r.URL.Query()
@@ -564,8 +567,19 @@ func (s workspace) orders(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, invalid)
 		return
 	}
+	unit, err := parseOrganizationScope(params.Get("unitId"))
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	query := ordersTemplateSQL
+	args := []any{source, order, boundary}
+	if unit.Valid {
+		query = scopedOrdersSQL
+		args = append(args, unit)
+	}
 	var result json.RawMessage
-	err := s.db.QueryRow(r.Context(), ordersSQL, source, order, boundary).Scan(&result)
+	err = s.db.QueryRow(r.Context(), query, args...).Scan(&result)
 	respond(w, result, err)
 }
 

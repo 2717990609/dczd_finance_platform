@@ -1,0 +1,168 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+func TestFinanceReportsFilterUsingOrganizationTree(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	const company, dept, team, sibling = "51000000-0000-4000-8000-000000000001", "51000000-0000-4000-8000-000000000002", "51000000-0000-4000-8000-000000000003", "51000000-0000-4000-8000-000000000004"
+	_, err := s.db.Exec(ctx, `
+	 INSERT INTO organization_units(id,parent_id,kind,name,status) VALUES
+	 ('51000000-0000-4000-8000-000000000001',NULL,'COMPANY','公司','ACTIVE'),
+	 ('51000000-0000-4000-8000-000000000002','51000000-0000-4000-8000-000000000001','DEPARTMENT','部门','ACTIVE'),
+	 ('51000000-0000-4000-8000-000000000003','51000000-0000-4000-8000-000000000002','TEAM','一组','ACTIVE'),
+	 ('51000000-0000-4000-8000-000000000004','51000000-0000-4000-8000-000000000002','TEAM','二组','INACTIVE');
+	 INSERT INTO people(name) VALUES('第一组销售'),('第二组销售');
+	 INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from) VALUES
+	 ('51000000-0000-4000-8000-000000000005',1,'51000000-0000-4000-8000-000000000003','PRIMARY','2025-01-01'),
+	 ('51000000-0000-4000-8000-000000000006',2,'51000000-0000-4000-8000-000000000004','PRIMARY','2025-01-01')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustID := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	day := 1
+	product := mustID(s.createProduct(ctx, createProductInput{Code: "TREE_FIXTURE", Name: "组织筛选样本", PeriodMode: "calendar", CycleStartDay: &day}))
+	period := mustID(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "八月", SettlementMonth: "2026-08"}))
+	mustID(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCJK", Domain: "TEST", SourceKey: "test"}))
+	for i, key := range []string{"one", "two"} {
+		mustID(s.assignIdentity(ctx, assignIdentityInput{PersonID: int64(i + 1), Source: "DCJK", ExternalID: key, ValidFrom: "2025-01-01T00:00:00Z"}))
+	}
+	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, Label: "试算分润", Components: []component{
+		{Type: "sales", Mode: "rate", Value: 1000, SourceRole: "SELLER", RefundPolicy: "proportional"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	fixture := scopeOrderFixtures()
+	if err := storeScopeOrderFixture(ctx, s, fixture); err != nil {
+		t.Fatal(err)
+	}
+	orderURL := "/api/v1/orders?unitId=" + team
+	pending := httptest.NewRecorder()
+	s.orders(pending, httptest.NewRequest(http.MethodGet, orderURL, nil))
+	var pendingRows []struct{ OrderID string }
+	if err := json.Unmarshal(pending.Body.Bytes(), &pendingRows); err != nil || pending.Code != 200 || len(pendingRows) != 1 || pendingRows[0].OrderID != "one" {
+		t.Fatalf("uncalculated team order: %d %v %s", pending.Code, err, pending.Body)
+	}
+	result, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+	if err != nil {
+		t.Fatal(err)
+	}
+	draft := result.(draftSummary)
+	if draft.Total != 300 {
+		t.Fatalf("unexpected fixture: %+v", draft)
+	}
+	if _, err := s.db.Exec(ctx, "INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')", period, draft.Version); err != nil {
+		t.Fatal(err)
+	}
+	call := func(handler http.HandlerFunc, path string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		handler(w, httptest.NewRequest(http.MethodGet, path, nil))
+		return w
+	}
+	draftURL := fmt.Sprintf("/api/v1/draft-report?periodId=%d&version=%d&dimension=person", period, draft.Version)
+	monthURL := "/api/v1/monthly-report?month=2026-08&view=settled&dimension=person"
+	for _, test := range []struct {
+		unit           string
+		net, principal int64
+		count          int
+	}{
+		{"", 300, 3000, 2}, {company, 300, 3000, 2}, {dept, 300, 3000, 2}, {team, 100, 1000, 1}, {sibling, 200, 2000, 1},
+	} {
+		for _, endpoint := range []struct {
+			handler http.HandlerFunc
+			path    string
+		}{{s.draftReport, draftURL}, {s.monthlyReport, monthURL}} {
+			w := call(endpoint.handler, endpoint.path+"&unitId="+test.unit)
+			var view struct {
+				Total            int
+				PerformanceMinor int64
+				Items            []struct{ TotalMinor int64 }
+				Periods          []struct{ CommissionMinor int64 }
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil || w.Code != 200 {
+				t.Fatalf("%s %s: %d %v %s", endpoint.path, test.unit, w.Code, err, w.Body)
+			}
+			var net int64
+			for _, row := range view.Items {
+				net += row.TotalMinor
+			}
+			if net != test.net || view.Total != test.count || view.PerformanceMinor != test.principal ||
+				len(view.Periods) != 0 && view.Periods[0].CommissionMinor != test.net {
+				t.Fatalf("%s %s: net %d view %+v", endpoint.path, test.unit, net, view)
+			}
+		}
+	}
+	details := call(s.getDraft, fmt.Sprintf("/api/v1/drafts?periodId=%d&unitId=%s", period, team))
+	var detail struct {
+		LineCount, ScopeLineCount, TotalMinor int
+		Lines                                 []struct{ OrderID string }
+	}
+	if err := json.Unmarshal(details.Body.Bytes(), &detail); err != nil || details.Code != 200 ||
+		detail.LineCount != 2 || detail.TotalMinor != 300 || detail.ScopeLineCount != 1 || len(detail.Lines) != 1 || detail.Lines[0].OrderID != "one" {
+		t.Fatalf("scoped settlement detail and overall total: %d %v %s", details.Code, err, details.Body)
+	}
+	orders := call(s.orders, "/api/v1/orders?unitId="+team)
+	var rows []struct{ OrderID string }
+	if err := json.Unmarshal(orders.Body.Bytes(), &rows); err != nil || orders.Code != 200 || len(rows) != 1 || rows[0].OrderID != "one" {
+		t.Fatalf("team orders: %d %v %s", orders.Code, err, orders.Body)
+	}
+	if w := call(s.monthlyReport, monthURL+"&unitId=bogus"); w.Code != http.StatusBadRequest {
+		t.Fatalf("invalid scope must fail: %d", w.Code)
+	}
+	const otherCompany, otherDept = "51000000-0000-4000-8000-000000000009", "51000000-0000-4000-8000-000000000010"
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_units(id,parent_id,kind,name,status) VALUES
+	 ('51000000-0000-4000-8000-000000000009',NULL,'COMPANY','另一公司','ACTIVE'),
+	 ('51000000-0000-4000-8000-000000000010','51000000-0000-4000-8000-000000000009','DEPARTMENT','另一部门','ACTIVE')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE organization_units SET parent_id=$2 WHERE id=$1", team, otherDept); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []string{otherCompany, otherDept} {
+		w := call(s.monthlyReport, monthURL+"&unitId="+scope)
+		var view struct{ Total int }
+		if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil || w.Code != 200 || view.Total != 0 {
+			t.Fatalf("moving a team cannot move confirmed amounts to a different company or department: %d %v %s", w.Code, err, w.Body)
+		}
+		w = call(s.orders, "/api/v1/orders?unitId="+scope)
+		if w.Code != 200 || w.Body.String() != "[]" {
+			t.Fatalf("moving a team cannot move the historical order: %d %s", w.Code, w.Body)
+		}
+	}
+}
+
+func scopeOrderFixtures() []sourceFact {
+	at := time.Date(2026, 8, 5, 8, 0, 0, 0, shanghai)
+	one, two := int64(1000), int64(2000)
+	return []sourceFact{
+		{Source: "DCJK", Domain: "TEST", SourceKey: "test", Kind: "ORDER_PAID", OrderID: "one", RecordKey: "payment:one",
+			PaymentID: "one", Version: "1", AmountMinor: &one, OccurredAt: at, UpdatedAt: at,
+			Participants: []sourceParticipant{{Role: "SELLER", UserID: "one"}, {Role: "DIRECT_REFERRER", UserID: "two"}}},
+		{Source: "DCJK", Domain: "TEST", SourceKey: "test", Kind: "ORDER_PAID", OrderID: "two", RecordKey: "payment:two",
+			PaymentID: "two", Version: "1", AmountMinor: &two, OccurredAt: at, UpdatedAt: at, Participants: []sourceParticipant{{Role: "SELLER", UserID: "two"}}},
+	}
+}
+
+func storeScopeOrderFixture(ctx context.Context, s workspace, facts []sourceFact) error {
+	return pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storeSourceFacts(ctx, tx, facts)
+		return err
+	})
+}

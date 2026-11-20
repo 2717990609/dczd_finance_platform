@@ -476,11 +476,11 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Corrections) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_corrections"},
-			[]string{"period_id", "original_line_id", "source_version_id", "person_id", "amount_minor", "company_id", "department_id", "beneficiary_unit_id"},
+			[]string{"period_id", "original_line_id", "source_version_id", "person_id", "amount_minor", "company_id", "department_id", "beneficiary_unit_id", "group_id"},
 			pgx.CopyFromSlice(len(result.Corrections), func(i int) ([]any, error) {
 				c := result.Corrections[i]
 				return []any{summary.PeriodID, c.OriginalLineID, c.SourceVersionID, optionalDraftID(c.PersonID),
-					c.Amount, c.organization.Company, c.organization.Department, c.Unit}, nil
+					c.Amount, c.organization.Company, c.organization.Department, c.Unit, c.organization.groupID()}, nil
 			}))
 	}
 	return err
@@ -536,7 +536,8 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 	return err
 }
 
-const draftDetailSQL = `SELECT jsonb_build_object(
+var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
+ SELECT jsonb_build_object(
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
  'catalog',d.rule_id IS NULL AND NOT (` + practiceRefundMonthScope + `),
  'practiceRefundMonth',(` + practiceRefundMonthScope + `),
@@ -552,6 +553,13 @@ const draftDetailSQL = `SELECT jsonb_build_object(
    WHERE a.period_id=d.period_id))),
  'totalMinor',d.total_minor+d.refund_minor+d.correction_minor,'accruedMinor',d.total_minor,
  'refundMinor',d.refund_minor,'refundCount',d.refund_count,'correctionMinor',d.correction_minor,'correctionCount',d.correction_count,
+ 'scopeLineCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_lines l
+  WHERE l.period_id=d.period_id AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,
+ 'scopeRefundCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_refunds a
+  JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE a.period_id=d.period_id
+   AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,
+ 'scopeCorrectionCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_corrections c
+  WHERE c.period_id=d.period_id AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `)) END,
  'lineCount',d.line_count,'issueCount',d.issue_count,'practiceRosterVersion',roster.source_version,
  'advisoryCount',(SELECT count(*) FROM calculation_draft_issues i WHERE i.period_id=d.period_id AND i.advisory),
  'attendanceCount',roster.attendance_count,
@@ -587,7 +595,8 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   LEFT JOIN practice_enrollments e ON e.id=l.practice_enrollment_id
   LEFT JOIN source_payment_companies company ON company.source_version_id=l.source_version_id AND e.id IS NOT NULL
   LEFT JOIN configuration_options company_label ON company_label.group_key='practiceSalesCompany' AND company_label.option_key=company.company_id
-  WHERE l.period_id=d.period_id AND l.id>$2 ORDER BY l.id LIMIT 50
+  WHERE l.period_id=d.period_id AND l.id>$2
+  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) ORDER BY l.id LIMIT 50
  ) l),'[]'),
  'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (
   SELECT a.id,a.amount_minor AS "amountMinor",rv.fact->>'refundId' AS "refundId",rv.version AS "refundVersion",
@@ -609,7 +618,8 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   ) pool ON true
   JOIN periods original_period ON original_period.id=l.period_id JOIN periods refund_period ON refund_period.id=a.refund_period_id
   JOIN periods posting_period ON posting_period.id=a.period_id
-  WHERE a.period_id=d.period_id AND a.id>$5 ORDER BY a.id LIMIT 50
+  WHERE a.period_id=d.period_id AND a.id>$5
+  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) ORDER BY a.id LIMIT 50
  ) a),'[]'),
  'corrections',coalesce((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM (
   SELECT c.id,c.amount_minor AS "amountMinor",paid.order_id AS "orderId",
@@ -627,7 +637,8 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   LEFT JOIN people old_person ON old_person.id=l.person_id LEFT JOIN organization_units old_recipient ON old_recipient.id=l.beneficiary_unit_id
   JOIN periods original_period ON original_period.id=l.period_id
   LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
-  WHERE c.period_id=d.period_id AND c.id>$6 ORDER BY c.id LIMIT 50
+  WHERE c.period_id=d.period_id AND c.id>$6
+  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `)) ORDER BY c.id LIMIT 50
  ) c),'[]'),
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
   SELECT i.id,i.component_type AS "component",i.code,i.advisory,o.source,o.order_id AS "orderId",e.source_enrollment_id AS "enrollmentId",
@@ -648,6 +659,9 @@ const draftDetailSQL = `SELECT jsonb_build_object(
 ) FROM calculation_drafts d JOIN periods period ON period.id=d.period_id JOIN products product ON product.id=period.product_id
  LEFT JOIN rule_versions r ON r.id=d.rule_id LEFT JOIN settlements st ON st.period_id=d.period_id
  LEFT JOIN practice_rosters roster ON roster.id=d.practice_roster_id WHERE d.period_id=$1 AND ($4::bigint=0 OR d.version=$4)`
+
+var draftDetailSQL = organizationScopeQuery(draftDetailTemplateSQL, "NULL")
+var scopedDraftDetailSQL = organizationScopeQuery(draftDetailTemplateSQL, "$7")
 
 func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
@@ -674,8 +688,13 @@ func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	unit, err := parseOrganizationScope(query.Get("unitId"))
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), draftDetailSQL, periodID, cursors[0], cursors[1], version, cursors[2], cursors[3]).Scan(&result)
+	err = s.db.QueryRow(r.Context(), scopedDraftDetailSQL, periodID, cursors[0], cursors[1], version, cursors[2], cursors[3], unit).Scan(&result)
 	if version > 0 && errors.Is(err, pgx.ErrNoRows) {
 		err = conflict
 	}

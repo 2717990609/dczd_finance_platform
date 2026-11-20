@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Checkbox, TreeSelect } from 'ant-design-vue'
 import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
 import CatalogAppointments from './CatalogAppointments.vue'
+import { organizationTree } from './organization-tree'
 
 const props = defineProps({api:Function, optionLabel:Function, formatTime:Function, canWrite:Boolean, appointmentKinds:Array,
   catalogRoles:Array,catalogScopes:Array})
@@ -24,24 +25,9 @@ const catalog = ref()
 let request = 0
 let unitRequest = 0
 
-function buildTree(forAppointment) {
-  const nodes = new Map(units.value.map(unit => [unit.id, {
-    value:unit.id,
-    title:unit.name + ' · ' + props.optionLabel('organizationKind',unit.kind) + (unit.status==='INACTIVE' ? '（已停用）' : ''),
-    selectable:!forAppointment || unit.status==='ACTIVE',
-    children:[],
-  }]))
-  const roots = []
-  for (const unit of units.value) {
-    const node = nodes.get(unit.id)
-    const parent = nodes.get(unit.parentId)
-    if (parent) parent.children.push(node)
-    else roots.push(node)
-  }
-  return roots
-}
-const tree = computed(() => buildTree(false))
-const appointmentTree = computed(() => buildTree(true))
+const kindLabel = kind => props.optionLabel('organizationKind',kind)
+const tree = computed(() => organizationTree(units.value,kindLabel))
+const appointmentTree = computed(() => organizationTree(units.value,kindLabel,true))
 const columns = computed(() => [
   {title:'人员',dataIndex:'personName',key:'personName',width:130},
   {title:'组织',dataIndex:'unitName',key:'unitName',width:180},
