@@ -33,7 +33,8 @@ func isLoopbackHost(host string) bool {
 
 func (s workspace) financeRoute(route rest.Route) rest.Route {
 	switch route.Path {
-	case "/api/v1/session", "/api/v1/catalog-rule-rates", "/api/v1/catalog-rule-people", "/api/v1/catalog-rule-impact":
+	case "/api/v1/session", "/api/v1/catalog-rule-rates", "/api/v1/catalog-rule-people", "/api/v1/catalog-rule-impact",
+		"/api/v1/catalog-period-rules", "/api/v1/catalog-period-rules/preview":
 		return route
 	}
 	rulesAccess := false

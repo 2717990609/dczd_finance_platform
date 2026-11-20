@@ -75,6 +75,7 @@ const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(result) ORDER BY res
  ` + catalogVersionVisible + ` AS "inLatestSnapshot",
  v.published_at AS "publishedAt",
  ` + catalogRateConfigurationSQL + ` AS "rateConfigAvailable",
+ (` + catalogPeriodRuleScope + `) AS "periodConfigAvailable",
  ` + catalogRateConfigurationSQL + ` AS "draftSupported"
  FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
  JOIN product_catalog_settings scope ON scope.product_id=p.product_id JOIN products pr ON pr.id=scope.product_id

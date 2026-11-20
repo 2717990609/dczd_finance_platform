@@ -23,6 +23,7 @@ import { organizationTree } from './organization-tree'
 import { copiedRuleComponents } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
+const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
 const navigation = [
   {key:'tasks', area:'work', title:'待办'},
   {key:'settlement', area:'work', title:'分润试算'},
@@ -101,6 +102,7 @@ const monthlyResume = ref()
 const orderSync = ref()
 const orderDetails = ref()
 const rateRule = ref()
+const periodRule = ref()
 const ruleDetails = ref()
 const appliedRule = ref()
 const rulePreview = ref()
@@ -347,8 +349,9 @@ function catalogRuleBadge(row) {
   return row.draftSupported ? { text:'可试算', color:'green' } : { text:'未开放试算', color:'blue' }
 }
 function ratePublished(result) {
-  notice.value = result.id === rateRule.value?.id ? '规则无变化。' : '规则 v'+result.version+' 已发布。'
+  notice.value = result.id === (rateRule.value || periodRule.value)?.id ? '规则无变化。' : '规则 v'+result.version+' 已发布。'
   rateRule.value = undefined
+  periodRule.value = undefined
   refresh()
 }
 const mainRows = computed(() => {
@@ -557,6 +560,7 @@ function changeRoute() {
     ? {href:returnLink,label:'返回本期'+draftViews[targetView]} : undefined
   orderDetails.value = undefined
   rateRule.value = undefined
+  periodRule.value = undefined
   ruleDetails.value = undefined
   appliedRule.value = undefined
   rulePreview.value = undefined
@@ -608,6 +612,7 @@ function clearWorkspace() {
   drawer.value = ''
   draft.value = {}
   rateRule.value = undefined
+  periodRule.value = undefined
   ruleDetails.value = undefined
   appliedRule.value = undefined
   rulePreview.value = undefined
@@ -1245,6 +1250,8 @@ async function save() {
                 <template v-else-if="column.key==='ruleAction'">
                   <a-button v-if="record.catalogPending && record.rateConfigAvailable && record.projectMatches && (!session.user || session.user.rules.some(grant=>grant.productId===record.productId))"
                     type="link" size="small" @click="rateRule=record">分润配置</a-button>
+                  <a-button v-else-if="record.periodConfigAvailable && canReadRules(record.productId)" type="link" size="small"
+                    @click="periodRule=record">整期阶梯</a-button>
                   <template v-else-if="!record.catalogPending">
                     <a-button type="link" size="small" @click="ruleDetails=record">查看规则</a-button>
                     <a-button v-if="canPublishRule(record.productId) && ruleEditVersionIDs.has(record.id)" :disabled="!configurationReady"
@@ -1479,6 +1486,9 @@ async function save() {
     :rule="rateRule" :applied="appliedRule?.catalog ? appliedRule : undefined" :api="api" :format-time="formatTime"
     :format-money="formatMoney" :periods="data.periods"
     @close="rateRule=undefined; appliedRule=undefined" @published="ratePublished"/>
+  <CatalogPeriodRule v-if="periodRule && active && !sessionError && !sessionChecking && !loginRequested"
+    :rule="periodRule" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
+    @close="periodRule=undefined" @published="ratePublished"/>
   <RuleVersionDetails v-if="viewedRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="viewedRule" :can-copy="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId))"
     :title="appliedRule?.rule ? '计提使用的规则' : undefined"
