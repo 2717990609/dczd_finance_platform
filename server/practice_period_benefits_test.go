@@ -13,6 +13,148 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func TestPracticeRefundCreditsOriginallyZeroPoolTier(t *testing.T) {
+	t.Run("保留原归属", func(t *testing.T) { verifyPracticeZeroPoolTier(t, true) })
+	t.Run("历史原结算缺少归属明细", func(t *testing.T) { verifyPracticeZeroPoolTier(t, false) })
+}
+
+func verifyPracticeZeroPoolTier(t *testing.T, retainReferences bool) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	mustExec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := s.db.Exec(ctx, sql, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_ZERO_TIER", Name: "交付阶梯样本", PeriodMode: "class"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "zero-tier"}))
+	const rosterKey = "PRACTICE:1:1:60"
+	class := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "零计提班次", Ordinal: 60,
+		StartsOn: "2026-08-08", EndsOn: "2026-08-08", SourcePeriodKey: rosterKey}))
+	september := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "补计账期", SettlementMonth: "2026-09"}))
+	october := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "次月退款", SettlementMonth: "2026-10"}))
+	owner := id(s.createPerson(ctx, createPersonInput{Name: "结算时交付负责人"}))
+	const unit = "41000000-0000-4000-8000-000000000201"
+	mustExec(`INSERT INTO organization_units(id,name,kind,status) VALUES($1,'交付公司','COMPANY','ACTIVE')`, unit)
+	pool := id(s.createPracticePool(ctx, createPracticePoolInput{ProductID: product, UnitID: unit, Name: "交付池"}))
+	through := int64(24999)
+	config := publishRuleInput{ProductID: product, PeriodID: &class, Label: "原交付阶梯", Components: []component{{
+		Type: "delivery", Mode: "period_rate", PeriodBenefit: &practicePeriodBenefit{Label: "交付",
+			Pool: &practicePoolTarget{PoolID: pool, OwnerID: owner}, TierOnWholeClass: true,
+			Tiers: []practicePeriodRate{{Through: &through, Value: 100000}, {From: 25000}}},
+	}}}
+	if _, err := s.publishRule(ctx, config); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 8, 8, 9, 0, 0, 0, shanghai)
+	paid := func(order string) sourceFact {
+		at, amount := start.Add(-24*time.Hour), int64(15000)
+		return sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: "zero-tier", Kind: "ORDER_PAID", Version: "1",
+			OrderID: order, PaymentID: order, RecordKey: "payment:" + order, OccurredAt: at, UpdatedAt: at, AmountMinor: &amount}
+	}
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if _, err := storePracticeRoster(ctx, tx, practiceRoster{Key: rosterKey, Hash: "zero-tier", SourceVersion: 1,
+			StartsAt: start, ConfirmedAt: start.Add(time.Hour), Enrollments: []practiceEnrollment{
+				{SourceEnrollmentID: "1", ParticipantID: "1", MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"1"}, ContentHash: "aa"},
+				{SourceEnrollmentID: "2", ParticipantID: "2", MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"2"}, ContentHash: "bb"},
+			}}); err != nil {
+			return err
+		}
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{paid("1"), paid("2")})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	calculate := func(period, amount int64) draftSummary {
+		t.Helper()
+		draft, err := s.calculateCurrentDraft(ctx, period, 0)
+		if err != nil || draft.IssueCount != 0 || draft.Total != amount || draft.LineCount != 0 {
+			t.Fatalf("expected %d with no visible accrual or pending issue: %+v %v", amount, draft, err)
+		}
+		return draft
+	}
+	freeze := func(draft draftSummary) {
+		t.Helper()
+		mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, draft.PeriodID, draft.Version)
+	}
+	original := calculate(class, 0)
+	var detail struct {
+		Lines                   []json.RawMessage
+		PoolAllocationAvailable bool
+	}
+	if err := s.db.QueryRow(ctx, draftDetailSQL, class, 0, 0, original.Version, 0, 0).Scan(&detail); err != nil ||
+		len(detail.Lines) != 0 || detail.PoolAllocationAvailable {
+		t.Fatalf("zero references should not appear as accrued benefits: %+v %v", detail, err)
+	}
+	if !retainReferences {
+		// Reproduce a settlement created before zero tier references were stored.
+		mustExec(`DELETE FROM calculation_draft_lines WHERE period_id=$1 AND practice_tier_reference`, class)
+	}
+	freeze(original)
+	// New rules must not provide the rate or recipient for the original order.
+	config.Components[0].PeriodBenefit = &practicePeriodBenefit{Label: "新版交付", PersonID: owner}
+	config.Components[0].Value = 500000
+	if _, err := s.publishRule(ctx, config); err != nil {
+		t.Fatal(err)
+	}
+	refund := func(order string, month time.Month, amount int64) {
+		t.Helper()
+		at := time.Date(2026, month, 5, 9, 0, 0, 0, shanghai)
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFacts(ctx, tx, []sourceFact{{
+				Source: "DCZD", Domain: "PRACTICE", SourceKey: "zero-tier", Kind: "REFUND_SUCCEEDED", Version: "1",
+				OrderID: order, RefundID: order, RecordKey: "refund:" + order, OccurredAt: at, UpdatedAt: at, AmountMinor: &amount,
+				RefundsPayment: []sourcePaymentReference{{OrderID: order, RecordID: order}},
+			}})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refund("1", time.September, 15000)
+	if !retainReferences {
+		draft, err := s.calculateCurrentDraft(ctx, september, 0)
+		if err != nil || draft.Total != 0 || draft.IssueCount != 1 {
+			t.Fatalf("historical data without a frozen recipient must stay pending: %+v %v", draft, err)
+		}
+		var issue string
+		if err := s.db.QueryRow(ctx, `SELECT code FROM calculation_draft_issues WHERE period_id=$1`, september).
+			Scan(&issue); err != nil || issue != "PRACTICE_REFUND_REPLAY_NEW_LINE" {
+			t.Fatalf("expected an explicit issue for a missing historical posting: %s %v", issue, err)
+		}
+		return
+	}
+	credited := calculate(september, 1500)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		stages, err := readPoolStages(ctx, tx, september)
+		if err != nil {
+			return err
+		}
+		for _, stage := range stages {
+			if stage.Opening != 0 || stage.Refund != 1500 || stage.Balance != 1500 {
+				t.Fatalf("credit must go to the original pool: %+v", stage.poolDraftItem)
+			}
+		}
+		if len(stages) != 1 {
+			t.Fatalf("expected only the original pool: %v", stages)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	freeze(credited)
+	refund("2", time.October, 5000)
+	calculate(october, -500)
+}
+
 func TestPracticeScopeUsesSavedGroupAlternatives(t *testing.T) {
 	const role = "DIRECT_REFERRER"
 	payment := paymentInput{ID: 11, Fact: sourceFact{Source: "DCZD", ReferrerID: "seller", SalesCompanyID: "company"}}

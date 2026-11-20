@@ -501,7 +501,12 @@ func practiceCorrectedLines(original []practiceReplayOriginal, revised []draftLi
 		}
 		target[i] = after
 	}
-	return target, len(current) == 0
+	for _, line := range current {
+		if !line.PracticeTierReference {
+			return nil, false
+		}
+	}
+	return target, true
 }
 
 func evaluateOrganizationCorrection(input correctionInput, balance *correctionBalance, unit *pgtype.UUID, amount int64) (correctionEvaluation, error) {

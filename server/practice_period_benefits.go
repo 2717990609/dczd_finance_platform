@@ -574,7 +574,7 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		if err != nil {
 			return err
 		}
-		if total == 0 {
+		if total == 0 && !slices.ContainsFunc(b.Tiers, func(tier practicePeriodRate) bool { return tier.Value > 0 }) {
 			continue
 		}
 		if b.UnitID != "" {
@@ -606,10 +606,11 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 func appendPracticePeriodShare(draft *paymentDraft, line draftLine, share practiceBenefitShare, amounts [2]int64) {
 	for i, payment := range share.payments {
 		net := share.purchase.netAmount(payment)
-		if net == 0 || line.PracticePool != nil && amounts[i] == 0 {
+		if net == 0 || line.PracticePool != nil && amounts[i] == 0 && !line.practiceTierRefund {
 			continue
 		}
 		line.FactID, line.Base, line.Amount = payment.ID, net, amounts[i]
+		line.PracticeTierReference = line.practiceTierRefund && line.Amount == 0
 		draft.Lines = append(draft.Lines, line)
 	}
 }

@@ -337,7 +337,8 @@ func readFinanceHistoryTotals(ctx context.Context, tx pgx.Tx, periodID int64) (f
 	 SELECT coalesce(sum(`+performancePostingMinorSQL+`),0) AS amount,count(*) AS rows
 	 FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id
 	 LEFT JOIN source_order_versions prior ON prior.id=a.prior_refund_version_id WHERE a.period_id=$1
-	), accrued AS (SELECT coalesce(sum(amount_minor),0) AS amount,count(*) AS rows FROM calculation_draft_lines WHERE period_id=$1),
+	), accrued AS (SELECT coalesce(sum(amount_minor),0) AS amount,count(*) AS rows FROM calculation_draft_lines
+	 WHERE period_id=$1 AND NOT practice_tier_reference),
 	 refunds AS (SELECT coalesce(sum(amount_minor),0) AS amount,count(*) AS rows FROM calculation_draft_refunds WHERE period_id=$1),
 	 corrections AS (SELECT coalesce(sum(amount_minor),0) AS amount,count(*) AS rows FROM calculation_draft_corrections WHERE period_id=$1)
 	 SELECT performance.amount,accrued.amount,refunds.amount,corrections.amount,performance.rows,accrued.rows,refunds.rows,corrections.rows

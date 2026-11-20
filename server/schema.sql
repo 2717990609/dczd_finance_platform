@@ -606,6 +606,8 @@ CREATE INDEX IF NOT EXISTS practice_roster_members_enrollment ON practice_roster
 ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS practice_roster_id bigint REFERENCES practice_rosters(id);
 ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS practice_replay_inputs jsonb;
 ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS practice_enrollment_id bigint REFERENCES practice_enrollments(id);
+ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS practice_tier_reference boolean NOT NULL DEFAULT false
+ CHECK (NOT practice_tier_reference OR (amount_minor=0 AND practice_enrollment_id IS NOT NULL AND starts_with(component_type,'period:')));
 ALTER TABLE calculation_draft_issues ADD COLUMN IF NOT EXISTS practice_enrollment_id bigint REFERENCES practice_enrollments(id);
 
 CREATE INDEX IF NOT EXISTS source_order_versions_practice_refund_payment
@@ -1227,7 +1229,8 @@ CREATE OR REPLACE VIEW pool_line_accounts AS
  WHERE l.allocation_owner_id IS NOT NULL;
 
 CREATE OR REPLACE VIEW pool_account_activity AS
- SELECT period_id,unit_id,item_key,scenario_key FROM pool_line_accounts
+ SELECT a.period_id,a.unit_id,a.item_key,a.scenario_key FROM pool_line_accounts a
+ JOIN calculation_draft_lines l ON l.id=a.line_id AND l.amount_minor>0
  UNION ALL
  SELECT r.period_id,a.unit_id,a.item_key,a.scenario_key
  FROM calculation_draft_refunds r JOIN pool_line_accounts a ON a.line_id=r.original_line_id
@@ -1248,7 +1251,7 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
   SELECT 1 FROM (
    SELECT account.unit_id,account.item_key,account.scenario_key,l.amount_minor AS amount
    FROM pool_line_accounts account JOIN calculation_draft_lines l ON l.id=account.line_id
-   WHERE account.period_id=scope_id
+   WHERE account.period_id=scope_id AND l.amount_minor>0
    UNION ALL
    SELECT account.unit_id,account.item_key,account.scenario_key,r.amount_minor
    FROM calculation_draft_refunds r JOIN pool_line_accounts account ON account.line_id=r.original_line_id

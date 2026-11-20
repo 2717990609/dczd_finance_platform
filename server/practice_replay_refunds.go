@@ -154,7 +154,7 @@ func readVerifiedPracticeReplay(ctx context.Context, tx pgx.Tx, classID int64) (
 		return replay, nil, err
 	}
 	before, err := practiceReplayLines(baseline.Lines)
-	if err != nil || len(before) != len(originals) || len(baseline.Performance) != len(replay.posted) {
+	if err != nil || len(baseline.Performance) != len(replay.posted) {
 		return replay, nil, errPracticeRefundReplay
 	}
 	for _, posting := range baseline.Performance {
@@ -172,6 +172,13 @@ func readVerifiedPracticeReplay(ctx context.Context, tx pgx.Tx, classID int64) (
 		}
 		line.proportionalRefund = value.practiceProportionalRefund
 		line.tierRefund = value.practiceTierRefund
+		delete(before, line.practiceReplayLineKey)
+	}
+	for _, line := range before {
+		// Older settlements did not retain zero-value tier references.
+		if !line.PracticeTierReference {
+			return replay, nil, errPracticeRefundReplay
+		}
 	}
 	return replay, originals, nil
 }

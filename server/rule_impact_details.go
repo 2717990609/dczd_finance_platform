@@ -107,7 +107,9 @@ func impactPostings(draft paymentDraft, originals map[int64]ruleImpactPosting) (
 	for _, line := range draft.Lines {
 		posting := ruleImpactPosting{fact: line.FactID, recipient: impactRecipient(line), kind: "accrual", amount: line.Amount}
 		current[paymentKey{line.FactID, line.Component}] = posting
-		postings = append(postings, posting)
+		if !line.PracticeTierReference {
+			postings = append(postings, posting)
+		}
 	}
 	for _, refund := range draft.Refunds {
 		posting := originals[refund.OriginalLineID]

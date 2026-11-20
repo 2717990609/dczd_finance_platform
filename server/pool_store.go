@@ -159,7 +159,7 @@ const poolEntriesSQL = `WITH scope AS (
 ), entries AS (
  SELECT l.unit,l.item,l.scenario,l.name,l.period_id,l.seq,l.id AS source_id,l.amount_minor,
   0 AS kind,l.occurred_at,l.id AS sort_id,false AS practice_distribution,
-  0::bigint AS refunded,0::bigint AS corrected FROM lines l WHERE l.seq IS NOT NULL
+  0::bigint AS refunded,0::bigint AS corrected FROM lines l WHERE l.seq IS NOT NULL AND l.amount_minor>0
  UNION ALL
  SELECT l.unit,l.item,l.scenario,l.name,r.period_id,r.seq,
   CASE WHEN r.amount_minor<0 AND r.practice AND (l.seq IS NULL OR l.seq>r.seq) THEN 0 ELSE l.id END,r.amount_minor,1,v.occurred_at,r.id,false,

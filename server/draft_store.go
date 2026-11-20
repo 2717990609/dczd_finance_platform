@@ -422,6 +422,12 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 
 func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []byte, result paymentDraft) error {
 	rosterID := summary.PracticeRosterID
+	lineCount := 0
+	for _, line := range result.Lines {
+		if !line.PracticeTierReference {
+			lineCount++
+		}
+	}
 	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id,performance_ready,catalog_refunds_ready,practice_replay_inputs,aggregate_predecessor_id)
 	  VALUES($1,nullif($2::bigint,0),1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,true,$12,$13,$14)
 	  ON CONFLICT(period_id) DO UPDATE SET rule_id=excluded.rule_id,version=calculation_drafts.version+1,
@@ -433,7 +439,7 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	  WHERE NOT calculation_drafts.performance_ready OR calculation_drafts.input_digest<>excluded.input_digest
 	   OR calculation_drafts.catalog_refunds_ready<>excluded.catalog_refunds_ready
 	  RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
-		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), result.blockingIssues(), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections),
+		summary.PeriodID, summary.RuleID, digest, result.Total, lineCount, result.blockingIssues(), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections),
 		summary.PracticeRosterID, summary.Catalog, result.practiceReplay, optionalDraftID(result.aggregatePredecessor)).
 		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount, &summary.PracticeRosterID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -569,7 +575,7 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 	return err
 }
 
-var draftLinePageScope = `l.period_id=d.period_id AND l.id>$2
+var draftLinePageScope = `l.period_id=d.period_id AND l.id>$2 AND NOT l.practice_tier_reference
  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `))`
 
 var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
@@ -598,7 +604,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
  'totalMinor',d.total_minor+d.refund_minor+d.correction_minor,'accruedMinor',d.total_minor,
  'refundMinor',d.refund_minor,'refundCount',d.refund_count,'correctionMinor',d.correction_minor,'correctionCount',d.correction_count,
  'scopeLineCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_lines l
-  WHERE l.period_id=d.period_id AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,
+  WHERE l.period_id=d.period_id AND NOT l.practice_tier_reference AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,
  'scopeRefundCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_refunds a
   JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE a.period_id=d.period_id
    AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,

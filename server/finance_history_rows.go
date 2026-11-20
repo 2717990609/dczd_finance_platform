@@ -37,8 +37,10 @@ const financeHistoryRowsSQL = `WITH lines AS MATERIALIZED (SELECT * FROM calcula
  ), rows(section,row_key,value) AS (
   SELECT 'period',id::text,to_jsonb(p) FROM periods p WHERE p.id=$1
   UNION ALL SELECT 'draft',period_id::text,to_jsonb(d) FROM draft d
-  UNION ALL SELECT 'accrual',id::text,to_jsonb(l) FROM lines l
-  UNION ALL SELECT 'originalAccrual',id::text,to_jsonb(l) FROM original_lines l
+  UNION ALL SELECT CASE WHEN practice_tier_reference THEN 'tierReference' ELSE 'accrual' END,id::text,
+   CASE WHEN practice_tier_reference THEN to_jsonb(l) ELSE to_jsonb(l)-'practice_tier_reference' END FROM lines l
+  UNION ALL SELECT 'originalAccrual',id::text,
+   CASE WHEN practice_tier_reference THEN to_jsonb(l) ELSE to_jsonb(l)-'practice_tier_reference' END FROM original_lines l
   UNION ALL SELECT 'performance',source_version_id::text,to_jsonb(a) FROM performance a
   UNION ALL SELECT 'refund',id::text,to_jsonb(r) FROM refunds r
   UNION ALL SELECT 'correction',id::text,to_jsonb(c) FROM corrections c

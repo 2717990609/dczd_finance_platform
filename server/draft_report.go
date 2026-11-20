@@ -17,6 +17,7 @@ const commissionReportPostingsSQL = `
  SELECT d.period_id,l.person_id,l.company_id,l.department_id,l.group_id,0::bigint AS performance,l.amount_minor,0::bigint AS refund,0::bigint AS correction,0::bigint AS allocation,
   CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS beneficiary_kind
  FROM calculation_draft_lines l JOIN selected_draft d USING(period_id)
+ WHERE NOT l.practice_tier_reference
  UNION ALL
  SELECT d.period_id,l.person_id,l.company_id,l.department_id,l.group_id,0,0,r.amount_minor,0,0,
   CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END
