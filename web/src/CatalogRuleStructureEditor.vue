@@ -2,7 +2,7 @@
 import { nextTick, ref, watch } from 'vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
-import { catalogFlatMethods, catalogRateConditionBody, moneyAsMinor } from './rule-component-form'
+import { catalogFlatMethods, catalogPayeeComplete, catalogRateConditionBody, moneyAsMinor } from './rule-component-form'
 
 const props = defineProps({options:Object, component:Object, api:Function, peopleFilters:Object, parseRate:Function})
 const draft = defineModel({type:Object,required:true})
@@ -21,7 +21,8 @@ function conditionLabel(condition) {
     labelFor(props.options.relationships,condition.relationship),percent(condition.rateBps)].join(' · ')
 }
 function itemLabel(item) {
-  const recipient = item.target==='person' ? item.personName : labelFor(props.options.organizations,item.organization)
+  const recipient = item.target==='referrer' ? '订单直接推荐人'
+    : item.target==='person' ? item.personName : labelFor(props.options.organizations,item.organization)
   const standard = item.rows?.length ? item.rows.length+' 条费率条件'
     : item.fixedMinor != null ? (item.fixedMinor/100).toFixed(2)+' 元/笔' : percent(item.rateBps)
   return [item.label,recipient,standard].join(' · ')
@@ -62,8 +63,7 @@ function stage() {
       else draft.value.rateRows.push(change)
     } else {
       const label = staged.label?.trim()
-      if (!label || (staged.target==='person' && (!staged.personId || !staged.role))
-        || (staged.target!=='person' && !staged.organization) || (staged.target==='pool' && !staged.role)) {
+      if (!label || !catalogPayeeComplete(staged)) {
         throw new Error('请填写分项名称，并选好收款对象及适用任职。')
       }
       const item = {label,target:staged.target,role:staged.role,personId:staged.personId,

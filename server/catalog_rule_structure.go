@@ -384,6 +384,11 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 	org := catalogStructureOptionFor(options.Organizations, target.Organization)
 	role := catalogStructureOptionFor(options.Roles, target.Role)
 	switch target.Target {
+	case "referrer":
+		if target.PersonID != 0 || target.Role != "" || target.Organization != "" {
+			return invalid
+		}
+		action.Mode, action.Role = vipOrderReferrerMode, "REFERRAL"
 	case "person":
 		if target.Organization != "" || !role.Personal || people[target.PersonID] == "" {
 			return invalid

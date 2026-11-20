@@ -5,7 +5,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
-import { catalogFlatMethods, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogFlatMethods, catalogPayeeComplete, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
@@ -43,8 +43,8 @@ const rateColumns = [
 const columns = computed(() => sheet.value?.mayPublish && !props.applied ? [...rateColumns,{title:'操作',key:'operation',width:142}] : rateColumns)
 const component = computed(() => sheet.value?.components.find(item => item.itemKey === selected.value))
 const targetKind = computed(() => targetEdits.value.get(selected.value)?.target || component.value?.targetKind)
-const targetKindLabels = {seller:'订单上的成交销售',person:'指定个人',company:'指定公司',pool:'团队池'}
-const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池'}
+const targetKindLabels = {seller:'订单上的成交销售',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人'}
+const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人'}
 const teamSplit = computed(() => component.value?.teamSplit)
 const splitRows = computed(() => {
   const split = teamSplit.value
@@ -161,8 +161,7 @@ function beginTarget() {
 }
 function stageTarget() {
   const payee = targetDraft.value
-  if (payee.target==='person' && (!payee.personId || !payee.role) ||
-    payee.target!=='person' && !payee.organization || payee.target==='pool' && !payee.role) {
+  if (!catalogPayeeComplete(payee)) {
     error.value = '请选择收款对象并填写对应岗位。'
     return
   }

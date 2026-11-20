@@ -19,6 +19,9 @@ export const salesStatus = {
 export const salesRoles = {SALES:'成交人',DCAI_GROUP_LEAD:'小组组长',DCAI_SERVICE:'服务岗',DCAI_TEAM_HEAD:'团队负责人'}
 export const benefitStatus = {
   INACTIVE:'付款时未任职',
+  REFERRER_SOURCE_CONFLICT:'订单直接推荐人和锁粉记录冲突',
+  REFERRER_PERSON_CONFLICT:'推荐人账号关联到多个人员',
+  REFERRER_PERSON_MISSING:'推荐人账号未关联到人员',
   BENEFIT_CONTEXT_MISSING:'核算所需的组织任职待补',
   BENEFIT_PERSON_MISSING:'受益人待核',
   BENEFIT_ORG_MISSING:'受益组织待核',

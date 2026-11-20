@@ -31,6 +31,8 @@ type vipBenefitPolicy struct {
 	actions []vipBenefitAction
 }
 
+const vipOrderReferrerMode = "ORDER_REFERRER"
+
 type vipBenefitOrganization struct {
 	Party, Unit, Name string
 }
@@ -117,6 +119,8 @@ func (a vipBenefitAction) validTarget() bool {
 	switch a.Mode {
 	case "PARTY":
 		return !poolFields && (a.Designated == "") != (a.Company == "")
+	case vipOrderReferrerMode:
+		return !poolFields && a.Designated == "" && a.Company == ""
 	case "TEAM_POOL":
 		return a.Designated == "" && a.Company == "" && a.PoolParty != "" && a.PoolUnit != "" &&
 			a.PoolCode != "" && a.PoolName != "" && a.OwnerRole != ""
@@ -139,7 +143,9 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 		switch {
 		case req.Paid == 0:
 			line.Status = "ZERO"
-		case !data.BenefitReady:
+		case a.Mode == vipOrderReferrerMode && req.Referrer.Party == "" && req.Referrer.Issue == "":
+			line.Status = "ZERO"
+		case !data.BenefitReady && a.Mode != vipOrderReferrerMode:
 			line.Status = "BENEFIT_CONTEXT_MISSING"
 		case issue != "":
 			line.Status = issue
@@ -157,6 +163,9 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 }
 
 func (a vipBenefitAction) targetKind() string {
+	if a.Mode == vipOrderReferrerMode {
+		return "referrer"
+	}
 	if a.Mode == "TEAM_POOL" {
 		return "pool"
 	}
@@ -186,6 +195,16 @@ func (a vipBenefitAction) quote(req vipSalesRequest, sourceIssue string) (rate, 
 
 func bindVIPBenefit(line *vipBenefitPart, a vipBenefitAction, req vipSalesRequest, data vipRuntimeData) {
 	line.Status = "CALCULATED"
+	if a.Mode == vipOrderReferrerMode {
+		line.Kind = "person"
+		if req.Referrer.Issue != "" {
+			line.Status = req.Referrer.Issue
+		} else {
+			line.Party = req.Referrer.Party
+			line.Name = data.People[line.Party]
+		}
+		return
+	}
 	if a.Designated != "" {
 		name := data.People[a.Designated]
 		if name == "" {

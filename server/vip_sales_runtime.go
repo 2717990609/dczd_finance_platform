@@ -76,6 +76,8 @@ type vipRuntimeData struct {
 	vipSalesData
 }
 
+const vipReferralParticipantsPath = `'$.participants[*] ? (@.role == "DIRECT_PID_USER" || @.role == "LOCK_DIRECT_SHARE_USER")'`
+
 // The directory fingerprint is independent of which people are needed by the
 // current payments. Only reusable draft quotes require this fingerprint.
 const vipRuntimeSQL = `WITH scope AS (
@@ -83,9 +85,16 @@ const vipRuntimeSQL = `WITH scope AS (
  JOIN product_catalog_settings cfg ON cfg.product_id=pro.id
  LEFT JOIN catalog_sales_context c ON c.source=cfg.source_system
  WHERE p.id=$1 AND cfg.source_system='DCAI'
+), definitions AS MATERIALIZED (
+ SELECT v.source_id,v.definition FROM unnest($3::text[]) r(id) JOIN product_rule_versions v ON v.source_id=r.id::uuid
 ), claims AS MATERIALIZED (
- SELECT source_version_id,sales_claims FROM source_order_classifications
- WHERE source_version_id=ANY($2::bigint[]) AND jsonb_typeof(sales_claims)='array'
+ SELECT c.source_version_id,c.sales_claims || coalesce((
+  SELECT jsonb_agg(jsonb_build_object('role',a->>'role','user',a->>'userId') ORDER BY a->>'role',a->>'userId')
+  FROM jsonb_path_query(v.fact,` + vipReferralParticipantsPath + `) a
+  WHERE EXISTS(SELECT 1 FROM definitions d WHERE d.definition->'benefit_actions' @> '[{"beneficiary_mode":"` + vipOrderReferrerMode + `"}]')
+ ),'[]') AS sales_claims
+ FROM source_order_classifications c JOIN source_order_versions v ON v.id=c.source_version_id
+ WHERE c.source_version_id=ANY($2::bigint[]) AND jsonb_typeof(c.sales_claims)='array'
 ), keys AS MATERIALIZED (
  SELECT DISTINCT line->>'user' AS person,line->>'company' AS company
  FROM claims CROSS JOIN LATERAL jsonb_array_elements(sales_claims) line
@@ -114,8 +123,6 @@ const vipRuntimeSQL = `WITH scope AS (
  SELECT ` + vipPersonKey + ` AS person,p.id,a.role,a.scope,a.scope_key AS key,a.valid_from AS "from",a.valid_to AS "to"
  FROM catalog_current_sales_appointments a JOIN people p ON p.id=a.person_id CROSS JOIN scope s
  WHERE a.source='DCAI' AND (a.scope='ORGANIZATION_UNIT' OR a.scope='PRODUCT' AND a.scope_key=s.code OR a.scope='PROJECT' AND a.scope_key=s.project_code)
-), definitions AS MATERIALIZED (
- SELECT v.source_id,v.definition FROM unnest($3::text[]) r(id) JOIN product_rule_versions v ON v.source_id=r.id::uuid
 ), named_people AS (
  SELECT key#>>'{}' AS key FROM definitions
  CROSS JOIN LATERAL jsonb_path_query(definition,'$.benefit_actions[*].designated_party_id') key
@@ -224,6 +231,7 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 	if !ok {
 		return req, "SALES_SOURCE_MISSING"
 	}
+	req.Referrer = d.orderReferrer(src, sale.PaidAt)
 	claim, issue := vipSellerClaim(src)
 	if issue != "" {
 		return req, issue
@@ -267,6 +275,36 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 		req.Category = &category.Value
 	}
 	return req, ""
+}
+
+type vipOrderReferrer struct{ Party, Issue string }
+
+func (d vipRuntimeData) orderReferrer(claims []vipClaim, at time.Time) vipOrderReferrer {
+	user := ""
+	for _, candidate := range claims {
+		if candidate.Role != "DIRECT_PID_USER" && candidate.Role != "LOCK_DIRECT_SHARE_USER" || candidate.User == "" {
+			continue
+		}
+		if user != "" && user != candidate.User {
+			return vipOrderReferrer{Issue: "REFERRER_SOURCE_CONFLICT"}
+		}
+		user = candidate.User
+	}
+	if user == "" {
+		return vipOrderReferrer{}
+	}
+	party, conflict := resolveVIPLink(d.Users, user, at)
+	if party == "" && !conflict {
+		party, conflict = resolveVIPLink(d.DirectoryUsers, user, at)
+	}
+	switch {
+	case conflict:
+		return vipOrderReferrer{Issue: "REFERRER_PERSON_CONFLICT"}
+	case party == "" || d.PersonIDs[party] == 0:
+		return vipOrderReferrer{Issue: "REFERRER_PERSON_MISSING"}
+	default:
+		return vipOrderReferrer{Party: party}
+	}
 }
 
 func applyVIPQuotes(items []catalogPaymentMatch, data vipRuntimeData) {

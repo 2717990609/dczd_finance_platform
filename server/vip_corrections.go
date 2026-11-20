@@ -29,20 +29,23 @@ FROM booked b JOIN periods target ON target.id=$1
 JOIN source_order_versions original ON original.id=b.source_version_id
 LEFT JOIN source_order_classifications oc ON oc.source_version_id=original.id
 JOIN LATERAL (
- SELECT v.id,v.fact,v.updated_at,lc.sales_claims,lc.entity_type,lc.business_key,lc.classifier
+ SELECT l.id,v.definition->'benefit_actions' @> '[{"beneficiary_mode":"` + vipOrderReferrerMode + `"}]' AS has_referral
+ FROM calculation_draft_lines l JOIN product_rule_versions v ON v.source_id=l.catalog_rule_id
+ WHERE l.period_id=b.period_id AND l.source_version_id=original.id ORDER BY l.id LIMIT 1
+) anchor ON true
+JOIN LATERAL (
+ SELECT v.id,v.fact,v.updated_at,lc.sales_claims,lc.entity_type,lc.business_key,lc.classifier,
+  CASE WHEN anchor.has_referral THEN jsonb_path_query_array(v.fact,` + vipReferralParticipantsPath + `) END AS referrals
  FROM source_order_versions v LEFT JOIN source_order_classifications lc ON lc.source_version_id=v.id
  WHERE ` + correctionOrderIdentity + ` AND (v.updated_at,v.id)>(original.updated_at,original.id)
  ORDER BY v.updated_at DESC,v.id DESC LIMIT 1
 ) latest ON true
-JOIN LATERAL (
- SELECT l.id FROM calculation_draft_lines l WHERE l.period_id=b.period_id AND l.source_version_id=original.id
- AND l.catalog_rule_id IS NOT NULL ORDER BY l.id LIMIT 1
-) anchor ON true
 LEFT JOIN LATERAL (
  SELECT v.id,v.updated_at FROM source_order_versions v
  LEFT JOIN source_order_classifications c ON c.source_version_id=v.id
  WHERE ` + correctionOrderIdentity + ` AND (v.updated_at,v.id)<(latest.updated_at,latest.id)
- AND c.sales_claims IS DISTINCT FROM latest.sales_claims
+ AND (c.sales_claims,CASE WHEN anchor.has_referral THEN jsonb_path_query_array(v.fact,` + vipReferralParticipantsPath + `) END)
+  IS DISTINCT FROM (latest.sales_claims,latest.referrals)
  ORDER BY v.updated_at DESC,v.id DESC LIMIT 1
 ) previous ON true
 JOIN LATERAL (
@@ -60,7 +63,9 @@ LEFT JOIN LATERAL (
     AND i.code<>'CORRECTION_REFUND_WAITING'
  ) active JOIN periods p ON p.id=active.period_id
  LEFT JOIN source_order_classifications ac ON ac.source_version_id=active.source_version_id
- WHERE ac.sales_claims IS NOT DISTINCT FROM latest.sales_claims
+ JOIN source_order_versions av ON av.id=active.source_version_id
+ WHERE (ac.sales_claims,CASE WHEN anchor.has_referral THEN jsonb_path_query_array(av.fact,` + vipReferralParticipantsPath + `) END)
+  IS NOT DISTINCT FROM (latest.sales_claims,latest.referrals)
  AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=active.period_id)
  ORDER BY p.starts_on,p.id LIMIT 1
 ) reserved ON true
@@ -79,7 +84,8 @@ LEFT JOIN LATERAL (
  WHERE l.source_version_id=original.id AND l.period_id=b.period_id
  ORDER BY s.id DESC,c.id DESC LIMIT 1
 ) confirmed ON timing.received_later
-WHERE (oc.sales_claims IS DISTINCT FROM latest.sales_claims OR EXISTS(
+WHERE ((oc.sales_claims,CASE WHEN anchor.has_referral THEN jsonb_path_query_array(original.fact,` + vipReferralParticipantsPath + `) END)
+ IS DISTINCT FROM (latest.sales_claims,latest.referrals) OR EXISTS(
  SELECT 1 FROM calculation_draft_lines l JOIN calculation_draft_corrections c ON c.original_line_id=l.id
  WHERE l.source_version_id=original.id AND l.period_id=b.period_id
 ))

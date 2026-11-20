@@ -129,3 +129,26 @@ func TestVIPFixedBenefitUsesRecognizedBalanceAfterPriorRefund(t *testing.T) {
 		}
 	}
 }
+
+func TestVIPOrderReferrerComesFromReferralRoles(t *testing.T) {
+	data := vipRuntimeData{DirectoryUsers: []vipLink{{Key: "referrer", Value: "person:2"}}, PersonIDs: map[string]int64{"person:2": 2}}
+	seller := vipClaim{Role: "PID_USER", User: "seller"}
+	direct := vipClaim{Role: "DIRECT_PID_USER", User: "referrer"}
+	lock := vipClaim{Role: "LOCK_DIRECT_SHARE_USER", User: "referrer"}
+	for _, tc := range []struct {
+		name   string
+		claims []vipClaim
+		result vipOrderReferrer
+	}{
+		{"seller only", []vipClaim{seller}, vipOrderReferrer{}},
+		{"order referrer", []vipClaim{seller, direct}, vipOrderReferrer{Party: "person:2"}},
+		{"locked referrer", []vipClaim{seller, lock}, vipOrderReferrer{Party: "person:2"}},
+		{"same person in both records", []vipClaim{seller, direct, lock}, vipOrderReferrer{Party: "person:2"}},
+		{"conflicting source records", []vipClaim{seller, direct, {Role: lock.Role, User: "other"}}, vipOrderReferrer{Issue: "REFERRER_SOURCE_CONFLICT"}},
+		{"unlinked source account", []vipClaim{seller, {Role: direct.Role, User: "other"}}, vipOrderReferrer{Issue: "REFERRER_PERSON_MISSING"}},
+	} {
+		if got := data.orderReferrer(tc.claims, time.Now()); got != tc.result {
+			t.Errorf("%s got %+v, wanted %+v", tc.name, got, tc.result)
+		}
+	}
+}

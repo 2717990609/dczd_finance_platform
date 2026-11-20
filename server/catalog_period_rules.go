@@ -112,7 +112,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 				action.PoolUnit = directUnit
 			}
 		}
-		if action.Item == "" || items[action.Item] || action.Label == "" || !action.validTarget() ||
+		if action.Item == "" || items[action.Item] || action.Label == "" || !action.validTarget() || action.Mode == vipOrderReferrerMode ||
 			action.Type != "TIER_RATE" || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" ||
 			!validCatalogPeriodTiers(action.Tiers) {
 			return result, errCatalogRateUnavailable

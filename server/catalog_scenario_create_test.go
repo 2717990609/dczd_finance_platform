@@ -26,8 +26,9 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		 VALUES(gen_random_uuid(),950,'DCAI','VIP','VIP_ORDER','ai_vip_order','dcai:vip:new','dcai.vip-lifecycle.v1','FIRST','新报 SKU',1,'2026-09-01','2026-11-01')`,
 		`INSERT INTO periods(id,product_id,name,ordinal,starts_on,ends_on,calendar_month) OVERRIDING SYSTEM VALUE
 		 VALUES(951,950,'十月',202610,'2026-09-25','2026-10-24','2026-10-01')`,
-		`INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES(9501,'成交销售样本')`,
-		`INSERT INTO identity_mappings(person_id,source,external_id,valid_from) VALUES(9501,'DCAI','seller','2026-09-01')`,
+		`INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES(9501,'成交销售样本'),(9502,'原推荐人'),(9503,'更正推荐人')`,
+		`INSERT INTO identity_mappings(person_id,source,external_id,valid_from) VALUES
+		 (9501,'DCAI','seller','2026-09-01'),(9502,'DCAI','referrer','2026-09-01'),(9503,'DCAI','replacement','2026-09-01')`,
 		`INSERT INTO catalog_sales_context(source,captured_at,snapshot_digest,benefit_ready)
 		 VALUES('DCAI','2026-11-01',sha256('fixture'::bytea),true)`,
 		`INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,valid_from,observed_at)
@@ -49,7 +50,8 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		 VALUES('DCAI','10000000-0000-4000-8000-000000000954','10000000-0000-4000-8000-000000000953','2026-11-01')`,
 		`WITH payment AS (INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
 		 VALUES('DCAI','101','','ai_vip_order:101','1','ORDER_PAID','2026-10-02T00:00Z','2026-10-02T00:00Z',
-		 '{"domain":"VIP","sourceKey":"new","paymentId":"101","amountMinor":10000}'),
+		 '{"domain":"VIP","sourceKey":"new","orderId":"101","paymentId":"101","amountMinor":10000,"occurredAt":"2026-10-02T00:00:00Z",
+		 "participants":[{"role":"DIRECT_PID_USER","userId":"referrer"}]}'),
 		 ('DCAI','102','','ai_vip_order:102','1','ORDER_PAID','2026-10-02T00:00Z','2026-10-02T00:00Z',
 		 '{"domain":"VIP","sourceKey":"new","paymentId":"102","amountMinor":10000}') RETURNING id,order_id)
 		 INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier,sales_claims)
@@ -76,7 +78,8 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		 "salesRates":[{"company":"ANY","categoryIds":["10000000-0000-4000-8000-000000000957","10000000-0000-4000-8000-000000000958"],"relationship":"ANY","rateBps":1000},
 		 {"companyIds":["10000000-0000-4000-8000-000000000953","10000000-0000-4000-8000-000000000955"],"relationship":"ANY","rateBps":1250}]},
 		 "newItems":[{"label":"公司安排","target":"company","organization":"10000000-0000-4000-8000-000000000954","rateBps":250},
-		 {"label":"固定交付","target":"company","organization":"10000000-0000-4000-8000-000000000954","fixedMinor":501}]}`))
+		 {"label":"固定交付","target":"company","organization":"10000000-0000-4000-8000-000000000954","fixedMinor":501},
+		 {"label":"推荐提成","target":"referrer","rateBps":1000}]}`))
 		r.Header.Set("Authorization", "Bearer "+token)
 		r.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
@@ -94,7 +97,8 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		t.Fatalf("the new SKU must reach regular trial calculation: queued=%t supported=%t err=%v", queued, supported, err)
 	}
 	sheet, err := s.catalogRuleRateSheet(ctx, published.ID)
-	if err != nil || len(sheet.Components) != 3 || len(sheet.Components[0].Rows) != 2 || sheet.Components[0].Rows[1].Rate != 1250 ||
+	if err != nil || len(sheet.Components) != 4 || len(sheet.Components[0].Rows) != 2 ||
+		sheet.Components[0].Rows[1].Rate != 1250 || sheet.Components[3].TargetKind != "referrer" ||
 		sheet.Components[0].Rows[0].Category != "类别甲、类别乙" || sheet.Components[0].Rows[1].Company != "收款公司样本、特例乙" {
 		t.Fatalf("the first rule must be editable: %+v %v", sheet, err)
 	}
@@ -108,7 +112,7 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result := trial.(draftSummary); result.Total != 3752 || result.LineCount != 6 || result.IssueCount != 0 {
+	if result := trial.(draftSummary); result.Total != 4752 || result.LineCount != 7 || result.IssueCount != 0 {
 		t.Fatalf("trial must apply the company exception for one order and category default for the other: %+v", result)
 	}
 	cut := time.Date(2026, 10, 1, 12, 0, 0, 0, shanghai)
@@ -130,7 +134,7 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		t.Fatal(err)
 	}
 	result := trial.(draftSummary)
-	if result.Total != 3206 || result.LineCount != 4 || result.IssueCount != 0 {
+	if result.Total != 4206 || result.LineCount != 5 || result.IssueCount != 0 {
 		t.Fatalf("editing the special scope must let the removed company inherit its category rate: %+v", result)
 	}
 	if _, err := db.Exec(ctx, `UPDATE products SET settlement_enabled=true WHERE id=950`); err != nil {
@@ -177,8 +181,52 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := refunded.(draftSummary); got.RefundTotal != -802 || got.RefundCount != 2 || got.IssueCount != 0 {
+	if got := refunded.(draftSummary); got.RefundTotal != -1302 || got.RefundCount != 3 || got.IssueCount != 0 {
 		t.Fatalf("a half refund must recover 302 cents of the original 603-cent award in the refund period: %+v", got)
+	}
+	originalAmount := int64(10000)
+	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		_, err := storeSourceFactsFrom(ctx, tx, []sourceFact{{
+			Source: "DCAI", Domain: "VIP", SourceKey: "new", Kind: "ORDER_PAID", OrderID: "101", PaymentID: "101",
+			RecordKey: "ai_vip_order:101", Version: "2", AmountMinor: &originalAmount,
+			OccurredAt: time.Date(2026, 10, 2, 0, 0, 0, 0, time.UTC), UpdatedAt: refundAt.Add(time.Hour),
+			Classification: sourceClassification{"VIP_ORDER", "dcai:vip:new", "dcai.vip-lifecycle.v1"},
+			VIPClaims:      []vipClaim{{Role: "PID_USER", User: "seller", Company: "seller-company", Relationship: "DIRECT"}},
+			Participants:   []sourceParticipant{{Role: "DIRECT_PID_USER", UserID: "replacement"}},
+		}}, s.dcaiSourceKey())
+		if err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `UPDATE source_order_versions SET received_at=$1 WHERE source='DCAI' AND order_id='101' AND version='2'`, refundAt.Add(time.Hour))
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	corrected, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: postingPeriod})
+	if err != nil || corrected.(draftSummary).IssueCount != 1 || corrected.(draftSummary).CorrectionTotal != 500 {
+		var issue string
+		_ = db.QueryRow(ctx, "SELECT code FROM calculation_draft_issues WHERE period_id=$1 LIMIT 1", postingPeriod).Scan(&issue)
+		t.Fatalf("referrer-only correction may not disturb the other parts: %+v %s %v", corrected, issue, err)
+	}
+	var recoveryLine int64
+	if err := db.QueryRow(ctx, `SELECT correction_line_id FROM calculation_draft_issues
+	 WHERE period_id=$1 AND code='CORRECTION_RECOVERY_PENDING' AND recovery_person_id=9502 AND recovery_minor=-500`,
+		postingPeriod).Scan(&recoveryLine); err != nil {
+		t.Fatalf("expected recovery of the original referrer's unrefunded balance: %v", err)
+	}
+	if _, err := db.Exec(ctx, storeCorrectionRecoverySQL, recoveryLine, 9502, "recover", "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	corrected, err = s.recalculateDraft(ctx, calculateDraftInput{PeriodID: postingPeriod})
+	if err != nil || corrected.(draftSummary).IssueCount != 0 || corrected.(draftSummary).CorrectionCount != 2 {
+		t.Fatalf("confirmation of recovery should post both sides of the referrer change: %+v %v", corrected, err)
+	}
+	var debit, credit int64
+	if err := db.QueryRow(ctx, `SELECT coalesce(sum(amount_minor) FILTER(WHERE person_id=9502),0),
+	 coalesce(sum(amount_minor) FILTER(WHERE person_id=9503),0)
+	 FROM calculation_draft_corrections WHERE period_id=$1`, postingPeriod).Scan(&debit, &credit); err != nil ||
+		debit != -500 || credit != 500 {
+		t.Fatalf("expected the original referrer's unrefunded 500 cents to move to the corrected referrer: %d %d %v", debit, credit, err)
 	}
 	if duplicate := post(950); duplicate.Code != 409 {
 		t.Fatalf("duplicate rule must be rejected: %d %s", duplicate.Code, duplicate.Body)

@@ -27,6 +27,16 @@ export function catalogRateConditionBody(row) {
     ...(row.categoryIds?.length ? {categoryIds:row.categoryIds} : {})}
 }
 
+export function catalogPayeeComplete(payee) {
+  switch (payee.target) {
+    case 'referrer': return true
+    case 'person': return !!(payee.personId && payee.role)
+    case 'company': return !!payee.organization
+    case 'pool': return !!(payee.organization && payee.role)
+    default: return false
+  }
+}
+
 export function ruleComponentLabel(component, optionLabel) {
   if (component.companySales?.label != null) return component.companySales.label.trim() || '未命名收款安排'
   const label = component.periodBenefit?.label

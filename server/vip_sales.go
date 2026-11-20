@@ -315,6 +315,7 @@ type vipSalesRequest struct {
 	Category                                               *string // Empty when explicitly unclassified, nil without a history record.
 	Paid, OriginalPaid                                     int64
 	At                                                     time.Time
+	Referrer                                               vipOrderReferrer
 }
 
 type vipSalesPart struct {
