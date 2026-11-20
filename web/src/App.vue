@@ -97,6 +97,7 @@ const drawer = ref('')
 const tab = ref('main')
 const draft = ref({})
 const filter = ref('')
+const identityAccount = ref()
 const sourceFilter = ref('')
 const olderThan = ref('')
 const pageStack = ref([])
@@ -139,6 +140,7 @@ const visibleProducts = computed(() => {
   return term ? scopedProducts.value.filter(p => (p.name+' '+p.code).toLowerCase().includes(term)) : scopedProducts.value
 })
 const peopleOptions = computed(() => data.value.people.map(p => ({value:p.id,label:p.name})))
+const identityPeopleOptions = computed(() => data.value.people.map(p => ({value:p.id,label:p.name+' · '+p.id})))
 const classRuleDirectory = ref()
 const classPeopleOptions = computed(() => classRuleDirectory.value?.people.map(person=>({value:person.id,label:person.name})) || peopleOptions.value)
 const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({value:unit.id,label:unit.name})) || [])
@@ -292,12 +294,17 @@ function ratePublished(result) {
 const mainRows = computed(() => {
   const key = tab.value === 'mapping' ? 'mappings' : tab.value === 'identity' ? 'identities' : current.value
   const result = key === 'rules' ? [...data.value.rules,...data.value.catalogRules] : data.value[key]
-  const rows = usesProductScope.value && productScope.value
+  let rows = usesProductScope.value && productScope.value
     ? result.filter(row => (key === 'products' ? row.id : row.productId) === productScope.value)
     : result
+  if (key==='identities' && identityAccount.value) {
+    const {source,externalId} = identityAccount.value
+    rows = rows.filter(row=>row.source===source && row.externalId===externalId)
+  }
   if (current.value === 'orders' || !filter.value.trim()) return rows
   const q = filter.value.trim().toLowerCase()
-  return rows.filter(row => Object.values(row).some(value => typeof value === 'string' && value.toLowerCase().includes(q)))
+  return rows.filter(row => Object.values(row).some(value => typeof value === 'string' && value.toLowerCase().includes(q))
+    || key==='people' && String(row.id)===q)
 })
 const columns = computed(() => {
   const values = {
@@ -308,7 +315,8 @@ const columns = computed(() => {
       ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',220],['操作','ruleAction',160]],
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
     person:[['人员名称','name'],['人员 ID','id']],
-    identity:[['归属人员','personName'],['业务来源','source'],['来源人员 ID','externalId'],['生效时间','validFrom'],['结束时间','validTo']],
+    identity:[['归属人员','personName',128],['业务来源','source',112],['来源人员 ID','externalId',164],
+      ['生效时间','validFrom',145],['结束时间','validTo',145],['操作','identityAction',192]],
   }
   return values[actions.value].map(([title,dataIndex,width]) => ({title,dataIndex,key:dataIndex,width}))
 })
@@ -338,6 +346,10 @@ async function refresh(reloadOptions = false) {
   if (unitScope.value) params.set('unitId',unitScope.value)
   const sections = {settlement:['products','periods'], monthly:['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
+  if (requests.identities && identityAccount.value) {
+    const {source,externalId} = identityAccount.value
+    requests.identities += '?'+new URLSearchParams({source,externalId})
+  }
   if (requests.catalogRules) requests.catalogRules = '/rule-catalog'
   if (requests.practiceCountOpenings) requests.practiceCountOpenings = '/practice-count-openings'
   if (!wholeWorkspace.value) delete requests.people
@@ -362,6 +374,23 @@ async function refresh(reloadOptions = false) {
     } else globalError.value ||= result.reason.message
   })
   loading.value = false
+}
+function showIdentityHistory({source,externalId}) {
+  identityAccount.value = {source,externalId,previousSearch:filter.value}
+  filter.value = ''
+  refresh()
+}
+function showAllIdentities() {
+  filter.value = identityAccount.value?.previousSearch || ''
+  identityAccount.value = undefined
+  refresh()
+}
+function changeListTab() {
+  filter.value = ''
+  if (identityAccount.value) {
+    identityAccount.value = undefined
+    refresh()
+  }
 }
 function refreshWorkspace() {
   refresh(true)
@@ -417,6 +446,7 @@ function changeRoute() {
     productScope.value=undefined
   }
   tab.value = 'main'
+  identityAccount.value = undefined
   filter.value = ''
   sourceFilter.value = ''
   olderThan.value = ''
@@ -452,6 +482,7 @@ function clearWorkspace() {
   globalError.value = ''
   notice.value = ''
   filter.value = ''
+  identityAccount.value = undefined
   sourceFilter.value = ''
   olderThan.value = ''
   pageStack.value = []
@@ -579,6 +610,9 @@ function open(kind, row) {
     draft.value.sourceConfigured = row?.sourceConfigured
   }
   if (kind === 'reportMonth') draft.value = {periodId:row.id, periodName:row.name, reportMonth:row.reportMonthOverride || ''}
+  if (kind === 'identity' && row) {
+    draft.value = {source:row.source,externalId:row.externalId,previousOwner:row}
+  }
   if (kind === 'rule') {
     if (row) {
       draft.value = {productId:row.productId, label:row.label, copiedFrom:row.version,
@@ -774,7 +808,8 @@ async function save() {
     const result = await api(paths[kind],{method:'POST',body:JSON.stringify(payload)})
     if (issuedFor!==sessionRequest) return
     notice.value = kind === 'pull' ? '同步完成，读取 '+result.facts+' 条业务记录，新增 '+result.newVersions+' 个版本。'
-      : kind === 'rule' ? '规则 v'+result.version+' 已保存。' : '保存成功。'
+      : kind === 'rule' ? '规则 v'+result.version+' 已保存。'
+      : kind === 'identity' ? '来源账号归属已保存。' : '保存成功。'
     drawer.value = ''
     rulePreview.value = undefined
     if (kind === 'pull') {
@@ -867,7 +902,7 @@ async function save() {
           <div class="workspace-page-title">
             <h1>{{ active.title }}</h1>
             <a v-if="periodFromMonthly" class="workspace-return" href="#monthly"><LeftOutlined aria-hidden="true"/>返回月度汇总</a>
-            <div v-if="actions && canOpenAction" class="topbar-actions">
+            <div v-if="actions && canOpenAction && !identityAccount" class="topbar-actions">
               <a v-if="orderSyncReturnPeriod" class="workspace-return" :href="'#settlement?periodId='+orderSyncReturnPeriod+'&view=review'"><LeftOutlined aria-hidden="true"/>返回结算核对</a>
               <a-button type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
             </div>
@@ -913,17 +948,28 @@ async function save() {
           ref="orderSync" :api="api" :streams="syncStreams" :format-time="formatTime" :target="orderSyncTarget" @updated="refresh()"/>
         <section class="records">
           <div class="records-head">
-            <a-tabs v-if="current==='products'||current==='people'" v-model:active-key="tab" @change="filter=''">
+            <a-tabs v-if="current==='products'||current==='people'" v-model:active-key="tab" @change="changeListTab">
               <a-tab-pane key="main" :tab="current==='products'?'产品列表':'人员列表'"/>
               <a-tab-pane :key="current==='products'?'mapping':'identity'" :tab="current==='products'?'来源映射':'映射历史'"/>
             </a-tabs>
             <h2 v-else>{{ {periods:'期次列表',rules:'规则列表',orders:'订单业务记录'}[current] }}</h2>
             <div class="search">
-              <a-input-search v-model:value="filter" :placeholder="current==='orders'?'输入原订单 ID':'在当前列表中搜索'" :aria-label="current==='orders'?'原订单 ID':'搜索列表'" allow-clear @search="current==='orders'&&resetOrders()"/>
+              <a-input-search v-model:value="filter" :placeholder="current==='orders'?'输入原订单 ID':current==='people'
+                  ? (tab==='identity'?'搜索归属人员或来源账号':'搜索姓名或人员 ID') : '在当前列表中搜索'"
+                :aria-label="current==='orders'?'原订单 ID':'搜索列表'" allow-clear @search="current==='orders'&&resetOrders()"/>
             </div>
           </div>
+          <section v-if="identityAccount" class="identity-scope" aria-label="来源账号">
+            <div>
+              <span>{{ sourceLabel(identityAccount.source) }}</span>
+              <strong>{{ identityAccount.externalId }}</strong>
+            </div>
+            <a-button size="small" @click="showAllIdentities">返回全部映射</a-button>
+          </section>
           <div class="table-container">
-            <a-table :columns="columns" :data-source="mainRows" :loading="loading" row-key="id" :pagination="current==='orders'?false:{pageSize:12,showSizeChanger:false}" :scroll="{x:tableWidth}">
+            <a-table :columns="columns" :data-source="mainRows" :loading="loading" row-key="id"
+              :pagination="current==='orders'?false:{pageSize:12,showSizeChanger:false,hideOnSinglePage:current==='people'}"
+              :scroll="{x:tableWidth}">
               <template #bodyCell="{ column, record, text }">
                 <a v-if="column.key==='name' && current==='periods'" :href="'#settlement?periodId='+record.id">{{ text }}</a>
                 <template v-else-if="column.key==='name'||column.key==='label'">
@@ -931,6 +977,10 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ optionLabel('periodMode',text) }}</a-tag></template>
                 <template v-else-if="column.key==='mappingCount'">{{ data.mappings.filter(x=>x.productId===record.id).length }}</template>
+                <a-space v-else-if="column.key==='identityAction'" :size="0">
+                  <a-button v-if="!identityAccount" type="link" size="small" @click="showIdentityHistory(record)">查看账号历史</a-button>
+                  <a-button v-if="!record.validTo && configurationReady" type="link" size="small" @click="open('identity',record)">变更归属</a-button>
+                </a-space>
                 <template v-else-if="column.key==='productAction'">
                   <div class="product-links">
                     <a :href="'#periods?productId='+record.id" :aria-label="record.name+' 的核算期次'">核算期次</a>
@@ -1000,7 +1050,7 @@ async function save() {
                 <template v-else-if="['occurredAt','validFrom','validTo'].includes(column.key)">{{ formatTime(text) }}</template>
               </template>
               <template #emptyText>
-                <div class="empty"><a-empty :image="undefined" :description="filter ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter && configurationReady && canOpenAction" @click="open(actions)">{{ titles[actions] }}</a-button></div>
+                <div class="empty"><a-empty :image="undefined" :description="filter ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter && !identityAccount && configurationReady && canOpenAction" @click="open(actions)">{{ titles[actions] }}</a-button></div>
               </template>
             </a-table>
           </div>
@@ -1012,7 +1062,8 @@ async function save() {
     </div>
   </div>
   <a-drawer v-if="active && !sessionError && !sessionChecking && !loginRequested" :open="Boolean(drawer)"
-    :title="rulePreview ? '预览分润规则' : drawer==='rule' && draft.copiedFrom ? '复制分润规则' : titles[drawer]"
+    :title="rulePreview ? '预览分润规则' : drawer==='rule' && draft.copiedFrom ? '复制分润规则'
+      : drawer==='identity' && draft.previousOwner ? '变更来源账号归属' : titles[drawer]"
     :width="drawer==='rule' ? 'min(620px, 100vw)' : 'min(510px, 100vw)'"
     :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="close">
     <div v-if="formError" ref="formFeedback" tabindex="-1">
@@ -1034,7 +1085,10 @@ async function save() {
         </a-form-item>
       </template>
       <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='rule' ? ruleProductOptions : productOptions" :disabled="Boolean(draft.copiedFrom)"/></a-form-item>
-      <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" :label="drawer==='pull' ? '订单来源' : '业务来源'"><a-select v-model:value="draft.source" :aria-label="drawer==='pull' ? '订单来源' : '业务来源'" :options="sources" :disabled="drawer==='pull' && draft.lockedOrder"/></a-form-item>
+      <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" :label="drawer==='pull' ? '订单来源' : '业务来源'">
+        <a-select v-model:value="draft.source" :aria-label="drawer==='pull' ? '订单来源' : '业务来源'"
+          :options="sources" :disabled="drawer==='pull' && draft.lockedOrder || drawer==='identity' && Boolean(draft.previousOwner)"/>
+      </a-form-item>
       <template v-if="drawer==='mapping'">
         <a-form-item label="来源业务域" required><a-input v-model:value="draft.domain" aria-label="来源业务域" placeholder="填写业务接口返回的业务域"/></a-form-item>
         <a-form-item label="源产品标识" required><a-input v-model:value="draft.sourceKey" aria-label="源产品标识"/></a-form-item>
@@ -1113,9 +1167,21 @@ async function save() {
       </template>
       <a-form-item v-if="drawer==='person'" label="人员名称" required><a-input v-model:value="draft.name" aria-label="人员名称"/></a-form-item>
       <template v-if="drawer==='identity'">
-        <a-form-item label="归属人员" required><a-select v-model:value="draft.personId" aria-label="归属人员" :options="peopleOptions"/></a-form-item>
-        <a-form-item label="来源人员 ID" required><a-input v-model:value="draft.externalId" aria-label="来源人员 ID"/></a-form-item>
-        <a-form-item label="生效日期" required><a-input v-model:value="draft.validFrom" aria-label="生效日期" type="date"/></a-form-item>
+        <a-form-item label="来源人员 ID" required>
+          <a-input v-model:value="draft.externalId" aria-label="来源人员 ID" :disabled="Boolean(draft.previousOwner)"/>
+        </a-form-item>
+        <a-form-item v-if="draft.previousOwner" label="上一段归属">
+          <strong>{{ draft.previousOwner.personName }}</strong>
+          <small class="order-version">{{ formatTime(draft.previousOwner.validFrom) }} 起</small>
+        </a-form-item>
+        <a-form-item label="归属人员" html-for="identity-person" required>
+          <a-select id="identity-person" v-model:value="draft.personId" placeholder="搜索姓名或人员 ID"
+            :options="identityPeopleOptions" option-filter-prop="label" show-search/>
+        </a-form-item>
+        <a-form-item label="生效日期" required
+          :extra="draft.previousOwner ? '新归属自北京时间零点生效，上一段归属于同一时间结束。' : '自所选日期的北京时间零点生效。'">
+          <a-input v-model:value="draft.validFrom" aria-label="生效日期" type="date"/>
+        </a-form-item>
       </template>
       <template v-if="drawer==='pull'">
         <a-alert v-if="!(draft.lockedOrder ? draft.sourceConfigured : data.sources.find(x=>x.source===draft.source)?.configured)"

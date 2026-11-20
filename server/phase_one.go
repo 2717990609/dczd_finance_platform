@@ -163,7 +163,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/catalog-appointments/transfer", Handler: submitJSON(32<<10, s.transferCatalogAppointment)},
 		{Method: http.MethodGet, Path: "/api/v1/people", Handler: s.list(peopleSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/people", Handler: submit(s.createPerson)},
-		{Method: http.MethodGet, Path: "/api/v1/identities", Handler: s.list(identitiesSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/identities", Handler: s.identities},
 		{Method: http.MethodPost, Path: "/api/v1/identities", Handler: submit(s.assignIdentity)},
 		{Method: http.MethodGet, Path: "/api/v1/orders", Handler: s.orders},
 		{Method: http.MethodGet, Path: "/api/v1/orders/version", Handler: s.orderVersion},
@@ -328,7 +328,21 @@ const peopleSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]
 const identitiesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
  (SELECT i.id,i.source,i.external_id AS "externalId",p.name AS "personName",
  i.valid_from AS "validFrom",i.valid_to AS "validTo"
- FROM identity_mappings i JOIN people p ON p.id=i.person_id ORDER BY i.id DESC LIMIT 500) a`
+ FROM identity_mappings i JOIN people p ON p.id=i.person_id
+ WHERE $1='' OR (i.source=$1 AND i.external_id=$2)
+ ORDER BY i.id DESC LIMIT CASE WHEN $1='' THEN 500 END) a`
+
+func (s workspace) identities(w http.ResponseWriter, r *http.Request) {
+	params := r.URL.Query()
+	source, externalID := params.Get("source"), strings.TrimSpace(params.Get("externalId"))
+	if (source != "" || externalID != "") && (!validSource(source) || !textOK(externalID, 128)) {
+		respond(w, nil, invalid)
+		return
+	}
+	var result json.RawMessage
+	err := s.db.QueryRow(r.Context(), identitiesSQL, source, externalID).Scan(&result)
+	respond(w, result, err)
+}
 
 func textOK(s string, max int) bool { return strings.TrimSpace(s) != "" && len([]rune(s)) <= max }
 func validSourceRole(role string) bool {

@@ -196,6 +196,8 @@ pnpm --dir web dev
 
 技术人员可在专用开发库一次性导入组织数据。文件包含 `capturedAt`、`people`、`units` 和 `assignments`。人员使用 `id` 和 `name`，组织使用 `id`、`parentId`、`name`、`kind`、`status` 及可选的 `sortOrder`，任职使用 `id`、`personId`、`unitId`、`kind`、`position`、`from` 和可空的 `to`。可选的 `companies` 用 `source`、`sourceCompanyId`、`companyId`、`from` 和可空的 `to` 保存来源销售公司标识的有效区间。相同的人员主键与已有人员档案共用，全部记录在单个事务中写入。
 
+「系统与数据 → 人员映射」可由姓名或人员 ID 查找人员。在「映射历史」中选择「查看账号历史」，可查看该业务来源与来源人员 ID 的归属时间线。「变更归属」沿用所选来源账号。选择接任人员和生效日期后，上一段归属于该日北京时间零点结束。
+
 可选的 `recommendations` 使用 `companyId`、`referrerCompanyId` 两个公司主键登记已核对的公司推荐关系。明确无推荐关系时填 `"referrerCompanyId": null`。目录变更会标记相关开放草稿重新试算。
 
 ```sh
