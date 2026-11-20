@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import { catalogRatePriorityLabel, exceptionCompanyIDs, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
@@ -15,6 +15,8 @@ const match = /^period:([^:]+):(\d+)$/.exec(props.component || '')
 const selectedPart = match ? Number(match[2]) : undefined
 const activePart = ref(match && props.rule.components[selectedPart]?.type===match[1]
   ? selectedPart : props.embedded || props.rule.components.length===1 ? 0 : undefined)
+const standardScope = ref('category')
+watch(activePart, () => { standardScope.value = 'category' })
 const directoryError = ref('')
 const directory = computed(() => loadedRecipients.value ?? props.recipients)
 const label = (group, key) => props.optionLabel(group, key) || key
@@ -52,9 +54,13 @@ const companyStandards = computed(() => {
       exceptions.push({row, names:exceptionCompanyIDs(row).map(companyName), inheritedRate:group.recommendationRate})
     }
   }
-  return {defaults,exceptions}
+  return [
+    {scope:'category',label:'销售类别默认',column:'销售类别',rows:defaults},
+    {scope:'company',label:'公司特例',column:'适用公司',rows:exceptions},
+  ].filter(group=>group.rows.length)
 })
-const showsRecommendation = computed(() => [...companyStandards.value.defaults,...companyStandards.value.exceptions]
+const activeStandard = computed(() => companyStandards.value.find(group=>group.scope===standardScope.value) || companyStandards.value[0])
+const showsRecommendation = computed(() => activeStandard.value?.rows
   .some(({row,inheritedRate})=>row.recommendationRate!=null || inheritedRate!=null))
 const countStart = rule => rule.openingId ? props.openingLabel(rule.openingId)
   : rule.countFromOrdinal ? '第 '+rule.countFromOrdinal+' 期' : rule.countFromAt && props.formatTime(rule.countFromAt)
@@ -88,10 +94,7 @@ function formula(part) {
       (part.periodBenefit.fixedPerClass ? ' / 班次' : ' / 报名')
     return '本班适用报名净实收 × '+(part.periodBenefit?.tiers?.length ? '档位比例' : rate(part.value,10000))
   }
-  if (part.companySales) {
-    const {defaults,exceptions} = companyStandards.value
-    return defaults.length && exceptions.length ? catalogRatePriorityLabel : defaults.length ? '按销售类别' : '按指定公司'
-  }
+  if (part.companySales) return '每份报名匹配一条标准'
   if (part.tiers) return '按累计人数或本班业绩匹配档位'
   if (part.mode==='rate') return (props.classProduct ? '报名净实收' : '付款实收')+' × '+standard(part)
   return standard(part)+fixedUnit.value
@@ -141,22 +144,28 @@ onMounted(async () => {
           </a-descriptions-item>
           <a-descriptions-item v-if="part.refundPolicy" label="退款处理">{{ label('refundPolicy',part.refundPolicy) }}</a-descriptions-item>
         </a-descriptions>
-        <template v-if="part.companySales">
+        <template v-if="part.companySales && activeStandard">
+          <div class="finance-rate-toolbar">
+            <a-radio-group v-if="companyStandards.length>1" v-model:value="standardScope" button-style="solid" size="small"
+              role="radiogroup" aria-label="查看计提标准">
+              <a-radio-button v-for="group in companyStandards" :key="group.scope" :value="group.scope">
+                <span>{{ group.label }}</span><small class="finance-rate-count">{{ group.rows.length }}</small>
+              </a-radio-button>
+            </a-radio-group>
+            <strong v-else>{{ activeStandard.label }}</strong>
+            <small v-if="companyStandards.length>1" class="finance-rate-priority">匹配顺序 {{ catalogRatePriorityLabel }}</small>
+          </div>
           <table class="rule-company-standards" aria-label="计提标准">
             <thead>
               <tr>
-                <th scope="col">适用范围</th>
+                <th scope="col">{{ activeStandard.column }}</th>
                 <th scope="col">计提标准</th>
                 <th v-if="showsRecommendation" scope="col">推荐比例</th>
               </tr>
             </thead>
-            <tbody v-for="(rows, scopeName) in {'销售类别默认':companyStandards.defaults,'公司特例':companyStandards.exceptions}"
-              v-show="rows.length" :key="scopeName">
-              <tr v-for="({row,names,inheritedRate},rowIndex) in rows" :key="rowIndex">
-                <th scope="row">
-                  <small>{{ scopeName }}</small>
-                  {{ names.join('、') }}
-                </th>
+            <tbody>
+              <tr v-for="({row,names,inheritedRate},rowIndex) in activeStandard.rows" :key="rowIndex">
+                <th scope="row">{{ names.join('、') }}</th>
                 <td>{{ standard(row,10000) }}{{ row.mode==='fixed' ? fixedUnit : '' }}</td>
                 <td v-if="showsRecommendation">
                   {{ row.recommendationRate!=null ? rate(row.recommendationRate,10000) :
@@ -237,5 +246,4 @@ onMounted(async () => {
 .rule-company-standards th { font-weight:500; overflow-wrap:anywhere; }
 .rule-company-standards thead { background:#f6f8fb; }
 .rule-company-standards td { white-space:nowrap; font-variant-numeric:tabular-nums; }
-.rule-company-standards small { display:inline-block; margin-inline-end:6px; color:var(--muted); }
 </style>

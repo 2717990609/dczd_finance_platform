@@ -94,7 +94,7 @@ watch(amounts, choices => {
   </div>
   <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
-  <div class="company-standard-toolbar">
+  <div class="finance-rate-toolbar company-standard-toolbar">
     <a-radio-group v-if="standardGroups.length>1" :value="activeGroup.scope" role="radiogroup" aria-label="查看计提标准"
       button-style="solid" size="small" @update:value="standardScope=$event">
       <a-radio-button v-for="group in standardGroups" :key="group.scope" :value="group.scope">
@@ -102,13 +102,13 @@ watch(amounts, choices => {
       </a-radio-button>
     </a-radio-group>
     <strong v-else>{{ activeGroup.label }}</strong>
-    <small v-if="standardGroups.length>1" class="finance-rate-priority">{{ catalogRatePriorityLabel }}</small>
-    <a-button v-if="activeGroup.scope==='companies' || salesCategories.length" class="company-standard-add" size="small"
+    <small v-if="standardGroups.length>1" class="finance-rate-priority">匹配顺序 {{ catalogRatePriorityLabel }}</small>
+    <a-button v-if="activeGroup.scope==='companies' || salesCategories.length" class="finance-rate-add" size="small"
       @click="addStandard(activeGroup.scope)">{{ activeGroup.action }}</a-button>
   </div>
   <section :key="activeGroup.scope" :aria-label="activeGroup.label"
     class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':component.classMember==='new'}">
-    <p v-if="!standardCount(activeGroup)" class="company-standard-empty">{{ activeGroup.scope==='category' ? '暂无类别标准' : '暂无公司特例' }}</p>
+    <p v-if="!standardCount(activeGroup)" class="finance-rate-empty">{{ activeGroup.scope==='category' ? '暂无类别标准' : '暂无公司特例' }}</p>
     <div v-else class="company-standard-fields company-standard-column-labels" aria-hidden="true">
       <span>{{ activeGroup.scope==='category' ? '销售类别' : '适用公司' }}</span>
       <span v-if="amounts.length>1">计算方式</span>
@@ -179,9 +179,7 @@ watch(amounts, choices => {
 </template>
 
 <style scoped>
-.company-standard-toolbar {display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;border-top:1px solid var(--line);padding:6px 0}
-.company-standard-add {margin-inline-start:auto}
-.company-standard-empty {margin:0;padding:3px 0 7px;color:var(--muted);font-size:13px}
+.company-standard-toolbar {border-top:1px solid var(--line);padding-top:6px}
 .company-standard-table {container-type:inline-size}
 .company-standard-table.has-method {--company-method-column:minmax(0,1.25fr)}
 .company-standard-table.has-recommendation {--company-recommendation-column:minmax(0,1fr)}

@@ -13,6 +13,7 @@ const effectiveFrom = ref('')
 const options = ref()
 const skus = ref([])
 const rates = ref([])
+const rateScope = ref()
 const structure = ref({items:[],rateRows:[]})
 const structureEditor = ref()
 const editing = ref(false)
@@ -27,9 +28,21 @@ const recognition = computed(() => {
 const ratePriority = computed(() => {
   const hasCategories = options.value?.categories.length
   if (!rates.value.some(row=>row.scope==='general')) return hasCategories ? catalogRatePriorityLabel : ''
-  return hasCategories ? '公司特例 → 销售类别默认 → 通用比例' : '公司特例 → 通用比例'
+  return hasCategories ? catalogRatePriorityLabel+' → 通用比例' : '公司特例 → 通用比例'
 })
+const rateGroups = computed(() => [
+  {scope:'category',label:'销售类别默认',action:'添加类别默认比例'},
+  {scope:'company',label:'公司特例',action:'添加公司特例'},
+  {scope:'general',label:'通用比例',action:'添加通用比例'},
+].filter(group=>group.scope!=='category' || options.value?.categories.length)
+  .map(group=>({...group,indices:rates.value.flatMap((row,index)=>row.scope===group.scope ? [index] : [])})))
+const activeRateGroup = computed(() => rateGroups.value.find(group=>group.scope===rateScope.value))
 const blankRate = scope => newCatalogRateCondition(options.value,scope)
+function addSales() {
+  const first = blankRate()
+  rates.value = [first]
+  rateScope.value = first.scope
+}
 let optionsRequest = 0
 
 watch(productId, async id=>{
@@ -49,7 +62,7 @@ watch(productId, async id=>{
     skus.value = result.skus.map(row=>({value:row.code,label:row.label,requiresCompletion:row.requiresCompletion}))
     sku.value = skus.value.some(row=>row.value===props.initialSku) && id===props.initialProduct
       ? props.initialSku : skus.value.length===1 ? skus.value[0].value : undefined
-    rates.value = [blankRate()]
+    addSales()
   } catch (err) {
     if (request===optionsRequest) error.value = err.message
   } finally {
@@ -63,7 +76,14 @@ async function publish() {
   try {
     if (!sku.value || !name.value.trim() || !effectiveFrom.value) throw new Error('请选择业务 SKU、生效时间并填写规则名称。')
     if (!rates.value.length && !structure.value.items.length) throw new Error('请至少添加一项收款安排。')
-    const salesRates = rates.value.map(row=>catalogRateConditionBody(row))
+    const salesRates = rates.value.map(row=>{
+      try {
+        return catalogRateConditionBody(row)
+      } catch (err) {
+        rateScope.value = row.scope
+        throw err
+      }
+    })
     publishing.value = true
     const result = await props.api('/catalog-rule-rates',{method:'POST',body:JSON.stringify({
       effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
@@ -84,7 +104,7 @@ async function publish() {
     :closable="!publishing" :mask-closable="!publishing" :keyboard="!publishing"
     @close="emit('close')">
     <a-alert v-if="error" type="error" :message="error" show-icon class="feedback"/>
-    <a-form layout="vertical" :disabled="publishing">
+    <a-form layout="vertical" size="small" :disabled="publishing">
       <div class="rule-basics">
         <a-form-item label="所属产品" html-for="scenario-create-product" required>
           <a-select id="scenario-create-product" v-model:value="productId" :options="products" placeholder="选择产品"/>
@@ -101,26 +121,28 @@ async function publish() {
       </div>
       <template v-if="options && sku">
         <section v-if="rates.length" class="rule-block rule-block-body catalog-first-rates" aria-label="成交销售">
-          <div class="rule-blocks-heading">
+          <div class="finance-rate-toolbar">
             <h3 class="form-subhead">成交销售</h3>
-            <small v-if="ratePriority" class="finance-rate-priority">{{ ratePriority }}</small>
+            <a-radio-group v-model:value="rateScope" button-style="solid" size="small" role="radiogroup" aria-label="查看比例">
+              <a-radio-button v-for="group in rateGroups" :key="group.scope" :value="group.scope">
+                <span>{{ group.label }}</span><small class="finance-rate-count">{{ group.indices.length }}</small>
+              </a-radio-button>
+            </a-radio-group>
+            <small v-if="ratePriority" class="finance-rate-priority">匹配顺序 {{ ratePriority }}</small>
+            <a-button class="finance-rate-add" size="small" @click="rates.push(blankRate(rateScope))">{{ activeRateGroup.action }}</a-button>
             <a-button type="link" danger size="small" @click="rates=[]">移除成交销售</a-button>
           </div>
-          <div v-for="(_,index) in rates" :key="index" class="catalog-add-condition">
-            <CatalogRateCondition v-model="rates[index]" :options="options" :suffix="'-first-'+index" sales-payee>
+          <p v-if="!activeRateGroup.indices.length" class="finance-rate-empty">暂无{{ activeRateGroup.label }}</p>
+          <div v-for="index in activeRateGroup.indices" :key="index" class="catalog-add-condition">
+            <CatalogRateCondition v-model="rates[index]" :options="options" :scope="rateScope" :suffix="'-first-'+index" sales-payee>
               <a-button v-if="rates.length>1" type="link" danger size="small" @click="rates.splice(index,1)">移除</a-button>
             </CatalogRateCondition>
           </div>
-          <a-space wrap>
-            <a-button v-if="options.categories.length" size="small" @click="rates.push(blankRate('category'))">添加类别默认比例</a-button>
-            <a-button size="small" @click="rates.push(blankRate('company'))">添加公司特例</a-button>
-            <a-button size="small" @click="rates.push(blankRate('general'))">添加通用比例</a-button>
-          </a-space>
         </section>
         <div class="rule-blocks-heading">
           <h3 class="form-subhead">{{ rates.length ? '其他收款安排' : '收款安排' }}</h3>
           <a-space wrap :size="4">
-            <a-button v-if="!rates.length" size="small" :disabled="editing" @click="rates=[blankRate()]">添加成交销售</a-button>
+            <a-button v-if="!rates.length" size="small" :disabled="editing" @click="addSales">添加成交销售</a-button>
             <a-button size="small" :disabled="editing" @click="structureEditor?.addRecipient()">添加收款安排</a-button>
           </a-space>
         </div>

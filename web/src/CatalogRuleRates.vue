@@ -464,7 +464,7 @@ async function publish() {
             </div>
             <p v-else class="rule-formula">{{ componentStandard(item) }}</p>
           </template>
-          <div v-if="hasRateTable" class="catalog-rate-toolbar">
+          <div v-if="hasRateTable" class="finance-rate-toolbar catalog-rate-toolbar">
               <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" size="small"
                 :disabled="structureEditing" role="radiogroup" aria-label="查看比例">
                 <a-radio-button v-for="group in rateGroups" :key="group.key" :value="group.key">
@@ -472,15 +472,15 @@ async function publish() {
                 </a-radio-button>
               </a-radio-group>
               <strong v-else-if="activeRateGroup">{{ activeRateGroup.title }}</strong>
-              <small v-if="ratePriority" class="finance-rate-priority">优先匹配 {{ ratePriority }}</small>
+              <small v-if="ratePriority" class="finance-rate-priority">匹配顺序 {{ ratePriority }}</small>
               <a-input v-if="activeRateGroup?.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
                 placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
-              <a-button v-if="activeRateGroup?.add" class="catalog-rate-add" size="small" :disabled="!editable || structureEditing || !!targetDraft"
+              <a-button v-if="activeRateGroup?.add" class="finance-rate-add" size="small" :disabled="!editable || structureEditing || !!targetDraft"
                 @click="structureEditor?.addRateCondition(activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
           </div>
           <div v-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
           <template v-if="hasRateTable">
-            <p v-if="!activeRateGroup?.rows.length" class="catalog-rate-empty">暂无{{ activeRateGroup?.title }}</p>
+            <p v-if="!activeRateGroup?.rows.length" class="finance-rate-empty">暂无{{ activeRateGroup?.title }}</p>
             <a-table v-else :key="selected + filter + rateGroup + rateTableRevision" class="catalog-rate-table"
               :columns="displayedColumns" :data-source="displayedRates" :row-key="rateRowKey" size="small"
               :scroll="{x:tableWidth}" :pagination="{pageSize:8,showSizeChanger:false,hideOnSinglePage:true}">
@@ -613,11 +613,7 @@ async function publish() {
 </template>
 
 <style scoped>
-.catalog-rate-toolbar {display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-bottom:6px}
-.catalog-rate-toolbar :deep(.ant-radio-group) {display:flex;flex-wrap:wrap}
 .catalog-rate-toolbar :deep(.ant-input-affix-wrapper) {width:min(100%,190px)}
-.catalog-rate-add {margin-inline-start:auto}
-.catalog-rate-empty {margin:0;padding:5px 0;color:var(--muted);font-size:13px}
 .catalog-rate-table :deep(.ant-table.ant-table-small .ant-table-cell) {padding-block:4px}
 .catalog-rate-table :deep(.ant-table-pagination) {margin-block:6px}
 .catalog-rate-summary {display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;padding-bottom:6px;margin-bottom:6px;border-bottom:1px solid var(--line)}

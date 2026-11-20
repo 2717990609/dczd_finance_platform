@@ -137,8 +137,13 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .finance-rule-editor .ant-descriptions-small .ant-descriptions-item-content { padding-block:4px; }
 .finance-rule-editor .rule-formula { margin-bottom:6px; }
 .finance-rule-editor .form-actions { padding-top:0; }
+.finance-rate-toolbar { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:center; margin-block:4px 6px; }
+.finance-rate-toolbar .ant-radio-group { display:flex; flex-wrap:wrap; }
+.finance-rate-toolbar .form-subhead { margin:0; }
 .finance-rate-priority { color:var(--muted);font-size:13px; }
 .finance-rate-count { margin-inline-start:5px;font-size:12px;font-variant-numeric:tabular-nums; }
+.finance-rate-add { margin-inline-start:auto; }
+.finance-rate-empty { margin:0; padding-block:4px; color:var(--muted); font-size:13px; }
 @media (max-width:700px) { .finance-rule-editor .ant-drawer-body { padding:12px; } }
 .order-link { color: var(--accent); border: 0; background: none; cursor: pointer; padding: 0; text-align: left; overflow-wrap: anywhere; }
 .order-link:hover { text-decoration: underline; }
@@ -194,7 +199,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .catalog-rate-fields > .catalog-rate-selector { flex:2 1 180px; }
 .catalog-rate-fields label { display:block; margin-bottom:2px; }
 .catalog-rate-fields .ant-select,.catalog-rate-fields .ant-input-number { width:100%; }
-.catalog-add-condition { border-bottom: 1px solid var(--line); margin-bottom: 6px; padding-bottom: 6px; }
+.catalog-add-condition + .catalog-add-condition { border-top:1px solid var(--line); margin-top:6px; padding-top:6px; }
 .catalog-staged-entries { list-style: none; padding: 0; }
 .catalog-staged-entries > li { display: flex; justify-content: space-between; align-items: center; gap: 5px; }
 .catalog-staged-entries > li > div:first-child { min-width: 0; overflow-wrap: anywhere; }

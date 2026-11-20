@@ -143,26 +143,26 @@ defineExpose({addRecipient,editSales,editCalculation,editRateScope,addRateCondit
         <CatalogRateCondition v-model="form.row" :options="options" :scope="form.scope" :sales-payee="component?.targetKind==='seller'"/>
       </template>
       <template v-else>
-        <template v-if="form.kind==='item'">
-          <a-form-item label="收款安排名称" html-for="catalog-add-label" required>
-            <a-input id="catalog-add-label" ref="itemName" v-model:value="form.label" :maxlength="80"/>
+        <div v-if="form.kind!=='sales'" class="rule-basics">
+          <template v-if="form.kind==='item'">
+            <a-form-item label="收款安排名称" html-for="catalog-add-label" required>
+              <a-input id="catalog-add-label" ref="itemName" v-model:value="form.label" :maxlength="80"/>
+            </a-form-item>
+            <CatalogPayeeFields v-model="form" prefix="catalog-add" :options="options" :api="api" :people-filters="peopleFilters"/>
+          </template>
+          <a-form-item :label="form.kind==='calculation' ? '新计提方式' : '计提方式'" html-for="catalog-add-format">
+            <a-select id="catalog-add-format" v-model:value="form.format" :options="calculationFormats"/>
           </a-form-item>
-          <h3 class="form-subhead">发给谁</h3>
-          <CatalogPayeeFields v-model="form" prefix="catalog-add" :options="options" :api="api" :people-filters="peopleFilters"/>
-          <h3 class="form-subhead">提成怎么算</h3>
-        </template>
-        <a-form-item v-if="form.kind!=='sales'" :label="form.kind==='calculation' ? '新计提方式' : '计提方式'" html-for="catalog-add-format">
-          <a-select id="catalog-add-format" v-model:value="form.format" :options="calculationFormats"/>
-        </a-form-item>
-        <a-form-item v-if="form.format==='rate'" label="比例（%）" html-for="catalog-add-fixed" required>
-          <a-input-number id="catalog-add-fixed" aria-label="比例（%）" v-model:value="form.rate"
-            :min="0" :max="100" :precision="2" string-mode/>
-        </a-form-item>
-        <a-form-item v-else-if="form.format==='fixed'" label="金额（元/笔）" html-for="catalog-add-amount" required>
-          <a-input-number id="catalog-add-amount" aria-label="金额（元/笔）" v-model:value="form.amount"
-            :min="0" :precision="2" string-mode/>
-        </a-form-item>
-        <template v-else>
+          <a-form-item v-if="form.format==='rate'" label="比例（%）" html-for="catalog-add-fixed" required>
+            <a-input-number id="catalog-add-fixed" aria-label="比例（%）" v-model:value="form.rate"
+              :min="0" :max="100" :precision="2" string-mode/>
+          </a-form-item>
+          <a-form-item v-else-if="form.format==='fixed'" label="金额（元/笔）" html-for="catalog-add-amount" required>
+            <a-input-number id="catalog-add-amount" aria-label="金额（元/笔）" v-model:value="form.amount"
+              :min="0" :precision="2" string-mode/>
+          </a-form-item>
+        </div>
+        <template v-if="form.format==='table'">
           <div v-for="(_,index) in form.rows" :key="index" class="catalog-add-condition">
             <CatalogRateCondition v-model="form.rows[index]" :options="options" :suffix="'-'+index" :sales-payee="form.kind==='sales'">
               <a-button v-if="form.rows.length>1" type="link" danger size="small" @click="form.rows.splice(index,1)">移除</a-button>

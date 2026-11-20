@@ -19,7 +19,7 @@ export function moneyAsMinor(value) {
   return Number.isSafeInteger(minor) ? minor : undefined
 }
 
-export const catalogRatePriorityLabel = '公司特例优先，其余按销售类别。'
+export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
 
 export function newCatalogRateCondition(options, scope = options.categories.length ? 'category' : 'general') {
   return {scope, companyIds:[], categoryIds:[],
