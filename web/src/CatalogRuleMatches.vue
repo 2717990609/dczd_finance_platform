@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({periodId:Number, draftAvailable:Boolean, api:Function, formatMoney:Function, formatTime:Function})
+const emit = defineEmits(['show-order'])
 const report = ref()
 const error = ref('')
 const loading = ref(false)
@@ -109,7 +110,7 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
       :pagination="pagination" :scroll="{x:970}" @change="changePage">
       <template #bodyCell="{column,record}">
         <template v-if="column.key==='order'">
-          {{ record.orderNo || record.orderId }}
+          <button type="button" class="order-link" @click="emit('show-order',record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>
           <small v-if="record.sourceTransactionType" class="order-version">原交易类型 {{ record.sourceTransactionType }}</small>
         </template>
         <template v-else-if="column.key==='paidAt'">

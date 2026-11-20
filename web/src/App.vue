@@ -48,11 +48,15 @@ const getRoute = key => {
 }
 const current = ref()
 const requestedPeriod = ref()
-const requestedReview = ref(false)
+const requestedView = ref()
 const requestedRulePeriod = ref()
+const ruleReturn = ref()
 const orderSyncTarget = ref()
-const orderSyncReturnPeriod = ref()
+const orderReturn = ref()
+const draftViews = {detail:'分润明细',report:'业绩与分润',issues:'待核',pools:'团队池分配',review:'结算核对',matching:'订单规则匹配'}
 const workbenchPeriod = ref()
+const workbenchView = ref('detail')
+const workbenchQuery = ref({})
 const workbench = ref()
 const active = computed(() => navigation.find(x => x.key === current.value))
 const workspacePages = computed(() => visibleNavigation.value.filter(page => page.area === active.value?.area))
@@ -63,11 +67,17 @@ const visibleWorkspaces = computed(() => workspaces.flatMap(workspace => {
 }))
 const activeWorkspace = computed(() => workspaces.find(workspace => workspace.key === active.value?.area))
 const theme = {token:{colorPrimary:'#315ab2', colorLink:'#315ab2', colorText:'#253044', borderRadius:6, fontSize:14, controlHeight:34}}
-const productScope = ref()
+const workProductScope = ref()
+const configProductScope = ref()
 const unitScope = ref()
 const usesOrganizationScope = computed(() => ['orders','settlement','monthly'].includes(current.value))
 const scopeSearch = ref('')
 const configProductPages = new Set(['products','periods','rules'])
+const activeProductScope = computed(() => configProductPages.has(current.value) ? configProductScope : workProductScope)
+const productScope = computed({
+  get: () => activeProductScope.value.value,
+  set: value => { activeProductScope.value.value = value },
+})
 const productScopedPages = new Set([...configProductPages,'settlement','monthly'])
 const usesProductScope = computed(() => productScopedPages.has(current.value))
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
@@ -101,6 +111,7 @@ const drawer = ref('')
 const tab = ref('main')
 const draft = ref({})
 const filter = ref('')
+const orderQuery = ref('')
 const identityAccount = ref()
 const sourceFilter = ref('')
 const olderThan = ref('')
@@ -137,10 +148,13 @@ const scopedProducts = computed(() => data.value.products.filter(p => current.va
 const scopeProductOptions = computed(() => scopedProducts.value.map(p=>({value:p.id,label:p.name})))
 const canPublishRule = productId => session.value?.user
   ? session.value.user.rules.some(rule => rule.productId===productId && rule.publish) : session.value?.development
-function classRuleSetupLink(period) {
+function classRuleSetupLink(period, fromWorkbench = false) {
   if (period?.periodMode==='class' && period.classStartsAt && !period.classStartOutsidePeriod
       && !period.ruleVersion && canPublishRule(period.productId)) {
-    return '#rules?productId='+period.productId+'&periodId='+period.id
+    const params = new URLSearchParams({productId:period.productId,periodId:period.id})
+    if (fromWorkbench) params.set('from','settlement')
+    if (fromWorkbench && periodFromMonthly.value) params.set('returnFrom','monthly')
+    return '#rules?'+params
   }
 }
 const ruleTargetPeriod = computed(() => {
@@ -364,7 +378,7 @@ async function refresh(reloadOptions = false) {
   globalError.value = ''
   const params = new URLSearchParams()
   if (sourceFilter.value) params.set('source',sourceFilter.value)
-  if (filter.value.trim()) params.set('orderId',filter.value.trim())
+  if (orderQuery.value) params.set('orderId',orderQuery.value)
   if (olderThan.value) params.set('beforeId',olderThan.value)
   if (unitScope.value) params.set('unitId',unitScope.value)
   const sections = {settlement:['products','periods'], monthly:['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
@@ -394,7 +408,10 @@ async function refresh(reloadOptions = false) {
           productScope.value = undefined
         }
       }
-    } else globalError.value ||= result.reason.message
+    } else {
+      if (key==='orders') data.value.orders = []
+      globalError.value ||= result.reason.message
+    }
   })
   loading.value = false
 }
@@ -421,8 +438,25 @@ function refreshWorkspace() {
   monthlyReport.value?.refresh()
   orderSync.value?.reload()
 }
+function settlementLink(periodId, view, fromMonthly) {
+  const params = new URLSearchParams({periodId})
+  if (view) params.set('view',view)
+  if (fromMonthly) params.set('from','monthly')
+  return '#settlement?'+params
+}
+function orderRecordsLink(order) {
+  if (current.value==='orders' && sourceFilter.value===order.source && orderQuery.value===order.orderId) return
+  const params = new URLSearchParams({source:order.source,orderId:order.orderId})
+  if (current.value==='settlement' && workbenchPeriod.value) {
+    params.set('returnPeriodId',workbenchPeriod.value)
+    params.set('returnView',workbenchView.value)
+    if (periodFromMonthly.value) params.set('returnFrom','monthly')
+  }
+  return '#orders?'+params
+}
 function changeRoute() {
   const previous = current.value
+  const wasFromMonthly = periodFromMonthly.value
   const [key, query] = location.hash.slice(1).split('?', 2)
   current.value = getRoute(key)
   if (active.value) lastWorkspacePages.value[active.value.area] = current.value
@@ -434,7 +468,8 @@ function changeRoute() {
   const periodID = Number(params.get('periodId'))
   requestedRulePeriod.value = key==='rules' && current.value===key && Number.isSafeInteger(periodID) && periodID>0 ? periodID : undefined
   requestedPeriod.value = key === 'settlement' && current.value === key && Number.isSafeInteger(periodID) && periodID > 0 ? periodID : undefined
-  requestedReview.value = Boolean(requestedPeriod.value && params.get('view') === 'review')
+  const view = params.get('view')
+  requestedView.value = requestedPeriod.value && Object.hasOwn(draftViews,view) ? view : undefined
   const fromMonthly = Boolean(requestedPeriod.value && params.get('from') === 'monthly')
   monthlyResume.value = undefined
   if (fromMonthly && previous === 'monthly') {
@@ -450,14 +485,20 @@ function changeRoute() {
     unitScope.value = saved.unit
     monthlyResume.value = saved.browse
   }
-  if (!fromMonthly) monthlyReturn.value = undefined
+  if (current.value==='monthly') monthlyReturn.value = undefined
   periodFromMonthly.value = fromMonthly
+  const returnFromMonthly = params.get('returnFrom')==='monthly' || previous==='settlement' && wasFromMonthly
+  ruleReturn.value = requestedRulePeriod.value && params.get('from')==='settlement'
+    ? settlementLink(requestedRulePeriod.value,undefined,returnFromMonthly) : undefined
   const returnPeriod = Number(params.get('returnPeriodId'))
   const isOrders = key === 'orders' && current.value === key
   const stream = params.get('stream')
   const fromDate = params.get('fromDate')
   orderSyncTarget.value = isOrders && stream ? {stream,fromDate} : undefined
-  orderSyncReturnPeriod.value = isOrders && Number.isSafeInteger(returnPeriod) && returnPeriod > 0 ? returnPeriod : undefined
+  const returnView = params.get('returnView')
+  const orderReturnView = Object.hasOwn(draftViews,returnView) ? returnView : 'review'
+  orderReturn.value = isOrders && Number.isSafeInteger(returnPeriod) && returnPeriod > 0
+    ? {href:settlementLink(returnPeriod,orderReturnView,returnFromMonthly),label:'返回'+draftViews[orderReturnView]} : undefined
   orderDetails.value = undefined
   rateRule.value = undefined
   ruleDetails.value = undefined
@@ -471,8 +512,9 @@ function changeRoute() {
   }
   tab.value = 'main'
   identityAccount.value = undefined
-  filter.value = ''
-  sourceFilter.value = ''
+  orderQuery.value = isOrders ? (params.get('orderId') || '').trim() : ''
+  filter.value = orderQuery.value
+  sourceFilter.value = isOrders ? params.get('source') || '' : ''
   olderThan.value = ''
   pageStack.value = []
   notice.value = ''
@@ -481,17 +523,21 @@ function changeRoute() {
 function clearWorkspace() {
   ++requestVersion
   data.value = emptyData()
-  productScope.value = undefined
+  workProductScope.value = undefined
+  configProductScope.value = undefined
   unitScope.value = undefined
   scopeUnits.value = undefined
   lastWorkspacePages.value = {}
   current.value = undefined
   requestedPeriod.value = undefined
-  requestedReview.value = false
+  requestedView.value = undefined
   requestedRulePeriod.value = undefined
+  ruleReturn.value = undefined
   orderSyncTarget.value = undefined
-  orderSyncReturnPeriod.value = undefined
+  orderReturn.value = undefined
   workbenchPeriod.value = undefined
+  workbenchView.value = 'detail'
+  workbenchQuery.value = {}
   periodFromMonthly.value = false
   monthlyReturn.value = undefined
   monthlyResume.value = undefined
@@ -507,6 +553,7 @@ function clearWorkspace() {
   globalError.value = ''
   notice.value = ''
   filter.value = ''
+  orderQuery.value = ''
   identityAccount.value = undefined
   sourceFilter.value = ''
   olderThan.value = ''
@@ -578,7 +625,26 @@ watch(() => drawer.value==='rule' && classRule.value ? draft.value.productId : u
     if (current) formError.value = err.message
   }
 })
-function resetOrders() { olderThan.value = ''; pageStack.value=[]; refresh() }
+function resetOrders() {
+  olderThan.value = ''
+  pageStack.value = []
+  const [key, search] = location.hash.slice(1).split('?', 2)
+  if (key === 'orders') {
+    const params = new URLSearchParams(search)
+    if (orderQuery.value) params.set('orderId',orderQuery.value)
+    else params.delete('orderId')
+    if (sourceFilter.value) params.set('source',sourceFilter.value)
+    else params.delete('source')
+    const query = params.toString()
+    history.replaceState(history.state,'','#orders'+(query ? '?'+query : ''))
+  }
+  refresh()
+}
+function searchOrders(value) {
+  orderQuery.value = value.trim()
+  filter.value = orderQuery.value
+  resetOrders()
+}
 function selectOrganization(unit) {
   if (unitScope.value === unit) return
   unitScope.value = unit
@@ -876,9 +942,8 @@ async function save() {
     if (kind === 'pull') {
       if (current.value === 'settlement') await workbench.value?.checkRefresh()
       if (current.value === 'orders') {
-        filter.value = payload.orderId
         sourceFilter.value = payload.source
-        resetOrders()
+        searchOrders(payload.orderId)
       }
     } else refresh()
   } catch (err) {
@@ -963,9 +1028,9 @@ async function save() {
           <div class="workspace-page-title">
             <h1>{{ active.title }}</h1>
             <a v-if="periodFromMonthly" class="workspace-return" href="#monthly"><LeftOutlined aria-hidden="true"/>返回月度汇总</a>
-            <a v-if="ruleTargetPeriod" class="workspace-return" :href="'#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>返回核算期次</a>
+            <a v-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
             <div v-if="actions && canOpenAction && !identityAccount" class="topbar-actions">
-              <a v-if="orderSyncReturnPeriod" class="workspace-return" :href="'#settlement?periodId='+orderSyncReturnPeriod+'&view=review'"><LeftOutlined aria-hidden="true"/>返回结算核对</a>
+              <a v-if="orderReturn" class="workspace-return" :href="orderReturn.href"><LeftOutlined aria-hidden="true"/>{{ orderReturn.label }}</a>
               <a-button type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : titles[actions] }}</a-button>
             </div>
           </div>
@@ -977,11 +1042,12 @@ async function save() {
         <template v-if="current==='settlement'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
-          <DraftWorkbench ref="workbench" v-model:period-id="workbenchPeriod" :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
+          <DraftWorkbench ref="workbench" v-model:period-id="workbenchPeriod" v-model:view="workbenchView" v-model:detail-query="workbenchQuery"
+            :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
             :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" :requested-period="requestedPeriod"
-            :rule-setup-link="classRuleSetupLink(calculationPeriods.find(period=>period.id===workbenchPeriod))"
-            :periods-loading="loading" :month="workspaceMonth" :requested-review="requestedReview"
+            :rule-setup-link="classRuleSetupLink(calculationPeriods.find(period=>period.id===workbenchPeriod), true)"
+            :periods-loading="loading" :month="workspaceMonth" :requested-view="requestedView"
             @show-order="orderDetails={versionId:$event}" @show-issue-order="orderDetails={versionId:$event,allowPull:true}"
             @show-applied-rule="showAppliedRule" />
         </template>
@@ -989,8 +1055,8 @@ async function save() {
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <MonthlyReport ref="monthlyReport" :month="workspaceMonth" v-model:view="monthlyView" v-model:dimension="monthlyDimension"
             :api="api" :format-money="formatMoney" :product-id="productScope" :unit-id="unitScope" :unit-name="selectedUnit?.name"
-            :resume="monthlyResume"
-            :views="options('monthlyReportView')" :dimensions="options('draftReportDimension')"/>
+            :resume="monthlyResume" :units="scopeUnits"
+            :views="options('monthlyReportView')" :dimensions="options('draftReportDimension')" @select-unit="selectOrganization"/>
         </template>
         <template v-else-if="current==='organization'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
@@ -1020,9 +1086,17 @@ async function save() {
             <div class="search">
               <a-input-search v-model:value="filter" :placeholder="current==='orders'?'输入原订单 ID':current==='people'
                   ? (tab==='identity'?'搜索归属人员或来源账号':'搜索姓名或人员 ID') : '在当前列表中搜索'"
-                :aria-label="current==='orders'?'原订单 ID':'搜索列表'" allow-clear @search="current==='orders'&&resetOrders()"/>
+                :aria-label="current==='orders'?'原订单 ID':'搜索列表'" :maxlength="current==='orders'?128:undefined"
+                allow-clear @search="value=>current==='orders'&&searchOrders(value)"/>
             </div>
           </div>
+          <section v-if="current==='orders' && orderQuery" class="identity-scope" aria-label="当前订单查询">
+            <div>
+              <span>{{ sourceFilter ? sourceLabel(sourceFilter) : '全部来源' }}</span>
+              <strong>{{ orderQuery }}</strong>
+            </div>
+            <a-button size="small" @click="searchOrders('')">清除订单查询</a-button>
+          </section>
           <section v-if="identityAccount" class="identity-scope" aria-label="来源账号">
             <div>
               <span>{{ sourceLabel(identityAccount.source) }}</span>
@@ -1128,11 +1202,11 @@ async function save() {
                 <template v-else-if="['occurredAt','validFrom','validTo'].includes(column.key)">{{ formatTime(text) }}</template>
               </template>
               <template #emptyText>
-                <div class="empty"><a-empty :image="undefined" :description="filter ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter && !identityAccount && configurationReady && canOpenAction" @click="open(actions)">{{ titles[actions] }}</a-button></div>
+                <div class="empty"><a-empty :image="undefined" :description="(current==='orders' ? orderQuery : filter) ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter && !orderQuery && !identityAccount && configurationReady && canOpenAction" @click="open(actions)">{{ titles[actions] }}</a-button></div>
               </template>
             </a-table>
           </div>
-          <div v-if="current==='orders'&&mainRows.length" class="paging"><a-button :disabled="!pageStack.length||loading" @click="prevOrders">上一页</a-button><a-button :disabled="mainRows.length<50||loading" @click="nextOrders">下一页</a-button></div>
+          <div v-if="current==='orders' && (mainRows.length>=50 || pageStack.length)" class="paging"><a-button :disabled="!pageStack.length||loading" @click="prevOrders">上一页</a-button><a-button :disabled="mainRows.length<50||loading" @click="nextOrders">下一页</a-button></div>
         </section>
         </template>
         </div>
@@ -1295,7 +1369,7 @@ async function save() {
     </template>
   </a-drawer>
   <OrderDetails v-if="orderDetails" :selection="orderDetails" :api="api" :format-money="formatMoney" :format-time="formatTime" :source-label="sourceLabel"
-    :labels="labels" :role-label="orderRoleLabel" :can-pull="Boolean(orderDetails.allowPull && configurationReady)"
+    :labels="labels" :role-label="orderRoleLabel" :can-pull="Boolean(orderDetails.allowPull && configurationReady)" :records-link="orderRecordsLink"
     @close="orderDetails=undefined" @pull="pullFromDetails"/>
   <a-drawer v-if="appliedRule?.loading || appliedRule?.error" open title="计提使用的规则" @close="appliedRule=undefined">
     <a-alert v-if="appliedRule.error" :message="appliedRule.error" type="error" show-icon/>

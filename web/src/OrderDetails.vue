@@ -1,12 +1,14 @@
 <script setup>
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 
 const props = defineProps({ selection: Object, api: Function, formatMoney: Function, formatTime: Function,
-  sourceLabel: Function, labels: Object, roleLabel: Function, canPull: Boolean })
+  sourceLabel: Function, labels: Object, roleLabel: Function, canPull: Boolean, recordsLink: Function })
 const emit = defineEmits(['close', 'pull'])
 const order = ref()
 const loading = ref(false)
 const error = ref('')
+const recordsHref = computed(() => !loading.value && !error.value && order.value?.orderId
+  ? props.recordsLink(order.value) : undefined)
 
 watch(() => props.selection, async (selection, _, onCleanup) => {
   order.value = selection.order
@@ -64,6 +66,7 @@ watch(() => props.selection, async (selection, _, onCleanup) => {
     </section>
     <template #footer>
       <div class="order-details-actions">
+        <a-button v-if="recordsHref" :href="recordsHref">查看同单业务记录</a-button>
         <a-button @click="emit('close')">关闭</a-button>
         <a-button v-if="canPull && order?.sourceConfigured && !loading && !error" type="primary" @click="emit('pull',order)">重新拉取订单</a-button>
       </div>
@@ -72,7 +75,7 @@ watch(() => props.selection, async (selection, _, onCleanup) => {
 </template>
 
 <style scoped>
-.order-details-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.order-details-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
 .order-attribution { list-style: none; margin: 0; padding: 0; }
 .order-attribution li + li { margin-top: 6px; }
 :deep(.ant-descriptions-item-content) { overflow-wrap: anywhere; }

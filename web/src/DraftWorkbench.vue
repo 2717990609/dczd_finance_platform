@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { Modal } from 'ant-design-vue'
 import CatalogRuleMatches from './CatalogRuleMatches.vue'
 import DraftReport from './DraftReport.vue'
@@ -9,10 +9,11 @@ import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
   recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
-  requestedPeriod: Number, requestedReview:Boolean, ruleSetupLink:String, periodsLoading: Boolean, month: String })
+  requestedPeriod: Number, requestedView:String, ruleSetupLink:String, periodsLoading: Boolean, month: String })
 const emit = defineEmits(['show-order', 'show-issue-order', 'show-applied-rule'])
 const selected = defineModel('periodId', {type:Number})
-const view = ref('detail')
+const view = defineModel('view', {type:String})
+const detailQuery = defineModel('detailQuery', {type:Object})
 const draft = ref()
 const loading = ref(false)
 const calculating = ref(false)
@@ -24,9 +25,8 @@ const recoveryError = ref('')
 const savingRecovery = ref(false)
 const error = ref('')
 const refreshStatus = ref()
-const orderInput = ref('')
-const beneficiaryInput = ref('')
-const detailQuery = ref({})
+const orderInput = ref(detailQuery.value.orderQuery || '')
+const beneficiaryInput = ref(detailQuery.value.beneficiaryQuery || '')
 const hasDetailFilter = computed(() => Boolean(detailQuery.value.orderQuery || detailQuery.value.beneficiaryQuery))
 let sequence = 0
 let statusSequence = 0
@@ -168,8 +168,9 @@ function appendDetailFilters(params) {
     if (value) params.set(name,value)
   }
 }
-function searchDetails() {
+async function searchDetails() {
   detailQuery.value = {orderQuery:orderInput.value.trim(),beneficiaryQuery:beneficiaryInput.value.trim()}
+  await nextTick()
   load()
 }
 function clearDetailInputs() {
@@ -177,8 +178,9 @@ function clearDetailInputs() {
   beneficiaryInput.value = ''
   detailQuery.value = {}
 }
-function resetDetails() {
+async function resetDetails() {
   clearDetailInputs()
+  await nextTick()
   load()
 }
 function hasMoreDetails(section,total) {
@@ -201,7 +203,8 @@ async function load(replace = false) {
     const result = await props.api('/drafts?' + params)
     if (request === sequence) {
       draft.value = result
-      if (result.settlement && view.value === 'matching' || view.value === 'review' && !hasSettlementReview.value) view.value = 'detail'
+      if (view.value==='matching' && !hasMatching.value || view.value==='review' && !hasSettlementReview.value ||
+          view.value==='pools' && !result.poolAllocationAvailable) view.value = 'detail'
     }
   } catch (err) {
     if (request === sequence && err.status !== 404) error.value = err.message
@@ -237,17 +240,22 @@ function visibilityChanged() {
 onMounted(() => document.addEventListener('visibilitychange', visibilityChanged))
 onBeforeUnmount(() => {
   unmounted = true
+  sequence++
   clearTimeout(statusTimer)
   document.removeEventListener('visibilitychange', visibilityChanged)
 })
-watch(selected, async () => {
+watch(selected, async (period, previous) => {
   clearTimeout(statusTimer)
   const request = ++statusSequence
   refreshStatus.value = undefined
   notice.value = ''
   recovery.value = undefined
-  clearDetailInputs()
-  view.value = props.requestedReview && selected.value === props.requestedPeriod ? 'review' : 'detail'
+  if (previous !== undefined) {
+    clearDetailInputs()
+    view.value = period===props.requestedPeriod && props.requestedView || 'detail'
+    await nextTick()
+    if (request !== statusSequence || unmounted) return
+  }
   await load(true)
   if (request === statusSequence) checkRefresh()
 }, {immediate:true})
@@ -256,10 +264,10 @@ watch(options, (values) => {
     selected.value = values.length === 1 ? values[0].value : undefined
   }
 }, {immediate:true})
-watch([linkedPeriod, () => props.requestedReview], ([period, review]) => {
+watch([linkedPeriod, () => props.requestedView], ([period, requestedView]) => {
   if (period) {
     selected.value = period
-    view.value = review ? 'review' : 'detail'
+    if (requestedView) view.value = requestedView
   }
 }, {immediate:true})
 watch(() => props.unitId, () => load())
@@ -532,7 +540,7 @@ async function loadMore(section, cursorName) {
     <div v-if="draft.issueCount + (draft.advisoryCount || 0) > draft.issues.length" class="paging"><a-button :loading="loading" @click="loadMore('issues', 'afterIssueId')">加载下一页</a-button></div>
   </section>
   <CatalogRuleMatches v-if="hasMatching && (!draft || view==='matching')" :period-id="selected" :draft-available="selectedPeriod.catalogDraftAvailable"
-    :api="api" :format-money="formatMoney" :format-time="formatTime"/>
+    :api="api" :format-money="formatMoney" :format-time="formatTime" @show-order="emit('show-issue-order',$event)"/>
   <section v-if="!draft && !error && !hasMatching" class="records empty">
     <a-empty :description="periodsLoading || loading ? '正在读取核算期' : ruleSetupLink ? '本期签到名单已就绪，待配置规则' : selected ? '本期暂无草稿' : options.length ? '请选择核算期' : month ? '所选月份暂无核算期' : '暂无核算期'" />
     <a-button v-if="!periodsLoading && !loading && ruleSetupLink" type="primary" :href="ruleSetupLink">配置本期规则</a-button>

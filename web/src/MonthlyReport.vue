@@ -3,7 +3,8 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RadioGroup } from 'ant-design-vue'
 
 const props = defineProps({ api:Function, formatMoney:Function, productId:Number, views:Array, dimensions:Array,
-  unitId:String, unitName:String, month:String, resume:Object })
+  unitId:String, unitName:String, month:String, resume:Object, units:Array })
+const emit = defineEmits(['select-unit'])
 const month = computed(() => props.month)
 const view = defineModel('view', {type:String})
 const dimension = defineModel('dimension', {type:String})
@@ -16,6 +17,7 @@ const error = ref('')
 let sequence = 0
 
 const dimensionLabel = computed(() => props.dimensions.find(option => option.value === dimension.value)?.label)
+const unitIds = computed(() => new Set(props.units?.map(unit=>unit.id)))
 const columns = computed(() => [
   {title:dimensionLabel.value,dataIndex:'name',key:'name',width:135},
   {title:'净业绩',dataIndex:'performanceMinor',key:'performanceMinor',width:108,align:'right'},
@@ -81,6 +83,10 @@ function changePage(next) {
   page.value = next.current
   load()
 }
+function openUnit(id) {
+  periodsOpen.value = true
+  emit('select-unit',id)
+}
 
 watch(() => props.views, choices => {
   if (!choices.some(option => option.value===view.value)) view.value = choices[0]?.value
@@ -116,7 +122,10 @@ defineExpose({refresh,browseState})
         <RadioGroup v-model:value="dimension" :options="dimensions" option-type="button" button-style="solid"
           role="radiogroup" aria-labelledby="monthly-dimension-label"/>
       </div>
-      <span v-if="unitName" class="monthly-scope">组织范围 · {{ unitName }}</span>
+      <div v-if="unitName" class="topbar-actions">
+        <span class="monthly-scope">组织范围 · {{ unitName }}</span>
+        <a-button type="link" size="small" @click="emit('select-unit',undefined)">恢复全部组织</a-button>
+      </div>
     </div>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon>
@@ -143,7 +152,12 @@ defineExpose({refresh,browseState})
       <a-table :columns="columns" :data-source="report.items" :loading="loading" :pagination="pagination" row-key="id"
         :scroll="{x:816}" @change="changePage">
         <template #bodyCell="{column,text,record}">
-          <template v-if="column.key==='name'">{{ text }}<small v-if="record.subtitle" class="order-version">{{ record.subtitle }}</small></template>
+          <template v-if="column.key==='name'">
+            <button v-if="dimension!=='person' && unitIds.has(record.id) && record.id!==unitId" type="button" class="order-link"
+              :aria-label="'按'+text+'查看'" @click="openUnit(record.id)">{{ text }}</button>
+            <span v-else>{{ text }}</span>
+            <small v-if="record.subtitle" class="order-version">{{ record.subtitle }}</small>
+          </template>
           <strong v-else-if="column.key==='totalMinor'" class="numeric">{{ formatMoney(text) }}</strong>
           <span v-else class="numeric">{{ formatMoney(text) }}</span>
         </template>
