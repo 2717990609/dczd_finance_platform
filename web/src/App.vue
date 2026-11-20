@@ -1488,6 +1488,7 @@ async function save() {
     @close="rateRule=undefined; appliedRule=undefined" @published="ratePublished"/>
   <CatalogPeriodRule v-if="periodRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="periodRule" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
+    :can-review-activity="wholeWorkspace"
     @close="periodRule=undefined" @published="ratePublished"/>
   <RuleVersionDetails v-if="viewedRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="viewedRule" :can-copy="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId))"

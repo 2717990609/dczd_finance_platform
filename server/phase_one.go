@@ -151,6 +151,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/catalog-period-rules", Handler: s.getCatalogPeriodRule},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-period-rules", Handler: s.postCatalogPeriodRule},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-period-rules/preview", Handler: s.postCatalogPeriodQuote},
+		{Method: http.MethodGet, Path: "/api/v1/catalog-period-activity", Handler: s.getCatalogPeriodActivity},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-people", Handler: s.getCatalogRulePeople},
 		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.listForAuthorizedProducts(practiceCountOpeningsSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-rule-recipients", Handler: s.practiceRuleRecipients},

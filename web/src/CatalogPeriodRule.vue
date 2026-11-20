@@ -1,7 +1,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 
-const props = defineProps({rule:Object, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function})
+const props = defineProps({rule:Object, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
 const emit = defineEmits(['close','published'])
 const sheet = ref()
 const rows = ref([])
@@ -12,10 +12,22 @@ const saving = ref(false)
 const previewing = ref(false)
 const error = ref('')
 const quote = ref()
+const activityMonth = ref(new Date(Date.now()+8*3600000).toISOString().slice(0,7))
+const reviewingActivity = ref(false)
+const activity = ref()
+const activityError = ref('')
 let versionRequest = 0
 let quoteRequest = 0
+let activityRequest = 0
 
 const cycleLabels = {MONTHLY:'自然月',MONTHLY_25_TO_24:'每月 25 日至次月 24 日'}
+const activityIssueLabels = {
+  REFUND_ADJUSTMENT:'退款更正待核对', INVALID_EVENT:'交易编号或金额缺失', DUPLICATE_EVENT:'交易编号重复',
+  REFUND_ORIGIN_MISSING:'退款未能唯一关联原付款', UNCLASSIFIED:'原付款未分类', MAPPING_MISSING:'缺少场景映射',
+  MAPPING_CONFLICT:'场景映射冲突', INVALID_PAYMENT:'原付款信息不完整', REFUND_EXCEEDS_PAYMENT:'累计退款超过原付款',
+}
+const sourceStatusLabels = {READY:'覆盖本期',NOT_CONFIGURED:'来源未配置',NOT_STARTED:'未同步',INCOMPLETE:'同步未完成',
+  OUTSIDE_RANGE:'未覆盖本期',STALE:'同步已过期',SOURCE_CHANGED:'来源已变更',FAILED:'同步失败',CLOCK_GAP:'来源时钟待核',UNSUPPORTED:'来源待核'}
 const localDate = stamp => new Date(Date.parse(stamp) + 8*3600000).toISOString().slice(0,10)
 const firstStart = computed(() => {
   if (!sheet.value) return undefined
@@ -78,6 +90,28 @@ watch([rows,amounts], ()=>{
   previewing.value = false
   quote.value = undefined
 }, {deep:true})
+watch([activityMonth,()=>props.rule.id], ()=>{
+  ++activityRequest
+  activity.value = undefined
+  activityError.value = ''
+  reviewingActivity.value = false
+})
+
+async function readActivity() {
+  const request = ++activityRequest
+  reviewingActivity.value = true
+  activityError.value = ''
+  activity.value = undefined
+  try {
+    const query = new URLSearchParams({ruleId:props.rule.id,month:activityMonth.value})
+    const result = await props.api('/catalog-period-activity?'+query)
+    if (request === activityRequest) activity.value = result
+  } catch (err) {
+    if (request === activityRequest) activityError.value = err.message
+  } finally {
+    if (request === activityRequest) reviewingActivity.value = false
+  }
+}
 
 async function preview() {
   const request = ++quoteRequest
@@ -158,6 +192,54 @@ async function publish() {
           </div>
           <a-button v-if="canSave" type="dashed" :disabled="saving" @click="rows[index].tiers.push({from:undefined,rate:0})">新增档位</a-button>
         </section>
+        <template v-if="canReviewActivity">
+          <h3 class="form-subhead">订单和退款核对</h3>
+          <p class="rule-formula">按当前规则的场景读取本地已同步数据。正式计提还要按原付款规则和团队池归属分组，并核对已确认结转。</p>
+          <a-form layout="inline" class="period-activity-query">
+            <a-form-item label="核对账期" html-for="period-activity-month">
+              <a-input id="period-activity-month" v-model:value="activityMonth" type="month"/>
+            </a-form-item>
+            <a-form-item>
+              <a-button :disabled="!activityMonth" :loading="reviewingActivity" @click="readActivity">读取已同步数据</a-button>
+            </a-form-item>
+          </a-form>
+          <a-alert v-if="activityError" class="feedback" :message="activityError" type="error" show-icon/>
+          <section v-if="activity" class="period-activity-result" aria-label="已同步数据核对结果">
+            <p class="rule-formula">{{ formatTime(activity.start) }} 至 {{ formatTime(activity.through) }}（截止时刻不含）</p>
+            <div class="period-activity-source">
+              <a-tag v-for="source in activity.sources" :key="source.stream" :color="source.status==='READY'?'green':'orange'">
+                {{ optionLabel('dcaiOrderStream',source.stream) || source.stream }} · {{ sourceStatusLabels[source.status] }}
+              </a-tag>
+              <a-tag v-if="!activity.sources.length" color="orange">缺少可核对的来源映射</a-tag>
+            </div>
+            <div class="period-activity-table">
+              <table>
+                <thead><tr><th>场景</th><th>已匹配收款</th><th>已匹配退款</th><th>其中跨期原付款退款</th></tr></thead>
+                <tbody>
+                  <tr v-for="scope in activity.scenarios" :key="scope.code">
+                    <th scope="row">{{ sheet.scenarios.find(sku=>sku.code===scope.code)?.label || scope.code }}
+                      <small v-if="!scope.mapped" class="order-version">本期缺少映射</small>
+                    </th>
+                    <td>
+                      <template v-if="scope.mapped || scope.paymentCount">{{ formatMoney(scope.receiptsMinor) }} <small>· {{ scope.paymentCount }} 笔</small></template>
+                      <template v-else>—</template>
+                    </td>
+                    <td>
+                      <template v-if="scope.mapped || scope.refundCount">{{ formatMoney(scope.refundsMinor) }} <small>· {{ scope.refundCount }} 笔</small></template>
+                      <template v-else>—</template>
+                    </td>
+                    <td>{{ scope.mapped || scope.refundCount ? formatMoney(scope.priorPeriodRefundsMinor) : '—' }}</td>
+                  </tr>
+                  <tr><th scope="row">已匹配合计</th><td>{{ formatMoney(activity.receiptsMinor) }}</td>
+                    <td>{{ formatMoney(activity.refundsMinor) }}</td><td>{{ formatMoney(activity.priorPeriodRefundsMinor) }}</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <ul v-if="Object.keys(activity.issues).length" class="period-activity-issues" aria-label="待核交易">
+              <li v-for="(count,issue) in activity.issues" :key="issue">{{ activityIssueLabels[issue] || issue }} · {{ count }} 笔</li>
+            </ul>
+          </section>
+        </template>
         <h3 class="form-subhead">金额演算</h3>
         <p class="rule-formula">手填所选场景的汇总金额，用于核对档位和计提金额。</p>
         <a-form layout="vertical">
@@ -203,5 +285,14 @@ async function publish() {
 .period-tier-grid :deep(.ant-input-number),.period-quote-inputs :deep(.ant-input-number) { width:100%; }
 .period-quote-inputs { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
 .period-quote-result { margin-top:12px; }
+.period-activity-query,.period-activity-result { margin-bottom:14px; }
+.period-activity-source { margin-bottom:8px; }
+.period-activity-table { overflow-x:auto; }
+.period-activity-table table { width:100%; min-width:520px; border-collapse:collapse; font-size:13px; }
+.period-activity-table th,.period-activity-table td { padding:8px; border-bottom:1px solid var(--line); text-align:left; }
+.period-activity-table th { font-weight:500; }
+.period-activity-table td { white-space:nowrap; font-variant-numeric:tabular-nums; }
+.period-activity-table td small { color:var(--muted); }
+.period-activity-issues { margin:8px 0 0; padding-inline-start:18px; color:var(--muted); }
 @media (max-width:540px) { .period-quote-inputs { grid-template-columns:1fr; gap:0; } }
 </style>

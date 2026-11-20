@@ -456,6 +456,8 @@ CREATE INDEX IF NOT EXISTS source_order_versions_refund_date
 
 CREATE INDEX IF NOT EXISTS source_order_versions_refund_identity
  ON source_order_versions(source,(fact->>'domain'),(fact->>'refundId')) WHERE kind='REFUND_SUCCEEDED';
+CREATE INDEX IF NOT EXISTS source_order_versions_refund_target_lookup
+ ON source_order_versions(source,(fact#>>'{refundsPayment,0,orderId}'),occurred_at) WHERE kind='REFUND_SUCCEEDED';
 
 CREATE TABLE IF NOT EXISTS calculation_draft_refunds (
  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
