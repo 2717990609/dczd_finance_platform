@@ -89,14 +89,15 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 }
 
 type practiceReplay struct {
-	rule       paymentRule
-	members    []practiceEnrollment
-	payments   map[string][]paymentInput
-	refunds    map[int64][]practiceRefundMatch
-	identities map[identityKey][]identityAssignment
-	history    practiceTierHistory
-	runtime    practiceDraftRuntime
-	posted     map[int64]practiceReplayPosting
+	independent bool
+	rule        paymentRule
+	members     []practiceEnrollment
+	payments    map[string][]paymentInput
+	refunds     map[int64][]practiceRefundMatch
+	identities  map[identityKey][]identityAssignment
+	history     practiceTierHistory
+	runtime     practiceDraftRuntime
+	posted      map[int64]practiceReplayPosting
 }
 
 type practiceReplayPosting struct {
@@ -105,34 +106,51 @@ type practiceReplayPosting struct {
 
 func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practiceReplay, error) {
 	var replay practiceReplay
-	var values practiceReplayInputs
+	var saved *practiceReplayInputs
 	var rosterID int64
 	err := tx.QueryRow(ctx, `SELECT d.practice_roster_id,r.id,r.components,d.practice_replay_inputs
 	 FROM calculation_drafts d JOIN rule_versions r ON r.id=d.rule_id JOIN settlements s ON s.period_id=d.period_id
-	 WHERE d.period_id=$1 AND d.practice_replay_inputs IS NOT NULL`, periodID).
-		Scan(&rosterID, &replay.rule.ID, &replay.rule.Components, &values)
+	 WHERE d.period_id=$1 AND d.practice_roster_id IS NOT NULL`, periodID).
+		Scan(&rosterID, &replay.rule.ID, &replay.rule.Components, &saved)
 	if err != nil {
 		return replay, err
 	}
-	if values.Version != 1 {
+	if saved != nil && saved.Version != 1 {
 		return replay, errPracticeRefundReplay
 	}
 	replay.members, err = readPracticeMembers(ctx, tx, []int64{rosterID}, false)
 	if err != nil {
 		return replay, err
 	}
+	var values practiceReplayInputs
+	if saved != nil {
+		values = *saved
+	} else {
+		if hasPracticeReplayDependencies(replay.rule, replay.members) {
+			return replay, errPracticeRefundReplay
+		}
+		for _, part := range replay.rule.Components {
+			if (part.Type != "sales" && part.Type != "referral") || (part.Mode != "rate" && part.Mode != "fixed") {
+				return replay, errPracticeRefundReplay
+			}
+		}
+		replay.independent = true
+	}
 	replay.payments = make(map[string][]paymentInput)
 	replay.refunds = make(map[int64][]practiceRefundMatch)
 	replay.posted = make(map[int64]practiceReplayPosting)
-	rows, err := tx.Query(ctx, `SELECT v.id,v.fact,coalesce(p.payment_version_id,0),coalesce(p.person_id,0)
+	rows, err := tx.Query(ctx, `SELECT v.id,v.fact,coalesce(p.payment_version_id,0),coalesce(p.person_id,0),
+	 coalesce(c.company_id,''),coalesce(c.recommendation_company_id,''),coalesce(c.recommendation_conflict,false)
 	 FROM calculation_draft_performance p JOIN source_order_versions v ON v.id=p.source_version_id
-	 WHERE p.period_id=$1 ORDER BY v.occurred_at,v.id`, periodID)
+	 LEFT JOIN source_payment_companies c ON c.source_version_id=v.id AND $2
+	 WHERE p.period_id=$1 ORDER BY v.occurred_at,v.id`, periodID, replay.independent)
 	if err != nil {
 		return replay, err
 	}
 	var original, person int64
 	var item paymentInput
-	_, err = pgx.ForEachRow(rows, []any{&item.ID, &item.Fact, &original, &person}, func() error {
+	var company practiceReplayCompany
+	_, err = pgx.ForEachRow(rows, []any{&item.ID, &item.Fact, &original, &person, &company.Sales, &company.Referrer, &company.Conflict}, func() error {
 		if item.Fact.AmountMinor == nil || *item.Fact.AmountMinor <= 0 {
 			return errPracticeRefundReplay
 		}
@@ -141,8 +159,11 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 			replay.refunds[original] = append(replay.refunds[original], practiceRefundMatch{event: item})
 		} else {
 			f := &item.Fact
-			company := values.PaymentCompanies[f.OrderID]
-			f.SalesCompanyID, f.ReferrerCompanyID, f.ReferrerConflict = company.Sales, company.Referrer, company.Conflict
+			assignment := company
+			if !replay.independent {
+				assignment = values.PaymentCompanies[f.OrderID]
+			}
+			f.SalesCompanyID, f.ReferrerCompanyID, f.ReferrerConflict = assignment.Sales, assignment.Referrer, assignment.Conflict
 			replay.payments[f.OrderID] = append(replay.payments[f.OrderID], item)
 		}
 		return nil
@@ -153,6 +174,11 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 	replay.identities = make(map[identityKey][]identityAssignment, len(values.Identities))
 	for user, assignments := range values.Identities {
 		replay.identities[identityKey{"DCZD", user}] = assignments
+	}
+	if replay.independent {
+		if err := replay.loadIndependentIdentities(ctx, tx, periodID); err != nil {
+			return replay, err
+		}
 	}
 	replay.history = practiceTierHistory{replaying: true, frozenPrior: values.PriorCounts}
 	replay.runtime = practiceDraftRuntime{
@@ -176,6 +202,25 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 		replay.runtime.recommendations.directory[id] = parent
 	}
 	return replay, nil
+}
+
+func (r practiceReplay) loadIndependentIdentities(ctx context.Context, tx pgx.Tx, periodID int64) error {
+	// Each original line pins the mapping used for its payment. Its current
+	// validity end may have been filled in after the class was confirmed.
+	rows, err := tx.Query(ctx, `SELECT DISTINCT i.external_id,i.id,l.person_id,v.occurred_at,v.occurred_at+interval '1 microsecond'
+	 FROM calculation_draft_lines l JOIN identity_mappings i ON i.id=l.identity_id
+	 JOIN source_order_versions v ON v.id=l.source_version_id WHERE l.period_id=$1`, periodID)
+	if err != nil {
+		return err
+	}
+	var external string
+	var assignment identityAssignment
+	_, err = pgx.ForEachRow(rows, []any{&external, &assignment.ID, &assignment.PersonID, &assignment.ValidFrom, &assignment.ValidTo}, func() error {
+		key := identityKey{"DCZD", external}
+		r.identities[key] = append(r.identities[key], assignment)
+		return nil
+	})
+	return err
 }
 
 func (r practiceReplay) calculate() (paymentDraft, error) {

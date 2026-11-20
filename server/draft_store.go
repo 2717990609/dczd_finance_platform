@@ -328,7 +328,7 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 		}
 	}
 	for _, issue := range result.Issues {
-		if issue.Advisory {
+		if issue.Advisory && issue.Code != "PRACTICE_CORRECTION_LATER_TIERS" {
 			continue
 		}
 		fact := facts[issue.FactID]
@@ -359,6 +359,15 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 			correctionLine
 			Organization *reportOrganization `json:",omitempty"`
 		}{correction, correction.organization.present()}); err != nil {
+			return nil, err
+		}
+	}
+	for _, change := range result.practiceChanges {
+		if err := encode.Encode(struct {
+			Class, Payment int64
+			Key            string
+			Identities     map[string][]identityAssignment
+		}{change.ClassID, change.OriginalID, change.Key, change.Identities}); err != nil {
 			return nil, err
 		}
 	}
@@ -419,6 +428,11 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if err = storeDraftPerformance(ctx, tx, summary.PeriodID, result.Performance); err != nil {
 		return err
+	}
+	if summary.PracticeRefundMonth {
+		if err := storePracticeCorrectionRevisions(ctx, tx, summary.PeriodID, result.practiceChanges); err != nil {
+			return err
+		}
 	}
 	if _, err = tx.Exec(ctx, "DELETE FROM calculation_draft_corrections WHERE period_id=$1", summary.PeriodID); err != nil {
 		return err
@@ -591,11 +605,14 @@ const draftDetailSQL = `SELECT jsonb_build_object(
   WHERE a.period_id=d.period_id AND a.id>$5 ORDER BY a.id LIMIT 50
  ) a),'[]'),
  'corrections',coalesce((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM (
-  SELECT c.id,c.amount_minor AS "amountMinor",v.order_id AS "orderId",v.fact->>'orderNo' AS "orderNo",
+  SELECT c.id,c.amount_minor AS "amountMinor",paid.order_id AS "orderId",
+   CASE WHEN paid.order_id=v.order_id AND v.kind='ORDER_PAID' THEN v.fact->>'orderNo' ELSE paid.fact->>'orderNo' END AS "orderNo",
    v.version AS "sourceVersion",p.name AS "personName",old_person.name AS "originalPersonName",
+   CASE WHEN paid.order_id<>v.order_id THEN v.order_id END AS "triggerOrderId",v.fact->>'refundId' AS "triggerRefundId",
    original_period.name AS "originalPeriod",coalesce(r.version,cv.version_no) AS "ruleVersion"
   FROM calculation_draft_corrections c JOIN source_order_versions v ON v.id=c.source_version_id
   JOIN people p ON p.id=c.person_id JOIN calculation_draft_lines l ON l.id=c.original_line_id
+  JOIN source_order_versions paid ON paid.id=l.source_version_id
   JOIN people old_person ON old_person.id=l.person_id JOIN periods original_period ON original_period.id=l.period_id
   LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
   WHERE c.period_id=d.period_id AND c.id>$6 ORDER BY c.id LIMIT 50

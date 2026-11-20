@@ -77,6 +77,18 @@ const draftRefreshFacts = `WITH keys AS (
  JOIN periods p ON p.source_period_key=e.period_key
  JOIN LATERAL (SELECT id FROM practice_rosters r WHERE r.period_key=e.period_key ORDER BY source_version DESC LIMIT 1) latest ON true
  JOIN practice_roster_members member ON member.roster_id=latest.id AND member.enrollment_id=e.id
+), practice_changed_classes AS (
+ SELECT DISTINCT class.id,class.product_id FROM changed c
+ JOIN source_order_versions latest ON latest.id=c.current_id
+ JOIN source_order_versions previous ON previous.id=c.previous_id
+ JOIN source_order_versions original ON original.source=latest.source AND original.order_id=latest.order_id
+  AND original.line_id=latest.line_id AND original.record_key=latest.record_key AND original.kind=latest.kind
+ JOIN calculation_draft_performance booked ON booked.source_version_id=original.id AND booked.payment_version_id IS NULL
+ JOIN settlements final ON final.period_id=booked.period_id
+ JOIN periods class ON class.id=booked.period_id AND class.calendar_month IS NULL AND class.source_period_key IS NOT NULL
+ WHERE latest.source='DCZD' AND latest.kind='ORDER_PAID' AND latest.fact->>'domain'='PRACTICE'
+  AND (latest.fact->'referrerId',latest.fact->'participants')
+  IS DISTINCT FROM (previous.fact->'referrerId',previous.fact->'participants')
 ), corrected_originals AS (
  SELECT DISTINCT line.id,prior.product_id FROM events v JOIN source_order_versions paid
   ON paid.source=v.source AND paid.order_id=v.order_id AND paid.kind='ORDER_PAID'
@@ -115,6 +127,11 @@ UNION SELECT posted.period_id FROM corrected_originals o JOIN calculation_draft_
 UNION SELECT issue.period_id FROM corrected_originals o JOIN calculation_draft_issues issue ON issue.correction_line_id=o.id
 UNION SELECT id FROM classes
 UNION SELECT id FROM practice_refund_months
+UNION SELECT p.id FROM practice_changed_classes c JOIN periods p USING(product_id) WHERE p.calendar_month IS NOT NULL
+ AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
+UNION SELECT a.period_id FROM practice_changed_classes c JOIN calculation_draft_practice_changes a ON a.class_period_id=c.id
+UNION SELECT i.period_id FROM practice_changed_classes c JOIN calculation_draft_lines l ON l.period_id=c.id
+ JOIN calculation_draft_issues i ON i.correction_line_id=l.id
 UNION SELECT p.id FROM classes c JOIN periods p ON p.product_id=c.product_id AND p.ordinal>c.ordinal
   AND split_part(p.source_period_key,':',3)=c.series
  WHERE EXISTS(SELECT 1 FROM rule_versions rv WHERE ` + matchingRuleScope + ` AND rv.components @>'[{"mode":"tiered"}]')`
@@ -142,6 +159,7 @@ const draftRefreshAfterClose = `WITH closing AS (
  JOIN calculation_drafts class ON class.period_id=original.period_id AND class.practice_replay_inputs IS NOT NULL
  JOIN periods original_period ON original_period.id=class.period_id AND original_period.product_id=closing.product_id
  WHERE closing.period_mode='class'
+ UNION SELECT c.class_period_id FROM calculation_draft_practice_changes c WHERE c.period_id=$1
 ), payments AS MATERIALIZED (
  SELECT post.source_version_id FROM calculation_draft_performance post
  WHERE post.payment_version_id IS NULL AND (post.period_id=$1 OR post.period_id IN (SELECT period_id FROM affected_classes))
@@ -165,7 +183,15 @@ WHERE (original.period_mode='class' AND p.calendar_month IS NOT NULL OR original
 UNION SELECT period_id FROM practice_payment_dependents($1)
 UNION SELECT c.period_id FROM closed_adjustments a JOIN calculation_draft_corrections c USING(original_line_id)
 UNION SELECT i.period_id FROM closed_adjustments a JOIN calculation_draft_issues i ON i.correction_line_id=a.original_line_id
-UNION SELECT r.period_id FROM closed_adjustments a JOIN calculation_draft_refunds r USING(original_line_id)`
+UNION SELECT r.period_id FROM closed_adjustments a JOIN calculation_draft_refunds r USING(original_line_id)
+UNION SELECT c.period_id FROM affected_classes a JOIN calculation_draft_practice_changes c ON c.class_period_id=a.period_id
+UNION SELECT i.period_id FROM affected_classes a JOIN calculation_draft_lines l ON l.period_id=a.period_id
+ JOIN calculation_draft_issues i ON i.correction_line_id=l.id
+UNION SELECT c.period_id FROM closing later
+ JOIN periods earlier ON earlier.product_id=later.product_id AND earlier.ordinal<later.ordinal
+  AND split_part(earlier.source_period_key,':',3)=split_part(later.source_period_key,':',3)
+ JOIN calculation_draft_practice_changes c ON c.class_period_id=earlier.id
+ WHERE later.period_mode='class' AND later.source_period_key IS NOT NULL`
 
 const draftRefreshRoster = `WITH base AS (
  SELECT p.id,p.product_id,p.ordinal,p.source_period_key,split_part(p.source_period_key,':',3) AS series FROM periods p

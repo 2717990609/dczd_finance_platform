@@ -335,14 +335,19 @@ BEGIN
   UNION SELECT original_line_id FROM calculation_draft_refunds WHERE period_id=OLD.period_id
  ), related_lines AS (
   SELECT DISTINCT linked.id FROM applied a JOIN calculation_draft_lines original ON original.id=a.original_line_id
-  JOIN calculation_draft_lines linked ON linked.period_id=original.period_id AND linked.source_version_id=original.source_version_id
-  WHERE original.catalog_rule_id IS NOT NULL
+  JOIN calculation_draft_lines linked ON linked.period_id=original.period_id
+   AND (original.practice_enrollment_id IS NOT NULL OR linked.source_version_id=original.source_version_id)
+  WHERE original.catalog_rule_id IS NOT NULL OR original.practice_enrollment_id IS NOT NULL
+  UNION SELECT linked.id FROM calculation_draft_practice_changes c
+   JOIN calculation_draft_lines linked ON linked.period_id=c.class_period_id WHERE c.period_id=OLD.period_id
   UNION SELECT original.id FROM applied a JOIN calculation_draft_lines original ON original.id=a.original_line_id
   WHERE original.component_type='referral'
  ), related_adjustments AS (
   SELECT r.period_id,true AS posting FROM related_lines l JOIN calculation_draft_refunds r ON r.original_line_id=l.id
   UNION SELECT c.period_id,true FROM related_lines l JOIN calculation_draft_corrections c ON c.original_line_id=l.id
   UNION SELECT i.period_id,false FROM related_lines l JOIN calculation_draft_issues i ON i.correction_line_id=l.id
+  UNION SELECT c.period_id,true FROM related_lines l JOIN calculation_draft_lines origin ON origin.id=l.id
+   JOIN calculation_draft_practice_changes c ON c.class_period_id=origin.period_id
  )
  SELECT array_agg(DISTINCT a.period_id) FILTER (WHERE s.id IS NULL),coalesce(bool_or(a.posting AND s.id>OLD.id),false)
  INTO adjustment_dependents,has_later_adjustment
@@ -351,6 +356,9 @@ BEGIN
     SELECT 1 FROM calculation_draft_lines l
     JOIN calculation_draft_refunds a ON a.original_line_id=l.id
     JOIN settlements s ON s.period_id=a.period_id WHERE l.period_id=OLD.period_id AND s.id<>OLD.id
+ ) OR EXISTS(
+    SELECT 1 FROM calculation_draft_practice_changes c JOIN settlements s USING(period_id)
+    WHERE c.class_period_id=OLD.period_id
  ) OR EXISTS(
     SELECT 1 FROM calculation_draft_lines l
     JOIN calculation_draft_corrections a ON a.original_line_id=l.id
@@ -388,6 +396,7 @@ BEGIN
  SELECT array_agg(dep.period_id) INTO correction_dependents FROM (
   SELECT a.period_id FROM calculation_draft_corrections a JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id
   UNION SELECT i.period_id FROM calculation_draft_issues i JOIN calculation_draft_lines l ON l.id=i.correction_line_id WHERE l.period_id=OLD.period_id
+  UNION SELECT c.period_id FROM calculation_draft_practice_changes c WHERE c.class_period_id=OLD.period_id
  ) dep;
  DELETE FROM calculation_drafts
  WHERE period_id IN (SELECT a.period_id FROM calculation_draft_refunds a
@@ -420,7 +429,8 @@ BEGIN
      OR EXISTS(SELECT 1 FROM calculation_draft_performance a JOIN settlements s USING(period_id)
        WHERE a.source_version_id=OLD.id OR a.payment_version_id=OLD.id OR a.completion_version_id=OLD.id OR a.prior_refund_version_id=OLD.id)
      OR EXISTS(SELECT 1 FROM calculation_draft_refunds a JOIN settlements s USING(period_id) WHERE a.refund_source_version_id=OLD.id)
-     OR EXISTS(SELECT 1 FROM calculation_draft_corrections a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id) THEN
+     OR EXISTS(SELECT 1 FROM calculation_draft_corrections a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id)
+     OR EXISTS(SELECT 1 FROM calculation_draft_practice_changes a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id) THEN
    RAISE EXCEPTION 'source version is referenced by a confirmed calculation' USING ERRCODE='55000';
   END IF;
  ELSE
@@ -479,6 +489,20 @@ CREATE INDEX IF NOT EXISTS calculation_corrections_original ON calculation_draft
 CREATE INDEX IF NOT EXISTS calculation_corrections_source ON calculation_draft_corrections(source_version_id);
 CREATE INDEX IF NOT EXISTS calculation_corrections_recipient ON calculation_draft_corrections(person_id,original_line_id);
 CREATE OR REPLACE TRIGGER protect_confirmed_corrections BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_corrections
+ FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+
+CREATE TABLE IF NOT EXISTS calculation_draft_practice_changes (
+ period_id bigint NOT NULL REFERENCES calculation_drafts(period_id) ON DELETE CASCADE,
+ class_period_id bigint NOT NULL REFERENCES periods(id),
+ original_version_id bigint NOT NULL REFERENCES source_order_versions(id),
+ source_version_id bigint NOT NULL REFERENCES source_order_versions(id),
+ PRIMARY KEY(period_id,class_period_id,original_version_id),
+ CHECK (period_id<>class_period_id AND original_version_id<>source_version_id)
+);
+CREATE INDEX IF NOT EXISTS calculation_practice_changes_class ON calculation_draft_practice_changes(class_period_id,original_version_id);
+CREATE INDEX IF NOT EXISTS calculation_practice_changes_source ON calculation_draft_practice_changes(source_version_id);
+ALTER TABLE calculation_draft_practice_changes ADD COLUMN IF NOT EXISTS identity_bindings jsonb;
+CREATE OR REPLACE TRIGGER protect_confirmed_practice_changes BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_practice_changes
  FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
 
 CREATE TABLE IF NOT EXISTS correction_recovery_decisions (

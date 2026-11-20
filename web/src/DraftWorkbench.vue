@@ -84,6 +84,10 @@ const reason = {
   CORRECTION_MISSING_FACT_OR_RULE: '缺少结算时使用的推荐规则或有效的最新付款金额',
   CORRECTION_REFUND_CONFLICT: '最新付款与已登记退款无法按结算时规则对平',
   CORRECTION_RECOVERY_PENDING: '待确认扣回方式',
+  PRACTICE_CORRECTION_WAITING: '该班次有较早账期的受益人更正待处理',
+  PRACTICE_CORRECTION_REPLAY_REQUIRED: '无法按原班次规则完成复算，请核对订金、尾款、人员归属和累计人数',
+  PRACTICE_CORRECTION_LINKED_REVIEW: '归属变更涉及公司、团队池或新增计提分项，请核对班次结算',
+  PRACTICE_CORRECTION_LATER_TIERS: '本次更正可能影响后续已结算班次的累计人数，请核对后续班次',
   PRACTICE_DUPLICATE_ENROLLMENT: '同一报名和付款仍在其他期次，请在来源名单核对延期',
   PRACTICE_PAYMENT_ALREADY_SETTLED: '报名中的付款已结算，请核对原班次和延期记录',
   PRACTICE_REFUND_PENDING: '对应付款已有退款，请重新试算',
@@ -396,6 +400,9 @@ async function loadMore(section, cursorName) {
           <template v-if="column.key==='order'">
             {{ record.orderNo || record.orderId }}
             <small class="order-version">结算时规则 v{{ record.ruleVersion }} · 订单版本 {{ record.sourceVersion }}</small>
+            <small v-if="record.triggerOrderId || record.triggerRefundId" class="order-version">
+              联动来源 {{ record.triggerOrderId || record.orderId }}<template v-if="record.triggerRefundId"> · 退款 {{ record.triggerRefundId }}</template>
+            </small>
           </template>
           <template v-else-if="column.key==='amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
         </template>

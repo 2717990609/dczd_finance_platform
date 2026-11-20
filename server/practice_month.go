@@ -65,6 +65,9 @@ func computePracticeRefundMonth(ctx context.Context, tx pgx.Tx, id int64, window
 	if err := applyRefundEvents(ctx, tx, id, window, nil, nil, &draft, nil, facts, true); err != nil {
 		return paymentDraft{}, nil, err
 	}
+	if err := addPracticeCorrections(ctx, tx, id, window, &draft, facts); err != nil {
+		return paymentDraft{}, nil, err
+	}
 	inputs := make([]paymentInput, 0, len(facts))
 	for _, f := range facts {
 		inputs = append(inputs, paymentInput{ID: f.ID, Fact: f.Fact})

@@ -58,36 +58,9 @@ func applyPracticeReplayRefunds(ctx context.Context, tx pgx.Tx, draft *paymentDr
 }
 
 func replayPracticeRefunds(ctx context.Context, tx pgx.Tx, classID int64, events []practiceReplayRefund) ([]refundLine, error) {
-	replay, err := readPracticeReplay(ctx, tx, classID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, errPracticeRefundReplay
-	}
+	replay, originals, err := readVerifiedPracticeReplay(ctx, tx, classID)
 	if err != nil {
 		return nil, err
-	}
-	originals, err := readPracticeReplayOriginals(ctx, tx, classID)
-	if err != nil {
-		return nil, err
-	}
-	baseline, err := replay.calculate()
-	if err != nil {
-		return nil, err
-	}
-	before, err := practiceReplayLines(baseline.Lines)
-	if err != nil || len(before) != len(originals) || len(baseline.Performance) != len(replay.posted) {
-		return nil, errPracticeRefundReplay
-	}
-	for _, posting := range baseline.Performance {
-		expected := practiceReplayPosting{posting.PaymentVersionID, posting.PersonID, posting.Principal}
-		if replay.posted[posting.SourceVersionID] != expected {
-			return nil, errPracticeRefundReplay
-		}
-	}
-	for _, line := range originals {
-		if value, found := before[line.practiceReplayLineKey]; !found || value.Amount != line.amount || value.Base != line.base ||
-			line.recovered < 0 || line.recovered > line.amount {
-			return nil, errPracticeRefundReplay
-		}
 	}
 	if err := replay.loadSettledRefunds(ctx, tx, classID); err != nil {
 		return nil, err
@@ -131,6 +104,41 @@ func replayPracticeRefunds(ctx context.Context, tx pgx.Tx, classID int64, events
 		}
 	}
 	return lines, nil
+}
+
+func readVerifiedPracticeReplay(ctx context.Context, tx pgx.Tx, classID int64) (practiceReplay, []practiceReplayOriginal, error) {
+	replay, err := readPracticeReplay(ctx, tx, classID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return replay, nil, errPracticeRefundReplay
+	}
+	if err != nil {
+		return replay, nil, err
+	}
+	originals, err := readPracticeReplayOriginals(ctx, tx, classID)
+	if err != nil {
+		return replay, nil, err
+	}
+	baseline, err := replay.calculate()
+	if err != nil {
+		return replay, nil, err
+	}
+	before, err := practiceReplayLines(baseline.Lines)
+	if err != nil || len(before) != len(originals) || len(baseline.Performance) != len(replay.posted) {
+		return replay, nil, errPracticeRefundReplay
+	}
+	for _, posting := range baseline.Performance {
+		expected := practiceReplayPosting{posting.PaymentVersionID, posting.PersonID, posting.Principal}
+		if replay.posted[posting.SourceVersionID] != expected {
+			return replay, nil, errPracticeRefundReplay
+		}
+	}
+	for _, line := range originals {
+		if value, found := before[line.practiceReplayLineKey]; !found || value.Amount != line.amount || value.Base != line.base ||
+			line.recovered < 0 || line.recovered > line.amount {
+			return replay, nil, errPracticeRefundReplay
+		}
+	}
+	return replay, originals, nil
 }
 
 func practiceReplayLines(lines []draftLine) (map[practiceReplayLineKey]draftLine, error) {

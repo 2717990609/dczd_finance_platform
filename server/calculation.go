@@ -65,6 +65,7 @@ type paymentDraft struct {
 	PracticeEnrollments []int64
 	practicePriorCounts map[int64]int64
 	practiceReplay      *practiceReplayInputs
+	practiceChanges     []practiceCorrectionRevision
 	Lines               []draftLine
 	Performance         []draftPerformance
 	Issues              []draftIssue

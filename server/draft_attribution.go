@@ -258,6 +258,18 @@ func attachReportOrganizations(ctx context.Context, tx pgx.Tx, draft *paymentDra
 
 // Correct an existing recipient against their original booked organization.
 // A recipient added by this change is resolved at the original payment time.
+func attributeCorrectionRecipients(ctx context.Context, tx pgx.Tx, corrections []correctionLine) error {
+	recipients := make([]int64, len(corrections))
+	for i, line := range corrections {
+		recipients[i] = line.PersonID
+	}
+	organizations, err := loadReportAttribution(ctx, tx, recipients, nil)
+	if err != nil {
+		return err
+	}
+	return attributeCorrections(ctx, tx, corrections, organizations)
+}
+
 func attributeCorrections(ctx context.Context, tx pgx.Tx, corrections []correctionLine, index reportAttribution) error {
 	lineIDs, people := make([]int64, len(corrections)), make([]int64, len(corrections))
 	for i, c := range corrections {

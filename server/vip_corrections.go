@@ -156,15 +156,7 @@ func addVIPRecipientCorrections(ctx context.Context, tx pgx.Tx, periodID int64, 
 	if len(draft.Corrections) == 0 {
 		return nil
 	}
-	recipients := make([]int64, len(draft.Corrections))
-	for i, line := range draft.Corrections {
-		recipients[i] = line.PersonID
-	}
-	organizations, err := loadReportAttribution(ctx, tx, recipients, nil)
-	if err != nil {
-		return err
-	}
-	return attributeCorrections(ctx, tx, draft.Corrections, organizations)
+	return attributeCorrectionRecipients(ctx, tx, draft.Corrections)
 }
 
 func loadVIPCorrectionPostings(ctx context.Context, tx pgx.Tx, payments []vipCorrectionPayment) ([]correctionInput, error) {
