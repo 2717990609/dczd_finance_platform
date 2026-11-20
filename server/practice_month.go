@@ -146,5 +146,5 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 	if practiceCompanyRate(original.Base, rate) != original.Accrued {
 		return replay
 	}
-	return component{Mode: "practice_rate", Value: rate}
+	return component{RefundPolicy: "proportional"}
 }

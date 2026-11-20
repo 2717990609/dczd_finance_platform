@@ -436,6 +436,7 @@ func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *test
 	class := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "八月班", Ordinal: 1,
 		StartsOn: "2026-08-08", EndsOn: "2026-08-09", SourcePeriodKey: "PRACTICE:1:1:1"}))
 	month := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "九月", SettlementMonth: "2026-09"}))
+	nextMonth := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "十月", SettlementMonth: "2026-10"}))
 	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "category"}))
 	const first = "41000000-0000-4000-8000-000000000001"
 	const second = "41000000-0000-4000-8000-000000000002"
@@ -470,6 +471,9 @@ func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *test
 	pay := func(order, company string, day int) sourceFact {
 		at := time.Date(2026, 8, day, 12, 0, 0, 0, time.UTC)
 		amount := int64(10000)
+		if order == "31" {
+			amount = 9999
+		}
 		return sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: "category", Kind: "ORDER_PAID", OrderID: order, PaymentID: order,
 			RecordKey: "payment:" + order, Version: "1", SalesCompanyID: company, AmountMinor: &amount, OccurredAt: at, UpdatedAt: at,
 			ReferrerID: "new-seller"}
@@ -514,23 +518,35 @@ func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *test
 		t.Fatal(err)
 	}
 	mustExec(`UPDATE organization_sales_category_history SET category_id=$2 WHERE unit_id=$1`, company, second)
-	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
-	partial := int64(5000)
-	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCZD", Domain: "PRACTICE", SourceKey: "category", Kind: "REFUND_SUCCEEDED",
-			OrderID: "31", RefundID: "refund-31", RecordKey: "refund:31", Version: "1", OccurredAt: at, UpdatedAt: at, AmountMinor: &partial,
-			RefundsPayment: []sourcePaymentReference{{OrderID: "31", RecordID: "31"}}}})
-		return err
-	}); err != nil {
-		t.Fatal(err)
+	refund := func(id string, at time.Time, amount int64) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCZD", Domain: "PRACTICE", SourceKey: "category", Kind: "REFUND_SUCCEEDED",
+				OrderID: "31", RefundID: id, RecordKey: "refund:" + id, Version: "1", OccurredAt: at, UpdatedAt: at, AmountMinor: &amount,
+				RefundsPayment: []sourcePaymentReference{{OrderID: "31", RecordID: "31"}}}})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if got := checkDraft(month, -2000, 0); got.RefundCount != 1 {
-		t.Fatalf("expected one refund in September: %+v", got)
+	refund("31", time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC), 501)
+	partial := checkDraft(month, -200, 0)
+	if partial.RefundCount != 1 {
+		t.Fatalf("expected one refund in September: %+v", partial)
 	}
 	var originalCompany string
 	if err := s.db.QueryRow(ctx, `SELECT l.beneficiary_unit_id::text FROM calculation_draft_refunds r
 	 JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1`, month).Scan(&originalCompany); err != nil || originalCompany != company {
 		t.Fatalf("refund should reverse the original company, got %s: %v", originalCompany, err)
+	}
+	mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES ($1,$2,'fixture')`, month, partial.Version)
+	refund("31-partial", time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC), 125)
+	if next := checkDraft(nextMonth, -50, 0); next.RefundCount != 1 {
+		t.Fatalf("expected cumulative reversal of 250 cents, got %+v", next)
+	}
+	refund("31-complete", time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC), 9373)
+	if complete := checkDraft(nextMonth, -3800, 0); complete.RefundCount != 2 {
+		t.Fatalf("full refund should recover the rest of the original company award: %+v", complete)
 	}
 }
 func TestPracticeCompanyMultiSelectAndExceptionsUseOneStandard(t *testing.T) {
