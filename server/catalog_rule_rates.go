@@ -14,7 +14,18 @@ type catalogRateComponent struct {
 	Rate        *int64             `json:"rateBps,omitempty"`
 	Rows        []catalogRateRow   `json:"rows,omitempty"`
 	Recipient   *catalogRulePerson `json:"recipient,omitempty"`
+	TargetKind  string             `json:"targetKind"`
 	TargetLabel string             `json:"targetLabel,omitempty"`
+	TeamSplit   *catalogSplitRates `json:"teamSplit,omitempty"`
+}
+
+type catalogSplitRates struct {
+	Total     int64 `json:"total"`
+	Sales     int64 `json:"sales"`
+	HeadSales int64 `json:"headSales"`
+	GroupLead int64 `json:"groupLead"`
+	Service   int64 `json:"service"`
+	TeamLead  int64 `json:"teamLead"`
 }
 
 type catalogRateRow struct {
@@ -63,7 +74,16 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		if err := json.Unmarshal(rawAction, &action); err != nil {
 			return nil, err
 		}
-		item := catalogRateComponent{ItemKey: action.Item, Label: action.Label, Rate: action.Rate}
+		item := catalogRateComponent{ItemKey: action.Item, Label: action.Label, Rate: action.Rate, TargetKind: action.targetKind()}
+		if item.ItemKey == sales.Item {
+			item.TargetKind = "seller"
+			if split := sales.Split; len(split.Teams) != 0 {
+				item.TeamSplit = &catalogSplitRates{
+					Total: split.Total, Sales: split.Assistant, HeadSales: split.HeadSeller,
+					GroupLead: split.Group, Service: split.Service, TeamLead: split.TeamHead,
+				}
+			}
+		}
 		if item.Label == "" {
 			item.Label = item.ItemKey
 		}
@@ -73,7 +93,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 				item.TargetLabel = "待核收款公司"
 			}
 		}
-		if action.PoolName != "" {
+		if item.TargetKind == "pool" {
 			item.TargetLabel = action.PoolName
 			if name := organizations[action.PoolParty]; name != "" {
 				item.TargetLabel += " · " + name

@@ -15,6 +15,7 @@ const field = name => 'practice-benefit-'+props.index+'-'+name
   <a-form-item label="分项名称" required>
     <a-input v-model:value="config.label" aria-label="分项名称" :maxlength="80"/>
   </a-form-item>
+  <h4 class="rule-item-section">发给谁</h4>
   <div class="period-fields">
     <a-form-item label="受益方类型" :html-for="field('recipient')">
       <a-select :id="field('recipient')" v-model:value="config.recipient" :options="recipientTypes"/>
@@ -28,6 +29,8 @@ const field = name => 'practice-benefit-'+props.index+'-'+name
   </div>
   <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
+  <h4 class="rule-item-section">提成怎么算</h4>
+  <p class="rule-formula">本班符合条件的报名净实收 × 计提比例。</p>
   <a-form-item>
     <a-checkbox v-model:checked="config.useTiers">按净实收阶梯选比例</a-checkbox>
   </a-form-item>
@@ -36,7 +39,7 @@ const field = name => 'practice-benefit-'+props.index+'-'+name
   </a-form-item>
   <template v-else>
     <a-form-item>
-      <a-checkbox v-model:checked="config.tierOnWholeClass">用全班净实收选档</a-checkbox>
+      <a-checkbox v-model:checked="config.tierOnWholeClass">用全班净实收选档（含新报和复训）</a-checkbox>
     </a-form-item>
     <div v-for="(tier,i) in config.tiers" :key="i" class="period-fields period-tier">
       <a-form-item label="净实收下限（元）" required>
@@ -53,7 +56,7 @@ const field = name => 'practice-benefit-'+props.index+'-'+name
     <a-button type="dashed" block @click="config.tiers.push({})">添加档位</a-button>
   </template>
   <a-collapse ghost class="period-scope">
-    <a-collapse-panel key="scope" header="限定销售范围或任职">
+    <a-collapse-panel key="scope" header="哪些业绩参与">
       <a-form-item label="销售公司" :html-for="field('companies')">
         <a-select :id="field('companies')" v-model:value="config.salesCompanies" :options="companies"
           mode="multiple" allow-clear :filter-option="byName" placeholder="全部销售公司"/>

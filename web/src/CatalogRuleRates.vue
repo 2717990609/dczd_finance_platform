@@ -31,6 +31,18 @@ const columns = [
 ]
 const componentOptions = computed(() => (sheet.value?.components || []).map(item => ({value:item.itemKey,label:item.label})))
 const component = computed(() => sheet.value?.components.find(item => item.itemKey === selected.value))
+const targetKind = computed(() => component.value?.targetKind || (component.value?.recipient ? 'person' : ''))
+const targetKindLabels = {seller:'订单成交销售',person:'指定个人',company:'指定公司',pool:'团队池'}
+const teamSplit = computed(() => component.value?.teamSplit)
+const splitRows = computed(() => {
+  const split = teamSplit.value
+  return split ? [
+    {label:'成交销售（非团队负责人）', rate:split.sales},
+    {label:'小组组长（按付款时任职）', rate:split.groupLead},
+    {label:'团队负责人', rate:split.teamLead},
+    {label:'服务人员', rate:split.service},
+  ].filter(row=>row.rate > 0) : []
+})
 const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:item.key,label:item.label})))
 const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
 const editable = computed(() => sheet.value?.mayPublish && !saving.value)
@@ -40,6 +52,7 @@ const hasEdits = computed(() => recipientsChanged.value || Object.keys(edits.val
   structure.value.items.length || structure.value.rateRows.length)
 const impactPeriods = computed(() => (props.periods || []).filter(period=>period.productId===sheet.value?.productId && !period.settled))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
+const percent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
 const rows = computed(() => {
   const term = filter.value.trim().toLowerCase()
   return (component.value?.rows || []).filter(row => !term ||
@@ -178,13 +191,21 @@ async function publish() {
           <a-form-item label="分润分项" html-for="catalog-rate-component">
             <a-select id="catalog-rate-component" v-model:value="selected" :options="componentOptions"/>
           </a-form-item>
+          <h3 v-if="component" class="form-subhead">发给谁</h3>
+          <p v-if="targetKind && !recipient && !component?.targetLabel" class="rule-formula">
+            {{ targetKindLabels[targetKind] }}<template v-if="teamSplit"> · 内部团队按岗位拆分</template>
+          </p>
           <a-form-item v-if="recipient" label="指定收款人" html-for="catalog-benefit-person">
             <AppointmentPersonSelect v-if="sheet.mayPublish" id="catalog-benefit-person" :key="selected"
               :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="recipient" :value="recipient.id"
               :disabled="!editable" :placeholder="recipient.id?'输入姓名搜索':recipient.name" @change="setRecipient"/>
             <span v-else>{{ recipient.name }}</span>
           </a-form-item>
-          <a-form-item v-if="component?.targetLabel" label="收款对象">{{ component.targetLabel }}</a-form-item>
+          <a-form-item v-if="component?.targetLabel" :label="targetKindLabels[targetKind] || '收款对象'">{{ component.targetLabel }}</a-form-item>
+          <h3 v-if="component" class="form-subhead">提成怎么算</h3>
+          <p v-if="component?.rateBps != null || component?.rows?.length" class="rule-formula">
+            每笔付款实收 × {{ component.rows?.length ? '命中的费率' : '下方比例' }}
+          </p>
           <a-form-item v-if="component?.rateBps != null" label="比例（%）" html-for="catalog-fixed-rate">
             <a-input-number v-if="!applied" id="catalog-fixed-rate" :value="displayRate(component.rateBps)" :disabled="!sheet.mayPublish || saving"
               :min="0" :max="100" :precision="2" string-mode @update:value="setRate($event,component.rateBps)"/>
@@ -228,6 +249,17 @@ async function publish() {
                   :disabled="!editable" :placeholder="teamPerson('service')?.id?'输入姓名搜索':teamPerson('service')?.name" @change="(id,option)=>setTeamPerson('service',id,option)"/>
                 <span v-else>{{ team.service.name }}</span>
               </a-form-item>
+              <template v-if="teamSplit">
+                <a-descriptions size="small" bordered :column="1">
+                  <a-descriptions-item v-for="row in splitRows" :key="row.label" :label="row.label">
+                    {{ percent(row.rate) }}
+                  </a-descriptions-item>
+                  <a-descriptions-item label="销售分项总比例">{{ percent(teamSplit.total) }}</a-descriptions-item>
+                </a-descriptions>
+                <p class="rule-formula">
+                  团队负责人亲自成交时，成交份额为 {{ percent(teamSplit.headSales) }}，另计团队负责人及服务份额。
+                </p>
+              </template>
             </a-collapse-panel>
           </a-collapse>
           <template v-if="sheet.mayPublish">

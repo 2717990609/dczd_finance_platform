@@ -38,9 +38,12 @@ watch(amounts, choices => {
 </script>
 
 <template>
+  <h4 class="rule-item-section">发给谁</h4>
+  <p class="rule-formula">向成交公司计提销售分润。配置了推荐分润时，另向符合条件的推荐公司计提。</p>
   <a-form-item label="销售来源角色" :html-for="field('role')" required>
     <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
   </a-form-item>
+  <h4 class="rule-item-section">提成怎么算</h4>
   <a-form-item label="适用个人销售规则的内部公司" :html-for="field('internal')"
     extra="新报和复训共用。销售公司归类不明确时，订单列为待核。">
     <a-select :id="field('internal')" v-model:value="component.companySales.internalCompanies" :options="internalOptions"
@@ -62,7 +65,7 @@ watch(amounts, choices => {
       <a-form-item label="类别计算方式" :html-for="field('method-'+i)">
         <a-select :id="field('method-'+i)" :value="category.mode" :options="amounts" @change="modeChanged(category,$event)"/>
       </a-form-item>
-      <a-form-item :label="category.mode==='rate' ? '类别比例（%）' : '类别金额（元）'" :html-for="field('value-'+i)" required>
+      <a-form-item :label="category.mode==='rate' ? '按报名净实收（%）' : '每份报名（元）'" :html-for="field('value-'+i)" required>
         <a-input-number :id="field('value-'+i)" v-model:value="category.value" :min="0"
           :max="category.mode==='rate'?100:undefined" :precision="category.mode==='rate'?4:2"/>
       </a-form-item>
@@ -83,7 +86,7 @@ watch(amounts, choices => {
             <a-form-item label="计算方式" :html-for="field('override-method-'+i+'-'+j)">
               <a-select :id="field('override-method-'+i+'-'+j)" :value="override.mode" :options="amounts" @change="modeChanged(override,$event)"/>
             </a-form-item>
-            <a-form-item :label="override.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="field('override-value-'+i+'-'+j)" required>
+            <a-form-item :label="override.mode==='rate' ? '按报名净实收（%）' : '每份报名（元）'" :html-for="field('override-value-'+i+'-'+j)" required>
               <a-input-number :id="field('override-value-'+i+'-'+j)" v-model:value="override.value" :min="0"
                 :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
             </a-form-item>

@@ -9,6 +9,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['close','copy'])
 const loadedRecipients = ref()
+const directoryError = ref('')
 const directory = computed(() => loadedRecipients.value ?? props.recipients)
 const label = (group, key) => props.optionLabel(group, key) || key
 const roleName = key => label('orderAttributionRole', key) !== key
@@ -23,6 +24,7 @@ const poolName = target => {
 const companyName = key => label('practiceSalesCompany', key)
 const rate = (value, scale = 100) => (value / scale)+'%'
 const standard = (row, scale) => row.mode==='rate' ? rate(row.value,scale) : props.formatMoney(row.value)
+const fixedUnit = computed(() => props.classProduct ? ' / 报名' : ' / 付款')
 const countStart = rule => rule.openingId ? props.openingLabel(rule.openingId)
   : rule.countFromOrdinal ? '第 '+rule.countFromOrdinal+' 期' : rule.countFromAt && props.formatTime(rule.countFromAt)
 const scope = props.rule.periodName || (props.rule.fromOrdinal ? '从第 '+props.rule.fromOrdinal+' 期起' : '产品默认')
@@ -35,15 +37,27 @@ function recipient(part) {
   if (benefit?.pool) return poolName(benefit.pool)
   if (benefit?.personId) return personName(benefit.personId)
   if (benefit?.unitId) return unitName(benefit.unitId)
-  if (part.companySales) return '规则指定的销售公司'
-  return roleName(part.sourceRole) || '—'
+  if (part.companySales) return '成交公司'
+  const source = roleName(part.sourceRole)
+  return part.retrainSplits?.length ? [source, '拆分指定的服务人员及团队池'].filter(Boolean).join('、') : source || '—'
+}
+function formula(part) {
+  if (part.mode==='period_rate') {
+    return '本班适用报名净实收 × '+(part.periodBenefit?.tiers?.length ? '档位比例' : rate(part.value,10000))
+  }
+  if (part.companySales) return '按成交公司的类别或单独标准计提'
+  if (part.tiers) return '按累计人数或本班业绩匹配档位'
+  if (part.mode==='rate') return (props.classProduct ? '报名净实收' : '付款实收')+' × '+standard(part)
+  return standard(part)+fixedUnit.value
 }
 onMounted(async () => {
-  if (!props.classProduct || !props.canCopy || !props.rule.components.some(part=>part.periodBenefit || part.retrainSplits?.length || part.tiers?.personCountStarts?.length)) return
+  if (props.embedded || props.recipients || !props.classProduct ||
+    !props.rule.components.some(part=>part.periodBenefit || part.retrainSplits?.length ||
+      part.tiers?.personCountStarts?.length || part.companySales?.recommendationRecipients?.length)) return
   try {
-    loadedRecipients.value = await props.api('/practice-rule-recipients?productId='+props.rule.productId)
-  } catch {
-    // The stored IDs remain available if the directory cannot be loaded.
+    loadedRecipients.value = await props.api('/practice-rule-recipients?ruleId='+props.rule.id)
+  } catch (err) {
+    directoryError.value = err.message || '收款对象名称读取失败'
   }
 })
 </script>
@@ -52,6 +66,7 @@ onMounted(async () => {
   <component :is="embedded ? 'div' : Drawer" v-bind="embedded ? {} : {open:true,title:title || '查看规则',width:'min(660px, 100vw)'}" @close="emit('close')">
     <section aria-label="规则详情" class="rule-preview">
       <h2>{{ rule.label }} <a-tag>{{ embedded ? '待发布' : 'v'+rule.version }}</a-tag></h2>
+      <a-alert v-if="directoryError" class="feedback" :message="directoryError" type="warning" show-icon/>
       <a-descriptions bordered size="small" :column="1" class="rule-preview-scope">
         <a-descriptions-item label="产品">{{ rule.productName }}</a-descriptions-item>
         <a-descriptions-item label="适用范围">{{ scope }}</a-descriptions-item>
@@ -63,11 +78,10 @@ onMounted(async () => {
           <a-tag v-if="part.classMember">{{ label('classMember', part.classMember) }}</a-tag>
         </header>
         <a-descriptions size="small" :column="1">
-          <a-descriptions-item label="受益对象">{{ recipient(part) }}</a-descriptions-item>
-          <a-descriptions-item label="计提标准">
-            <template v-if="part.mode==='period_rate'">{{ part.periodBenefit?.tiers?.length ? '按班次阶梯计提' : rate(part.value,10000) }}</template>
-            <template v-else-if="part.tiers || part.companySales">{{ label('amountMode', part.mode) }}</template>
-            <template v-else>{{ standard(part) }}</template>
+          <a-descriptions-item label="发给谁">{{ recipient(part) }}</a-descriptions-item>
+          <a-descriptions-item label="提成怎么算">{{ formula(part) }}</a-descriptions-item>
+          <a-descriptions-item v-if="part.periodBenefit?.tiers?.length" label="阶梯选档范围">
+            {{ part.periodBenefit.tierOnWholeClass ? '全班净实收（新报及复训）' : '适用报名净实收' }}
           </a-descriptions-item>
           <a-descriptions-item v-if="part.refundPolicy" label="退款处理">{{ label('refundPolicy',part.refundPolicy) }}</a-descriptions-item>
         </a-descriptions>
@@ -90,7 +104,6 @@ onMounted(async () => {
             <p v-if="part.periodBenefit.salesCompanies?.length">销售公司 {{ part.periodBenefit.salesCompanies.map(companyName).join('、') }}</p>
             <p v-if="part.periodBenefit.salesPeople?.length">销售人员 {{ part.periodBenefit.salesPeople.map(personName).join('、') }} · {{ roleName(part.sourceRole) }}</p>
             <p v-if="part.periodBenefit.appointmentUnitId">任职期间 {{ unitName(part.periodBenefit.appointmentUnitId) }} · {{ label('appointmentKind',part.periodBenefit.appointmentKind) }}</p>
-            <p v-if="part.periodBenefit.tiers?.length">{{ part.periodBenefit.tierOnWholeClass ? '用全班净实收选档' : '用适用报名净实收选档' }}</p>
             <ul v-if="part.periodBenefit.tiers?.length">
               <li v-for="row in part.periodBenefit.tiers" :key="row.from">{{ range(row,false) }} · {{ rate(row.value,10000) }}</li>
             </ul>
@@ -111,7 +124,7 @@ onMounted(async () => {
             <li v-for="split in part.retrainSplits" :key="split.companyId">
               {{ companyName(split.companyId) }} · 个人 {{ formatMoney(split.personalMinor) }}
               <template v-if="split.servicePersonId"> · 服务 {{ personName(split.servicePersonId) }} {{ formatMoney(split.serviceMinor) }}</template>
-              · {{ poolName(split.pool) }}
+              · {{ poolName(split.pool) }} {{ formatMoney(part.value - split.personalMinor - (split.serviceMinor || 0)) }}
             </li>
           </ul>
         </details>

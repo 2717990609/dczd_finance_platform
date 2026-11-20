@@ -1285,7 +1285,7 @@ async function save() {
       <a-alert class="feedback" type="error" :message="formError" show-icon/>
     </div>
     <div v-if="rulePreview" ref="previewPane" class="rule-draft-preview" tabindex="-1" aria-label="发布前预览">
-      <RuleVersionDetails :rule="rulePreview" embedded :recipients="classRuleDirectory"
+      <RuleVersionDetails :rule="rulePreview" embedded :class-product="classRule" :recipients="classRuleDirectory"
         :option-label="optionLabel" :people="data.people" :opening-label="savedOpeningLabel"
         :format-time="formatTime" :format-money="formatMoney"/>
       <RuleImpactPreview v-model:busy="ruleImpactBusy" :periods="previewPeriods" :period-id="rulePreview.periodId"
@@ -1361,24 +1361,39 @@ async function save() {
         <a-form-item v-if="selectedProduct" label="生效时间" :extra="classRule ? '按北京时间的实际开班时点匹配。留空时作为该适用范围的默认规则。' : '按北京时间和原付款时间匹配。留空时作为该适用范围的默认规则。'">
           <a-input v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local"/>
         </a-form-item>
-        <h3 class="form-subhead">分润组件</h3>
+        <h3 class="form-subhead">分润分项</h3>
         <div v-for="(c,i) in draft.components" :key="i" class="component-editor">
-          <div class="component-row">
-          <label class="sr-only" :for="'rule-component-'+i">组件 {{ i+1 }}</label>
-          <a-select :id="'rule-component-'+i" v-model:value="c.type" :options="availableComponentTypes(c)" @change="resetAmountMode(c)"/>
-          <label class="sr-only" :for="'rule-mode-'+i">计算方式 {{ i+1 }}</label>
-          <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
-          <a-input-number v-if="!['tiered','period_rate','company_sales'].includes(c.mode)" v-model:value="c.amount" :aria-label="'组件参数 '+(i+1)" :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
-          <a-button v-if="draft.components.length>1" type="link" danger @click="draft.components.splice(i,1)">移除</a-button>
+          <div class="rule-item-heading">
+            <a-form-item :html-for="'rule-component-'+i" label="分项类型">
+              <a-select :id="'rule-component-'+i" v-model:value="c.type" :options="availableComponentTypes(c)" @change="resetAmountMode(c)"/>
+            </a-form-item>
+            <a-form-item v-if="classRule" :html-for="'rule-member-'+i" label="报名类型">
+              <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="availableClassMembers(c)" @change="resetAmountMode(c)"/>
+            </a-form-item>
+            <a-button v-if="draft.components.length>1" type="link" danger @click="draft.components.splice(i,1)">移除</a-button>
           </div>
-          <a-form-item v-if="classRule" :html-for="'rule-member-'+i" :label="'报名类型 '+(i+1)">
-            <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="availableClassMembers(c)" @change="resetAmountMode(c)"/>
-          </a-form-item>
-          <a-form-item v-if="['sales','referral'].includes(c.type)" :html-for="'rule-source-role-'+i" label="按订单中的谁计提" required>
-            <a-select :id="'rule-source-role-'+i" v-model:value="c.sourceRole" :options="componentSourceRoles(c.sourceRole)"
-              placeholder="选择订单角色" show-search option-filter-prop="label"/>
-          </a-form-item>
-          <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes" :people="classPeopleOptions" :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"/>
+          <template v-if="['sales','referral'].includes(c.type)">
+            <h4 class="rule-item-section">发给谁</h4>
+            <a-form-item :html-for="'rule-source-role-'+i" label="按订单中的谁计提" required>
+              <a-select :id="'rule-source-role-'+i" v-model:value="c.sourceRole" :options="componentSourceRoles(c.sourceRole)"
+                placeholder="选择订单角色" show-search option-filter-prop="label"/>
+            </a-form-item>
+          </template>
+          <template v-if="!['period_rate','company_sales'].includes(c.mode)">
+            <h4 class="rule-item-section">提成怎么算</h4>
+            <div class="rule-item-heading">
+              <a-form-item :html-for="'rule-mode-'+i" label="计算方式">
+                <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
+              </a-form-item>
+              <a-form-item v-if="c.mode==='fixed' || c.mode==='rate'" :html-for="'rule-amount-'+i"
+                :label="c.mode==='rate' ? '计提比例（%）' : classRule ? '每份报名（元）' : '每笔付款（元）'">
+                <a-input-number :id="'rule-amount-'+i" v-model:value="c.amount"
+                  :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
+              </a-form-item>
+            </div>
+            <p v-if="c.mode==='rate'" class="rule-formula">{{ classRule ? '报名净实收' : '付款实收' }} × 计提比例</p>
+            <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes" :people="classPeopleOptions" :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"/>
+          </template>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
             :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')"
@@ -1393,7 +1408,7 @@ async function save() {
             <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>
           </a-form-item>
         </div>
-        <a-button v-if="nextComponent" type="dashed" block @click="draft.components.push(nextComponent)">添加组件</a-button>
+        <a-button v-if="nextComponent" type="dashed" block @click="draft.components.push(nextComponent)">添加分润分项</a-button>
       </template>
       <a-form-item v-if="drawer==='person'" label="人员名称" required><a-input v-model:value="draft.name" aria-label="人员名称"/></a-form-item>
       <template v-if="drawer==='identity'">

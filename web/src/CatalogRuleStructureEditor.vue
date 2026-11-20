@@ -89,6 +89,7 @@ watch(form, value => { editing.value = !!value })
         <a-form-item label="分项名称" html-for="catalog-add-label" required>
           <a-input id="catalog-add-label" v-model:value="form.label" :maxlength="80"/>
         </a-form-item>
+        <h3 class="form-subhead">发给谁</h3>
         <a-form-item label="收款对象" html-for="catalog-add-target">
           <a-select id="catalog-add-target" v-model:value="form.target" :options="targets" @change="changeTarget"/>
         </a-form-item>
@@ -104,7 +105,8 @@ watch(form, value => { editing.value = !!value })
           <a-select id="catalog-add-organization" v-model:value="form.organization" :options="organizations"
             show-search option-filter-prop="label" placeholder="选择已完成映射的组织"/>
         </a-form-item>
-        <a-form-item label="计提方式" html-for="catalog-add-format">
+        <h3 class="form-subhead">提成怎么算</h3>
+        <a-form-item label="计提方式" html-for="catalog-add-format" extra="按每笔付款实收乘以适用比例。">
           <a-select id="catalog-add-format" v-model:value="form.format" :options="formats"/>
         </a-form-item>
         <a-form-item v-if="form.format==='fixed'" label="新增比例（%）" html-for="catalog-add-fixed" required>

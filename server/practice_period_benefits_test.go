@@ -72,6 +72,32 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 	if _, err := s.publishRule(ctx, rule); err != nil {
 		t.Fatalf("could not publish the configured class components: %v", err)
 	}
+	var ruleID int64
+	if err := s.db.QueryRow(ctx, "SELECT id FROM rule_versions WHERE product_id=$1", product).Scan(&ruleID); err != nil {
+		t.Fatal(err)
+	}
+	id(s.createPerson(ctx, createPersonInput{Name: "未被规则引用的人"}))
+	readVersionDirectory := func(productGrant int64) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/practice-rule-recipients?ruleId="+strconv.FormatInt(ruleID, 10), nil)
+		req = req.WithContext(context.WithValue(req.Context(), financePrincipalKey{}, &financePrincipal{Rules: []financeRuleGrant{{ProductID: productGrant}}}))
+		result := httptest.NewRecorder()
+		s.practiceRuleRecipients(result, req)
+		return result
+	}
+	allowed := readVersionDirectory(product)
+	var directory struct {
+		People []struct{ ID int64 }
+		Units  []struct{ ID string }
+	}
+	if err := json.Unmarshal(allowed.Body.Bytes(), &directory); err != nil {
+		t.Fatal(err)
+	}
+	if allowed.Code != http.StatusOK || len(directory.People) != 1 || directory.People[0].ID != manager || len(directory.Units) != 2 {
+		t.Fatalf("rule read grant must return only referenced recipients: %d %s", allowed.Code, allowed.Body.String())
+	}
+	if denied := readVersionDirectory(product + 1); denied.Code != http.StatusNotFound {
+		t.Fatalf("ungranted version must be hidden, got %d", denied.Code)
+	}
 	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, Label: "非班次计提", PeriodID: &period,
 		Components: []component{{Type: "manager", Mode: "rate", Value: 500}}}); !errors.Is(err, invalid) {
 		t.Fatalf("published a manager component the class calculation cannot use: %v", err)

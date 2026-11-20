@@ -17,6 +17,10 @@ import (
 const periodRateScale = 1_000_000
 
 func (s workspace) practiceRuleRecipients(w http.ResponseWriter, r *http.Request) {
+	if ruleID := r.URL.Query().Get("ruleId"); ruleID != "" {
+		s.practiceVersionRecipients(w, r, ruleID)
+		return
+	}
 	product, err := strconv.ParseInt(r.URL.Query().Get("productId"), 10, 64)
 	if err != nil || product < 1 {
 		respond(w, nil, invalid)
@@ -34,6 +38,31 @@ func (s workspace) practiceRuleRecipients(w http.ResponseWriter, r *http.Request
 	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name,'kind',kind) ORDER BY name,id)
 	  FROM organization_units WHERE status='ACTIVE'),'[]'))
 	 FROM products WHERE id=$1 AND period_mode='class'`, product).Scan(&result)
+	respond(w, result, err)
+}
+
+func (s workspace) practiceVersionRecipients(w http.ResponseWriter, r *http.Request, ruleID string) {
+	id, err := strconv.ParseInt(ruleID, 10, 64)
+	if err != nil || id < 1 {
+		respond(w, nil, invalid)
+		return
+	}
+	var scope []int64
+	if actor := financeUser(r.Context()); actor != nil {
+		scope = make([]int64, 0, len(actor.Rules))
+		for _, grant := range actor.Rules {
+			scope = append(scope, grant.ProductID)
+		}
+	}
+	var version json.RawMessage
+	err = s.db.QueryRow(r.Context(), `SELECT jsonb_build_object('components',v.components)
+	 FROM rule_versions v JOIN products p ON p.id=v.product_id
+	 WHERE v.id=$1 AND p.period_mode='class' AND ($2::bigint[] IS NULL OR p.id=ANY($2))`, id, scope).Scan(&version)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	result, err := s.appliedRuleRecipients(r.Context(), version)
 	respond(w, result, err)
 }
 

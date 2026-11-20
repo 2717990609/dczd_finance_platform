@@ -87,8 +87,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .form-subhead { margin: 0 0 10px; font-size: 15px; }
 .component-editor { padding: 12px; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 6px; background: #fcfdff; }
 .component-editor > .ant-form-item:last-child { margin-bottom: 0; }
-.component-row { display: grid; grid-template-columns: 1.3fr 1fr 1fr auto; gap: 6px; margin-bottom: 10px; }
-.component-row .ant-input-number { width: 100%; }
+.rule-item-heading { display: flex; gap: 8px; flex-wrap: wrap; align-items: baseline; }
+.rule-item-heading > .ant-form-item { flex: 1 1 140px; min-width: 0; }
+.rule-item-heading .ant-input-number { width: 100%; }
+.rule-item-section { margin: 0 0 8px; font-size: 14px; }
+.rule-formula { margin: 0 0 12px; color: var(--muted); font-size: 13px; }
 .order-link { color: var(--accent); border: 0; background: none; cursor: pointer; padding: 0; text-align: left; overflow-wrap: anywhere; }
 .order-link:hover { text-decoration: underline; }
 .order-version { display: block; color: var(--muted); font-size: 12px; margin-top: 2px; overflow-wrap: anywhere; }
