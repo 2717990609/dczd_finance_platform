@@ -89,6 +89,39 @@ func TestPracticeCompanySalesSeparatesSellerPerformanceAndCompanyProceeds(t *tes
 	if err != nil || corporate != 14901 || personal != 1000 || performance != 4 {
 		t.Fatalf("company %d, person %d, seller facts %d, err %v", corporate, personal, performance, err)
 	}
+	payee := id(s.createPerson(ctx, createPersonInput{Name: "指定收款人"}))
+	const delivery = "40000000-0000-4000-8000-000000000002"
+	pool := id(s.createPracticePool(ctx, createPracticePoolInput{ProductID: product, UnitID: delivery, Name: "指定团队池"}))
+	for _, test := range []struct {
+		recipient        practiceCompanyPayee
+		personID, poolID int64
+		unitID           string
+	}{
+		{recipient: practiceCompanyPayee{Kind: "order_person", Role: "DIRECT_REFERRER"}, personID: person},
+		{recipient: practiceCompanyPayee{Kind: "person", PersonID: payee}, personID: payee},
+		{recipient: practiceCompanyPayee{Kind: "company", CompanyID: delivery}, unitID: delivery},
+		{recipient: practiceCompanyPayee{Kind: "pool", Pool: &practicePoolTarget{PoolID: pool, OwnerID: payee}}, poolID: pool, unitID: delivery},
+	} {
+		rule.Components[1].CompanySales.Payee = &test.recipient
+		if _, err := s.publishRule(ctx, rule); err != nil {
+			t.Fatalf("publish %s recipient: %v", test.recipient.Kind, err)
+		}
+		raw, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+		if err != nil || raw.(draftSummary).Total != 15901 || raw.(draftSummary).IssueCount != 0 {
+			t.Fatalf("%s must keep company rate and seller performance: %+v %v", test.recipient.Kind, raw, err)
+		}
+		var amount int64
+		if err := s.db.QueryRow(ctx, `SELECT coalesce(sum(amount_minor),0) FROM calculation_draft_lines
+		 WHERE period_id=$1 AND component_type='period:company_sales:1' AND coalesce(person_id,0)=$2
+		  AND coalesce(practice_pool_id,0)=$3 AND coalesce(beneficiary_unit_id::text,'')=$4`,
+			period, test.personID, test.poolID, test.unitID).Scan(&amount); err != nil || amount != 5001 {
+			t.Fatalf("%s must receive both payment shares: got %d, %v", test.recipient.Kind, amount, err)
+		}
+	}
+	rule.Components[1].CompanySales.Payee = nil
+	if _, err := s.publishRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
 	 VALUES('DCZD','old-company','40000000-0000-4000-8000-000000000002','2026-07-01')`); err != nil {
 		t.Fatal(err)
@@ -308,6 +341,16 @@ func TestPracticeCompanyRecommendationUsesCurrentDirectoryAndSkipsKnownNoParent(
 	if next := assertDraft(5506, 0, 4); next.Version != current.Version {
 		t.Fatal("unchanged inputs replaced the draft")
 	}
+	rule.Components[0].CompanySales.Payee = &practiceCompanyPayee{Kind: "company", CompanyID: referrer}
+	if _, err := s.publishRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	assertDraft(5506, 0, 4)
+	assertRecipient(referrer)
+	rule.Components[0].CompanySales.Payee = nil
+	if _, err := s.publishRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
 	if err := storeOrganizationSnapshot(ctx, s.db, organizations("2026-08-03T00:00:00Z", []map[string]any{{"companyId": salesCompany}})); err == nil {
 		t.Fatal("an omitted referrer must not silently clear a known relationship")
 	}
@@ -405,13 +448,14 @@ func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *test
 		}
 	}
 	mustExec(`INSERT INTO organization_sales_categories(id,name,active) VALUES ($1,'地区渠道',true),($2,'其他渠道',true)`, first, second)
-	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &class, Label: "按销售类别",
+	rule := publishRuleInput{ProductID: product, PeriodID: &class, Label: "按销售类别",
 		Components: []component{{Type: "sales", Mode: "rate", Value: 1000, ClassMember: "new", SourceRole: "DIRECT_REFERRER"},
 			{Type: "company_sales", Mode: "company_sales", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
 				CompanySales: &practiceCompanySales{Categories: []practiceCompanyCategory{
 					{SalesCategoryID: first, practiceCompanyValue: practiceCompanyValue{"rate", 400000}},
 					{SalesCategoryID: second, practiceCompanyValue: practiceCompanyValue{"rate", 100000}},
-				}}}}}); err != nil {
+				}}}}}
+	if _, err := s.publishRule(ctx, rule); err != nil {
 		t.Fatal(err)
 	}
 	// Both the company and the person arrive after the rule has been published.
@@ -465,6 +509,10 @@ func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *test
 		t.Fatalf("the new internal seller should receive the existing personal rate, got %d: %v", earnings, err)
 	}
 	mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES ($1,$2,'fixture')`, class, settled.Version)
+	rule.Components[1].CompanySales.Payee = &practiceCompanyPayee{Kind: "person", PersonID: seller}
+	if _, err := s.publishRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
 	mustExec(`UPDATE organization_sales_category_history SET category_id=$2 WHERE unit_id=$1`, company, second)
 	at := time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC)
 	partial := int64(5000)
@@ -478,5 +526,10 @@ func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *test
 	}
 	if got := checkDraft(month, -2000, 0); got.RefundCount != 1 {
 		t.Fatalf("expected one refund in September: %+v", got)
+	}
+	var originalCompany string
+	if err := s.db.QueryRow(ctx, `SELECT l.beneficiary_unit_id::text FROM calculation_draft_refunds r
+	 JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1`, month).Scan(&originalCompany); err != nil || originalCompany != company {
+		t.Fatalf("refund should reverse the original company, got %s: %v", originalCompany, err)
 	}
 }

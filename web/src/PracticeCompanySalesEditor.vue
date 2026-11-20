@@ -1,8 +1,18 @@
 <script setup>
 import { computed, watch } from 'vue'
+import PracticePoolFields from './PracticePoolFields.vue'
 
-const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,sourceRoles:Array})
+const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
+  sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function})
 const categories = computed(() => props.component.companySales.categories)
+const payee = computed(() => props.component.companySales.payee)
+const payeeKinds = [
+  {value:'sales_company',label:'订单上的成交公司'},
+  {value:'order_person',label:'订单上的人员'},
+  {value:'person',label:'指定个人'},
+  {value:'company',label:'指定公司'},
+  {value:'pool',label:'团队池'},
+]
 const hasRecommendations = computed(() => props.component.classMember==='new' && categories.value.some(category=>
   category.recommendationRate>0 || category.overrides.some(override=>override.recommendationRate>0)))
 const internalOptions = computed(() => props.companies.filter(option=>!categories.value.some(c=>
@@ -48,10 +58,28 @@ watch(amounts, choices => {
 </script>
 
 <template>
+  <a-form-item label="收款安排名称" :html-for="field('label')">
+    <a-input :id="field('label')" v-model:value="component.companySales.label" placeholder="按销售类别或公司计算" :maxlength="80"/>
+  </a-form-item>
   <h4 class="rule-item-section">发给谁</h4>
-  <p class="rule-formula">订单上的成交公司</p>
+  <div class="company-value">
+    <a-form-item label="收款对象" :html-for="field('payee')">
+      <a-select :id="field('payee')" v-model:value="payee.kind" :options="payeeKinds"/>
+    </a-form-item>
+    <a-form-item v-if="payee.kind==='order_person'" label="从订单取谁" :html-for="field('payee-role')" required>
+      <a-select :id="field('payee-role')" v-model:value="payee.role" :options="payeeRoles" show-search :filter-option="byName"/>
+    </a-form-item>
+    <a-form-item v-if="payee.kind==='person'" label="收款人" :html-for="field('payee-person')" required>
+      <a-select :id="field('payee-person')" v-model:value="payee.personId" :options="people" show-search :filter-option="byName"/>
+    </a-form-item>
+    <a-form-item v-if="payee.kind==='company'" label="收款公司" :html-for="field('payee-company')" required>
+      <a-select :id="field('payee-company')" v-model:value="payee.companyId" :options="recipients" show-search :filter-option="byName"/>
+    </a-form-item>
+  </div>
+  <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
+    :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <h4 class="rule-item-section">提成怎么算</h4>
-  <p class="rule-formula">新公司登记销售类别后，自动沿用该类别的标准。公司有单独约定时优先使用单独标准。</p>
+  <p class="rule-formula">按订单成交公司的销售类别或单独约定取标准。新公司登记到已有类别后，自动沿用该类别标准。</p>
   <section v-for="(category,i) in categories" :key="i" class="company-category">
     <div class="company-category-title">
       <strong>{{ category.scope==='category' ? salesCategories.find(option=>option.value===category.salesCategoryId)?.label || '新的类别标准' : category.label || '公司单独标准' }}</strong>
@@ -126,7 +154,7 @@ watch(amounts, choices => {
   </a-form-item>
   <a-collapse ghost>
     <a-collapse-panel key="advanced" header="更多配置">
-      <a-form-item label="订单中的销售角色" :html-for="field('role')" required>
+      <a-form-item label="业绩归给订单里的谁" :html-for="field('role')" required>
         <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
       </a-form-item>
       <a-form-item label="沿用个人提成的内部公司" :html-for="field('internal')" extra="新报和复训共用。">

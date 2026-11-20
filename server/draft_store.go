@@ -607,7 +607,9 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    l.component_type AS "component", beneficiary.kind AS "beneficiaryUnitKind",
    CASE WHEN rv.id IS NOT NULL AND starts_with(l.component_type,'period:')
-     THEN rv.components->(split_part(l.component_type,':',3)::int)->'periodBenefit'->>'label'
+     THEN CASE WHEN split_part(l.component_type,':',2)='company_sales'
+       THEN rv.components->(split_part(l.component_type,':',3)::int)->'companySales'->>'label'
+       ELSE rv.components->(split_part(l.component_type,':',3)::int)->'periodBenefit'->>'label' END
      ELSE action.definition->>'label' END AS "componentLabel",nullif(split_part(l.component_type,':',2),'') AS "componentRole",
    l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",l.aggregate_group_key AS "aggregateGroupKey",o.source,o.order_id AS "orderId",
    o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",o.id AS "sourceVersionId",coalesce(rv.version,cv.version_no) AS "ruleVersion",

@@ -47,6 +47,9 @@ func practicePoolTargets(items []component) []practicePoolTarget {
 		if b := part.PeriodBenefit; b != nil && b.Pool != nil {
 			targets = append(targets, *b.Pool)
 		}
+		if s := part.CompanySales; s != nil && s.Payee != nil && s.Payee.Pool != nil {
+			targets = append(targets, *s.Payee.Pool)
+		}
 		for _, split := range part.retrainSplits() {
 			targets = append(targets, split.Pool)
 		}

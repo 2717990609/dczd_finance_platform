@@ -614,7 +614,7 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 		}
 		var personIDs []int64
 		var companyIDs []string
-		var unitIDs, appointmentKinds, recommendationRecipients, salesUnitIDs, categoryIDs []string
+		var unitIDs, appointmentKinds, receivingCompanies, salesUnitIDs, categoryIDs []string
 		poolIDs := make(map[int64]int64)
 		for _, target := range practicePoolTargets(p.Components) {
 			if owner := poolIDs[target.PoolID]; owner != 0 && owner != target.OwnerID {
@@ -643,7 +643,15 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			}
 			if c.CompanySales != nil {
 				companyIDs = append(companyIDs, c.CompanySales.InternalCompanies...)
-				recommendationRecipients = append(recommendationRecipients, c.CompanySales.RecommendationRecipients...)
+				receivingCompanies = append(receivingCompanies, c.CompanySales.RecommendationRecipients...)
+				if payee := c.CompanySales.Payee; payee != nil {
+					if payee.PersonID != 0 {
+						personIDs = append(personIDs, payee.PersonID)
+					}
+					if payee.CompanyID != "" {
+						receivingCompanies = append(receivingCompanies, payee.CompanyID)
+					}
+				}
 				for _, category := range c.CompanySales.Categories {
 					companyIDs = append(companyIDs, category.Companies...)
 					if category.SalesCategoryID != "" {
@@ -697,11 +705,11 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				}
 			}
 		}
-		if len(recommendationRecipients) != 0 {
+		if len(receivingCompanies) != 0 {
 			var valid bool
 			if err := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM unnest($1::text[]) AS requested(id)
 			 WHERE NOT EXISTS(SELECT 1 FROM organization_units u WHERE u.id=requested.id::uuid AND u.kind='COMPANY' AND u.status='ACTIVE'))`,
-				recommendationRecipients).Scan(&valid); err != nil {
+				receivingCompanies).Scan(&valid); err != nil {
 				return err
 			}
 			if !valid {

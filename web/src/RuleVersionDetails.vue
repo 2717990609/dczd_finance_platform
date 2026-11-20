@@ -40,7 +40,14 @@ function recipient(part) {
   if (benefit?.pool) return poolName(benefit.pool)
   if (benefit?.personId) return personName(benefit.personId)
   if (benefit?.unitId) return unitName(benefit.unitId)
-  if (part.companySales) return '成交公司'
+  if (part.companySales) {
+    const payee = part.companySales.payee
+    if (payee?.kind==='order_person') return roleName(payee.role)
+    if (payee?.kind==='person') return personName(payee.personId)
+    if (payee?.kind==='company') return unitName(payee.companyId)
+    if (payee?.kind==='pool') return poolName(payee.pool)
+    return '订单上的成交公司'
+  }
   const source = roleName(part.sourceRole)
   return part.retrainSplits?.length ? [source, '拆分指定的服务人员及团队池'].filter(Boolean).join('、') : source || '—'
 }
@@ -56,7 +63,8 @@ function formula(part) {
 onMounted(async () => {
   if (props.embedded || props.recipients || !props.classProduct ||
     !props.rule.components.some(part=>part.periodBenefit || part.retrainSplits?.length ||
-      part.tiers?.personCountStarts?.length || part.companySales?.recommendationRecipients?.length)) return
+    part.tiers?.personCountStarts?.length || part.companySales?.recommendationRecipients?.length ||
+    ['person','company','pool'].includes(part.companySales?.payee?.kind))) return
   try {
     loadedRecipients.value = await props.api('/practice-rule-recipients?ruleId='+props.rule.id)
   } catch (err) {

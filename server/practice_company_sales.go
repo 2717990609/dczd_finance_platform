@@ -11,9 +11,51 @@ import (
 )
 
 type practiceCompanySales struct {
+	Label                    string                    `json:"label,omitempty"`
+	Payee                    *practiceCompanyPayee     `json:"payee,omitempty"`
 	Categories               []practiceCompanyCategory `json:"categories"`
 	InternalCompanies        []string                  `json:"internalCompanies,omitempty"`
 	RecommendationRecipients []string                  `json:"recommendationRecipients,omitempty"`
+}
+
+type practiceCompanyPayee struct {
+	Kind      string              `json:"kind"`
+	Role      string              `json:"role,omitempty"`
+	PersonID  int64               `json:"personId,omitempty"`
+	CompanyID string              `json:"companyId,omitempty"`
+	Pool      *practicePoolTarget `json:"pool,omitempty"`
+}
+
+func (p *practiceCompanyPayee) kind() string {
+	if p == nil {
+		return "sales_company"
+	}
+	return p.Kind
+}
+
+func (p *practiceCompanyPayee) valid() bool {
+	if p == nil {
+		return true
+	}
+	if p.Kind != "order_person" && p.Role != "" || p.Kind != "person" && p.PersonID != 0 ||
+		p.Kind != "company" && p.CompanyID != "" || p.Kind != "pool" && p.Pool != nil {
+		return false
+	}
+	switch p.Kind {
+	case "sales_company":
+		return true
+	case "order_person":
+		return validSourceRole(p.Role)
+	case "person":
+		return p.PersonID > 0
+	case "company":
+		id, ok := canonicalSourceUUID(p.CompanyID)
+		return ok && id == p.CompanyID
+	case "pool":
+		return p.Pool != nil && p.Pool.valid()
+	default:
+		return false
+	}
 }
 
 type practiceCompanyValue struct {
@@ -58,7 +100,8 @@ func validPracticeCompanySales(c component) bool {
 		return false
 	}
 	seen := make(map[string]bool)
-	if c.ClassMember != "new" && len(c.CompanySales.RecommendationRecipients) != 0 {
+	if !c.CompanySales.Payee.valid() || c.CompanySales.Label != "" && !textOK(c.CompanySales.Label, 80) ||
+		c.ClassMember != "new" && len(c.CompanySales.RecommendationRecipients) != 0 {
 		return false
 	}
 	for _, id := range c.CompanySales.RecommendationRecipients {
@@ -137,6 +180,7 @@ type practiceCompanyAward struct {
 	role, key                string
 	internal                 bool
 	componentIndex           int
+	payee                    *practiceCompanyPayee
 	recommendationRate       int64
 	recommendationRecipients []string
 }
@@ -169,7 +213,7 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 		key := practicePeriodComponentKey(part, i)
 		for _, category := range part.CompanySales.Categories {
 			award := practiceCompanyAward{practiceCompanyValue: category.practiceCompanyValue, role: part.SourceRole, key: key,
-				componentIndex: i, recommendationRecipients: part.CompanySales.RecommendationRecipients}
+				componentIndex: i, payee: part.CompanySales.Payee, recommendationRecipients: part.CompanySales.RecommendationRecipients}
 			if category.RecommendationRate != nil {
 				award.recommendationRate = *category.RecommendationRate
 			}
@@ -370,30 +414,64 @@ func practiceCompanyRecipient(assignments []companySourceAssignment, at time.Tim
 	return result
 }
 
-func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practicePurchase,
-	recipients map[string][]companySourceAssignment, identities map[identityKey][]identityAssignment,
-	recommendations practiceCompanyRecommendations) error {
-	award := p.companyAward
-	if award == nil {
-		return nil
-	}
-	if _, issue := practiceBeneficiaries(p.payments, award.role, identities); issue != "" {
-		draft.Issues = append(draft.Issues, practiceIssue(issue, p.member, rule, award.key))
-		return nil
-	}
+func practiceSalesCompanyUnit(payments []paymentInput, recipients map[string][]companySourceAssignment) (pgtype.UUID, string) {
 	var unit pgtype.UUID
-	for _, payment := range p.payments {
+	for _, payment := range payments {
 		f := payment.Fact
 		mapping := practiceCompanyRecipient(recipients[f.SalesCompanyID], f.OccurredAt)
 		switch {
 		case mapping.Ambiguous || unit.Valid && mapping.ID.Valid && unit != mapping.ID:
-			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_COMPANY_RECIPIENT_CONFLICT", p.member, rule, award.key))
-			return nil
+			return pgtype.UUID{}, "PRACTICE_COMPANY_RECIPIENT_CONFLICT"
 		case !mapping.ID.Valid:
-			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_COMPANY_RECIPIENT_MISSING", p.member, rule, award.key))
-			return nil
+			return pgtype.UUID{}, "PRACTICE_COMPANY_RECIPIENT_MISSING"
 		}
 		unit = mapping.ID
+	}
+	return unit, ""
+}
+
+func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practicePurchase,
+	runtime practiceDraftRuntime, identities map[identityKey][]identityAssignment) error {
+	award := p.companyAward
+	if _, issue := practiceBeneficiaries(p.payments, award.role, identities); issue != "" {
+		draft.Issues = append(draft.Issues, practiceIssue(issue, p.member, rule, award.key))
+		return nil
+	}
+	line := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: award.key}
+	var salesCompany pgtype.UUID
+	var companyIssue string
+	kind := award.payee.kind()
+	if kind == "sales_company" || award.recommendationRate > 0 {
+		salesCompany, companyIssue = practiceSalesCompanyUnit(p.payments, runtime.companyRecipients)
+	}
+	issue := ""
+	switch kind {
+	case "sales_company":
+		line.BeneficiaryUnit, issue = &salesCompany, companyIssue
+	case "order_person":
+		people, problem := practiceBeneficiaries(p.payments, award.payee.Role, identities)
+		issue = problem
+		if issue == "" {
+			line.PersonID = people[0].PersonID
+		}
+	case "person":
+		line.PersonID = award.payee.PersonID
+	case "company":
+		unit := new(pgtype.UUID)
+		if err := unit.Scan(award.payee.CompanyID); err != nil {
+			return err
+		}
+		line.BeneficiaryUnit = unit
+	case "pool":
+		unit := runtime.poolUnits[award.payee.Pool.PoolID]
+		if !unit.Valid {
+			issue = "PRACTICE_POOL_MISSING"
+		}
+		line.BeneficiaryUnit, line.PracticePool = &unit, award.payee.Pool
+	}
+	if issue != "" {
+		draft.Issues = append(draft.Issues, practiceIssue(issue, p.member, rule, award.key))
+		return nil
 	}
 	amount := award.Value
 	if award.Mode == "rate" {
@@ -403,21 +481,25 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_COMPANY_AWARD_EXCEEDS_PAYMENT", p.member, rule, award.key))
 		return nil
 	}
-	if err := appendPracticeCompanyShare(draft, rule, p, unit, award.key, amount); err != nil {
+	if err := appendPracticeCompanyShare(draft, p, line, amount); err != nil {
 		return err
 	}
 	if award.recommendationRate > 0 {
 		key := "period:company_referral:" + strconv.Itoa(award.componentIndex)
-		parent, issue := recommendations.resolve(p.payments, unit)
-		if issue == "" && parent.Valid && !slices.Contains(award.recommendationRecipients, parent.String()) {
-			issue = "PRACTICE_RECOMMENDATION_ROUTE_MISSING"
+		var parent pgtype.UUID
+		if companyIssue == "" {
+			parent, companyIssue = runtime.recommendations.resolve(p.payments, salesCompany)
+			if companyIssue == "" && parent.Valid && !slices.Contains(award.recommendationRecipients, parent.String()) {
+				companyIssue = "PRACTICE_RECOMMENDATION_ROUTE_MISSING"
+			}
 		}
-		if issue != "" {
-			pending := practiceIssue(issue, p.member, rule, key)
+		if companyIssue != "" {
+			pending := practiceIssue(companyIssue, p.member, rule, key)
 			pending.FactID = p.payments[0].ID
 			draft.Issues = append(draft.Issues, pending)
 		} else if parent.Valid {
-			return appendPracticeCompanyShare(draft, rule, p, parent, key, practiceCompanyRate(p.base, award.recommendationRate))
+			referral := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: key, BeneficiaryUnit: &parent}
+			return appendPracticeCompanyShare(draft, p, referral, practiceCompanyRate(p.base, award.recommendationRate))
 		}
 	}
 	return nil
@@ -427,13 +509,12 @@ func practiceCompanyRate(base, rate int64) int64 {
 	return base/periodRateScale*rate + (base%periodRateScale*rate+periodRateScale/2)/periodRateScale
 }
 
-func appendPracticeCompanyShare(draft *paymentDraft, rule paymentRule, p practicePurchase, unit pgtype.UUID, key string, amount int64) error {
+func appendPracticeCompanyShare(draft *paymentDraft, p practicePurchase, line draftLine, amount int64) error {
 	var err error
 	draft.Total, err = addMinor(draft.Total, amount)
 	if err != nil {
 		return err
 	}
-	line := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: key, BeneficiaryUnit: &unit}
 	appendPracticePeriodShare(draft, line, practiceBenefitShare{purchase: p, payments: p.payments, amount: amount})
 	return nil
 }

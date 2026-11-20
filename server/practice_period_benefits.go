@@ -93,6 +93,10 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 		}
 		if part.CompanySales != nil {
 			units = append(units, part.CompanySales.RecommendationRecipients...)
+			if payee := part.CompanySales.Payee; payee != nil {
+				people = append(people, payee.PersonID)
+				units = append(units, payee.CompanyID)
+			}
 		}
 		for _, split := range part.retrainSplits() {
 			people = append(people, split.ServicePersonID)

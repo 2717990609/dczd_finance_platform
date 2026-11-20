@@ -278,7 +278,7 @@ function updateAmountMode(row, mode) {
   }
   if (mode==='company_sales' && !row.companySales) {
     row.sourceRole = row.sourceRole || firstOption('practicePeriodSourceRole')
-    row.companySales = {internalCompanies:[],categories:[{mode:baseModes.value[0]?.value,companies:[],overrides:[],
+    row.companySales = {internalCompanies:[],payee:{kind:'sales_company',pool:{}},categories:[{mode:baseModes.value[0]?.value,companies:[],overrides:[],
       scope:options('practiceSalesCategory').length ? 'category' : 'companies'}]}
   }
   if (mode === 'tiered' && !row.tierConfig) {
@@ -317,7 +317,7 @@ const recipientChoices = computed(() => {
     {type:'sales',label:'订单上的成交销售'},
     {type:'referral',label:'订单上的推荐人'},
     ...(classRule.value ? [
-      {type:'company_sales',label:'订单上的成交公司'},
+      {type:'company_sales',label:'按销售类别或公司计算'},
       {type:'manager',label:'指定个人、组织或团队池'},
     ] : []),
   ]
@@ -339,7 +339,15 @@ function ruleRecipientSummary(row) {
     if (benefit.recipient==='unit') return unitOptions.value.find(option=>option.value===benefit.unitId)?.label || '指定组织'
     return classPeopleOptions.value.find(option=>option.value===benefit.personId)?.label || '指定个人'
   }
-  if (row.mode==='company_sales') return '成交公司 · 按销售类别'
+  if (row.mode==='company_sales') {
+    const payee = row.companySales?.payee
+    let who = '成交公司'
+    if (payee?.kind==='order_person') who = optionLabel('orderAttributionRole',payee.role) || '订单上的人员'
+    if (payee?.kind==='person') who = classPeopleOptions.value.find(option=>option.value===payee.personId)?.label || '指定个人'
+    if (payee?.kind==='company') who = companyRecipientOptions.value.find(option=>option.value===payee.companyId)?.label || '指定公司'
+    if (payee?.kind==='pool') who = practicePoolOptions.value.find(option=>option.value===payee.pool?.poolId)?.label || '团队池'
+    return who+' · 按销售类别或公司'
+  }
   const who = row.sourceRole ? optionLabel('orderAttributionRole',row.sourceRole) : '选择订单上的收款人'
   if (row.mode==='tiered') return who+' · 按阶梯'
   if (row.amount == null) return who
@@ -969,13 +977,19 @@ function ruleComponentBody(row) {
     ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy && !['period_rate','company_sales'].includes(row.mode) ? {refundPolicy:row.refundPolicy} : {}),
     ...(row.classMember ? {classMember:row.classMember} : {})}
   if (row.mode==='company_sales') {
-    must(sourceRole,'请选择从订单读取的销售角色')
+    must(sourceRole,'请选择业绩使用的订单销售角色')
+    const sales = row.companySales
+    const payee = {kind:must(sales.payee?.kind,'请选择收款对象')}
+    if (payee.kind==='order_person') payee.role=must(sales.payee.role,'请选择从订单读取的收款人')
+    if (payee.kind==='person') payee.personId=must(sales.payee.personId,'请选择收款人员')
+    if (payee.kind==='company') payee.companyId=must(sales.payee.companyId,'请选择收款公司')
+    if (payee.kind==='pool') payee.pool=practicePoolBody(sales.payee.pool)
     const value = item => {
       const mode = must(item.mode,'请选择外部公司计算方式')
       return {mode,value:mode==='rate' ? periodRate(item.value) : minor(must(item.value,'请填写计提金额')),
         ...(row.classMember==='new' && item.recommendationRate != null ? {recommendationRate:periodRate(item.recommendationRate)} : {})}
     }
-    component.companySales = {internalCompanies:row.companySales.internalCompanies,categories:row.companySales.categories.map(category=>{
+    component.companySales = {label:sales.label?.trim() || undefined,payee,internalCompanies:sales.internalCompanies,categories:sales.categories.map(category=>{
       const byCategory = category.scope==='category'
       const overrides = category.overrides.filter(override=>byCategory || !override.companyId || category.companies.includes(override.companyId))
       return {
@@ -1570,7 +1584,8 @@ async function save() {
             :pools="practicePoolOptions" :create-pool="createPracticePool"/>
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
             :sales-categories="options('practiceSalesCategory')" :recipients="companyRecipientOptions" :amounts="baseModes"
-            :source-roles="options('practicePeriodSourceRole')"/>
+            :source-roles="options('practicePeriodSourceRole')" :payee-roles="componentSourceRoles(c.companySales.payee.role)"
+            :people="classPeopleOptions" :units="unitOptions" :pools="practicePoolOptions" :create-pool="createPracticePool"/>
           <a-collapse v-if="selectedProduct && (!classRule || !['rate','period_rate','company_sales'].includes(c.mode))" ghost>
             <a-collapse-panel key="refund" header="退款处理">
               <a-form-item label="扣回方式" :extra="classRule ? '适用于确认签到名单前的固定金额。' : '按原计提规则扣回。'">
