@@ -41,7 +41,7 @@ const rateColumns = [
   {title:'实收比例（%）',key:'rate',width:126},
   {title:'收款方',key:'payee',width:128},
 ]
-const columns = computed(() => sheet.value?.mayPublish && !props.applied ? [...rateColumns,{title:'操作',key:'operation',width:142}] : rateColumns)
+const columns = computed(() => sheet.value?.mayPublish && !props.applied ? [...rateColumns,{title:'操作',key:'operation',width:190}] : rateColumns)
 const component = computed(() => sheet.value?.components.find(item => item.itemKey === selected.value))
 const targetKind = computed(() => targetEdits.value.get(selected.value)?.target || component.value?.targetKind)
 const targetKindLabels = {seller:'按下表结算',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人'}
@@ -68,8 +68,30 @@ const impactPeriods = computed(() => (props.periods || []).filter(period=>period
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
 const percent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
 const canAddRates = computed(() => sheet.value?.mayPublish && !props.applied && !!sheet.value.structureOptions && !itemRemoved.value)
+const rateNames = computed(() => Object.fromEntries(['companies','categories','relationships'].map(kind=>
+  [kind,new Map((sheet.value?.structureOptions?.[kind] || []).map(option=>[option.value,option.label]))])))
+function stagedRateRow(change, original) {
+  const {companyIds,categoryIds,relationship,payee,rateBps,draftKey} = change
+  const names = rateNames.value
+  const labelList = (ids, labels, missing) => ids?.map(id=>labels.get(id) || missing).join('、')
+  return {
+    ...original,draftKey,companyIds,categoryIds,payee,rateBps,staged:true,
+    scope:companyIds?.length ? 'company' : categoryIds?.length ? 'category' : 'general',
+    company:labelList(companyIds,names.companies,'公司名称待补'),
+    category:labelList(categoryIds,names.categories,'销售类别名称待补'),
+    relationshipCode:relationship,limitsRelationship:relationship!=='ANY',
+    relationship:names.relationships.get(relationship) || original?.relationship || relationship,
+  }
+}
+const rateRows = computed(() => {
+  const stored = component.value?.rows || []
+  const staged = structure.value.rateRows.filter(row=>row.itemKey===selected.value)
+  if (!staged.length) return stored
+  const byRow = new Map(stored.map(row=>[row.row,row]))
+  const replaced = new Set(staged.map(row=>row.row))
+  return [...staged.map(change=>stagedRateRow(change,byRow.get(change.row))),...stored.filter(row=>!replaced.has(row.row))]
+})
 const rateGroups = computed(() => {
-  const rows = component.value?.rows || []
   const mayAdd = canAddRates.value
   return [
     {key:'category',title:'销售类别默认',add:mayAdd && sheet.value.structureOptions.categories.length && '添加类别默认比例'},
@@ -77,10 +99,12 @@ const rateGroups = computed(() => {
     {key:'inherited',title:'公司补充比例'},
     {key:'general',title:'通用比例',add:mayAdd && '添加通用比例'},
   ]
-    .map(group=>({...group,rows:rows.filter(row=>row.scope===group.key)}))
+    .map(group=>({...group,rows:rateRows.value.filter(row=>row.scope===group.key)}))
     .filter(group=>group.add || group.rows.length)
 })
 const rateGroup = ref()
+const rateTableRevision = ref(0)
+const rateRowKey = row => row.draftKey || row.row
 const rateEditorTarget = computed(() => '#'+CSS.escape('catalog-rates-edit-'+selected.value))
 watch([selected,rateGroups], ([,groups]) => {
   if (!groups.some(group=>group.key===rateGroup.value)) rateGroup.value = groups[0]?.key
@@ -115,11 +139,11 @@ async function addRecipient() {
 }
 async function editRateScope(row) {
   await nextTick()
-  structureEditor.value?.editRateScope(row,displayRate(row.rateBps,row.row))
+  structureEditor.value?.editRateScope(row,row.staged ? String(row.rateBps/100) : displayRate(row.rateBps,row.row))
 }
 const pendingScope = (itemKey, row) => row && structure.value.rateRows.find(edit=>edit.itemKey===itemKey && edit.row===row)
 const salesPayeeLabel = row => row.teamRate ? '团队岗位拆分'
-  : catalogSalesPayees.find(choice=>choice.value===(pendingScope(selected.value,row.row)?.payee || row.payee || 'seller'))?.label
+  : catalogSalesPayees.find(choice=>choice.value===(row.payee || 'seller'))?.label
 const cellKey = (item, row) => JSON.stringify([item,row || 0])
 function toggleItemRemoval() {
   const key = selected.value
@@ -130,6 +154,22 @@ function toggleRowRemoval(row) {
   const itemKey = selected.value
   const key = cellKey(itemKey,row)
   if (!removedRateRows.value.delete(key)) removedRateRows.value.set(key,{itemKey,row})
+}
+function showRateGroup(scope) {
+  rateGroup.value = scope
+  filter.value = ''
+  rateTableRevision.value++
+}
+function discardStagedRate(row) {
+  const index = structure.value.rateRows.findIndex(change=>change.itemKey===selected.value && rateRowKey(change)===rateRowKey(row))
+  if (index<0) return
+  structure.value.rateRows.splice(index,1)
+  const original = component.value.rows.find(entry=>entry.row===row.row)
+  if (original && original.scope!==row.scope) showRateGroup(original.scope)
+}
+function undoRateChange(row) {
+  if (row.staged) discardStagedRate(row)
+  else delete edits.value[cellKey(selected.value,row.row)]
 }
 const displayRate = (rate, row, item=selected.value) => {
   const key = cellKey(item,row)
@@ -269,7 +309,7 @@ function publicationInput() {
     })),
     newItems:structure.value.items.map(({personName,...item})=>item),
     newRateRows:structure.value.rateRows.filter(({itemKey,row})=>!removedItems.value.has(itemKey) && !removedRateRows.value.has(cellKey(itemKey,row)))
-      .map(({itemLabel,...row})=>row),
+      .map(({draftKey,...row})=>row),
     removedItems:[...removedItems.value],
     removedRateRows:[...removedRateRows.value.values()].filter(row=>!removedItems.value.has(row.itemKey)),
   }
@@ -385,8 +425,8 @@ async function publish() {
                 @click="structureEditor?.addRateCondition(activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
             </div>
             <p v-if="!activeRateGroup?.rows.length" class="catalog-rate-empty">暂无{{ activeRateGroup?.title }}</p>
-            <a-table v-else :key="selected + filter + rateGroup" class="catalog-rate-table"
-              :columns="displayedColumns" :data-source="displayedRates" row-key="row" size="small"
+            <a-table v-else :key="selected + filter + rateGroup + rateTableRevision" class="catalog-rate-table"
+              :columns="displayedColumns" :data-source="displayedRates" :row-key="rateRowKey" size="small"
               :scroll="{x:tableWidth}" :pagination="{pageSize:8,showSizeChanger:false,hideOnSinglePage:true}">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key==='company'">
@@ -394,21 +434,25 @@ async function publish() {
                 </template>
                 <template v-if="column.key==='category'">{{ record.category || '不限' }}</template>
                 <template v-if="column.key==='rate'">
-                  <a-input-number v-if="!applied" :aria-label="'第 '+record.row+' 行比例'" size="small"
-                    :value="pendingScope(selected,record.row) ? Number(pendingScope(selected,record.row).rateBps)/100 : displayRate(record.rateBps,record.row)"
-                    :disabled="!editable || record.teamRate || !!pendingScope(selected,record.row) || removedRateRows.has(cellKey(selected,record.row))"
+                  <a-input-number v-if="!applied && !record.staged" :aria-label="'第 '+record.row+' 行比例'" size="small"
+                    :value="displayRate(record.rateBps,record.row)"
+                    :disabled="!editable || record.teamRate || removedRateRows.has(cellKey(selected,record.row))"
                     :min="0" :max="100" :precision="2" string-mode @update:value="setRate($event,record.rateBps,record.row)"/>
-                  <span v-else>{{ displayRate(record.rateBps,record.row) }}%</span>
+                  <span v-else>{{ applied ? displayRate(record.rateBps,record.row)+'%' : percent(record.rateBps) }}</span>
+                  <small v-if="record.staged || Object.hasOwn(edits,cellKey(selected,record.row))" class="order-version">未保存</small>
                   <small v-if="record.teamRate" class="order-version">内部团队拆分</small>
                 </template>
                 <span v-else-if="column.key==='payee'">{{ salesPayeeLabel(record) }}</span>
                 <template v-if="column.key==='operation' && !itemRemoved">
                   <a-button v-if="removedRateRows.has(cellKey(selected,record.row))" type="link" size="small"
-                    :disabled="saving" @click="toggleRowRemoval(record.row)">撤销删除</a-button>
+                    :disabled="saving || structureEditing" @click="toggleRowRemoval(record.row)">撤销删除</a-button>
                   <template v-else>
                     <a-button v-if="!record.teamRate && !record.companyFallback" type="link" size="small" :disabled="saving || structureEditing"
                       @click="editRateScope(record)">编辑范围</a-button>
-                    <a-button type="link" danger size="small" :disabled="saving || record.teamRate" @click="toggleRowRemoval(record.row)">删除</a-button>
+                    <a-button v-if="record.row && (record.staged || Object.hasOwn(edits,cellKey(selected,record.row)))"
+                      type="link" size="small" :disabled="saving || structureEditing" @click="undoRateChange(record)">撤销修改</a-button>
+                    <a-button type="link" danger size="small" :disabled="saving || structureEditing || record.teamRate"
+                      @click="record.draftKey ? discardStagedRate(record) : toggleRowRemoval(record.row)">删除</a-button>
                   </template>
                 </template>
               </template>
@@ -453,7 +497,7 @@ async function publish() {
               :to="component?.rows?.length && !itemRemoved ? rateEditorTarget : 'body'">
               <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id"
                 v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
-                :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints"/>
+                :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" @rate-staged="showRateGroup"/>
             </Teleport>
             <a-collapse v-model:active-key="more" ghost class="catalog-more">
               <a-collapse-panel key="more" header="更多配置">
