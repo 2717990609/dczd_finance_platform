@@ -1,5 +1,6 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, ref, watch } from 'vue'
+import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
 const props = defineProps({api:Function, canWrite:Boolean, roles:Array, scopes:Array, formatTime:Function})
@@ -16,7 +17,8 @@ const roleFilter = ref()
 const scopeFilter = ref()
 const scopeKeyFilter = ref()
 const on = ref('')
-const history = ref(false)
+const dateMode = ref('current')
+const waitingForDate = computed(() => dateMode.value==='date' && !on.value)
 const form = ref()
 const saving = ref(false)
 const saveError = ref('')
@@ -40,7 +42,7 @@ const columns = computed(() => [
   {title:'结束时间',dataIndex:'validTo',key:'date',width:155},
   ...(props.canWrite ? [{title:'操作',key:'actions',width:128}] : []),
 ])
-const pagination = computed(() => ({current:page.value,pageSize:25,total:entries.value.total,showSizeChanger:false}))
+const pagination = computed(() => ({current:page.value,pageSize:25,total:entries.value.total,showSizeChanger:false,hideOnSinglePage:true}))
 
 async function loadSettings() {
   const sequence = ++settingsRequest
@@ -55,15 +57,20 @@ async function loadSettings() {
 
 async function load() {
   const sequence = ++request
-  loading.value = true
   listError.value = ''
+  if (waitingForDate.value) {
+    entries.value = {total:0,items:[]}
+    loading.value = false
+    return
+  }
+  loading.value = true
   const params = new URLSearchParams({page:page.value})
   if (name.value) params.set('name',name.value)
   if (roleFilter.value) params.set('role',roleFilter.value)
   if (scopeFilter.value) params.set('scope',scopeFilter.value)
   if (scopeKeyFilter.value) params.set('scopeKey',scopeKeyFilter.value)
-  if (history.value) params.set('history','true')
-  else if (on.value) params.set('on',on.value)
+  if (dateMode.value==='history') params.set('history','true')
+  if (dateMode.value==='date') params.set('on',on.value)
   try {
     const result = await props.api(base+'?'+params)
     if (sequence===request) entries.value = result
@@ -120,8 +127,8 @@ async function save() {
 }
 
 watch(scopeFilter,()=>{ scopeKeyFilter.value = undefined })
-watch([name,roleFilter,scopeFilter,scopeKeyFilter,on,history],()=>{ page.value = 1; load() })
-onMounted(refresh)
+watch([name,roleFilter,scopeFilter,scopeKeyFilter,on,dateMode],()=>{ page.value = 1; load() })
+onActivated(refresh)
 onBeforeUnmount(()=>{ request++; settingsRequest++ })
 defineExpose({refresh})
 </script>
@@ -155,13 +162,9 @@ defineExpose({refresh})
           <a-select id="catalog-appointment-key-filter" v-model:value="scopeKeyFilter" :options="scopeOptions(scopeFilter)"
             option-filter-prop="label" show-search allow-clear :placeholder="'全部'+scopeLabel(scopeFilter)"/>
         </div>
-        <div>
-          <label for="catalog-appointment-date">任职日期</label>
-          <input id="catalog-appointment-date" v-model="on" type="date" class="ant-input organization-date" :disabled="history"/>
-        </div>
-        <a-checkbox v-model:checked="history">显示全部计提任职</a-checkbox>
+        <AppointmentDateFilter v-model:mode="dateMode" v-model:date="on" class="catalog-appointment-date-filter"/>
       </div>
-      <a-table :columns="columns" :data-source="entries.items" :loading="loading" row-key="id" :pagination="pagination"
+      <a-table size="middle" :columns="columns" :data-source="entries.items" :loading="loading" row-key="id" :pagination="pagination"
         :scroll="{x:canWrite?923:795}" @change="pageChanged">
         <template #bodyCell="{column,record,text}">
           <template v-if="column.key==='role'">{{ roleLabel(text) }}</template>
@@ -172,7 +175,7 @@ defineExpose({refresh})
             <a-button type="link" size="small" @click="open('end',record)">结束</a-button>
           </a-space>
         </template>
-        <template #emptyText>当前条件下没有计提任职</template>
+        <template #emptyText>{{ waitingForDate ? '请选择任职日期' : '当前条件下没有计提任职' }}</template>
       </a-table>
     </template>
   </section>

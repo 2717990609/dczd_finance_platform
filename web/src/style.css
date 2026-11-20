@@ -183,23 +183,39 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .rule-count-review { margin-top: 4px; font-size: 12px; }
 .rule-count-review ul { margin-block: 4px 0; padding-inline-start: 18px; }
 
+.organization-browser { display: grid; grid-template-columns: 226px minmax(0, 1fr); }
+.organization-browser .organization-directory { min-width: 0; }
+.organization-browser .desktop-scope { border-bottom: 0; padding-bottom: 0; }
+.organization-heading { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
 .organization-filters {
   display: grid;
-  grid-template-columns: minmax(180px, 1.3fr) minmax(155px, .7fr) minmax(170px, 1fr) auto;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   padding: 14px 15px;
-  align-items: end;
+  align-items: start;
   border-bottom: 1px solid var(--line);
 }
 .organization-filters > div { min-width: 0; }
-.organization-filters label { display: block; margin-bottom: 5px; }
-.organization-filters .ant-tree-select { width: 100%; }
-.organization-filters .organization-date { height: 34px; }
-.organization-filters .ant-checkbox-wrapper { display: inline-flex; align-items: center; min-height: 34px; margin: 0; }
+.organization-filters label:not(.ant-radio-button-wrapper), .appointment-filter-label {
+  display: block;
+  margin-bottom: 5px;
+}
+.appointment-date-filter { display: flex; flex-wrap: wrap; gap: 10px 14px; }
+.appointment-date-filter .ant-radio-group { display: inline-flex; }
+.appointment-date-filter .organization-date { width: 154px; }
+.appointment-timezone { display: block; color: var(--muted); margin-top: 3px; }
+.catalog-appointment-date-filter { grid-column: 1 / -1; }
+.organization-person-filters { grid-template-columns: minmax(150px, 240px) minmax(0, 1fr); }
+.organization-person-link.ant-btn { height: auto; padding: 0; text-align: left; white-space: normal; }
 .organization-context { color: var(--muted); font-size: 13px; }
 .organization-directory .ant-table-pagination, .draft-report .ant-table-pagination { padding-inline: 12px; }
 @media (max-width: 820px) {
   .organization-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .organization-person-filters { grid-template-columns: 1fr; }
+}
+@media (max-width: 680px) {
+  .organization-browser { grid-template-columns: minmax(0, 1fr); }
+  .organization-browser .organization-scope .mobile-scope { margin-bottom: 0; }
 }
 @media (max-width: 390px) {
   .organization-filters { grid-template-columns: 1fr; }

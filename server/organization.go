@@ -29,7 +29,8 @@ const organizationAssignmentsSQL = `WITH matching AS (
  FROM organization_assignments a JOIN people p ON p.id=a.person_id JOIN organization_units u ON u.id=a.unit_id
  WHERE ($1::uuid IS NULL OR a.unit_id=$1) AND
   ($2::timestamptz IS NULL OR (a.valid_from<=$2 AND (a.valid_to IS NULL OR a.valid_to>$2))) AND
-  ($3='' OR strpos(lower(p.name),lower($3))>0)
+  ($3='' OR strpos(lower(p.name),lower($3))>0) AND
+  ($5::bigint IS NULL OR a.person_id=$5)
  ), page AS (
  SELECT * FROM matching ORDER BY "personName","validFrom" DESC,id LIMIT 25 OFFSET $4
  )
@@ -43,13 +44,22 @@ func (s workspace) organizationAssignments(w http.ResponseWriter, r *http.Reques
 		respond(w, nil, invalid)
 		return
 	}
+	var personID *int64
+	if value := params.Get("personId"); value != "" {
+		id, err := strconv.ParseInt(value, 10, 64)
+		if err != nil || id < 1 {
+			respond(w, nil, invalid)
+			return
+		}
+		personID = &id
+	}
 	offset, at, name, err := organizationAssignmentFilters(params)
 	if err != nil {
 		respond(w, nil, err)
 		return
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), organizationAssignmentsSQL, unitID, at, name, offset).Scan(&result)
+	err = s.db.QueryRow(r.Context(), organizationAssignmentsSQL, unitID, at, name, offset, personID).Scan(&result)
 	respond(w, result, err)
 }
 
