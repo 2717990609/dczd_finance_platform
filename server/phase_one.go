@@ -181,6 +181,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-people", Handler: s.getCatalogRulePeople},
 		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.listForAuthorizedProducts(practiceCountOpeningsSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-rule-recipients", Handler: s.practiceRuleRecipients},
+		{Method: http.MethodPost, Path: "/api/v1/practice-registration-import/preview", Handler: submitJSON(896<<10, s.previewPracticeRegistrationImport)},
 		{Method: http.MethodPost, Path: "/api/v1/practice-pools", Handler: submit(s.createPracticePool)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
 		{Method: http.MethodPost, Path: "/api/v1/rules/retire", Handler: submit(s.retireRule)},
@@ -646,7 +647,7 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			}
 		}
 		var personIDs []int64
-		var companyIDs []string
+		var companyIDs, registrationCompanyIDs []string
 		var unitIDs, appointmentKinds, receivingCompanies, salesUnitIDs, categoryIDs []string
 		poolIDs := make(map[int64]int64)
 		for _, target := range practicePoolTargets(p.Components) {
@@ -708,9 +709,9 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			if benefit := c.PeriodBenefit; benefit != nil {
 				companyIDs = append(companyIDs, benefit.SalesCompanies...)
 				if scope := benefit.RegistrationScope; scope != nil {
-					companyIDs = append(companyIDs, scope.Companies...)
+					registrationCompanyIDs = append(registrationCompanyIDs, scope.Companies...)
 					if scope.SellerCompanyID != "" {
-						companyIDs = append(companyIDs, scope.SellerCompanyID)
+						registrationCompanyIDs = append(registrationCompanyIDs, scope.SellerCompanyID)
 					}
 				}
 				personIDs = append(personIDs, benefit.SalesPeople...)
@@ -780,6 +781,11 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			}
 			if missing {
 				return errPracticeTierCompany
+			}
+		}
+		if len(registrationCompanyIDs) != 0 {
+			if err := validatePracticeRegistrationCompanies(ctx, tx, p, registrationCompanyIDs); err != nil {
+				return err
 			}
 		}
 		if len(personIDs) != 0 {

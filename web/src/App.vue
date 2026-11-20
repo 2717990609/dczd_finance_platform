@@ -25,6 +25,7 @@ import { copiedRuleComponents, ruleComponentLabel } from './rule-component-form'
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
 const CatalogScenarioCreate = defineAsyncComponent(() => import('./CatalogScenarioCreate.vue'))
+const PracticeRegistrationImport = defineAsyncComponent(() => import('./PracticeRegistrationImport.vue'))
 const navigation = [
   {key:'tasks', area:'work', title:'待办'},
   {key:'settlement', area:'work', title:'分润试算'},
@@ -339,6 +340,45 @@ function addRuleComponent(type) {
   resetAmountMode(row)
   draft.value.components.push(row)
   activeRuleComponent.value = draft.value.components.length-1
+}
+function addPracticeRegistrationImport(preview) {
+  formError.value = ''
+  const form = draft.value
+  const imported = copiedRuleComponents(preview.components,optionLabel)
+  const conflict = form.components.find(part=>{
+    const current = part.periodBenefit?.registrationScope
+    if (!current) return false
+    return imported.some(candidate=>{
+      const {sellerId,sellerCompanyId,companies=[]} = candidate.periodBenefit.registrationScope
+      return sellerId===current.sellerId && sellerCompanyId===current.sellerCompanyId ||
+        companies.includes(current.sellerCompanyId) || current.companies?.includes(sellerCompanyId) ||
+        companies.some(company=>current.companies?.includes(company))
+    })
+  })
+  if (conflict) {
+    showFormError(new Error('报名归属与「'+conflict.periodBenefit.label+'」重叠。请先调整该安排。'))
+    return
+  }
+  if (form.scope!=='period') {
+    const startsAt = Date.parse(preview.startsAt)
+    const effectiveAt = Date.parse(form.editBaseId ? form.effectiveFrom : form.effectiveFrom ? form.effectiveFrom+'+08:00' : '')
+    if (form.editBaseId && (!Number.isFinite(effectiveAt) || effectiveAt<startsAt)) {
+      showFormError(new Error('请选择适用于关系起始时间的规则，或复制为新配置。'))
+      return
+    }
+    if (!Number.isFinite(effectiveAt) || effectiveAt<startsAt) {
+      form.effectiveFrom = new Date(startsAt+8*3600000).toISOString().slice(0,19)
+    }
+  }
+  const starter = newRuleComponent()
+  const firstPart = form.components[0]
+  if (!form.copiedFrom && form.components.length===1 && !firstPart.sourceRole &&
+    firstPart.amount===0 && firstPart.type===starter.type && firstPart.mode===starter.mode && firstPart.classMember===starter.classMember) {
+    form.components.pop()
+  }
+  const first = form.components.length
+  form.components.push(...imported)
+  activeRuleComponent.value = first
 }
 function ruleRecipientSummary(row) {
   if (row.periodBenefit) {
@@ -1587,7 +1627,7 @@ async function save() {
         <a-form-item v-if="draft.scope==='ordinal'" label="起始期数" required><a-input-number v-model:value="draft.fromOrdinal" aria-label="起始期数" :min="1" :precision="0" :disabled="Boolean(draft.editBaseId)"/></a-form-item>
         <a-form-item v-if="selectedProduct" label="生效时间" :extra="classRule ? '按北京时间的实际开班时点匹配。留空时作为该适用范围的默认规则。' : '按北京时间和原付款时间匹配。留空时作为该适用范围的默认规则。'">
           <span v-if="draft.editBaseId">{{ draft.effectiveFrom ? formatTime(draft.effectiveFrom) : '范围默认' }}</span>
-          <a-input v-else v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local"/>
+          <a-input v-else v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local" step="1"/>
         </a-form-item>
         </div>
         <div v-if="draft.components?.length" class="rule-blocks" aria-label="收款安排">
@@ -1603,6 +1643,10 @@ async function save() {
                 </a-menu>
               </template>
             </a-dropdown>
+            <PracticeRegistrationImport v-if="classRule && selectedProduct" :key="draft.productId" :api="api"
+              :product-id="draft.productId" :period-id="draft.scope==='period' ? draft.periodId : undefined"
+              :blocked="draft.scope==='period' && !draft.periodId" :people="classPeopleOptions" :units="unitOptions"
+              :format-time="formatTime" @add="addPracticeRegistrationImport"/>
           </div>
           <section v-for="(c,i) in draft.components" :key="i" class="rule-block">
           <button type="button" class="rule-block-header" :aria-expanded="activeRuleComponent===i"
