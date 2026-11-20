@@ -47,6 +47,7 @@ const getRoute = key => {
 const current = ref()
 const requestedPeriod = ref()
 const requestedReview = ref(false)
+const requestedRulePeriod = ref()
 const orderSyncTarget = ref()
 const orderSyncReturnPeriod = ref()
 const workbenchPeriod = ref()
@@ -133,6 +134,17 @@ const scopedProducts = computed(() => data.value.products.filter(p => current.va
 const scopeProductOptions = computed(() => scopedProducts.value.map(p=>({value:p.id,label:p.name})))
 const canPublishRule = productId => session.value?.user
   ? session.value.user.rules.some(rule => rule.productId===productId && rule.publish) : session.value?.development
+function classRuleSetupLink(period) {
+  if (period?.periodMode==='class' && period.classStartsAt && !period.classStartOutsidePeriod
+      && !period.ruleVersion && canPublishRule(period.productId)) {
+    return '#rules?productId='+period.productId+'&periodId='+period.id
+  }
+}
+const ruleTargetPeriod = computed(() => {
+  if (current.value!=='rules' || !requestedRulePeriod.value || !canPublishRule(productScope.value)) return
+  return data.value.periods.find(period=>period.id===requestedRulePeriod.value
+    && period.productId===productScope.value && period.periodMode==='class' && !period.practiceRefundMonth)
+})
 const ruleProductOptions = computed(() => data.value.products.filter(p=>(!p.catalogPending || p.periodMode==='class') && canPublishRule(p.id))
   .map(p=>({value:p.id,label:p.name})))
 const visibleProducts = computed(() => {
@@ -409,6 +421,7 @@ function changeRoute() {
     productScope.value = productID
   }
   const periodID = Number(params.get('periodId'))
+  requestedRulePeriod.value = key==='rules' && current.value===key && Number.isSafeInteger(periodID) && periodID>0 ? periodID : undefined
   requestedPeriod.value = key === 'settlement' && current.value === key && Number.isSafeInteger(periodID) && periodID > 0 ? periodID : undefined
   requestedReview.value = Boolean(requestedPeriod.value && params.get('view') === 'review')
   const fromMonthly = Boolean(requestedPeriod.value && params.get('from') === 'monthly')
@@ -464,6 +477,7 @@ function clearWorkspace() {
   current.value = undefined
   requestedPeriod.value = undefined
   requestedReview.value = false
+  requestedRulePeriod.value = undefined
   orderSyncTarget.value = undefined
   orderSyncReturnPeriod.value = undefined
   workbenchPeriod.value = undefined
@@ -535,7 +549,7 @@ async function signOut() {
 onMounted(() => { addEventListener('hashchange',changeRoute); loadSession() })
 onBeforeUnmount(() => removeEventListener('hashchange',changeRoute))
 watch(() => draft.value.productId, (next, previous) => {
-  if (drawer.value === 'rule' && next !== previous && !draft.value.copiedFrom) {
+  if (drawer.value === 'rule' && next !== previous && !draft.value.copiedFrom && !draft.value.lockedPeriod) {
     draft.value.periodId = undefined
     draft.value.effectiveFrom = undefined
     draft.value.components = [newRuleComponent()]
@@ -566,6 +580,10 @@ function selectProduct(product) {
   const params = new URLSearchParams(search)
   if (product) params.set('productId', product)
   else params.delete('productId')
+  if (key==='rules') {
+    requestedRulePeriod.value = undefined
+    params.delete('periodId')
+  }
   const query = params.toString()
   history.replaceState(history.state, '', '#'+key+(query ? '?'+query : ''))
 }
@@ -614,12 +632,19 @@ function open(kind, row) {
     draft.value = {source:row.source,externalId:row.externalId,previousOwner:row}
   }
   if (kind === 'rule') {
+    const target = ruleTargetPeriod.value
     if (row) {
       draft.value = {productId:row.productId, label:row.label, copiedFrom:row.version,
         scope:row.periodId ? 'period' : row.fromOrdinal ? 'ordinal' : 'default',
         components:copiedRuleComponents(row.components),
       }
     } else draft.value.components = [newRuleComponent()]
+    if (target) {
+      draft.value.scope = 'period'
+      draft.value.periodId = target.id
+      draft.value.lockedPeriod = true
+      draft.value.label = target.name+'分润规则'
+    }
   }
 }
 function pullFromDetails(order) {
@@ -902,9 +927,10 @@ async function save() {
           <div class="workspace-page-title">
             <h1>{{ active.title }}</h1>
             <a v-if="periodFromMonthly" class="workspace-return" href="#monthly"><LeftOutlined aria-hidden="true"/>返回月度汇总</a>
+            <a v-if="ruleTargetPeriod" class="workspace-return" :href="'#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>返回核算期次</a>
             <div v-if="actions && canOpenAction && !identityAccount" class="topbar-actions">
               <a v-if="orderSyncReturnPeriod" class="workspace-return" :href="'#settlement?periodId='+orderSyncReturnPeriod+'&view=review'"><LeftOutlined aria-hidden="true"/>返回结算核对</a>
-              <a-button type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
+              <a-button type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : titles[actions] }}</a-button>
             </div>
           </div>
           <nav v-if="workspacePages.length>1" class="workspace-nav" :aria-label="activeWorkspace?.title+'导航'">
@@ -918,6 +944,7 @@ async function save() {
           <DraftWorkbench ref="workbench" v-model:period-id="workbenchPeriod" :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
             :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" :requested-period="requestedPeriod"
+            :rule-setup-link="classRuleSetupLink(calculationPeriods.find(period=>period.id===workbenchPeriod))"
             :periods-loading="loading" :month="workspaceMonth" :requested-review="requestedReview"
             @show-order="orderDetails={versionId:$event}" @show-issue-order="orderDetails={versionId:$event,allowPull:true}"
             @show-applied-rule="showAppliedRule" />
@@ -938,6 +965,7 @@ async function save() {
         <template v-else>
         <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
         <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
+        <a-alert v-if="ruleTargetPeriod" class="feedback" type="info" :message="'为'+ruleTargetPeriod.name+'配置规则'" show-icon/>
         <div v-if="current==='orders' && data.sources.length" class="source-status-strip">
           <div v-for="entry in data.sources" :key="entry.source">
             <b>{{ sourceLabel(entry.source) }}</b><a-tag :color="entry.configured ? 'green' : 'default'">{{ entry.configured ? '已接入' : '未接入' }}</a-tag>
@@ -995,6 +1023,9 @@ async function save() {
                   <a-tag v-if="record.practiceRefundMonth" color="blue">按结算时规则</a-tag>
                   <a-tag v-else-if="record.classStartOutsidePeriod" color="orange" :title="formatTime(record.classStartsAt)">开班时间超出本期</a-tag>
                   <a-tag v-else-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag>
+                  <a v-else-if="classRuleSetupLink(record)" :href="classRuleSetupLink(record)">
+                    待配规则
+                  </a>
                   <a-tag v-else color="orange">{{ record.ruleMatchingAvailable ? '按订单匹配' : record.periodMode==='class' && !record.classStartsAt ? '待签到名单' : '待配规则' }}</a-tag>
                 </template>
                 <template v-else-if="column.key==='version'"><a-tag color="green">v{{ text }}</a-tag></template>
@@ -1084,7 +1115,7 @@ async function save() {
           <a-input-number v-model:value="draft.cycleStartDay" aria-label="退款账期每月开始日" :min="1" :max="28" :precision="0"/>
         </a-form-item>
       </template>
-      <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='rule' ? ruleProductOptions : productOptions" :disabled="Boolean(draft.copiedFrom)"/></a-form-item>
+      <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='rule' ? ruleProductOptions : productOptions" :disabled="Boolean(draft.copiedFrom || draft.lockedPeriod)"/></a-form-item>
       <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" :label="drawer==='pull' ? '订单来源' : '业务来源'">
         <a-select v-model:value="draft.source" :aria-label="drawer==='pull' ? '订单来源' : '业务来源'"
           :options="sources" :disabled="drawer==='pull' && draft.lockedOrder || drawer==='identity' && Boolean(draft.previousOwner)"/>
@@ -1125,8 +1156,8 @@ async function save() {
       <template v-if="drawer==='rule'">
         <a-alert v-if="draft.copiedFrom" class="feedback" type="info" :message="'已带入 v'+draft.copiedFrom+' 的组件配置，请核对本次适用范围和生效时间。'" show-icon/>
         <a-form-item label="规则名称" required><a-input v-model:value="draft.label" aria-label="规则名称"/></a-form-item>
-        <a-form-item html-for="rule-scope" label="适用范围"><a-select id="rule-scope" v-model:value="draft.scope" :options="options('ruleScope')"/></a-form-item>
-        <a-form-item v-if="draft.scope==='period'" html-for="rule-period" label="指定期次" required><a-select id="rule-period" v-model:value="draft.periodId" :options="periodOptions"/></a-form-item>
+        <a-form-item html-for="rule-scope" label="适用范围"><a-select id="rule-scope" v-model:value="draft.scope" :options="options('ruleScope')" :disabled="draft.lockedPeriod"/></a-form-item>
+        <a-form-item v-if="draft.scope==='period'" html-for="rule-period" label="指定期次" required><a-select id="rule-period" v-model:value="draft.periodId" :options="periodOptions" :disabled="draft.lockedPeriod"/></a-form-item>
         <a-form-item v-if="draft.scope==='ordinal'" label="起始期数" required><a-input-number v-model:value="draft.fromOrdinal" aria-label="起始期数" :min="1" :precision="0"/></a-form-item>
         <a-form-item v-if="selectedProduct" label="生效时间" :extra="classRule ? '按北京时间的实际开班时点匹配。留空时作为该适用范围的默认规则。' : '按北京时间和原付款时间匹配。留空时作为该适用范围的默认规则。'">
           <a-input v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local"/>

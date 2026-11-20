@@ -9,7 +9,7 @@ import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
   recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
-  requestedPeriod: Number, requestedReview:Boolean, periodsLoading: Boolean, month: String })
+  requestedPeriod: Number, requestedReview:Boolean, ruleSetupLink:String, periodsLoading: Boolean, month: String })
 const emit = defineEmits(['show-order', 'show-issue-order', 'show-applied-rule'])
 const selected = defineModel('periodId', {type:Number})
 const view = ref('detail')
@@ -24,6 +24,10 @@ const recoveryError = ref('')
 const savingRecovery = ref(false)
 const error = ref('')
 const refreshStatus = ref()
+const orderInput = ref('')
+const beneficiaryInput = ref('')
+const detailQuery = ref({})
+const hasDetailFilter = computed(() => Boolean(detailQuery.value.orderQuery || detailQuery.value.beneficiaryQuery))
 let sequence = 0
 let statusSequence = 0
 let statusTimer
@@ -159,6 +163,28 @@ const issueColumns = [
   { title: '处理说明', key: 'reason', width: 240 },
 ]
 
+function appendDetailFilters(params) {
+  for (const [name,value] of Object.entries(detailQuery.value)) {
+    if (value) params.set(name,value)
+  }
+}
+function searchDetails() {
+  detailQuery.value = {orderQuery:orderInput.value.trim(),beneficiaryQuery:beneficiaryInput.value.trim()}
+  load()
+}
+function clearDetailInputs() {
+  orderInput.value = ''
+  beneficiaryInput.value = ''
+  detailQuery.value = {}
+}
+function resetDetails() {
+  clearDetailInputs()
+  load()
+}
+function hasMoreDetails(section,total) {
+  return draft.value.detailHasMore?.[section] ?? total>draft.value[section].length
+}
+
 async function load(replace = false) {
   const request = ++sequence
   if (replace) draft.value = undefined
@@ -171,6 +197,7 @@ async function load(replace = false) {
   try {
     const params = new URLSearchParams({periodId:selected.value})
     if (props.unitId) params.set('unitId',props.unitId)
+    appendDetailFilters(params)
     const result = await props.api('/drafts?' + params)
     if (request === sequence) {
       draft.value = result
@@ -219,6 +246,7 @@ watch(selected, async () => {
   refreshStatus.value = undefined
   notice.value = ''
   recovery.value = undefined
+  clearDetailInputs()
   view.value = props.requestedReview && selected.value === props.requestedPeriod ? 'review' : 'detail'
   await load(true)
   if (request === statusSequence) checkRefresh()
@@ -305,13 +333,17 @@ async function loadMore(section, cursorName) {
   const cursor = current[section].at(-1).id
   const params = new URLSearchParams({ periodId: selected.value, version: current.version, [cursorName]: cursor })
   if (props.unitId) params.set('unitId',props.unitId)
+  appendDetailFilters(params)
   loading.value = true
   error.value = ''
   try {
     const next = await props.api('/drafts?' + params)
     if (request === sequence) {
       if (section === 'issues' && next.calculatedAt !== current.calculatedAt) await load()
-      else current[section].push(...next[section])
+      else {
+        current[section].push(...next[section])
+        if (current.detailHasMore && next.detailHasMore && section!=='issues') current.detailHasMore[section] = next.detailHasMore[section]
+      }
     }
   } catch (err) {
     if (request === sequence) error.value = err.message
@@ -375,10 +407,27 @@ async function loadMore(section, cursorName) {
     :format-time="formatTime" :source-streams="sourceStreams" :working="calculating || pullingRoster" :can-pull-roster="canPullRoster"
     @show-pools="view='pools'" @show-issues="view='issues'" @recalculate="calculate" @pull-roster="pullRoster" @refresh-draft="load()" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">
+  <section v-if="draft.lineCount || draft.refundCount || draft.correctionCount" class="records draft-detail-search" aria-label="明细筛选">
+    <form class="draft-detail-fields" @submit.prevent="searchDetails">
+      <div>
+        <label for="draft-order-search">原订单号</label>
+        <a-input id="draft-order-search" v-model:value="orderInput" placeholder="订单号或来源订单 ID" :maxlength="128" allow-clear/>
+      </div>
+      <div>
+        <label for="draft-beneficiary-search">受益对象</label>
+        <a-input id="draft-beneficiary-search" v-model:value="beneficiaryInput" placeholder="人员、公司或团队池" :maxlength="128" allow-clear/>
+      </div>
+      <div class="draft-detail-actions">
+        <a-button type="primary" html-type="submit" :disabled="calculating" :loading="loading && hasDetailFilter">查询</a-button>
+        <a-button v-if="hasDetailFilter || orderInput || beneficiaryInput" :disabled="calculating" @click="resetDetails">清除</a-button>
+      </div>
+    </form>
+    <p v-if="hasDetailFilter" class="draft-report-note">上方金额为全期汇总。</p>
+  </section>
   <section v-if="!draft.practiceRefundMonth" class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>
     <div class="table-container">
-      <a-table :columns="lineColumns" :data-source="draft.lines" :pagination="false" row-key="id" :scroll="{ x: 755 }">
+      <a-table :columns="lineColumns" :data-source="draft.lines" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: 755 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
             <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>
@@ -401,15 +450,15 @@ async function loadMore(section, cursorName) {
           </template>
           <template v-else-if="column.key === 'amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
         </template>
-        <template #emptyText><a-empty description="本期没有可计提明细" /></template>
+        <template #emptyText><a-empty :description="hasDetailFilter ? '未找到符合条件的计提明细' : '本期没有可计提明细'" /></template>
       </a-table>
     </div>
-    <div v-if="(draft.scopeLineCount ?? draft.lineCount) > draft.lines.length" class="paging"><a-button :loading="loading" @click="loadMore('lines', 'afterLineId')">加载下一页</a-button></div>
+    <div v-if="hasMoreDetails('lines', draft.scopeLineCount ?? draft.lineCount)" class="paging"><a-button :loading="loading" @click="loadMore('lines', 'afterLineId')">加载下一页</a-button></div>
   </section>
   <section v-if="draft.scopeRefundCount ?? draft.refundCount" class="records draft-issues">
     <div class="records-head"><h2>退款扣减明细</h2></div>
     <div class="table-container">
-      <a-table :columns="refundColumns" :data-source="draft.refunds" :pagination="false" row-key="id" :scroll="{ x: 840 }">
+      <a-table :columns="refundColumns" :data-source="draft.refunds" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: 840 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
             <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.originalOrderNo || record.originalOrderId }}</button>
@@ -426,14 +475,15 @@ async function loadMore(section, cursorName) {
           </template>
           <template v-else-if="column.key === 'amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
         </template>
+        <template #emptyText>未找到符合条件的退款扣减</template>
       </a-table>
     </div>
-    <div v-if="(draft.scopeRefundCount ?? draft.refundCount) > draft.refunds.length" class="paging"><a-button :loading="loading" @click="loadMore('refunds', 'afterRefundId')">加载下一页</a-button></div>
+    <div v-if="hasMoreDetails('refunds', draft.scopeRefundCount ?? draft.refundCount)" class="paging"><a-button :loading="loading" @click="loadMore('refunds', 'afterRefundId')">加载下一页</a-button></div>
   </section>
   <section v-if="draft.scopeCorrectionCount ?? draft.correctionCount" class="records draft-issues">
     <div class="records-head"><h2>受益人更正明细</h2></div>
     <div class="table-container">
-      <a-table :columns="correctionColumns" :data-source="draft.corrections" :pagination="false" row-key="id" :scroll="{x:710}">
+      <a-table :columns="correctionColumns" :data-source="draft.corrections" :loading="loading" :pagination="false" row-key="id" :scroll="{x:710}">
         <template #bodyCell="{column,record}">
           <template v-if="column.key==='order'">
             <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>
@@ -448,9 +498,10 @@ async function loadMore(section, cursorName) {
           </template>
           <template v-else-if="column.key==='amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
         </template>
+        <template #emptyText>未找到符合条件的受益人更正</template>
       </a-table>
     </div>
-    <div v-if="(draft.scopeCorrectionCount ?? draft.correctionCount) > draft.corrections.length" class="paging"><a-button :loading="loading" @click="loadMore('corrections','afterCorrectionId')">加载下一页</a-button></div>
+    <div v-if="hasMoreDetails('corrections', draft.scopeCorrectionCount ?? draft.correctionCount)" class="paging"><a-button :loading="loading" @click="loadMore('corrections','afterCorrectionId')">加载下一页</a-button></div>
   </section>
   </template>
   <section v-if="draft && view==='issues'" class="records">
@@ -483,7 +534,8 @@ async function loadMore(section, cursorName) {
   <CatalogRuleMatches v-if="hasMatching && (!draft || view==='matching')" :period-id="selected" :draft-available="selectedPeriod.catalogDraftAvailable"
     :api="api" :format-money="formatMoney" :format-time="formatTime"/>
   <section v-if="!draft && !error && !hasMatching" class="records empty">
-    <a-empty :description="periodsLoading || loading ? '正在读取核算期' : selected ? '本期暂无草稿' : options.length ? '请选择核算期' : month ? '所选月份暂无核算期' : '暂无核算期'" />
+    <a-empty :description="periodsLoading || loading ? '正在读取核算期' : ruleSetupLink ? '本期签到名单已就绪，待配置规则' : selected ? '本期暂无草稿' : options.length ? '请选择核算期' : month ? '所选月份暂无核算期' : '暂无核算期'" />
+    <a-button v-if="!periodsLoading && !loading && ruleSetupLink" type="primary" :href="ruleSetupLink">配置本期规则</a-button>
     <a-button v-if="!periodsLoading && !loading && !options.length" href="#periods">查看核算期次</a-button>
   </section>
   <Modal :open="!!recovery" title="登记扣回处理" ok-text="保存并试算" cancel-text="取消" :confirm-loading="savingRecovery"

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -596,7 +597,8 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
   LEFT JOIN source_payment_companies company ON company.source_version_id=l.source_version_id AND e.id IS NOT NULL
   LEFT JOIN configuration_options company_label ON company_label.group_key='practiceSalesCompany' AND company_label.option_key=company.company_id
   WHERE l.period_id=d.period_id AND l.id>$2
-  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) ORDER BY l.id LIMIT 50
+  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `))
+  {{lineSearch}} ORDER BY l.id LIMIT {{detailLimit}}
  ) l),'[]'),
  'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (
   SELECT a.id,a.amount_minor AS "amountMinor",rv.fact->>'refundId' AS "refundId",rv.version AS "refundVersion",
@@ -620,7 +622,8 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
   JOIN periods original_period ON original_period.id=l.period_id JOIN periods refund_period ON refund_period.id=a.refund_period_id
   JOIN periods posting_period ON posting_period.id=a.period_id
   WHERE a.period_id=d.period_id AND a.id>$5
-  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) ORDER BY a.id LIMIT 50
+  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `))
+  {{refundSearch}} ORDER BY a.id LIMIT {{detailLimit}}
  ) a),'[]'),
  'corrections',coalesce((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM (
   SELECT c.id,c.amount_minor AS "amountMinor",paid.order_id AS "orderId",
@@ -641,7 +644,8 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
   LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
   LEFT JOIN product_rule_packages package ON package.source_id=cv.package_id
   WHERE c.period_id=d.period_id AND c.id>$6
-  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `)) ORDER BY c.id LIMIT 50
+  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `))
+  {{correctionSearch}} ORDER BY c.id LIMIT {{detailLimit}}
  ) c),'[]'),
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
   SELECT i.id,i.component_type AS "component",i.code,i.advisory,o.source,o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",
@@ -665,8 +669,57 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
  LEFT JOIN rule_versions r ON r.id=d.rule_id LEFT JOIN settlements st ON st.period_id=d.period_id
  LEFT JOIN practice_rosters roster ON roster.id=d.practice_roster_id WHERE d.period_id=$1 AND ($4::bigint=0 OR d.version=$4)`
 
-var draftDetailSQL = organizationScopeQuery(draftDetailTemplateSQL, "NULL")
-var scopedDraftDetailSQL = organizationScopeQuery(draftDetailTemplateSQL, "$7")
+const draftDetailPageSize = 50
+
+var standardDraftDetailsSQL = strings.NewReplacer("{{lineSearch}}", "", "{{refundSearch}}", "",
+	"{{correctionSearch}}", "", "{{detailLimit}}", strconv.Itoa(draftDetailPageSize)).Replace(draftDetailTemplateSQL)
+var draftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "NULL")
+var scopedDraftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "$7")
+var filteredDraftDetailSQL = organizationScopeQuery(strings.NewReplacer(
+	"{{lineSearch}}", draftDetailFilter("o", "o.fact->>'orderNo'", "coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name)"),
+	"{{refundSearch}}", draftDetailFilter("o", "o.fact->>'orderNo'", "coalesce(p.name,practice_pool.name,pool.name,beneficiary.name)"),
+	"{{correctionSearch}}", draftDetailFilter("paid",
+		"CASE WHEN paid.order_id=v.order_id AND v.kind='ORDER_PAID' THEN v.fact->>'orderNo' ELSE paid.fact->>'orderNo' END",
+		"coalesce(p.name,pool.name,recipient.name)", "coalesce(old_person.name,pool.name,old_recipient.name)"),
+	"{{detailLimit}}", strconv.Itoa(draftDetailPageSize+1),
+).Replace(draftDetailTemplateSQL), "$7")
+
+func draftDetailFilter(orderAlias, orderName string, beneficiaryNames ...string) string {
+	beneficiaryMatches := []string{"$9::text=''"}
+	for _, name := range beneficiaryNames {
+		beneficiaryMatches = append(beneficiaryMatches, "strpos(lower("+name+"),lower($9))>0")
+	}
+	return " AND ($8::text='' OR strpos(lower(" + orderAlias + ".order_id),lower($8))>0 OR strpos(lower(" +
+		orderName + "),lower($8))>0) AND (" + strings.Join(beneficiaryMatches, " OR ") + ")"
+}
+
+func withDraftDetailPagination(raw json.RawMessage) (json.RawMessage, error) {
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, err
+	}
+	more := make(map[string]bool, 3)
+	for _, section := range []string{"lines", "refunds", "corrections"} {
+		var rows []json.RawMessage
+		if err := json.Unmarshal(result[section], &rows); err != nil {
+			return nil, err
+		}
+		more[section] = len(rows) > draftDetailPageSize
+		if more[section] {
+			items, err := json.Marshal(rows[:draftDetailPageSize])
+			if err != nil {
+				return nil, err
+			}
+			result[section] = items
+		}
+	}
+	next, err := json.Marshal(more)
+	if err != nil {
+		return nil, err
+	}
+	result["detailHasMore"] = next
+	return json.Marshal(result)
+}
 
 const draftRuleReferenceSQL = `SELECT rule_id,catalog_rule_id::text,component_type
  FROM calculation_draft_lines WHERE $3::text='lines' AND period_id=$1 AND id=$2
@@ -751,10 +804,26 @@ func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
+	orderQuery := strings.TrimSpace(query.Get("orderQuery"))
+	beneficiaryQuery := strings.TrimSpace(query.Get("beneficiaryQuery"))
+	if orderQuery != "" && !textOK(orderQuery, 128) || beneficiaryQuery != "" && !textOK(beneficiaryQuery, 128) {
+		respond(w, nil, invalid)
+		return
+	}
+	detailSQL := scopedDraftDetailSQL
+	args := []any{periodID, cursors[0], cursors[1], version, cursors[2], cursors[3], unit}
+	filtered := orderQuery != "" || beneficiaryQuery != ""
+	if filtered {
+		detailSQL = filteredDraftDetailSQL
+		args = append(args, orderQuery, beneficiaryQuery)
+	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), scopedDraftDetailSQL, periodID, cursors[0], cursors[1], version, cursors[2], cursors[3], unit).Scan(&result)
+	err = s.db.QueryRow(r.Context(), detailSQL, args...).Scan(&result)
 	if version > 0 && errors.Is(err, pgx.ErrNoRows) {
 		err = conflict
+	}
+	if err == nil && filtered {
+		result, err = withDraftDetailPagination(result)
 	}
 	respond(w, result, err)
 }
