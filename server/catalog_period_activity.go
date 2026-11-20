@@ -39,6 +39,13 @@ type catalogPeriodScenarioActivity struct {
 	PriorRefundsMinor int64  `json:"priorPeriodRefundsMinor"`
 }
 
+type catalogPeriodScopeExclusions struct {
+	Payments      int   `json:"paymentCount"`
+	Refunds       int   `json:"refundCount"`
+	ReceiptsMinor int64 `json:"receiptsMinor"`
+	RefundsMinor  int64 `json:"refundsMinor"`
+}
+
 type catalogPeriodActivity struct {
 	Start              time.Time                       `json:"start"`
 	Through            time.Time                       `json:"through"`
@@ -48,6 +55,7 @@ type catalogPeriodActivity struct {
 	Receipts           int64                           `json:"receiptsMinor"`
 	Refunds            int64                           `json:"refundsMinor"`
 	PriorPeriodRefunds int64                           `json:"priorPeriodRefundsMinor"`
+	OutsideScope       *catalogPeriodScopeExclusions   `json:"outsidePerformanceScope,omitempty"`
 	Grouping           *catalogPeriodGroupReport       `json:"grouping,omitempty"`
 	postingIssues      []draftIssue
 }
@@ -540,6 +548,20 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 				decisions[event.PaymentID] = decision
 			}
 			if decision.excluded {
+				if result.OutsideScope == nil {
+					result.OutsideScope = &catalogPeriodScopeExclusions{}
+				}
+				outside := result.OutsideScope
+				if event.Refund {
+					outside.Refunds++
+					err = addCatalogActivityAmount(event.Amount, &outside.RefundsMinor)
+				} else {
+					outside.Payments++
+					err = addCatalogActivityAmount(event.Amount, &outside.ReceiptsMinor)
+				}
+				if err != nil {
+					return result, err
+				}
 				continue
 			}
 			if decision.issue != "" {

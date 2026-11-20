@@ -641,6 +641,14 @@ async function resumeRule() {
                   <tr><th scope="row">已匹配合计</th><td>{{ formatMoney(activity.receiptsMinor) }}</td>
                     <td>{{ formatMoney(activity.refundsMinor) }}</td><td>{{ formatMoney(activity.priorPeriodRefundsMinor) }}</td></tr>
                 </tbody>
+                <tfoot v-if="activity.outsidePerformanceScope" class="period-activity-excluded">
+                  <tr>
+                    <th scope="row">业绩范围外</th>
+                    <td>{{ formatMoney(activity.outsidePerformanceScope.receiptsMinor) }} <small>· {{ activity.outsidePerformanceScope.paymentCount }} 笔</small></td>
+                    <td>{{ formatMoney(activity.outsidePerformanceScope.refundsMinor) }} <small>· {{ activity.outsidePerformanceScope.refundCount }} 笔</small></td>
+                    <td>—</td>
+                  </tr>
+                </tfoot>
               </table>
             </div>
             <ul v-if="Object.keys(activity.issues).length" class="period-activity-issues" aria-label="待核交易">
@@ -771,6 +779,7 @@ async function resumeRule() {
 .period-activity-table th { font-weight:500; }
 .period-activity-table td { white-space:nowrap; font-variant-numeric:tabular-nums; }
 .period-activity-table td small { color:var(--muted); }
+.period-activity-excluded { color:var(--muted); }
 .period-activity-issues { margin:8px 0 0; padding-inline-start:18px; color:var(--muted); }
 @media (max-width:540px) { .period-quote-inputs { grid-template-columns:1fr; gap:0; } }
 </style>

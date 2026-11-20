@@ -163,6 +163,13 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	scopedInput := strings.TrimSuffix(strings.Replace(input, "新整期规则", "销售一部负责人", 1), "}") + `,
 	 "performanceScope":{"unitIds":["10000000-0000-4000-8000-000000000982","10000000-0000-4000-8000-000000000984","10000000-0000-4000-8000-000000000985"],
 	 "appointment":{"personId":9801,"unitId":"10000000-0000-4000-8000-000000000982","role":"TEAM_LEAD"}}}`
+	scopedPreview := submit(980, "/api/v1/catalog-period-activity", s.postCatalogPeriodActivity, scopedInput)
+	var reconciliation catalogPeriodActivity
+	if err := json.Unmarshal(scopedPreview.Body.Bytes(), &reconciliation); err != nil || scopedPreview.Code != 200 ||
+		reconciliation.Receipts != 14000 || reconciliation.OutsideScope == nil ||
+		*reconciliation.OutsideScope != (catalogPeriodScopeExclusions{Payments: 3, ReceiptsMinor: 190000}) {
+		t.Fatalf("scope preview must reconcile included and excluded payments: %d %s %v", scopedPreview.Code, scopedPreview.Body.String(), err)
+	}
 	w = submit(980, path, s.postCatalogPeriodRule, scopedInput)
 	if err := json.Unmarshal(w.Body.Bytes(), &published); err != nil || w.Code != 200 {
 		t.Fatalf("scoped aggregate rule did not publish: %d %s %v", w.Code, w.Body.String(), err)
@@ -259,6 +266,9 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &activity); err != nil || w.Code != 200 ||
 		activity.Refunds != 5000 || activity.Grouping == nil || len(activity.Grouping.Groups) != 1 || activity.Grouping.Groups[0].Version != 1 {
 		t.Fatalf("activity before opening the next draft must use the original scoped refund: %d %s %v", w.Code, w.Body.String(), err)
+	}
+	if activity.OutsideScope == nil || *activity.OutsideScope != (catalogPeriodScopeExclusions{Refunds: 1, RefundsMinor: 4000}) {
+		t.Fatalf("the refund of an excluded original payment should stay outside the scope: %s", w.Body.String())
 	}
 	trial, err = s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: later.ID, Month: "2026-11"})
 	if err != nil || trial.(draftSummary).IssueCount != 0 {
