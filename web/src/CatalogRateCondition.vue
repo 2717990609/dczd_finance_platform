@@ -3,25 +3,25 @@ import { computed } from 'vue'
 
 const props = defineProps({options:Object, suffix:{type:String,default:''}, scope:String})
 const value = defineModel({type:Object,required:true})
-const companies = computed(() => props.scope==='company'
-  ? props.options.companies.filter(option=>option.value!=='ANY') : props.options.companies)
+const companies = computed(() => props.options.companies.filter(option=>option.value!=='ANY'))
 </script>
 
 <template>
-  <div class="field-grid">
+  <div class="field-grid catalog-rate-fields">
+    <div>
+      <label :for="'catalog-add-category'+suffix">销售类别</label>
+      <a-select :id="'catalog-add-category'+suffix" v-model:value="value.categoryIds" :options="options.categories"
+        :placeholder="scope==='category' ? '选择销售类别' : '不限销售类别'" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label"/>
+    </div>
     <div v-if="scope!=='category'">
-      <label :for="'catalog-add-company'+suffix">销售公司</label>
-      <a-select :id="'catalog-add-company'+suffix" v-model:value="value.company"
-        :options="companies" show-search option-filter-prop="label"/>
+      <label :for="'catalog-add-company'+suffix">公司特例</label>
+      <a-select :id="'catalog-add-company'+suffix" v-model:value="value.companyIds"
+        :options="companies" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label"
+        :placeholder="scope==='company' ? '选择特例公司' : '按类别适用'"/>
     </div>
     <div>
       <label :for="'catalog-add-relationship'+suffix">销售关系</label>
       <a-select :id="'catalog-add-relationship'+suffix" v-model:value="value.relationship" :options="options.relationships"/>
-    </div>
-    <div>
-      <label :for="'catalog-add-category'+suffix">销售类别</label>
-      <a-select :id="'catalog-add-category'+suffix" v-model:value="value.category" :options="options.categories"
-        :placeholder="scope==='category' ? '选择类别' : '不限'" :allow-clear="scope!=='category'" show-search option-filter-prop="label"/>
     </div>
     <div>
       <label :for="'catalog-add-rate'+suffix">新增比例（%）</label>

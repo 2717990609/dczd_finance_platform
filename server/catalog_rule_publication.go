@@ -233,7 +233,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			}
 		}
 		if structureChanged {
-			body, err = editCatalogStructure(ctx, tx, body, input.NewItems, input.NewRateRows, input.TargetChanges)
+			body, err = editCatalogStructure(ctx, tx, body, input.NewItems, input.NewRateRows, input.TargetChanges, input.RemovedRateRows)
 			if err != nil {
 				return err
 			}
@@ -408,11 +408,12 @@ func editCatalogRates(raw json.RawMessage, changes []catalogRateChange) (json.Ra
 func internalTeamRatesChanged(before, after vipSalesPolicy) bool {
 	// Valid category IDs are UUIDs. Also check no history, unclassified, and unmatched.
 	categories := map[string]bool{"": true, "unmatched": true}
-	for _, row := range before.Sales {
-		categories[row.Category] = true
-	}
-	for _, row := range after.Sales {
-		categories[row.Category] = true
+	for _, policy := range []vipSalesPolicy{before, after} {
+		for _, row := range policy.Sales {
+			for _, id := range row.categories() {
+				categories[id] = true
+			}
+		}
 	}
 	categoryChecks := []*string{nil}
 	for category := range categories {

@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
-import { rateAsBasisPoints } from './rule-component-form'
+import { catalogRateConditionBody, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({products:Array,initialProduct:Number,initialSku:String,api:Function})
 const emit = defineEmits(['close','published'])
@@ -20,7 +20,7 @@ const loading = ref(false)
 const publishing = ref(false)
 const error = ref('')
 const peopleFilters = computed(() => ({productId:productId.value}))
-const blankRate = () => ({company:'ANY',relationship:'ANY'})
+const blankRate = () => ({companyIds:[],categoryIds:[],relationship:'ANY'})
 let optionsRequest = 0
 
 watch(productId, async id=>{
@@ -53,11 +53,7 @@ async function publish() {
   error.value = ''
   try {
     if (!sku.value || !name.value.trim() || !effectiveFrom.value) throw new Error('请选择业务 SKU、生效时间并填写规则名称。')
-    const salesRates = rates.value.map(({rate,...row})=>{
-      const value = rateAsBasisPoints(rate)
-      if (!row.company || !row.relationship || value===undefined) throw new Error('请核对每行的销售范围和比例。')
-      return {...row,rateBps:value}
-    })
+    const salesRates = rates.value.map(catalogRateConditionBody)
     publishing.value = true
     const result = await props.api('/catalog-rule-rates',{method:'POST',body:JSON.stringify({
       effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),

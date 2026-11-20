@@ -172,6 +172,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .catalog-add-form { padding: 10px; background: var(--accent-soft); border-radius: 6px; }
 .catalog-add-form .ant-select, .catalog-add-form .ant-input-number { width: 100%; }
 .catalog-add-form .field-grid label { display: block; margin-bottom: 4px; }
+.catalog-rate-fields { gap:8px 14px; }
+.catalog-rate-fields > div { min-width:0; }
+.catalog-rate-fields label { display:block; margin-bottom:4px; }
+.catalog-rate-fields .ant-select,.catalog-rate-fields .ant-input-number { width:100%; }
 .catalog-add-condition { border-bottom: 1px solid var(--line); margin-bottom: 8px; padding-bottom: 8px; }
 .catalog-staged-entries { list-style: none; padding: 0; margin: 8px 0 0; }
 .catalog-staged-entries > li { display: flex; justify-content: space-between; align-items: center; gap: 5px; }

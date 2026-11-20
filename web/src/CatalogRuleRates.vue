@@ -40,7 +40,7 @@ const rateColumns = [
   {title:'销售关系',key:'relationship',dataIndex:'relationship',width:110},
   {title:'比例（%）',key:'rate',width:115},
 ]
-const columns = computed(() => sheet.value?.mayPublish && !props.applied ? [...rateColumns,{title:'操作',key:'operation',width:85}] : rateColumns)
+const columns = computed(() => sheet.value?.mayPublish && !props.applied ? [...rateColumns,{title:'操作',key:'operation',width:142}] : rateColumns)
 const component = computed(() => sheet.value?.components.find(item => item.itemKey === selected.value))
 const targetKind = computed(() => targetEdits.value.get(selected.value)?.target || component.value?.targetKind)
 const targetKindLabels = {seller:'订单上的成交销售',person:'指定个人',company:'指定公司',pool:'团队池'}
@@ -70,7 +70,7 @@ const rateGroups = computed(() => {
   const rows = component.value?.rows || []
   const result = [
     {key:'default',title:'按销售类别',rows:rows.filter(row=>['category','general'].includes(row.scope))},
-    {key:'company',title:'公司单独比例',rows:rows.filter(row=>row.scope==='company')},
+    {key:'company',title:'公司特例',rows:rows.filter(row=>row.scope==='company')},
     {key:'inherited',title:'公司补充比例',rows:rows.filter(row=>row.scope==='inherited')},
   ]
   return result.filter(group=>group.rows.length)
@@ -100,6 +100,12 @@ async function addRecipient() {
   await nextTick()
   await structureEditor.value?.addRecipient()
 }
+async function editRateScope(row) {
+  more.value = ['more']
+  await nextTick()
+  structureEditor.value?.editRateScope(row,displayRate(row.rateBps,row.row))
+}
+const pendingScope = (itemKey, row) => row && structure.value.rateRows.find(edit=>edit.itemKey===itemKey && edit.row===row)
 const cellKey = (item, row) => JSON.stringify([item,row || 0])
 function toggleItemRemoval() {
   const key = selected.value
@@ -209,7 +215,7 @@ function publicationInput() {
   if (!effectiveFrom.value) throw new Error('请选择生效时间。')
   if (copy.value && (!copy.value.sku || !copy.value.label?.trim())) throw new Error('请选择目标 SKU，并填写规则名称。')
   const changes = Object.values(edits.value)
-    .filter(({itemKey,row})=>!removedItems.value.has(itemKey) && !removedRateRows.value.has(cellKey(itemKey,row)))
+    .filter(({itemKey,row})=>!removedItems.value.has(itemKey) && !removedRateRows.value.has(cellKey(itemKey,row)) && !pendingScope(itemKey,row))
     .map(({itemKey,row,value}) => ({itemKey,row,rateBps:rateAsBasisPoints(value)}))
   if (changes.some(change => change.rateBps === undefined)) throw new Error('请填写 0 至 100 之间的比例，最多保留两位小数。')
   return {
@@ -223,7 +229,8 @@ function publicationInput() {
       teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
     })),
     newItems:structure.value.items.map(({personName,...item})=>item),
-    newRateRows:structure.value.rateRows.filter(row=>!removedItems.value.has(row.itemKey)).map(({itemLabel,...row})=>row),
+    newRateRows:structure.value.rateRows.filter(({itemKey,row})=>!removedItems.value.has(itemKey) && !removedRateRows.value.has(cellKey(itemKey,row)))
+      .map(({itemLabel,...row})=>row),
     removedItems:[...removedItems.value],
     removedRateRows:[...removedRateRows.value.values()].filter(row=>!removedItems.value.has(row.itemKey)),
   }
@@ -333,7 +340,7 @@ async function publish() {
                 placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
             </div>
             <p v-if="rateGroup==='default' && automaticCategoryRate" class="catalog-inheritance">
-              新公司登记到已有销售类别后，自动沿用该类别比例。公司有单独约定时，优先使用单独比例。
+              公司特例优先，其余按销售类别默认比例。
             </p>
             <p v-if="rateGroup==='inherited'" class="catalog-inheritance">公司没有单独比例，也未匹配到类别默认比例时，才使用此处配置。</p>
             <a-table :key="selected + filter + rateGroup" :columns="displayedColumns" :data-source="displayedRates" row-key="row" size="small"
@@ -345,7 +352,8 @@ async function publish() {
                 <template v-if="column.key==='category'">{{ record.category || (record.scope==='general' && automaticCategoryRate ? '其他已识别类别' : '不限') }}</template>
                 <template v-if="column.key==='rate'">
                   <a-input-number v-if="!applied" :aria-label="'第 '+record.row+' 行比例'"
-                    :value="displayRate(record.rateBps,record.row)" :disabled="!editable || record.teamRate || removedRateRows.has(cellKey(selected,record.row))"
+                    :value="pendingScope(selected,record.row) ? Number(pendingScope(selected,record.row).rateBps)/100 : displayRate(record.rateBps,record.row)"
+                    :disabled="!editable || record.teamRate || !!pendingScope(selected,record.row) || removedRateRows.has(cellKey(selected,record.row))"
                     :min="0" :max="100" :precision="2" string-mode @update:value="setRate($event,record.rateBps,record.row)"/>
                   <span v-else>{{ displayRate(record.rateBps,record.row) }}%</span>
                   <small v-if="record.teamRate" class="order-version">内部团队拆分</small>
@@ -353,8 +361,11 @@ async function publish() {
                 <template v-if="column.key==='operation' && !itemRemoved">
                   <a-button v-if="removedRateRows.has(cellKey(selected,record.row))" type="link" size="small"
                     :disabled="saving" @click="toggleRowRemoval(record.row)">撤销删除</a-button>
-                  <a-button v-else type="link" danger size="small" :disabled="saving || record.teamRate"
-                    @click="toggleRowRemoval(record.row)">删除</a-button>
+                  <template v-else>
+                    <a-button v-if="!record.teamRate && !record.companyFallback" type="link" size="small" :disabled="saving || structureEditing"
+                      @click="editRateScope(record)">编辑范围</a-button>
+                    <a-button type="link" danger size="small" :disabled="saving || record.teamRate" @click="toggleRowRemoval(record.row)">删除</a-button>
+                  </template>
                 </template>
               </template>
             </a-table>

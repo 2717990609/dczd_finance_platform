@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -31,15 +32,18 @@ type catalogSplitRates struct {
 }
 
 type catalogRateRow struct {
-	Row                int    `json:"row"`
-	Company            string `json:"company"`
-	Relationship       string `json:"relationship"`
-	LimitsRelationship bool   `json:"limitsRelationship,omitempty"`
-	Category           string `json:"category,omitempty"`
-	Scope              string `json:"scope"`
-	Rate               int64  `json:"rateBps"`
-	TeamRate           bool   `json:"teamRate,omitempty"`
-	Fallback           bool   `json:"companyFallback,omitempty"`
+	Row                int      `json:"row"`
+	Company            string   `json:"company"`
+	Relationship       string   `json:"relationship"`
+	LimitsRelationship bool     `json:"limitsRelationship,omitempty"`
+	Category           string   `json:"category,omitempty"`
+	Scope              string   `json:"scope"`
+	Rate               int64    `json:"rateBps"`
+	TeamRate           bool     `json:"teamRate,omitempty"`
+	Fallback           bool     `json:"companyFallback,omitempty"`
+	CompanyIDs         []string `json:"companyIds,omitempty"`
+	CategoryIDs        []string `json:"categoryIds,omitempty"`
+	RelationshipCode   string   `json:"relationshipCode"`
 }
 
 type catalogRateSheet struct {
@@ -71,6 +75,13 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 			return missing
 		}
 		return code
+	}
+	joinedCaption := func(names map[string]string, codes []string, missing string) string {
+		labels := make([]string, 0, len(codes))
+		for _, code := range codes {
+			labels = append(labels, caption(names, code, missing))
+		}
+		return strings.Join(labels, "、")
 	}
 	for _, body := range actions {
 		rawAction, err := json.Marshal(body)
@@ -119,20 +130,28 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 			for i, entry := range rows {
 				scope := "company"
 				switch {
-				case entry.Company == "ANY" && entry.Category != "":
+				case entry.Company == "ANY" && entry.hasCategory():
 					scope = "category"
 				case entry.Company == "ANY":
 					scope = "general"
 				case entry.SnapshotDefault:
 					scope = "inherited"
 				}
+				var companyIDs, categoryIDs []string
+				if entry.Company != "ANY" {
+					companyIDs = entry.companies()
+				}
+				if entry.hasCategory() {
+					categoryIDs = entry.categories()
+				}
 				item.Rows = append(item.Rows, catalogRateRow{
-					Row: i + 1, Company: caption(companies, entry.Company, "公司名称待补"),
-					Category:           caption(categories, entry.Category, "销售类别名称待补"),
-					Relationship:       caption(relationships, entry.Relationship, "销售关系待核"),
+					Row: i + 1, Company: joinedCaption(companies, entry.companies(), "公司名称待补"),
+					Category:         joinedCaption(categories, entry.categories(), "销售类别名称待补"),
+					Relationship:     caption(relationships, entry.Relationship, "销售关系待核"),
+					RelationshipCode: entry.Relationship, CompanyIDs: companyIDs, CategoryIDs: categoryIDs,
 					LimitsRelationship: entry.Relationship != "ANY", Rate: entry.Rate, Scope: scope,
 					TeamRate: item.ItemKey == sales.Split.Item && slices.ContainsFunc(sales.Split.Teams, func(team vipInternalTeam) bool {
-						return team.Company == entry.Company
+						return entry.namesCompany(team.Company)
 					}),
 					Fallback: entry.SnapshotDefault,
 				})

@@ -7,6 +7,14 @@ export function rateAsBasisPoints(value) {
   return rate <= 10000 ? rate : undefined
 }
 
+export function catalogRateConditionBody(row) {
+  const rateBps = rateAsBasisPoints(row.rate)
+  if (!row.relationship || rateBps===undefined) throw new Error('请核对销售范围和比例。')
+  return {relationship:row.relationship,rateBps,
+    ...(row.companyIds?.length ? {companyIds:row.companyIds} : {company:'ANY'}),
+    ...(row.categoryIds?.length ? {categoryIds:row.categoryIds} : {})}
+}
+
 export function ruleComponentLabel(component, optionLabel) {
   if (component.companySales?.label != null) return component.companySales.label.trim() || '未命名收款安排'
   const label = component.periodBenefit?.label

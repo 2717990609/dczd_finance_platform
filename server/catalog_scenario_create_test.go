@@ -30,16 +30,29 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		 VALUES('DCAI','2026-11-01',sha256('fixture'::bytea),true)`,
 		`INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,valid_from,observed_at)
 		 VALUES(gen_random_uuid(),'DCAI',9501,'SALES','PROJECT','DCAI','2026-09-01','2026-11-01')`,
-		`INSERT INTO organization_units(id,kind,name,status) VALUES('10000000-0000-4000-8000-000000000953','COMPANY','收款公司样本','ACTIVE')`,
+		`INSERT INTO organization_units(id,kind,name,status) VALUES
+		 ('10000000-0000-4000-8000-000000000953','COMPANY','收款公司样本','ACTIVE'),
+		 ('10000000-0000-4000-8000-000000000955','COMPANY','特例乙','ACTIVE'),
+		 ('10000000-0000-4000-8000-000000000956','COMPANY','类别默认公司','ACTIVE')`,
 		`INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
-		 VALUES('DCAI','seller-company','10000000-0000-4000-8000-000000000953','2026-09-01')`,
+		 VALUES('DCAI','seller-company','10000000-0000-4000-8000-000000000953','2026-09-01'),
+		 ('DCAI','special-company','10000000-0000-4000-8000-000000000955','2026-09-01'),
+		 ('DCAI','standard-company','10000000-0000-4000-8000-000000000956','2026-09-01')`,
+		`INSERT INTO organization_sales_categories(id,name,active) VALUES
+		 ('10000000-0000-4000-8000-000000000957','类别甲',true),('10000000-0000-4000-8000-000000000958','类别乙',true)`,
+		`INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from) VALUES
+		 ('10000000-0000-4000-8000-000000000953','10000000-0000-4000-8000-000000000957','2026-09-01'),
+		 ('10000000-0000-4000-8000-000000000956','10000000-0000-4000-8000-000000000958','2026-09-01')`,
 		`INSERT INTO catalog_benefit_organizations(source,party_uuid,unit_id,observed_at)
 		 VALUES('DCAI','10000000-0000-4000-8000-000000000954','10000000-0000-4000-8000-000000000953','2026-11-01')`,
 		`WITH payment AS (INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
 		 VALUES('DCAI','101','','ai_vip_order:101','1','ORDER_PAID','2026-10-02T00:00Z','2026-10-02T00:00Z',
-		 '{"domain":"VIP","sourceKey":"new","paymentId":"101","amountMinor":10000}') RETURNING id)
+		 '{"domain":"VIP","sourceKey":"new","paymentId":"101","amountMinor":10000}'),
+		 ('DCAI','102','','ai_vip_order:102','1','ORDER_PAID','2026-10-02T00:00Z','2026-10-02T00:00Z',
+		 '{"domain":"VIP","sourceKey":"new","paymentId":"102","amountMinor":10000}') RETURNING id,order_id)
 		 INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier,sales_claims)
-		 SELECT id,'VIP_ORDER','dcai:vip:new','dcai.vip-lifecycle.v1','[{"role":"PID_USER","user":"seller","company":"seller-company","relationship":"DIRECT"}]' FROM payment`,
+		 SELECT id,'VIP_ORDER','dcai:vip:new','dcai.vip-lifecycle.v1',jsonb_build_array(jsonb_build_object(
+		 'role','PID_USER','user','seller','relationship','DIRECT','company',CASE order_id WHEN '101' THEN 'seller-company' ELSE 'standard-company' END)) FROM payment`,
 	} {
 		if _, err := db.Exec(ctx, sql); err != nil {
 			t.Fatal(err)
@@ -57,7 +70,8 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		}
 		r := httptest.NewRequest(http.MethodPost, "/api/v1/catalog-rule-rates", strings.NewReader(`{
 		 "effectiveFrom":"2026-10-01T00:00:00+08:00","create":{"productId":950,"sku":"FIRST","label":"首版分润",
-		 "salesRates":[{"company":"ANY","relationship":"ANY","rateBps":1250}]},
+		 "salesRates":[{"company":"ANY","categoryIds":["10000000-0000-4000-8000-000000000957","10000000-0000-4000-8000-000000000958"],"relationship":"ANY","rateBps":1000},
+		 {"companyIds":["10000000-0000-4000-8000-000000000953","10000000-0000-4000-8000-000000000955"],"relationship":"ANY","rateBps":1250}]},
 		 "newItems":[{"label":"公司安排","target":"company","organization":"10000000-0000-4000-8000-000000000954","rateBps":250}]}`))
 		r.Header.Set("Authorization", "Bearer "+token)
 		r.Header.Set("Content-Type", "application/json")
@@ -76,27 +90,30 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		t.Fatalf("the new SKU must reach regular trial calculation: queued=%t supported=%t err=%v", queued, supported, err)
 	}
 	sheet, err := s.catalogRuleRateSheet(ctx, published.ID)
-	if err != nil || len(sheet.Components) != 2 || len(sheet.Components[0].Rows) != 1 || sheet.Components[0].Rows[0].Rate != 1250 {
+	if err != nil || len(sheet.Components) != 2 || len(sheet.Components[0].Rows) != 2 || sheet.Components[0].Rows[1].Rate != 1250 ||
+		sheet.Components[0].Rows[0].Category != "类别甲、类别乙" || sheet.Components[0].Rows[1].Company != "收款公司样本、特例乙" {
 		t.Fatalf("the first rule must be editable: %+v %v", sheet, err)
 	}
 	trial, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: 951})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result := trial.(draftSummary); result.Total != 1500 || result.LineCount != 2 || result.IssueCount != 0 {
-		t.Fatalf("trial must calculate both first-version benefits: %+v", result)
+	if result := trial.(draftSummary); result.Total != 2750 || result.LineCount != 4 || result.IssueCount != 0 {
+		t.Fatalf("trial must apply the company exception for one order and category default for the other: %+v", result)
 	}
 	cut := time.Date(2026, 10, 1, 12, 0, 0, 0, shanghai)
+	revisedRate := int64(1250)
 	if _, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{BaseID: published.ID, EffectiveFrom: cut,
-		RemovedItems: []string{sheet.Components[1].ItemKey}}, "fixture"); err != nil {
+		RemovedItems: []string{sheet.Components[1].ItemKey}, NewRateRows: []catalogNewRateRow{{ItemKey: sheet.Components[0].ItemKey, Row: 2,
+			catalogConditionInput: catalogConditionInput{CompanyIDs: []string{"10000000-0000-4000-8000-000000000955"}, Relationship: "ANY", Rate: &revisedRate}}}}, "fixture"); err != nil {
 		t.Fatal(err)
 	}
 	trial, err = s.recalculateDraft(ctx, calculateDraftInput{PeriodID: 951})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result := trial.(draftSummary); result.Total != 1250 || result.LineCount != 1 || result.IssueCount != 0 {
-		t.Fatalf("an independent sales-only rule must also calculate: %+v", result)
+	if result := trial.(draftSummary); result.Total != 2000 || result.LineCount != 2 || result.IssueCount != 0 {
+		t.Fatalf("editing the special scope must let the removed company inherit its category rate: %+v", result)
 	}
 	if duplicate := post(950); duplicate.Code != 409 {
 		t.Fatalf("duplicate rule must be rejected: %d %s", duplicate.Code, duplicate.Body)

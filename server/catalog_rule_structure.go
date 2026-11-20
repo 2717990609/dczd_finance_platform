@@ -32,14 +32,17 @@ type catalogStructureOptions struct {
 }
 
 type catalogConditionInput struct {
-	Company      string `json:"company"`
-	Relationship string `json:"relationship"`
-	Category     string `json:"category,omitempty"`
-	Rate         *int64 `json:"rateBps"`
+	Company      string   `json:"company"`
+	CompanyIDs   []string `json:"companyIds,omitempty"`
+	Relationship string   `json:"relationship"`
+	Category     string   `json:"category,omitempty"`
+	CategoryIDs  []string `json:"categoryIds,omitempty"`
+	Rate         *int64   `json:"rateBps"`
 }
 
 type catalogNewRateRow struct {
 	ItemKey string `json:"itemKey"`
+	Row     int    `json:"row,omitempty"` // One-based base row, or zero to append.
 	catalogConditionInput
 }
 
@@ -116,17 +119,29 @@ func catalogStructureOptionFor(choices []catalogStructureOption, value string) c
 }
 
 func (o catalogStructureOptions) condition(row catalogConditionInput) (json.RawMessage, error) {
-	if row.Rate == nil || *row.Rate < 0 || *row.Rate > 10000 ||
-		catalogStructureOptionFor(o.Companies, row.Company).Value == "" ||
-		catalogStructureOptionFor(o.Relationships, row.Relationship).Value == "" ||
-		row.Category != "" && catalogStructureOptionFor(o.Categories, row.Category).Value == "" {
+	rate := vipRateRow{Company: row.Company, CompanyIDs: row.CompanyIDs, Relationship: row.Relationship,
+		Category: row.Category, CategoryIDs: row.CategoryIDs}
+	if row.Rate == nil || *row.Rate < 0 || *row.Rate > 10000 || !rate.validScope() ||
+		catalogStructureOptionFor(o.Relationships, row.Relationship).Value == "" {
 		return nil, invalid
 	}
-	return json.Marshal(vipRateRow{Company: row.Company, Relationship: row.Relationship, Category: row.Category, Rate: *row.Rate})
+	for _, id := range rate.companies() {
+		if catalogStructureOptionFor(o.Companies, id).Value == "" {
+			return nil, invalid
+		}
+	}
+	for _, id := range rate.categories() {
+		if id != "" && catalogStructureOptionFor(o.Categories, id).Value == "" {
+			return nil, invalid
+		}
+	}
+	rate.Rate = *row.Rate
+	return json.Marshal(rate)
 }
 
 func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
-	items []catalogNewBenefitItem, rateRows []catalogNewRateRow, targets []catalogBenefitTargetChange) (json.RawMessage, error) {
+	items []catalogNewBenefitItem, rateRows []catalogNewRateRow, targets []catalogBenefitTargetChange,
+	removed []catalogRateRowRemoval) (json.RawMessage, error) {
 	if _, err := tx.Exec(ctx, `SELECT source FROM catalog_sales_context WHERE source='DCAI' FOR SHARE`); err != nil {
 		return nil, err
 	}
@@ -146,26 +161,29 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 		}
 		positions[key] = i
 	}
-	additions := make(map[string][]json.RawMessage)
+	tableEdits := make(map[string][]catalogNewRateRow)
 	for _, row := range rateRows {
 		index, found := positions[row.ItemKey]
 		if !found || string(actions[index]["type"]) != `"RATE_TABLE"` {
 			return nil, invalid
 		}
-		value, err := options.condition(row.catalogConditionInput)
-		if err != nil {
-			return nil, err
-		}
-		additions[row.ItemKey] = append(additions[row.ItemKey], value)
+		tableEdits[row.ItemKey] = append(tableEdits[row.ItemKey], row)
 	}
-	for key, added := range additions {
+	removedByItem := make(map[string]map[int]bool)
+	for _, row := range removed {
+		if removedByItem[row.ItemKey] == nil {
+			removedByItem[row.ItemKey] = make(map[int]bool)
+		}
+		removedByItem[row.ItemKey][row.Row] = true
+	}
+	for key, edits := range tableEdits {
 		fields := actions[positions[key]]
 		var existing []json.RawMessage
 		if err := json.Unmarshal(fields["rate_table"], &existing); err != nil {
 			return nil, err
 		}
-		updated := append(slices.Clone(existing), added...)
-		if err := validateCatalogNewRateConditions(existing, updated); err != nil {
+		updated, err := changeCatalogRateRows(existing, edits, removedByItem[key], options)
+		if err != nil {
 			return nil, err
 		}
 		fields["rate_table"], err = json.Marshal(updated)
@@ -223,6 +241,51 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 		return nil, errCatalogTeamRate
 	}
 	return body, nil
+}
+
+func changeCatalogRateRows(existing []json.RawMessage, edits []catalogNewRateRow, removed map[int]bool, options catalogStructureOptions) ([]json.RawMessage, error) {
+	updated := slices.Clone(existing)
+	seen := make(map[int]bool)
+	var changed []json.RawMessage
+	for _, edit := range edits {
+		value, err := options.condition(edit.catalogConditionInput)
+		if err != nil {
+			return nil, err
+		}
+		if edit.Row == 0 {
+			updated = append(updated, value)
+		} else {
+			if edit.Row < 1 || edit.Row > len(existing) || seen[edit.Row] || removed[edit.Row] {
+				return nil, invalid
+			}
+			var prior map[string]json.RawMessage
+			var replacement map[string]json.RawMessage
+			if json.Unmarshal(existing[edit.Row-1], &prior) != nil || json.Unmarshal(value, &replacement) != nil ||
+				string(prior["sales_category_snapshot_default"]) == "true" {
+				return nil, invalid
+			}
+			if id := prior["id"]; len(id) != 0 {
+				replacement["id"] = id
+			}
+			value, err = json.Marshal(replacement)
+			if err != nil {
+				return nil, err
+			}
+			seen[edit.Row] = true
+			updated[edit.Row-1] = value
+		}
+		changed = append(changed, value)
+	}
+	var unchanged []json.RawMessage
+	for n, row := range existing {
+		if !seen[n+1] && !removed[n+1] {
+			unchanged = append(unchanged, row)
+		}
+	}
+	if err := validateCatalogNewRateConditions(unchanged, slices.Concat(unchanged, changed)); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func changeCatalogBenefitTargets(actions []map[string]json.RawMessage, salesKey string, edits []catalogBenefitTargetChange,
@@ -367,9 +430,13 @@ type catalogRateIndex struct {
 func indexCatalogRates(rows []vipRateRow) catalogRateIndex {
 	index := catalogRateIndex{groups: make(map[catalogRateScope][]vipRateRow)}
 	for _, row := range rows {
-		scope := catalogRateScope{row.Company, row.Category}
-		index.groups[scope] = append(index.groups[scope], row)
-		index.categorized = index.categorized || row.Category != ""
+		for _, company := range row.companies() {
+			for _, category := range row.categories() {
+				scope := catalogRateScope{company, category}
+				index.groups[scope] = append(index.groups[scope], row)
+			}
+		}
+		index.categorized = index.categorized || row.hasCategory()
 	}
 	return index
 }
@@ -400,15 +467,19 @@ func validateCatalogNewRateConditions(existing, updated []json.RawMessage) error
 	companies := map[string]bool{"unlisted-company": true}
 	categories := map[string]bool{"": true}
 	for n, row := range after {
-		key := condition{row.Company, row.Relationship, row.Category}
-		if n >= len(before) && seen[key] {
-			return errCatalogRateConditions
+		for _, company := range row.companies() {
+			if company != "ANY" {
+				companies[company] = true
+			}
+			for _, category := range row.categories() {
+				key := condition{company, row.Relationship, category}
+				if n >= len(before) && seen[key] {
+					return errCatalogRateConditions
+				}
+				seen[key] = true
+				categories[category] = true
+			}
 		}
-		seen[key] = true
-		if row.Company != "ANY" {
-			companies[row.Company] = true
-		}
-		categories[row.Category] = true
 	}
 	// Compare the winner for each condition the matcher can distinguish,
 	// while only examining rows that can match the current company/category.

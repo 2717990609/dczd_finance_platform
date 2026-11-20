@@ -10,11 +10,53 @@ import (
 )
 
 type vipRateRow struct {
-	Company         string `json:"sales_organization_party_id"`
-	Relationship    string `json:"sales_relationship"`
-	Category        string `json:"sales_category_id"`
-	SnapshotDefault bool   `json:"sales_category_snapshot_default"`
-	Rate            int64  `json:"rate_bps"`
+	Company         string   `json:"sales_organization_party_id,omitempty"`
+	CompanyIDs      []string `json:"sales_organization_party_ids,omitempty"`
+	Relationship    string   `json:"sales_relationship"`
+	Category        string   `json:"sales_category_id,omitempty"`
+	CategoryIDs     []string `json:"sales_category_ids,omitempty"`
+	SnapshotDefault bool     `json:"sales_category_snapshot_default"`
+	Rate            int64    `json:"rate_bps"`
+}
+
+func (r vipRateRow) companies() []string {
+	if len(r.CompanyIDs) != 0 {
+		return r.CompanyIDs
+	}
+	return []string{r.Company}
+}
+
+func (r vipRateRow) categories() []string {
+	if len(r.CategoryIDs) != 0 {
+		return r.CategoryIDs
+	}
+	// An empty category is the unrestricted group in the rate index.
+	return []string{r.Category}
+}
+
+func (r vipRateRow) hasCategory() bool {
+	return r.Category != "" || len(r.CategoryIDs) != 0
+}
+
+func (r vipRateRow) namesCompany(id string) bool {
+	return r.Company == id || slices.Contains(r.CompanyIDs, id)
+}
+
+func validVIPRateGroup(single string, grouped []string) bool {
+	if len(grouped) != 0 && single != "" {
+		return false
+	}
+	for i, id := range grouped {
+		if id == "" || id == "ANY" || slices.Contains(grouped[:i], id) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r vipRateRow) validScope() bool {
+	return (r.Company != "" || len(r.CompanyIDs) != 0) && validVIPRateGroup(r.Company, r.CompanyIDs) &&
+		validVIPRateGroup(r.Category, r.CategoryIDs)
 }
 
 type vipInternalTeam struct {
@@ -156,14 +198,14 @@ func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(raw, &row) != nil || json.Unmarshal(raw, &fields) != nil ||
 			len(fields["rate_bps"]) == 0 || string(fields["rate_bps"]) == "null" ||
-			row.Company == "" || row.Rate < 0 || row.Rate > 10000 ||
+			!row.validScope() || row.Rate < 0 || row.Rate > 10000 ||
 			!slices.Contains([]string{"ANY", "DIRECT", "INDIRECT", "NONE"}, row.Relationship) {
 			return nil, false
 		}
 		for key := range fields {
 			switch key {
-			case "id", "rate_bps", "sales_relationship", "sales_organization_party_id",
-				"sales_category_id", "sales_category_snapshot_default":
+			case "id", "rate_bps", "sales_relationship", "sales_organization_party_id", "sales_organization_party_ids",
+				"sales_category_id", "sales_category_ids", "sales_category_snapshot_default":
 			default:
 				return nil, false
 			}
@@ -174,7 +216,7 @@ func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
 }
 
 func resolveVIPRate(rows []vipRateRow, company, relationship string, category *string) (int64, string) {
-	categorized := slices.ContainsFunc(rows, func(r vipRateRow) bool { return r.Category != "" })
+	categorized := slices.ContainsFunc(rows, vipRateRow.hasCategory)
 	return resolveVIPRateRows(rows, company, relationship, category, categorized)
 }
 
@@ -187,18 +229,18 @@ func resolveVIPRateRows(rows []vipRateRow, company, relationship string, categor
 	}
 	var groups [4][]vipRateRow
 	for _, row := range rows {
-		if row.Company != company && row.Company != "ANY" || row.Relationship != "ANY" && relationship != "" && row.Relationship != relationship ||
-			row.Category != "" && (category == nil || row.Category != *category) {
+		if row.Company != "ANY" && !row.namesCompany(company) || row.Relationship != "ANY" && relationship != "" && row.Relationship != relationship ||
+			row.hasCategory() && (category == nil || row.Category != *category && !slices.Contains(row.CategoryIDs, *category)) {
 			continue
 		}
 		tier := 0
 		if categorized {
 			switch {
-			case row.Company == company && !row.SnapshotDefault:
+			case row.Company != "ANY" && !row.SnapshotDefault:
 				tier = 0
-			case row.Company == "ANY" && row.Category != "":
+			case row.Company == "ANY" && row.hasCategory():
 				tier = 1
-			case row.Company == company:
+			case row.Company != "ANY":
 				tier = 2
 			default:
 				tier = 3

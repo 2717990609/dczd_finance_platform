@@ -8,6 +8,38 @@ import (
 	"testing"
 )
 
+func TestCatalogGroupedRateConditionsKeepOneRowAndCompanyPriority(t *testing.T) {
+	base := json.RawMessage(`{"sales_organization_party_id":"ANY","sales_category_ids":["partner","regional"],"sales_relationship":"ANY","rate_bps":1200}`)
+	special := json.RawMessage(`{"sales_organization_party_ids":["alpha","beta"],"sales_relationship":"ANY","rate_bps":2000}`)
+	table := []json.RawMessage{base, special}
+	if err := validateCatalogNewRateConditions(nil, table); err != nil {
+		t.Fatalf("the grouped table should be accepted: %v", err)
+	}
+	rows, valid := parseVIPRateTable(table)
+	if !valid || len(rows) != 2 {
+		t.Fatalf("expected two editable rate rows, got %+v", rows)
+	}
+	for _, tc := range []struct {
+		company, category string
+		want              int64
+	}{
+		{"ordinary", "partner", 1200}, {"ordinary", "regional", 1200},
+		{"alpha", "partner", 2000}, {"beta", "regional", 2000},
+	} {
+		if got, issue := resolveVIPRate(rows, tc.company, "DIRECT", &tc.category); got != tc.want || issue != "" {
+			t.Fatalf("%s/%s rate=%d issue=%s", tc.company, tc.category, got, issue)
+		}
+	}
+	for _, overlapping := range []json.RawMessage{
+		json.RawMessage(`{"sales_organization_party_id":"alpha","sales_relationship":"ANY","rate_bps":4000}`),
+		json.RawMessage(`{"sales_organization_party_id":"ANY","sales_category_id":"regional","sales_relationship":"ANY","rate_bps":4000}`),
+	} {
+		if err := validateCatalogNewRateConditions(table, append(slices.Clone(table), overlapping)); !errors.Is(err, errCatalogRateConditions) {
+			t.Fatalf("a group overlap must be rejected: %v", err)
+		}
+	}
+}
+
 func TestCatalogNewRateConditionsPreserveMatcherPrecedence(t *testing.T) {
 	row := func(company, relation, category string, rate int64, fallback bool) json.RawMessage {
 		t.Helper()
