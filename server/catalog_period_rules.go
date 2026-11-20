@@ -26,6 +26,8 @@ type catalogPeriodItem struct {
 	OwnerRole    string              `json:"ownerRole,omitempty"`
 	Tiers        []catalogPeriodTier `json:"tiers"`
 	organization string
+	unit         string
+	memberRole   string
 }
 
 type catalogPeriodDefinition struct {
@@ -55,9 +57,10 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		} `json:"settlement_policy"`
 		Actions []struct {
 			vipBenefitAction
-			Metric string              `json:"metric_code"`
-			Unit   string              `json:"metric_unit"`
-			Tiers  []catalogPeriodTier `json:"tier_table"`
+			Metric          string              `json:"metric_code"`
+			Unit            string              `json:"metric_unit"`
+			Tiers           []catalogPeriodTier `json:"tier_table"`
+			EligibilityRole string              `json:"eligibility_role"`
 		} `json:"benefit_actions"`
 	}
 	var result catalogPeriodDefinition
@@ -87,7 +90,8 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			org = action.PoolParty
 		}
 		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: action.targetKind(),
-			PoolName: action.PoolName, OwnerRole: action.OwnerRole, organization: org, Tiers: action.Tiers})
+			PoolName: action.PoolName, OwnerRole: action.OwnerRole, organization: org, Tiers: action.Tiers,
+			unit: action.PoolUnit, memberRole: catalogAggregateMemberRole(action.Role, action.EligibilityRole)})
 	}
 	return result, nil
 }

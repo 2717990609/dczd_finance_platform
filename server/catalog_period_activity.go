@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"net/http"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,6 +15,7 @@ type catalogPeriodActivityRequest struct {
 	Window    periodWindow
 	Provider  string
 	MaxAge    time.Duration
+	GroupRule *catalogPeriodVersion
 }
 
 type catalogPeriodScenarioActivity struct {
@@ -35,6 +37,7 @@ type catalogPeriodActivity struct {
 	Receipts           int64                           `json:"receiptsMinor"`
 	Refunds            int64                           `json:"refundsMinor"`
 	PriorPeriodRefunds int64                           `json:"priorPeriodRefundsMinor"`
+	Grouping           *catalogPeriodGroupReport       `json:"grouping,omitempty"`
 }
 
 const catalogAggregateRoutes = `
@@ -121,6 +124,7 @@ current_events AS MATERIALIZED (
  FROM assessed
 )
 SELECT coalesce(sku,''),kind,coalesce(amount,0),coalesce(paid_at<$3,false),
+ coalesce(payment_id,0),coalesce(paid_at,occurred_at),
  CASE WHEN issue='' AND kind='REFUND_SUCCEEDED' AND linked_refunds>original_amount THEN 'REFUND_EXCEEDS_PAYMENT' ELSE issue END
 FROM capped WHERE occurred_at>=$3 LIMIT $5`
 
@@ -153,6 +157,7 @@ func (s workspace) getCatalogPeriodActivity(w http.ResponseWriter, r *http.Reque
 		if err != nil {
 			return err
 		}
+		rule.Cycle = definition.Cycle
 		day := 1
 		if definition.Cycle == "MONTHLY_25_TO_24" {
 			day = 25
@@ -162,13 +167,29 @@ func (s workspace) getCatalogPeriodActivity(w http.ResponseWriter, r *http.Reque
 			return err
 		}
 		result, err = readCatalogPeriodActivity(ctx, tx, catalogPeriodActivityRequest{ProductID: rule.ProductID,
-			Scenarios: definition.Scenarios, Window: window, Provider: s.dcaiSourceKey(), MaxAge: s.settlementSyncMaxAge})
+			Scenarios: definition.Scenarios, Window: window, Provider: s.dcaiSourceKey(), MaxAge: s.settlementSyncMaxAge, GroupRule: &rule})
 		return err
 	})
 	respond(w, result, err)
 }
 
 func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodActivityRequest) (catalogPeriodActivity, error) {
+	var rules []catalogAggregateRule
+	if in.GroupRule != nil && !in.GroupRule.Paused {
+		var err error
+		rules, err = readCatalogAggregateVersions(ctx, tx, in.GroupRule.packageID, in.Window.Through, in.GroupRule.Cycle)
+		if err != nil {
+			return catalogPeriodActivity{}, err
+		}
+		in.Scenarios = slices.Clone(in.Scenarios)
+		for _, rule := range rules {
+			for _, code := range rule.Definition.Scenarios {
+				if !slices.Contains(in.Scenarios, code) {
+					in.Scenarios = append(in.Scenarios, code)
+				}
+			}
+		}
+	}
 	result := catalogPeriodActivity{Start: in.Window.Start, Through: in.Window.Through,
 		Scenarios: make([]catalogPeriodScenarioActivity, len(in.Scenarios)), Sources: []settlementSource{}, Issues: make(map[string]int)}
 	byCode := make(map[string]*catalogPeriodScenarioActivity, len(in.Scenarios))
@@ -194,8 +215,12 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 	var kind, issue string
 	var amount int64
 	var prior bool
+	var paymentID int64
+	var paidAt time.Time
+	var events []catalogActivityEvent
+	firstPayment := in.Window.Start
 	seen := 0
-	_, err = pgx.ForEachRow(rows, []any{&code, &kind, &amount, &prior, &issue}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&code, &kind, &amount, &prior, &paymentID, &paidAt, &issue}, func() error {
 		seen++
 		if seen > maxDraftPayments {
 			return errDraftLimit
@@ -207,6 +232,13 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 		item := byCode[code]
 		if item == nil {
 			return errProductConfigConflict
+		}
+		if in.GroupRule != nil && !in.GroupRule.Paused {
+			events = append(events, catalogActivityEvent{PaymentID: paymentID, PaidAt: paidAt, Scenario: code,
+				Amount: amount, Refund: kind != "ORDER_PAID"})
+			if paidAt.Before(firstPayment) {
+				firstPayment = paidAt
+			}
 		}
 		if kind == "ORDER_PAID" {
 			item.Payments++
@@ -223,6 +255,21 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 	})
 	if err != nil {
 		return result, err
+	}
+	if in.GroupRule != nil {
+		if in.GroupRule.Paused {
+			result.Grouping = &catalogPeriodGroupReport{Paused: true, Groups: []catalogPeriodGroup{}, Issues: map[string]int{}}
+		} else {
+			directory, err := readCatalogAggregateDirectory(ctx, tx, rules, firstPayment, in.Window.Through)
+			if err != nil {
+				return result, err
+			}
+			grouping, err := groupCatalogPeriodEvents(events, rules, directory)
+			if err != nil {
+				return result, err
+			}
+			result.Grouping = &grouping
+		}
 	}
 	if in.MaxAge == 0 {
 		in.MaxAge = defaultSettlementSyncMaxAge

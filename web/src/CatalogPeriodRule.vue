@@ -26,6 +26,15 @@ const activityIssueLabels = {
   REFUND_ORIGIN_MISSING:'退款未能唯一关联原付款', UNCLASSIFIED:'原付款未分类', MAPPING_MISSING:'缺少场景映射',
   MAPPING_CONFLICT:'场景映射冲突', INVALID_PAYMENT:'原付款信息不完整', REFUND_EXCEEDS_PAYMENT:'累计退款超过原付款',
 }
+const groupingIssueLabels = {
+  ORIGINAL_RULE_MISSING:'原付款时没有适用规则',
+  ORIGINAL_RULE_CONFLICT:'原付款时有多个适用版本',
+  BENEFIT_ORG_MISSING:'缺少收款组织',
+  BENEFIT_ORG_CONFLICT:'收款组织无法唯一确定',
+  BENEFIT_POOL_OWNER_MISSING:'付款时缺少池负责人',
+  BENEFIT_POOL_OWNER_CONFLICT:'付款时有多位池负责人',
+  BENEFIT_POOL_MEMBERS_MISSING:'付款时没有可分配成员',
+}
 const sourceStatusLabels = {READY:'覆盖本期',NOT_CONFIGURED:'来源未配置',NOT_STARTED:'未同步',INCOMPLETE:'同步未完成',
   OUTSIDE_RANGE:'未覆盖本期',STALE:'同步已过期',SOURCE_CHANGED:'来源已变更',FAILED:'同步失败',CLOCK_GAP:'来源时钟待核',UNSUPPORTED:'来源待核'}
 const localDate = stamp => new Date(Date.parse(stamp) + 8*3600000).toISOString().slice(0,10)
@@ -194,7 +203,7 @@ async function publish() {
         </section>
         <template v-if="canReviewActivity">
           <h3 class="form-subhead">订单和退款核对</h3>
-          <p class="rule-formula">按当前规则的场景读取本地已同步数据。正式计提还要按原付款规则和团队池归属分组，并核对已确认结转。</p>
+          <p class="rule-formula">读取本地已同步的收退款。分组使用原付款时适用的规则和任职。</p>
           <a-form layout="inline" class="period-activity-query">
             <a-form-item label="核对账期" html-for="period-activity-month">
               <a-input id="period-activity-month" v-model:value="activityMonth" type="month"/>
@@ -238,6 +247,36 @@ async function publish() {
             <ul v-if="Object.keys(activity.issues).length" class="period-activity-issues" aria-label="待核交易">
               <li v-for="(count,issue) in activity.issues" :key="issue">{{ activityIssueLabels[issue] || issue }} · {{ count }} 笔</li>
             </ul>
+            <section v-if="activity.grouping" aria-label="按原付款分组">
+              <h4 class="form-subhead">按原付款分组</h4>
+              <p v-if="activity.grouping.paused" class="rule-formula">规则包已暂停，本次仅核对场景收退款。</p>
+              <template v-else>
+                <p class="rule-formula">下表净额为本期收款减退款。正式计提还需核对上期结转。</p>
+                <div v-if="activity.grouping.groups.length" class="period-activity-table">
+                  <table>
+                    <thead><tr><th>规则版本</th><th>收款对象</th><th>本期收款</th><th>本期退款</th><th>本期净额</th></tr></thead>
+                    <tbody>
+                      <tr v-for="group in activity.grouping.groups" :key="group.id">
+                        <td>v{{ group.version }}</td>
+                        <td>
+                          <div v-for="target in group.targets" :key="target.itemKey">
+                            {{ target.name }}
+                            <small v-if="target.ownerName" class="order-version">{{ target.ownerName }}负责 · {{ target.memberCount }} 人可分配</small>
+                          </div>
+                        </td>
+                        <td>{{ formatMoney(group.receiptsMinor) }}</td>
+                        <td>{{ formatMoney(group.refundsMinor) }}</td>
+                        <td>{{ formatMoney(group.netMinor) }}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+                <p v-else class="rule-formula">本期没有可归组的交易。</p>
+                <ul v-if="Object.keys(activity.grouping.issues).length" class="period-activity-issues" aria-label="待核分组">
+                  <li v-for="(count,issue) in activity.grouping.issues" :key="issue">{{ groupingIssueLabels[issue] || issue }} · {{ count }} 笔</li>
+                </ul>
+              </template>
+            </section>
           </section>
         </template>
         <h3 class="form-subhead">金额演算</h3>

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -98,6 +99,65 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 		}
 		if len(report.Scenarios) != 3 || report.Scenarios[2].Mapped {
 			t.Fatalf("missing scenario coverage was not reported: %+v", report.Scenarios)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const packageID = "10000000-0000-4000-8000-000000000101"
+	const ruleID = "10000000-0000-4000-8000-000000000102"
+	const unitID = "10000000-0000-4000-8000-000000000103"
+	const orgID = "10000000-0000-4000-8000-000000000104"
+	for _, statement := range []string{
+		`INSERT INTO product_rule_packages(source_id,product_id,code,name,project_code,policy_kind,scope_type,scope_id,paused)
+		 VALUES('` + packageID + `',901,'net','运营净额','DCAI','COMPONENT_RULE','CROSS_SCENARIO_AGGREGATE','DCAI_NET',false)`,
+		`INSERT INTO catalog_sales_context(source,captured_at,snapshot_digest,benefit_ready) VALUES('DCAI','2026-10-01',sha256('fixture'::bytea),true)`,
+		`INSERT INTO organization_units(id,kind,name,status) VALUES('` + unitID + `','DEPARTMENT','运营部','ACTIVE')`,
+		`INSERT INTO catalog_benefit_organizations(source,party_uuid,unit_id,observed_at)
+		 VALUES('DCAI','` + orgID + `','` + unitID + `','2026-10-01')`,
+		`WITH staff AS (INSERT INTO people(name) VALUES('上期负责人'),('本期负责人'),('池成员'),('未加入运营部') RETURNING id,name),
+		 membership AS (
+		  INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from)
+		  SELECT gen_random_uuid(),id,'` + unitID + `','PRIMARY','2026-01-01' FROM staff WHERE name<>'未加入运营部'
+		 )
+		 INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,valid_from,valid_to,observed_at)
+		 SELECT gen_random_uuid(),'DCAI',id,CASE WHEN name IN ('池成员','未加入运营部') THEN 'member' ELSE 'owner' END,
+		  'ORGANIZATION_UNIT','` + unitID + `',CASE WHEN name='本期负责人' THEN '2026-10-01 00:00+08' ELSE '2026-01-01' END::timestamptz,
+		  CASE WHEN name='上期负责人' THEN '2026-10-01 00:00+08' END::timestamptz,'2026-10-01' FROM staff`,
+	} {
+		if _, err := db.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rule := strings.NewReplacer(`"pool_party_id":"party"`, `"pool_party_id":"`+orgID+`"`,
+		`"pool_organization_unit_id":"unit"`, `"pool_organization_unit_id":"`+unitID+`"`,
+		`"allocation_owner_role":"owner"`, `"allocation_owner_role":"owner","role":"member"`).Replace(twoTierPeriodRule)
+	if _, err := db.Exec(ctx, `INSERT INTO product_rule_versions
+	 (source_id,package_id,version_no,source_status,effective_from,content_hash,definition,observed_at)
+	 VALUES($1,$2,1,'PUBLISHED','2026-08-01 00:00+08','fixture',$3,'2026-10-01')`, ruleID, packageID, json.RawMessage(rule)); err != nil {
+		t.Fatal(err)
+	}
+	in.GroupRule = &catalogPeriodVersion{Cycle: "MONTHLY", packageID: packageID}
+	err = pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		report, err := readCatalogPeriodActivity(ctx, tx, in)
+		if err != nil {
+			return err
+		}
+		if report.Grouping == nil || len(report.Grouping.Groups) != 2 || len(report.Grouping.Issues) != 0 {
+			t.Fatalf("expected two resolved groups: %+v", report.Grouping)
+		}
+		for _, group := range report.Grouping.Groups {
+			if group.RuleID != ruleID || len(group.Targets) != 1 || group.Targets[0].MemberCount != 1 {
+				t.Fatalf("wrong group membership: %+v", group)
+			}
+			if group.Targets[0].OwnerName == "上期负责人" && group.Receipts == 0 && group.Refunds == 3000 {
+				continue
+			}
+			if group.Targets[0].OwnerName != "本期负责人" || group.Receipts != 32000 || group.Refunds != 0 {
+				t.Fatalf("wrong owner or amount at appointment boundary: %+v", group)
+			}
 		}
 		return nil
 	})
