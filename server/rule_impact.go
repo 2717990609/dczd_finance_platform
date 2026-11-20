@@ -23,8 +23,11 @@ func (s workspace) postComponentRuleImpact(ctx context.Context, input componentR
 	if actor := financeUser(ctx); actor != nil && !actor.permitsRule(p.ProductID, true) {
 		return nil, errFinanceForbidden
 	}
-	if !validRulePublication(p) || p.PeriodID != nil && *p.PeriodID != input.PeriodID {
+	if p.PeriodID != nil && *p.PeriodID != input.PeriodID {
 		return nil, invalid
+	}
+	if err := validateRulePublication(p); err != nil {
+		return nil, err
 	}
 	return s.compareRuleImpact(ctx, input.PeriodID, p.ProductID, p.FromOrdinal, func(tx pgx.Tx) error {
 		_, err := writeComponentRule(ctx, tx, p, false)

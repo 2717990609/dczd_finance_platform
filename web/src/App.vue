@@ -356,7 +356,7 @@ function addPracticeRegistrationImport(preview) {
   const imported = copiedRuleComponents(preview.components,optionLabel)
   const conflict = form.components.find(part=>{
     const current = part.periodBenefit?.registrationScope
-    if (!current) return false
+    if (!current?.exclusive) return false
     return imported.some(candidate=>{
       const {sellerId,sellerCompanyId,companies=[]} = candidate.periodBenefit.registrationScope
       return sellerId===current.sellerId && sellerCompanyId===current.sellerCompanyId ||
@@ -365,7 +365,7 @@ function addPracticeRegistrationImport(preview) {
     })
   })
   if (conflict) {
-    showFormError(new Error('报名归属与「'+conflict.periodBenefit.label+'」重叠。请先调整该安排。'))
+    showFormError(new Error('总监归属与「'+conflict.periodBenefit.label+'」重叠。请核对归属关系。'))
     return
   }
   if (form.scope!=='period') {
@@ -1146,7 +1146,11 @@ function ruleComponentBody(row) {
       }
       if (!sellerId && !companies.length) throw new Error('请选择本人和所属公司，或添加下属公司。')
       if (companies.includes(sellerCompanyId)) throw new Error('本人销售公司不能同时选作下属公司。')
-      component.periodBenefit.registrationScope = {...(sellerId ? {sellerId,sellerCompanyId} : {}), ...(companies.length ? {companies} : {})}
+      component.periodBenefit.registrationScope = {
+        ...(sellerId ? {sellerId,sellerCompanyId} : {}),
+        ...(companies.length ? {companies} : {}),
+        ...(registration.exclusive ? {exclusive:true} : {}),
+      }
       delete component.sourceRole
     } else if (b.salesPeople?.length || b.salesUnits?.length) must(sourceRole,'请选择销售人员的来源角色')
     return component

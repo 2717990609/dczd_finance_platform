@@ -84,11 +84,19 @@ func TestPracticeRegistrationImportPreviewsApprovedGroupsAndPendingRows(t *testi
 		t.Fatalf("expected two arrangements and an excluded pending row: %+v %v", result, err)
 	}
 	personal, company := result.Components[0].PeriodBenefit, result.Components[1].PeriodBenefit
-	if personal.PersonID != 9876 || len(personal.RegistrationScope.Companies) != 2 ||
+	if personal.PersonID != 9876 || !personal.RegistrationScope.Exclusive || !company.RegistrationScope.Exclusive ||
+		len(personal.RegistrationScope.Companies) != 2 ||
 		personal.RegistrationScope.Companies[0] != "98913" || personal.RegistrationScope.Companies[1] != "98914" ||
 		company.UnitID != corporate || len(company.RegistrationScope.Companies) != 0 || result.Pending[0].Message != "待核公司" {
 		t.Fatalf("unexpected payer or scope: %+v %+v %+v", personal, company, result.Pending)
 	}
+	previous := doc.Rows[1]
+	doc.Rows[1].Pending, doc.Rows[1].SourceMember = false, "98913"
+	if duplicate, err := preview(); err != nil || len(duplicate.Issues) != 1 || len(duplicate.Components) != 0 ||
+		duplicate.Issues[0].Message != errPracticeRegistrationOverlap.Error() {
+		t.Fatalf("two directors may not claim the same company in one import: %+v %v", duplicate, err)
+	}
+	doc.Rows[1] = previous
 	var versions int
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM rule_versions`).Scan(&versions); err != nil || versions != 0 {
 		t.Fatalf("preview cannot publish any rule version: %d %v", versions, err)

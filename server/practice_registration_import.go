@@ -203,7 +203,7 @@ func buildPracticeRegistrationImport(doc practiceRegistrationDocument, rate int6
 				name = row.SourceSeller
 			}
 			benefit := &practicePeriodBenefit{Label: name + " · 总监分润", RegistrationScope: &practiceRegistrationScope{
-				SellerID: row.SourceSeller, SellerCompanyID: row.SourceCompany}}
+				SellerID: row.SourceSeller, SellerCompanyID: row.SourceCompany, Exclusive: true}}
 			switch row.Recipient {
 			case row.LeaderID:
 				benefit.PersonID = people[row.SourceSeller]

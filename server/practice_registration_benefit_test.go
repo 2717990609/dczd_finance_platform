@@ -35,16 +35,20 @@ func TestPracticeRegistrationBenefitMatchesConfirmedSignupAndKeepsRefundPayee(t 
 	refundPeriod := createID(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "七月退款", SettlementMonth: "2026-07"}))
 	person := createID(s.createPerson(ctx, createPersonInput{Name: "个人收款方"}))
 	const unit = "43000000-0000-4000-8000-000000000001"
+	const delivery = "43000000-0000-4000-8000-000000000002"
 	exec(`INSERT INTO organization_units(id,kind,name,status) VALUES($1,'COMPANY','公司收款方','ACTIVE')`, unit)
+	exec(`INSERT INTO organization_units(id,kind,name,status) VALUES($1,'COMPANY','独立交付收款方','ACTIVE')`, delivery)
 	exec(`INSERT INTO configuration_options(group_key,option_key,label,display_order) VALUES
 	 ('practiceSalesCompany','30','本人公司甲',10),('practiceSalesCompany','31','下属公司甲',20),
 	 ('practiceSalesCompany','32','本人公司乙',30),('practiceSalesCompany','33','下属公司乙',40)`)
 	raw := fmt.Sprintf(`[
 	 {"type":"manager","mode":"period_rate","value":30000,"periodBenefit":{"label":"甲总监","personId":%d,
-	  "registrationScope":{"sellerId":"481","sellerCompanyId":"30","companies":["31"]}}},
+	  "registrationScope":{"sellerId":"481","sellerCompanyId":"30","companies":["31"],"exclusive":true}}},
 	 {"type":"manager","mode":"period_rate","value":30000,"periodBenefit":{"label":"乙总监","unitId":%q,
-	  "registrationScope":{"sellerId":"581","sellerCompanyId":"32","companies":["33"]}}}
-	]`, person, unit)
+	  "registrationScope":{"sellerId":"581","sellerCompanyId":"32","companies":["33"],"exclusive":true}}},
+	 {"type":"manager","mode":"period_rate","value":10000,"periodBenefit":{"label":"交付费","unitId":%q,
+	  "registrationScope":{"sellerId":"481","sellerCompanyId":"30","companies":["31"]}}}
+	]`, person, unit, delivery)
 	rule := publishRuleInput{ProductID: product, PeriodID: &period, Label: "按报名归属"}
 	if err := json.Unmarshal([]byte(raw), &rule.Components); err != nil {
 		t.Fatal(err)
@@ -53,8 +57,13 @@ func TestPracticeRegistrationBenefitMatchesConfirmedSignupAndKeepsRefundPayee(t 
 	if err := validateComponents(overlapping); !errors.Is(err, errPracticeRegistrationOverlap) {
 		t.Fatalf("repeated signup scope should be rejected, got %v", err)
 	}
+	conflicting := rule
+	conflicting.Components = overlapping
+	if _, err := s.publishRule(ctx, conflicting); !errors.Is(err, errPracticeRegistrationOverlap) {
+		t.Fatalf("publication should identify the overlap for the editor, got %v", err)
+	}
 	if _, err := s.publishRule(ctx, rule); err != nil {
-		t.Fatal(err)
+		t.Fatalf("an independent payee should be able to use the same signup scope: %v", err)
 	}
 	at := time.Date(2026, 6, 8, 9, 38, 0, 0, shanghai)
 	roster := practiceRoster{Key: key, Hash: "registration-class", SourceVersion: 1, StartsAt: at, ConfirmedAt: at.Add(time.Hour)}
@@ -134,14 +143,29 @@ func TestPracticeRegistrationBenefitMatchesConfirmedSignupAndKeepsRefundPayee(t 
 		t.Fatalf("receiving a corrected attendance event should queue the affected draft: %v %v", queued, err)
 	}
 	preview, err = s.calculateCurrentDraft(ctx, period, 0)
-	if err != nil || preview.IssueCount != 0 || preview.Total != 37200 || preview.LineCount != 4 {
+	if err != nil || preview.IssueCount != 0 || preview.Total != 43400 || preview.LineCount != 6 {
 		t.Fatalf("personal and subordinate-company sales must calculate once per recipient, got %+v %v", preview, err)
 	}
-	var own, corporate int64
+	var own, corporate, deliveryTotal int64
 	if err := s.db.QueryRow(ctx, `SELECT sum(amount_minor) FILTER(WHERE person_id=$2),
-	 sum(amount_minor) FILTER(WHERE beneficiary_unit_id=$3) FROM calculation_draft_lines WHERE period_id=$1`,
-		period, person, unit).Scan(&own, &corporate); err != nil || own != 18600 || corporate != 18600 {
-		t.Fatalf("expected different recipients with 18600 each, got %d %d %v", own, corporate, err)
+	 sum(amount_minor) FILTER(WHERE beneficiary_unit_id=$3),sum(amount_minor) FILTER(WHERE beneficiary_unit_id=$4)
+	 FROM calculation_draft_lines WHERE period_id=$1`,
+		period, person, unit, delivery).Scan(&own, &corporate, &deliveryTotal); err != nil ||
+		own != 18600 || corporate != 18600 || deliveryTotal != 6200 {
+		t.Fatalf("expected directors and the independent company to be paid: %d %d %d %v", own, corporate, deliveryTotal, err)
+	}
+	var originalRule int64
+	if err := s.db.QueryRow(ctx, "SELECT id FROM rule_versions WHERE product_id=$1 AND version=1", product).Scan(&originalRule); err != nil {
+		t.Fatal(err)
+	}
+	rule.EditBaseID = &originalRule
+	rule.Components[2].Value = 20000
+	if _, err := s.publishRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	preview, err = s.calculateCurrentDraft(ctx, period, 0)
+	if err != nil || preview.RuleVersion != 2 || preview.IssueCount != 0 || preview.Total != 49600 || preview.LineCount != 6 {
+		t.Fatalf("editing delivery must only change that arrangement's commission: %+v %v", preview, err)
 	}
 	exec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, preview.Version)
 	if _, err := s.db.Exec(ctx, `UPDATE source_order_versions SET practice_registration='{}'
@@ -157,13 +181,14 @@ func TestPracticeRegistrationBenefitMatchesConfirmedSignupAndKeepsRefundPayee(t 
 		OrderID: "1001", RecordKey: "refund:1", Version: "1", RefundID: "1", AmountMinor: &amount,
 		RefundsPayment: []sourcePaymentReference{{OrderID: "1001", RecordID: "1001"}}, OccurredAt: refundedAt, UpdatedAt: refundedAt}}, false)
 	refund, err := s.calculateCurrentDraft(ctx, refundPeriod, 0)
-	if err != nil || refund.IssueCount != 0 || refund.RefundTotal != -3000 {
+	if err != nil || refund.IssueCount != 0 || refund.RefundCount != 2 || refund.RefundTotal != -5000 {
 		t.Fatalf("later refund must use the original signup attribution, got %+v %v", refund, err)
 	}
-	var refundedPerson int64
-	if err := s.db.QueryRow(ctx, `SELECT l.person_id FROM calculation_draft_refunds r
-	 JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1`, refundPeriod).
-		Scan(&refundedPerson); err != nil || refundedPerson != person {
-		t.Fatalf("expected the original person to have the refund, got %d %v", refundedPerson, err)
+	var refundedPerson, refundedCompany int64
+	if err := s.db.QueryRow(ctx, `SELECT sum(r.amount_minor) FILTER(WHERE l.person_id=$2),
+	 sum(r.amount_minor) FILTER(WHERE l.beneficiary_unit_id=$3) FROM calculation_draft_refunds r
+	 JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1`, refundPeriod, person, delivery).
+		Scan(&refundedPerson, &refundedCompany); err != nil || refundedPerson != -3000 || refundedCompany != -2000 {
+		t.Fatalf("expected both original recipients to have the refund, got %d %d %v", refundedPerson, refundedCompany, err)
 	}
 }

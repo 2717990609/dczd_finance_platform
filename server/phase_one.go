@@ -595,8 +595,8 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 	return map[string]int64{"id": id}, err
 }
 func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, error) {
-	if !validRulePublication(p) {
-		return nil, invalid
+	if err := validateRulePublication(p); err != nil {
+		return nil, err
 	}
 	var version int
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
@@ -607,11 +607,14 @@ func (s workspace) publishRule(ctx context.Context, p publishRuleInput) (any, er
 	return map[string]int{"version": version}, err
 }
 
-func validRulePublication(p publishRuleInput) bool {
-	return p.ProductID > 0 && (p.EditBaseID == nil || *p.EditBaseID > 0) && textOK(p.Label, 80) && (p.PeriodID == nil || *p.PeriodID > 0) &&
-		(p.FromOrdinal == nil || *p.FromOrdinal > 0) && (p.PeriodID == nil || p.FromOrdinal == nil) &&
-		p.ActivityType >= 0 && p.ActivityType <= 2 && (p.ActivityType == 0 || p.PeriodID == nil) &&
-		(p.EffectiveFrom == nil || !p.EffectiveFrom.IsZero()) && validateComponents(p.Components) == nil
+func validateRulePublication(p publishRuleInput) error {
+	if p.ProductID < 1 || p.EditBaseID != nil && *p.EditBaseID < 1 || !textOK(p.Label, 80) ||
+		p.PeriodID != nil && (*p.PeriodID < 1 || p.FromOrdinal != nil || p.ActivityType != 0) ||
+		p.FromOrdinal != nil && *p.FromOrdinal < 1 || p.ActivityType < 0 || p.ActivityType > 2 ||
+		p.EffectiveFrom != nil && p.EffectiveFrom.IsZero() {
+		return invalid
+	}
+	return validateComponents(p.Components)
 }
 
 func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refreshDrafts bool) (int, error) {

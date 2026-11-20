@@ -8,12 +8,13 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-var errPracticeRegistrationOverlap = errors.New("报名销售范围重复，请为同一报名类型确认唯一的收款安排")
+var errPracticeRegistrationOverlap = errors.New("总监归属范围重叠，请核对同一报名类型的归属关系")
 
 type practiceRegistrationScope struct {
 	SellerID        string   `json:"sellerId,omitempty"`
 	SellerCompanyID string   `json:"sellerCompanyId,omitempty"`
 	Companies       []string `json:"companies,omitempty"`
+	Exclusive       bool     `json:"exclusive,omitempty"`
 }
 
 func (s practiceRegistrationScope) valid() bool {
@@ -42,14 +43,17 @@ func checkPracticeRegistrationScopes(parts []component) error {
 			continue
 		}
 		left := part.PeriodBenefit.RegistrationScope
+		if !left.Exclusive {
+			continue
+		}
 		for _, other := range parts[:i] {
 			if other.PeriodBenefit == nil || other.PeriodBenefit.RegistrationScope == nil ||
 				part.ClassMember != "" && other.ClassMember != "" && other.ClassMember != part.ClassMember {
 				continue
 			}
 			right := other.PeriodBenefit.RegistrationScope
-			if left.matches(right.SellerID, right.SellerCompanyID) || right.matches(left.SellerID, left.SellerCompanyID) ||
-				slices.ContainsFunc(left.Companies, func(company string) bool { return slices.Contains(right.Companies, company) }) {
+			if right.Exclusive && (left.matches(right.SellerID, right.SellerCompanyID) || right.matches(left.SellerID, left.SellerCompanyID) ||
+				slices.ContainsFunc(left.Companies, func(company string) bool { return slices.Contains(right.Companies, company) })) {
 				return errPracticeRegistrationOverlap
 			}
 		}
