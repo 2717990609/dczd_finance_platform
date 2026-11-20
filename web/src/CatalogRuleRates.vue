@@ -65,10 +65,11 @@ const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:
 const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
 const itemRemoved = computed(() => removedItems.value.has(selected.value))
 const editable = computed(() => sheet.value?.mayPublish && !saving.value && !itemRemoved.value)
+const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKind==='seller'))
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
 const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 || labelEdits.value.size ||
-  structure.value.items.length || structure.value.rateRows.length || structure.value.calculations.length ||
+  structure.value.items.length || structure.value.salesRates?.length || structure.value.rateRows.length || structure.value.calculations.length ||
   removedItems.value.size || removedRateRows.value.size)
 const impactPeriods = computed(() => (props.periods || []).filter(period=>period.productId===sheet.value?.productId && !period.settled))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
@@ -146,6 +147,11 @@ async function addRecipient() {
   selected.value = undefined
   await nextTick()
   await structureEditor.value?.addRecipient()
+}
+async function addSales() {
+  selected.value = undefined
+  await nextTick()
+  structureEditor.value?.editSales()
 }
 async function editRateScope(row) {
   await nextTick()
@@ -340,6 +346,7 @@ function publicationInput() {
       teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
     })),
     newItems:structure.value.items.map(({personName,...item})=>item),
+    newSalesRates:structure.value.salesRates,
     calculationChanges:structure.value.calculations.filter(({itemKey})=>!removedItems.value.has(itemKey)),
     newRateRows:structure.value.rateRows.filter(({itemKey,row})=>!removedItems.value.has(itemKey) &&
       !removedRateRows.value.has(cellKey(itemKey,row)) && !calculationFor(itemKey))
@@ -399,8 +406,11 @@ async function publish() {
           <div class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
-            <a-button v-if="sheet.mayPublish && !applied && sheet.structureOptions" size="small" :disabled="saving || structureEditing || !!targetDraft"
-              @click="addRecipient">添加收款安排</a-button>
+            <a-space v-if="sheet.mayPublish && !applied && sheet.structureOptions" wrap :size="4">
+              <a-button v-if="!hasSales && !structure.salesRates?.length" size="small" :disabled="saving || structureEditing || !!targetDraft"
+                @click="addSales">添加成交销售</a-button>
+              <a-button size="small" :disabled="saving || structureEditing || !!targetDraft" @click="addRecipient">添加收款安排</a-button>
+            </a-space>
           </div>
           <section v-for="item in sheet.components" :key="item.itemKey" class="rule-block">
           <button type="button" class="rule-block-header" :disabled="saving || structureEditing || !!targetDraft"
@@ -538,7 +548,7 @@ async function publish() {
           </section>
           </div>
           <template v-if="sheet.mayPublish && !applied">
-            <Teleport v-if="sheet.structureOptions" :disabled="!component || itemRemoved"
+            <Teleport v-if="sheet.structureOptions" defer :disabled="!component || itemRemoved"
               :to="component && !itemRemoved ? rateEditorTarget : 'body'">
               <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id"
                 v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
@@ -551,7 +561,7 @@ async function publish() {
                     :disabled="!editable || structureEditing || !!targetDraft" @update:value="setLabel(component,$event)"/>
                 </a-form-item>
                 <div class="topbar-actions">
-                  <a-button v-if="component && targetKind!=='seller'" :danger="!itemRemoved" :disabled="structureEditing || saving"
+                  <a-button v-if="component && !component.teamSplit" :danger="!itemRemoved" :disabled="structureEditing || saving"
                     @click="toggleItemRemoval">{{ itemRemoved ? '撤销删除分项' : '删除分项' }}</a-button>
                   <a-button v-if="targetSkus.length && !copy" :disabled="saving" @click="copy={}">复制到其他 SKU</a-button>
                 </div>

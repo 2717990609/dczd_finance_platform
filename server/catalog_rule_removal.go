@@ -15,7 +15,7 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 	sales, _ := readVIPSalesPolicy(raw)
 	removeItems := make(map[string]bool, len(items))
 	for _, key := range items {
-		if key == sales.Item {
+		if key == sales.Split.Item {
 			return nil, errCatalogRequiredEntry
 		}
 		if removeItems[key] {
@@ -41,6 +41,9 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 			return nil, err
 		}
 		if removeItems[key] {
+			if key == sales.Item {
+				root["sales_attribution"] = json.RawMessage(`"ORDER_SELLER"`)
+			}
 			delete(removeItems, key)
 			continue
 		}
@@ -73,6 +76,9 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 	}
 	if len(removeItems)+len(removeRows) != 0 {
 		return nil, invalid
+	}
+	if len(kept) == 0 {
+		return nil, errCatalogRequiredEntry
 	}
 	root["benefit_actions"], err = json.Marshal(kept)
 	if err != nil {

@@ -154,9 +154,7 @@ func (o catalogStructureOptions) condition(row catalogConditionInput) (json.RawM
 	return json.Marshal(rate)
 }
 
-func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
-	items []catalogNewBenefitItem, rateRows []catalogNewRateRow, targets []catalogBenefitTargetChange,
-	calculations []catalogBenefitCalculationChange, removed []catalogRateRowRemoval) (json.RawMessage, error) {
+func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage, input publishCatalogRatesInput) (json.RawMessage, error) {
 	if _, err := tx.Exec(ctx, `SELECT source FROM catalog_sales_context WHERE source='DCAI' FOR SHARE`); err != nil {
 		return nil, err
 	}
@@ -164,8 +162,14 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 	if err != nil {
 		return nil, err
 	}
-	root, actions, err := catalogRateActions(raw)
-	if err != nil {
+	var root map[string]json.RawMessage
+	var actions []map[string]json.RawMessage
+	if input.Create == nil {
+		root, actions, err = catalogRateActions(raw)
+		if err != nil {
+			return nil, err
+		}
+	} else if err := json.Unmarshal(raw, &root); err != nil {
 		return nil, err
 	}
 	before, _ := readVIPSalesPolicy(raw)
@@ -178,7 +182,7 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 		positions[key] = i
 	}
 	tableEdits := make(map[string][]catalogNewRateRow)
-	for _, row := range rateRows {
+	for _, row := range input.NewRateRows {
 		index, found := positions[row.ItemKey]
 		if !found || string(actions[index]["type"]) != `"RATE_TABLE"` || row.Payee != "" && row.ItemKey != before.Item {
 			return nil, invalid
@@ -186,7 +190,7 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 		tableEdits[row.ItemKey] = append(tableEdits[row.ItemKey], row)
 	}
 	removedByItem := make(map[string]map[int]bool)
-	for _, row := range removed {
+	for _, row := range input.RemovedRateRows {
 		if removedByItem[row.ItemKey] == nil {
 			removedByItem[row.ItemKey] = make(map[int]bool)
 		}
@@ -207,7 +211,7 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 			return nil, err
 		}
 	}
-	for _, change := range calculations {
+	for _, change := range input.CalculationChanges {
 		index, found := positions[change.ItemKey]
 		if !found || change.ItemKey == before.Item {
 			return nil, invalid
@@ -234,12 +238,12 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 		}
 	}
 	var people []catalogRuleRecipientChange
-	for _, item := range items {
+	for _, item := range input.NewItems {
 		if item.Target == "person" {
 			people = append(people, catalogRuleRecipientChange{PersonID: item.PersonID})
 		}
 	}
-	for _, target := range targets {
+	for _, target := range input.TargetChanges {
 		if target.Target == "person" {
 			people = append(people, catalogRuleRecipientChange{PersonID: target.PersonID})
 		}
@@ -248,10 +252,43 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 	if err != nil {
 		return nil, err
 	}
-	if err := changeCatalogBenefitTargets(actions, before.Item, targets, options, keys); err != nil {
+	if err := changeCatalogBenefitTargets(actions, before.Item, input.TargetChanges, options, keys); err != nil {
 		return nil, err
 	}
-	for _, item := range items {
+	if len(input.NewSalesRates) != 0 {
+		if before.Item != "" {
+			return nil, invalid
+		}
+		key := "sales"
+		for n := 2; ; n++ {
+			if _, exists := positions[key]; !exists {
+				break
+			}
+			key = "sales-" + strconv.Itoa(n)
+		}
+		rates := make([]json.RawMessage, 0, len(input.NewSalesRates))
+		for _, row := range input.NewSalesRates {
+			rate, err := options.condition(row)
+			if err != nil {
+				return nil, err
+			}
+			rates = append(rates, rate)
+		}
+		if err := validateCatalogNewRateConditions(nil, rates); err != nil {
+			return nil, err
+		}
+		rawKey, _ := json.Marshal(key)
+		rawRates, err := json.Marshal(rates)
+		if err != nil {
+			return nil, err
+		}
+		positions[key] = len(actions)
+		actions = append(actions, map[string]json.RawMessage{
+			"item_key": rawKey, "label": json.RawMessage(`"成交销售"`), "role": json.RawMessage(`"SALES"`),
+			"type": json.RawMessage(`"RATE_TABLE"`), "beneficiary_mode": json.RawMessage(`"PARTY"`), "rate_table": rawRates,
+		})
+	}
+	for _, item := range input.NewItems {
 		var key string
 		for n := len(actions) + 1; ; n++ {
 			key = "benefit-" + strconv.Itoa(n)
@@ -276,6 +313,9 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage,
 	}
 	after, ok := readVIPSalesPolicy(body)
 	if !ok {
+		return nil, errCatalogRateUnavailable
+	}
+	if _, ok := readVIPBenefits(body); !ok {
 		return nil, errCatalogRateUnavailable
 	}
 	if len(before.Split.Teams) != 0 && internalTeamRatesChanged(before, after) {

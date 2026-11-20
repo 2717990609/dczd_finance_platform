@@ -97,7 +97,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		item := catalogRateComponent{ItemKey: action.Item, Label: action.Label, Rate: action.Rate, Fixed: action.Fixed, TargetKind: action.targetKind()}
 		if item.ItemKey == sales.Item {
 			item.TargetKind = "seller"
-			if split := sales.Split; len(split.Teams) != 0 {
+			if split := sales.Split; split.Item != "" {
 				item.TeamSplit = &catalogSplitRates{
 					Total: split.Total, Sales: split.Assistant, HeadSales: split.HeadSeller,
 					GroupLead: split.Group, Service: split.Service, TeamLead: split.TeamHead,

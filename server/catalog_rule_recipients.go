@@ -260,7 +260,7 @@ func setCatalogPerson(fields map[string]json.RawMessage, field, key string) bool
 func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, product int64, at time.Time, raw, edited json.RawMessage) error {
 	before, wasValid := readVIPBenefits(raw)
 	after, ok := readVIPBenefits(edited)
-	if !wasValid || !ok || len(before.split.Teams) != len(after.split.Teams) {
+	if len(raw) != 0 && !wasValid || !ok || len(before.split.Teams) != len(after.split.Teams) {
 		return invalid
 	}
 	type requiredAppointment struct {

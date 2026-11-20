@@ -18,7 +18,7 @@ var (
 	errCatalogRateDates          = errors.New("生效时间须晚于所选版本的起点")
 	errCatalogConfigurationOwned = errors.New("此产品已在本平台发布规则，请通过规则配置维护")
 	errCatalogTeamRate           = errors.New("此调整会改变内部团队的拆分比例或收款方式，请核对团队规则")
-	errCatalogRequiredEntry      = errors.New("请保留成交销售分项及其适用费率；费率表至少需要一行")
+	errCatalogRequiredEntry      = errors.New("请至少保留一项收款安排。成交团队拆分及在用的费率表须保留适用费率")
 )
 
 type catalogRateChange struct {
@@ -36,6 +36,7 @@ type publishCatalogRatesInput struct {
 	RecipientChanges   []catalogRuleRecipientChange      `json:"recipientChanges"`
 	TeamChanges        []catalogTeamRecipientChange      `json:"teamChanges"`
 	NewItems           []catalogNewBenefitItem           `json:"newItems"`
+	NewSalesRates      []catalogConditionInput           `json:"newSalesRates,omitempty"`
 	NewRateRows        []catalogNewRateRow               `json:"newRateRows"`
 	TargetChanges      []catalogBenefitTargetChange      `json:"targetChanges"`
 	CalculationChanges []catalogBenefitCalculationChange `json:"calculationChanges,omitempty"`
@@ -155,7 +156,7 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRatesInput, actor string, refreshDrafts bool) (catalogPublication, error) {
 	if input.Create != nil {
 		if input.BaseID != "" || input.Copy != nil || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges)+
-			len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges)+len(input.RemovedItems)+len(input.RemovedRateRows) != 0 {
+			len(input.NewSalesRates)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges)+len(input.RemovedItems)+len(input.RemovedRateRows) != 0 {
 			return catalogPublication{}, invalid
 		}
 		return createCatalogScenarioRule(ctx, tx, *input.Create, input.EffectiveFrom, input.NewItems, actor, refreshDrafts)
@@ -163,7 +164,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 	published := catalogPublication{ID: input.BaseID}
 	id, valid := canonicalSourceUUID(input.BaseID)
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
-	structureChanged := len(input.NewItems)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges) != 0
+	structureChanged := len(input.NewItems)+len(input.NewSalesRates)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges) != 0
 	removals := len(input.RemovedItems)+len(input.RemovedRateRows) != 0
 	if !valid || from.IsZero() || input.Copy == nil && len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 &&
 		!structureChanged && !removals || !textOK(actor, 128) {
@@ -239,8 +240,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			}
 		}
 		if structureChanged {
-			body, err = editCatalogStructure(ctx, tx, body, input.NewItems, input.NewRateRows, input.TargetChanges,
-				input.CalculationChanges, input.RemovedRateRows)
+			body, err = editCatalogStructure(ctx, tx, body, input)
 			if err != nil {
 				return err
 			}

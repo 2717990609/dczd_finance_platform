@@ -64,7 +64,7 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 		policy.split = *def.Split
 		salesItem = def.Split.Item
 	} else {
-		sales, valid := readDirectSalesPolicy(def.Actions)
+		sales, valid := def.directSalesPolicy()
 		if !valid {
 			return vipBenefitPolicy{}, false
 		}
@@ -111,7 +111,7 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 		}
 		policy.actions = append(policy.actions, action)
 	}
-	return policy, items[salesItem]
+	return policy, salesItem == "" || items[salesItem]
 }
 
 func (a vipBenefitAction) validTarget() bool {

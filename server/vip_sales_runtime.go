@@ -92,13 +92,17 @@ const vipRuntimeSQL = `WITH scope AS (
 ), definitions AS MATERIALIZED (
  SELECT v.source_id,v.definition FROM unnest($3::text[]) r(id) JOIN product_rule_versions v ON v.source_id=r.id::uuid
 ), claims AS MATERIALIZED (
- SELECT c.source_version_id,c.sales_claims || coalesce((
+ SELECT c.source_version_id,
+  CASE WHEN jsonb_typeof(c.sales_claims)='array' THEN c.sales_claims ELSE '[]'::jsonb END
+  || coalesce(referrals.participants,'[]') AS sales_claims
+ FROM source_order_classifications c JOIN source_order_versions v ON v.id=c.source_version_id
+ CROSS JOIN LATERAL (
   SELECT jsonb_agg(jsonb_build_object('role',a->>'role','user',a->>'userId') ORDER BY a->>'role',a->>'userId')
+   AS participants
   FROM jsonb_path_query(v.fact,` + vipReferralParticipantsPath + `) a
   WHERE EXISTS(SELECT 1 FROM definitions d WHERE d.definition->'benefit_actions' @> '[{"beneficiary_mode":"` + vipOrderReferrerMode + `"}]')
- ),'[]') AS sales_claims
- FROM source_order_classifications c JOIN source_order_versions v ON v.id=c.source_version_id
- WHERE c.source_version_id=ANY($2::bigint[]) AND jsonb_typeof(c.sales_claims)='array'
+ ) referrals
+ WHERE c.source_version_id=ANY($2::bigint[]) AND (jsonb_typeof(c.sales_claims)='array' OR referrals.participants IS NOT NULL)
 ), keys AS MATERIALIZED (
  SELECT DISTINCT line->>'user' AS person,line->>'company' AS company
  FROM claims CROSS JOIN LATERAL jsonb_array_elements(sales_claims) line
@@ -149,7 +153,7 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
  'claims',(SELECT jsonb_object_agg(source_version_id::text,sales_claims) FROM claims),
  'definitions',(SELECT jsonb_object_agg(source_id::text,jsonb_build_object(
   'amount_basis',definition->'amount_basis','stacking_policy',definition->'stacking_policy','rounding_policy',definition->'rounding_policy',
-  'refund_policy',definition->'refund_policy',
+  'refund_policy',definition->'refund_policy','sales_attribution',definition->'sales_attribution',
   'internal_sales_direct_split',definition->'internal_sales_direct_split',
   'benefit_actions',definition->'benefit_actions')) FROM definitions),
  'users',(SELECT jsonb_agg(to_jsonb(users)-'id') FROM users),
@@ -344,7 +348,9 @@ func (p vipQuotePolicies) apply(row *catalogPaymentMatch, data vipRuntimeData, r
 	if policy, ok := p.sales[row.RuleID]; ok {
 		row.SalesItem = policy.Item
 		row.SalesParts, row.SalesStatus = nil, issue
-		if issue == "" {
+		if policy.Item == "" {
+			row.SalesStatus = vipSalesNotConfigured
+		} else if issue == "" {
 			row.SalesParts, row.SalesStatus = calculateVIPSales(policy, req, data.vipSalesData)
 		}
 		if row.SalesStatus == "" {

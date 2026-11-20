@@ -15,6 +15,8 @@ const catalogSplitDraftRule = `(v.definition->>'recognition_plan' IS NULL
 const catalogDirectDraftRule = `(v.published_at IS NOT NULL AND v.definition->>'recognition_plan' IS NULL
  AND v.definition->>'sales_attribution'='ORDER_SELLER')`
 
+const vipSalesNotConfigured = "SALES_NOT_CONFIGURED"
+
 const catalogDraftAvailableSQL = `(pro.period_mode='calendar' AND EXISTS(
  SELECT 1 FROM product_catalog_settings c
  JOIN product_rule_packages k ON k.product_id=c.product_id AND k.project_code=c.project_code
@@ -182,7 +184,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	}
 	if row.SalesStatus == "" {
 		issue("sales", "VIP_SALES_RULE_UNSUPPORTED")
-	} else if row.SalesStatus != "CALCULATED" && row.SalesStatus != vipSalesAppointmentInactive {
+	} else if row.SalesStatus != "CALCULATED" && row.SalesStatus != vipSalesAppointmentInactive && row.SalesStatus != vipSalesNotConfigured {
 		issue("sales", row.SalesStatus)
 	}
 	var salesRate int64

@@ -1,4 +1,5 @@
 export const salesStatus = {
+  SALES_NOT_CONFIGURED:'本规则未配置成交分润',
   SALES_SOURCE_MISSING:'需重拉订单销售数据',
   SALES_SOURCE_CONFLICT:'成交人或锁粉归属冲突',
   SALES_PERSON_MISSING:'成交人待核',

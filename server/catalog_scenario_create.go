@@ -78,8 +78,11 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	var result catalogPublication
 	input.Label = strings.TrimSpace(input.Label)
 	at = at.UTC().Truncate(time.Microsecond)
-	if input.ProductID <= 0 || !textOK(input.Label, 80) || !textOK(input.SKU, 128) || at.IsZero() || len(input.SalesRates) == 0 || !textOK(actor, 128) {
+	if input.ProductID <= 0 || !textOK(input.Label, 80) || !textOK(input.SKU, 128) || at.IsZero() || !textOK(actor, 128) {
 		return result, invalid
+	}
+	if len(input.SalesRates)+len(items) == 0 {
+		return result, errCatalogRequiredEntry
 	}
 	if operator := financeUser(ctx); operator != nil {
 		if err := lockCatalogProductPublisher(ctx, tx, operator, input.ProductID); err != nil {
@@ -103,21 +106,6 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	if occupied {
 		return result, errCatalogScenarioOccupied
 	}
-	options, err := readCatalogStructureOptions(ctx, tx)
-	if err != nil {
-		return result, err
-	}
-	rates := make([]json.RawMessage, 0, len(input.SalesRates))
-	for _, row := range input.SalesRates {
-		value, err := options.condition(row)
-		if err != nil {
-			return result, err
-		}
-		rates = append(rates, value)
-	}
-	if err := validateCatalogNewRateConditions(nil, rates); err != nil {
-		return result, err
-	}
 	cycle := "MONTHLY"
 	if cycleStart == 25 {
 		cycle = "MONTHLY_25_TO_24"
@@ -129,8 +117,6 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 		"rounding_policy":   map[string]any{"mode": "HALF_UP", "scale": 2},
 		"settlement_policy": map[string]string{"cycle": cycle},
 		"policy_scope":      scope,
-		"benefit_actions": []map[string]any{{"item_key": "sales", "label": "成交销售", "role": "SALES", "type": "RATE_TABLE",
-			"beneficiary_mode": "PARTY", "rate_table": rates}},
 	}
 	if compound {
 		definition["schema_version"] = "1.2"
@@ -142,15 +128,12 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	if err != nil {
 		return result, err
 	}
-	body := base
-	if len(items) != 0 {
-		body, err = editCatalogStructure(ctx, tx, base, items, nil, nil, nil, nil)
-		if err != nil {
-			return result, err
-		}
-		if err := validateCatalogRecipientAppointments(ctx, tx, input.ProductID, at, base, body); err != nil {
-			return result, err
-		}
+	body, err := editCatalogStructure(ctx, tx, base, publishCatalogRatesInput{Create: &input, NewItems: items, NewSalesRates: input.SalesRates})
+	if err != nil {
+		return result, err
+	}
+	if err := validateCatalogRecipientAppointments(ctx, tx, input.ProductID, at, nil, body); err != nil {
+		return result, err
 	}
 	digest := sha256.Sum256(body)
 	result, err = insertCatalogScenarioRule(ctx, tx, input.ProductID, input.catalogScenarioCopy, at, actor, hex.EncodeToString(digest[:]), body)

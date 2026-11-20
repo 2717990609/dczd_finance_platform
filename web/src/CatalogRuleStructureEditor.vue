@@ -9,7 +9,8 @@ const emit = defineEmits(['rate-staged'])
 const draft = defineModel({type:Object,required:true})
 const editing = defineModel('editing', {type:Boolean,default:false})
 const form = ref()
-const revising = computed(() => form.value?.kind==='calculation' || form.value?.itemIndex!=null || form.value?.rowNumber || form.value?.draftKey)
+const revising = computed(() => form.value?.kind==='calculation' || form.value?.itemIndex!=null ||
+  form.value?.rowNumber || form.value?.draftKey || form.value?.kind==='sales' && draft.value.salesRates?.length)
 const itemName = ref()
 const error = ref('')
 let nextDraftKey = 0
@@ -40,6 +41,10 @@ async function addRecipient() {
   begin('item')
   await nextTick()
   itemName.value?.focus()
+}
+function editSales() {
+  error.value = ''
+  form.value = {kind:'sales',...calculationForm({rows:draft.value.salesRates},'table')}
 }
 async function editRecipient(index) {
   const {fixedMinor,rateBps,rows,...payee} = draft.value.items[index]
@@ -104,6 +109,8 @@ function stage() {
       if (existing>=0) draft.value.rateRows.splice(existing,1,change)
       else draft.value.rateRows.push(change)
       emit('rate-staged',scope)
+    } else if (staged.kind==='sales') {
+      draft.value.salesRates = calculationBody(staged).rows
     } else if (staged.kind==='calculation') {
       const change = {itemKey:staged.itemKey,...calculationBody(staged)}
       const existing = draft.value.calculations.findIndex(row=>row.itemKey===change.itemKey)
@@ -125,7 +132,7 @@ function stage() {
   }
 }
 watch(form, value => { editing.value = !!value })
-defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=>begin('row',scope)})
+defineExpose({addRecipient,editSales,editCalculation,editRateScope,addRateCondition:scope=>begin('row',scope)})
 </script>
 
 <template>
@@ -144,7 +151,7 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
           <CatalogPayeeFields v-model="form" prefix="catalog-add" :options="options" :api="api" :people-filters="peopleFilters"/>
           <h3 class="form-subhead">提成怎么算</h3>
         </template>
-        <a-form-item :label="form.kind==='calculation' ? '新计提方式' : '计提方式'" html-for="catalog-add-format">
+        <a-form-item v-if="form.kind!=='sales'" :label="form.kind==='calculation' ? '新计提方式' : '计提方式'" html-for="catalog-add-format">
           <a-select id="catalog-add-format" v-model:value="form.format" :options="calculationFormats"/>
         </a-form-item>
         <a-form-item v-if="form.format==='rate'" label="比例（%）" html-for="catalog-add-fixed" required>
@@ -157,7 +164,7 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
         </a-form-item>
         <template v-else>
           <div v-for="(_,index) in form.rows" :key="index" class="catalog-add-condition">
-            <CatalogRateCondition v-model="form.rows[index]" :options="options" :suffix="'-'+index">
+            <CatalogRateCondition v-model="form.rows[index]" :options="options" :suffix="'-'+index" :sales-payee="form.kind==='sales'">
               <a-button v-if="form.rows.length>1" type="link" danger size="small" @click="form.rows.splice(index,1)">移除</a-button>
             </CatalogRateCondition>
           </div>
@@ -167,11 +174,18 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
       <div class="form-actions">
         <a-button :size="form.kind==='row' ? 'small' : undefined" @click="cancel">{{ revising ? '取消编辑' : '取消添加' }}</a-button>
         <a-button :size="form.kind==='row' ? 'small' : undefined" type="primary" @click="stage">
-          {{ revising ? '应用修改' : form.kind==='item' ? '加入规则' : '加入比例表' }}
+          {{ revising ? '应用修改' : form.kind==='row' ? '加入比例表' : '加入规则' }}
         </a-button>
       </div>
     </div>
-    <ul v-if="draft.items.length" class="catalog-staged-entries" aria-label="待发布新增配置">
+    <ul v-if="draft.items.length || draft.salesRates?.length" class="catalog-staged-entries" aria-label="待发布新增配置">
+      <li v-if="draft.salesRates?.length">
+        <div><span>成交销售 · {{ draft.salesRates.length }} 条费率条件</span><small class="order-version">未保存</small></div>
+        <a-space :size="0">
+          <a-button type="link" size="small" :disabled="!!form" @click="editSales">编辑</a-button>
+          <a-button type="link" danger size="small" :disabled="!!form" @click="draft.salesRates=undefined">移除</a-button>
+        </a-space>
+      </li>
       <li v-for="(item,index) in draft.items" :key="'item-'+index">
         <div>
           <span>{{ itemLabel(item) }}</span>

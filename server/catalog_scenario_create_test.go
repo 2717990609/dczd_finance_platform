@@ -308,4 +308,113 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	if denied := post(949); denied.Code != 403 {
 		t.Fatalf("publication must remain product-scoped: %d %s", denied.Code, denied.Body)
 	}
+
+	if _, err := db.Exec(ctx, `INSERT INTO catalog_business_routes(source_id,product_id,source,domain,entity_type,record_table,
+	 business_key,classifier,sku_code,sku_label,mapping_version,effective_from,observed_at)
+	 SELECT gen_random_uuid(),product_id,source,domain,entity_type,record_table,'dcai:vip:other','dcai.vip-lifecycle.v1',
+	 'OTHER','非成交安排',1,'2026-07-01',observed_at FROM catalog_business_routes WHERE sku_code='FIRST';
+	 UPDATE identity_mappings SET valid_from='2026-07-01' WHERE source='DCAI' AND person_id IN (9501,9502);
+	 UPDATE organization_company_sources SET valid_from='2026-07-01' WHERE source='DCAI' AND source_company_id='seller-company';
+	 UPDATE catalog_sales_appointments SET valid_from='2026-07-01' WHERE source='DCAI' AND person_id=9501`); err != nil {
+		t.Fatal(err)
+	}
+	firstAt := time.Date(2026, 7, 25, 0, 0, 0, 0, shanghai)
+	standalone := publishCatalogRatesInput{EffectiveFrom: firstAt, Create: &catalogScenarioCreate{ProductID: 950,
+		catalogScenarioCopy: catalogScenarioCopy{SKU: "OTHER", Label: "无成交分润"}}, NewItems: []catalogNewBenefitItem{
+		{Label: "公司独立固定额", catalogBenefitTarget: catalogBenefitTarget{Target: "company", Organization: "10000000-0000-4000-8000-000000000954"},
+			catalogBenefitCalculation: catalogBenefitCalculation{Fixed: &revisedRate}},
+		{Label: "直接推荐", catalogBenefitTarget: catalogBenefitTarget{Target: "referrer"},
+			catalogBenefitCalculation: catalogBenefitCalculation{Rate: &revisedRate}},
+	}}
+	onlyBenefits, err := s.publishCatalogRates(ctx, standalone, "fixture")
+	if err != nil {
+		t.Fatalf("could not publish without a sales arrangement: %v", err)
+	}
+	sheet, err = s.catalogRuleRateSheet(ctx, onlyBenefits.ID)
+	if err != nil || len(sheet.Components) != 2 || sheet.Components[0].TargetKind != "company" ||
+		sheet.Components[1].TargetKind != "referrer" {
+		t.Fatalf("unexpected first version: %+v %v", sheet, err)
+	}
+	salesRate := int64(1500)
+	withSales, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{
+		BaseID: onlyBenefits.ID, EffectiveFrom: firstAt.AddDate(0, 0, 3),
+		NewSalesRates: []catalogConditionInput{{Company: "ANY", Relationship: "ANY", Rate: &salesRate}},
+	}, "fixture")
+	if err != nil {
+		t.Fatalf("could not add sales to an existing rule: %v", err)
+	}
+	withSalesSheet, err := s.catalogRuleRateSheet(ctx, withSales.ID)
+	if err != nil || len(withSalesSheet.Components) != 3 || withSalesSheet.Components[2].TargetKind != "seller" {
+		t.Fatalf("could not reopen added sales arrangement: %+v %v", withSalesSheet, err)
+	}
+	withoutSales, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{
+		BaseID: withSales.ID, EffectiveFrom: firstAt.AddDate(0, 0, 6),
+		RemovedItems: []string{withSalesSheet.Components[2].ItemKey},
+	}, "fixture")
+	if err != nil {
+		t.Fatalf("could not remove independent sales arrangement: %v", err)
+	}
+	withoutSalesSheet, err := s.catalogRuleRateSheet(ctx, withoutSales.ID)
+	if err != nil || len(withoutSalesSheet.Components) != 2 || withoutSalesSheet.Components[0].ItemKey != sheet.Components[0].ItemKey {
+		t.Fatalf("removing sales must retain the other arrangements: %+v %v", withoutSalesSheet, err)
+	}
+	if _, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{
+		BaseID: withoutSales.ID, EffectiveFrom: firstAt.AddDate(0, 0, 7),
+		RemovedItems: []string{sheet.Components[0].ItemKey, sheet.Components[1].ItemKey},
+	}, "fixture"); err == nil {
+		t.Fatal("a rule with no arrangements may not be published")
+	}
+	benefitPeriod, err := s.createPeriod(ctx, createPeriodInput{ProductID: 950, SettlementMonth: "2026-08", Name: "独立收款账期"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, day := range []int{1, 4, 7} {
+		at := firstAt.AddDate(0, 0, day)
+		external := fmt.Sprintf("20%d", i)
+		fact := sourceFact{Source: "DCAI", Domain: "VIP", SourceKey: "new", Kind: "ORDER_PAID",
+			OrderID: external, PaymentID: external, RecordKey: "ai_vip_order:" + external, Version: "1",
+			AmountMinor: &originalAmount, OccurredAt: at, UpdatedAt: at,
+			Classification: sourceClassification{"VIP_ORDER", "dcai:vip:other", "dcai.vip-lifecycle.v1"},
+			Participants:   []sourceParticipant{{Role: "DIRECT_PID_USER", UserID: "referrer"}}}
+		if i == 1 {
+			fact.VIPClaims = []vipClaim{{Role: "PID_USER", User: "seller", Company: "seller-company", Relationship: "DIRECT"}}
+		}
+		if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+			_, err := storeSourceFactsFrom(ctx, tx, []sourceFact{fact}, s.dcaiSourceKey())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newPeriod := benefitPeriod.(map[string]int64)["id"]
+	tested, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: newPeriod})
+	if err != nil || tested.(draftSummary).Total != 9000 || tested.(draftSummary).LineCount != 7 || tested.(draftSummary).IssueCount != 0 {
+		var issues []string
+		_ = db.QueryRow(ctx, `SELECT array_agg(i.code ORDER BY i.id) FROM calculation_draft_issues i WHERE i.period_id=$1`, newPeriod).Scan(&issues)
+		t.Fatalf("the three versions must generate only their configured benefits: %+v issues=%v %v", tested, issues, err)
+	}
+	if _, err := db.Exec(ctx, "INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')",
+		newPeriod, tested.(draftSummary).Version); err != nil {
+		t.Fatal(err)
+	}
+	refundPeriod, err := s.createPeriod(ctx, createPeriodInput{ProductID: 950, SettlementMonth: "2026-09", Name: "独立收款退款账期"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := firstAt.AddDate(0, 1, 1)
+	for _, external := range []string{"200", "201"} {
+		adjustment := sourceFact{Source: "DCAI", Domain: "VIP", SourceKey: "new", Kind: "REFUND_SUCCEEDED", OrderID: external,
+			RecordKey: "ai_vip_order:partial-" + external, RefundID: "partial-" + external, Version: "1", AmountMinor: &amount,
+			OccurredAt: at, UpdatedAt: at, RefundsPayment: []sourcePaymentReference{{OrderID: external, RecordID: external}}}
+		if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+			_, err := storeSourceFactsFrom(ctx, tx, []sourceFact{adjustment}, s.dcaiSourceKey())
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refunds, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: refundPeriod.(map[string]int64)["id"]})
+	if err != nil || refunds.(draftSummary).RefundTotal != -3250 || refunds.(draftSummary).RefundCount != 5 || refunds.(draftSummary).IssueCount != 0 {
+		t.Fatalf("refunds must use the original sales and independent benefit arrangements: %+v %v", refunds, err)
+	}
 }

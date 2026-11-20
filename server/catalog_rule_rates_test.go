@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestRemoveCatalogEntriesKeepsTheBaseDefinitionAndSalesRule(t *testing.T) {
+func TestRemoveCatalogEntriesKeepsTheBaseDefinitionAndAtLeastOneArrangement(t *testing.T) {
 	base := json.RawMessage(`{
 		"amount_basis":"ACTUAL_RECEIVED","stacking_policy":"SUM","rounding_policy":{"mode":"HALF_UP","scale":2},
 		"benefit_actions":[
@@ -28,8 +28,15 @@ func TestRemoveCatalogEntriesKeepsTheBaseDefinitionAndSalesRule(t *testing.T) {
 	if err != nil || len(after) != 1 || len(after[0].Rows) != 1 || after[0].Rows[0].Rate != 200 {
 		t.Fatalf("new version should retain only the default sales row: %v %v", after, err)
 	}
-	if _, err := removeCatalogEntries(base, []string{"sales"}, nil); !errors.Is(err, errCatalogRequiredEntry) {
-		t.Fatalf("required sales item removal was not rejected: %v", err)
+	ownerOnly, err := removeCatalogEntries(base, []string{"sales"}, nil)
+	if err != nil {
+		t.Fatalf("independent seller arrangement could not be removed: %v", err)
+	}
+	if items, err := catalogRateComponents(ownerOnly, nil, nil, nil, nil); err != nil || len(items) != 1 || items[0].ItemKey != "owner" {
+		t.Fatalf("the remaining arrangement must be editable: %+v %v", items, err)
+	}
+	if _, err := removeCatalogEntries(base, []string{"sales", "owner"}, nil); !errors.Is(err, errCatalogRequiredEntry) {
+		t.Fatalf("a rule must preserve at least one arrangement: %v", err)
 	}
 	if _, err := removeCatalogEntries(base, nil, []catalogRateRowRemoval{{ItemKey: "sales", Row: 1}, {ItemKey: "sales", Row: 2}}); !errors.Is(err, errCatalogRequiredEntry) {
 		t.Fatalf("empty sales table was not rejected: %v", err)

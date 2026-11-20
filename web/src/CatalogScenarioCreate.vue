@@ -62,6 +62,7 @@ async function publish() {
   error.value = ''
   try {
     if (!sku.value || !name.value.trim() || !effectiveFrom.value) throw new Error('请选择业务 SKU、生效时间并填写规则名称。')
+    if (!rates.value.length && !structure.value.items.length) throw new Error('请至少添加一项收款安排。')
     const salesRates = rates.value.map(row=>catalogRateConditionBody(row))
     publishing.value = true
     const result = await props.api('/catalog-rule-rates',{method:'POST',body:JSON.stringify({
@@ -99,10 +100,11 @@ async function publish() {
         </a-form-item>
       </div>
       <template v-if="options && sku">
-        <section class="rule-block rule-block-body catalog-first-rates" aria-label="成交销售">
+        <section v-if="rates.length" class="rule-block rule-block-body catalog-first-rates" aria-label="成交销售">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">成交销售</h3>
             <small v-if="ratePriority" class="finance-rate-priority">{{ ratePriority }}</small>
+            <a-button type="link" danger size="small" @click="rates=[]">移除成交销售</a-button>
           </div>
           <div v-for="(_,index) in rates" :key="index" class="catalog-add-condition">
             <CatalogRateCondition v-model="rates[index]" :options="options" :suffix="'-first-'+index" sales-payee>
@@ -116,8 +118,11 @@ async function publish() {
           </a-space>
         </section>
         <div class="rule-blocks-heading">
-          <h3 class="form-subhead">其他收款安排</h3>
-          <a-button :disabled="editing" @click="structureEditor?.addRecipient()">添加收款安排</a-button>
+          <h3 class="form-subhead">{{ rates.length ? '其他收款安排' : '收款安排' }}</h3>
+          <a-space wrap :size="4">
+            <a-button v-if="!rates.length" size="small" :disabled="editing" @click="rates=[blankRate()]">添加成交销售</a-button>
+            <a-button size="small" :disabled="editing" @click="structureEditor?.addRecipient()">添加收款安排</a-button>
+          </a-space>
         </div>
         <CatalogRuleStructureEditor ref="structureEditor" v-model="structure" v-model:editing="editing"
           :options="options" :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints"/>

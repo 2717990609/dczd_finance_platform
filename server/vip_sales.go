@@ -94,9 +94,10 @@ type vipSalesPolicy struct {
 }
 
 type vipCommissionDefinition struct {
-	Basis    string `json:"amount_basis"`
-	Stacking string `json:"stacking_policy"`
-	Rounding struct {
+	Basis       string `json:"amount_basis"`
+	Stacking    string `json:"stacking_policy"`
+	Attribution string `json:"sales_attribution"`
+	Rounding    struct {
 		Mode  string
 		Scale int
 	} `json:"rounding_policy"`
@@ -120,7 +121,7 @@ func readVIPSalesPolicy(raw json.RawMessage) (vipSalesPolicy, bool) {
 		return vipSalesPolicy{}, false
 	}
 	if def.Split == nil {
-		return readDirectSalesPolicy(def.Actions)
+		return def.directSalesPolicy()
 	}
 	type salesAction struct {
 		Type       string            `json:"type"`
@@ -151,10 +152,10 @@ func readVIPSalesPolicy(raw json.RawMessage) (vipSalesPolicy, bool) {
 	return policy, policy.Item != ""
 }
 
-func readDirectSalesPolicy(actions []json.RawMessage) (vipSalesPolicy, bool) {
-	items := make(map[string]bool, len(actions))
+func (d vipCommissionDefinition) directSalesPolicy() (vipSalesPolicy, bool) {
+	items := make(map[string]bool, len(d.Actions))
 	var policy vipSalesPolicy
-	for _, payload := range actions {
+	for _, payload := range d.Actions {
 		var identity struct {
 			Item       string `json:"item_key"`
 			Role       string `json:"role"`
@@ -188,7 +189,7 @@ func readDirectSalesPolicy(actions []json.RawMessage) (vipSalesPolicy, bool) {
 		}
 		policy = vipSalesPolicy{Item: action.Item, Sales: rates}
 	}
-	return policy, policy.Item != ""
+	return policy, policy.Item != "" || d.Attribution == "ORDER_SELLER" && len(d.Actions) != 0
 }
 
 func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
