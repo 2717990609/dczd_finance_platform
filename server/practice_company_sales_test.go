@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 
@@ -465,9 +466,17 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment bool) {
 	if withTier {
 		delivery := id(s.createPerson(ctx, createPersonInput{Name: "整班交付"}))
 		through := int64(29499)
+		benefit := &practicePeriodBenefit{Label: "交付阶梯", PersonID: delivery, TierOnWholeClass: true,
+			Tiers: []practicePeriodRate{{Through: &through, Value: 10000}, {From: 29500, Value: 20000}}}
+		if splitPayment {
+			const poolUnit = "41000000-0000-4000-8000-000000000006"
+			mustExec(`INSERT INTO organization_units(id,name,kind,status) VALUES($1,'交付团队','COMPANY','ACTIVE')`, poolUnit)
+			pool := id(s.createPracticePool(ctx, createPracticePoolInput{ProductID: product, UnitID: poolUnit, Name: "交付池"}))
+			benefit.PersonID = 0
+			benefit.Pool = &practicePoolTarget{PoolID: pool, OwnerID: delivery}
+		}
 		rule.Components = append(rule.Components, component{Type: "delivery", Mode: "period_rate",
-			PeriodBenefit: &practicePeriodBenefit{Label: "交付阶梯", PersonID: delivery, TierOnWholeClass: true,
-				Tiers: []practicePeriodRate{{Through: &through, Value: 10000}, {From: 29500, Value: 20000}}}})
+			PeriodBenefit: benefit})
 	}
 	if _, err := s.publishRule(ctx, rule); err != nil {
 		t.Fatal(err)
@@ -553,18 +562,18 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment bool) {
 		t.Fatal(err)
 	}
 	mustExec(`UPDATE organization_sales_category_history SET category_id=$2 WHERE unit_id=$1`, company, second)
-	refund := func(id string, at time.Time, amount int64) {
+	refund := func(order, id string, at time.Time, amount int64) {
 		t.Helper()
 		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 			_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCZD", Domain: "PRACTICE", SourceKey: "category", Kind: "REFUND_SUCCEEDED",
-				OrderID: "31", RefundID: id, RecordKey: "refund:" + id, Version: "1", OccurredAt: at, UpdatedAt: at, AmountMinor: &amount,
-				RefundsPayment: []sourcePaymentReference{{OrderID: "31", RecordID: "31"}}}})
+				OrderID: order, RefundID: id, RecordKey: "refund:" + id, Version: "1", OccurredAt: at, UpdatedAt: at, AmountMinor: &amount,
+				RefundsPayment: []sourcePaymentReference{{OrderID: order, RecordID: order}}}})
 			return err
 		}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	refund("31", time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC), 501)
+	refund("31", "31", time.Date(2026, 9, 5, 12, 0, 0, 0, time.UTC), 501)
 	partial := checkDraft(month, firstAmount, 0)
 	if partial.RefundCount != firstLines {
 		t.Fatalf("unexpected September refund lines: %+v", partial)
@@ -581,6 +590,7 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment bool) {
 		Scan(&companyDebit); err != nil || companyDebit != -200 {
 		t.Fatalf("company reversal must follow the original rounded payout: %d %v", companyDebit, err)
 	}
+	mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES ($1,$2,'fixture')`, month, partial.Version)
 	if splitPayment {
 		var charged []string
 		if err := s.db.QueryRow(ctx, `SELECT array_agg(p.order_id ORDER BY p.order_id) FROM calculation_draft_refunds r
@@ -589,14 +599,61 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment bool) {
 			len(charged) != 1 || charged[0] != "31" {
 			t.Fatalf("a deposit refund may only reverse the deposit's original company share: %+v %v", charged, err)
 		}
+		refund("31", "deposit-complete", time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC), 3498)
+		cleared := checkDraft(nextMonth, -1435, 0)
+		if cleared.RefundCount != 3 {
+			t.Fatalf("the fully refunded deposit must reopen the total pool share on the balance payment: %+v", cleared)
+		}
+		var credit int64
+		if err := s.db.QueryRow(ctx, `SELECT r.amount_minor FROM calculation_draft_refunds r
+		 JOIN calculation_draft_lines l ON l.id=r.original_line_id JOIN source_order_versions p ON p.id=l.source_version_id
+		 WHERE r.period_id=$1 AND p.order_id='34' AND l.practice_pool_id IS NOT NULL`, nextMonth).Scan(&credit); err != nil || credit != 3 {
+			t.Fatalf("the original balance payment's team pool must receive its three-cent increase: %d %v", credit, err)
+		}
+		type adjustmentDetail struct {
+			OriginalOrderID, ReplayTriggerOrderID string
+			AmountMinor                           int64
+			TierCredit                            bool
+		}
+		var details struct{ Refunds []adjustmentDetail }
+		if err := s.db.QueryRow(ctx, draftDetailSQL, nextMonth, 0, 0, cleared.Version, 0, 0).Scan(&details); err != nil {
+			t.Fatal(err)
+		}
+		if !slices.ContainsFunc(details.Refunds, func(row adjustmentDetail) bool {
+			return row.TierCredit && row.AmountMinor == 3 && row.OriginalOrderID == "34" && row.ReplayTriggerOrderID == "31"
+		}) {
+			t.Fatalf("draft detail must identify the adjustment and the refund that triggered it: %+v", details)
+		}
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			stages, err := readPoolStages(ctx, tx, nextMonth)
+			if err != nil {
+				return err
+			}
+			if len(stages) != 1 {
+				t.Fatalf("unexpected pool accounts: %v", stages)
+			}
+			for _, stage := range stages {
+				if stage.Opening != 295 || stage.Refund != -35 || stage.Balance != 260 {
+					t.Fatalf("both sides of the recalculation must reach the team pool: %+v", stage.poolDraftItem)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES ($1,$2,'fixture')`, nextMonth, cleared.Version)
+		thirdMonth := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "十一月", SettlementMonth: "2026-11"}))
+		refund("34", "balance-partial", time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC), 1000)
+		if later := checkDraft(thirdMonth, -410, 0); later.RefundCount != 2 {
+			t.Fatalf("the next refund must account for the confirmed increase: %+v", later)
+		}
 		return
 	}
-	mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES ($1,$2,'fixture')`, month, partial.Version)
-	refund("31-partial", time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC), 125)
+	refund("31", "31-partial", time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC), 125)
 	if next := checkDraft(nextMonth, nextAmount, 0); next.RefundCount != nextLines {
 		t.Fatalf("unexpected cumulative reversal: %+v", next)
 	}
-	refund("31-complete", time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC), 9373)
+	refund("31", "31-complete", time.Date(2026, 10, 6, 12, 0, 0, 0, time.UTC), 9373)
 	if complete := checkDraft(nextMonth, fullAmount, 0); complete.RefundCount != fullLines {
 		t.Fatalf("full refund should recover the rest of the original company award: %+v", complete)
 	}

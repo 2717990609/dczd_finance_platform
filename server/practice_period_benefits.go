@@ -592,7 +592,7 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		for _, share := range shares {
 			base := draftLine{PersonID: b.PersonID, RuleID: rule.ID, EnrollmentID: share.purchase.member.ID,
 				Component: key, BeneficiaryUnit: unit, reportUnit: reportUnit, PracticePool: b.Pool,
-				practiceProportionalRefund: b.FixedMinor == nil && len(b.Tiers) == 0}
+				practiceProportionalRefund: b.FixedMinor == nil && len(b.Tiers) == 0, practiceTierRefund: len(b.Tiers) != 0}
 			amounts := share.fixed
 			if b.FixedMinor == nil {
 				amounts = practiceGrossShares(share.purchase.gross, share.payments, share.amount)

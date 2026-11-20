@@ -259,6 +259,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 					FactID: payment.ID, RuleID: rule.ID, EnrollmentID: member.ID, PersonID: payee.PersonID,
 					IdentityID: payee.ID, Component: part.Type, Base: net, Amount: share - previousShare,
 					practiceProportionalRefund: !isTiered && part.Mode == "rate",
+					practiceTierRefund:         isTiered,
 				})
 				previousShare = share
 			}

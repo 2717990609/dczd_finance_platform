@@ -23,7 +23,7 @@ const columns = computed(() => [
   {title:'净业绩',dataIndex:'performanceMinor',key:'performanceMinor',width:108,align:'right'},
   {title:'净分润',dataIndex:'totalMinor',key:'totalMinor',width:108,align:'right'},
   {title:'计提分润',dataIndex:'accruedMinor',key:'accruedMinor',width:115,align:'right'},
-  {title:'退款扣减',dataIndex:'refundMinor',key:'refundMinor',width:110,align:'right'},
+  {title:'退款调整',dataIndex:'refundMinor',key:'refundMinor',width:110,align:'right'},
   {title:'受益人更正',dataIndex:'correctionMinor',key:'correctionMinor',width:120,align:'right'},
   {title:'团队池分配',dataIndex:'allocationMinor',key:'allocationMinor',width:120,align:'right'},
 ])

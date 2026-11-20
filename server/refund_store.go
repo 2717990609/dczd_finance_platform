@@ -24,6 +24,7 @@ type refundLine struct {
 	ComponentType                                         string
 	RefundID                                              string
 	OccurredAt                                            time.Time
+	TierCredit                                            bool `json:",omitempty"`
 }
 
 type refundObligation struct {

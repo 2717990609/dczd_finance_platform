@@ -8,6 +8,8 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+var errPracticeRefundUnanchored = errors.New("阶梯复算新增分润缺少原结算明细")
+
 type practiceReplayRefund struct {
 	refundInput
 	classID, paymentID int64
@@ -22,8 +24,9 @@ type practiceReplayLineKey struct {
 
 type practiceReplayOriginal struct {
 	practiceReplayLineKey
-	id, base, amount, recovered int64
-	proportionalRefund          bool
+	id, base, amount, adjusted int64
+	proportionalRefund         bool
+	tierRefund                 bool
 }
 
 func applyPracticeReplayRefunds(ctx context.Context, tx pgx.Tx, draft *paymentDraft, events []practiceReplayRefund) error {
@@ -38,9 +41,13 @@ func applyPracticeReplayRefunds(ctx context.Context, tx pgx.Tx, draft *paymentDr
 	for _, id := range ordered {
 		classEvents := classes[id]
 		lines, err := replayPracticeRefunds(ctx, tx, id, classEvents)
-		if errors.Is(err, errPracticeRefundReplay) {
+		if errors.Is(err, errPracticeRefundReplay) || errors.Is(err, errPracticeRefundUnanchored) {
+			code := "PRACTICE_REFUND_REPLAY_REQUIRED"
+			if errors.Is(err, errPracticeRefundUnanchored) {
+				code = "PRACTICE_REFUND_REPLAY_NEW_LINE"
+			}
 			for _, event := range classEvents {
-				draft.Issues = append(draft.Issues, draftIssue{FactID: event.ID, Code: "PRACTICE_REFUND_REPLAY_REQUIRED"})
+				draft.Issues = append(draft.Issues, draftIssue{FactID: event.ID, Code: code})
 			}
 			continue
 		}
@@ -66,6 +73,10 @@ func replayPracticeRefunds(ctx context.Context, tx pgx.Tx, classID int64, events
 	if err := replay.loadSettledRefunds(ctx, tx, classID); err != nil {
 		return nil, err
 	}
+	frozen := make(map[practiceReplayLineKey]bool, len(originals))
+	for _, original := range originals {
+		frozen[original.practiceReplayLineKey] = true
+	}
 	var lines []refundLine
 	for len(events) != 0 {
 		n := 1
@@ -89,6 +100,11 @@ func replayPracticeRefunds(ctx context.Context, tx pgx.Tx, classID int64, events
 		if err != nil {
 			return nil, err
 		}
+		for key, line := range target {
+			if line.practiceTierRefund && line.Amount > 0 && !frozen[key] {
+				return nil, errPracticeRefundUnanchored
+			}
+		}
 		for i := range originals {
 			line := &originals[i]
 			remaining := target[line.practiceReplayLineKey].Amount
@@ -98,8 +114,12 @@ func replayPracticeRefunds(ctx context.Context, tx pgx.Tx, classID int64, events
 					return nil, err
 				}
 			}
-			delta := line.amount - line.recovered - remaining
-			if delta <= 0 {
+			settledAmount, err := addMinor(line.amount, line.adjusted)
+			if err != nil {
+				return nil, err
+			}
+			change := remaining - settledAmount
+			if change == 0 || change > 0 && !line.tierRefund {
 				continue
 			}
 			anchor, found := anchors[line.payment]
@@ -108,9 +128,10 @@ func replayPracticeRefunds(ctx context.Context, tx pgx.Tx, classID int64, events
 			}
 			lines = append(lines, refundLine{
 				OriginalLineID: line.id, RefundPeriodID: anchor.RefundPeriodID, RefundSourceVersionID: anchor.ID,
-				Amount: -delta, Principal: *anchor.Fact.AmountMinor, RefundID: anchor.Fact.RefundID, OccurredAt: anchor.Fact.OccurredAt.UTC(),
+				Amount: change, Principal: *anchor.Fact.AmountMinor, RefundID: anchor.Fact.RefundID, OccurredAt: anchor.Fact.OccurredAt.UTC(),
+				TierCredit: change > 0,
 			})
-			line.recovered += delta
+			line.adjusted = remaining - line.amount
 		}
 	}
 	return lines, nil
@@ -146,10 +167,11 @@ func readVerifiedPracticeReplay(ctx context.Context, tx pgx.Tx, classID int64) (
 		line := &originals[i]
 		value, found := before[line.practiceReplayLineKey]
 		if !found || value.Amount != line.amount || value.Base != line.base ||
-			line.recovered < 0 || line.recovered > line.amount {
+			line.adjusted < -line.amount || line.adjusted > 0 && !value.practiceTierRefund {
 			return replay, nil, errPracticeRefundReplay
 		}
 		line.proportionalRefund = value.practiceProportionalRefund
+		line.tierRefund = value.practiceTierRefund
 	}
 	return replay, originals, nil
 }
@@ -177,7 +199,7 @@ func readPracticeReplayOriginals(ctx context.Context, tx pgx.Tx, classID int64) 
 	rows, err := tx.Query(ctx, `SELECT l.id,l.source_version_id,coalesce(l.practice_enrollment_id,0),coalesce(l.person_id,0),
 	 l.component_type,l.beneficiary_unit_id,coalesce(l.practice_pool_id,0),coalesce(l.allocation_owner_id,0),
 	 coalesce(l.identity_id,0),l.base_minor,l.amount_minor,
-	 coalesce((SELECT -sum(r.amount_minor) FROM calculation_draft_refunds r JOIN settlements closed USING(period_id)
+	 coalesce((SELECT sum(r.amount_minor) FROM calculation_draft_refunds r JOIN settlements closed USING(period_id)
 	  WHERE r.original_line_id=l.id),0)::bigint
 	 FROM calculation_draft_lines l WHERE l.period_id=$1 ORDER BY l.id`, classID)
 	if err != nil {
@@ -186,7 +208,7 @@ func readPracticeReplayOriginals(ctx context.Context, tx pgx.Tx, classID int64) 
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (practiceReplayOriginal, error) {
 		var line practiceReplayOriginal
 		err := row.Scan(&line.id, &line.payment, &line.enrollment, &line.person, &line.component, &line.unit, &line.pool, &line.owner,
-			&line.identity, &line.base, &line.amount, &line.recovered)
+			&line.identity, &line.base, &line.amount, &line.adjusted)
 		return line, err
 	})
 }

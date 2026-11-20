@@ -477,7 +477,8 @@ CREATE OR REPLACE TRIGGER protect_settled_order_versions BEFORE UPDATE ON source
 CREATE OR REPLACE TRIGGER protect_settled_rule_versions BEFORE UPDATE ON rule_versions
  FOR EACH ROW EXECUTE FUNCTION protect_settlement_input();
 
-ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS refund_minor bigint NOT NULL DEFAULT 0 CHECK(refund_minor<=0);
+ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS refund_minor bigint NOT NULL DEFAULT 0;
+ALTER TABLE calculation_drafts DROP CONSTRAINT IF EXISTS calculation_drafts_refund_minor_check;
 ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS refund_count int NOT NULL DEFAULT 0 CHECK(refund_count>=0);
 CREATE INDEX IF NOT EXISTS source_order_versions_refund_date
  ON source_order_versions(source, (fact->>'domain'), (fact->>'sourceKey'), occurred_at)
@@ -494,9 +495,19 @@ CREATE TABLE IF NOT EXISTS calculation_draft_refunds (
  original_line_id bigint NOT NULL REFERENCES calculation_draft_lines(id),
  refund_period_id bigint NOT NULL REFERENCES periods(id),
  refund_source_version_id bigint NOT NULL REFERENCES source_order_versions(id),
- amount_minor bigint NOT NULL CHECK(amount_minor<=0),
+ amount_minor bigint NOT NULL,
  UNIQUE(period_id, original_line_id, refund_source_version_id)
 );
+ALTER TABLE calculation_draft_refunds ADD COLUMN IF NOT EXISTS tier_credit boolean NOT NULL DEFAULT false;
+DO $$
+BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_refunds'::regclass
+  AND conname='calculation_refund_adjustment_sign') THEN
+  ALTER TABLE calculation_draft_refunds DROP CONSTRAINT IF EXISTS calculation_draft_refunds_amount_minor_check;
+  ALTER TABLE calculation_draft_refunds ADD CONSTRAINT calculation_refund_adjustment_sign
+   CHECK ((amount_minor > 0) = tier_credit);
+ END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS calculation_refunds_page ON calculation_draft_refunds(period_id,id);
 CREATE INDEX IF NOT EXISTS calculation_refunds_original ON calculation_draft_refunds(original_line_id);
 CREATE INDEX IF NOT EXISTS calculation_refunds_source_version ON calculation_draft_refunds(refund_source_version_id);
@@ -1220,7 +1231,7 @@ CREATE OR REPLACE VIEW pool_account_activity AS
  UNION ALL
  SELECT r.period_id,a.unit_id,a.item_key,a.scenario_key
  FROM calculation_draft_refunds r JOIN pool_line_accounts a ON a.line_id=r.original_line_id
- WHERE r.amount_minor<0
+ WHERE r.amount_minor<>0
  UNION ALL
  SELECT c.period_id,a.unit_id,a.item_key,a.scenario_key
  FROM calculation_draft_corrections c JOIN pool_line_accounts a ON a.line_id=c.original_line_id AND a.unit_id=c.beneficiary_unit_id
@@ -1241,7 +1252,7 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
    UNION ALL
    SELECT account.unit_id,account.item_key,account.scenario_key,r.amount_minor
    FROM calculation_draft_refunds r JOIN pool_line_accounts account ON account.line_id=r.original_line_id
-   WHERE r.period_id=scope_id AND r.amount_minor<0
+   WHERE r.period_id=scope_id AND r.amount_minor<>0
    UNION ALL
    SELECT account.unit_id,account.item_key,account.scenario_key,c.amount_minor
    FROM calculation_draft_corrections c JOIN pool_line_accounts account

@@ -124,7 +124,7 @@ const poolEntriesSQL = `WITH scope AS (
   AND (final.id IS NULL OR posted.id<final.id))
 ), refunds AS MATERIALIZED (
  SELECT r.original_line_id,r.period_id,r.amount_minor,r.refund_source_version_id,r.id,p.seq,p.practice
- FROM scope p JOIN calculation_draft_refunds r ON r.period_id=p.id AND r.amount_minor<0
+ FROM scope p JOIN calculation_draft_refunds r ON r.period_id=p.id AND r.amount_minor<>0
  JOIN pool_line_accounts account ON account.line_id=r.original_line_id
  LEFT JOIN scope origin ON origin.id=account.period_id
  WHERE p.practice OR origin.id IS NOT NULL
@@ -162,7 +162,7 @@ const poolEntriesSQL = `WITH scope AS (
   0::bigint AS refunded,0::bigint AS corrected FROM lines l WHERE l.seq IS NOT NULL
  UNION ALL
  SELECT l.unit,l.item,l.scenario,l.name,r.period_id,r.seq,
-  CASE WHEN r.practice AND (l.seq IS NULL OR l.seq>r.seq) THEN 0 ELSE l.id END,r.amount_minor,1,v.occurred_at,r.id,false,
+  CASE WHEN r.amount_minor<0 AND r.practice AND (l.seq IS NULL OR l.seq>r.seq) THEN 0 ELSE l.id END,r.amount_minor,1,v.occurred_at,r.id,false,
   r.amount_minor,0
  FROM refunds r
  JOIN lines l ON l.id=r.original_line_id JOIN source_order_versions v ON v.id=r.refund_source_version_id

@@ -139,6 +139,7 @@ const reason = {
   PRACTICE_POOL_MISSING: '资金池或归集组织待核',
   PRACTICE_REFUND_MONTH_MISSING: '退款发生月份尚未建立退款账期',
   PRACTICE_REFUND_REPLAY_REQUIRED: '退款联动分润待核，请核对结算时的名单、付款和规则',
+  PRACTICE_REFUND_REPLAY_NEW_LINE: '阶梯复算新增分润，原结算没有对应明细',
   PRACTICE_TIER_COMPANY_NOT_CONFIGURED: '该销售公司未配置阶梯',
   PRACTICE_TIER_OPENING_MISSING: '所选冻结期初中缺少该人员的期初人数',
   PRACTICE_TIER_HISTORY_MISSING: '累计起点或历史期次缺少已确认名单',
@@ -164,14 +165,14 @@ const lineColumns = computed(() => [
   { title: '应计提成', key: 'amount', width: 115, align:'right' },
 ])
 watch(()=>[draft.value?.periodId,draft.value?.version],()=>{aggregateGroup.value=undefined})
-const refundColumns = [
+const refundColumns = computed(() => [
   { title: '原订单', key: 'order', width: 190 },
   { title: '原受益对象', key: 'beneficiary', width: 140 },
   { title: '原结算账期', dataIndex: 'originalPeriod', width: 135 },
   { title: '退款归属期', dataIndex: 'refundPeriod', width: 135 },
-  { title: '实际扣减期', dataIndex: 'postingPeriod', width: 135 },
-  { title: '退款扣减', key: 'amount', width: 115 },
-]
+  { title: '实际归账期', dataIndex: 'postingPeriod', width: 135 },
+  { title: draft.value?.practiceRefundMonth ? '调整金额' : '退款扣减', key: 'amount', width: 115 },
+])
 const correctionColumns = [
   { title:'原订单', key:'order', width:180 },
   { title:'原受益对象', dataIndex:'originalPersonName', width:130 },
@@ -420,7 +421,7 @@ async function loadMore(section, cursorName) {
         <small>{{ draft.aggregatePackageId ? '整期计提' : draft.practiceRosterVersion ? '本班净分润' : '本期净分润' }}</small><strong>{{ formatMoney(draft.totalMinor) }}</strong>
       </div>
       <div v-if="!draft.aggregatePackageId && !draft.practiceRefundMonth && (!draft.practiceRosterVersion || draft.correctionCount || !draft.refundsReady)"><small>计提分润</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div>
-      <div v-if="!draft.aggregatePackageId && !draft.practiceRosterVersion"><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div>
+      <div v-if="!draft.aggregatePackageId && !draft.practiceRosterVersion"><small>{{ draft.practiceRefundMonth ? '退款调整' : '退款扣减' }}</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div>
       <div v-if="draft.correctionCount"><small>受益人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div>
       <div><small>{{ draft.practiceRefundMonth ? '退款及更正' : '计提明细' }}</small><strong>{{ draft.practiceRefundMonth ? draft.refundCount + draft.correctionCount : draft.lineCount }} <span>条</span></strong></div>
     </div>
@@ -513,7 +514,7 @@ async function loadMore(section, cursorName) {
     <div v-if="hasMoreDetails('lines', draft.scopeLineCount ?? draft.lineCount)" class="paging"><a-button :loading="loading" @click="loadMore('lines', 'afterLineId')">加载下一页</a-button></div>
   </section>
   <section v-if="draft.scopeRefundCount ?? draft.refundCount" class="records draft-issues">
-    <div class="records-head"><h2>退款扣减明细</h2></div>
+    <div class="records-head"><h2>{{ draft.practiceRefundMonth ? '退款调整明细' : '退款扣减明细' }}</h2></div>
     <div class="table-container">
       <a-table :columns="refundColumns" :data-source="draft.refunds" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: 840 }">
         <template #bodyCell="{ column, record }">
@@ -530,9 +531,12 @@ async function loadMore(section, cursorName) {
             {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池</small>
             <small v-else-if="record.beneficiaryKind==='company'" class="order-version">公司分润</small>
           </template>
-          <template v-else-if="column.key === 'amount'"><strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong></template>
+          <template v-else-if="column.key === 'amount'">
+            <strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong>
+            <small v-if="record.tierCredit" class="order-version">阶梯复算补计</small>
+          </template>
         </template>
-        <template #emptyText>未找到符合条件的退款扣减</template>
+        <template #emptyText>未找到符合条件的退款明细</template>
       </a-table>
     </div>
     <div v-if="hasMoreDetails('refunds', draft.scopeRefundCount ?? draft.refundCount)" class="paging"><a-button :loading="loading" @click="loadMore('refunds', 'afterRefundId')">加载下一页</a-button></div>

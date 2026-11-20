@@ -554,7 +554,7 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 		}
 	}
 	_, err := tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_refunds"},
-		[]string{"period_id", "original_line_id", "refund_period_id", "refund_source_version_id", "amount_minor"},
+		[]string{"period_id", "original_line_id", "refund_period_id", "refund_source_version_id", "amount_minor", "tier_credit"},
 		pgx.CopyFromSlice(len(refunds), func(i int) ([]any, error) {
 			refund := refunds[i]
 			lineID := refund.OriginalLineID
@@ -564,7 +564,7 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 			if lineID == 0 {
 				return nil, errRefundAmount
 			}
-			return []any{periodID, lineID, refund.RefundPeriodID, refund.RefundSourceVersionID, refund.Amount}, nil
+			return []any{periodID, lineID, refund.RefundPeriodID, refund.RefundSourceVersionID, refund.Amount, refund.TierCredit}, nil
 		}))
 	return err
 }
@@ -644,7 +644,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
   {{lineSearch}} ORDER BY l.id LIMIT {{detailLimit}}
  ) l),'[]'),
  'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (
-  SELECT a.id,a.amount_minor AS "amountMinor",rv.fact->>'refundId' AS "refundId",rv.version AS "refundVersion",
+  SELECT a.id,a.amount_minor AS "amountMinor",a.tier_credit AS "tierCredit",rv.fact->>'refundId' AS "refundId",rv.version AS "refundVersion",
    coalesce(p.name,practice_pool.name,pool.name,beneficiary.name) AS "personName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",o.id AS "sourceVersionId",coalesce(r.version,cv.version_no) AS "ruleVersion",
