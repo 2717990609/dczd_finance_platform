@@ -28,7 +28,7 @@ func newPoolAccount() poolAccount {
 }
 
 func (a *poolAccount) credit(id, amount int64) error {
-	if _, exists := a.indices[id]; exists || amount <= 0 {
+	if id <= 0 || amount <= 0 {
 		return conflict
 	}
 	next, err := addMinor(a.balance, amount)
@@ -40,8 +40,12 @@ func (a *poolAccount) credit(id, amount int64) error {
 		available = max(0, next)
 	}
 	a.balance = next
-	a.indices[id] = len(a.lots)
-	a.lots = append(a.lots, poolFundingLot{LineID: id, Remaining: available})
+	if i, exists := a.indices[id]; exists {
+		a.lots[i].Remaining += available
+	} else {
+		a.indices[id] = len(a.lots)
+		a.lots = append(a.lots, poolFundingLot{LineID: id, Remaining: available})
+	}
 	return nil
 }
 

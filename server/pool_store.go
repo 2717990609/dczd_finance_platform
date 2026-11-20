@@ -28,6 +28,7 @@ type poolDraftItem struct {
 	Opening     int64                 `json:"openingMinor"`
 	Income      int64                 `json:"incomeMinor"`
 	Refund      int64                 `json:"refundMinor"`
+	Correction  int64                 `json:"correctionMinor"`
 	Confirmed   int64                 `json:"confirmedMinor"`
 	Balance     int64                 `json:"balanceMinor"`
 	Revision    int64                 `json:"revision"`
@@ -116,9 +117,21 @@ const poolEntriesSQL = `WITH scope AS (
  JOIN pool_line_accounts account ON account.line_id=r.original_line_id
  LEFT JOIN scope origin ON origin.id=account.period_id
  WHERE p.practice OR origin.id IS NOT NULL
+), corrections AS MATERIALIZED (
+ SELECT c.original_line_id,c.period_id,c.amount_minor,c.source_version_id,c.id,p.seq,p.practice
+ FROM scope p JOIN calculation_draft_corrections c ON c.period_id=p.id AND c.beneficiary_unit_id IS NOT NULL
+ JOIN pool_line_accounts account ON account.line_id=c.original_line_id AND account.unit_id=c.beneficiary_unit_id
+ LEFT JOIN scope origin ON origin.id=account.period_id
+ WHERE p.practice OR origin.id IS NOT NULL
+), corrected_refunds AS (
+ SELECT c.id,sum(r.amount_minor)::bigint AS refunded,min(v.occurred_at) AS occurred_at
+ FROM corrections c JOIN refunds r ON r.period_id=c.period_id AND r.original_line_id=c.original_line_id
+ JOIN source_order_versions v ON v.id=r.refund_source_version_id
+ GROUP BY c.id
 ), required_lines AS (
  SELECT account.line_id FROM scope JOIN pool_line_accounts account ON account.period_id=scope.id
  UNION SELECT original_line_id FROM refunds
+ UNION SELECT original_line_id FROM corrections
 ), lines AS MATERIALIZED (
  SELECT l.id,account.unit_id::text AS unit,account.item_key AS item,account.scenario_key AS scenario,
   coalesce(pool.name,a.name,l.component_type) AS name,l.period_id,l.amount_minor,scope.seq,v.occurred_at
@@ -134,19 +147,30 @@ const poolEntriesSQL = `WITH scope AS (
  ) a ON true
 ), entries AS (
  SELECT l.unit,l.item,l.scenario,l.name,l.period_id,l.seq,l.id AS source_id,l.amount_minor,
-  0 AS kind,l.occurred_at,l.id AS sort_id,false AS practice_distribution FROM lines l WHERE l.seq IS NOT NULL
+  0 AS kind,l.occurred_at,l.id AS sort_id,false AS practice_distribution,
+  0::bigint AS refunded,0::bigint AS corrected FROM lines l WHERE l.seq IS NOT NULL
  UNION ALL
  SELECT l.unit,l.item,l.scenario,l.name,r.period_id,r.seq,
-  CASE WHEN r.practice AND (l.seq IS NULL OR l.seq>r.seq) THEN 0 ELSE l.id END,r.amount_minor,1,v.occurred_at,r.id,false
+  CASE WHEN r.practice AND (l.seq IS NULL OR l.seq>r.seq) THEN 0 ELSE l.id END,r.amount_minor,1,v.occurred_at,r.id,false,
+  r.amount_minor,0
  FROM refunds r
  JOIN lines l ON l.id=r.original_line_id JOIN source_order_versions v ON v.id=r.refund_source_version_id
+ WHERE NOT EXISTS(SELECT 1 FROM corrections c WHERE c.period_id=r.period_id AND c.original_line_id=r.original_line_id)
  UNION ALL
- SELECT l.unit,l.item,l.scenario,l.name,a.period_id,p.seq,l.id,-f.amount_minor,2,s.confirmed_at,sh.id,p.practice
+ SELECT l.unit,l.item,l.scenario,l.name,c.period_id,c.seq,
+  CASE WHEN c.amount_minor+coalesce(r.refunded,0)<0 AND c.practice AND (l.seq IS NULL OR l.seq>c.seq) THEN 0 ELSE l.id END,
+  c.amount_minor+coalesce(r.refunded,0),1,coalesce(r.occurred_at,v.received_at),c.id,false,
+  coalesce(r.refunded,0),c.amount_minor
+ FROM corrections c
+ JOIN lines l ON l.id=c.original_line_id JOIN source_order_versions v ON v.id=c.source_version_id
+ LEFT JOIN corrected_refunds r ON r.id=c.id
+ UNION ALL
+ SELECT l.unit,l.item,l.scenario,l.name,a.period_id,p.seq,l.id,-f.amount_minor,2,s.confirmed_at,sh.id,p.practice,0,0
  FROM scope p JOIN settlements s ON s.period_id=p.id JOIN monthly_pool_allocations a ON a.period_id=p.id AND a.draft_version=s.draft_version
  JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
  JOIN monthly_pool_allocation_funding f ON f.share_id=sh.id JOIN lines l ON l.id=f.source_line_id
 )
-SELECT unit,item,scenario,name,period_id,source_id,amount_minor,kind,practice_distribution FROM entries
+SELECT unit,item,scenario,name,period_id,source_id,amount_minor,kind,practice_distribution,refunded,corrected FROM entries
 ORDER BY seq,kind,occurred_at,sort_id,source_id`
 
 const poolEligibilitySQL = `SELECT DISTINCT l.id,m.person_id,person.name FROM unnest($1::bigint[]) source(id)
@@ -179,10 +203,11 @@ func readPoolStages(ctx context.Context, tx pgx.Tx, periodID int64) (map[poolSco
 	}
 	var scope poolScope
 	var name string
-	var postingPeriod, source, amount int64
+	var postingPeriod, source, amount, refunded, corrected int64
 	var kind int
 	var practiceDistribution bool
-	_, err = pgx.ForEachRow(rows, []any{&scope.Unit, &scope.Item, &scope.Scenario, &name, &postingPeriod, &source, &amount, &kind, &practiceDistribution}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&scope.Unit, &scope.Item, &scope.Scenario, &name, &postingPeriod, &source, &amount, &kind,
+		&practiceDistribution, &refunded, &corrected}, func() error {
 		a := states[scope]
 		if a == nil {
 			a = &poolStage{poolDraftItem: poolDraftItem{poolScope: scope, Shares: []poolAllocationShare{}, Members: []poolMember{}}, poolAccount: newPoolAccount()}
@@ -201,11 +226,18 @@ func readPoolStages(ctx context.Context, tx pgx.Tx, periodID int64) (map[poolSco
 				a.Income, err = addMinor(a.Income, amount)
 			}
 		case 1:
-			if err := a.debit(source, -amount); err != nil {
-				return err
+			// Apply the net to the original payment lot. A refund and its
+			// offset must not take availability from unrelated payments.
+			if amount > 0 {
+				err = a.credit(source, amount)
+			} else if amount < 0 {
+				err = a.debit(source, -amount)
 			}
-			if postingPeriod == periodID {
-				a.Refund, err = addMinor(a.Refund, amount)
+			if err == nil && postingPeriod == periodID {
+				a.Refund, err = addMinor(a.Refund, refunded)
+				if err == nil {
+					a.Correction, err = addMinor(a.Correction, corrected)
+				}
 			}
 		case 2:
 			// A backdated refund may reduce the lot that funded an already

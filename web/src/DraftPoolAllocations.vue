@@ -107,6 +107,7 @@ async function save() {
           <div><dt>期初余额</dt><dd>{{ formatMoney(pool.openingMinor) }}</dd></div>
           <div><dt>本期归集</dt><dd>{{ formatMoney(pool.incomeMinor) }}</dd></div>
           <div><dt>本期退款</dt><dd>{{ formatMoney(pool.refundMinor) }}</dd></div>
+          <div v-if="pool.correctionMinor"><dt>本期更正</dt><dd>{{ formatMoney(pool.correctionMinor) }}</dd></div>
           <div v-if="report.closed"><dt>确认分配</dt><dd>{{ formatMoney(pool.confirmedMinor) }}</dd></div>
           <div><dt>{{ report.closed ? '期末余额' : '池余额' }}</dt><dd>{{ formatMoney(pool.balanceMinor) }}</dd></div>
         </dl>

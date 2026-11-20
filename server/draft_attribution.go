@@ -272,21 +272,26 @@ func attributeCorrectionRecipients(ctx context.Context, tx pgx.Tx, corrections [
 
 func attributeCorrections(ctx context.Context, tx pgx.Tx, corrections []correctionLine, index reportAttribution) error {
 	lineIDs, people := make([]int64, len(corrections)), make([]int64, len(corrections))
+	units := make([]pgtype.UUID, len(corrections))
 	for i, c := range corrections {
-		lineIDs[i], people[i] = c.OriginalLineID, c.PersonID
+		lineIDs[i], people[i], units[i] = c.OriginalLineID, c.PersonID, c.Unit
 	}
-	rows, err := tx.Query(ctx, `SELECT q.n,p.occurred_at,q.person_id=l.person_id,
-	 previous.found,CASE WHEN q.person_id=l.person_id THEN l.company_id ELSE previous.company_id END,
-	 CASE WHEN q.person_id=l.person_id THEN l.department_id ELSE previous.department_id END
-	 FROM unnest($1::bigint[],$2::bigint[]) WITH ORDINALITY AS q(line_id,person_id,n)
+	rows, err := tx.Query(ctx, `SELECT q.n,p.occurred_at,origin.same,
+	 previous.found,CASE WHEN origin.same THEN l.company_id ELSE previous.company_id END,
+	 CASE WHEN origin.same THEN l.department_id ELSE previous.department_id END
+	 FROM unnest($1::bigint[],$2::bigint[],$3::uuid[]) WITH ORDINALITY AS q(line_id,person_id,unit_id,n)
 	 JOIN calculation_draft_lines l ON l.id=q.line_id
 	 JOIN source_order_versions p ON p.id=l.source_version_id
+	 CROSS JOIN LATERAL (
+	  SELECT (nullif(q.person_id,0),q.unit_id) IS NOT DISTINCT FROM (l.person_id,l.beneficiary_unit_id) AS same
+	 ) origin
 	 LEFT JOIN LATERAL (
 	  SELECT true AS found,c.company_id,c.department_id FROM calculation_draft_corrections c
 	  JOIN settlements settled USING(period_id)
-	  WHERE c.original_line_id=l.id AND c.person_id=q.person_id AND c.amount_minor>0
+	  WHERE c.original_line_id=l.id AND (c.person_id,c.beneficiary_unit_id) IS NOT DISTINCT FROM (nullif(q.person_id,0),q.unit_id)
+	   AND c.amount_minor>0
 	  ORDER BY settled.confirmed_at,c.id LIMIT 1
-	 ) previous ON true`, lineIDs, people)
+	 ) previous ON true`, lineIDs, people, units)
 	if err != nil {
 		return err
 	}
@@ -298,7 +303,9 @@ func attributeCorrections(ctx context.Context, tx pgx.Tx, corrections []correcti
 	_, err = pgx.ForEachRow(rows, []any{&n, &at, &original, &prior, &org.Company, &org.Department}, func() error {
 		c := &corrections[n-1]
 		c.organization = org
-		if !original && prior == nil {
+		if !original && prior == nil && c.Unit.Valid {
+			c.organization = index.ancestors(c.Unit)
+		} else if !original && prior == nil {
 			c.organization = index.resolve(c.PersonID, at, identityKey{})
 		}
 		return nil

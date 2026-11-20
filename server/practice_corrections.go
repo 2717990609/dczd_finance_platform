@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"math"
 	"slices"
 	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type practiceCorrectionBatch struct {
@@ -135,7 +137,7 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 	if err != nil {
 		return err
 	}
-	if !replay.independent {
+	if !replay.independent && !replay.independentRefunds {
 		if err := replay.loadSettledRefunds(ctx, tx, classID); err != nil {
 			return err
 		}
@@ -165,6 +167,8 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 	}
 	for i := range b.revisions {
 		change := &b.revisions[i]
+		change.Company = &practiceReplayCompany{Sales: change.Fact.SalesCompanyID,
+			Referrer: change.Fact.ReferrerCompanyID, Conflict: change.Fact.ReferrerConflict}
 		change.Identities = make(map[string][]identityAssignment)
 		for _, user := range practiceCorrectionUsers(change.Fact) {
 			key := identityKey{change.Fact.Source, user}
@@ -195,13 +199,13 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 			sourceID = direct
 		}
 		inputs[i] = correctionInput{OriginalLineID: line.id, OriginalPersonID: line.person,
-			OriginalAmount: line.amount, SourceVersionID: sourceID}
+			OriginalAmount: line.amount, SourceVersionID: sourceID, OriginalUnit: line.unit}
 	}
 	balances, err := readCorrectionBalances(ctx, tx, inputs, draft.Refunds)
 	if err != nil {
 		return err
 	}
-	target, ok := practiceCorrectedLines(original, revised.Lines, balances)
+	target, ok := practiceCorrectedLines(original, revised.Lines)
 	if !ok {
 		return issue("PRACTICE_CORRECTION_LINKED_REVIEW")
 	}
@@ -213,12 +217,22 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 			}
 		}
 	}
-	for i, line := range original {
-		if line.person == 0 {
-			continue
+	if replay.independentRefunds {
+		if err := applyIndependentPracticeCorrectionRefunds(replay, original, target, balances); err != nil {
+			if errors.Is(err, errRefundAmount) || errors.Is(err, errRefundPolicy) || errors.Is(err, errPracticeRefundReplay) {
+				return issue("CORRECTION_REFUND_CONFLICT")
+			}
+			return err
 		}
+	}
+	for i, line := range original {
 		after := target[i]
-		result, err := evaluateRecipientCorrection(inputs[i], balances[line.id], after.PersonID, after.Amount)
+		var result correctionEvaluation
+		if line.person != 0 {
+			result, err = evaluateRecipientCorrection(inputs[i], balances[line.id], after.PersonID, after.Amount)
+		} else {
+			result, err = evaluateOrganizationCorrection(inputs[i], balances[line.id], after.BeneficiaryUnit, after.Amount)
+		}
 		if err != nil {
 			return err
 		}
@@ -230,6 +244,35 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 		return err
 	}
 	draft.practiceChanges = append(draft.practiceChanges, b.revisions...)
+	return nil
+}
+
+func applyIndependentPracticeCorrectionRefunds(replay practiceReplay, original []practiceReplayOriginal, target []draftLine,
+	balances map[int64]*correctionBalance) error {
+	members := make(map[int64]int, len(replay.members))
+	for _, member := range replay.members {
+		members[member.ID] = member.MembershipType
+	}
+	companies := make(map[int64]string)
+	for _, payments := range replay.payments {
+		for _, payment := range payments {
+			companies[payment.ID] = payment.Fact.SalesCompanyID
+		}
+	}
+	for i, line := range original {
+		principal := balances[line.id].refunded
+		after := &target[i]
+		if principal == 0 || after.Amount == 0 {
+			continue
+		}
+		terms := practiceMonthlyRefundPolicy(replay.rule.Components,
+			refundObligation{Base: after.Base, Accrued: after.Amount, ComponentType: after.Component}, 1, members[line.enrollment], companies[line.payment])
+		debit, err := refundDelta(terms, after.Base, after.Amount, principal, 0)
+		if err != nil {
+			return err
+		}
+		after.Amount += debit
+	}
 	return nil
 }
 
@@ -306,15 +349,15 @@ func (r practiceReplay) applyRecipientRevisions(ctx context.Context, tx pgx.Tx, 
 			seen++
 			old, revised := payment.Fact, change.Fact
 			if change.Booked {
-				// Confirmed changes were allowed only where these fields
-				// matched the class. Reuse the class values on later refunds.
-				revised.SalesCompanyID, revised.ReferrerCompanyID, revised.ReferrerConflict =
-					old.SalesCompanyID, old.ReferrerCompanyID, old.ReferrerConflict
+				company := change.Company
+				if company == nil {
+					company = &practiceReplayCompany{old.SalesCompanyID, old.ReferrerCompanyID, old.ReferrerConflict}
+				}
+				revised.SalesCompanyID, revised.ReferrerCompanyID, revised.ReferrerConflict = company.Sales, company.Referrer, company.Conflict
 			}
 			if old.PaymentID != revised.PaymentID || old.SourceKey != revised.SourceKey || old.Domain != revised.Domain ||
 				old.TransactionType != revised.TransactionType || !old.OccurredAt.Equal(revised.OccurredAt) ||
-				old.AmountMinor == nil || revised.AmountMinor == nil || *old.AmountMinor != *revised.AmountMinor ||
-				old.SalesCompanyID != revised.SalesCompanyID || old.ReferrerCompanyID != revised.ReferrerCompanyID || old.ReferrerConflict != revised.ReferrerConflict {
+				old.AmountMinor == nil || revised.AmountMinor == nil || *old.AmountMinor != *revised.AmountMinor {
 				return errPracticeRefundReplay
 			}
 			for _, user := range practiceCorrectionUsers(revised) {
@@ -388,9 +431,9 @@ func practiceCorrectionUsers(f sourceFact) []string {
 }
 
 // The frozen payment, enrollment and component identify a posting even when
-// the person or their tier changes. Organization and pool entries keep their
-// original ownership and the amount left after the normal refund calculation.
-func practiceCorrectedLines(original []practiceReplayOriginal, revised []draftLine, balances map[int64]*correctionBalance) ([]draftLine, bool) {
+// the recipient or amount changes. A pool adjustment stays in the original
+// account, including when its original component becomes inapplicable.
+func practiceCorrectedLines(original []practiceReplayOriginal, revised []draftLine) ([]draftLine, bool) {
 	type slot struct {
 		payment, enrollment int64
 		component           string
@@ -412,16 +455,44 @@ func practiceCorrectedLines(original []practiceReplayOriginal, revised []draftLi
 			if found && after.PersonID == 0 {
 				return nil, false
 			}
-		} else {
-			balance := balances[line.id]
-			if after.Amount != line.amount-balance.refundDebit ||
-				found && (after.PersonID != 0 || after.BeneficiaryUnit == nil || *after.BeneficiaryUnit != line.unit ||
-					(line.pool != 0) != (after.PracticePool != nil) || after.PracticePool != nil &&
-					(after.PracticePool.PoolID != line.pool || after.PracticePool.OwnerID != line.owner)) {
-				return nil, false
-			}
+		} else if found && (after.PersonID != 0 || after.BeneficiaryUnit == nil ||
+			(line.pool != 0) != (after.PracticePool != nil) || after.PracticePool != nil &&
+			(*after.BeneficiaryUnit != line.unit || after.PracticePool.PoolID != line.pool || after.PracticePool.OwnerID != line.owner)) {
+			return nil, false
 		}
 		target[i] = after
 	}
 	return target, len(current) == 0
+}
+
+func evaluateOrganizationCorrection(input correctionInput, balance *correctionBalance, unit *pgtype.UUID, amount int64) (correctionEvaluation, error) {
+	var result correctionEvaluation
+	keys := slices.SortedFunc(maps.Keys(balance.organizations), func(a, b pgtype.UUID) int {
+		return slices.Compare(a.Bytes[:], b.Bytes[:])
+	})
+	if unit != nil {
+		if _, exists := balance.organizations[*unit]; !exists {
+			keys = append(keys, *unit)
+		}
+	}
+	for _, recipient := range keys {
+		var expected int64
+		if unit != nil && *unit == recipient {
+			expected = amount
+		}
+		current := balance.organizations[recipient]
+		if current == math.MinInt64 {
+			return correctionEvaluation{}, errCalculationOverflow
+		}
+		delta, err := addMinor(expected, -current)
+		if err != nil {
+			return correctionEvaluation{}, err
+		}
+		if delta != 0 {
+			result.lines = append(result.lines, correctionLine{
+				OriginalLineID: input.OriginalLineID, SourceVersionID: input.SourceVersionID, Unit: recipient, Amount: delta,
+			})
+		}
+	}
+	return result, nil
 }

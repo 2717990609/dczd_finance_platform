@@ -137,7 +137,7 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
  LEFT JOIN practice_enrollments enrollment ON enrollment.id=l.practice_enrollment_id
  LEFT JOIN source_payment_companies company ON company.source_version_id=p.id AND enrollment.id IS NOT NULL
  WHERE original.product_id=(SELECT product_id FROM periods WHERE id=$2)
-  AND (NOT $3 OR enrollment.id IS NOT NULL AND d.practice_replay_inputs IS NULL)
+  AND (NOT $3 OR enrollment.id IS NOT NULL AND NOT `+practiceRefundReplaySQL+`)
  ORDER BY q.id,l.id`, requests, periodID, practiceMonth)
 	if err != nil {
 		return nil, err

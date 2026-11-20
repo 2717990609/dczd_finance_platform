@@ -81,14 +81,18 @@ const draftRefreshFacts = `WITH keys AS (
  SELECT DISTINCT class.id,class.product_id FROM changed c
  JOIN source_order_versions latest ON latest.id=c.current_id
  JOIN source_order_versions previous ON previous.id=c.previous_id
+ LEFT JOIN source_payment_companies next_company ON next_company.source_version_id=latest.id
+ LEFT JOIN source_payment_companies prior_company ON prior_company.source_version_id=previous.id
  JOIN source_order_versions original ON original.source=latest.source AND original.order_id=latest.order_id
   AND original.line_id=latest.line_id AND original.record_key=latest.record_key AND original.kind=latest.kind
  JOIN calculation_draft_performance booked ON booked.source_version_id=original.id AND booked.payment_version_id IS NULL
  JOIN settlements final ON final.period_id=booked.period_id
  JOIN periods class ON class.id=booked.period_id AND class.calendar_month IS NULL AND class.source_period_key IS NOT NULL
  WHERE latest.source='DCZD' AND latest.kind='ORDER_PAID' AND latest.fact->>'domain'='PRACTICE'
-  AND (latest.fact->'referrerId',latest.fact->'participants')
-  IS DISTINCT FROM (previous.fact->'referrerId',previous.fact->'participants')
+  AND (latest.fact->'referrerId',latest.fact->'participants',next_company.company_id,
+   next_company.recommendation_company_id,next_company.recommendation_conflict)
+  IS DISTINCT FROM (previous.fact->'referrerId',previous.fact->'participants',prior_company.company_id,
+   prior_company.recommendation_company_id,prior_company.recommendation_conflict)
 ), corrected_originals AS (
  SELECT DISTINCT line.id,prior.product_id FROM events v JOIN source_order_versions paid
   ON paid.source=v.source AND paid.order_id=v.order_id AND paid.kind='ORDER_PAID'

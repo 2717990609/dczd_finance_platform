@@ -199,7 +199,7 @@ func (p vipCorrectionPayment) match(id int64) catalogPaymentMatch {
 
 func (p vipCorrectionPayment) input(posted vipCorrectionPosting) correctionInput {
 	return correctionInput{OriginalLineID: posted.ID, OriginalPersonID: posted.Line.PersonID,
-		OriginalAmount: posted.Line.Amount, SourceVersionID: p.LatestID}
+		OriginalAmount: posted.Line.Amount, SourceVersionID: p.LatestID, OriginalUnit: posted.Line.Catalog.Unit}
 }
 
 func (p vipCorrectionPayment) append(draft *paymentDraft, old, latest catalogPaymentMatch, balances map[int64]*correctionBalance, data vipRuntimeData) error {
@@ -276,6 +276,11 @@ func (p vipCorrectionPayment) noOutstandingBalance(balances map[int64]*correctio
 			return false
 		}
 		for _, amount := range balance.recorded {
+			if amount != 0 {
+				return false
+			}
+		}
+		for _, amount := range balance.organizations {
 			if amount != 0 {
 				return false
 			}

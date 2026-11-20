@@ -51,7 +51,7 @@ const performanceRefundOriginsSQL = `SELECT q.id,a.source_version_id,coalesce(a.
  JOIN settlements closed ON closed.period_id=prior.period_id
  JOIN source_order_versions rv ON rv.id=prior.source_version_id
  WHERE prior.payment_version_id=a.source_version_id),0)::bigint,
- a.period_id,d.practice_replay_inputs IS NOT NULL
+ a.period_id,` + practiceRefundReplaySQL + `
  FROM jsonb_to_recordset($1::jsonb) AS q(id bigint,source text,order_id text,line_id text,record_id text)
  JOIN source_order_versions p ON p.source=q.source AND p.order_id=q.order_id AND p.kind='ORDER_PAID'
   AND (q.line_id='' OR p.line_id=q.line_id)

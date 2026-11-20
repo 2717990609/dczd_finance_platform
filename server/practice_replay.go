@@ -12,15 +12,28 @@ import (
 // the class draft. Keep only calculation inputs that those versions cannot
 // supply when a later refund changes the outcome for the class.
 type practiceReplayInputs struct {
-	Version           int                                  `json:"version"`
-	PriorCounts       map[int64]int64                      `json:"priorCounts,omitempty"`
-	Identities        map[string][]identityAssignment      `json:"identities,omitempty"`
-	Appointments      map[int][]practiceAppointment        `json:"appointments,omitempty"`
-	Companies         map[string][]companySourceAssignment `json:"companies,omitempty"`
-	ReferrerCompanies map[string][]companySourceAssignment `json:"referrerCompanies,omitempty"`
-	Recommendations   map[string]pgtype.UUID               `json:"recommendations,omitempty"`
-	PaymentCompanies  map[string]practiceReplayCompany     `json:"paymentCompanies,omitempty"`
-	PoolUnits         map[int64]pgtype.UUID                `json:"poolUnits,omitempty"`
+	Version            int                                  `json:"version"`
+	IndependentRefunds bool                                 `json:"independentRefunds,omitempty"`
+	PriorCounts        map[int64]int64                      `json:"priorCounts,omitempty"`
+	Identities         map[string][]identityAssignment      `json:"identities,omitempty"`
+	Appointments       map[int][]practiceAppointment        `json:"appointments,omitempty"`
+	Companies          map[string][]companySourceAssignment `json:"companies,omitempty"`
+	ReferrerCompanies  map[string][]companySourceAssignment `json:"referrerCompanies,omitempty"`
+	Recommendations    map[string]pgtype.UUID               `json:"recommendations,omitempty"`
+	PaymentCompanies   map[string]practiceReplayCompany     `json:"paymentCompanies,omitempty"`
+	PoolUnits          map[int64]pgtype.UUID                `json:"poolUnits,omitempty"`
+}
+
+const practiceRefundReplaySQL = `(d.practice_replay_inputs IS NOT NULL
+ AND d.practice_replay_inputs->'independentRefunds' IS DISTINCT FROM 'true'::jsonb)`
+
+func hasPracticeCorporatePayees(rule paymentRule) bool {
+	for _, part := range rule.Components {
+		if part.CompanySales != nil {
+			return true
+		}
+	}
+	return false
 }
 
 type practiceReplayCompany struct {
@@ -89,15 +102,16 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 }
 
 type practiceReplay struct {
-	independent bool
-	rule        paymentRule
-	members     []practiceEnrollment
-	payments    map[string][]paymentInput
-	refunds     map[int64][]practiceRefundMatch
-	identities  map[identityKey][]identityAssignment
-	history     practiceTierHistory
-	runtime     practiceDraftRuntime
-	posted      map[int64]practiceReplayPosting
+	independent        bool
+	independentRefunds bool
+	rule               paymentRule
+	members            []practiceEnrollment
+	payments           map[string][]paymentInput
+	refunds            map[int64][]practiceRefundMatch
+	identities         map[identityKey][]identityAssignment
+	history            practiceTierHistory
+	runtime            practiceDraftRuntime
+	posted             map[int64]practiceReplayPosting
 }
 
 type practiceReplayPosting struct {
@@ -125,6 +139,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 	var values practiceReplayInputs
 	if saved != nil {
 		values = *saved
+		replay.independentRefunds = saved.IndependentRefunds
 	} else {
 		if hasPracticeReplayDependencies(replay.rule, replay.members) {
 			return replay, errPracticeRefundReplay

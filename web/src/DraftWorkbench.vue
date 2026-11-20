@@ -142,8 +142,8 @@ const refundColumns = [
 ]
 const correctionColumns = [
   { title:'原订单', key:'order', width:180 },
-  { title:'原受益人', dataIndex:'originalPersonName', width:130 },
-  { title:'调整人员', dataIndex:'personName', width:130 },
+  { title:'原受益对象', dataIndex:'originalPersonName', width:130 },
+  { title:'调整对象', dataIndex:'personName', width:130 },
   { title:'原结算期', dataIndex:'originalPeriod', width:130 },
   { title:'调整金额', key:'amount', width:140 },
 ]

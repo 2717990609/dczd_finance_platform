@@ -344,8 +344,10 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	for _, member := range members {
 		result.PracticeEnrollments = append(result.PracticeEnrollments, member.ID)
 	}
-	if result.blockingIssues() == 0 && hasPracticeReplayDependencies(rule, members) {
+	linkedRefunds := hasPracticeReplayDependencies(rule, members)
+	if result.blockingIssues() == 0 && (linkedRefunds || hasPracticeCorporatePayees(rule)) {
 		result.practiceReplay = capturePracticeReplayInputs(rule, result, facts, identities, runtime)
+		result.practiceReplay.IndependentRefunds = !linkedRefunds
 	}
 	if err = attachReportOrganizations(ctx, tx, &result, facts); err != nil {
 		return paymentDraft{}, nil, err

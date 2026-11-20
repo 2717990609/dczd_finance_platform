@@ -22,7 +22,7 @@ const practiceSettlementPaymentVersionsSQL = `SELECT DISTINCT related.source_ver
  JOIN periods class_period ON class_period.id=origin.period_id AND class_period.product_id=month.product_id
  JOIN calculation_drafts d ON d.period_id=origin.period_id AND d.practice_roster_id IS NOT NULL
  JOIN calculation_draft_performance related ON related.period_id=origin.period_id AND related.payment_version_id IS NULL
-  AND (d.practice_replay_inputs IS NOT NULL OR related.source_version_id=origin.source_version_id)
+  AND (` + practiceRefundReplaySQL + ` OR related.source_version_id=origin.source_version_id)
  WHERE refund.period_id=$1
  UNION
  SELECT DISTINCT related.source_version_id FROM calculation_draft_practice_changes c

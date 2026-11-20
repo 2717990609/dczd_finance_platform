@@ -23,8 +23,10 @@ const commissionReportPostingsSQL = `
  FROM calculation_draft_refunds r JOIN selected_draft d USING(period_id)
  JOIN calculation_draft_lines l ON l.id=r.original_line_id
  UNION ALL
- SELECT c.person_id,c.company_id,c.department_id,0,0,0,c.amount_minor,0,'person'
+ SELECT c.person_id,c.company_id,c.department_id,0,0,0,c.amount_minor,0,
+  CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN c.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END
  FROM calculation_draft_corrections c JOIN selected_draft d USING(period_id)
+ JOIN calculation_draft_lines l ON l.id=c.original_line_id
  UNION ALL
  SELECT target.person_id,l.company_id,l.department_id,0,0,0,0,target.amount,target.kind
  FROM current_pool_allocations a

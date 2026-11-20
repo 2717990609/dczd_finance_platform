@@ -502,6 +502,7 @@ CREATE TABLE IF NOT EXISTS calculation_draft_practice_changes (
 CREATE INDEX IF NOT EXISTS calculation_practice_changes_class ON calculation_draft_practice_changes(class_period_id,original_version_id);
 CREATE INDEX IF NOT EXISTS calculation_practice_changes_source ON calculation_draft_practice_changes(source_version_id);
 ALTER TABLE calculation_draft_practice_changes ADD COLUMN IF NOT EXISTS identity_bindings jsonb;
+ALTER TABLE calculation_draft_practice_changes ADD COLUMN IF NOT EXISTS company_binding jsonb;
 CREATE OR REPLACE TRIGGER protect_confirmed_practice_changes BEFORE INSERT OR UPDATE OR DELETE ON calculation_draft_practice_changes
  FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
 
@@ -778,6 +779,19 @@ ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS company_id uuid REF
 ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS department_id uuid REFERENCES organization_units(id);
 ALTER TABLE calculation_draft_corrections ADD COLUMN IF NOT EXISTS company_id uuid REFERENCES organization_units(id);
 ALTER TABLE calculation_draft_corrections ADD COLUMN IF NOT EXISTS department_id uuid REFERENCES organization_units(id);
+ALTER TABLE calculation_draft_corrections
+ ALTER COLUMN person_id DROP NOT NULL,
+ ADD COLUMN IF NOT EXISTS beneficiary_unit_id uuid REFERENCES organization_units(id);
+DO $$
+BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_corrections'::regclass
+  AND conname='calculation_correction_recipient_check') THEN
+  ALTER TABLE calculation_draft_corrections ADD CONSTRAINT calculation_correction_recipient_check
+   CHECK ((person_id IS NOT NULL) <> (beneficiary_unit_id IS NOT NULL));
+ END IF;
+END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS calculation_corrections_organization
+ ON calculation_draft_corrections(period_id,original_line_id,beneficiary_unit_id) WHERE beneficiary_unit_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS organization_company_sources (
  source text NOT NULL,
@@ -1156,6 +1170,9 @@ CREATE OR REPLACE VIEW pool_account_activity AS
  FROM calculation_draft_refunds r JOIN pool_line_accounts a ON a.line_id=r.original_line_id
  WHERE r.amount_minor<0
  UNION ALL
+ SELECT c.period_id,a.unit_id,a.item_key,a.scenario_key
+ FROM calculation_draft_corrections c JOIN pool_line_accounts a ON a.line_id=c.original_line_id AND a.unit_id=c.beneficiary_unit_id
+ UNION ALL
  SELECT a.period_id,a.unit_id,a.item_key,a.scenario_key FROM monthly_pool_allocations a
  JOIN calculation_drafts d ON d.period_id=a.period_id AND d.version=a.draft_version
  WHERE EXISTS(SELECT 1 FROM monthly_pool_allocation_shares s WHERE s.allocation_id=a.id);
@@ -1173,6 +1190,11 @@ RETURNS boolean LANGUAGE sql STABLE AS $$
    SELECT account.unit_id,account.item_key,account.scenario_key,r.amount_minor
    FROM calculation_draft_refunds r JOIN pool_line_accounts account ON account.line_id=r.original_line_id
    WHERE r.period_id=scope_id AND r.amount_minor<0
+   UNION ALL
+   SELECT account.unit_id,account.item_key,account.scenario_key,c.amount_minor
+   FROM calculation_draft_corrections c JOIN pool_line_accounts account
+    ON account.line_id=c.original_line_id AND account.unit_id=c.beneficiary_unit_id
+   WHERE c.period_id=scope_id
    UNION ALL
    SELECT a.unit_id,a.item_key,a.scenario_key,-f.amount_minor
    FROM monthly_pool_allocations a JOIN monthly_pool_allocation_shares s ON s.allocation_id=a.id

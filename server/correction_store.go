@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type correctionInput struct {
@@ -14,11 +15,13 @@ type correctionInput struct {
 	SourceVersionID                                  int64
 	Original, Latest                                 sourceFact
 	Components                                       []component
+	OriginalUnit                                     pgtype.UUID
 }
 
 type correctionLine struct {
 	OriginalLineID, SourceVersionID int64
 	PersonID, Amount                int64
+	Unit                            pgtype.UUID `json:"-"`
 	organization                    reportOrganization
 }
 
@@ -34,6 +37,7 @@ type correctionEvaluation struct {
 
 type correctionBalance struct {
 	recorded           map[int64]int64
+	organizations      map[pgtype.UUID]int64
 	refunded           int64
 	refundDebit        int64
 	currentRefundDebit int64
@@ -210,18 +214,22 @@ func referralComponent(components []component) component {
 func readCorrectionBalances(ctx context.Context, tx pgx.Tx, inputs []correctionInput, pendingRefunds []refundLine) (map[int64]*correctionBalance, error) {
 	ids := make([]int64, 0, len(inputs))
 	balances := make(map[int64]*correctionBalance, len(inputs))
-	originalPeople := make(map[int64]int64, len(inputs))
+	originals := make(map[int64]correctionInput, len(inputs))
 	for _, input := range inputs {
 		id := input.OriginalLineID
 		ids = append(ids, id)
-		originalPeople[id] = input.OriginalPersonID
-		balances[id] = &correctionBalance{recorded: map[int64]int64{input.OriginalPersonID: input.OriginalAmount}, recoverability: make(map[int64]string)}
+		originals[id] = input
+		entry := &correctionBalance{recorded: make(map[int64]int64), recoverability: make(map[int64]string)}
+		if err := entry.apply(input.OriginalPersonID, input.OriginalUnit, input.OriginalAmount, 0, false); err != nil {
+			return nil, err
+		}
+		balances[id] = entry
 	}
-	rows, err := tx.Query(ctx, `SELECT c.original_line_id,c.person_id,c.amount_minor,0::bigint,false
+	rows, err := tx.Query(ctx, `SELECT c.original_line_id,coalesce(c.person_id,0),c.beneficiary_unit_id,c.amount_minor,0::bigint,false
 	 FROM calculation_draft_corrections c JOIN settlements s USING (period_id)
 	 WHERE c.original_line_id=ANY($1::bigint[])
 	 UNION ALL
-	 SELECT a.original_line_id,coalesce(l.person_id,0),a.amount_minor,(v.fact->>'amountMinor')::bigint,true
+	 SELECT a.original_line_id,coalesce(l.person_id,0),l.beneficiary_unit_id,a.amount_minor,(v.fact->>'amountMinor')::bigint,true
 	 FROM calculation_draft_refunds a JOIN settlements s USING (period_id)
 	 JOIN calculation_draft_lines l ON l.id=a.original_line_id JOIN source_order_versions v ON v.id=a.refund_source_version_id
 	 WHERE a.original_line_id=ANY($1::bigint[])`, ids)
@@ -230,12 +238,13 @@ func readCorrectionBalances(ctx context.Context, tx pgx.Tx, inputs []correctionI
 	}
 	for rows.Next() {
 		var id, person, amount, principal int64
+		var unit pgtype.UUID
 		var refund bool
-		if err = rows.Scan(&id, &person, &amount, &principal, &refund); err != nil {
+		if err = rows.Scan(&id, &person, &unit, &amount, &principal, &refund); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if err = balances[id].apply(person, amount, principal, refund); err != nil {
+		if err = balances[id].apply(person, unit, amount, principal, refund); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -245,7 +254,8 @@ func readCorrectionBalances(ctx context.Context, tx pgx.Tx, inputs []correctionI
 	}
 	for _, item := range pendingRefunds {
 		if entry := balances[item.OriginalLineID]; entry != nil {
-			if err = entry.apply(originalPeople[item.OriginalLineID], item.Amount, item.Principal, true); err != nil {
+			origin := originals[item.OriginalLineID]
+			if err = entry.apply(origin.OriginalPersonID, origin.OriginalUnit, item.Amount, item.Principal, true); err != nil {
 				return nil, err
 			}
 			entry.currentRefundDebit, err = addMinor(entry.currentRefundDebit, -item.Amount)
@@ -271,9 +281,16 @@ func readCorrectionBalances(ctx context.Context, tx pgx.Tx, inputs []correctionI
 	return balances, rows.Err()
 }
 
-func (b *correctionBalance) apply(person, amount, principal int64, refund bool) error {
+func (b *correctionBalance) apply(person int64, unit pgtype.UUID, amount, principal int64, refund bool) error {
 	var err error
-	b.recorded[person], err = addMinor(b.recorded[person], amount)
+	if unit.Valid {
+		if b.organizations == nil {
+			b.organizations = make(map[pgtype.UUID]int64)
+		}
+		b.organizations[unit], err = addMinor(b.organizations[unit], amount)
+	} else {
+		b.recorded[person], err = addMinor(b.recorded[person], amount)
+	}
 	if err == nil && refund {
 		b.refundDebit, err = addMinor(b.refundDebit, -amount)
 	}

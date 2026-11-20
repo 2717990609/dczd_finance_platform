@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 var (
@@ -355,10 +356,15 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 	}
 	for _, correction := range result.Corrections {
 		correction.SourceVersionID = 0
+		var unit *pgtype.UUID
+		if correction.Unit.Valid {
+			unit = &correction.Unit
+		}
 		if err := encode.Encode(struct {
 			correctionLine
-			Organization *reportOrganization `json:",omitempty"`
-		}{correction, correction.organization.present()}); err != nil {
+			Organization    *reportOrganization `json:",omitempty"`
+			BeneficiaryUnit *pgtype.UUID        `json:",omitempty"`
+		}{correction, correction.organization.present(), unit}); err != nil {
 			return nil, err
 		}
 	}
@@ -470,10 +476,11 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Corrections) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_corrections"},
-			[]string{"period_id", "original_line_id", "source_version_id", "person_id", "amount_minor", "company_id", "department_id"},
+			[]string{"period_id", "original_line_id", "source_version_id", "person_id", "amount_minor", "company_id", "department_id", "beneficiary_unit_id"},
 			pgx.CopyFromSlice(len(result.Corrections), func(i int) ([]any, error) {
 				c := result.Corrections[i]
-				return []any{summary.PeriodID, c.OriginalLineID, c.SourceVersionID, c.PersonID, c.Amount, c.organization.Company, c.organization.Department}, nil
+				return []any{summary.PeriodID, c.OriginalLineID, c.SourceVersionID, optionalDraftID(c.PersonID),
+					c.Amount, c.organization.Company, c.organization.Department, c.Unit}, nil
 			}))
 	}
 	return err
@@ -607,13 +614,18 @@ const draftDetailSQL = `SELECT jsonb_build_object(
  'corrections',coalesce((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM (
   SELECT c.id,c.amount_minor AS "amountMinor",paid.order_id AS "orderId",
    CASE WHEN paid.order_id=v.order_id AND v.kind='ORDER_PAID' THEN v.fact->>'orderNo' ELSE paid.fact->>'orderNo' END AS "orderNo",
-   v.version AS "sourceVersion",p.name AS "personName",old_person.name AS "originalPersonName",
+   v.version AS "sourceVersion",coalesce(p.name,pool.name,recipient.name) AS "personName",
+   coalesce(old_person.name,pool.name,old_recipient.name) AS "originalPersonName",
+   CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN c.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    CASE WHEN paid.order_id<>v.order_id THEN v.order_id END AS "triggerOrderId",v.fact->>'refundId' AS "triggerRefundId",
    original_period.name AS "originalPeriod",coalesce(r.version,cv.version_no) AS "ruleVersion"
   FROM calculation_draft_corrections c JOIN source_order_versions v ON v.id=c.source_version_id
-  JOIN people p ON p.id=c.person_id JOIN calculation_draft_lines l ON l.id=c.original_line_id
+  JOIN calculation_draft_lines l ON l.id=c.original_line_id
+  LEFT JOIN people p ON p.id=c.person_id LEFT JOIN organization_units recipient ON recipient.id=c.beneficiary_unit_id
+  LEFT JOIN practice_pools pool ON pool.id=l.practice_pool_id
   JOIN source_order_versions paid ON paid.id=l.source_version_id
-  JOIN people old_person ON old_person.id=l.person_id JOIN periods original_period ON original_period.id=l.period_id
+  LEFT JOIN people old_person ON old_person.id=l.person_id LEFT JOIN organization_units old_recipient ON old_recipient.id=l.beneficiary_unit_id
+  JOIN periods original_period ON original_period.id=l.period_id
   LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
   WHERE c.period_id=d.period_id AND c.id>$6 ORDER BY c.id LIMIT 50
  ) c),'[]'),
