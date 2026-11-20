@@ -7,6 +7,7 @@ import (
 )
 
 type practiceSalesTiers struct {
+	IncludeRetrain    bool                       `json:"includeRetrain,omitempty"`
 	CompanySchedules  []practiceCompanySchedule  `json:"companySchedules,omitempty"`
 	OpeningID         int64                      `json:"openingId,omitempty"`
 	CountFromOrdinal  int                        `json:"countFromOrdinal,omitempty"`
@@ -52,10 +53,23 @@ func (t practiceSalesTiers) defaultCountStart() practiceCountStart {
 }
 
 type practiceTier struct {
-	From    int64  `json:"from"`
-	Through *int64 `json:"through,omitempty"`
-	Mode    string `json:"mode"`
-	Value   int64  `json:"value"`
+	From    int64               `json:"from"`
+	Through *int64              `json:"through,omitempty"`
+	Mode    string              `json:"mode"`
+	Value   int64               `json:"value"`
+	Retrain *practiceTierPayout `json:"retrain,omitempty"`
+}
+
+type practiceTierPayout struct {
+	Mode  string `json:"mode"`
+	Value int64  `json:"value"`
+}
+
+func (r practiceTier) payout(retrain bool) practiceTier {
+	if retrain {
+		r.Mode, r.Value = r.Retrain.Mode, r.Retrain.Value
+	}
+	return r
 }
 
 type practiceTierSchedule struct {
@@ -107,6 +121,15 @@ type practiceTierPurchase struct {
 	PaidAt       time.Time
 	PersonID     int64
 	Base         int64
+	Retrain      bool
+}
+
+func (part component) tierIncludesRetrain() bool {
+	return part.Mode == "tiered" && part.Tiers != nil && part.Tiers.IncludeRetrain
+}
+
+func (part component) matchesPracticeMember(member string) bool {
+	return part.ClassMember == "" || part.ClassMember == member || member == "retrain" && part.tierIncludesRetrain()
 }
 
 func validPracticeSalesTiers(part component) bool {
@@ -144,14 +167,14 @@ func validPracticeSalesTiers(part component) bool {
 		companies[company.CompanyID] = true
 	}
 	for _, schedule := range tiers.schedules() {
-		if !validPracticeTierRows(schedule.Count) || !validPracticeTierRows(schedule.Performance) {
+		if !validPracticeTierRows(schedule.Count, tiers.IncludeRetrain) || !validPracticeTierRows(schedule.Performance, tiers.IncludeRetrain) {
 			return false
 		}
 	}
 	return true
 }
 
-func validPracticeTierRows(rows []practiceTier) bool {
+func validPracticeTierRows(rows []practiceTier, includeRetrain bool) bool {
 	for i, row := range rows {
 		if row.From < 0 || row.Value < 0 || (row.Through != nil && *row.Through < row.From) {
 			return false
@@ -159,20 +182,16 @@ func validPracticeTierRows(rows []practiceTier) bool {
 		if i > 0 && (row.From <= rows[i-1].From || (rows[i-1].Through != nil && *rows[i-1].Through >= row.From)) {
 			return false
 		}
-		switch row.Mode {
-		case "rate":
-			if row.Value > 10000 {
-				return false
-			}
-		case "fixed":
-			if row.Value > 100000000000 {
-				return false
-			}
-		default:
+		if !(practiceTierPayout{Mode: row.Mode, Value: row.Value}).valid() ||
+			(row.Retrain != nil) != includeRetrain || row.Retrain != nil && !row.Retrain.valid() {
 			return false
 		}
 	}
 	return true
+}
+
+func (p practiceTierPayout) valid() bool {
+	return p.Value >= 0 && (p.Mode == "rate" && p.Value <= 10000 || p.Mode == "fixed" && p.Value <= 100000000000)
 }
 
 func practiceTierComponent(rule paymentRule) *component {
@@ -240,22 +259,24 @@ func choosePracticeSalesTiers(config practiceSalesTiers, purchases []practiceTie
 		if err != nil {
 			return nil, err
 		}
-		metric.seen++
-		if metric.needFull {
-			metric.full, err = addMinor(metric.full, purchase.Base)
-			if err != nil {
-				return nil, err
+		if !purchase.Retrain {
+			metric.seen++
+			if metric.needFull {
+				metric.full, err = addMinor(metric.full, purchase.Base)
+				if err != nil {
+					return nil, err
+				}
 			}
-		}
-		// The old calculator defines the shared fallback amount using the first eligible sale's count schedule.
-		if _, covered := matchingPracticeTier(metric.firstCount, count); metric.needFallback && !covered {
-			metric.fallback, err = addMinor(metric.fallback, purchase.Base)
-			if err != nil {
-				return nil, err
+			// The shared fallback amount uses the first eligible sale's count schedule.
+			if _, covered := matchingPracticeTier(metric.firstCount, count); metric.needFallback && !covered {
+				metric.fallback, err = addMinor(metric.fallback, purchase.Base)
+				if err != nil {
+					return nil, err
+				}
 			}
 		}
 		if tier, matched := matchingPracticeTier(schedule.Count, count); matched {
-			awards[purchase.EnrollmentID] = tier
+			awards[purchase.EnrollmentID] = tier.payout(purchase.Retrain)
 		} else if len(schedule.Performance) != 0 {
 			fallback = append(fallback, purchase)
 		}
@@ -268,7 +289,7 @@ func choosePracticeSalesTiers(config practiceSalesTiers, purchases []practiceTie
 			performance = metric.fallback
 		}
 		if tier, matched := matchingPracticeTier(schedule.Performance, performance); matched {
-			awards[purchase.EnrollmentID] = tier
+			awards[purchase.EnrollmentID] = tier.payout(purchase.Retrain)
 		}
 	}
 	return awards, nil

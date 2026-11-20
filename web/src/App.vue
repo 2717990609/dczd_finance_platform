@@ -309,6 +309,12 @@ function resetAmountMode(row) {
   const modes = amountModes(row)
   if (!modes.some(option => option.value === row.mode)) updateAmountMode(row,modes[0]?.value)
 }
+function tierIncludesRetrain(row) {
+  return row.mode==='tiered' && Boolean(row.tierConfig?.includeRetrain ?? row.tiers?.includeRetrain)
+}
+function matchesPracticeMember(row, member) {
+  return !row.classMember || row.classMember===member || member==='retrain' && tierIncludesRetrain(row)
+}
 const componentTypes = computed(() => options('component').filter(option=>
   matchesOption(option,selectedProduct.value?.periodMode) &&
   (!isPeriodBenefit(option.value) || !!periodBenefitMode.value?.scope?.componentTypes?.includes(option.value)) &&
@@ -317,7 +323,7 @@ function classMemberChoices(row,type = row.type) {
   if (isPeriodBenefit(type)) return classMembers.value
   return classMembers.value.filter(member=>type!=='company_sales' || companySalesMode.value?.scope?.classMembers?.includes(member.value)).map(member=>{
     const occupied = draft.value.components.some(c=>c!==row && c.type===type &&
-      (!c.classMember || !member.value || c.classMember===member.value))
+      (!member.value || matchesPracticeMember(c,member.value)))
     return occupied ? {...member,disabled:true,label:member.label+'（已配置）'} : member
   })
 }
@@ -516,7 +522,7 @@ const mainRows = computed(() => {
     rows = rows.filter(row=>row.productId===Number(product) && (
       kind==='sku' && row.scopeType==='BUSINESS_SCENARIO' && row.scopeId===businessKey ||
       kind==='aggregate' && row.scopeType==='CROSS_SCENARIO_AGGREGATE' ||
-      kind==='member' && row.components?.some(component=>!component.classMember || component.classMember===businessKey)
+      kind==='member' && row.components?.some(component=>matchesPracticeMember(component,businessKey))
     ))
   }
   if (key==='identities' && identityAccount.value) {
@@ -1159,8 +1165,12 @@ function ruleComponentBody(row) {
     ...(tier.through != null ? {through:convert(tier.through)} : {}),
     mode:must(tier.mode,'请选择各档位计提方式'),
     value:minor(must(tier.value,'请填写各档位计提值')),
+    ...(form.includeRetrain ? {retrain:{
+      mode:must(tier.retrain?.mode,'请选择各档位复训计提方式'),
+      value:minor(must(tier.retrain?.value,'请填写各档位复训计提值')),
+    }} : {}),
   })).sort((a,b) => a.from-b.from)
-  component.tiers = {}
+  component.tiers = form.includeRetrain ? {includeRetrain:true} : {}
   if (form.metric !== 'performance') {
     if (!form.onlyCompanies) component.tiers.count = serialize(form.count,Number)
     if (form.startMode === 'opening') component.tiers.openingId = must(form.openingId,'请选择冻结期初')
@@ -1522,7 +1532,7 @@ async function save() {
                 <template v-else-if="column.key==='components'">
                   {{ text.length }} 项收款安排
                   <small v-if="text.some(c=>c.classMember)" class="order-version">
-                    {{ [...new Set(text.filter(c=>c.classMember).map(c=>optionLabel('classMember',c.classMember)))].join(' · ') }}
+                    {{ [...new Set(text.filter(c=>c.classMember).flatMap(c=>tierIncludesRetrain(c) ? ['新报','复训'] : [optionLabel('classMember',c.classMember)]))].join(' · ') }}
                   </small>
                 </template>
                 <template v-else-if="column.key==='source'">{{ sourceLabel(text) }}</template>
@@ -1664,7 +1674,7 @@ async function save() {
             :aria-controls="'practice-rule-part-'+i" @click="activeRuleComponent=activeRuleComponent===i ? undefined : i">
             <DownOutlined aria-hidden="true"/>
             <strong>{{ c.periodBenefit ? c.periodBenefit.label || '未命名收款安排' : ruleComponentLabel(c,optionLabel) }}</strong>
-            <span v-if="classRule" class="rule-block-badge">{{ c.classMember ? optionLabel('classMember',c.classMember) : '通用报名' }}</span>
+            <span v-if="classRule" class="rule-block-badge">{{ tierIncludesRetrain(c) ? '新报和复训' : c.classMember ? optionLabel('classMember',c.classMember) : '通用报名' }}</span>
             <small>{{ ruleRecipientSummary(c) }}</small>
           </button>
           <div v-if="i===activeRuleComponent" :id="'practice-rule-part-'+i" class="rule-block-body component-editor">
@@ -1698,7 +1708,10 @@ async function save() {
               </a-form-item>
             </div>
             <p v-if="c.mode==='rate'" class="rule-formula">{{ classRule ? '报名净实收' : '付款实收' }} × 计提比例</p>
-            <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')" :start-modes="options('tierStartMode')" :amounts="baseModes" :people="classPeopleOptions" :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"/>
+            <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')"
+              :start-modes="options('tierStartMode')" :amounts="baseModes" :people="classPeopleOptions"
+              :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"
+              :retrain-unavailable="draft.components.some(other=>other!==c && other.type==='sales' && matchesPracticeMember(other,'retrain'))"/>
           </template>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"

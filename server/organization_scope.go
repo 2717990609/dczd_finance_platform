@@ -88,7 +88,8 @@ const uncalculatedOrderInOrganization = `EXISTS (
   ) rule ON true
   CROSS JOIN LATERAL (
    SELECT nullif(part->>'sourceRole','') AS role FROM jsonb_array_elements(rule.components) part
-    WHERE part->>'type' IN ('sales','company_sales') AND (coalesce(part->>'classMember','')='' OR part->>'classMember'=coalesce(p.member,''))
+    WHERE part->>'type' IN ('sales','company_sales') AND (coalesce(part->>'classMember','')='' OR part->>'classMember'=coalesce(p.member,'')
+      OR p.member='retrain' AND part->>'mode'='tiered' AND part->'tiers' @> '{"includeRetrain":true}')
    ORDER BY (part->>'type'='sales') DESC LIMIT 1
   ) chosen
   HAVING count(DISTINCT chosen.role)<=1

@@ -64,6 +64,7 @@ export function ruleComponentLabel(component, optionLabel) {
 function tierRows(rows, scale) {
   return (rows || []).map(row => ({
     ...row, from:row.from / scale, through:row.through == null ? undefined : row.through / scale, value:row.value / 100,
+    retrain:row.retrain ? {...row.retrain,value:row.retrain.value / 100} : undefined,
   }))
 }
 
@@ -80,6 +81,7 @@ function tierForm(tiers) {
   const hasPerformance = [tiers, ...schedules].some(schedule => schedule.performance?.length)
   return {
     ...countStart(tiers),
+    includeRetrain:Boolean(tiers.includeRetrain),
     metric:hasCount ? (hasPerformance ? 'fallback' : 'count') : 'performance',
     onlyCompanies:!tiers.count?.length && !tiers.performance?.length,
     count:tierRows(tiers.count,1), performance:tierRows(tiers.performance,100),

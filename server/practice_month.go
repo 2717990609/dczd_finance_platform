@@ -83,7 +83,7 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 	}
 	member := classMember(membership)
 	for _, part := range parts {
-		inMemberScope := part.ClassMember == "" || part.ClassMember == member
+		inMemberScope := part.matchesPracticeMember(member)
 		// A refund can change the original class base or the tier chosen by other orders.
 		if part.Mode == "tiered" && inMemberScope {
 			return replay
@@ -95,7 +95,7 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 	}
 	if original.ComponentType == "sales" || original.ComponentType == "referral" {
 		for _, part := range parts {
-			if part.Type != original.ComponentType || (part.ClassMember != "" && part.ClassMember != member) {
+			if part.Type != original.ComponentType || !part.matchesPracticeMember(member) {
 				continue
 			}
 			if len(part.salesCompanies()) != 0 && !slices.Contains(part.salesCompanies(), company) {

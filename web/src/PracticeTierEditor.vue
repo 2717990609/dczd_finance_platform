@@ -10,6 +10,7 @@ const props = defineProps({
   people: { type: Array, required: true },
   openings: { type: Array, required: true },
   companies: { type: Array, required: true },
+  retrainUnavailable: Boolean,
 })
 const personalStartModes = computed(() => props.startModes.filter(option =>
   !option.scope?.countScopes || option.scope.countScopes.includes('person')))
@@ -29,7 +30,15 @@ function eligibleCompanies(row) {
 }
 function addCompany() {
   const mode = props.amounts[0]?.value
-  props.config.companies.push({count:[{mode}],performance:[{from:0,mode}]})
+  const payout = () => props.config.includeRetrain ? {mode,retrain:{mode}} : {mode}
+  props.config.companies.push({count:[payout()],performance:[{from:0,...payout()}]})
+}
+function setIncludeRetrain(checked) {
+  props.config.includeRetrain = checked
+  if (!checked) return
+  for (const schedule of [props.config,...props.config.companies]) {
+    for (const row of [...schedule.count,...schedule.performance]) row.retrain ??= {mode:props.amounts[0]?.value}
+  }
 }
 function removeCompany(index) {
   props.config.companies.splice(index,1)
@@ -42,6 +51,9 @@ function removeCompany(index) {
     <a-form-item html-for="tier-metric" label="阶梯指标">
       <a-select id="tier-metric" v-model:value="config.metric" :options="metrics"/>
     </a-form-item>
+    <a-checkbox :checked="config.includeRetrain" :disabled="retrainUnavailable && !config.includeRetrain"
+      @change="setIncludeRetrain($event.target.checked)">复训共用此阶梯</a-checkbox>
+    <p v-if="retrainUnavailable" class="tier-note">移除单独的复训销售安排后可启用。</p>
     <template v-if="config.metric !== 'performance'">
       <a-form-item html-for="tier-start-mode" label="默认累计起点">
         <a-select id="tier-start-mode" v-model:value="config.startMode" :options="startModes"/>
@@ -77,7 +89,7 @@ function removeCompany(index) {
         <a-button type="dashed" block @click="config.personCountStarts.push({startMode:personalStartModes[0]?.value})">添加个人起点</a-button>
       </details>
     </template>
-    <PracticeTierRanges v-if="!config.onlyCompanies" :config="config" :sections="sections" :amounts="amounts"/>
+    <PracticeTierRanges v-if="!config.onlyCompanies" :config="config" :sections="sections" :amounts="amounts" :include-retrain="config.includeRetrain"/>
     <details class="tier-person-starts">
       <summary>按销售公司配置档位</summary>
       <p class="tier-note">按原付款中的销售公司选档，同一人的累计在所选公司间合并。</p>
@@ -88,7 +100,8 @@ function removeCompany(index) {
         <a-form-item :html-for="'tier-company-'+index" label="销售公司" required>
           <a-select :id="'tier-company-'+index" v-model:value="company.companyId" :options="eligibleCompanies(company)" show-search option-filter-prop="label"/>
         </a-form-item>
-        <PracticeTierRanges :config="company" :sections="sections" :amounts="amounts" :prefix="'company-'+index+'-'"/>
+        <PracticeTierRanges :config="company" :sections="sections" :amounts="amounts"
+          :include-retrain="config.includeRetrain" :prefix="'company-'+index+'-'"/>
         <a-button type="link" danger @click="removeCompany(index)">移除公司档位</a-button>
       </div>
       <a-button v-if="config.companies.length<companies.length" type="dashed" block @click="addCompany">添加公司档位</a-button>

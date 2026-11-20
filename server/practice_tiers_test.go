@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -9,6 +10,93 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
+
+func TestPracticeRetrainSharesNewEnrollmentTierWithoutRaisingIt(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(result any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.(map[string]int64)["id"]
+	}
+	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_RETRAIN_TIER", Name: "复训阶梯验收", PeriodMode: "class"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "tier-retrain"}))
+	key := "PRACTICE:2:1:8"
+	period := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "班次", Ordinal: 1, StartsOn: "2026-06-08", EndsOn: "2026-06-08", SourcePeriodKey: key}))
+	refundPeriod := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "退款", SettlementMonth: "2026-07"}))
+	seller := id(s.createPerson(ctx, createPersonInput{Name: "阶梯验收销售"}))
+	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: seller, Source: "DCZD", ExternalID: "sales", ValidFrom: "2026-01-01T00:00:00Z"}))
+	policy := publishRuleInput{ProductID: product, PeriodID: &period, Label: "新报复训共用阶梯"}
+	if err := json.Unmarshal([]byte(`[{"type":"sales","mode":"tiered","classMember":"new","sourceRole":"DIRECT_REFERRER","value":0,
+	 "tiers":{"includeRetrain":true,"countFromOrdinal":1,"count":[{"from":1,"mode":"rate","value":2000,"retrain":{"mode":"fixed","value":3000}}],
+	  "performance":[{"from":0,"mode":"rate","value":1000,"retrain":{"mode":"fixed","value":1000}},
+	                   {"from":20000,"mode":"rate","value":1500,"retrain":{"mode":"fixed","value":2000}}]}}]`), &policy.Components); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.publishRule(ctx, policy); err != nil {
+		t.Fatal(err)
+	}
+	separateRetrain := component{Type: "sales", Mode: "fixed", ClassMember: "retrain", SourceRole: "DIRECT_REFERRER", Value: 1500}
+	overlapping := policy
+	overlapping.Components = append([]component{separateRetrain}, policy.Components...)
+	if _, err := s.publishRule(ctx, overlapping); !errors.Is(err, invalid) {
+		t.Fatalf("shared tier and independent retraining sale must not overlap: %v", err)
+	}
+	at := time.Date(2026, 6, 8, 9, 0, 0, 0, shanghai)
+	roster := practiceRoster{Key: key, SourceVersion: 1, Hash: "tier-retrain", StartsAt: at, ConfirmedAt: at.Add(time.Hour)}
+	var facts []sourceFact
+	for i, member := range []int{2, 3, 2} {
+		order := fmt.Sprint(100 + i)
+		amount := int64(50000)
+		if member == 3 {
+			amount = 10000
+		}
+		paid := at.Add(time.Duration(i-3) * time.Hour)
+		roster.Enrollments = append(roster.Enrollments, practiceEnrollment{SourceEnrollmentID: order, ParticipantID: order,
+			MembershipType: member, CommissionEligible: true, SignedAt: at, PaidOrderIDs: []string{order}, ContentHash: fmt.Sprintf("%064x", i+1)})
+		facts = append(facts, sourceFact{Source: "DCZD", Kind: "ORDER_PAID", Domain: "PRACTICE", SourceKey: "tier-retrain",
+			OrderID: order, PaymentID: order, RecordKey: "paid:" + order, Version: "1", AmountMinor: &amount,
+			ReferrerID: "sales", OccurredAt: paid, UpdatedAt: paid})
+	}
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if _, err := storePracticeRoster(ctx, tx, roster); err != nil {
+			return err
+		}
+		_, err := storeSourceFacts(ctx, tx, facts)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	draft, err := s.calculateCurrentDraft(ctx, period, 0)
+	if err != nil || draft.Total != 5000 || draft.LineCount != 3 || draft.IssueCount != 0 {
+		t.Fatalf("before the new enrollment use the lower tier and after it use the higher tier: %+v %v", draft, err)
+	}
+	var amounts []int64
+	if err := s.db.QueryRow(ctx, `SELECT array_agg(l.amount_minor ORDER BY v.order_id) FROM calculation_draft_lines l
+	 JOIN source_order_versions v ON v.id=l.source_version_id WHERE l.period_id=$1`, period).Scan(&amounts); err != nil ||
+		len(amounts) != 3 || amounts[0] != 1000 || amounts[1] != 1000 || amounts[2] != 3000 {
+		t.Fatalf("unexpected awards %v, %v", amounts, err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, draft.Version); err != nil {
+		t.Fatal(err)
+	}
+	refundAt := at.AddDate(0, 1, 0)
+	refund := sourceFact{Source: "DCZD", Kind: "REFUND_SUCCEEDED", Domain: "PRACTICE", SourceKey: "tier-retrain",
+		OrderID: "101", RefundID: "1", RecordKey: "refund:1", Version: "1", AmountMinor: facts[1].AmountMinor,
+		OccurredAt: refundAt, UpdatedAt: refundAt, RefundsPayment: []sourcePaymentReference{{OrderID: "101", RecordID: "101"}}}
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{refund})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	after, err := s.calculateCurrentDraft(ctx, refundPeriod, 0)
+	if err != nil || after.IssueCount != 0 || after.RefundTotal != -3000 {
+		t.Fatalf("refund must reverse the new award and the tier difference on the later retraining enrollment: %+v %v", after, err)
+	}
+}
 
 func TestPracticeTierFallbackUsesOnlyBelowThresholdEnrollmentBase(t *testing.T) {
 	config := practiceSalesTiers{

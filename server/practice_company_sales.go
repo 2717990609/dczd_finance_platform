@@ -275,7 +275,7 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 		for _, part := range rule.Components {
 			if part.Type == "sales" {
 				for _, member := range []string{"new", "retrain"} {
-					if part.ClassMember == "" || part.ClassMember == member {
+					if part.matchesPracticeMember(member) {
 						offers.personal[member] = true
 						for _, company := range part.salesCompanies() {
 							offers.companies[member][company] = practiceCompanyAward{internal: true}

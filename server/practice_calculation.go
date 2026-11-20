@@ -171,7 +171,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		}
 		matched := purchase.noReferrer
 		for index, part := range rule.Components {
-			if part.ClassMember != "" && part.ClassMember != classMember(member.MembershipType) {
+			if !part.matchesPracticeMember(classMember(member.MembershipType)) {
 				continue
 			}
 			if part.CompanySales != nil {
@@ -319,7 +319,10 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 	purchases := make(map[int64]practicePurchase)
 	for _, purchase := range current {
 		member := purchase.member
-		if classMember(member.MembershipType) != "new" || purchase.issue == practicePaymentAlreadySettled {
+		kind := classMember(member.MembershipType)
+		retrain := kind == "retrain"
+		if !part.matchesPracticeMember(kind) || purchase.noReferrer || purchase.issue == practicePaymentAlreadySettled ||
+			retrain && (purchase.issue != "" || purchase.companyRoutingIssue != "") {
 			continue
 		}
 		if purchase.companyAward != nil {
@@ -340,19 +343,25 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		}
 		person := practicePurchaseOwner(purchase, part.SourceRole, identities)
 		if person == 0 || repeatedPracticePayment(purchase.payments, seenPayments) {
+			if retrain {
+				issues.enrollments[member.ID] = "PRACTICE_TIER_GROUP_INCOMPLETE"
+				continue
+			}
 			issues.people[0] = "PRACTICE_TIER_GROUP_INCOMPLETE"
 			return nil, issues, nil
 		}
 		if companyIssue != "" {
 			issues.enrollments[member.ID] = companyIssue
-			issues.people[person] = "PRACTICE_TIER_GROUP_INCOMPLETE"
+			if !retrain {
+				issues.people[person] = "PRACTICE_TIER_GROUP_INCOMPLETE"
+			}
 			continue
 		}
 		if len(schedule.Count) != 0 {
 			needsCount[person] = true
 		}
 		row := practiceTierPurchase{EnrollmentID: member.ID, PersonID: person, CompanyID: company, Base: purchase.base,
-			SequenceKey: purchase.payments[0].Fact.OrderID, PaidAt: purchase.payments[0].Fact.OccurredAt}
+			SequenceKey: purchase.payments[0].Fact.OrderID, PaidAt: purchase.payments[0].Fact.OccurredAt, Retrain: retrain}
 		if len(purchase.payments) == 2 {
 			row.SequenceKey = member.SourceEnrollmentID
 			if second := purchase.payments[1].Fact.OccurredAt; second.Before(row.PaidAt) {

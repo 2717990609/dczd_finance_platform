@@ -71,6 +71,9 @@ func validateComponents(items []component) error {
 			members = 3
 		case "new":
 			members = 1
+			if c.tierIncludesRetrain() {
+				members |= 2
+			}
 		case "retrain":
 			members = 2
 		default:

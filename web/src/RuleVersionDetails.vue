@@ -95,7 +95,7 @@ onMounted(async () => {
           @click="activePart=activePart===index ? undefined : index">
           <DownOutlined aria-hidden="true"/>
           <strong>{{ ruleComponentLabel(part,label) }}</strong>
-          <span v-if="classProduct" class="rule-block-badge">{{ part.classMember ? label('classMember',part.classMember) : '通用报名' }}</span>
+          <span v-if="classProduct" class="rule-block-badge">{{ part.tiers?.includeRetrain ? '新报和复训' : part.classMember ? label('classMember',part.classMember) : '通用报名' }}</span>
           <small>{{ recipient(part) }}</small>
         </button>
         <div v-if="activePart===index" :id="'rule-preview-'+index" class="rule-block-body rule-preview-part">
@@ -120,8 +120,12 @@ onMounted(async () => {
             <template v-for="schedule in [part.tiers, ...(part.tiers.companySchedules || [])]" :key="schedule.companyId || ''">
               <h4 v-if="schedule.count?.length || schedule.performance?.length">{{ schedule.companyId ? companyName(schedule.companyId) : '通用阶梯' }}</h4>
               <ul>
-                <li v-for="row in schedule.count" :key="'count-'+row.from">累计 {{ range(row,true) }} · {{ standard(row) }}</li>
-                <li v-for="row in schedule.performance" :key="'paid-'+row.from">本期净实收 {{ range(row,false) }} · {{ standard(row) }}</li>
+                <li v-for="row in schedule.count" :key="'count-'+row.from">
+                  累计 {{ range(row,true) }} · {{ standard(row) }}<template v-if="row.retrain">（新报） · 复训 {{ standard(row.retrain) }}</template>
+                </li>
+                <li v-for="row in schedule.performance" :key="'paid-'+row.from">
+                  本期新报净实收 {{ range(row,false) }} · {{ standard(row) }}<template v-if="row.retrain">（新报） · 复训 {{ standard(row.retrain) }}</template>
+                </li>
               </ul>
             </template>
           </template>

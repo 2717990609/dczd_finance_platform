@@ -30,7 +30,7 @@ func performanceOwner(fact sourceFact, rule *paymentRule, member string, identit
 		return 0
 	}
 	for _, part := range rule.Components {
-		if part.Type == "sales" && part.SourceRole != "" && (part.ClassMember == "" || part.ClassMember == member) {
+		if part.Type == "sales" && part.SourceRole != "" && part.matchesPracticeMember(member) {
 			owner, _ := paymentBeneficiary(fact, part.SourceRole, identities)
 			return owner.PersonID
 		}
