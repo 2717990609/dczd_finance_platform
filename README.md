@@ -174,7 +174,7 @@ pnpm --dir web dev
 
 ## 财务账号
 
-默认的 `FINANCE_ACCESS_MODE=managed` 要求登录后使用工作台。后端监听回环地址，对外访问由同源 HTTPS 代理转发。仅本机开发库可设为 `development` 来匿名读取和试算开发样本。
+默认的 `FINANCE_ACCESS_MODE=managed` 要求登录后使用工作台。后端监听回环地址，对外访问由同源 HTTPS 代理转发。仅本机开发库可设为 `development`，免登录查看、试算和配置开发规则。规则保存须从同源发起，目录规则的发布人记为 `local-development`。
 
 账号关联已有的财务人员主键。技术人员使用 `configure-finance-account` 登记账号或调整权限。配置文件可参照下例，人员和产品 ID 使用本平台实际主键。
 

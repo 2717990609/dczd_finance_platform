@@ -69,6 +69,14 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		sources: map[string]sourceConfig{"DCAI": {BaseURL: "https://fixture.invalid", Token: "fixture"}}}
 	submit := func(grant int64, path string, handler http.HandlerFunc, body string) *httptest.ResponseRecorder {
 		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		if grant == 0 {
+			r.Header.Set("Sec-Fetch-Site", "same-origin")
+			w := httptest.NewRecorder()
+			handler(w, r)
+			return w
+		}
 		claims := catalogRuleClaims{RegisteredClaims: jwt.RegisteredClaims{Issuer: s.ruleAuth.issuer, Subject: "fixture",
 			Audience: jwt.ClaimStrings{"finance-platform"}, ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))},
 			Permissions: []string{catalogRulePublishPermission}, ProductIDs: []int64{grant}}
@@ -76,9 +84,7 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+token)
-		r.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
 		handler(w, r)
 		return w
@@ -89,7 +95,7 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	 {"label":"公司安排","targetKind":"company","organizationKey":"unit:10000000-0000-4000-8000-000000000981","tiers":[{"rate_bps":1500}]},
 	 {"label":"个人安排","targetKind":"person","personId":9801,"tiers":[{"rate_bps":500}]}]}`
 	quoteInput := strings.TrimSuffix(input, "}") + `,"receiptsMinor":40000}`
-	preview := submit(980, path+"/preview", s.postCatalogPeriodQuote, quoteInput)
+	preview := submit(0, path+"/preview", s.postCatalogPeriodQuote, quoteInput)
 	var quote catalogPeriodQuote
 	if err := json.Unmarshal(preview.Body.Bytes(), &quote); err != nil || preview.Code != 200 || quote.Total != 8000 {
 		t.Fatalf("unsaved aggregate quote should price both benefits: %d %s %v", preview.Code, preview.Body.String(), err)
@@ -104,10 +110,14 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	if unmapped := submit(980, path, s.postCatalogPeriodRule, strings.Replace(input, "SECOND", "UNMAPPED", 1)); unmapped.Code != 409 {
 		t.Fatalf("creation accepted an unmapped SKU: %d %s", unmapped.Code, unmapped.Body.String())
 	}
-	w := submit(980, path, s.postCatalogPeriodRule, input)
+	w := submit(0, path, s.postCatalogPeriodRule, input)
 	var published catalogPublication
 	if err := json.Unmarshal(w.Body.Bytes(), &published); err != nil || w.Code != 200 || published.ID == "" || published.Version != 1 {
 		t.Fatalf("first aggregate rule did not publish: %d %s %v", w.Code, w.Body.String(), err)
+	}
+	var publisher string
+	if err := db.QueryRow(ctx, `SELECT published_by FROM product_rule_versions WHERE source_id=$1`, published.ID).Scan(&publisher); err != nil || publisher != "local-development" {
+		t.Fatalf("anonymous local publication must identify the development actor: %q %v", publisher, err)
 	}
 	trial, err := s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: published.ID, Month: "2026-10"})
 	if err != nil {

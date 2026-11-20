@@ -88,3 +88,41 @@ func TestCatalogRuleAccessRequiresSignedScopedSession(t *testing.T) {
 		t.Fatalf("readonly permission did not remain readonly: %+v", view)
 	}
 }
+
+func TestCatalogRuleDevelopmentAccessWithoutLogin(t *testing.T) {
+	for _, tc := range []struct {
+		name, method, site string
+		configure          func(*http.Request)
+		want               error
+	}{
+		{name: "read", method: http.MethodGet},
+		{name: "same-origin write", method: http.MethodPost, site: "same-origin"},
+		{name: "cross-origin write", method: http.MethodPost, site: "cross-site", want: errRulePermission},
+		{name: "invalid API credential", method: http.MethodGet, want: errRuleLogin, configure: func(r *http.Request) {
+			r.Header.Set("Authorization", "Bearer invalid")
+		}},
+		{name: "invalid browser session", method: http.MethodGet, want: errRuleLogin, configure: func(r *http.Request) {
+			r.AddCookie(&http.Cookie{Name: financeAccountCookie, Value: "invalid"})
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(tc.method, "http://127.0.0.1:5194/api/v1/catalog-period-rules", nil)
+			if tc.site != "" {
+				r.Header.Set("Sec-Fetch-Site", tc.site)
+			}
+			if tc.configure != nil {
+				tc.configure(r)
+			}
+			actor, err := (workspace{development: true}).financeRateActor(r)
+			if err != tc.want {
+				t.Fatalf("development access returned %v, want %v", err, tc.want)
+			}
+			if err == nil && (!actor.permits(13, false) || !actor.permits(13, true) || actor.subject == "") {
+				t.Fatal("local finance preview should allow rule maintenance and identify its actor")
+			}
+			if _, err := (workspace{}).financeRateActor(r); err != errRuleLogin {
+				t.Fatalf("managed access returned %v without a valid session", err)
+			}
+		})
+	}
+}

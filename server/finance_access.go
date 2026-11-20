@@ -107,7 +107,8 @@ type financeRuleActor struct {
 }
 
 func (s workspace) financeRateActor(r *http.Request) (financeRuleActor, error) {
-	if r.Header.Get("Authorization") == "" {
+	authorization := r.Header.Get("Authorization")
+	if authorization == "" {
 		p, err := s.accountSession(r)
 		if err != nil {
 			return financeRuleActor{}, err
@@ -122,9 +123,20 @@ func (s workspace) financeRateActor(r *http.Request) (financeRuleActor, error) {
 			return financeRuleActor{}, errRuleLogin
 		}
 	}
-	p := s.ruleAuth.session(r)
-	if p == nil {
+	if p := s.ruleAuth.session(r); p != nil {
+		return financeRuleActor{subject: p.Subject, permits: p.permits}, nil
+	}
+	if !s.development || authorization != "" {
 		return financeRuleActor{}, errRuleLogin
 	}
-	return financeRuleActor{subject: p.Subject, permits: p.permits}, nil
+	for _, name := range []string{financeAccountCookie, "finance_session"} {
+		if _, err := r.Cookie(name); err == nil {
+			return financeRuleActor{}, errRuleLogin
+		}
+	}
+	if r.Method != http.MethodGet && !catalogCookieWriteAllowed(r) {
+		return financeRuleActor{}, errRulePermission
+	}
+	// Server startup restricts development access to a loopback listener and a dedicated development database.
+	return financeRuleActor{subject: "local-development", permits: func(product int64, _ bool) bool { return product > 0 }}, nil
 }
