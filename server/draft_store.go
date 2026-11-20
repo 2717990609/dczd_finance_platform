@@ -572,7 +572,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
      THEN rv.components->(split_part(l.component_type,':',3)::int)->'periodBenefit'->>'label'
      ELSE action.definition->>'label' END AS "componentLabel",nullif(split_part(l.component_type,':',2),'') AS "componentRole",
    l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",o.source,o.order_id AS "orderId",
-   o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",coalesce(rv.version,cv.version_no) AS "ruleVersion",
+   o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",o.id AS "sourceVersionId",coalesce(rv.version,cv.version_no) AS "ruleVersion",
    completed.occurred_at AS "completedAt",
    (completed.occurred_at AT TIME ZONE 'Asia/Shanghai')::date<period.starts_on AS "completionCarried",
    coalesce(l.catalog_rule_id::text,l.rule_id::text) AS "ruleId",coalesce(package.name,rv.label) AS "ruleLabel",
@@ -602,9 +602,9 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
   SELECT a.id,a.amount_minor AS "amountMinor",rv.fact->>'refundId' AS "refundId",rv.version AS "refundVersion",
    coalesce(p.name,practice_pool.name,pool.name,beneficiary.name) AS "personName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
-   o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",coalesce(r.version,cv.version_no) AS "ruleVersion",
+   o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",o.id AS "sourceVersionId",coalesce(r.version,cv.version_no) AS "ruleVersion",
    CASE WHEN l.practice_enrollment_id IS NOT NULL AND rv.order_id<>o.order_id THEN rv.order_id END AS "replayTriggerOrderId",
-   r.label AS "ruleLabel",
+   coalesce(package.name,r.label) AS "ruleLabel",
    original_period.name AS "originalPeriod",refund_period.name AS "refundPeriod",posting_period.name AS "postingPeriod"
   FROM calculation_draft_refunds a
   JOIN source_order_versions rv ON rv.id=a.refund_source_version_id
@@ -612,6 +612,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
   LEFT JOIN people p ON p.id=l.person_id LEFT JOIN organization_units beneficiary ON beneficiary.id=l.beneficiary_unit_id
   LEFT JOIN practice_pools practice_pool ON practice_pool.id=l.practice_pool_id
   LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
+  LEFT JOIN product_rule_packages package ON package.source_id=cv.package_id
   LEFT JOIN LATERAL (
    SELECT b->>'pool_name' AS name FROM jsonb_array_elements(cv.definition->'benefit_actions') b
    WHERE l.allocation_owner_id IS NOT NULL AND b->>'item_key'=l.component_type LIMIT 1
@@ -624,11 +625,12 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
  'corrections',coalesce((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM (
   SELECT c.id,c.amount_minor AS "amountMinor",paid.order_id AS "orderId",
    CASE WHEN paid.order_id=v.order_id AND v.kind='ORDER_PAID' THEN v.fact->>'orderNo' ELSE paid.fact->>'orderNo' END AS "orderNo",
-   v.version AS "sourceVersion",coalesce(p.name,pool.name,recipient.name) AS "personName",
+   v.version AS "sourceVersion",paid.id AS "sourceVersionId",coalesce(p.name,pool.name,recipient.name) AS "personName",
    coalesce(old_person.name,pool.name,old_recipient.name) AS "originalPersonName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN c.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    CASE WHEN paid.order_id<>v.order_id THEN v.order_id END AS "triggerOrderId",v.fact->>'refundId' AS "triggerRefundId",
-   original_period.name AS "originalPeriod",coalesce(r.version,cv.version_no) AS "ruleVersion"
+   original_period.name AS "originalPeriod",coalesce(r.version,cv.version_no) AS "ruleVersion",
+   coalesce(package.name,r.label) AS "ruleLabel"
   FROM calculation_draft_corrections c JOIN source_order_versions v ON v.id=c.source_version_id
   JOIN calculation_draft_lines l ON l.id=c.original_line_id
   LEFT JOIN people p ON p.id=c.person_id LEFT JOIN organization_units recipient ON recipient.id=c.beneficiary_unit_id
@@ -637,6 +639,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
   LEFT JOIN people old_person ON old_person.id=l.person_id LEFT JOIN organization_units old_recipient ON old_recipient.id=l.beneficiary_unit_id
   JOIN periods original_period ON original_period.id=l.period_id
   LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
+  LEFT JOIN product_rule_packages package ON package.source_id=cv.package_id
   WHERE c.period_id=d.period_id AND c.id>$6
   AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `)) ORDER BY c.id LIMIT 50
  ) c),'[]'),

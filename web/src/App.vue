@@ -14,6 +14,7 @@ import PracticeRetrainSplitEditor from './PracticeRetrainSplitEditor.vue'
 import PracticeCompanySalesEditor from './PracticeCompanySalesEditor.vue'
 import FinanceLogin from './FinanceLogin.vue'
 import OrganizationDirectory from './OrganizationDirectory.vue'
+import OrderDetails from './OrderDetails.vue'
 import OrderSyncPanel from './OrderSyncPanel.vue'
 import PracticeTierEditor from './PracticeTierEditor.vue'
 import { organizationTree } from './organization-tree'
@@ -36,12 +37,12 @@ const sessionChecking = ref(false)
 const wholeWorkspace = computed(() => session.value?.user ? session.value.user.workspace : session.value?.development)
 const visibleNavigation = computed(() => wholeWorkspace.value ? navigation : session.value?.user?.rules.length
   ? navigation.filter(entry => entry.key==='rules') : [])
-const getRoute = () => {
-  const key = location.hash.slice(1)
+const getRoute = key => {
   if (visibleNavigation.value.some(entry => entry.key === key)) return key
-  return wholeWorkspace.value ? 'products' : visibleNavigation.value[0]?.key
+  return visibleNavigation.value[0]?.key
 }
 const current = ref()
+const requestedPeriod = ref()
 const active = computed(() => navigation.find(x => x.key === current.value))
 const theme = {token:{colorPrimary:'#315ab2', colorLink:'#315ab2', colorText:'#253044', borderRadius:6, fontSize:14, controlHeight:34}}
 const productScope = ref()
@@ -53,7 +54,11 @@ const usesProductScope = computed(() => productScopedPages.has(current.value))
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
 const organization = ref()
 const monthlyReport = ref()
+const monthlyMonth = ref(new Intl.DateTimeFormat('sv-SE', {year:'numeric',month:'2-digit',timeZone:'Asia/Shanghai'}).format(new Date()))
+const monthlyView = ref()
+const monthlyDimension = ref()
 const orderSync = ref()
+const orderDetails = ref()
 const rateRule = ref()
 const emptyData = () => ({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
 const data = ref(emptyData())
@@ -306,7 +311,14 @@ function refreshWorkspace() {
   orderSync.value?.reload()
 }
 function changeRoute() {
-  current.value = getRoute()
+  const [key, query] = location.hash.slice(1).split('?', 2)
+  current.value = getRoute(key)
+  const periodID = Number(new URLSearchParams(query).get('periodId'))
+  requestedPeriod.value = key === 'settlement' && current.value === key && Number.isSafeInteger(periodID) && periodID > 0 ? periodID : undefined
+  orderDetails.value = undefined
+  if (requestedPeriod.value && productScope.value && data.value.periods.find(period => period.id === requestedPeriod.value)?.productId !== productScope.value) {
+    productScope.value = undefined
+  }
   if (current.value==='rules' && session.value?.user && !session.value.user.rules.some(rule=>rule.productId===productScope.value)) {
     productScope.value=undefined
   }
@@ -325,6 +337,8 @@ function clearWorkspace() {
   unitScope.value = undefined
   scopeUnits.value = undefined
   current.value = undefined
+  requestedPeriod.value = undefined
+  orderDetails.value = undefined
   drawer.value = ''
   draft.value = {}
   rateRule.value = undefined
@@ -445,6 +459,11 @@ function open(kind, row) {
   }
   if (kind === 'reportMonth') draft.value = {periodId:row.id, periodName:row.name, reportMonth:row.reportMonthOverride || ''}
   if (kind === 'rule') draft.value.components = [newRuleComponent()]
+}
+function pullFromDetails() {
+  const order = orderDetails.value.order
+  orderDetails.value = undefined
+  open('pull', order)
 }
 function close() { if (!saving.value) drawer.value = '' }
 function must(value, msg = '请补齐必填内容') {
@@ -676,11 +695,13 @@ async function save() {
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <DraftWorkbench :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
-            :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" />
+            :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" :requested-period="requestedPeriod"
+            @show-order="orderDetails={versionId:$event}" />
         </template>
         <template v-else-if="current==='monthly'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
-          <MonthlyReport ref="monthlyReport" :api="api" :format-money="formatMoney" :product-id="productScope" :unit-id="unitScope"
+          <MonthlyReport ref="monthlyReport" v-model:month="monthlyMonth" v-model:view="monthlyView" v-model:dimension="monthlyDimension"
+            :api="api" :format-money="formatMoney" :product-id="productScope" :unit-id="unitScope"
             :views="options('monthlyReportView')" :dimensions="options('draftReportDimension')"/>
         </template>
         <template v-else-if="current==='organization'">
@@ -727,7 +748,8 @@ async function save() {
           <div class="table-container">
             <a-table :columns="columns" :data-source="mainRows" :loading="loading" row-key="id" :pagination="current==='orders'?false:{pageSize:12,showSizeChanger:false}" :scroll="{x:tableWidth}">
               <template #bodyCell="{ column, record, text }">
-                <template v-if="column.key==='name'||column.key==='label'">
+                <a v-if="column.key==='name' && current==='periods'" :href="'#settlement?periodId='+record.id">{{ text }}</a>
+                <template v-else-if="column.key==='name'||column.key==='label'">
                   <strong class="primary-cell">{{ text }}</strong>
                 </template>
                 <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ optionLabel('periodMode',text) }}</a-tag></template>
@@ -781,7 +803,7 @@ async function save() {
                   </div>
                 </template>
                 <template v-else-if="column.key==='source'">{{ sourceLabel(text) }}</template>
-                <template v-else-if="column.key==='orderNo'"><button class="order-link" type="button" @click="open('pull',record)" :title="'原订单 ID '+record.orderId">{{ text || record.orderId }}</button><small class="order-version">版本 {{ record.version }}</small></template>
+                <template v-else-if="column.key==='orderNo'"><button class="order-link" type="button" @click="orderDetails={order:record}" :title="'原订单 ID '+record.orderId">{{ text || record.orderId }}</button><small class="order-version">版本 {{ record.version }}</small></template>
                 <template v-else-if="column.key==='kind'"><a-tag>{{ labels[text] || text }}</a-tag></template>
                 <template v-else-if="column.key==='productName'&&current==='orders'"><a-tag v-if="!text" color="orange">待映射</a-tag><span v-else>{{ text }}</span></template>
                 <template v-else-if="column.key==='amountMinor'"><span class="numeric">{{ formatMoney(text) }}</span></template>
@@ -897,6 +919,9 @@ async function save() {
       <div class="form-actions"><a-button :disabled="saving" @click="close">取消</a-button><a-button html-type="submit" type="primary" :loading="saving">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':'保存' }}</a-button></div>
     </a-form>
   </a-drawer>
+  <OrderDetails v-if="orderDetails" :selection="orderDetails" :api="api" :format-money="formatMoney" :format-time="formatTime" :source-label="sourceLabel"
+    :labels="labels" :can-pull="Boolean(orderDetails.order && configurationReady && data.sources.some(source=>source.source===orderDetails.order.source && source.configured))"
+    @close="orderDetails=undefined" @pull="pullFromDetails"/>
   <CatalogRuleRates v-if="rateRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="rateRule" :api="api" :format-time="formatTime" @close="rateRule=undefined" @published="ratePublished"/>
 </a-config-provider>

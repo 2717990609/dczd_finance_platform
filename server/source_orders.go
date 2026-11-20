@@ -583,6 +583,17 @@ func (s workspace) orders(w http.ResponseWriter, r *http.Request) {
 	respond(w, result, err)
 }
 
+func (s workspace) orderVersion(w http.ResponseWriter, r *http.Request) {
+	id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
+	if err != nil || id < 1 {
+		respond(w, nil, invalid)
+		return
+	}
+	var result json.RawMessage
+	err = s.db.QueryRow(r.Context(), `SELECT fact FROM source_order_versions WHERE id=$1`, id).Scan(&result)
+	respond(w, result, err)
+}
+
 func (s workspace) sourceStatuses(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	rows, err := s.db.Query(ctx, "SELECT source,max(received_at) FROM source_order_versions GROUP BY source")

@@ -166,6 +166,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/identities", Handler: s.list(identitiesSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/identities", Handler: submit(s.assignIdentity)},
 		{Method: http.MethodGet, Path: "/api/v1/orders", Handler: s.orders},
+		{Method: http.MethodGet, Path: "/api/v1/orders/version", Handler: s.orderVersion},
 		{Method: http.MethodPost, Path: "/api/v1/orders/pull", Handler: submit(s.pullOrder)},
 		{Method: http.MethodGet, Path: "/api/v1/orders/sync", Handler: s.getOrderSyncJobs},
 		{Method: http.MethodPost, Path: "/api/v1/orders/sync", Handler: submit(s.requestOrderSync)},

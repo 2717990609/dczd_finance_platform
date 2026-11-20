@@ -8,7 +8,9 @@ import DraftSettlementReview from './DraftSettlementReview.vue'
 import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
-  recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function, unitId: String })
+  recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
+  requestedPeriod: Number })
+const emit = defineEmits(['show-order'])
 const selected = ref()
 const view = ref('detail')
 const draft = ref()
@@ -32,6 +34,7 @@ const options = computed(() => props.periods.map(period => ({
   label: `${period.productName} · ${period.name}`,
 })))
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
+const linkedPeriod = computed(() => props.periods.find(period => period.id === props.requestedPeriod)?.id)
 const canPullRoster = computed(() => selectedPeriod.value?.periodMode === 'class' && selectedPeriod.value.sourcePeriodKey && !draft.value?.settlement)
 const canReviewRecovery = computed(() => !draft.value?.settlement && props.recoveryOptions?.length && props.settlementProducts?.includes(selectedPeriod.value?.productId))
 const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable && !draft.value?.settlement)
@@ -219,6 +222,9 @@ watch(selected, async () => {
 watch(options, (values) => {
   if (selected.value && !values.some(option => option.value === selected.value)) selected.value = undefined
 })
+watch(linkedPeriod, period => {
+  if (period) selected.value = period
+}, {immediate:true})
 watch(() => props.unitId, () => load())
 
 async function calculate() {
@@ -355,7 +361,7 @@ async function loadMore(section, cursorName) {
       <a-table :columns="lineColumns" :data-source="draft.lines" :pagination="false" row-key="id" :scroll="{ x: 755 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
-            {{ record.orderNo || record.orderId }}
+            <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>
             <small class="order-version">订单版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template><template v-if="record.salesCompany"> · {{ record.salesCompany }}</template></small>
             <small v-if="record.completedAt" class="order-version">完成 {{ formatTime(record.completedAt) }}<template v-if="record.completionCarried"> · 补入本期</template></small>
           </template>
@@ -381,7 +387,7 @@ async function loadMore(section, cursorName) {
       <a-table :columns="refundColumns" :data-source="draft.refunds" :pagination="false" row-key="id" :scroll="{ x: 840 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
-            {{ record.originalOrderNo || record.originalOrderId }}
+            <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.originalOrderNo || record.originalOrderId }}</button>
             <small class="order-version">计提时规则 v{{ record.ruleVersion }}<template v-if="record.ruleLabel"> · {{ record.ruleLabel }}</template>
               <template v-if="record.replayTriggerOrderId"> · 班次联动 · 订单 {{ record.replayTriggerOrderId }} 的退款 {{ record.refundId }}</template>
               <template v-else> · 退款 {{ record.refundId }}</template>
@@ -403,8 +409,9 @@ async function loadMore(section, cursorName) {
       <a-table :columns="correctionColumns" :data-source="draft.corrections" :pagination="false" row-key="id" :scroll="{x:710}">
         <template #bodyCell="{column,record}">
           <template v-if="column.key==='order'">
-            {{ record.orderNo || record.orderId }}
-            <small class="order-version">结算时规则 v{{ record.ruleVersion }} · 订单版本 {{ record.sourceVersion }}</small>
+            <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>
+            <small class="order-version">结算时规则 v{{ record.ruleVersion }}<template v-if="record.ruleLabel"> · {{ record.ruleLabel }}</template></small>
+            <small class="order-version">更正来源版本 {{ record.sourceVersion }}</small>
             <small v-if="record.triggerOrderId || record.triggerRefundId" class="order-version">
               联动来源 {{ record.triggerOrderId || record.orderId }}<template v-if="record.triggerRefundId"> · 退款 {{ record.triggerRefundId }}</template>
             </small>

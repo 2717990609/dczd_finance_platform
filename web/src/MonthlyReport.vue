@@ -2,9 +2,9 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
 const props = defineProps({ api:Function, formatMoney:Function, productId:Number, views:Array, dimensions:Array, unitId:String })
-const month = ref(new Intl.DateTimeFormat('sv-SE', {year:'numeric',month:'2-digit',timeZone:'Asia/Shanghai'}).format(new Date()))
-const view = ref()
-const dimension = ref()
+const month = defineModel('month', {type:String})
+const view = defineModel('view', {type:String})
+const dimension = defineModel('dimension', {type:String})
 const page = ref(1)
 const snapshot = ref('')
 const report = ref()
@@ -110,7 +110,6 @@ defineExpose({refresh})
       <a-select id="monthly-report-view" v-model:value="view" :options="views"/>
       <label for="monthly-report-dimension">汇总维度</label>
       <a-select id="monthly-report-dimension" v-model:value="dimension" :options="dimensions"/>
-      <a-button :disabled="!month || !view || !dimension" :loading="loading" @click="refresh">刷新汇总</a-button>
     </div>
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon/>
@@ -146,7 +145,7 @@ defineExpose({refresh})
       <summary>核算范围（{{ report.periods.length }} 期）</summary>
       <a-table :columns="periodColumns" :data-source="report.periods" row-key="id" :pagination="{pageSize:10,showSizeChanger:false}" :scroll="{x:785}">
         <template #bodyCell="{column,record,text}">
-          <template v-if="column.key==='name'">{{ text }}<small class="order-version">{{ periodKinds[record.kind] }}</small></template>
+          <template v-if="column.key==='name'"><a :href="'#settlement?periodId='+record.id">{{ text }}</a><small class="order-version">{{ periodKinds[record.kind] }}</small></template>
           <span v-else-if="column.key==='dates'">{{ record.startsOn }} 至 {{ record.endsOn }}</span>
           <template v-else-if="column.key==='status'">
             <a-tag :color="statuses[record.status].color">{{ statuses[record.status].label }}</a-tag>
