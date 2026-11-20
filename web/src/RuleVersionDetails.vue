@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { Drawer } from 'ant-design-vue'
+import { ruleComponentLabel } from './rule-component-form'
 
 const props = defineProps({
   rule: Object, canCopy: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
@@ -9,6 +10,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['close','copy'])
 const loadedRecipients = ref()
+const activePart = ref(0)
 const directoryError = ref('')
 const directory = computed(() => loadedRecipients.value ?? props.recipients)
 const label = (group, key) => props.optionLabel(group, key) || key
@@ -63,19 +65,33 @@ onMounted(async () => {
 </script>
 
 <template>
-  <component :is="embedded ? 'div' : Drawer" v-bind="embedded ? {} : {open:true,title:title || '查看规则',width:'min(660px, 100vw)'}" @close="emit('close')">
+  <component :is="embedded ? 'div' : Drawer" v-bind="embedded ? {} : {open:true,title:title || '查看规则',width:'min(1120px, 100vw)'}" @close="emit('close')">
     <section aria-label="规则详情" class="rule-preview">
       <h2>{{ rule.label }} <a-tag>{{ embedded ? '待发布' : 'v'+rule.version }}</a-tag></h2>
       <a-alert v-if="directoryError" class="feedback" :message="directoryError" type="warning" show-icon/>
-      <a-descriptions bordered size="small" :column="1" class="rule-preview-scope">
+      <a-descriptions bordered size="small" :column="{xs:1,sm:1,md:2}" class="rule-preview-scope">
         <a-descriptions-item label="产品">{{ rule.productName }}</a-descriptions-item>
         <a-descriptions-item label="适用范围">{{ scope }}</a-descriptions-item>
         <a-descriptions-item label="生效时间">{{ rule.effectiveFrom ? formatTime(rule.effectiveFrom) : '范围默认' }}<template v-if="rule.effectiveTo"> 至 {{ formatTime(rule.effectiveTo) }}</template></a-descriptions-item>
         <a-descriptions-item v-if="rule.retiredFrom" label="停用时间">{{ formatTime(rule.retiredFrom) }}</a-descriptions-item>
       </a-descriptions>
-      <article v-for="(part,index) in rule.components" :key="index" class="rule-preview-part">
+      <div class="rule-edit-layout">
+        <aside class="rule-item-nav" aria-label="规则分项">
+          <h3 class="form-subhead">分润分项</h3>
+          <div class="rule-item-nav-list">
+            <button v-for="(part,index) in rule.components" :key="index" type="button" :aria-pressed="activePart===index" @click="activePart=index">
+              <span>{{ ruleComponentLabel(part,label) }}
+                <small v-if="part.periodBenefit?.personId" class="rule-nav-recipient">{{ personName(part.periodBenefit.personId) }}</small>
+              </span>
+              <small v-if="part.classMember">{{ label('classMember',part.classMember) }}</small>
+            </button>
+          </div>
+        </aside>
+        <div class="rule-editor-pane">
+        <template v-for="(part,index) in rule.components" :key="index">
+      <article v-if="activePart===index" class="rule-preview-part">
         <header>
-          <h3>{{ part.periodBenefit?.label || label('component', part.type) }}</h3>
+          <h3>{{ ruleComponentLabel(part,label) }}</h3>
           <a-tag v-if="part.classMember">{{ label('classMember', part.classMember) }}</a-tag>
         </header>
         <a-descriptions size="small" :column="1">
@@ -131,6 +147,9 @@ onMounted(async () => {
           </ul>
         </details>
       </article>
+        </template>
+        </div>
+      </div>
       <div v-if="!embedded" class="workspace-edit-footer">
         <a-button @click="emit('close')">关闭</a-button>
         <a-button v-if="canCopy" type="primary" @click="emit('copy')">复制配置</a-button>
@@ -142,7 +161,7 @@ onMounted(async () => {
 <style scoped>
 .rule-preview h2 { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 12px; font-size:18px; }
 .rule-preview-scope { margin-bottom:16px; }
-.rule-preview-part { padding:12px 14px; margin-bottom:12px; border:1px solid var(--line); border-radius:6px; }
+.rule-preview-part { padding:18px; margin-bottom:12px; border:1px solid var(--line); border-radius:8px; }
 .rule-preview-part header { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:8px; }
 .rule-preview-part h3 { margin:0; font-size:15px; }
 .rule-preview-part h4, .rule-preview-part p { margin:8px 0 4px; font-size:13px; }

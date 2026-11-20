@@ -5,6 +5,9 @@ const props = defineProps({rule:Object, api:Function, formatMoney:Function, form
 const emit = defineEmits(['close','published'])
 const sheet = ref()
 const rows = ref([])
+const activeComponent = ref()
+const editingComponent = ref()
+let newComponentID = 0
 const effectiveDate = ref('')
 const amounts = ref({receipts:0,refunds:0,carry:0})
 const loading = ref(false)
@@ -52,25 +55,63 @@ const canSave = computed(() => sheet.value?.mayPublish && (!cutoff.value || firs
 const changed = computed(() => JSON.stringify(rows.value) !== JSON.stringify(editableRows(sheet.value?.items || [])))
 
 function editableRows(items) {
-  return items.map(item => ({itemKey:item.itemKey,tiers:item.tiers.map(row => ({
+  return items.map(item => ({uid:item.itemKey,itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,
+    organizationKey:item.organizationKey,poolName:item.poolName || '',ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
+    tiers:item.tiers.map(row => ({
     from:(row.min_inclusive || 0)/100,rate:row.rate_bps/100,
   }))}))
+}
+const targetTypes = [{value:'company',label:'指定公司'},{value:'pool',label:'团队池'}]
+function availableOrganizations(row) {
+  const options = (sheet.value?.options?.organizations || []).filter(item=>row.targetKind==='pool' || item.kind==='COMPANY')
+  if (!row.organizationKey || options.some(item=>item.value===row.organizationKey)) return options
+  const original = sheet.value.items.find(item=>item.itemKey===row.itemKey)
+  return [...options,{value:row.organizationKey,label:original?.targetName || row.organizationKey}]
+}
+function availableRoles(role) {
+  const options = (sheet.value?.options?.roles || []).filter(item=>item.organization)
+  if (!role || options.some(item=>item.value===role)) return options
+  return [...options,{value:role,label:props.optionLabel('catalogAppointmentRole',role) || role}]
+}
+function setTarget(row, target) {
+  row.targetKind = target
+  row.organizationKey = undefined
+  row.ownerRole = ''
+  row.memberRole = ''
+  row.poolName = ''
+}
+function addComponent() {
+  const uid = 'new-' + (++newComponentID)
+  rows.value.push({uid,label:'',targetKind:'company',tiers:[{from:0,rate:0}]})
+  activeComponent.value = uid
+  editingComponent.value = uid
+}
+function removeComponent(row) {
+  const index = rows.value.indexOf(row)
+  rows.value.splice(index,1)
+  activeComponent.value = rows.value[Math.min(index,rows.value.length-1)].uid
+  editingComponent.value = undefined
 }
 function minor(value, message) {
   if (value == null || !Number.isSafeInteger(Math.round(value*100)) || value < 0) throw new Error(message)
   return Math.round(value*100)
 }
-function editedTiers() {
-  if (!canSave.value || !changed.value) return []
-  return rows.value.map(item=>{
+function componentChanges() {
+  if (!canSave.value || !changed.value) return {}
+  return {components:rows.value.map(item=>{
+    if (!item.label.trim() || !item.organizationKey) throw new Error('请填写分项名称和收款组织。')
+    if (item.targetKind==='pool' && (!item.poolName?.trim() || !item.ownerRole || !item.memberRole)) {
+      throw new Error('请填写团队池名称、负责人职责和成员职责。')
+    }
     const starts = item.tiers.map(row=>minor(row.from,'请输入每档净额起点。'))
     if (starts.some((from,index)=>index && from<=starts[index-1])) throw new Error('每一档净额起点须高于上一档。')
-    return {itemKey:item.itemKey,tiers:item.tiers.map((row,index)=>{
+    return {itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,organizationKey:item.organizationKey,
+      poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole,tiers:item.tiers.map((row,index)=>{
       const rate = minor(row.rate,'请输入每档比例。')
       if (rate>10000) throw new Error('比例须在 0% 到 100% 之间。')
       return {min_inclusive:starts[index],max_exclusive:starts[index+1],rate_bps:rate}
     })}
-  })
+  })}
 }
 function removeTier(tiers, index) {
   tiers.splice(index,1)
@@ -87,6 +128,8 @@ watch(()=>props.rule.id, async id=>{
     if (request !== versionRequest) return
     sheet.value = data
     rows.value = editableRows(data.items)
+    activeComponent.value = rows.value[0]?.uid
+    editingComponent.value = undefined
     effectiveDate.value = canSave.value ? firstStart.value : ''
   } catch (err) {
     if (request === versionRequest) error.value = err.message
@@ -129,7 +172,7 @@ async function preview() {
   previewing.value = true
   try {
     const result = await props.api('/catalog-period-rules/preview',{method:'POST',body:JSON.stringify({
-      baseId:props.rule.id,edits:editedTiers(),
+      baseId:props.rule.id,...componentChanges(),
       receiptsMinor:minor(amounts.value.receipts,'请输入本期实收。'),
       refundsMinor:minor(amounts.value.refunds,'请输入本期退款。'),
       carryInMinor:-minor(amounts.value.carry,'请输入上期未抵扣退款。'),
@@ -151,7 +194,7 @@ async function publish() {
   try {
     const result = await props.api('/catalog-period-rules',{method:'POST',body:JSON.stringify({
       baseId:props.rule.id,effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),
-      edits:editedTiers(),
+      ...componentChanges(),
     })})
     emit('published',result)
   } catch (err) {
@@ -163,7 +206,7 @@ async function publish() {
 </script>
 
 <template>
-  <a-drawer open title="整期阶梯配置" width="min(760px, 100vw)"
+  <a-drawer open title="整期阶梯配置" width="min(1260px, 100vw)"
     :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="emit('close')">
     <a-alert v-if="error" class="feedback" :message="error" type="error" show-icon/>
     <a-spin :spinning="loading">
@@ -171,36 +214,81 @@ async function publish() {
         <h2>{{ sheet.label }} <a-tag>v{{ sheet.version }}</a-tag></h2>
         <a-alert v-if="sheet.paused" class="feedback" type="info" show-icon
           message="当前暂停执行。保存档位新版本后仍维持暂停。"/>
-        <a-descriptions size="small" :column="1" bordered>
+        <a-descriptions size="small" :column="{xs:1,sm:1,md:2}" bordered>
           <a-descriptions-item label="结算周期">{{ cycleLabels[sheet.cycle] }}</a-descriptions-item>
           <a-descriptions-item label="有效范围">{{ formatTime(sheet.effectiveFrom) }}<template v-if="sheet.effectiveTo"> 至 {{ formatTime(sheet.effectiveTo) }}</template></a-descriptions-item>
           <a-descriptions-item label="参与场景">
-            <a-tag v-for="sku in sheet.scenarios" :key="sku.code">{{ sku.label }}</a-tag>
+            <a-tag v-for="sku in sheet.scenarios" :key="sku.code" :title="sku.code">{{ sku.label }}</a-tag>
           </a-descriptions-item>
         </a-descriptions>
-        <section v-for="(item,index) in sheet.items" :key="item.itemKey" class="period-tier-item">
-          <h3 class="form-subhead">{{ item.label }}</h3>
-          <p><strong>发给谁</strong> {{ item.targetKind==='pool' ? item.poolName : item.targetName || '规则指定公司' }}
-            <span v-if="item.targetKind==='pool' && item.targetName"> · {{ item.targetName }}</span>
-          </p>
-          <p v-if="item.ownerRole" class="rule-formula">
-            分配负责人按「{{ optionLabel('catalogAppointmentRole',item.ownerRole) }}」任职确定。
-          </p>
+        <div class="rule-edit-layout period-component-layout">
+          <aside class="rule-item-nav" aria-label="整期分润分项">
+            <h3 class="form-subhead">分润分项</h3>
+            <div class="rule-item-nav-list">
+              <button v-for="item in rows" :key="item.uid" type="button" :aria-pressed="activeComponent===item.uid" @click="activeComponent=item.uid">
+                <span>{{ item.label || '新分项' }}</span><small>{{ item.targetKind==='pool' ? '团队池' : '公司' }}</small>
+              </button>
+            </div>
+            <a-button v-if="canSave" type="dashed" block :disabled="saving" @click="addComponent">新增分润分项</a-button>
+          </aside>
+        <div class="rule-editor-pane">
+        <template v-for="item in rows" :key="item.uid">
+        <section v-if="activeComponent===item.uid" class="period-tier-item">
+          <div class="period-component-heading">
+            <h3 class="form-subhead">{{ item.label || '新分项' }}</h3>
+            <div v-if="canSave">
+              <a-button v-if="editingComponent!==item.uid" type="link" :disabled="saving" @click="editingComponent=item.uid">编辑分项</a-button>
+              <a-button v-else type="link" :disabled="saving" @click="editingComponent=undefined">收起编辑</a-button>
+              <a-button v-if="rows.length>1" type="link" danger :disabled="saving" @click="removeComponent(item)">删除分项</a-button>
+            </div>
+          </div>
+          <h4 class="rule-item-section">发给谁</h4>
+          <a-form v-if="canSave && editingComponent===item.uid" layout="vertical" class="rule-basics">
+            <a-form-item label="分项名称" html-for="period-benefit-label">
+              <a-input id="period-benefit-label" v-model:value="item.label" :maxlength="80" :disabled="saving"/>
+            </a-form-item>
+            <a-form-item label="收款对象类型" html-for="period-benefit-target">
+              <a-select id="period-benefit-target" :value="item.targetKind" :options="targetTypes" :disabled="saving" @change="setTarget(item,$event)"/>
+            </a-form-item>
+            <a-form-item :label="item.targetKind==='pool' ? '归集组织' : '收款公司'" html-for="period-benefit-org">
+              <a-select id="period-benefit-org" v-model:value="item.organizationKey" :options="availableOrganizations(item)"
+                :disabled="saving" show-search option-filter-prop="label"/>
+            </a-form-item>
+            <template v-if="item.targetKind==='pool'">
+              <a-form-item label="团队池名称" html-for="period-benefit-pool">
+                <a-input id="period-benefit-pool" v-model:value="item.poolName" :maxlength="80" :disabled="saving"/>
+              </a-form-item>
+              <a-form-item label="负责人职责" html-for="period-benefit-owner">
+                <a-select id="period-benefit-owner" v-model:value="item.ownerRole" :options="availableRoles(item.ownerRole)" :disabled="saving"/>
+              </a-form-item>
+              <a-form-item label="成员职责" html-for="period-benefit-member">
+                <a-select id="period-benefit-member" v-model:value="item.memberRole" :options="availableRoles(item.memberRole)" :disabled="saving"/>
+              </a-form-item>
+            </template>
+          </a-form>
+          <template v-else>
+            <p class="rule-formula">{{ item.targetKind==='pool' ? item.poolName+' · ' : '' }}{{ availableOrganizations(item).find(org=>org.value===item.organizationKey)?.label || sheet.items.find(old=>old.itemKey===item.itemKey)?.targetName || '待选择' }}</p>
+            <p v-if="item.ownerRole" class="rule-formula">负责人 {{ optionLabel('catalogAppointmentRole',item.ownerRole) || item.ownerRole }} · 成员 {{ optionLabel('catalogAppointmentRole',item.memberRole) || item.memberRole || '未配置' }}</p>
+          </template>
+          <h4 class="rule-item-section">提成怎么算</h4>
           <p class="rule-formula">整期净收款选档，全部可计提净额乘以该档比例。</p>
           <div class="period-tier-grid period-tier-header" aria-hidden="true">
             <span>净额起点（元，含）</span><span>净额止点（元，不含）</span><span>计提比例（%）</span><span v-if="canSave">操作</span>
           </div>
-          <div v-for="(tier,i) in rows[index].tiers" :key="i" class="period-tier-grid">
+          <div v-for="(tier,i) in item.tiers" :key="i" class="period-tier-grid">
             <a-input-number v-model:value="tier.from" :aria-label="'第 '+(i+1)+' 档净额起点'"
               :min="0" :precision="2" :disabled="!canSave || saving || i===0"/>
-            <span>{{ rows[index].tiers[i+1]?.from == null ? (i===rows[index].tiers.length-1 ? '不限' : '待填写') : formatMoney(Math.round(rows[index].tiers[i+1].from*100)) }}</span>
+            <span>{{ item.tiers[i+1]?.from == null ? (i===item.tiers.length-1 ? '不限' : '待填写') : formatMoney(Math.round(item.tiers[i+1].from*100)) }}</span>
             <a-input-number v-model:value="tier.rate" :aria-label="'第 '+(i+1)+' 档计提比例'"
               :min="0" :max="100" :precision="2" :disabled="!canSave || saving"/>
-            <a-button v-if="canSave" danger type="link" size="small" :disabled="saving || rows[index].tiers.length===1"
-              @click="removeTier(rows[index].tiers,i)">删除</a-button>
+            <a-button v-if="canSave" danger type="link" size="small" :disabled="saving || item.tiers.length===1"
+              @click="removeTier(item.tiers,i)">删除</a-button>
           </div>
-          <a-button v-if="canSave" type="dashed" :disabled="saving" @click="rows[index].tiers.push({from:undefined,rate:0})">新增档位</a-button>
+          <a-button v-if="canSave" type="dashed" :disabled="saving" @click="item.tiers.push({from:undefined,rate:0})">新增档位</a-button>
         </section>
+        </template>
+        </div>
+        </div>
         <template v-if="canReviewActivity">
           <h3 class="form-subhead">订单和退款核对</h3>
           <p class="rule-formula">读取本地已同步的收退款。分组使用原付款时适用的规则和任职。</p>
@@ -298,7 +386,7 @@ async function publish() {
         <a-descriptions v-if="quote" size="small" :column="1" bordered class="period-quote-result" aria-label="金额演算结果">
           <a-descriptions-item label="可计提净额">{{ formatMoney(quote.basisMinor) }}</a-descriptions-item>
           <a-descriptions-item v-for="award in quote.awards" :key="award.itemKey"
-            :label="sheet.items.find(item=>item.itemKey===award.itemKey)?.label">{{ award.rateBps/100 }}% · {{ formatMoney(award.amountMinor) }}</a-descriptions-item>
+            :label="award.label || sheet.items.find(item=>item.itemKey===award.itemKey)?.label">{{ award.rateBps/100 }}% · {{ formatMoney(award.amountMinor) }}</a-descriptions-item>
           <a-descriptions-item label="下期结转退款">{{ formatMoney(-quote.carryForwardMinor) }}</a-descriptions-item>
         </a-descriptions>
         <a-form v-if="canSave" layout="vertical" class="period-quote-result">
@@ -318,7 +406,9 @@ async function publish() {
 </template>
 
 <style scoped>
-.period-tier-item { margin:16px 0; padding:12px; border:1px solid var(--line); border-radius:6px; }
+.period-component-layout { margin:16px 0 22px; }
+.period-tier-item { padding:18px; border:1px solid var(--line); border-radius:8px; }
+.period-component-heading { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
 .period-tier-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:8px; align-items:center; margin-bottom:8px; }
 .period-tier-header { color:var(--muted); font-size:12px; }
 .period-tier-grid :deep(.ant-input-number),.period-quote-inputs :deep(.ant-input-number) { width:100%; }

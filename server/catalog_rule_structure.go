@@ -15,11 +15,12 @@ import (
 var errCatalogRateConditions = errors.New("费率条件重复或存在重叠，请核对公司、销售关系和销售类别")
 
 type catalogStructureOption struct {
-	Value    string `json:"value"`
-	Label    string `json:"label"`
-	Kind     string `json:"kind,omitempty"`
-	UnitID   string `json:"unitId,omitempty"`
-	Personal bool   `json:"personal,omitempty"`
+	Value        string `json:"value"`
+	Label        string `json:"label"`
+	Kind         string `json:"kind,omitempty"`
+	UnitID       string `json:"unitId,omitempty"`
+	Personal     bool   `json:"personal,omitempty"`
+	Organization bool   `json:"organization,omitempty"`
 }
 
 type catalogStructureOptions struct {
@@ -64,7 +65,8 @@ const catalogStructureOptionsSQL = `WITH companies AS (
  WHERE b.source='DCAI' GROUP BY b.party_uuid HAVING count(DISTINCT u.id)=1
 ), configured AS (
  SELECT group_key,jsonb_agg(jsonb_build_object('value',option_key,'label',label,
-  'personal',group_key='catalogAppointmentRole' AND (NOT applies_to ? 'scopes' OR applies_to->'scopes' ?| ARRAY['PRODUCT','PROJECT']))
+  'personal',group_key='catalogAppointmentRole' AND (NOT applies_to ? 'scopes' OR applies_to->'scopes' ?| ARRAY['PRODUCT','PROJECT']),
+  'organization',group_key='catalogAppointmentRole' AND (NOT applies_to ? 'scopes' OR applies_to->'scopes' ? 'ORGANIZATION_UNIT'))
    ORDER BY display_order,option_key) AS items
  FROM configuration_options
  WHERE enabled AND group_key IN ('catalogSalesRelationship','catalogAppointmentRole')

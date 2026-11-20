@@ -18,16 +18,16 @@ type catalogPeriodTierEdit struct {
 }
 
 type catalogPeriodItem struct {
-	ItemKey      string              `json:"itemKey"`
-	Label        string              `json:"label"`
-	TargetKind   string              `json:"targetKind"`
-	TargetName   string              `json:"targetName,omitempty"`
-	PoolName     string              `json:"poolName,omitempty"`
-	OwnerRole    string              `json:"ownerRole,omitempty"`
-	Tiers        []catalogPeriodTier `json:"tiers"`
-	organization string
-	unit         string
-	memberRole   string
+	ItemKey         string              `json:"itemKey"`
+	Label           string              `json:"label"`
+	TargetKind      string              `json:"targetKind"`
+	TargetName      string              `json:"targetName,omitempty"`
+	OrganizationKey string              `json:"organizationKey"`
+	PoolName        string              `json:"poolName,omitempty"`
+	OwnerRole       string              `json:"ownerRole,omitempty"`
+	MemberRole      string              `json:"memberRole,omitempty"`
+	Tiers           []catalogPeriodTier `json:"tiers"`
+	unit            string
 }
 
 type catalogPeriodDefinition struct {
@@ -86,12 +86,14 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		}
 		items[action.Item] = true
 		org := action.Company
+		memberRole := ""
 		if action.Mode == "TEAM_POOL" {
 			org = action.PoolParty
+			memberRole = catalogAggregateMemberRole(action.Role, action.EligibilityRole)
 		}
 		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: action.targetKind(),
-			PoolName: action.PoolName, OwnerRole: action.OwnerRole, organization: org, Tiers: action.Tiers,
-			unit: action.PoolUnit, memberRole: catalogAggregateMemberRole(action.Role, action.EligibilityRole)})
+			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OrganizationKey: org, Tiers: action.Tiers,
+			MemberRole: memberRole, unit: action.PoolUnit})
 	}
 	return result, nil
 }
@@ -141,14 +143,7 @@ func editCatalogPeriodTiers(raw json.RawMessage, edits []catalogPeriodTierEdit) 
 		if slices.EqualFunc(tiers, item.Tiers, sameCatalogPeriodTier) {
 			continue
 		}
-		rows := make([]struct {
-			ID string `json:"id"`
-			catalogPeriodTier
-		}, len(tiers))
-		for n, tier := range tiers {
-			rows[n].ID, rows[n].catalogPeriodTier = "tier-"+strconv.Itoa(n+1), tier
-		}
-		actions[i]["tier_table"], err = json.Marshal(rows)
+		actions[i]["tier_table"], err = encodeCatalogPeriodTiers(tiers)
 		if err != nil {
 			return nil, err
 		}
@@ -167,6 +162,17 @@ func editCatalogPeriodTiers(raw json.RawMessage, edits []catalogPeriodTierEdit) 
 	return json.Marshal(root)
 }
 
+func encodeCatalogPeriodTiers(tiers []catalogPeriodTier) (json.RawMessage, error) {
+	rows := make([]struct {
+		ID string `json:"id"`
+		catalogPeriodTier
+	}, len(tiers))
+	for n, tier := range tiers {
+		rows[n].ID, rows[n].catalogPeriodTier = "tier-"+strconv.Itoa(n+1), tier
+	}
+	return json.Marshal(rows)
+}
+
 func sameCatalogPeriodTier(a, b catalogPeriodTier) bool {
 	if a.From != b.From || a.Rate != b.Rate {
 		return false
@@ -179,6 +185,7 @@ func sameCatalogPeriodTier(a, b catalogPeriodTier) bool {
 
 type catalogPeriodAward struct {
 	ItemKey string `json:"itemKey"`
+	Label   string `json:"label"`
 	Rate    int64  `json:"rateBps"`
 	Amount  int64  `json:"amountMinor"`
 }
@@ -213,7 +220,7 @@ func quoteCatalogPeriod(items []catalogPeriodItem, received, refunds, carry int6
 		if err != nil {
 			return result, err
 		}
-		result.Awards = append(result.Awards, catalogPeriodAward{item.ItemKey, rate, amount})
+		result.Awards = append(result.Awards, catalogPeriodAward{item.ItemKey, item.Label, rate, amount})
 	}
 	return result, nil
 }

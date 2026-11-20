@@ -198,7 +198,7 @@ async function publish() {
 </script>
 
 <template>
-  <a-drawer :open="!!(rule || applied)" :width="'min(760px, 100vw)'" :title="applied ? '计提使用的规则' : '产品分润配置'"
+  <a-drawer :open="!!(rule || applied)" :width="'min(1260px, 100vw)'" :title="applied ? '计提使用的规则' : '产品分润配置'"
     :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="emit('close')">
     <section :aria-label="applied ? '计提使用的规则' : '产品分润配置'">
     <a-alert v-if="error" type="error" :message="error" show-icon class="feedback"/>
@@ -206,6 +206,7 @@ async function publish() {
       <template v-if="sheet">
         <h2>{{ sheet.productName }}</h2>
         <p class="draft-report-note">{{ sheet.label }} · v{{ sheet.version }}</p>
+        <p v-if="rule?.scopeId && rule.scopeType==='BUSINESS_SCENARIO'" class="draft-report-note">业务 SKU {{ rule.scopeLabel || rule.scopeId }}</p>
         <p class="draft-report-note">
           生效于 {{ formatTime(sheet.effectiveFrom) }}<span v-if="sheet.effectiveTo"> · 截止 {{ formatTime(sheet.effectiveTo) }}</span>
         </p>

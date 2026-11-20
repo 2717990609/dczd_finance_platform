@@ -262,7 +262,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap),
 		errors.Is(err, errPracticeMonthSettlementDependency),
 		errors.Is(err, errCatalogRateStale), errors.Is(err, errCatalogRateUnavailable), errors.Is(err, errCatalogRateDates), errors.Is(err, errCatalogTeamRate),
-		errors.Is(err, errCatalogRateConditions), errors.Is(err, errCatalogRequiredEntry),
+		errors.Is(err, errCatalogRateConditions), errors.Is(err, errCatalogRequiredEntry), errors.Is(err, errCatalogPeriodRecipient), errors.Is(err, errCatalogPeriodComponents),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
 		errors.Is(err, errSettlementUnsupported),
 		errors.Is(err, errDraftChanged),
@@ -309,7 +309,14 @@ func (s workspace) list(query string) http.HandlerFunc {
 
 const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT p.id,p.code,p.name,p.period_mode AS "periodMode",p.cycle_start_day AS "cycleStartDay",
- (l.product_id IS NOT NULL) AS "catalogPending"
+ (l.product_id IS NOT NULL) AS "catalogPending",
+ coalesce((
+  SELECT jsonb_agg(jsonb_build_object('code',sku_code,'label',label) ORDER BY label,sku_code)
+  FROM (
+   SELECT sku_code,min(sku_label) AS label FROM catalog_business_routes r
+   WHERE r.product_id=p.id AND r.observed_at=l.captured_at GROUP BY sku_code
+  ) business
+ ),'[]') AS "businessSkus"
  FROM products p LEFT JOIN product_catalog_settings l ON l.product_id=p.id
  WHERE ($1::bigint[] IS NULL OR p.id=ANY($1)) ORDER BY p.id DESC LIMIT 500) p`
 const mappingsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM

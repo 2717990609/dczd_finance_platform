@@ -20,7 +20,7 @@ import PracticeTierEditor from './PracticeTierEditor.vue'
 import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
-import { copiedRuleComponents } from './rule-component-form'
+import { copiedRuleComponents, ruleComponentLabel } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -74,6 +74,8 @@ const activeWorkspace = computed(() => workspaces.find(workspace => workspace.ke
 const theme = {token:{colorPrimary:'#315ab2', colorLink:'#315ab2', colorText:'#253044', borderRadius:6, fontSize:14, controlHeight:34}}
 const workProductScope = ref()
 const configProductScope = ref()
+const ruleBusinessScope = ref()
+const activeRuleComponent = ref(0)
 const unitScope = ref()
 const usesOrganizationScope = computed(() => ['orders','settlement','monthly'].includes(current.value))
 const scopeSearch = ref('')
@@ -85,6 +87,25 @@ const productScope = computed({
 })
 const productScopedPages = new Set([...configProductPages,'tasks','settlement','monthly'])
 const usesProductScope = computed(() => productScopedPages.has(current.value))
+const ruleBusinessOptions = computed(() => {
+  const products = data.value.products.filter(product=>!productScope.value || product.id===productScope.value)
+  return products.flatMap(product=>{
+    const prefix = productScope.value ? '' : product.name+' · '
+    const choices = (product.businessSkus || []).map(sku=>({
+      value:product.id+':sku:'+sku.code,label:sku.label.startsWith(product.name) ? sku.label : prefix+sku.label,code:sku.code,
+    }))
+    if (data.value.catalogRules.some(rule=>rule.productId===product.id && rule.scopeType==='CROSS_SCENARIO_AGGREGATE')) {
+      choices.push({value:product.id+':aggregate',label:prefix+'跨 SKU 汇总'})
+    }
+    if (product.periodMode==='class') {
+      for (const member of options('classMember').filter(member=>member.value)) {
+        choices.push({value:product.id+':member:'+member.value,label:prefix+member.label})
+      }
+    }
+    return choices
+  })
+})
+watch(productScope,()=>{ ruleBusinessScope.value=undefined })
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
 const organization = ref()
 const monthlyReport = ref()
@@ -278,11 +299,6 @@ function resetAmountMode(row) {
   const modes = amountModes(row)
   if (!modes.some(option => option.value === row.mode)) updateAmountMode(row,modes[0]?.value)
 }
-function tierLabel(tiers) {
-  if (tiers.companySchedules?.length) return '公司阶梯'
-  if (tiers.count?.length && tiers.performance?.length) return '人数优先阶梯'
-  return tiers.count?.length ? '累计人数阶梯' : '本期实付阶梯'
-}
 const componentTypes = computed(() => options('component').filter(option=>
   matchesOption(option,selectedProduct.value?.periodMode) &&
   (!isPeriodBenefit(option.value) || !!periodBenefitMode.value?.scope?.componentTypes?.includes(option.value)) &&
@@ -397,6 +413,15 @@ const mainRows = computed(() => {
   let rows = usesProductScope.value && productScope.value
     ? result.filter(row => (key === 'products' ? row.id : row.productId) === productScope.value)
     : result
+  if (key==='rules' && ruleBusinessScope.value) {
+    const [product,kind,...scope] = ruleBusinessScope.value.split(':')
+    const businessKey = scope.join(':')
+    rows = rows.filter(row=>row.productId===Number(product) && (
+      kind==='sku' && row.scopeType==='BUSINESS_SCENARIO' && row.scopeId===businessKey ||
+      kind==='aggregate' && row.scopeType==='CROSS_SCENARIO_AGGREGATE' ||
+      kind==='member' && row.components?.some(component=>!component.classMember || component.classMember===businessKey)
+    ))
+  }
   if (key==='identities' && identityAccount.value) {
     const {source,externalId} = identityAccount.value
     rows = rows.filter(row=>row.source===source && row.externalId===externalId)
@@ -408,12 +433,12 @@ const mainRows = computed(() => {
 })
 const columns = computed(() => {
   const values = {
-    product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['来源映射','mappingCount'],['操作','productAction',160]],
+    product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['业务 SKU / 报名类型','businessSkus',290],['操作','productAction',160]],
     mapping:[['产品名称','productName'],['业务来源','source'],['业务域','domain'],['来源标识','sourceKey']],
     period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],
       ['报表月份','reportMonth',115],['签到名单','practiceRoster',150],['适用规则','ruleVersion',200]],
-    rule:[['规则名称','label',200],['所属产品','productName',155],['版本','version',80],
-      ['适用范围','scope',160],['生效时间','effectiveFrom',175],['状态与分润组件','components',220],['操作','ruleAction',270]],
+    rule:[['规则名称','label',210],['所属产品','productName',128],['版本','version',68],
+      ['适用范围','scope',180],['生效时间','effectiveFrom',165],['状态 / 分项','components',112],['操作','ruleAction',240]],
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
     person:[['人员名称','name'],['人员 ID','id']],
     identity:[['归属人员','personName',128],['业务来源','source',112],['来源人员 ID','externalId',164],
@@ -609,6 +634,7 @@ function changeRoute() {
     productScope.value=undefined
   }
   tab.value = 'main'
+  ruleBusinessScope.value = undefined
   identityAccount.value = undefined
   orderQuery.value = isOrders ? (params.get('orderId') || '').trim() : ''
   filter.value = orderQuery.value
@@ -718,6 +744,7 @@ watch(() => draft.value.productId, (next, previous) => {
     draft.value.periodId = undefined
     draft.value.effectiveFrom = undefined
     draft.value.components = [newRuleComponent()]
+    activeRuleComponent.value = 0
   }
 })
 watch(() => drawer.value==='rule' && classRule.value ? draft.value.productId : undefined, async (product, _, onCleanup) => {
@@ -800,6 +827,7 @@ function open(kind, row, edit = false) {
   notice.value = ''
   rulePreview.value = undefined
   drawer.value = kind
+  activeRuleComponent.value = 0
   draft.value = {
     periodMode:firstOption('periodMode'),practicePeriodKind:firstOption('practicePeriodKind'),source:row?.source || firstOption('source'),
     orderId:row?.orderId || '',scope:firstOption('ruleScope'),
@@ -1230,6 +1258,18 @@ async function save() {
                 allow-clear @search="value=>current==='orders'&&searchOrders(value)"/>
             </div>
           </div>
+          <div v-if="current==='rules' && ruleBusinessOptions.length" class="rule-scope-bar">
+            <span id="rule-business-label">业务 SKU / 报名类型</span>
+            <div v-if="ruleBusinessOptions.length<=7" class="rule-scope-buttons" role="group" aria-labelledby="rule-business-label">
+              <a-button :type="!ruleBusinessScope ? 'primary' : 'default'" :aria-pressed="!ruleBusinessScope"
+                @click="ruleBusinessScope=undefined">全部</a-button>
+              <a-button v-for="scope in ruleBusinessOptions" :key="scope.value"
+                :type="ruleBusinessScope===scope.value ? 'primary' : 'default'" :aria-pressed="ruleBusinessScope===scope.value"
+                :title="scope.code" @click="ruleBusinessScope=scope.value">{{ scope.label }}</a-button>
+            </div>
+            <a-select v-else v-model:value="ruleBusinessScope" :options="ruleBusinessOptions" aria-labelledby="rule-business-label"
+              allow-clear show-search option-filter-prop="label" placeholder="全部业务 SKU 和报名类型"/>
+          </div>
           <section v-if="current==='orders' && orderQuery" class="identity-scope" aria-label="当前订单查询">
             <div>
               <span>{{ sourceFilter ? sourceLabel(sourceFilter) : '全部来源' }}</span>
@@ -1249,7 +1289,14 @@ async function save() {
               :pagination="current==='orders'?false:{pageSize:12,showSizeChanger:false,hideOnSinglePage:current==='people'}"
               :scroll="{x:tableWidth}">
               <template #bodyCell="{ column, record, text }">
-                <a v-if="column.key==='name' && current==='periods'" :href="'#settlement?periodId='+record.id">{{ text }}</a>
+                <template v-if="column.key==='businessSkus'">
+                  <div v-if="text?.length" class="product-business-skus">
+                    <span v-for="sku in text" :key="sku.code" :title="sku.code">{{ sku.label }}</span>
+                  </div>
+                  <span v-else-if="record.periodMode==='class'">{{ options('classMember').filter(item=>item.value).map(item=>item.label).join(' · ') }}</span>
+                  <span v-else>—</span>
+                </template>
+                <a v-else-if="column.key==='name' && current==='periods'" :href="'#settlement?periodId='+record.id">{{ text }}</a>
                 <template v-else-if="column.key==='name'||column.key==='label'">
                   <strong class="primary-cell">{{ text }}</strong>
                 </template>
@@ -1297,7 +1344,8 @@ async function save() {
                 </template>
                 <template v-else-if="column.key==='scope'">
                   <template v-if="record.catalogPending">
-                    {{ record.scopeLabel || catalogScopeLabels[record.scopeType] || '未细分范围' }}
+                    {{ record.scopeType==='CROSS_SCENARIO_AGGREGATE' ? '跨 SKU 汇总' : record.scopeLabel || catalogScopeLabels[record.scopeType] || '未细分范围' }}
+                    <small v-if="record.scopeType==='BUSINESS_SCENARIO' && record.scopeId" class="order-version">{{ record.scopeId }}</small>
                   </template>
                   <template v-else>{{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}</template>
                 </template>
@@ -1321,26 +1369,10 @@ async function save() {
                     type="link" danger size="small" @click="openRuleRetirement(record)">停用规则</a-button>
                 </template>
                 <template v-else-if="column.key==='components'">
-                  <div v-for="(c,index) in text" :key="index">
-                    <a-tag>{{ c.periodBenefit?.label || optionLabel('component',c.type) }}{{ c.classMember ? ' · '+optionLabel('classMember',c.classMember) : '' }}
-                      {{ c.mode==='company_sales' ? c.companySales.categories.length+' 个类别' : c.mode==='period_rate' ? c.periodBenefit.tiers?.length ? '班次阶梯' : (c.value/10000)+'%' : c.mode==='tiered' ? tierLabel(c.tiers) : c.mode==='rate' ? (c.value/100)+'%' : formatMoney(c.value) }}</a-tag>
-                    <small v-if="c.companySales?.categories.some(category=>category.recommendationRate>0 || category.overrides?.some(override=>override.recommendationRate>0))"
-                      class="order-version">含公司推荐分润</small>
-                    <small v-if="c.periodBenefit?.pool || c.retrainSplits?.length" class="order-version">含资金池归集</small>
-                    <small v-if="c.tiers?.companySchedules?.length" class="order-version">
-                      {{ c.tiers.companySchedules.map(company=>optionLabel('practiceSalesCompany',company.companyId)).join('、') }}
-                    </small>
-                    <small v-if="c.tiers?.openingId" class="order-version">{{ savedOpeningLabel(c.tiers.openingId) }}</small>
-                    <details v-if="c.tiers?.personCountStarts?.length" class="rule-count-review">
-                      <summary>个人累计起点（{{ c.tiers.personCountStarts.length }}）</summary>
-                      <ul>
-                        <li v-for="start in c.tiers.personCountStarts" :key="start.personId">
-                          {{ peopleOptions.find(person=>person.value===start.personId)?.label || '人员 '+start.personId }}
-                          · {{ start.countFromOrdinal ? '第 '+start.countFromOrdinal+' 期' : formatTime(start.countFromAt) }}
-                        </li>
-                      </ul>
-                    </details>
-                  </div>
+                  {{ text.length }} 个分项
+                  <small v-if="text.some(c=>c.classMember)" class="order-version">
+                    {{ [...new Set(text.filter(c=>c.classMember).map(c=>optionLabel('classMember',c.classMember)))].join(' · ') }}
+                  </small>
                 </template>
                 <template v-else-if="column.key==='source'">{{ sourceLabel(text) }}</template>
                 <template v-else-if="column.key==='orderNo'"><button class="order-link" type="button" @click="orderDetails={order:record,versionId:record.id,allowPull:true}" :title="'原订单 ID '+record.orderId">{{ text || record.orderId }}</button><small class="order-version">版本 {{ record.version }}</small></template>
@@ -1366,7 +1398,7 @@ async function save() {
       : drawer==='rule' && draft.copiedFrom ? '复制分润规则'
       : drawer==='periodRoster' && !draft.expectedSourcePeriodKey ? '关联签到名单'
       : drawer==='identity' && draft.previousOwner ? '变更来源账号归属' : titles[drawer]"
-    :width="drawer==='rule' ? 'min(620px, 100vw)' : 'min(510px, 100vw)'"
+    :width="drawer==='rule' ? 'min(1260px, 100vw)' : 'min(510px, 100vw)'"
     :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="close">
     <div v-if="formError" ref="formFeedback" tabindex="-1">
       <a-alert class="feedback" type="error" :message="formError" show-icon/>
@@ -1388,7 +1420,7 @@ async function save() {
           <a-input-number v-model:value="draft.cycleStartDay" aria-label="退款账期每月开始日" :min="1" :max="28" :precision="0"/>
         </a-form-item>
       </template>
-      <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='rule' ? ruleProductOptions : productOptions" :disabled="Boolean(draft.copiedFrom || draft.lockedPeriod)"/></a-form-item>
+      <a-form-item v-if="['mapping','period'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="productOptions" :disabled="Boolean(draft.lockedPeriod)"/></a-form-item>
       <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" :label="drawer==='pull' ? '订单来源' : '业务来源'">
         <a-select v-model:value="draft.source" :aria-label="drawer==='pull' ? '订单来源' : '业务来源'"
           :options="sources" :disabled="drawer==='pull' && draft.lockedOrder || drawer==='identity' && Boolean(draft.previousOwner)"/>
@@ -1442,6 +1474,8 @@ async function save() {
       <template v-if="drawer==='rule'">
         <a-alert v-if="draft.copiedFrom" class="feedback" type="info"
           :message="draft.editBaseId ? '编辑 v'+draft.copiedFrom+'，保存后生成新版本。已结算记录继续引用原规则。' : '已带入 v'+draft.copiedFrom+' 的组件配置，请核对本次适用范围和生效时间。'" show-icon/>
+        <div class="rule-basics">
+        <a-form-item label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="ruleProductOptions" :disabled="Boolean(draft.copiedFrom || draft.lockedPeriod)"/></a-form-item>
         <a-form-item label="规则名称" required><a-input v-model:value="draft.label" aria-label="规则名称"/></a-form-item>
         <a-form-item html-for="rule-scope" label="适用范围"><a-select id="rule-scope" v-model:value="draft.scope" :options="options('ruleScope')" :disabled="Boolean(draft.lockedPeriod || draft.editBaseId)"/></a-form-item>
         <a-form-item v-if="draft.scope==='period'" html-for="rule-period" label="指定期次" required><a-select id="rule-period" v-model:value="draft.periodId" :options="periodOptions" :disabled="Boolean(draft.lockedPeriod || draft.editBaseId)"/></a-form-item>
@@ -1450,8 +1484,24 @@ async function save() {
           <span v-if="draft.editBaseId">{{ draft.effectiveFrom ? formatTime(draft.effectiveFrom) : '范围默认' }}</span>
           <a-input v-else v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local"/>
         </a-form-item>
-        <h3 class="form-subhead">分润分项</h3>
-        <div v-for="(c,i) in draft.components" :key="i" class="component-editor">
+        </div>
+        <div class="rule-edit-layout" v-if="draft.components?.length">
+          <aside class="rule-item-nav" aria-label="分润分项">
+            <h3 class="form-subhead">分润分项</h3>
+            <div class="rule-item-nav-list">
+              <button v-for="(c,i) in draft.components" :key="i" type="button" :aria-pressed="activeRuleComponent===i"
+                @click="activeRuleComponent=i">
+                <span>{{ ruleComponentLabel(c,optionLabel) }}
+                  <small v-if="c.periodBenefit?.personId" class="rule-nav-recipient">{{ classPeopleOptions.find(option=>option.value===c.periodBenefit.personId)?.label }}</small>
+                </span>
+                <small v-if="c.classMember">{{ optionLabel('classMember',c.classMember) }}</small>
+              </button>
+            </div>
+            <a-button v-if="nextComponent" type="dashed" block @click="draft.components.push(nextComponent); activeRuleComponent=draft.components.length-1">添加分润分项</a-button>
+          </aside>
+          <div class="rule-editor-pane">
+          <template v-for="(c,i) in draft.components" :key="i">
+          <section v-if="i===activeRuleComponent" class="component-editor">
           <div class="rule-item-heading">
             <a-form-item :html-for="'rule-component-'+i" label="分项类型">
               <a-select :id="'rule-component-'+i" v-model:value="c.type" :options="availableComponentTypes(c)" @change="resetAmountMode(c)"/>
@@ -1459,7 +1509,8 @@ async function save() {
             <a-form-item v-if="classRule" :html-for="'rule-member-'+i" label="报名类型">
               <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="availableClassMembers(c)" @change="resetAmountMode(c)"/>
             </a-form-item>
-            <a-button v-if="draft.components.length>1" type="link" danger @click="draft.components.splice(i,1)">删除分项</a-button>
+            <a-button v-if="draft.components.length>1" type="link" danger
+              @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">删除分项</a-button>
           </div>
           <template v-if="['sales','referral'].includes(c.type)">
             <h4 class="rule-item-section">发给谁</h4>
@@ -1496,8 +1547,10 @@ async function save() {
             :extra="classRule ? (c.retrainSplits?.length ? '仅适用于未设置公司拆分的固定提成。' : '适用于确认名单前的固定金额分项或固定金额档位。') : '退款按计提时使用的规则版本处理。'">
             <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>
           </a-form-item>
+          </section>
+          </template>
+          </div>
         </div>
-        <a-button v-if="nextComponent" type="dashed" block @click="draft.components.push(nextComponent)">添加分润分项</a-button>
       </template>
       <a-form-item v-if="drawer==='person'" label="人员名称" required><a-input v-model:value="draft.name" aria-label="人员名称"/></a-form-item>
       <template v-if="drawer==='identity'">

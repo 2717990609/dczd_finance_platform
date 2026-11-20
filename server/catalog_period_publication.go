@@ -20,17 +20,18 @@ const catalogPeriodRuleScope = `scope.source_system='DCAI' AND p.project_code=sc
  AND p.policy_kind='COMPONENT_RULE' AND p.scope_type='CROSS_SCENARIO_AGGREGATE'`
 
 type catalogPeriodVersion struct {
-	ProductID   int64               `json:"productId"`
-	ProductName string              `json:"productName"`
-	Label       string              `json:"label"`
-	Version     int                 `json:"version"`
-	From        time.Time           `json:"effectiveFrom"`
-	Through     *time.Time          `json:"effectiveTo"`
-	MayPublish  bool                `json:"mayPublish"`
-	Paused      bool                `json:"paused"`
-	Cycle       string              `json:"cycle"`
-	Scenarios   []catalogPeriodSKU  `json:"scenarios"`
-	Items       []catalogPeriodItem `json:"items"`
+	ProductID   int64                 `json:"productId"`
+	ProductName string                `json:"productName"`
+	Label       string                `json:"label"`
+	Version     int                   `json:"version"`
+	From        time.Time             `json:"effectiveFrom"`
+	Through     *time.Time            `json:"effectiveTo"`
+	MayPublish  bool                  `json:"mayPublish"`
+	Paused      bool                  `json:"paused"`
+	Cycle       string                `json:"cycle"`
+	Scenarios   []catalogPeriodSKU    `json:"scenarios"`
+	Items       []catalogPeriodItem   `json:"items"`
+	Options     *catalogPeriodOptions `json:"options,omitempty"`
 	packageID   string
 	raw         json.RawMessage
 }
@@ -41,21 +42,28 @@ type catalogPeriodSKU struct {
 }
 
 type catalogPeriodPublishInput struct {
-	BaseID        string                  `json:"baseId"`
-	EffectiveFrom time.Time               `json:"effectiveFrom"`
-	Edits         []catalogPeriodTierEdit `json:"edits"`
+	BaseID        string                       `json:"baseId"`
+	EffectiveFrom time.Time                    `json:"effectiveFrom"`
+	Edits         []catalogPeriodTierEdit      `json:"edits"`
+	Components    []catalogPeriodComponentEdit `json:"components"`
 }
 
 type catalogPeriodQuoteInput struct {
-	BaseID   string                  `json:"baseId"`
-	Edits    []catalogPeriodTierEdit `json:"edits"`
-	Receipts int64                   `json:"receiptsMinor"`
-	Refunds  int64                   `json:"refundsMinor"`
-	CarryIn  int64                   `json:"carryInMinor"`
+	BaseID     string                       `json:"baseId"`
+	Edits      []catalogPeriodTierEdit      `json:"edits"`
+	Components []catalogPeriodComponentEdit `json:"components"`
+	Receipts   int64                        `json:"receiptsMinor"`
+	Refunds    int64                        `json:"refundsMinor"`
+	CarryIn    int64                        `json:"carryInMinor"`
 }
 
 type catalogPeriodReader interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+type catalogPeriodOptions struct {
+	Organizations []catalogStructureOption `json:"organizations"`
+	Roles         []catalogStructureOption `json:"roles"`
 }
 
 func readCatalogPeriodVersion(ctx context.Context, db catalogPeriodReader, id string) (catalogPeriodVersion, error) {
@@ -99,7 +107,7 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 	rule.Cycle, rule.Items = period.Cycle, period.Items
 	var organizations []string
 	for _, item := range rule.Items {
-		organizations = append(organizations, item.organization)
+		organizations = append(organizations, item.OrganizationKey)
 	}
 	var skuLabels, organizationNames map[string]string
 	err = s.db.QueryRow(ctx, `SELECT coalesce((
@@ -122,7 +130,12 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 		rule.Scenarios = append(rule.Scenarios, catalogPeriodSKU{Code: code, Label: label})
 	}
 	for i := range rule.Items {
-		rule.Items[i].TargetName = organizationNames[rule.Items[i].organization]
+		rule.Items[i].TargetName = organizationNames[rule.Items[i].OrganizationKey]
+	}
+	if err == nil && rule.MayPublish {
+		var options catalogStructureOptions
+		options, err = readCatalogStructureOptions(ctx, s.db)
+		rule.Options = &catalogPeriodOptions{Organizations: options.Organizations, Roles: options.Roles}
 	}
 	respond(w, rule, err)
 }
@@ -139,10 +152,10 @@ func (s workspace) postCatalogPeriodQuote(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return result, err
 		}
-		if !actor.permits(rule.ProductID, len(input.Edits) != 0) {
+		if !actor.permits(rule.ProductID, len(input.Edits) != 0 || input.Components != nil) {
 			return result, errRulePermission
 		}
-		regulated, err := editCatalogPeriodTiers(rule.raw, input.Edits)
+		regulated, err := applyCatalogPeriodChanges(ctx, s.db, rule.raw, input.Edits, input.Components)
 		if err != nil {
 			return result, err
 		}
@@ -202,7 +215,7 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 		return result, err
 	}
 	at := input.EffectiveFrom.In(shanghai)
-	if !base.MayPublish || len(input.Edits) == 0 || !validCatalogPeriodStart(at, period.Cycle) || !at.After(base.From) ||
+	if !base.MayPublish || (len(input.Edits) == 0 && input.Components == nil) || !validCatalogPeriodStart(at, period.Cycle) || !at.After(base.From) ||
 		base.Through != nil && !at.Before(*base.Through) {
 		return result, errCatalogPeriodStart
 	}
@@ -218,7 +231,12 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 	if err != nil {
 		return result, err
 	}
-	body, err := editCatalogPeriodTiers(base.raw, input.Edits)
+	if input.Components != nil {
+		if _, err := tx.Exec(ctx, `SELECT source FROM catalog_sales_context WHERE source='DCAI' FOR SHARE`); err != nil {
+			return result, err
+		}
+	}
+	body, err := applyCatalogPeriodChanges(ctx, tx, base.raw, input.Edits, input.Components)
 	if err != nil {
 		return result, err
 	}
@@ -233,6 +251,21 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 		base.packageID, at, base.Through, hex.EncodeToString(digest[:]), body, actor.subject, input.BaseID).
 		Scan(&result.ID, &result.Version)
 	return result, err
+}
+
+func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, raw json.RawMessage,
+	edits []catalogPeriodTierEdit, components []catalogPeriodComponentEdit) (json.RawMessage, error) {
+	if components == nil {
+		return editCatalogPeriodTiers(raw, edits)
+	}
+	if len(edits) != 0 {
+		return nil, invalid
+	}
+	options, err := readCatalogStructureOptions(ctx, db)
+	if err != nil {
+		return nil, err
+	}
+	return editCatalogPeriodComponents(raw, components, options)
 }
 
 func validCatalogPeriodStart(at time.Time, cycle string) bool {

@@ -20,6 +20,54 @@ const twoTierPeriodRule = `{
  "tier_table":[{"id":"original-1","rate_bps":0,"max_exclusive":10001},{"id":"original-2","rate_bps":100,"min_inclusive":10001}]}]
 }`
 
+func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t *testing.T) {
+	choices := catalogStructureOptions{
+		Organizations: []catalogStructureOption{{Value: "company", UnitID: "company-unit", Kind: "COMPANY"}, {Value: "pool", UnitID: "pool-unit", Kind: "TEAM"}},
+		Roles:         []catalogStructureOption{{Value: "OWNER", Organization: true}, {Value: "MEMBER", Organization: true}},
+	}
+	raw := json.RawMessage(twoTierPeriodRule)
+	edits := []catalogPeriodComponentEdit{
+		{ItemKey: "operations", Label: "交付", TargetKind: "pool", OrganizationKey: "pool", PoolName: "交付池",
+			OwnerRole: "OWNER", MemberRole: "MEMBER", Tiers: []catalogPeriodTier{{Rate: 125}}},
+		{Label: "技术公司", TargetKind: "company", OrganizationKey: "company", Tiers: []catalogPeriodTier{{Rate: 250}}},
+	}
+	body, err := editCatalogPeriodComponents(raw, edits, choices)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parseCatalogPeriodRule(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Items) != 2 || parsed.Items[0].ItemKey != "operations" || parsed.Items[0].unit != "pool-unit" ||
+		parsed.Items[0].PoolName != "交付池" || parsed.Items[0].OwnerRole != "OWNER" || parsed.Items[0].MemberRole != "MEMBER" ||
+		parsed.Items[1].OrganizationKey != "company" || parsed.Items[1].TargetKind != "company" {
+		t.Fatalf("wrong version contents: %+v", parsed.Items)
+	}
+	original, err := parseCatalogPeriodRule(raw)
+	if err != nil || len(original.Items) != 1 || original.Items[0].Label != "运营" || len(original.Items[0].Tiers) != 2 {
+		t.Fatalf("original changed: %+v, %v", original, err)
+	}
+	edits = edits[1:]
+	edits[0].ItemKey = parsed.Items[1].ItemKey
+	body, err = editCatalogPeriodComponents(body, edits, choices)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err = parseCatalogPeriodRule(body)
+	if err != nil || len(parsed.Items) != 1 || parsed.Items[0].ItemKey != edits[0].ItemKey {
+		t.Fatalf("removal did not reach execution: %+v, %v", parsed, err)
+	}
+	quote, err := quoteCatalogPeriod(parsed.Items, 20000, 0, 0)
+	if err != nil || quote.Total != 500 || len(quote.Awards) != 1 {
+		t.Fatalf("wrong edited award: %+v, %v", quote, err)
+	}
+	edits[0].OrganizationKey = "pool"
+	if _, err := editCatalogPeriodComponents(body, edits, choices); !errors.Is(err, errCatalogPeriodRecipient) {
+		t.Fatalf("accepted non-company for company payout: %v", err)
+	}
+}
+
 func TestCatalogPeriodRuleQuotesWholeNetAtCentBoundary(t *testing.T) {
 	rule, err := parseCatalogPeriodRule(json.RawMessage(twoTierPeriodRule))
 	if err != nil {

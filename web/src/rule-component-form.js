@@ -1,5 +1,13 @@
 const localTime = value => value ? new Date(Date.parse(value) + 8 * 60 * 60 * 1000).toISOString().slice(0, -1) : undefined
 
+export function ruleComponentLabel(component, optionLabel) {
+  const label = component.periodBenefit?.label
+  const type = optionLabel('component',component.type) || '分润分项'
+  if (!label) return type
+  const title = optionLabel('catalogAppointmentRole',label)
+  return title!==label ? title : /^[A-Z][A-Z0-9_]*$/.test(label) ? type : label
+}
+
 function tierRows(rows, scale) {
   return (rows || []).map(row => ({
     ...row, from:row.from / scale, through:row.through == null ? undefined : row.through / scale, value:row.value / 100,

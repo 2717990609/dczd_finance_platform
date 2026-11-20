@@ -98,7 +98,7 @@ func (d catalogAggregateDirectory) groupTarget(item catalogPeriodItem, at time.T
 	target := catalogPeriodGroupTarget{ItemKey: item.ItemKey}
 	key := catalogGroupTargetKey{Item: item.ItemKey}
 	for _, org := range d.Organizations {
-		if org.Party == item.organization && (item.unit == "" || org.Unit == item.unit) {
+		if org.Party == item.OrganizationKey && (item.unit == "" || org.Unit == item.unit) {
 			if key.Unit != "" && key.Unit != org.Unit {
 				return target, key, "BENEFIT_ORG_CONFLICT"
 			}
@@ -127,7 +127,7 @@ func (d catalogAggregateDirectory) groupTarget(item catalogPeriodItem, at time.T
 			break
 		}
 	}
-	key.Members = d.members(key.Unit, item.memberRole, at)
+	key.Members = d.members(key.Unit, item.MemberRole, at)
 	if len(key.Members) == 0 {
 		return target, key, "BENEFIT_POOL_MEMBERS_MISSING"
 	}
@@ -264,10 +264,10 @@ func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catal
 	var parties, units, roles []string
 	for _, version := range rules {
 		for _, item := range version.Definition.Items {
-			parties = append(parties, item.organization)
+			parties = append(parties, item.OrganizationKey)
 			if item.TargetKind == "pool" {
 				units = append(units, item.unit)
-				roles = append(roles, item.OwnerRole, item.memberRole)
+				roles = append(roles, item.OwnerRole, item.MemberRole)
 			}
 		}
 	}
