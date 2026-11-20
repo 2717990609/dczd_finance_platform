@@ -59,6 +59,8 @@ go -C server run . initialize-finance /secure/finance-initialization.json --appl
 
 用目标产品已确认的归档资料回放历史期次。核对归档订单和退款版本、当时的规则、组织归属、实战班名单及团队池实际分配。日常结算开放前，按同产品原确认时间依次承接，资金池余额由已承接流水结转。历史承接适用于能在目标库逐笔对平的期次。
 
+订单范围以冻结期次的付款和退款清单为准，单独核对当期全额退款等未产生正向计提的订单。已确认的团队池分配按原付款、受益人及金额逐笔核对。日常分配会按当前可用余额和人员资格重新选取付款，历史承接需要保留原分配的对应关系。
+
 `adopt-finance-history` 读取一个期次的 JSON 清单，填写 `database`、`schema`、`productCode`、`periodId`、带时区的原 `confirmedAt` 和 `expected`。`expected` 包含净业绩 `performanceMinor`、计提 `accruedMinor`、退款 `refundMinor`、更正 `correctionMinor` 和各自的 `performanceCount`、`accrualCount`、`refundCount`、`correctionCount`。金额单位为分，退款扣减填负数，计数为保存的明细行数。
 
 1. 运行 `--rows` 输出对账明细。逐项核对原始订单、规则、金额、归属、受益人及资金池分配。核对通过后，将该文件的 SHA-256 写入清单的 `postingsSha256`。
