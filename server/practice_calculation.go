@@ -177,6 +177,16 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			if part.Type == "sales" && (purchase.companyAward != nil || purchase.companyRoutingIssue != "") {
 				continue
 			}
+			if len(part.salesCompanies()) != 0 {
+				company, issue := practicePurchaseCompany(payments)
+				if issue != "" {
+					draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+					continue
+				}
+				if !slices.Contains(part.salesCompanies(), company) {
+					continue
+				}
+			}
 			if (part.Type != "sales" && part.Type != "referral") || part.SourceRole == "" {
 				draft.Issues = append(draft.Issues, practiceIssue("UNCONFIGURED_COMPONENT", member, rule, part.Type))
 				continue

@@ -18,11 +18,10 @@ const calculationMethods = [
 </script>
 
 <template>
-  <a-form-item label="收款安排名称" required>
-    <a-input v-model:value="config.label" aria-label="收款安排名称" :maxlength="80" placeholder="例如交付团队分润"/>
-  </a-form-item>
-  <h4 class="rule-item-section">发给谁</h4>
   <div class="period-fields">
+    <a-form-item label="收款安排名称" required>
+      <a-input v-model:value="config.label" aria-label="收款安排名称" :maxlength="80" placeholder="例如交付团队分润"/>
+    </a-form-item>
     <a-form-item label="收款对象" :html-for="field('recipient')" required>
       <a-select :id="field('recipient')" v-model:value="config.recipient" :options="recipientTypes" placeholder="选择收款对象"/>
     </a-form-item>
@@ -35,18 +34,19 @@ const calculationMethods = [
   </div>
   <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
-  <h4 class="rule-item-section">提成怎么算</h4>
-  <a-form-item label="计算方式" :html-for="field('method')">
-    <a-select :id="field('method')" v-model:value="config.method" :options="calculationMethods"/>
-  </a-form-item>
-  <a-form-item v-if="config.method==='rate'" label="班次计提比例（%）" required>
-    <a-input-number v-model:value="component.amount" aria-label="班次计提比例（%）" :min="0" :max="100" :precision="4"/>
-  </a-form-item>
-  <a-form-item v-else-if="config.method==='fixed' || config.method==='class_fixed'"
-    :label="config.method==='class_fixed' ? '整班金额（元）' : '每份报名（元）'" :html-for="field('fixed')" required>
-    <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
-  </a-form-item>
-  <template v-else-if="config.method==='tiers'">
+  <div class="period-fields">
+    <a-form-item label="计算方式" :html-for="field('method')">
+      <a-select :id="field('method')" v-model:value="config.method" :options="calculationMethods"/>
+    </a-form-item>
+    <a-form-item v-if="config.method==='rate'" label="班次计提比例（%）" required>
+      <a-input-number v-model:value="component.amount" aria-label="班次计提比例（%）" :min="0" :max="100" :precision="4"/>
+    </a-form-item>
+    <a-form-item v-else-if="config.method==='fixed' || config.method==='class_fixed'"
+      :label="config.method==='class_fixed' ? '整班金额（元）' : '每份报名（元）'" :html-for="field('fixed')" required>
+      <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
+    </a-form-item>
+  </div>
+  <template v-if="config.method==='tiers'">
     <a-form-item>
       <a-checkbox v-model:checked="config.tierOnWholeClass">用全班净实收选档（含新报和复训）</a-checkbox>
     </a-form-item>
@@ -95,7 +95,7 @@ const calculationMethods = [
 </template>
 
 <style scoped>
-.period-fields {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
+.period-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,160px),1fr));gap:4px 10px}
 .period-tier {grid-template-columns:repeat(3,minmax(0,1fr));align-items:end}
 .period-fields :deep(.ant-input-number) {width:100%}
 .period-scope {margin-top:8px}

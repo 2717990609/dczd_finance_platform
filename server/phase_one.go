@@ -8,6 +8,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -25,16 +26,24 @@ var schema string
 const schemaLockSQL = "SELECT pg_advisory_xact_lock(637619238)"
 
 type component struct {
-	Type          string                  `json:"type"`
-	Mode          string                  `json:"mode"`
-	Value         int64                   `json:"value"`
-	SourceRole    string                  `json:"sourceRole,omitempty"`
-	RefundPolicy  string                  `json:"refundPolicy,omitempty"`
-	ClassMember   string                  `json:"classMember,omitempty"`
-	Tiers         *practiceSalesTiers     `json:"tiers,omitempty"`
-	PeriodBenefit *practicePeriodBenefit  `json:"periodBenefit,omitempty"`
-	CompanySales  *practiceCompanySales   `json:"companySales,omitempty"`
-	RetrainSplits *[]practiceRetrainSplit `json:"retrainSplits,omitempty"`
+	Type           string                  `json:"type"`
+	Mode           string                  `json:"mode"`
+	Value          int64                   `json:"value"`
+	SourceRole     string                  `json:"sourceRole,omitempty"`
+	RefundPolicy   string                  `json:"refundPolicy,omitempty"`
+	ClassMember    string                  `json:"classMember,omitempty"`
+	SalesCompanies *[]string               `json:"salesCompanies,omitempty"`
+	Tiers          *practiceSalesTiers     `json:"tiers,omitempty"`
+	PeriodBenefit  *practicePeriodBenefit  `json:"periodBenefit,omitempty"`
+	CompanySales   *practiceCompanySales   `json:"companySales,omitempty"`
+	RetrainSplits  *[]practiceRetrainSplit `json:"retrainSplits,omitempty"`
+}
+
+func (c component) salesCompanies() []string {
+	if c.SalesCompanies == nil {
+		return nil
+	}
+	return *c.SalesCompanies
 }
 
 var errPracticeTierCompany = errors.New("规则引用的销售公司未配置或已停用")
@@ -69,6 +78,21 @@ func validateComponents(items []component) error {
 		}
 		if c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) || !validPracticeRetrainSplits(c) {
 			return invalid
+		}
+		if companies := c.salesCompanies(); len(companies) != 0 {
+			if c.Type != "sales" || c.Mode != "fixed" && c.Mode != "rate" || c.SourceRole == "" {
+				return invalid
+			}
+			for i, company := range companies {
+				if !textOK(company, 128) || slices.Contains(companies[:i], company) {
+					return invalid
+				}
+			}
+			for _, split := range c.retrainSplits() {
+				if !slices.Contains(companies, split.CompanyID) {
+					return invalid
+				}
+			}
 		}
 		if c.Type == "company_sales" || c.CompanySales != nil {
 			if seen[c.Type]&members != 0 || !validPracticeCompanySales(c) {
@@ -646,9 +670,10 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			}
 		}
 		for _, c := range p.Components {
-			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil) {
+			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil || len(c.salesCompanies()) != 0) {
 				return invalid
 			}
+			companyIDs = append(companyIDs, c.salesCompanies()...)
 			if c.CompanySales != nil {
 				companyIDs = append(companyIDs, c.CompanySales.InternalCompanies...)
 				receivingCompanies = append(receivingCompanies, c.CompanySales.RecommendationRecipients...)

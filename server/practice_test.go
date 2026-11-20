@@ -630,3 +630,63 @@ func TestPracticeFixedNewSalesRefundRequiresConfiguredHandling(t *testing.T) {
 		t.Errorf("proportional commission must use net paid amount, got %d %q", got, issue)
 	}
 }
+
+func TestPracticePersonalSalesCanBeLimitedToSelectedCompanies(t *testing.T) {
+	var rule paymentRule
+	rule.ID = 7
+	if err := json.Unmarshal([]byte(`[
+	 {"type":"sales","mode":"rate","value":1900,"classMember":"new","sourceRole":"DIRECT_REFERRER","salesCompanies":["8","353"]},
+	 {"type":"sales","mode":"fixed","value":8500,"classMember":"retrain","sourceRole":"DIRECT_REFERRER","salesCompanies":["8","353"]},
+	 {"type":"company_sales","mode":"company_sales","classMember":"new","sourceRole":"DIRECT_REFERRER",
+	  "companySales":{"internalCompanies":["other-internal"],"categories":[{"companies":["external"],"mode":"rate","value":500000}]}}
+	]`), &rule.Components); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateComponents(rule.Components); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 6, 8, 9, 38, 0, 0, shanghai)
+	orders := make(map[string][]paymentInput)
+	var members []practiceEnrollment
+	for i, item := range []struct {
+		kind    int
+		company string
+		minor   int64
+	}{
+		{3, "8", 580000}, {3, "353", 580000}, {3, "other-internal", 580000},
+		{2, "8", 40000}, {2, "353", 40000}, {2, "other-internal", 40000},
+	} {
+		id := strconv.Itoa(i + 1)
+		orders[id] = []paymentInput{{ID: int64(i + 1), Fact: sourceFact{
+			Source: "DCZD", Domain: "PRACTICE", Kind: "ORDER_PAID", OrderID: id, PaymentID: id,
+			SalesCompanyID: item.company, AmountMinor: &item.minor, OccurredAt: at, ReferrerID: "seller",
+		}}}
+		members = append(members, practiceEnrollment{ID: int64(i + 1), SourceEnrollmentID: id, MembershipType: item.kind,
+			CommissionEligible: true, PaidOrderIDs: []string{id}})
+	}
+	partialNew, partialRetrain := int64(100000), int64(10000)
+	refunds := map[int64][]practiceRefundMatch{
+		1: {{event: paymentInput{ID: 91, Fact: sourceFact{AmountMinor: &partialNew, OccurredAt: at.Add(time.Hour)}}}},
+		4: {{event: paymentInput{ID: 92, Fact: sourceFact{AmountMinor: &partialRetrain, OccurredAt: at.Add(time.Hour)}}}},
+	}
+	for i := range members {
+		members[i].ConfirmedAt = at.Add(2 * time.Hour)
+	}
+	seller := identityKey{Source: "DCZD", ExternalID: "seller"}
+	result, err := calculatePracticeDraft(members, rule, orders, map[identityKey][]identityAssignment{
+		seller: {{ID: 24, PersonID: 42, ValidFrom: at.Add(-time.Hour)}},
+	}, nil, practiceTierHistory{}, refunds, practiceDraftRuntime{companyOffers: practiceCompanyStandards(rule)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[int64]int64{1: 91200, 2: 110200, 4: 8500, 5: 8500}
+	if len(result.Issues) != 0 || len(result.Lines) != len(want) || result.Total != 218400 {
+		t.Fatalf("expected scoped rate and fixed sales, got total %d, lines %+v, issues %+v", result.Total, result.Lines, result.Issues)
+	}
+	for _, line := range result.Lines {
+		if line.PersonID != 42 || want[line.FactID] != line.Amount {
+			t.Fatalf("wrong company scope or standard: %+v", line)
+		}
+		delete(want, line.FactID)
+	}
+}

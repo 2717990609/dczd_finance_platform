@@ -173,18 +173,21 @@ func validPracticeCompanySales(c component) bool {
 
 func validPracticeCompanyScopes(items []component) bool {
 	var internal, external []string
+	externalByMember := make(map[string][]string)
 	for _, part := range items {
 		for _, split := range part.retrainSplits() {
 			internal = append(internal, split.CompanyID)
 		}
 		if s := part.CompanySales; s != nil {
 			internal = append(internal, s.InternalCompanies...)
+			first := len(external)
 			for _, category := range s.Categories {
 				external = append(external, category.Companies...)
 				for _, override := range category.Overrides {
 					external = append(external, override.companyIDs()...)
 				}
 			}
+			externalByMember[part.ClassMember] = append(externalByMember[part.ClassMember], external[first:]...)
 		}
 	}
 	companies := make(map[string]bool, len(external))
@@ -194,6 +197,15 @@ func validPracticeCompanyScopes(items []component) bool {
 	for _, company := range internal {
 		if !textOK(company, 128) || companies[company] {
 			return false
+		}
+	}
+	for _, part := range items {
+		for member, explicit := range externalByMember {
+			if (part.ClassMember == "" || part.ClassMember == member) && slices.ContainsFunc(part.salesCompanies(), func(company string) bool {
+				return slices.Contains(explicit, company)
+			}) {
+				return false
+			}
 		}
 	}
 	return true
@@ -265,6 +277,9 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 				for _, member := range []string{"new", "retrain"} {
 					if part.ClassMember == "" || part.ClassMember == member {
 						offers.personal[member] = true
+						for _, company := range part.salesCompanies() {
+							offers.companies[member][company] = practiceCompanyAward{internal: true}
+						}
 					}
 				}
 			}

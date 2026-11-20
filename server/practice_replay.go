@@ -46,7 +46,7 @@ type practiceReplayCompany struct {
 
 func hasPracticeReplayDependencies(rule paymentRule, members []practiceEnrollment) bool {
 	for _, part := range rule.Components {
-		if part.Tiers != nil || part.PeriodBenefit != nil || len(part.retrainSplits()) != 0 {
+		if part.Tiers != nil || part.PeriodBenefit != nil || len(part.salesCompanies()) != 0 || len(part.retrainSplits()) != 0 {
 			return true
 		}
 	}

@@ -4,7 +4,8 @@ import PracticePoolFields from './PracticePoolFields.vue'
 import { catalogRatePriorityLabel } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
-  sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function})
+  sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array})
+const emit = defineEmits(['member-change'])
 const categories = computed(() => props.component.companySales.categories)
 const standardGroups = computed(() => [
   {scope:'category',label:'按销售类别',action:'添加类别标准'},
@@ -66,6 +67,9 @@ watch(amounts, choices => {
 
 <template>
   <div class="company-value company-meta">
+    <a-form-item label="适用报名" :html-for="'rule-member-'+index">
+      <a-select :id="'rule-member-'+index" v-model:value="component.classMember" :options="memberChoices" @change="emit('member-change')"/>
+    </a-form-item>
     <a-form-item label="收款安排名称" :html-for="field('label')" required>
       <a-input :id="field('label')" v-model:value="component.companySales.label" placeholder="输入安排名称" :maxlength="80"/>
     </a-form-item>
@@ -81,10 +85,11 @@ watch(amounts, choices => {
     <a-form-item v-if="payee.kind==='company'" label="收款公司" :html-for="field('payee-company')" required>
       <a-select :id="field('payee-company')" v-model:value="payee.companyId" :options="recipients" show-search :filter-option="byName"/>
     </a-form-item>
+    <slot name="actions"/>
   </div>
   <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
-  <small v-if="standardGroups.length>1" class="finance-rate-priority">{{ catalogRatePriorityLabel }}</small>
+  <div v-if="standardGroups.length>1" class="company-priority finance-rate-priority">{{ catalogRatePriorityLabel }}</div>
   <section v-for="group in standardGroups" :key="group.scope" class="company-standard-group">
     <div class="company-category-title">
       <h4 class="rule-item-section">{{ group.label }}</h4>
@@ -143,7 +148,7 @@ watch(amounts, choices => {
     <a-select :id="field('referral-recipients')" v-model:value="component.companySales.recommendationRecipients"
       :options="recipients" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
   </a-form-item>
-  <a-collapse ghost>
+  <a-collapse ghost class="company-advanced">
     <a-collapse-panel key="advanced" header="更多配置">
       <a-form-item label="业绩归给订单里的谁" :html-for="field('role')" required>
         <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
@@ -157,15 +162,18 @@ watch(amounts, choices => {
 </template>
 
 <style scoped>
-.company-standard-group {border:1px solid var(--line);border-radius:6px;margin:6px 0 8px}
-.company-category-title {display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;background:var(--accent-soft);border-radius:5px}
+.company-standard-group {border-top:1px solid var(--line);margin:4px 0}
+.company-category-title {display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px;padding:3px 0}
 .company-category-title h4 {margin:0}
-.company-category {border-top:1px solid var(--line);padding:6px 10px}
+.company-category {padding:4px 8px 6px;background:#f6f8fb;border-radius:4px;margin-bottom:4px}
+.company-priority {margin:4px 0 6px}
 .company-value {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:4px 12px}
+.company-meta {display:flex;flex-wrap:wrap;align-items:end;gap:4px 10px;margin-bottom:6px}
+.company-meta :deep(.ant-form-item) {flex:1 1 140px;min-width:0;margin-bottom:0}
+.company-meta :deep(.rule-remove) {margin-bottom:4px}
 .company-standard-fields {display:flex;flex-wrap:wrap;align-items:end;gap:4px 10px}
 .company-category .company-standard-fields :deep(.ant-form-item) {flex:1 1 130px;min-width:0;margin:0}
 .company-standard-fields :deep(.company-scope-field) {flex:3 1 220px}
-.company-meta :deep(.ant-form-item) {margin-bottom:6px;min-width:0}
 .company-value :deep(.ant-form-item-label),.company-standard-fields :deep(.ant-form-item-label) {padding-bottom:2px}
 .company-standard-remove {margin:0 0 4px auto}
 .company-advanced :deep(.ant-collapse-header) {padding:4px 0}

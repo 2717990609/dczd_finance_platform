@@ -99,6 +99,9 @@ onMounted(async () => {
         <a-descriptions size="small" :column="1">
           <a-descriptions-item label="发给谁">{{ recipient(part) }}</a-descriptions-item>
           <a-descriptions-item label="提成怎么算">{{ formula(part) }}</a-descriptions-item>
+          <a-descriptions-item v-if="part.salesCompanies?.length" label="适用销售公司">
+            {{ part.salesCompanies.map(companyName).join('、') }}
+          </a-descriptions-item>
           <a-descriptions-item v-if="part.periodBenefit?.tiers?.length" label="阶梯选档范围">
             {{ part.periodBenefit.tierOnWholeClass ? '全班净实收（新报及复训）' : '适用报名净实收' }}
           </a-descriptions-item>

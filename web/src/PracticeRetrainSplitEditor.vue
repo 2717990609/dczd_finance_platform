@@ -1,8 +1,12 @@
 <script setup>
+import { computed } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 
 const props = defineProps({ component:Object, index:Number, companies:Array, pools:Array, people:Array, units:Array, createPool:Function })
 const field = (name,index) => 'practice-retrain-'+props.index+'-'+index+'-'+name
+const eligibleCompanies = computed(() => props.component.salesCompanies?.length
+  ? props.companies.filter(company=>props.component.salesCompanies.includes(company.value))
+  : props.companies)
 
 function addSplit() {
   props.component.retrainSplits ||= []
@@ -16,7 +20,7 @@ function addSplit() {
       <p class="draft-report-note">固定提成先分给销售和服务人员，余额归入资金池。确认名单前部分退款且报名仍有效时，保留固定提成。</p>
       <section v-for="(split,i) in component.retrainSplits" :key="i" class="retrain-split">
         <a-form-item label="销售公司" :html-for="field('company',i)" required>
-          <a-select :id="field('company',i)" v-model:value="split.companyId" :options="companies"
+          <a-select :id="field('company',i)" v-model:value="split.companyId" :options="eligibleCompanies"
             show-search option-filter-prop="label"/>
         </a-form-item>
         <a-form-item label="销售份额（元）" :html-for="field('sales',i)" required>

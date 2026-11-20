@@ -361,10 +361,10 @@ async function publish() {
           </template>
           <template v-if="component?.rows?.length">
             <div class="catalog-rate-toolbar">
-              <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" aria-label="查看比例">
+              <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" size="small" aria-label="查看比例">
                 <a-radio-button v-for="group in rateGroups" :key="group.key" :value="group.key">{{ group.title }}</a-radio-button>
               </a-radio-group>
-              <a-input v-if="component.rows.length>8" id="catalog-rate-filter" v-model:value="filter"
+              <a-input v-if="component.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
                 placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
               <small v-if="rateGroup!=='inherited' && automaticCategoryRate" class="finance-rate-priority">{{ catalogRatePriorityLabel }}</small>
             </div>
@@ -377,7 +377,7 @@ async function publish() {
                 </template>
                 <template v-if="column.key==='category'">{{ record.category || (record.scope==='general' && automaticCategoryRate ? '其他已识别类别' : '不限') }}</template>
                 <template v-if="column.key==='rate'">
-                  <a-input-number v-if="!applied" :aria-label="'第 '+record.row+' 行比例'"
+                  <a-input-number v-if="!applied" :aria-label="'第 '+record.row+' 行比例'" size="small"
                     :value="pendingScope(selected,record.row) ? Number(pendingScope(selected,record.row).rateBps)/100 : displayRate(record.rateBps,record.row)"
                     :disabled="!editable || record.teamRate || !!pendingScope(selected,record.row) || removedRateRows.has(cellKey(selected,record.row))"
                     :min="0" :max="100" :precision="2" string-mode @update:value="setRate($event,record.rateBps,record.row)"/>
@@ -493,7 +493,7 @@ async function publish() {
 .catalog-rate-toolbar :deep(.ant-input-affix-wrapper) {width:min(100%,260px)}
 .catalog-rate-summary {display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 12px;padding:0 0 8px;margin-bottom:8px;border-bottom:1px solid var(--line)}
 .catalog-rate-summary h2 {font-size:18px;margin:0 0 2px}
-.catalog-rate-summary p {margin:0;color:var(--muted);line-height:1.65}
+.catalog-rate-summary p {margin:0;color:var(--muted);line-height:1.45}
 .catalog-rate-context {font-size:13px}
 .catalog-inheritance {margin:0 0 6px;color:var(--muted);font-size:13px;line-height:1.6}
 .catalog-receipt {margin-bottom:6px}

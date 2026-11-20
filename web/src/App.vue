@@ -1078,6 +1078,9 @@ function ruleComponentBody(row) {
   }
   if (row.mode !== 'tiered') {
     component.value = minor(must(row.amount,'请填写每个组件的比例或金额'))
+    if (classRule.value && row.type==='sales' && row.salesCompanies?.length) {
+      component.salesCompanies = row.salesCompanies
+    }
     if (classRule.value && row.type==='sales' && row.mode==='fixed' && row.classMember==='retrain' && row.retrainSplits?.length) {
       must(sourceRole,'请选择销售来源角色')
       component.retrainSplits = row.retrainSplits.map(split=>({
@@ -1087,6 +1090,9 @@ function ruleComponentBody(row) {
       }))
       if (component.retrainSplits.some(split=>split.personalMinor+(split.serviceMinor || 0)>component.value)) {
         throw new Error('销售份额与服务份额合计不能超过固定提成。')
+      }
+      if (component.salesCompanies && component.retrainSplits.some(split=>!component.salesCompanies.includes(split.companyId))) {
+        throw new Error('拆分公司须在适用销售公司范围内。')
       }
     }
     return component
@@ -1595,22 +1601,25 @@ async function save() {
             <small>{{ ruleRecipientSummary(c) }}</small>
           </button>
           <div v-if="i===activeRuleComponent" :id="'practice-rule-part-'+i" class="rule-block-body component-editor">
-          <div class="rule-item-heading">
+          <div v-if="c.mode!=='company_sales'" class="rule-item-heading">
             <a-form-item v-if="classRule" :html-for="'rule-member-'+i" label="适用报名">
               <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="classMemberChoices(c)" @change="resetAmountMode(c)"/>
             </a-form-item>
             <a-button v-if="draft.components.length>1" type="link" danger class="rule-remove"
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
           </div>
-          <template v-if="['sales','referral'].includes(c.type)">
-            <h4 class="rule-item-section">发给谁</h4>
+          <div v-if="['sales','referral'].includes(c.type)" class="rule-item-heading">
             <a-form-item :html-for="'rule-source-role-'+i" label="从订单取收款人" required>
               <a-select :id="'rule-source-role-'+i" v-model:value="c.sourceRole" :options="componentSourceRoles(c.sourceRole)"
                 placeholder="选择订单角色" show-search option-filter-prop="label"/>
             </a-form-item>
-          </template>
+            <a-form-item v-if="classRule && c.type==='sales' && ['rate','fixed'].includes(c.mode)"
+              :html-for="'rule-sales-companies-'+i" label="适用销售公司">
+              <a-select :id="'rule-sales-companies-'+i" v-model:value="c.salesCompanies" :options="options('practiceSalesCompany')"
+                mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label" placeholder="不限公司"/>
+            </a-form-item>
+          </div>
           <template v-if="!['period_rate','company_sales'].includes(c.mode)">
-            <h4 class="rule-item-section">提成怎么算</h4>
             <div class="rule-item-heading">
               <a-form-item :html-for="'rule-mode-'+i" label="计算方式">
                 <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
@@ -1634,7 +1643,13 @@ async function save() {
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
             :sales-categories="options('practiceSalesCategory')" :recipients="companyRecipientOptions" :amounts="baseModes"
             :source-roles="options('practicePeriodSourceRole')" :payee-roles="componentSourceRoles(c.companySales.payee.role)"
-            :people="classPeopleOptions" :units="unitOptions" :pools="practicePoolOptions" :create-pool="createPracticePool"/>
+            :people="classPeopleOptions" :units="unitOptions" :pools="practicePoolOptions" :create-pool="createPracticePool"
+            :member-choices="classMemberChoices(c)" @member-change="resetAmountMode(c)">
+            <template #actions>
+              <a-button v-if="draft.components.length>1" type="link" size="small" danger class="rule-remove"
+                @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
+            </template>
+          </PracticeCompanySalesEditor>
           <a-collapse v-if="selectedProduct && (!classRule || !['rate','period_rate','company_sales'].includes(c.mode))" ghost>
             <a-collapse-panel key="refund" header="退款处理">
               <a-form-item label="扣回方式" :extra="classRule ? '适用于确认签到名单前的固定金额。' : '按原计提规则扣回。'">

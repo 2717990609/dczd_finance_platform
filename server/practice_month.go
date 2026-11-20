@@ -98,6 +98,9 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 			if part.Type != original.ComponentType || (part.ClassMember != "" && part.ClassMember != member) {
 				continue
 			}
+			if len(part.salesCompanies()) != 0 && !slices.Contains(part.salesCompanies(), company) {
+				return replay
+			}
 			switch part.Mode {
 			case "rate":
 				if calculatePaymentAmount(original.Base, part) == original.Accrued {
