@@ -110,7 +110,7 @@ const catalogMatchSQL = `WITH period AS (
  )
 ), matches AS (
  SELECT f.id AS "sourceVersionId",f.order_id AS "orderId",f.order_no AS "orderNo",f.occurred_at AS "paidAt",
- f.transaction_type AS "sourceTransactionType",f.paid AS "paidMinor",f.occurred_at>=scope.after AS "paidInWindow",
+ f.domain AS "sourceDomain",f.transaction_type AS "sourceTransactionType",f.paid AS "paidMinor",f.occurred_at>=scope.after AS "paidInWindow",
  CASE WHEN r.health_recognition OR f.occurred_at<scope.after THEN completed.id END AS "completionVersionId",
  CASE WHEN r.health_recognition OR f.occurred_at<scope.after THEN completed.occurred_at END AS "completedAt",
  coalesce(f.completion_due AND completed.occurred_at<scope.after,false) AS "completionCarried",
@@ -183,8 +183,14 @@ const catalogMatchSQL = `WITH period AS (
  ) prior ON true
  WHERE f.occurred_at>=scope.after OR ((r.n<>1 OR r.compound_recognition) AND completed.id IS NOT NULL
   AND f.completion_due AND (completed.occurred_at>=scope.after OR NOT booked.other_period))
+), selected_matches AS MATERIALIZED (
+ SELECT * FROM matches
+ WHERE $4='' OR "sourceDomain"='VIP' AND (
+  "sourceTransactionType"=$4
+  OR $4='UNKNOWN' AND coalesce("sourceTransactionType",'') NOT IN ('NEW','RENEWAL')
+ )
 ), page AS MATERIALIZED (
- SELECT * FROM matches ORDER BY "paidAt" DESC,"sourceVersionId" DESC LIMIT $3 OFFSET $2
+ SELECT * FROM selected_matches ORDER BY "paidAt" DESC,"sourceVersionId" DESC LIMIT $3 OFFSET $2
 ), fixed_actions AS MATERIALIZED (
  SELECT v.source_id::text AS rule_id,a->>'item_key' AS item_key,a->>'label' AS label,
   CASE WHEN a->>'rate_bps' ~ '^[0-9]{1,5}$' THEN (a->>'rate_bps')::integer END AS rate_bps
@@ -206,10 +212,11 @@ const catalogMatchSQL = `WITH period AS (
  ),'[]') AS "fixedParts" FROM page
 )
 SELECT jsonb_build_object(
- 'orderCount',(SELECT count(*) FROM matches),
- 'matchedCount',(SELECT count(*) FROM matches WHERE status='MATCHED'),
- 'paidMinor',(SELECT coalesce(sum("paidMinor"),0) FROM matches WHERE "paidInWindow" AND status NOT IN ('INVALID_PAYMENT','DUPLICATE_PAYMENT','PAYMENT_ALREADY_SETTLED')),
- 'matchedMinor',(SELECT coalesce(sum(coalesce("recognizedMinor","paidMinor")),0) FROM matches WHERE status='MATCHED'),
+ 'hasMembershipOrders',EXISTS(SELECT 1 FROM routes WHERE source='DCAI' AND domain='VIP' AND record_table='ai_vip_order'),
+ 'orderCount',(SELECT count(*) FROM selected_matches),
+ 'matchedCount',(SELECT count(*) FROM selected_matches WHERE status='MATCHED'),
+ 'paidMinor',(SELECT coalesce(sum("paidMinor"),0) FROM selected_matches WHERE "paidInWindow" AND status NOT IN ('INVALID_PAYMENT','DUPLICATE_PAYMENT','PAYMENT_ALREADY_SETTLED')),
+ 'matchedMinor',(SELECT coalesce(sum(coalesce("recognizedMinor","paidMinor")),0) FROM selected_matches WHERE status='MATCHED'),
  'items',coalesce((SELECT jsonb_agg(to_jsonb(output) ORDER BY "paidAt" DESC,"sourceVersionId" DESC) FROM output),'[]'))
 FROM period WHERE EXISTS(SELECT 1 FROM routes)`
 
@@ -228,11 +235,18 @@ func (s workspace) catalogMatches(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	memberType := query.Get("memberTransactionType")
+	switch memberType {
+	case "", "NEW", "RENEWAL", "UNKNOWN":
+	default:
+		respond(w, nil, invalid)
+		return
+	}
 	ctx := r.Context()
 	var report catalogMatchReport
 	err = pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
-		report, err = readCatalogMatches(ctx, tx, periodID, (page-1)*25, 25)
+		report, err = readCatalogMatchPage(ctx, tx, periodID, (page-1)*25, 25, memberType)
 		if err != nil {
 			return err
 		}
@@ -247,9 +261,13 @@ func (s workspace) catalogMatches(w http.ResponseWriter, r *http.Request) {
 }
 
 func readCatalogMatches(ctx context.Context, tx pgx.Tx, periodID int64, offset, limit int) (catalogMatchReport, error) {
+	return readCatalogMatchPage(ctx, tx, periodID, offset, limit, "")
+}
+
+func readCatalogMatchPage(ctx context.Context, tx pgx.Tx, periodID int64, offset, limit int, memberType string) (catalogMatchReport, error) {
 	var report catalogMatchReport
 	var raw json.RawMessage
-	if err := tx.QueryRow(ctx, catalogMatchSQL, periodID, offset, limit).Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, catalogMatchSQL, periodID, offset, limit, memberType).Scan(&raw); err != nil {
 		return report, err
 	}
 	err := json.Unmarshal(raw, &report)

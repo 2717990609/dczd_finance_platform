@@ -66,13 +66,13 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 		t.Fatal(err)
 	}
 	periodID := p.(map[string]int64)["id"]
-	insert := func(order, entity, version string, at time.Time, amount int64) {
+	insert := func(order, entity, version, transactionType string, at time.Time, amount int64) {
 		t.Helper()
 		timestamp := at.Format(time.RFC3339)
 		payload := fmt.Sprintf(`{"fact_schema_version":"source.order-fact/1.0","fact_type":"ORDER_PAID","occurred_at":%q,
 		 "order":{"source_order_id":%q,"order_no":%q},"source_record":{"source_table":"ai_vip_order","record_id":%q,"record_version":%q,"updated_at":%q},
-		 "business":{"source_domain_code":"VIP","source_entity_type_code":%q,"source_product_code":"VIP","source_transaction_type_code":"RENEWAL"},
-		 "payment":{"source_payment_id":%q},"amounts":{"paid_minor":"%d"}}`, timestamp, order, order, order, version, timestamp, entity, order, amount)
+		 "business":{"source_domain_code":"VIP","source_entity_type_code":%q,"source_product_code":"VIP","source_transaction_type_code":%q},
+		 "payment":{"source_payment_id":%q},"amounts":{"paid_minor":"%d"}}`, timestamp, order, order, order, version, timestamp, entity, transactionType, order, amount)
 		fact, err := normalizeFact("DCAI", order, json.RawMessage(payload))
 		if err != nil {
 			t.Fatal(err)
@@ -84,11 +84,12 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	insert("before", "VIP_ORDER", "1", from, 490)
-	insert("after", "VIP_ORDER", "1", boundary, 580)
-	insert("after", "VIP_ORDER", "2", boundary.Add(time.Minute), 650)
-	insert("outside", "VIP_ORDER", "1", through, 120)
-	insert("unknown", "", "1", boundary, 170)
+	insert("before", "VIP_ORDER", "1", "NEW", from, 490)
+	insert("after", "VIP_ORDER", "1", "RENEWAL", boundary, 580)
+	insert("after", "VIP_ORDER", "2", "RENEWAL", boundary.Add(time.Minute), 650)
+	insert("new", "VIP_ORDER", "1", "NEW", boundary.Add(20*time.Second), 510)
+	insert("outside", "VIP_ORDER", "1", "RENEWAL", through, 120)
+	insert("unknown", "", "1", "", boundary, 170)
 	refund := int64(100)
 	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
 		_, err := storeSourceFacts(ctx, tx, []sourceFact{{
@@ -101,9 +102,9 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	get := func() catalogMatchReport {
+	get := func(filter string) catalogMatchReport {
 		t.Helper()
-		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/period-rule-matches?periodId=%d", periodID), nil)
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/period-rule-matches?periodId=%d%s", periodID, filter), nil)
 		w := httptest.NewRecorder()
 		for _, route := range s.routes() {
 			if route.Method == req.Method && route.Path == req.URL.Path {
@@ -146,8 +147,8 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 		t.Fatalf("catalog payments leaked into generic draft: %+v, performance=%d", genericDraft, performanceCount)
 	}
 
-	report := get()
-	if report.OrderCount != 3 || report.MatchedCount != 2 || report.MatchedMinor != 1140 || report.PaidMinor != 1310 {
+	report := get("")
+	if report.OrderCount != 4 || report.MatchedCount != 3 || report.MatchedMinor != 1650 || report.PaidMinor != 1820 {
 		t.Fatalf("unexpected summary: %+v", report)
 	}
 	byOrder := make(map[string]catalogPaymentMatch)
@@ -162,19 +163,39 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 	if len(fixed) != 1 || fixed[0].Label != "固定分项" || fixed[0].AmountMinor != 20 {
 		t.Fatalf("incorrect fixed-part preview: %+v", fixed)
 	}
+	renewal := get("&memberTransactionType=RENEWAL")
+	if renewal.OrderCount != 1 || renewal.MatchedCount != 1 || renewal.PaidMinor != 650 || renewal.MatchedMinor != 650 ||
+		len(renewal.Items) != 1 || renewal.Items[0].OrderID != "after" {
+		t.Fatalf("renewal filter must retain the real source type and recompute totals: %+v", renewal)
+	}
+	firstPurchases := get("&memberTransactionType=NEW")
+	if firstPurchases.OrderCount != 2 || firstPurchases.PaidMinor != 1000 || firstPurchases.MatchedMinor != 1000 ||
+		len(firstPurchases.Items) != 2 || firstPurchases.Items[0].OrderID != "new" ||
+		firstPurchases.Items[0].RuleID != renewal.Items[0].RuleID || firstPurchases.Items[0].Scenario != renewal.Items[0].Scenario {
+		t.Fatalf("new purchase and renewal in the same scope must share one rule: %+v", firstPurchases)
+	}
+	if secondPage := get("&memberTransactionType=RENEWAL&page=2"); secondPage.OrderCount != 1 || len(secondPage.Items) != 0 {
+		t.Fatalf("filter must be applied before pagination: %+v", secondPage)
+	}
+	if unspecified := get("&memberTransactionType=UNKNOWN"); unspecified.OrderCount != 1 ||
+		unspecified.MatchedCount != 0 || unspecified.PaidMinor != 170 || !unspecified.HasMembershipOrders ||
+		len(unspecified.Items) != 1 || unspecified.Items[0].SourceDomain != "VIP" ||
+		unspecified.Items[0].SourceTransactionType != "" {
+		t.Fatalf("missing transaction type must stay visible without being inferred: %+v", unspecified)
+	}
 	input.Products[0].Packages = append(input.Products[0].Packages, pack(20, 16, 16, "AFTER", "BUSINESS_SCENARIO", false))
 	input.CapturedAt = input.CapturedAt.Add(time.Second)
 	saveConfig()
-	if got := get(); got.MatchedCount != 1 || got.Items[0].Status != "RULE_CONFLICT" {
+	if got := get(""); got.MatchedCount != 1 || got.Items[0].Status != "RULE_CONFLICT" {
 		t.Fatalf("tied rule must surface conflict: %+v", got)
 	}
-	insert("pre-cutoff", "VIP_ORDER", "1", boundary.Add(time.Second), 200)
+	insert("pre-cutoff", "VIP_ORDER", "1", "NEW", boundary.Add(time.Second), 200)
 	if _, err := s.retireRule(ctx, retireRuleInput{ProductID: productID, CatalogVersionID: z(21),
 		EffectiveFrom: boundary.Add(time.Second * 10)}); err != nil {
 		t.Fatal(err)
 	}
 	stopped := make(map[string]catalogPaymentMatch)
-	for _, row := range get().Items {
+	for _, row := range get("").Items {
 		stopped[row.OrderID] = row
 	}
 	if stopped["pre-cutoff"].Status != "RULE_CONFLICT" || stopped["after"].Status != "MATCHED" || stopped["after"].RuleVersion != 13 {

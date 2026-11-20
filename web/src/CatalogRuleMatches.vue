@@ -8,6 +8,7 @@ const report = ref()
 const error = ref('')
 const loading = ref(false)
 const page = ref(1)
+const memberType = ref('')
 const poolOpen = ref(false)
 const poolReport = ref()
 const poolError = ref('')
@@ -42,6 +43,9 @@ const poolColumns = [
   {title:'归集付款笔数',dataIndex:'paymentCount',align:'right'},
   {title:'付款归集金额',key:'amount',align:'right'},
 ]
+const memberTypes = {NEW:'新购',RENEWAL:'续费'}
+const memberTypeOptions = [{value:'',label:'全部订单'},
+  ...Object.entries(memberTypes).map(([value,label])=>({value,label})),{value:'UNKNOWN',label:'未标记'}]
 const pagination = computed(() => ({current:page.value,pageSize:25,total:report.value?.orderCount || 0,showSizeChanger:false}))
 
 async function refresh() {
@@ -50,6 +54,7 @@ async function refresh() {
   error.value = ''
   try {
     const params = new URLSearchParams({periodId:props.periodId,page:page.value})
+    if (memberType.value) params.set('memberTransactionType',memberType.value)
     const result = await props.api('/period-rule-matches?'+params)
     if (request===sequence) report.value=result
   } catch (err) {
@@ -63,6 +68,11 @@ async function refresh() {
 }
 function changePage(next) {
   page.value=next.current
+  refresh()
+}
+function changeMemberType(value) {
+  memberType.value=value
+  page.value=1
   refresh()
 }
 async function openPools() {
@@ -84,6 +94,7 @@ watch(() => props.periodId, () => {
   poolSequence++
   poolOpen.value=false
   page.value=1
+  memberType.value=''
   report.value=undefined
   refresh()
 }, {immediate:true})
@@ -95,15 +106,18 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
     <div class="records-head">
       <h2>订单规则匹配</h2>
       <div class="topbar-actions">
+        <a-select v-if="report?.hasMembershipOrders" :value="memberType" :options="memberTypeOptions"
+          class="catalog-match-member-type" aria-label="会员订单类型" @change="changeMemberType"/>
         <a-button @click="openPools">团队池归集</a-button>
         <a-button :loading="loading" @click="refresh">刷新匹配</a-button>
       </div>
     </div>
-    <p class="draft-report-note">{{ draftAvailable ? '按当前订单核对适用规则。试算和结算明细可查实际使用的规则版本。' : '按付款时间核对业务场景和适用规则。该产品暂未开放分润试算。' }}</p>
+    <p class="draft-report-note">{{ report?.hasMembershipOrders ? '会员新购和续费共用一个分润场景，规则版本按付款时间匹配。'
+      : draftAvailable ? '按当前订单核对适用规则。试算和结算明细可查实际使用的规则版本。' : '按付款时间核对业务场景和适用规则。该产品暂未开放分润试算。' }}</p>
     <a-alert v-if="error" type="error" :message="error" show-icon/>
     <div v-if="report" class="catalog-match-totals">
       <span>已匹配 <strong>{{ report.matchedCount }} / {{ report.orderCount }}</strong> 笔</span>
-      <span>账期实收 <strong>{{ formatMoney(report.paidMinor) }}</strong></span>
+      <span>{{ memberType ? '筛选实收' : '账期实收' }} <strong>{{ formatMoney(report.paidMinor) }}</strong></span>
       <span>已匹配基数 <strong>{{ formatMoney(report.matchedMinor) }}</strong></span>
     </div>
     <a-table :columns="columns" :data-source="report?.items || []" :loading="loading" row-key="sourceVersionId"
@@ -111,7 +125,9 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
       <template #bodyCell="{column,record}">
         <template v-if="column.key==='order'">
           <button type="button" class="order-link" @click="emit('show-order',record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>
-          <small v-if="record.sourceTransactionType" class="order-version">原交易类型 {{ record.sourceTransactionType }}</small>
+          <small v-if="record.sourceDomain==='VIP' || record.sourceTransactionType" class="order-version">
+            {{ record.sourceDomain==='VIP' ? memberTypes[record.sourceTransactionType] || '类型未标记' : record.sourceTransactionType }}
+          </small>
         </template>
         <template v-else-if="column.key==='paidAt'">
           {{ formatTime(record.paidAt) }}

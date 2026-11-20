@@ -20,6 +20,7 @@ type catalogPaymentMatch struct {
 	CompletionCarried     bool       `json:"completionCarried,omitempty"`
 	RecognizedMinor       *int64     `json:"recognizedMinor,omitempty"`
 	PriorRefundVersionID  int64      `json:"priorRefundVersionId,omitempty"`
+	SourceDomain          string     `json:"sourceDomain"`
 	SourceTransactionType string     `json:"sourceTransactionType"`
 	Scenario              string     `json:"scenario"`
 	ScenarioLabel         string     `json:"scenarioLabel"`
@@ -48,11 +49,12 @@ func (row catalogPaymentMatch) commissionBasis() int64 {
 }
 
 type catalogMatchReport struct {
-	OrderCount   int                   `json:"orderCount"`
-	MatchedCount int                   `json:"matchedCount"`
-	MatchedMinor int64                 `json:"matchedMinor"`
-	PaidMinor    int64                 `json:"paidMinor"`
-	Items        []catalogPaymentMatch `json:"items"`
+	HasMembershipOrders bool                  `json:"hasMembershipOrders,omitempty"`
+	OrderCount          int                   `json:"orderCount"`
+	MatchedCount        int                   `json:"matchedCount"`
+	MatchedMinor        int64                 `json:"matchedMinor"`
+	PaidMinor           int64                 `json:"paidMinor"`
+	Items               []catalogPaymentMatch `json:"items"`
 }
 
 type vipLink struct {
