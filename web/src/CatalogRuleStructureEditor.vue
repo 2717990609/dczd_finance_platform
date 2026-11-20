@@ -2,7 +2,7 @@
 import { nextTick, ref, watch } from 'vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
-import { catalogFlatMethods, catalogPayeeComplete, catalogRateConditionBody, catalogSalesPayees, moneyAsMinor } from './rule-component-form'
+import { catalogFlatMethods, catalogPayeeComplete, catalogRateConditionBody, catalogSalesPayees, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object, component:Object, api:Function, peopleFilters:Object, parseRate:Function})
 const draft = defineModel({type:Object,required:true})
@@ -11,8 +11,7 @@ const form = ref()
 const itemName = ref()
 const error = ref('')
 const formats = [...catalogFlatMethods,{value:'table',label:'按类别或公司设置比例'}]
-const blankCondition = () => ({companyIds:[],categoryIds:[],
-  relationship:props.options.relationships.find(option=>option.value==='ANY')?.value || props.options.relationships[0]?.value})
+const blankCondition = scope => newCatalogRateCondition(props.options,scope)
 const labelFor = (choices,value) => choices.find(option=>option.value===value)?.label || value
 const percent = basisPoints => (basisPoints/100)+'%'
 function conditionLabel(condition) {
@@ -33,7 +32,7 @@ function begin(kind,scope) {
   form.value = kind==='item'
     ? {kind,target:'person',format:'rate',rows:[blankCondition()]}
     : {kind,scope,itemKey:props.component.itemKey,itemLabel:props.component.label,
-      row:blankCondition()}
+      row:blankCondition(scope)}
 }
 async function addRecipient() {
   begin('item')
@@ -57,9 +56,7 @@ function stage() {
   const staged = form.value
   try {
     if (staged.kind==='row') {
-      if (staged.scope==='category' && !staged.row.categoryIds.length) throw new Error('请选择销售类别。')
-      if (staged.scope==='company' && !staged.row.companyIds.length) throw new Error('请选择特例公司。')
-      const change = {itemKey:staged.itemKey,itemLabel:staged.itemLabel,row:staged.rowNumber,...catalogRateConditionBody(staged.row)}
+      const change = {itemKey:staged.itemKey,itemLabel:staged.itemLabel,row:staged.rowNumber,...catalogRateConditionBody(staged.row,staged.scope)}
       const existing = change.row ? draft.value.rateRows.findIndex(row=>row.itemKey===change.itemKey && row.row===change.row) : -1
       if (existing>=0) draft.value.rateRows.splice(existing,1,change)
       else draft.value.rateRows.push(change)
@@ -76,7 +73,7 @@ function stage() {
       } else if (staged.format==='fixed') {
         item.fixedMinor = moneyAsMinor(staged.amount)
         if (item.fixedMinor===undefined) throw new Error('请填写有效金额，最多保留两位小数。')
-      } else item.rows = staged.rows.map(catalogRateConditionBody)
+      } else item.rows = staged.rows.map(row=>catalogRateConditionBody(row))
       draft.value.items.push(item)
     }
     cancel()
@@ -92,15 +89,15 @@ defineExpose({addRecipient,editRateScope})
   <section class="catalog-rule-structure" aria-label="分润分项和费率条件">
     <div v-if="!form" class="topbar-actions">
       <template v-if="component?.rows?.length">
-        <a-button v-if="options.categories.length" @click="begin('row','category')">添加类别默认比例</a-button>
-        <a-button @click="begin('row','company')">添加公司特例</a-button>
-        <a-button @click="begin('row')">添加其他比例</a-button>
+        <a-button v-if="options.categories.length" size="small" @click="begin('row','category')">添加类别默认比例</a-button>
+        <a-button size="small" @click="begin('row','company')">添加公司特例</a-button>
+        <a-button size="small" @click="begin('row','general')">添加通用比例</a-button>
       </template>
     </div>
     <div v-if="form" class="catalog-add-form">
       <a-alert v-if="error" :message="error" type="error" show-icon class="feedback"/>
       <template v-if="form.kind==='row'">
-        <p class="workbench-scope-note">{{ form.itemLabel }}</p>
+        <p v-if="form.scope" class="workbench-scope-note">{{ {category:'类别默认比例',company:'公司特例',general:'通用比例'}[form.scope] }}</p>
         <CatalogRateCondition v-model="form.row" :options="options" :scope="form.scope" :sales-payee="component?.targetKind==='seller'"/>
       </template>
       <template v-else>

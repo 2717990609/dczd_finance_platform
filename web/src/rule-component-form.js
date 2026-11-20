@@ -19,13 +19,22 @@ export function moneyAsMinor(value) {
   return Number.isSafeInteger(minor) ? minor : undefined
 }
 
-export function catalogRateConditionBody(row) {
+export const catalogRatePriorityLabel = '公司特例优先，其余按销售类别。'
+
+export function newCatalogRateCondition(options, scope = options.categories.length ? 'category' : 'general') {
+  return {scope, companyIds:[], categoryIds:[],
+    relationship:options.relationships.find(option=>option.value==='ANY')?.value || options.relationships[0]?.value}
+}
+
+export function catalogRateConditionBody(row, scope = row.scope) {
   const rateBps = rateAsBasisPoints(row.rate)
   if (!row.relationship || rateBps===undefined) throw new Error('请核对销售范围和比例。')
+  if (scope==='category' && !row.categoryIds.length) throw new Error('请选择销售类别。')
+  if (scope==='company' && !row.companyIds.length) throw new Error('请选择特例公司。')
   return {relationship:row.relationship,rateBps,
     ...(row.payee ? {payee:row.payee} : {}),
-    ...(row.companyIds?.length ? {companyIds:row.companyIds} : {company:'ANY'}),
-    ...(row.categoryIds?.length ? {categoryIds:row.categoryIds} : {})}
+    ...(scope!=='category' && scope!=='general' && row.companyIds?.length ? {companyIds:row.companyIds} : {company:'ANY'}),
+    ...(scope!=='general' && row.categoryIds?.length ? {categoryIds:row.categoryIds} : {})}
 }
 
 export const catalogSalesPayees = [

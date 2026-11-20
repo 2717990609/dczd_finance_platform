@@ -5,7 +5,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
-import { catalogFlatMethods, catalogPayeeComplete, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogFlatMethods, catalogPayeeComplete, catalogRatePriorityLabel, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
@@ -38,7 +38,7 @@ const rateColumns = [
   {title:'销售公司',key:'company',dataIndex:'company',width:190},
   {title:'销售类别',key:'category',dataIndex:'category',width:170},
   {title:'销售关系',key:'relationship',dataIndex:'relationship',width:110},
-  {title:'比例（%）',key:'rate',width:115},
+  {title:'实收比例（%）',key:'rate',width:126},
   {title:'收款方',key:'payee',width:128},
 ]
 const columns = computed(() => sheet.value?.mayPublish && !props.applied ? [...rateColumns,{title:'操作',key:'operation',width:142}] : rateColumns)
@@ -98,12 +98,10 @@ const displayedColumns = computed(() => columns.value.filter(col=>
   (col.key!=='payee' || component.value?.targetKind==='seller')))
 const tableWidth = computed(() => displayedColumns.value.reduce((width,column)=>width+column.width,0))
 async function addRecipient() {
-  more.value = ['more']
   await nextTick()
   await structureEditor.value?.addRecipient()
 }
 async function editRateScope(row) {
-  more.value = ['more']
   await nextTick()
   structureEditor.value?.editRateScope(row,displayRate(row.rateBps,row.row))
 }
@@ -329,10 +327,10 @@ async function publish() {
           </button>
           <div v-if="selected===item.itemKey" :id="'catalog-rate-'+item.itemKey" class="rule-block-body">
           <a-alert v-if="itemRemoved" type="warning" message="此分项将从新版移除" show-icon class="feedback"/>
-          <div class="rule-blocks-heading">
-            <h4 class="rule-item-section">发给谁</h4>
+          <div v-if="targetKind!=='seller' || !component?.rows?.length" class="rule-blocks-heading catalog-receipt">
+            <span v-if="!targetDraft">{{ targetKindLabels[targetKind] }}<template v-if="targetName(item)"> · {{ targetName(item) }}</template></span>
             <a-button v-if="!applied && sheet.structureOptions && targetKind!=='seller' && !targetDraft"
-              :disabled="!editable || structureEditing" @click="beginTarget">编辑收款对象</a-button>
+              size="small" :disabled="!editable || structureEditing" @click="beginTarget">编辑收款对象</a-button>
           </div>
           <template v-if="targetDraft">
             <div class="rule-basics">
@@ -344,16 +342,6 @@ async function publish() {
               <a-button type="primary" @click="stageTarget">确认收款对象</a-button>
             </a-space>
           </template>
-          <p v-else class="rule-formula">
-            {{ targetKindLabels[targetKind] }}<template v-if="targetName(item)"> · {{ targetName(item) }}</template><template v-if="teamSplit"> · 指定内部团队按岗位拆分</template>
-          </p>
-          <p v-if="targetKind==='seller'" class="catalog-inheritance">
-            新销售关联来源账号并登记销售岗位后，自动沿用这条规则。按付款当天的岗位记录判断。
-          </p>
-          <h4 class="rule-item-section">提成怎么算</h4>
-          <p v-if="component?.rows?.length" class="rule-formula">
-            每笔付款实收 × 适用比例
-          </p>
           <template v-if="item.fixedMinor != null || item.rateBps != null">
             <div v-if="!applied && sheet.mayPublish" class="rule-basics">
               <a-form-item label="计提方式" html-for="catalog-flat-method">
@@ -378,10 +366,8 @@ async function publish() {
               </a-radio-group>
               <a-input v-if="component.rows.length>8" id="catalog-rate-filter" v-model:value="filter"
                 placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
+              <small v-if="rateGroup!=='inherited' && automaticCategoryRate" class="finance-rate-priority">{{ catalogRatePriorityLabel }}</small>
             </div>
-            <p v-if="rateGroup==='default' && automaticCategoryRate" class="catalog-inheritance">
-              公司特例优先，其余按销售类别默认比例。
-            </p>
             <p v-if="rateGroup==='inherited'" class="catalog-inheritance">公司没有单独比例，也未匹配到类别默认比例时，才使用此处配置。</p>
             <a-table :key="selected + filter + rateGroup" :columns="displayedColumns" :data-source="displayedRates" row-key="row" size="small"
               :scroll="{x:tableWidth}" :pagination="{pageSize:8,showSizeChanger:false,hideOnSinglePage:true}">
@@ -445,11 +431,11 @@ async function publish() {
           </section>
           </div>
           <template v-if="sheet.mayPublish && !applied">
+            <CatalogRuleStructureEditor v-if="sheet.structureOptions" ref="structureEditor" :key="rule.id"
+              v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
+              :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints"/>
             <a-collapse v-model:active-key="more" ghost class="catalog-more">
               <a-collapse-panel key="more" header="更多配置">
-                <CatalogRuleStructureEditor v-if="sheet.structureOptions" ref="structureEditor" :key="rule.id"
-                  v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
-                  :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints"/>
                 <div class="topbar-actions">
                   <a-button v-if="component && targetKind!=='seller'" :danger="!itemRemoved" :disabled="structureEditing || saving"
                     @click="toggleItemRemoval">{{ itemRemoved ? '撤销删除分项' : '删除分项' }}</a-button>
@@ -503,13 +489,15 @@ async function publish() {
 </template>
 
 <style scoped>
-.catalog-rate-toolbar {display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin-bottom:12px}
+.catalog-rate-toolbar {display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;margin-bottom:6px}
 .catalog-rate-toolbar :deep(.ant-input-affix-wrapper) {width:min(100%,260px)}
-.catalog-rate-summary {display:flex;flex-wrap:wrap;justify-content:space-between;gap:12px;padding:0 0 16px;margin-bottom:18px;border-bottom:1px solid var(--line)}
-.catalog-rate-summary h2 {font-size:20px;margin:0 0 4px}
+.catalog-rate-summary {display:flex;flex-wrap:wrap;justify-content:space-between;gap:6px 12px;padding:0 0 8px;margin-bottom:8px;border-bottom:1px solid var(--line)}
+.catalog-rate-summary h2 {font-size:18px;margin:0 0 2px}
 .catalog-rate-summary p {margin:0;color:var(--muted);line-height:1.65}
 .catalog-rate-context {font-size:13px}
-.catalog-inheritance {margin:0 0 12px;color:var(--muted);font-size:13px;line-height:1.6}
-.catalog-more {margin:16px 0}
+.catalog-inheritance {margin:0 0 6px;color:var(--muted);font-size:13px;line-height:1.6}
+.catalog-receipt {margin-bottom:6px}
+.catalog-more {margin:6px 0}
+.catalog-more :deep(.ant-collapse-header) {padding-block:6px}
 .catalog-copy {padding:16px;margin:12px 0;border:1px solid var(--line);border-radius:8px}
 </style>

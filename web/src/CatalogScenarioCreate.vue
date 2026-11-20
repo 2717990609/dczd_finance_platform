@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
-import { catalogRateConditionBody, rateAsBasisPoints } from './rule-component-form'
+import { catalogRateConditionBody, catalogRatePriorityLabel, newCatalogRateCondition, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({products:Array,initialProduct:Number,initialSku:String,api:Function})
 const emit = defineEmits(['close','published'])
@@ -24,7 +24,7 @@ const recognition = computed(() => {
   const selected = skus.value.find(option=>option.value===sku.value)
   return selected ? (selected.requiresCompletion ? '付款后，订单完成时计提' : '付款后计提') : undefined
 })
-const blankRate = () => ({companyIds:[],categoryIds:[],relationship:'ANY'})
+const blankRate = scope => newCatalogRateCondition(options.value,scope)
 let optionsRequest = 0
 
 watch(productId, async id=>{
@@ -57,7 +57,7 @@ async function publish() {
   error.value = ''
   try {
     if (!sku.value || !name.value.trim() || !effectiveFrom.value) throw new Error('请选择业务 SKU、生效时间并填写规则名称。')
-    const salesRates = rates.value.map(catalogRateConditionBody)
+    const salesRates = rates.value.map(row=>catalogRateConditionBody(row))
     publishing.value = true
     const result = await props.api('/catalog-rule-rates',{method:'POST',body:JSON.stringify({
       effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
@@ -94,13 +94,20 @@ async function publish() {
         </a-form-item>
       </div>
       <template v-if="options && sku">
-        <section class="rule-block rule-block-body" aria-label="成交销售">
-          <h3 class="form-subhead">成交销售</h3>
+        <section class="rule-block rule-block-body catalog-first-rates" aria-label="成交销售">
+          <div class="rule-blocks-heading">
+            <h3 class="form-subhead">成交销售</h3>
+            <small v-if="options.categories.length" class="finance-rate-priority">{{ catalogRatePriorityLabel }}</small>
+          </div>
           <div v-for="(_,index) in rates" :key="index" class="catalog-add-condition">
             <CatalogRateCondition v-model="rates[index]" :options="options" :suffix="'-first-'+index" sales-payee/>
             <a-button v-if="rates.length>1" type="link" @click="rates.splice(index,1)">移除此条件</a-button>
           </div>
-          <a-button type="dashed" @click="rates.push(blankRate())">添加比例条件</a-button>
+          <a-space wrap>
+            <a-button v-if="options.categories.length" size="small" @click="rates.push(blankRate('category'))">添加类别默认比例</a-button>
+            <a-button size="small" @click="rates.push(blankRate('company'))">添加公司特例</a-button>
+            <a-button size="small" @click="rates.push(blankRate('general'))">添加通用比例</a-button>
+          </a-space>
         </section>
         <div class="rule-blocks-heading">
           <h3 class="form-subhead">其他收款安排</h3>
