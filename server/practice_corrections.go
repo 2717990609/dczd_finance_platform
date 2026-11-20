@@ -357,10 +357,13 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 	 JOIN settlements s ON s.period_id=later.id
 	 JOIN calculation_drafts d ON d.period_id=later.id
 	 JOIN rule_versions rule ON rule.id=d.rule_id
-	 WHERE original.id=$1 AND (jsonb_path_exists(rule.components,'$[*].tiers.count[*]')
-	  OR jsonb_path_exists(rule.components,'$[*].tiers.companySchedules[*].count[*]'))
+	 WHERE original.id=$1
 	 AND EXISTS(SELECT 1 FROM calculation_draft_lines l WHERE l.period_id=later.id AND l.component_type='sales'
-	  AND l.person_id=ANY($2::bigint[]))
+	  AND l.person_id=ANY($2::bigint[]) AND (
+	   jsonb_path_exists(rule.components,'$[*].tiers.count[*]')
+	   OR jsonb_path_exists(rule.components,'$[*].tiers.companySchedules[*].count[*]')
+	   OR jsonb_path_exists(rule.components,'$[*].tiers.personSchedules[*] ? (@.personId == $person).count[*]',
+	    jsonb_build_object('person',l.person_id))))
 	)`, classID, slices.Sorted(maps.Keys(people))).Scan(&affected)
 	if err == nil && affected {
 		draft.Issues = append(draft.Issues, draftIssue{FactID: trigger, Code: "PRACTICE_CORRECTION_LATER_TIERS", Advisory: true,

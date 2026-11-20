@@ -14,6 +14,16 @@ import (
 )
 
 func TestPracticeCorrectionReplaysBothLegsAndTheWholeSalesTier(t *testing.T) {
+	t.Run("shared cumulative tier", func(t *testing.T) {
+		testPracticeCorrectionAcrossClasses(t, false)
+	})
+	t.Run("personal cumulative tier", func(t *testing.T) {
+		testPracticeCorrectionAcrossClasses(t, true)
+	})
+}
+
+func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool) {
+	t.Helper()
 	ctx := context.Background()
 	service := workspace{db: integrationDB(t), sources: map[string]sourceConfig{
 		"DCZD": {BaseURL: "http://127.0.0.1:9126", Token: "isolated-practice-correction"},
@@ -113,9 +123,17 @@ func TestPracticeCorrectionReplaysBothLegsAndTheWholeSalesTier(t *testing.T) {
 	later := id(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "七月班", Ordinal: 57,
 		StartsOn: "2026-07-10", EndsOn: "2026-07-10", SourcePeriodKey: laterKey}))
 	laterStart := time.Date(2026, 7, 10, 8, 0, 0, 0, shanghai)
+	laterTiers := &practiceSalesTiers{CountFromOrdinal: 56,
+		Count: []practiceTier{{From: 1, Mode: "rate", Value: 1000}, {From: 2, Mode: "rate", Value: 2000}}}
+	if personalTier {
+		laterTiers.PersonSchedules = []practicePersonSchedule{{
+			PersonID: people["销售甲"], practiceTierSchedule: practiceTierSchedule{Count: laterTiers.Count},
+		}}
+		laterTiers.Count = nil
+	}
 	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &later, Label: "累计新报",
 		Components: []component{{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
-			Tiers: &practiceSalesTiers{CountFromOrdinal: 56, Count: []practiceTier{{From: 1, Mode: "rate", Value: 1000}, {From: 2, Mode: "rate", Value: 2000}}}}}}); err != nil {
+			Tiers: laterTiers}}}); err != nil {
 		t.Fatal(err)
 	}
 	store(paidAt, payment("fourth", "1", "销售甲", 10000, paidAt))
@@ -134,6 +152,33 @@ func TestPracticeCorrectionReplaysBothLegsAndTheWholeSalesTier(t *testing.T) {
 	} else {
 		t.Fatalf("the later settled class must depend on the earlier sales count: %+v", next)
 	}
+	const openKey = "PRACTICE:1:1:58"
+	openClass := id(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "八月班", Ordinal: 58,
+		StartsOn: "2026-08-12", EndsOn: "2026-08-12", SourcePeriodKey: openKey}))
+	openStart := time.Date(2026, 8, 12, 8, 0, 0, 0, shanghai)
+	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &openClass, Label: "开放班次个人累计",
+		Components: []component{{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
+			Tiers: &practiceSalesTiers{CountFromOrdinal: 56, PersonSchedules: []practicePersonSchedule{
+				{PersonID: people["销售甲"], practiceTierSchedule: practiceTierSchedule{
+					Count: []practiceTier{{Mode: "rate", Value: 1000}, {From: 3, Mode: "rate", Value: 2000}},
+				}},
+			}}}}}); err != nil {
+		t.Fatal(err)
+	}
+	store(paidAt, payment("fifth", "1", "销售甲", 10000, paidAt))
+	if err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
+		_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: openKey, Hash: "later-open-tier", SourceVersion: 1,
+			StartsAt: openStart, ConfirmedAt: openStart.Add(time.Hour), Enrollments: []practiceEnrollment{
+				{SourceEnrollmentID: "5", ParticipantID: "5", MembershipType: 3, CommissionEligible: true,
+					SignedAt: openStart, PaidOrderIDs: []string{"fifth"}, ContentHash: "ee"},
+			}})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if next := draftAt(openClass); next.Total != 2000 || next.IssueCount != 0 {
+		t.Fatalf("the open class must use the original three earlier enrollments: %+v", next)
+	}
 	store(revisedAt, payment("deposit", "2", replacement, 4000, revisedAt))
 	if partial := draftAt(july); partial.IssueCount != 1 || partial.CorrectionCount != 0 {
 		t.Fatalf("one changed leg must expose a mismatch without posting a credit: %+v", partial)
@@ -150,6 +195,12 @@ func TestPracticeCorrectionReplaysBothLegsAndTheWholeSalesTier(t *testing.T) {
 	changed := draftAt(august)
 	if changed.CorrectionCount != 3 || changed.CorrectionTotal != 2600 || changed.IssueCount != 3 {
 		t.Fatalf("expected both payment legs and the other seller's increased tier: %+v", changed)
+	}
+	if err := service.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, openClass).Scan(&queued); err != nil || !queued {
+		t.Fatalf("the open class must be queued when the earlier seller changes: %t %v", queued, err)
+	}
+	if next := draftAt(openClass); next.Total != 1000 || next.IssueCount != 0 {
+		t.Fatalf("the open class must recalculate to the affected seller's two earlier enrollments: %+v", next)
 	}
 	var advisory bool
 	if err := service.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM calculation_draft_issues
@@ -209,7 +260,8 @@ func TestPracticeCorrectionReplaysBothLegsAndTheWholeSalesTier(t *testing.T) {
 	response := httptest.NewRecorder()
 	service.getDraft(response, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/drafts?periodId=%d", august), nil))
 	var detail struct {
-		Corrections []struct {
+		AdvisoryCount int
+		Corrections   []struct {
 			OrderID, TriggerOrderID, PersonName string
 			RuleVersion                         int
 			AmountMinor                         int64
@@ -217,6 +269,9 @@ func TestPracticeCorrectionReplaysBothLegsAndTheWholeSalesTier(t *testing.T) {
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil || response.Code != http.StatusOK {
 		t.Fatalf("correction detail: %d %v %s", response.Code, err, response.Body)
+	}
+	if detail.AdvisoryCount != 1 {
+		t.Fatalf("the finance workbench must receive the later-class advisory, got %d", detail.AdvisoryCount)
 	}
 	var linked bool
 	for _, entry := range detail.Corrections {
@@ -284,6 +339,9 @@ func TestPracticeCorrectionReplaysBothLegsAndTheWholeSalesTier(t *testing.T) {
 	var frozenTotal int64
 	if err := service.db.QueryRow(ctx, `SELECT total_minor FROM calculation_drafts WHERE period_id=$1`, class).Scan(&frozenTotal); err != nil || frozenTotal != frozen.Total {
 		t.Fatalf("the original class was rewritten: %d %v", frozenTotal, err)
+	}
+	if err := service.db.QueryRow(ctx, `SELECT total_minor FROM calculation_drafts WHERE period_id=$1`, later).Scan(&frozenTotal); err != nil || frozenTotal != 2000 {
+		t.Fatalf("the later settled class was rewritten: %d %v", frozenTotal, err)
 	}
 	if _, err := service.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", class); err == nil || !strings.Contains(err.Error(), "booked adjustments") {
 		t.Fatalf("cannot reopen the class while its related correction is booked: %v", err)
