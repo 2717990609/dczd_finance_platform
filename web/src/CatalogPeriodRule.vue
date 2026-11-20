@@ -1,8 +1,10 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { DownOutlined } from '@ant-design/icons-vue'
+import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
-const props = defineProps({rule:Object, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
-const emit = defineEmits(['close','published'])
+const props = defineProps({rule:Object, applied:Object, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
+const emit = defineEmits(['close','published','open-draft'])
 const sheet = ref()
 const rows = ref([])
 const activeComponent = ref()
@@ -21,6 +23,7 @@ const activityMonth = ref(new Date(Date.now()+8*3600000).toISOString().slice(0,7
 const reviewingActivity = ref(false)
 const activity = ref()
 const activityError = ref('')
+const savingDraft = ref(false)
 let versionRequest = 0
 let quoteRequest = 0
 let activityRequest = 0
@@ -37,6 +40,7 @@ const groupingIssueLabels = {
   BENEFIT_ORG_MISSING:'缺少收款组织映射',
   BENEFIT_ORG_INACTIVE:'收款组织当前停用',
   BENEFIT_ORG_CONFLICT:'收款组织无法唯一确定',
+  BENEFIT_PERSON_MISSING:'找不到指定收款人',
   BENEFIT_POOL_OWNER_MISSING:'付款时缺少池负责人',
   BENEFIT_POOL_OWNER_CONFLICT:'付款时有多位池负责人',
   BENEFIT_POOL_MEMBERS_MISSING:'付款时没有可分配成员',
@@ -73,12 +77,21 @@ const scenarioOptions = computed(() => {
 
 function editableRows(items) {
   return items.map(item => ({uid:item.itemKey,itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,
-    organizationKey:item.organizationKey,poolName:item.poolName || '',ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
+    organizationKey:item.organizationKey,personId:item.personId,personName:item.personId ? item.targetName : undefined,
+    poolName:item.poolName || '',ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
     tiers:item.tiers.map(row => ({
     from:(row.min_inclusive || 0)/100,rate:row.rate_bps/100,
   }))}))
 }
-const targetTypes = [{value:'company',label:'指定公司'},{value:'pool',label:'团队池'}]
+const targetTypes = [{value:'person',label:'指定个人'},{value:'company',label:'指定公司'},{value:'pool',label:'团队池'}]
+const targetLabels = {person:'个人',company:'公司',pool:'团队池'}
+const peopleFilters = computed(() => ({ruleId:props.rule?.id,scope:'period'}))
+function targetLabel(item) {
+  if (item.targetKind==='person') return item.personName || '待选择收款人'
+  const name = availableOrganizations(item).find(org=>org.value===item.organizationKey)?.label ||
+    sheet.value.items.find(old=>old.itemKey===item.itemKey)?.targetName
+  return [item.poolName,name].filter(Boolean).join(' · ') || '待选择收款对象'
+}
 function availableOrganizations(row) {
   const options = (sheet.value?.options?.organizations || []).filter(item=>row.targetKind==='pool' || item.kind==='COMPANY')
   if (!row.organizationKey || options.some(item=>item.value===row.organizationKey)) return options
@@ -93,6 +106,8 @@ function availableRoles(role) {
 function setTarget(row, target) {
   row.targetKind = target
   row.organizationKey = undefined
+  row.personId = undefined
+  row.personName = undefined
   row.ownerRole = ''
   row.memberRole = ''
   row.poolName = ''
@@ -116,14 +131,16 @@ function minor(value, message) {
 function componentChanges() {
   if (!canSave.value || !componentsChanged.value) return {}
   return {components:rows.value.map(item=>{
-    if (!item.label.trim() || !item.organizationKey) throw new Error('请填写分项名称和收款组织。')
+    if (!item.label.trim() || (item.targetKind==='person' ? !item.personId : !item.organizationKey)) {
+      throw new Error('请填写收款安排名称并选择收款对象。')
+    }
     if (item.targetKind==='pool' && (!item.poolName?.trim() || !item.ownerRole || !item.memberRole)) {
       throw new Error('请填写团队池名称、负责人职责和成员职责。')
     }
     const starts = item.tiers.map(row=>minor(row.from,'请输入每档净额起点。'))
     if (starts.some((from,index)=>index && from<=starts[index-1])) throw new Error('每一档净额起点须高于上一档。')
     return {itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,organizationKey:item.organizationKey,
-      poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole,tiers:item.tiers.map((row,index)=>{
+      personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole,tiers:item.tiers.map((row,index)=>{
       const rate = minor(row.rate,'请输入每档比例。')
       if (rate>10000) throw new Error('比例须在 0% 到 100% 之间。')
       return {min_inclusive:starts[index],max_exclusive:starts[index+1],rate_bps:rate}
@@ -135,19 +152,19 @@ function removeTier(tiers, index) {
   tiers[0].from = 0
 }
 
-watch(()=>props.rule.id, async id=>{
+watch(()=>[props.rule?.id,props.applied], async ([id,applied])=>{
   const request = ++versionRequest
   error.value = ''
   sheet.value = undefined
   loading.value = true
   try {
-    const data = await props.api('/catalog-period-rules?ruleId='+encodeURIComponent(id))
+    const data = applied || await props.api('/catalog-period-rules?ruleId='+encodeURIComponent(id))
     if (request !== versionRequest) return
     sheet.value = data
     rows.value = editableRows(data.items)
     scenarioCodes.value = data.scenarios.map(sku=>sku.code)
     editingScenarios.value = false
-    activeComponent.value = rows.value[0]?.uid
+    activeComponent.value = rows.value.length===1 ? rows.value[0].uid : undefined
     editingComponent.value = undefined
     effectiveDate.value = canSave.value ? firstStart.value : ''
   } catch (err) {
@@ -161,7 +178,7 @@ watch([rows,amounts,scenarioCodes], ()=>{
   previewing.value = false
   quote.value = undefined
 }, {deep:true})
-watch([activityMonth,()=>props.rule.id], ()=>{
+watch([activityMonth,()=>props.rule?.id], ()=>{
   ++activityRequest
   activity.value = undefined
   activityError.value = ''
@@ -182,6 +199,20 @@ async function readActivity(trialPaused = false) {
     if (request === activityRequest) activityError.value = err.message
   } finally {
     if (request === activityRequest) reviewingActivity.value = false
+  }
+}
+
+async function openDraft() {
+  savingDraft.value = true
+  activityError.value = ''
+  try {
+    const result = await props.api('/catalog-aggregate-drafts',{method:'POST',
+      body:JSON.stringify({ruleId:props.rule.id,month:activityMonth.value})})
+    emit('open-draft',result)
+  } catch (err) {
+    activityError.value = err.message
+  } finally {
+    savingDraft.value = false
   }
 }
 
@@ -231,13 +262,13 @@ async function publish() {
 </script>
 
 <template>
-  <a-drawer open title="整期阶梯配置" width="min(1260px, 100vw)"
-    :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="emit('close')">
+  <a-drawer open :title="applied ? '计提使用的整期规则' : '整期阶梯配置'" width="min(1260px, 100vw)"
+    :closable="!saving && !savingDraft" :mask-closable="!saving && !savingDraft" :keyboard="!saving && !savingDraft" @close="emit('close')">
     <a-alert v-if="error" class="feedback" :message="error" type="error" show-icon/>
     <a-spin :spinning="loading">
       <section v-if="sheet">
         <h2>{{ sheet.label }} <a-tag>v{{ sheet.version }}</a-tag></h2>
-        <a-alert v-if="sheet.paused" class="feedback" type="info" show-icon
+        <a-alert v-if="sheet.paused && !applied" class="feedback" type="info" show-icon
           message="当前暂停执行。保存档位新版本后仍维持暂停。"/>
         <a-descriptions size="small" :column="{xs:1,sm:1,md:2}" bordered>
           <a-descriptions-item label="结算周期">{{ cycleLabels[sheet.cycle] }}</a-descriptions-item>
@@ -255,36 +286,41 @@ async function publish() {
             </template>
           </a-descriptions-item>
         </a-descriptions>
-        <div class="rule-edit-layout period-component-layout">
-          <aside class="rule-item-nav" aria-label="整期分润分项">
-            <h3 class="form-subhead">分润分项</h3>
-            <div class="rule-item-nav-list">
-              <button v-for="item in rows" :key="item.uid" type="button" :aria-pressed="activeComponent===item.uid" @click="activeComponent=item.uid">
-                <span>{{ item.label || '新分项' }}</span><small>{{ item.targetKind==='pool' ? '团队池' : '公司' }}</small>
-              </button>
-            </div>
-            <a-button v-if="canSave" type="dashed" block :disabled="saving" @click="addComponent">新增分润分项</a-button>
-          </aside>
-        <div class="rule-editor-pane">
-        <template v-for="item in rows" :key="item.uid">
-        <section v-if="activeComponent===item.uid" class="period-tier-item">
+        <div class="rule-blocks period-component-layout" aria-label="收款安排">
+          <div class="rule-blocks-heading">
+            <h3 class="form-subhead">收款安排</h3>
+            <a-button v-if="canSave" :disabled="saving" @click="addComponent">添加收款安排</a-button>
+          </div>
+        <section v-for="item in rows" :key="item.uid" class="rule-block">
+          <button type="button" class="rule-block-header" :aria-expanded="activeComponent===item.uid"
+            :aria-controls="'period-rule-part-'+item.uid" @click="activeComponent=activeComponent===item.uid ? undefined : item.uid">
+            <DownOutlined aria-hidden="true"/>
+            <strong>{{ item.label || '新收款安排' }}</strong>
+            <span class="rule-block-badge">{{ targetLabels[item.targetKind] }}</span>
+            <small>{{ targetLabel(item) }}</small>
+          </button>
+          <div v-if="activeComponent===item.uid" :id="'period-rule-part-'+item.uid" class="rule-block-body">
           <div class="period-component-heading">
-            <h3 class="form-subhead">{{ item.label || '新分项' }}</h3>
+            <h4 class="rule-item-section">发给谁</h4>
             <div v-if="canSave">
-              <a-button v-if="editingComponent!==item.uid" type="link" :disabled="saving" @click="editingComponent=item.uid">编辑分项</a-button>
+              <a-button v-if="editingComponent!==item.uid" type="link" :disabled="saving" @click="editingComponent=item.uid">编辑收款对象</a-button>
               <a-button v-else type="link" :disabled="saving" @click="editingComponent=undefined">收起编辑</a-button>
-              <a-button v-if="rows.length>1" type="link" danger :disabled="saving" @click="removeComponent(item)">删除分项</a-button>
+              <a-button v-if="rows.length>1" type="link" danger :disabled="saving" @click="removeComponent(item)">移除此安排</a-button>
             </div>
           </div>
-          <h4 class="rule-item-section">发给谁</h4>
           <a-form v-if="canSave && editingComponent===item.uid" layout="vertical" class="rule-basics">
-            <a-form-item label="分项名称" html-for="period-benefit-label">
+            <a-form-item label="收款安排名称" html-for="period-benefit-label">
               <a-input id="period-benefit-label" v-model:value="item.label" :maxlength="80" :disabled="saving"/>
             </a-form-item>
-            <a-form-item label="收款对象类型" html-for="period-benefit-target">
+            <a-form-item label="收款对象" html-for="period-benefit-target">
               <a-select id="period-benefit-target" :value="item.targetKind" :options="targetTypes" :disabled="saving" @change="setTarget(item,$event)"/>
             </a-form-item>
-            <a-form-item :label="item.targetKind==='pool' ? '归集组织' : '收款公司'" html-for="period-benefit-org">
+            <a-form-item v-if="item.targetKind==='person'" label="收款人" html-for="period-benefit-person">
+              <AppointmentPersonSelect id="period-benefit-person" v-model:value="item.personId" :api="api" endpoint="/catalog-rule-people"
+                :filters="peopleFilters" :current="item.personId ? {id:item.personId,name:item.personName} : undefined"
+                :disabled="saving" @change="(_,option)=>item.personName=option.name"/>
+            </a-form-item>
+            <a-form-item v-else :label="item.targetKind==='pool' ? '归集组织' : '收款公司'" html-for="period-benefit-org">
               <a-select id="period-benefit-org" v-model:value="item.organizationKey" :options="availableOrganizations(item)"
                 :disabled="saving" show-search option-filter-prop="label"/>
             </a-form-item>
@@ -301,11 +337,14 @@ async function publish() {
             </template>
           </a-form>
           <template v-else>
-            <p class="rule-formula">{{ item.targetKind==='pool' ? item.poolName+' · ' : '' }}{{ availableOrganizations(item).find(org=>org.value===item.organizationKey)?.label || sheet.items.find(old=>old.itemKey===item.itemKey)?.targetName || '待选择' }}</p>
+            <p class="rule-formula">{{ targetLabel(item) }}</p>
             <p v-if="item.ownerRole" class="rule-formula">负责人 {{ optionLabel('catalogAppointmentRole',item.ownerRole) || item.ownerRole }} · 成员 {{ optionLabel('catalogAppointmentRole',item.memberRole) || item.memberRole || '未配置' }}</p>
           </template>
           <h4 class="rule-item-section">提成怎么算</h4>
-          <p class="rule-formula">整期净收款选档，全部可计提净额乘以该档比例。</p>
+          <p class="rule-formula">同一收款组用本组净收款选档，再用净额乘以该档比例。</p>
+          <p v-if="rows.length>1 && rows.some(row=>row.targetKind==='pool')" class="rule-formula">
+            团队池负责人或可分配成员变动时分组。同组的各个收款安排共用选档净额，可各设比例。
+          </p>
           <div class="period-tier-grid period-tier-header" aria-hidden="true">
             <span>净额起点（元，含）</span><span>净额止点（元，不含）</span><span>计提比例（%）</span><span v-if="canSave">操作</span>
           </div>
@@ -319,9 +358,8 @@ async function publish() {
               @click="removeTier(item.tiers,i)">删除</a-button>
           </div>
           <a-button v-if="canSave" type="dashed" :disabled="saving" @click="item.tiers.push({from:undefined,rate:0})">新增档位</a-button>
+          </div>
         </section>
-        </template>
-        </div>
         </div>
         <template v-if="canReviewActivity">
           <h3 class="form-subhead">订单和退款核对</h3>
@@ -331,8 +369,9 @@ async function publish() {
               <a-input id="period-activity-month" v-model:value="activityMonth" type="month"/>
             </a-form-item>
             <a-form-item>
-              <a-button :disabled="!activityMonth" :loading="reviewingActivity" @click="readActivity()">读取已同步数据</a-button>
+              <a-button :disabled="!activityMonth || savingDraft" :loading="reviewingActivity" @click="readActivity()">读取已同步数据</a-button>
               <a-button v-if="sheet.paused" :disabled="!activityMonth || reviewingActivity" @click="readActivity(true)">试算暂停规则</a-button>
+              <a-button v-else :disabled="!activityMonth || reviewingActivity" :loading="savingDraft" @click="openDraft">打开整期草稿</a-button>
             </a-form-item>
           </a-form>
           <a-alert v-if="activityError" class="feedback" :message="activityError" type="error" show-icon/>
@@ -411,6 +450,7 @@ async function publish() {
             </section>
           </section>
         </template>
+        <template v-if="!applied">
         <h3 class="form-subhead">金额演算</h3>
         <p class="rule-formula">手填所选场景的汇总金额，用于核对档位和计提金额。</p>
         <a-form layout="vertical">
@@ -433,6 +473,7 @@ async function publish() {
             :label="award.label || sheet.items.find(item=>item.itemKey===award.itemKey)?.label">{{ award.rateBps/100 }}% · {{ formatMoney(award.amountMinor) }}</a-descriptions-item>
           <a-descriptions-item label="下期结转退款">{{ formatMoney(-quote.carryForwardMinor) }}</a-descriptions-item>
         </a-descriptions>
+        </template>
         <a-form v-if="canSave" layout="vertical" class="period-quote-result">
           <a-form-item label="新版本生效日期（北京时间零点）" html-for="period-rule-effective" :extra="cycleLabels[sheet.cycle]+'的账期起点生效。'">
             <a-input id="period-rule-effective" v-model:value="effectiveDate" type="date" :min="firstStart" :max="cutoff" :disabled="saving"/>
@@ -452,7 +493,6 @@ async function publish() {
 <style scoped>
 .period-component-layout { margin:16px 0 22px; }
 .period-scenario-select { width:min(100%,720px); }
-.period-tier-item { padding:18px; border:1px solid var(--line); border-radius:8px; }
 .period-component-heading { display:flex; justify-content:space-between; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:8px; }
 .period-tier-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:8px; align-items:center; margin-bottom:8px; }
 .period-tier-header { color:var(--muted); font-size:12px; }

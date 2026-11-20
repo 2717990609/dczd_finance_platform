@@ -12,12 +12,12 @@ const field = name => 'practice-benefit-'+props.index+'-'+name
 </script>
 
 <template>
-  <a-form-item label="分项名称" required>
-    <a-input v-model:value="config.label" aria-label="分项名称" :maxlength="80"/>
+  <a-form-item label="收款安排名称" required>
+    <a-input v-model:value="config.label" aria-label="收款安排名称" :maxlength="80" placeholder="例如交付团队分润"/>
   </a-form-item>
   <h4 class="rule-item-section">发给谁</h4>
   <div class="period-fields">
-    <a-form-item label="受益方类型" :html-for="field('recipient')">
+    <a-form-item label="收款对象" :html-for="field('recipient')">
       <a-select :id="field('recipient')" v-model:value="config.recipient" :options="recipientTypes"/>
     </a-form-item>
     <a-form-item v-if="config.recipient==='unit'" label="收款组织" :html-for="field('unit')" required>

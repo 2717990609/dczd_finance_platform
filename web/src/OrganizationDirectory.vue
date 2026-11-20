@@ -174,10 +174,10 @@ defineExpose({refresh})
 
 <template>
   <a-tabs v-model:active-key="panel" class="workbench-tabs">
-    <a-tab-pane key="organization" tab="组织任职"/>
-    <a-tab-pane key="companies" tab="销售公司"/>
+    <a-tab-pane key="organization" tab="人员归属"/>
+    <a-tab-pane key="companies" tab="销售公司与类别"/>
     <a-tab-pane key="duties" tab="业务职责"/>
-    <a-tab-pane key="catalog" tab="计提任职"/>
+    <a-tab-pane key="catalog" tab="分润岗位"/>
   </a-tabs>
   <KeepAlive>
     <CatalogAppointments v-if="panel==='catalog'" ref="catalog" :api="api" :can-write="canWrite"

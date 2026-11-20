@@ -44,7 +44,7 @@ const catalogMatchSQL = `WITH period AS (
   CASE pro.cycle_start_day WHEN 25 THEN 'MONTHLY_25_TO_24' WHEN 1 THEN 'MONTHLY' END AS cycle
  FROM periods p JOIN products pro ON pro.id=p.product_id
  JOIN product_catalog_settings c ON c.product_id=p.product_id
- WHERE p.id=$1 AND pro.period_mode='calendar'
+ WHERE p.id=$1 AND pro.period_mode='calendar' AND p.aggregate_package_id IS NULL
 ), routes AS MATERIALIZED (
  SELECT m.* FROM catalog_business_routes m JOIN period p USING(product_id) WHERE m.observed_at=p.captured_at
 ), rules AS MATERIALIZED (
@@ -66,10 +66,10 @@ const catalogMatchSQL = `WITH period AS (
  UNION ALL
  SELECT origin.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
   (origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',true
- FROM period scope JOIN periods origin ON origin.product_id=scope.product_id AND origin.ends_on<scope.starts_on
+ FROM period scope JOIN periods origin ON origin.product_id=scope.product_id AND origin.ends_on<scope.starts_on AND origin.aggregate_package_id IS NULL
  JOIN settlements closed ON closed.period_id=origin.id
  WHERE scope.is_open AND NOT EXISTS (
-  SELECT 1 FROM periods earlier WHERE earlier.product_id=scope.product_id
+  SELECT 1 FROM periods earlier WHERE earlier.product_id=scope.product_id AND earlier.aggregate_package_id IS NULL
    AND earlier.starts_on>origin.ends_on AND earlier.starts_on<scope.starts_on
    AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=earlier.id)
  )

@@ -5,6 +5,7 @@ import CatalogRuleMatches from './CatalogRuleMatches.vue'
 import DraftReport from './DraftReport.vue'
 import DraftPoolAllocations from './DraftPoolAllocations.vue'
 import DraftSettlementReview from './DraftSettlementReview.vue'
+import DraftAggregateOrders from './DraftAggregateOrders.vue'
 import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
@@ -16,6 +17,7 @@ const selected = defineModel('periodId', {type:Number})
 const view = defineModel('view', {type:String})
 const detailQuery = defineModel('detailQuery', {type:Object})
 const draft = ref()
+const aggregateGroup = ref()
 const loading = ref(false)
 const calculating = ref(false)
 const pullingRoster = ref(false)
@@ -66,6 +68,15 @@ const reason = {
   UNCLASSIFIED: '订单场景分类待核',
   MAPPING_MISSING: '订单没有匹配的场景映射',
   MAPPING_CONFLICT: '订单同时命中多条场景映射',
+  AGGREGATE_SCENARIO_UNMAPPED: '参与场景缺少本期订单映射',
+  AGGREGATE_PRIOR_UNSETTLED: '上一账期尚未确认，结转退款待核',
+  AGGREGATE_ORIGINAL_AMOUNT_CHANGED: '已结算的原付款金额有变更',
+  REFUND_ADJUSTMENT: '来源退款更正待核对',
+  REFUND_ORIGIN_MISSING: '退款未能唯一关联原付款',
+  REFUND_EXCEEDS_PAYMENT: '累计退款超出原实收',
+  BENEFIT_ORG_INACTIVE: '收款组织当前停用',
+  ORIGINAL_RULE_MISSING: '原付款时没有适用的整期规则',
+  ORIGINAL_RULE_CONFLICT: '原付款时有多份整期规则生效',
   RULE_MISSING: '付款时点没有适用规则',
   RULE_CONFLICT: '同一付款命中多份规则',
   COMPOUND_RECOGNITION_UNSUPPORTED: '组合确认待启用',
@@ -138,14 +149,15 @@ const reason = {
   PRACTICE_PERIOD_BENEFIT_INCOMPLETE: '适用报名或付款待核，暂未汇总此分项',
   PRACTICE_PERIOD_BENEFIT_TIER_MISSING: '净实收金额没有匹配的班次档位',
 }
-const lineColumns = [
-  { title: '原订单', key: 'order', width: 190 },
+const lineColumns = computed(() => [
+  { title: draft.value?.aggregatePackageId ? '计提范围' : '原订单', key: 'order', width: 190 },
   { title: '受益对象', key: 'beneficiary', width: 135 },
   { title: '分项', key: 'component', width: 115 },
   { title: '规则版本', key: 'rule', width: 100 },
-  { title: '实付基数', key: 'base', width: 115, align:'right' },
+  { title: draft.value?.aggregatePackageId ? '可计提净额' : '实付基数', key: 'base', width: 115, align:'right' },
   { title: '应计提成', key: 'amount', width: 115, align:'right' },
-]
+])
+watch(()=>[draft.value?.periodId,draft.value?.version],()=>{aggregateGroup.value=undefined})
 const refundColumns = [
   { title: '原订单', key: 'order', width: 190 },
   { title: '原受益对象', key: 'beneficiary', width: 140 },
@@ -398,9 +410,11 @@ async function loadMore(section, cursorName) {
       </p>
     </div>
     <div v-if="draft" class="workbench-totals">
-      <div v-if="draft.refundsReady" class="workbench-net"><small>{{ draft.practiceRosterVersion ? '本班净分润' : '本期净分润' }}</small><strong>{{ formatMoney(draft.totalMinor) }}</strong></div>
-      <div v-if="!draft.practiceRefundMonth && (!draft.practiceRosterVersion || draft.correctionCount || !draft.refundsReady)"><small>计提分润</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div>
-      <div v-if="!draft.practiceRosterVersion"><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div>
+      <div v-if="draft.refundsReady || draft.aggregatePackageId" class="workbench-net">
+        <small>{{ draft.aggregatePackageId ? '整期计提' : draft.practiceRosterVersion ? '本班净分润' : '本期净分润' }}</small><strong>{{ formatMoney(draft.totalMinor) }}</strong>
+      </div>
+      <div v-if="!draft.aggregatePackageId && !draft.practiceRefundMonth && (!draft.practiceRosterVersion || draft.correctionCount || !draft.refundsReady)"><small>计提分润</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div>
+      <div v-if="!draft.aggregatePackageId && !draft.practiceRosterVersion"><small>退款扣减</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div>
       <div v-if="draft.correctionCount"><small>受益人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div>
       <div><small>{{ draft.practiceRefundMonth ? '退款及更正' : '计提明细' }}</small><strong>{{ draft.practiceRefundMonth ? draft.refundCount + draft.correctionCount : draft.lineCount }} <span>条</span></strong></div>
     </div>
@@ -424,7 +438,23 @@ async function loadMore(section, cursorName) {
     :related-period-link="relatedPeriodLink"
     @show-pools="view='pools'" @show-issues="view='issues'" @recalculate="calculate" @pull-roster="pullRoster" @refresh-draft="load()" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">
-  <section v-if="draft.lineCount || draft.refundCount || draft.correctionCount" class="records draft-detail-search" aria-label="明细筛选">
+  <section v-if="draft.aggregateGroups?.length" class="records" aria-label="整期分组">
+    <div class="records-head"><h2>整期分组</h2></div>
+    <div class="table-container">
+      <a-table :data-source="draft.aggregateGroups" row-key="key" :pagination="false" :scroll="{x:650}" :columns="[
+        {title:'规则版本',key:'ruleVersion'},{title:'本期收款',key:'receiptsMinor'},
+        {title:'本期退款',key:'refundsMinor'},{title:'上期转入退款',key:'carryInMinor'},
+        {title:'转出到下期',key:'carryOutMinor'},{title:'明细',key:'events'}]">
+        <template #bodyCell="{column,record}">
+          <template v-if="column.key==='ruleVersion'">v{{ record.ruleVersion }}</template>
+          <button v-else-if="column.key==='events'" type="button" class="order-link" @click="aggregateGroup=record.key">查看收退款</button>
+          <span v-else class="numeric">{{ formatMoney(Math.abs(record[column.key])) }}</span>
+        </template>
+      </a-table>
+    </div>
+  </section>
+  <section v-if="!draft.aggregatePackageId && (draft.lineCount || draft.refundCount || draft.correctionCount)"
+    class="records draft-detail-search" aria-label="明细筛选">
     <form class="draft-detail-fields" @submit.prevent="searchDetails">
       <div>
         <label for="draft-order-search">原订单号</label>
@@ -447,9 +477,13 @@ async function loadMore(section, cursorName) {
       <a-table :columns="lineColumns" :data-source="draft.lines" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: 755 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
+            <button v-if="record.aggregateGroupKey" type="button" class="order-link"
+              @click="aggregateGroup=record.aggregateGroupKey">查看本组收退款</button>
+            <template v-else>
             <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>
             <small class="order-version">订单版本 {{ record.sourceVersion }}<template v-if="record.enrollmentId"> · {{ memberLabel(record.membershipType) }} {{ record.enrollmentId }}</template><template v-if="record.salesCompany"> · {{ record.salesCompany }}</template></small>
             <small v-if="record.completedAt" class="order-version">完成 {{ formatTime(record.completedAt) }}<template v-if="record.completionCarried"> · 补入本期</template></small>
+            </template>
           </template>
           <template v-else-if="column.key === 'beneficiary'">
             {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池 · 待分配</small>
@@ -554,6 +588,9 @@ async function loadMore(section, cursorName) {
     <a-empty v-else description="本期暂无待核项"/>
     <div v-if="draft.issueCount + (draft.advisoryCount || 0) > draft.issues.length" class="paging"><a-button :loading="loading" @click="loadMore('issues', 'afterIssueId')">加载下一页</a-button></div>
   </section>
+  <DraftAggregateOrders v-if="draft && aggregateGroup" :period-id="draft.periodId" :version="draft.version" :group="aggregateGroup"
+    :api="api" :format-money="formatMoney" :format-time="formatTime"
+    @close="aggregateGroup=undefined" @show-order="id=>{aggregateGroup=undefined; emit('show-order',id)}"/>
   <CatalogRuleMatches v-if="hasMatching && (!draft || view==='matching')" :period-id="selected" :draft-available="selectedPeriod.catalogDraftAvailable"
     :api="api" :format-money="formatMoney" :format-time="formatTime" @show-order="emit('show-issue-order',$event)"/>
   <section v-if="!draft && !error && !hasMatching" class="records empty">

@@ -40,7 +40,7 @@ func TestCatalogRateComponentsDescribeActualRecipients(t *testing.T) {
 	definition := json.RawMessage(`{
 		"amount_basis":"ACTUAL_RECEIVED","stacking_policy":"SUM","rounding_policy":{"mode":"HALF_UP","scale":2},
 		"benefit_actions":[
-			{"item_key":"sales","label":"销售提成","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY","rate_table":[{"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":500}]},
+			{"item_key":"sales","label":"销售提成","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY","rate_table":[{"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":500},{"sales_organization_party_id":"ANY","sales_relationship":"DIRECT","rate_bps":700}]},
 			{"item_key":"owner","label":"项目负责人","role":"PROJECT_OWNER","type":"RATE","beneficiary_mode":"PARTY","designated_party_id":"person:8","rate_bps":100},
 			{"item_key":"company","label":"技术服务","role":"TECHNOLOGY","type":"RATE","beneficiary_mode":"PARTY","company_beneficiary_party_id":"company","rate_bps":100},
 			{"item_key":"pool","label":"交付","role":"DELIVERY_TEAM","type":"RATE","beneficiary_mode":"TEAM_POOL","pool_code":"delivery","pool_organization_unit_id":"delivery-unit","allocation_owner_role":"TEAM_LEAD","pool_name":"交付团队池","pool_party_id":"delivery","rate_bps":300}
@@ -52,6 +52,9 @@ func TestCatalogRateComponentsDescribeActualRecipients(t *testing.T) {
 	}
 	if len(items) != 4 {
 		t.Fatalf("want four configured items, got %d", len(items))
+	}
+	if rows := items[0].Rows; len(rows) != 2 || rows[0].LimitsRelationship || !rows[1].LimitsRelationship {
+		t.Fatalf("only the direct-sales row should show a relationship condition: %+v", rows)
 	}
 	want := []struct{ kind, label string }{
 		{"seller", ""},

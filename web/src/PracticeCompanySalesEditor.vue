@@ -13,7 +13,7 @@ const field = name => 'practice-company-'+props.index+'-'+name
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 const scopeOptions = computed(() => [
   ...(props.salesCategories.length ? [{value:'category',label:'按销售类别'}] : []),
-  {value:'companies',label:'指定公司'},
+  {value:'companies',label:'单独约定的公司'},
 ])
 
 function availableCompanies(category) {
@@ -51,14 +51,15 @@ watch(amounts, choices => {
   <h4 class="rule-item-section">发给谁</h4>
   <p class="rule-formula">订单上的成交公司</p>
   <h4 class="rule-item-section">提成怎么算</h4>
-  <p class="rule-formula">外部公司按付款时的销售类别套用默认标准。单独约定的公司优先使用自己的标准。</p>
+  <p class="rule-formula">新公司登记销售类别后，自动沿用该类别的标准。公司有单独约定时优先使用单独标准。</p>
   <section v-for="(category,i) in categories" :key="i" class="company-category">
     <div class="company-category-title">
-      <strong>{{ category.scope==='category' ? '类别默认标准' : '指定公司标准' }}</strong>
+      <strong>{{ category.scope==='category' ? salesCategories.find(option=>option.value===category.salesCategoryId)?.label || '新的类别标准' : category.label || '公司单独标准' }}</strong>
       <a-button v-if="categories.length>1" type="link" danger @click="categories.splice(i,1)">移除</a-button>
     </div>
-    <a-form-item v-if="salesCategories.length" label="适用范围" :html-for="field('scope-'+i)">
-      <a-radio-group :id="field('scope-'+i)" v-model:value="category.scope" :options="scopeOptions"/>
+    <div class="company-value">
+    <a-form-item v-if="salesCategories.length" label="按什么匹配" :html-for="field('scope-'+i)">
+      <a-select :id="field('scope-'+i)" v-model:value="category.scope" :options="scopeOptions"/>
     </a-form-item>
     <a-form-item v-if="category.scope==='category'" label="销售类别" :html-for="field('sales-category-'+i)" required>
       <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryId" :options="salesCategoryOptions(category)"
@@ -73,8 +74,7 @@ watch(amounts, choices => {
           mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" @change="selectCompanies(category,$event)"/>
       </a-form-item>
     </template>
-    <div class="company-value">
-      <a-form-item label="类别计算方式" :html-for="field('method-'+i)">
+      <a-form-item v-if="amounts.length>1" label="计算方式" :html-for="field('method-'+i)">
         <a-select :id="field('method-'+i)" :value="category.mode" :options="amounts" @change="modeChanged(category,$event)"/>
       </a-form-item>
       <a-form-item :label="category.mode==='rate' ? '按报名净实收（%）' : '每份报名（元）'" :html-for="field('value-'+i)" required>
@@ -82,20 +82,22 @@ watch(amounts, choices => {
           :max="category.mode==='rate'?100:undefined" :precision="category.mode==='rate'?4:2"/>
       </a-form-item>
     </div>
-    <a-form-item v-if="component.classMember==='new'" label="公司推荐比例（%）" :html-for="field('recommendation-'+i)"
-      extra="按报名净实收计提给推荐公司。留空或填 0 时不计提。">
-      <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate"
-        :min="0" :max="100" :precision="4"/>
-    </a-form-item>
     <a-collapse v-if="category.scope==='category' || category.companies.length" ghost>
-      <a-collapse-panel key="overrides" header="公司单独标准">
+      <a-collapse-panel v-if="component.classMember==='new'" key="recommendation"
+        :header="category.recommendationRate > 0 ? '推荐公司分润 · '+category.recommendationRate+'%' : '推荐公司分润'">
+        <a-form-item label="公司推荐比例（%）" :html-for="field('recommendation-'+i)"
+          extra="按报名净实收计提给推荐公司。留空或填 0 时不计提。">
+          <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" :min="0" :max="100" :precision="4"/>
+        </a-form-item>
+      </a-collapse-panel>
+      <a-collapse-panel key="overrides" :header="category.overrides.length ? '公司单独标准（'+category.overrides.length+'）' : '公司单独标准'">
         <div class="company-override" v-for="(override,j) in category.overrides" :key="j">
           <a-form-item label="公司" :html-for="field('override-'+i+'-'+j)" required>
             <a-select :id="field('override-'+i+'-'+j)" v-model:value="override.companyId"
               :options="overrideOptions(category,override)" show-search :filter-option="byName"/>
           </a-form-item>
           <div class="company-value">
-            <a-form-item label="计算方式" :html-for="field('override-method-'+i+'-'+j)">
+            <a-form-item v-if="amounts.length>1" label="计算方式" :html-for="field('override-method-'+i+'-'+j)">
               <a-select :id="field('override-method-'+i+'-'+j)" :value="override.mode" :options="amounts" @change="modeChanged(override,$event)"/>
             </a-form-item>
             <a-form-item :label="override.mode==='rate' ? '按报名净实收（%）' : '每份报名（元）'" :html-for="field('override-value-'+i+'-'+j)" required>
@@ -141,4 +143,5 @@ watch(amounts, choices => {
 .company-value {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
 .company-value :deep(.ant-input-number) {width:100%}
 .company-override {border-bottom:1px solid var(--line);padding-bottom:8px;margin-bottom:10px}
+@media (max-width:520px) { .company-value {grid-template-columns:minmax(0,1fr)} }
 </style>

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  BankOutlined, CloudSyncOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined,
+  BankOutlined, CloudSyncOutlined, DownOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined,
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import DraftWorkbench from './DraftWorkbench.vue'
@@ -304,12 +304,6 @@ const componentTypes = computed(() => options('component').filter(option=>
   matchesOption(option,selectedProduct.value?.periodMode) &&
   (!isPeriodBenefit(option.value) || !!periodBenefitMode.value?.scope?.componentTypes?.includes(option.value)) &&
   (option.value!=='company_sales' || !!companySalesMode.value)))
-function availableComponentTypes(row) {
-  return componentTypes.value.filter(type => isPeriodBenefit(type.value) ||
-    (type.value==='company_sales' ? availableClassMembers(row,type.value).length :
-      !draft.value.components.some(c => c !== row && c.type === type.value &&
-        (!classRule.value || !c.classMember || !row.classMember || c.classMember === row.classMember))))
-}
 function availableClassMembers(row,type = row.type) {
   if (isPeriodBenefit(type)) return classMembers.value
   return classMembers.value.filter(member =>
@@ -317,19 +311,40 @@ function availableClassMembers(row,type = row.type) {
     !draft.value.components.some(c =>
       c !== row && c.type === type && (!c.classMember || !member.value || c.classMember === member.value)))
 }
-const nextComponent = computed(() => {
-  if (drawer.value !== 'rule') return undefined
-  const members = classRule.value ? classMembers.value : [{value:undefined}]
-  for (const type of componentTypes.value) {
-    for (const {value:classMember} of members) {
-      const row = {type:type.value,classMember,mode:baseModes.value[0]?.value,amount:0}
-      if (availableComponentTypes(row).some(option => option.value === row.type)) {
-        resetAmountMode(row)
-        return row
-      }
-    }
-  }
+const recipientChoices = computed(() => {
+  if (drawer.value!=='rule' || !selectedProduct.value) return []
+  const choices = [
+    {type:'sales',label:'订单上的成交销售'},
+    {type:'referral',label:'订单上的推荐人'},
+    ...(classRule.value ? [
+      {type:'company_sales',label:'订单上的成交公司'},
+      {type:'manager',label:'指定个人、组织或团队池'},
+    ] : []),
+  ]
+  return choices.filter(choice=>componentTypes.value.some(type=>type.value===choice.type) &&
+    (classRule.value ? availableClassMembers({},choice.type).length :
+      !draft.value.components.some(row=>row.type===choice.type)))
 })
+function addRuleComponent(type) {
+  const row = {type,classMember:classRule.value ? availableClassMembers({},type)[0]?.value : undefined,
+    mode:baseModes.value[0]?.value}
+  resetAmountMode(row)
+  draft.value.components.push(row)
+  activeRuleComponent.value = draft.value.components.length-1
+}
+function ruleRecipientSummary(row) {
+  if (row.periodBenefit) {
+    const benefit = row.periodBenefit
+    if (benefit.recipient==='pool') return practicePoolOptions.value.find(option=>option.value===benefit.pool?.poolId)?.label || '团队池'
+    if (benefit.recipient==='unit') return unitOptions.value.find(option=>option.value===benefit.unitId)?.label || '指定组织'
+    return classPeopleOptions.value.find(option=>option.value===benefit.personId)?.label || '指定个人'
+  }
+  if (row.mode==='company_sales') return '成交公司 · 按销售类别'
+  const who = row.sourceRole ? optionLabel('orderAttributionRole',row.sourceRole) : '选择订单上的收款人'
+  if (row.mode==='tiered') return who+' · 按阶梯'
+  if (row.amount == null) return who
+  return who+' · '+(row.mode==='fixed' ? formatMoney(Math.round(row.amount*100)) : row.amount+'%')
+}
 const syncStreams = computed(() => data.value.sources
   .filter(entry => entry.configured && (!sourceFilter.value || sourceFilter.value===entry.source))
   .flatMap(entry => options(entry.source.toLowerCase()+'OrderStream')))
@@ -440,7 +455,7 @@ const columns = computed(() => {
     period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],
       ['报表月份','reportMonth',115],['签到名单','practiceRoster',150],['适用规则','ruleVersion',200]],
     rule:[['规则名称','label',210],['所属产品','productName',128],['版本','version',68],
-      ['适用范围','scope',180],['生效时间','effectiveFrom',165],['状态 / 分项','components',112],['操作','ruleAction',240]],
+      ['适用订单','scope',188],['生效时间','effectiveFrom',165],['状态','components',112],['操作','ruleAction',240]],
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
     person:[['人员名称','name'],['人员 ID','id']],
     identity:[['归属人员','personName',128],['业务来源','source',112],['来源人员 ID','externalId',164],
@@ -855,6 +870,7 @@ function open(kind, row, edit = false) {
   if (kind === 'rule') {
     const target = ruleTargetPeriod.value
     if (row) {
+      activeRuleComponent.value = undefined
       draft.value = {productId:row.productId, label:row.label, copiedFrom:row.version,
         scope:row.periodId ? 'period' : row.fromOrdinal ? 'ordinal' : 'default',
         components:copiedRuleComponents(row.components),
@@ -898,6 +914,10 @@ async function showAppliedRule(selection) {
   } catch (err) {
     if (appliedRule.value === request) appliedRule.value = {error:err.message}
   }
+}
+function openAggregateDraft(result) {
+  periodRule.value = undefined
+  location.hash = settlementLink(result.periodId,'detail')
 }
 function close() {
   if (saving.value) return
@@ -1266,7 +1286,7 @@ async function save() {
             </div>
           </div>
           <div v-if="current==='rules' && ruleBusinessOptions.length" class="rule-scope-bar">
-            <span id="rule-business-label">业务 SKU / 报名类型</span>
+            <span id="rule-business-label">适用订单</span>
             <div v-if="ruleBusinessOptions.length<=7" class="rule-scope-buttons" role="group" aria-labelledby="rule-business-label">
               <a-button :type="!ruleBusinessScope ? 'primary' : 'default'" :aria-pressed="!ruleBusinessScope"
                 @click="ruleBusinessScope=undefined">全部</a-button>
@@ -1352,7 +1372,6 @@ async function save() {
                 <template v-else-if="column.key==='scope'">
                   <template v-if="record.catalogPending">
                     {{ record.scopeType==='CROSS_SCENARIO_AGGREGATE' ? '跨 SKU 汇总' : record.scopeLabel || catalogScopeLabels[record.scopeType] || '未细分范围' }}
-                    <small v-if="record.scopeType==='BUSINESS_SCENARIO' && record.scopeId" class="order-version">{{ record.scopeId }}</small>
                   </template>
                   <template v-else>{{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}</template>
                 </template>
@@ -1376,7 +1395,7 @@ async function save() {
                     type="link" danger size="small" @click="openRuleRetirement(record)">停用规则</a-button>
                 </template>
                 <template v-else-if="column.key==='components'">
-                  {{ text.length }} 个分项
+                  {{ text.length }} 项收款安排
                   <small v-if="text.some(c=>c.classMember)" class="order-version">
                     {{ [...new Set(text.filter(c=>c.classMember).map(c=>optionLabel('classMember',c.classMember)))].join(' · ') }}
                   </small>
@@ -1480,7 +1499,7 @@ async function save() {
       </template>
       <template v-if="drawer==='rule'">
         <a-alert v-if="draft.copiedFrom" class="feedback" type="info"
-          :message="draft.editBaseId ? '编辑 v'+draft.copiedFrom+'，保存后生成新版本。已结算记录继续引用原规则。' : '已带入 v'+draft.copiedFrom+' 的组件配置，请核对本次适用范围和生效时间。'" show-icon/>
+          :message="draft.editBaseId ? '正在编辑 v'+draft.copiedFrom+'，保存后生成新版本。' : '已复制 v'+draft.copiedFrom+' 的收款安排，请核对适用期次。'" show-icon/>
         <div class="rule-basics">
         <a-form-item label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="ruleProductOptions" :disabled="Boolean(draft.copiedFrom || draft.lockedPeriod)"/></a-form-item>
         <a-form-item label="规则名称" required><a-input v-model:value="draft.label" aria-label="规则名称"/></a-form-item>
@@ -1492,36 +1511,37 @@ async function save() {
           <a-input v-else v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local"/>
         </a-form-item>
         </div>
-        <div class="rule-edit-layout" v-if="draft.components?.length">
-          <aside class="rule-item-nav" aria-label="分润分项">
-            <h3 class="form-subhead">分润分项</h3>
-            <div class="rule-item-nav-list">
-              <button v-for="(c,i) in draft.components" :key="i" type="button" :aria-pressed="activeRuleComponent===i"
-                @click="activeRuleComponent=i">
-                <span>{{ ruleComponentLabel(c,optionLabel) }}
-                  <small v-if="c.periodBenefit?.personId" class="rule-nav-recipient">{{ classPeopleOptions.find(option=>option.value===c.periodBenefit.personId)?.label }}</small>
-                </span>
-                <small v-if="c.classMember">{{ optionLabel('classMember',c.classMember) }}</small>
-              </button>
-            </div>
-            <a-button v-if="nextComponent" type="dashed" block @click="draft.components.push(nextComponent); activeRuleComponent=draft.components.length-1">添加分润分项</a-button>
-          </aside>
-          <div class="rule-editor-pane">
-          <template v-for="(c,i) in draft.components" :key="i">
-          <section v-if="i===activeRuleComponent" class="component-editor">
+        <div v-if="draft.components?.length" class="rule-blocks" aria-label="收款安排">
+          <div class="rule-blocks-heading">
+            <h3 class="form-subhead">收款安排</h3>
+            <a-dropdown v-if="recipientChoices.length" :trigger="['click']">
+              <a-button>添加收款安排 <DownOutlined aria-hidden="true"/></a-button>
+              <template #overlay>
+                <a-menu @click="({key})=>addRuleComponent(key)">
+                  <a-menu-item v-for="choice in recipientChoices" :key="choice.type">{{ choice.label }}</a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
+          </div>
+          <section v-for="(c,i) in draft.components" :key="i" class="rule-block">
+          <button type="button" class="rule-block-header" :aria-expanded="activeRuleComponent===i"
+            :aria-controls="'practice-rule-part-'+i" @click="activeRuleComponent=activeRuleComponent===i ? undefined : i">
+            <DownOutlined aria-hidden="true"/>
+            <strong>{{ c.periodBenefit ? c.periodBenefit.label || '班次分润' : ruleComponentLabel(c,optionLabel) }}</strong>
+            <span v-if="classRule" class="rule-block-badge">{{ optionLabel('classMember',c.classMember || '') }}</span>
+            <small>{{ ruleRecipientSummary(c) }}</small>
+          </button>
+          <div v-if="i===activeRuleComponent" :id="'practice-rule-part-'+i" class="rule-block-body component-editor">
           <div class="rule-item-heading">
-            <a-form-item :html-for="'rule-component-'+i" label="分项类型">
-              <a-select :id="'rule-component-'+i" v-model:value="c.type" :options="availableComponentTypes(c)" @change="resetAmountMode(c)"/>
-            </a-form-item>
-            <a-form-item v-if="classRule" :html-for="'rule-member-'+i" label="报名类型">
+            <a-form-item v-if="classRule" :html-for="'rule-member-'+i" label="适用报名">
               <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="availableClassMembers(c)" @change="resetAmountMode(c)"/>
             </a-form-item>
-            <a-button v-if="draft.components.length>1" type="link" danger
-              @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">删除分项</a-button>
+            <a-button v-if="draft.components.length>1" type="link" danger class="rule-remove"
+              @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
           </div>
           <template v-if="['sales','referral'].includes(c.type)">
             <h4 class="rule-item-section">发给谁</h4>
-            <a-form-item :html-for="'rule-source-role-'+i" label="按订单中的谁计提" required>
+            <a-form-item :html-for="'rule-source-role-'+i" label="从订单取收款人" required>
               <a-select :id="'rule-source-role-'+i" v-model:value="c.sourceRole" :options="componentSourceRoles(c.sourceRole)"
                 placeholder="选择订单角色" show-search option-filter-prop="label"/>
             </a-form-item>
@@ -1551,13 +1571,15 @@ async function save() {
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
             :sales-categories="options('practiceSalesCategory')" :recipients="companyRecipientOptions" :amounts="baseModes"
             :source-roles="options('practicePeriodSourceRole')"/>
-          <a-form-item v-if="selectedProduct && (!classRule || !['rate','period_rate','company_sales'].includes(c.mode))" :label="'分项 '+(i+1)+' 的退款处理'"
-            :extra="classRule ? (c.retrainSplits?.length ? '仅适用于未设置公司拆分的固定提成。' : '适用于确认名单前的固定金额分项或固定金额档位。') : '退款按计提时使用的规则版本处理。'">
-            <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择退款处理"/>
-          </a-form-item>
-          </section>
-          </template>
+          <a-collapse v-if="selectedProduct && (!classRule || !['rate','period_rate','company_sales'].includes(c.mode))" ghost>
+            <a-collapse-panel key="refund" header="退款处理">
+              <a-form-item label="扣回方式" :extra="classRule ? '适用于确认签到名单前的固定金额。' : '按原计提规则扣回。'">
+                <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择扣回方式"/>
+              </a-form-item>
+            </a-collapse-panel>
+          </a-collapse>
           </div>
+          </section>
         </div>
       </template>
       <a-form-item v-if="drawer==='person'" label="人员名称" required><a-input v-model:value="draft.name" aria-label="人员名称"/></a-form-item>
@@ -1624,10 +1646,10 @@ async function save() {
     :format-money="formatMoney" :periods="data.periods"
     :skus="data.products.find(product=>product.id===rateRule?.productId)?.businessSkus"
     @close="rateRule=undefined; appliedRule=undefined" @published="ratePublished"/>
-  <CatalogPeriodRule v-if="periodRule && active && !sessionError && !sessionChecking && !loginRequested"
-    :rule="periodRule" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
-    :can-review-activity="wholeWorkspace"
-    @close="periodRule=undefined" @published="ratePublished"/>
+  <CatalogPeriodRule v-if="(periodRule || appliedRule?.aggregate) && active && !sessionError && !sessionChecking && !loginRequested"
+    :rule="periodRule" :applied="appliedRule?.aggregate" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
+    :can-review-activity="wholeWorkspace && !appliedRule?.aggregate"
+    @close="periodRule=undefined; appliedRule=undefined" @published="ratePublished" @open-draft="openAggregateDraft"/>
   <RuleVersionDetails v-if="viewedRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="viewedRule" :can-copy="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId))"
     :title="appliedRule?.rule ? '计提使用的规则' : undefined"

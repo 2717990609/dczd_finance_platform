@@ -43,7 +43,15 @@ func (s workspace) getCatalogRulePeople(w http.ResponseWriter, r *http.Request) 
 		respond(w, nil, err)
 		return
 	}
-	_, product, err := s.ruleRateProduct(r.Context(), r.URL.Query().Get("ruleId"))
+	var product int64
+	ruleID := r.URL.Query().Get("ruleId")
+	if r.URL.Query().Get("scope") == "period" {
+		var rule catalogPeriodVersion
+		rule, err = readCatalogPeriodVersion(r.Context(), s.db, ruleID)
+		product = rule.ProductID
+	} else {
+		_, product, err = s.ruleRateProduct(r.Context(), ruleID)
+	}
 	if err != nil {
 		respond(w, nil, err)
 		return

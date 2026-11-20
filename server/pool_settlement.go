@@ -40,6 +40,7 @@ type settlementReview struct {
 	product              int64
 	lastRemoval          int64
 	catalog              bool
+	aggregate            bool
 	practiceRefundMonth  bool
 	digest               []byte
 }
@@ -57,7 +58,7 @@ func readSettlementScope(ctx context.Context, tx pgx.Tx, periodID int64, lock bo
 	 ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')<=CURRENT_TIMESTAMP,pro.period_mode,
 	 pro.period_mode='class' AND p.calendar_month IS NOT NULL,
 	 coalesce(d.version,0),coalesce(d.input_digest,''::bytea),coalesce(d.issue_count,0),
-	 coalesce(d.rule_id IS NULL AND d.catalog_refunds_ready,false),
+	 coalesce(d.rule_id IS NULL AND d.catalog_refunds_ready,false),p.aggregate_package_id IS NOT NULL,
 	 coalesce(d.total_minor+d.refund_minor+d.correction_minor,0),
 	 coalesce((SELECT max(r.settlement_id) FROM settlement_removals r WHERE r.period_id=p.id),0)
 	 FROM periods p JOIN products pro ON pro.id=p.product_id LEFT JOIN calculation_drafts d ON d.period_id=p.id
@@ -67,7 +68,7 @@ func readSettlementScope(ctx context.Context, tx pgx.Tx, periodID int64, lock bo
 	}
 	review := settlementReview{Pools: []settlementPoolGap{}}
 	err := tx.QueryRow(ctx, query, periodID).Scan(&review.product, &review.Enabled, &review.Ended, &review.mode,
-		&review.practiceRefundMonth, &review.Version, &review.digest, &review.IssueCount, &review.catalog, &review.Total, &review.lastRemoval)
+		&review.practiceRefundMonth, &review.Version, &review.digest, &review.IssueCount, &review.catalog, &review.aggregate, &review.Total, &review.lastRemoval)
 	return review, err
 }
 
@@ -168,6 +169,7 @@ const settlementPoolFundingSQL = `SELECT a.id,a.revision,a.unit_id::text,a.item_
 const laterSettlementPoolSQL = `SELECT EXISTS (
  SELECT 1 FROM pool_period_order target
  JOIN pool_period_order later ON later.product_id=target.product_id
+  AND later.aggregate_package_id IS NOT DISTINCT FROM target.aggregate_package_id
   AND (later.book_date,later.book_stage,later.ordinal)>(target.book_date,target.book_stage,target.ordinal)
  JOIN settlements s ON s.period_id=later.id
  JOIN pool_account_activity a ON a.period_id=later.id

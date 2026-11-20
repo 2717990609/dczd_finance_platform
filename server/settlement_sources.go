@@ -122,8 +122,47 @@ const practiceMonthSettlementSourceSQL = `WITH scope AS (
  )
 )` + practiceSettlementCoverageSQL
 
+const catalogAggregateSettlementSourceSQL = `WITH accounting AS (
+ SELECT p.id,p.product_id,p.aggregate_package_id,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai' AS start_at,
+  (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai' AS through_time
+ FROM periods p WHERE p.id=$1
+), p AS (
+ SELECT a.*,least(a.start_at,(
+  SELECT min(v.occurred_at) FROM catalog_aggregate_draft_events events
+  JOIN source_order_versions v ON v.id=events.source_version_id WHERE events.period_id=a.id
+ )) AS from_time FROM accounting a
+), sku AS (
+ SELECT DISTINCT jsonb_array_elements_text(v.definition->'policy_scope'->'business_sku_codes') AS code
+ FROM accounting a JOIN product_rule_packages p ON p.source_id=a.aggregate_package_id
+ JOIN product_rule_versions v ON v.package_id=p.source_id JOIN product_catalog_settings scope ON scope.product_id=p.product_id
+ WHERE v.source_status='PUBLISHED' AND ` + catalogVersionVisible + ` AND v.effective_from<a.through_time
+ UNION SELECT e.sku_code FROM catalog_aggregate_draft_events e JOIN accounting a ON a.id=e.period_id
+), required AS (
+ SELECT DISTINCT CASE r.domain WHEN 'VIP' THEN 'VIP_ORDERS' WHEN 'HEALTH_IDENTITY' THEN 'HEALTH_IDENTITY_ORDERS'
+  ELSE '' END AS stream,r.domain
+ FROM accounting a JOIN product_catalog_settings anchor ON anchor.product_id=a.product_id
+ JOIN product_catalog_settings c ON c.project_code=anchor.project_code AND c.source_system=anchor.source_system
+ JOIN catalog_business_routes r ON r.product_id=c.product_id AND r.observed_at=c.captured_at AND r.source='DCAI'
+ JOIN sku ON sku.code=r.sku_code WHERE r.effective_from<a.through_time
+)
+SELECT r.stream,` + settlementSourceStatusSQL + `,s.initial_from,s.completed_through,s.last_success_at,
+ (SELECT count(DISTINCT b.order_id) FROM dcai_order_blockers b
+  WHERE b.stream=r.stream AND 'REFUND_EVIDENCE_MISSING'=ANY(b.reasons) AND (
+   EXISTS(SELECT 1 FROM source_order_versions original JOIN catalog_aggregate_draft_events e ON e.payment_version_id=original.id
+    JOIN periods related ON related.id=e.period_id AND related.aggregate_package_id=p.aggregate_package_id
+    LEFT JOIN settlements final ON final.period_id=e.period_id
+    WHERE original.source='DCAI' AND original.order_id=b.order_id AND original.kind='ORDER_PAID'
+     AND original.fact->>'domain'=r.domain AND (e.period_id=p.id OR final.id IS NOT NULL))
+   OR b.cursor_updated_at<p.through_time AND NOT EXISTS(SELECT 1 FROM source_order_versions original
+    WHERE original.source='DCAI' AND original.order_id=b.order_id AND original.kind='ORDER_PAID' AND original.fact->>'domain'=r.domain)
+  )),p.from_time,p.through_time
+FROM p CROSS JOIN required r JOIN source_write_state ws ON ws.source='DCAI'
+LEFT JOIN dcai_order_sync s ON s.stream=r.stream LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream ORDER BY r.stream`
+
 func (s workspace) settlementSources(ctx context.Context, tx pgx.Tx, periodID int64, review settlementReview) ([]settlementSource, error) {
 	switch {
+	case review.aggregate:
+		return readSettlementSourceCoverage(ctx, tx, periodID, s.dcaiSourceKey(), s.settlementSyncMaxAge, catalogAggregateSettlementSourceSQL)
 	case review.practiceRefundMonth:
 		return readSettlementSourceCoverage(ctx, tx, periodID, s.orderSourceKey("DCZD"), s.settlementSyncMaxAge, practiceMonthSettlementSourceSQL)
 	case review.isPracticeClass():

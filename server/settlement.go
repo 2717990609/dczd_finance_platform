@@ -67,7 +67,7 @@ type settlement struct {
 	reviewToken  string
 }
 
-func readSettlement(ctx context.Context, tx pgx.Tx, periodID int64) (settlement, error) {
+func readSettlement(ctx context.Context, tx catalogPeriodReader, periodID int64) (settlement, error) {
 	var value settlement
 	err := tx.QueryRow(ctx, `SELECT id,period_id,draft_version,confirmed_at,confirmed_by,review_token FROM settlements WHERE period_id=$1`,
 		periodID).Scan(&value.ID, &value.PeriodID, &value.DraftVersion, &value.ConfirmedAt, &value.ConfirmedBy, &value.reviewToken)

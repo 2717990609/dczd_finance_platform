@@ -26,6 +26,7 @@ type draftSummary struct {
 	PracticeRefundMonth   bool      `json:"practiceRefundMonth,omitempty"`
 	PracticeRosterID      *int64    `json:"-"`
 	PracticeStartsAt      time.Time `json:"-"`
+	AggregatePackage      *string   `json:"aggregatePackageId,omitempty"`
 	PeriodOrdinal         int       `json:"-"`
 	PracticeRosterVersion int64     `json:"practiceRosterVersion,omitempty"`
 	PeriodID              int64     `json:"periodId"`
@@ -48,7 +49,7 @@ const maxDraftPayments = 100000
 const draftScopeSQL = `SELECT pro.period_mode, p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
  (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',coalesce(p.source_period_key,''),p.ordinal,
  EXISTS(SELECT 1 FROM product_catalog_settings l WHERE l.product_id=pro.id),` + catalogDraftAvailableSQL + `,
- (pro.period_mode='class' AND p.calendar_month IS NOT NULL)
+ (pro.period_mode='class' AND p.calendar_month IS NOT NULL),p.aggregate_package_id::text
  FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1`
 
 const draftRulesSQL = `SELECT rv.id,rv.version,rv.effective_from,stopped.at,rv.components FROM periods p
@@ -135,6 +136,9 @@ func (s workspace) calculateCurrentDraft(ctx context.Context, periodID, wantedGe
 }
 
 func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window periodWindow, rules []paymentRule, quotes *vipDraftQuoteCache) (paymentDraft, []byte, error) {
+	if summary.AggregatePackage != nil {
+		return computeCatalogAggregateDraft(ctx, tx, summary, window)
+	}
 	if summary.PracticeRefundMonth {
 		return computePracticeRefundMonth(ctx, tx, summary.PeriodID, window)
 	}
@@ -169,12 +173,16 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 	var window periodWindow
 	var mode, sourceKey string
 	var scenarioRules bool
-	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &scenarioRules, &summary.Catalog, &summary.PracticeRefundMonth)
+	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &scenarioRules, &summary.Catalog, &summary.PracticeRefundMonth, &summary.AggregatePackage)
 	if err != nil {
 		return window, nil, err
 	}
 	if summary.PracticeRefundMonth {
 		summary.Catalog = false
+		return window, nil, nil
+	}
+	if summary.AggregatePackage != nil {
+		summary.Catalog = true
 		return window, nil, nil
 	}
 	if summary.Catalog {
@@ -393,23 +401,34 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 			return nil, err
 		}
 	}
+	for _, group := range result.aggregateGroups {
+		if err := encode.Encode(group); err != nil {
+			return nil, err
+		}
+	}
+	if result.aggregatePredecessor != 0 {
+		if err := encode.Encode(result.aggregatePredecessor); err != nil {
+			return nil, err
+		}
+	}
 	return hash.Sum(nil), nil
 }
 
 func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []byte, result paymentDraft) error {
 	rosterID := summary.PracticeRosterID
-	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id,performance_ready,catalog_refunds_ready,practice_replay_inputs)
-	  VALUES($1,nullif($2::bigint,0),1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,true,$12,$13)
+	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id,performance_ready,catalog_refunds_ready,practice_replay_inputs,aggregate_predecessor_id)
+	  VALUES($1,nullif($2::bigint,0),1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,true,$12,$13,$14)
 	  ON CONFLICT(period_id) DO UPDATE SET rule_id=excluded.rule_id,version=calculation_drafts.version+1,
 	  input_digest=excluded.input_digest,total_minor=excluded.total_minor,line_count=excluded.line_count,issue_count=excluded.issue_count,
 	  performance_ready=true,calculated_at=excluded.calculated_at,refund_minor=excluded.refund_minor,refund_count=excluded.refund_count,
 	  correction_minor=excluded.correction_minor,correction_count=excluded.correction_count,practice_roster_id=excluded.practice_roster_id,
-	  catalog_refunds_ready=excluded.catalog_refunds_ready,practice_replay_inputs=excluded.practice_replay_inputs
+	  catalog_refunds_ready=excluded.catalog_refunds_ready,practice_replay_inputs=excluded.practice_replay_inputs,
+	  aggregate_predecessor_id=excluded.aggregate_predecessor_id
 	  WHERE NOT calculation_drafts.performance_ready OR calculation_drafts.input_digest<>excluded.input_digest
 	   OR calculation_drafts.catalog_refunds_ready<>excluded.catalog_refunds_ready
 	  RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
 		summary.PeriodID, summary.RuleID, digest, result.Total, len(result.Lines), result.blockingIssues(), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections),
-		summary.PracticeRosterID, summary.Catalog, result.practiceReplay).
+		summary.PracticeRosterID, summary.Catalog, result.practiceReplay, optionalDraftID(result.aggregatePredecessor)).
 		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount, &summary.PracticeRosterID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Keep monetary lines and allocations stable when a newer roster
@@ -437,6 +456,11 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if err = storeDraftPerformance(ctx, tx, summary.PeriodID, result.Performance); err != nil {
 		return err
+	}
+	if summary.AggregatePackage != nil {
+		if err := storeCatalogAggregateDraft(ctx, tx, summary.PeriodID, result.aggregateGroups); err != nil {
+			return err
+		}
 	}
 	if summary.PracticeRefundMonth {
 		if err := storePracticeCorrectionRevisions(ctx, tx, summary.PeriodID, result.practiceChanges); err != nil {
@@ -546,13 +570,21 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
  SELECT jsonb_build_object(
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
  'catalog',d.rule_id IS NULL AND NOT (` + practiceRefundMonthScope + `),
+ 'aggregatePackageId',period.aggregate_package_id,
+ 'aggregatePredecessorId',d.aggregate_predecessor_id,
+ 'aggregateGroups',CASE WHEN period.aggregate_package_id IS NOT NULL AND {{unit}} IS NULL THEN (
+  SELECT coalesce(jsonb_agg(jsonb_build_object('key',g.group_key,'ruleVersion',v.version_no,'receiptsMinor',g.receipts_minor,
+   'refundsMinor',g.refunds_minor,'carryInMinor',g.carry_in_minor,'carryOutMinor',g.carry_out_minor)
+  ORDER BY v.version_no,g.group_key),'[]')
+  FROM catalog_aggregate_draft_groups g JOIN product_rule_versions v ON v.source_id=g.rule_id WHERE g.period_id=d.period_id
+ ) END,
  'practiceRefundMonth',(` + practiceRefundMonthScope + `),
  'refundsReady',d.rule_id IS NOT NULL OR d.catalog_refunds_ready OR (` + practiceRefundMonthScope + `),
  'settlementReviewAvailable',d.rule_id IS NULL AND d.catalog_refunds_ready OR d.practice_roster_id IS NOT NULL OR (` + practiceRefundMonthScope + `),
- 'poolAllocationAvailable',(d.rule_id IS NULL AND d.catalog_refunds_ready OR (d.practice_roster_id IS NOT NULL OR (` + practiceRefundMonthScope + `)) AND (EXISTS(
+ 'poolAllocationAvailable',(d.rule_id IS NULL AND d.catalog_refunds_ready OR (d.practice_roster_id IS NOT NULL OR period.aggregate_package_id IS NOT NULL OR (` + practiceRefundMonthScope + `)) AND (EXISTS(
   SELECT 1 FROM pool_account_activity movement JOIN pool_period_order origin ON origin.id=movement.period_id
   JOIN pool_period_order target ON target.id=d.period_id
-  WHERE origin.product_id=target.product_id AND (origin.id=target.id OR
+  WHERE origin.product_id=target.product_id AND origin.aggregate_package_id IS NOT DISTINCT FROM target.aggregate_package_id AND (origin.id=target.id OR
    (origin.book_date,origin.book_stage,origin.ordinal)<(target.book_date,target.book_stage,target.ordinal)
    AND EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=origin.id AND (st.id IS NULL OR s.id<st.id))))
   OR EXISTS(SELECT 1 FROM monthly_pool_allocations a JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
@@ -577,7 +609,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
    CASE WHEN rv.id IS NOT NULL AND starts_with(l.component_type,'period:')
      THEN rv.components->(split_part(l.component_type,':',3)::int)->'periodBenefit'->>'label'
      ELSE action.definition->>'label' END AS "componentLabel",nullif(split_part(l.component_type,':',2),'') AS "componentRole",
-   l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",o.source,o.order_id AS "orderId",
+   l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",l.aggregate_group_key AS "aggregateGroupKey",o.source,o.order_id AS "orderId",
    o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",o.id AS "sourceVersionId",coalesce(rv.version,cv.version_no) AS "ruleVersion",
    completed.occurred_at AS "completedAt",
    (completed.occurred_at AT TIME ZONE 'Asia/Shanghai')::date<period.starts_on AS "completionCarried",
@@ -732,22 +764,23 @@ func withDraftDetailPagination(raw json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(result)
 }
 
-const draftRuleReferenceSQL = `SELECT rule_id,catalog_rule_id::text,component_type
+const draftRuleReferenceSQL = `SELECT rule_id,catalog_rule_id::text,component_type,aggregate_group_key IS NOT NULL
  FROM calculation_draft_lines WHERE $3::text='lines' AND period_id=$1 AND id=$2
  UNION ALL
- SELECT l.rule_id,l.catalog_rule_id::text,l.component_type FROM calculation_draft_refunds r
+ SELECT l.rule_id,l.catalog_rule_id::text,l.component_type,false FROM calculation_draft_refunds r
  JOIN calculation_draft_lines l ON l.id=r.original_line_id
  WHERE $3::text='refunds' AND r.period_id=$1 AND r.id=$2
  UNION ALL
- SELECT l.rule_id,l.catalog_rule_id::text,l.component_type FROM calculation_draft_corrections c
+ SELECT l.rule_id,l.catalog_rule_id::text,l.component_type,false FROM calculation_draft_corrections c
  JOIN calculation_draft_lines l ON l.id=c.original_line_id
  WHERE $3::text='corrections' AND c.period_id=$1 AND c.id=$2`
 
 type draftRuleDetails struct {
-	Rule      json.RawMessage   `json:"rule,omitempty"`
-	Catalog   *catalogRateSheet `json:"catalog,omitempty"`
-	Directory json.RawMessage   `json:"directory,omitempty"`
-	Component string            `json:"component"`
+	Rule      json.RawMessage       `json:"rule,omitempty"`
+	Catalog   *catalogRateSheet     `json:"catalog,omitempty"`
+	Aggregate *catalogPeriodVersion `json:"aggregate,omitempty"`
+	Directory json.RawMessage       `json:"directory,omitempty"`
+	Component string                `json:"component"`
 }
 
 func (s workspace) getDraftRule(w http.ResponseWriter, r *http.Request) {
@@ -764,12 +797,29 @@ func (s workspace) getDraftRule(w http.ResponseWriter, r *http.Request) {
 	var result draftRuleDetails
 	var ruleID *int64
 	var catalogID *string
-	err := s.db.QueryRow(ctx, draftRuleReferenceSQL, periodID, rowID, section).Scan(&ruleID, &catalogID, &result.Component)
+	var aggregate bool
+	err := s.db.QueryRow(ctx, draftRuleReferenceSQL, periodID, rowID, section).Scan(&ruleID, &catalogID, &result.Component, &aggregate)
 	if err != nil {
 		respond(w, nil, err)
 		return
 	}
 	switch {
+	case catalogID != nil && aggregate:
+		var sheet catalogPeriodVersion
+		sheet, err = readCatalogPeriodVersion(ctx, s.db, *catalogID)
+		if err == nil {
+			var policy catalogPeriodDefinition
+			policy, err = parseCatalogPeriodRule(sheet.raw)
+			sheet.MayPublish = false
+			sheet.Cycle, sheet.Items = policy.Cycle, policy.Items
+			if err == nil {
+				err = nameCatalogPeriodTargets(ctx, s.db, sheet.Items)
+			}
+			for _, code := range policy.Scenarios {
+				sheet.Scenarios = append(sheet.Scenarios, catalogPeriodSKU{Code: code, Label: code, Mapped: true})
+			}
+			result.Aggregate = &sheet
+		}
 	case catalogID != nil:
 		sheet, sheetErr := s.catalogRuleRateSheet(ctx, *catalogID)
 		sheet.MayPublish = false

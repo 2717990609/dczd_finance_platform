@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -33,6 +34,7 @@ type catalogPeriodVersion struct {
 	Items       []catalogPeriodItem   `json:"items"`
 	Options     *catalogPeriodOptions `json:"options,omitempty"`
 	packageID   string
+	retiredFrom *time.Time
 	raw         json.RawMessage
 }
 
@@ -76,13 +78,13 @@ func readCatalogPeriodVersion(ctx context.Context, db catalogPeriodReader, id st
 		return rule, invalid
 	}
 	err := db.QueryRow(ctx, `SELECT p.product_id,pro.name,p.name,v.version_no,v.effective_from,`+catalogDisplayedThrough+`,
-	 v.package_id::text,v.definition,(v.source_status='PUBLISHED' AND `+catalogVersionVisible+`),p.paused
+	 v.package_id::text,v.definition,(v.source_status='PUBLISHED' AND `+catalogVersionVisible+`),p.paused,`+catalogRuleRetiredAtSQL+`
 	 FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
 	 JOIN product_catalog_settings scope ON scope.product_id=p.product_id
 	 JOIN products pro ON pro.id=p.product_id
 	 WHERE v.source_id=$1::uuid AND `+catalogPeriodRuleScope, id).
 		Scan(&rule.ProductID, &rule.ProductName, &rule.Label, &rule.Version, &rule.From, &rule.Through, &rule.packageID,
-			&rule.raw, &rule.MayPublish, &rule.Paused)
+			&rule.raw, &rule.MayPublish, &rule.Paused, &rule.retiredFrom)
 	return rule, err
 }
 
@@ -109,10 +111,6 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 	}
 	rule.MayPublish = rule.MayPublish && actor.permits(rule.ProductID, true)
 	rule.Cycle, rule.Items = period.Cycle, period.Items
-	var organizations []string
-	for _, item := range rule.Items {
-		organizations = append(organizations, item.OrganizationKey)
-	}
 	skus, err := readCatalogPeriodScenarioOptions(ctx, s.db, rule.ProductID, nil, nil)
 	if err != nil {
 		respond(w, nil, err)
@@ -122,23 +120,13 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 	for _, sku := range skus {
 		skuLabels[sku.Code] = sku.Label
 	}
-	var organizationNames map[string]string
-	err = s.db.QueryRow(ctx, `SELECT coalesce((
-		SELECT jsonb_object_agg(party_uuid,name) FROM (
-		 SELECT b.party_uuid,min(u.name) AS name FROM catalog_benefit_organizations b
-		 JOIN catalog_sales_context c ON c.source=b.source AND c.captured_at=b.observed_at
-		 JOIN organization_units u ON u.id=b.unit_id
-		 WHERE b.source='DCAI' AND b.party_uuid::text=ANY($1) GROUP BY b.party_uuid HAVING count(DISTINCT b.unit_id)=1
-		) orgs),'{}')`, organizations).Scan(&organizationNames)
+	err = nameCatalogPeriodTargets(ctx, s.db, rule.Items)
 	for _, code := range period.Scenarios {
 		label := skuLabels[code]
 		if label == "" {
 			label = code
 		}
 		rule.Scenarios = append(rule.Scenarios, catalogPeriodSKU{Code: code, Label: label, Mapped: skuLabels[code] != ""})
-	}
-	for i := range rule.Items {
-		rule.Items[i].TargetName = organizationNames[rule.Items[i].OrganizationKey]
 	}
 	if err == nil && rule.MayPublish {
 		var options catalogStructureOptions
@@ -280,7 +268,11 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 	  'PUBLISHED',$2,$3,$4,$5,now(),now(),$6,$7::uuid RETURNING source_id::text,version_no`,
 		base.packageID, at, base.Through, hex.EncodeToString(digest[:]), body, actor.subject, input.BaseID).
 		Scan(&result.ID, &result.Version)
-	return result, err
+	if err != nil {
+		return result, err
+	}
+	return result, enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods WHERE aggregate_package_id=$1::uuid
+	 AND $2<(ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'`, base.packageID, at)
 }
 
 func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, raw json.RawMessage,
@@ -291,11 +283,56 @@ func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, raw 
 	if len(edits) != 0 {
 		return nil, invalid
 	}
+	var personIDs []int64
+	for _, item := range components {
+		if item.PersonID > 0 {
+			personIDs = append(personIDs, item.PersonID)
+		}
+	}
+	if len(personIDs) > 0 {
+		var missing bool
+		if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM unnest($1::bigint[]) selected(id)
+		 WHERE NOT EXISTS(SELECT 1 FROM people WHERE id=selected.id))`, personIDs).Scan(&missing); err != nil {
+			return nil, err
+		}
+		if missing {
+			return nil, errCatalogPeriodRecipient
+		}
+	}
 	options, err := readCatalogStructureOptions(ctx, db)
 	if err != nil {
 		return nil, err
 	}
 	return editCatalogPeriodComponents(raw, components, options)
+}
+
+func nameCatalogPeriodTargets(ctx context.Context, db catalogPeriodReader, items []catalogPeriodItem) error {
+	var organizations []string
+	var people []int64
+	for _, item := range items {
+		if item.PersonID > 0 {
+			people = append(people, item.PersonID)
+		} else {
+			organizations = append(organizations, item.OrganizationKey)
+		}
+	}
+	var names map[string]string
+	if err := db.QueryRow(ctx, `SELECT coalesce(jsonb_object_agg(key,name),'{}') FROM (
+	 SELECT b.party_uuid::text AS key,min(u.name) AS name FROM catalog_benefit_organizations b
+	 JOIN catalog_sales_context c ON c.source=b.source AND c.captured_at=b.observed_at
+	 JOIN organization_units u ON u.id=b.unit_id
+	 WHERE b.source='DCAI' AND b.party_uuid::text=ANY($1) GROUP BY b.party_uuid HAVING count(DISTINCT b.unit_id)=1
+	 UNION ALL SELECT id::text,name FROM people WHERE id=ANY($2::bigint[])) targets`, organizations, people).Scan(&names); err != nil {
+		return err
+	}
+	for i := range items {
+		key := items[i].OrganizationKey
+		if items[i].PersonID > 0 {
+			key = strconv.FormatInt(items[i].PersonID, 10)
+		}
+		items[i].TargetName = names[key]
+	}
+	return nil
 }
 
 func validCatalogPeriodStart(at time.Time, cycle string) bool {

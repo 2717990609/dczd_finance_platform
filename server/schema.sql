@@ -129,10 +129,19 @@ END
 $$;
 ALTER TABLE periods ADD COLUMN IF NOT EXISTS calendar_month date;
 ALTER TABLE periods ADD COLUMN IF NOT EXISTS report_month date CHECK(calendar_month IS NULL AND extract(day FROM report_month)=1 OR report_month IS NULL);
+ALTER TABLE periods ADD COLUMN IF NOT EXISTS aggregate_package_id uuid;
 CREATE INDEX IF NOT EXISTS periods_reporting_scope
  ON periods(coalesce(report_month,calendar_month,date_trunc('month',ends_on::timestamp)::date),product_id,id);
+DO $$ BEGIN
+ IF EXISTS (SELECT 1 FROM pg_indexes WHERE schemaname=current_schema() AND indexname='periods_ordinal_without_month'
+  AND strpos(indexdef,'aggregate_package_id')=0) THEN
+  DROP INDEX periods_ordinal_without_month;
+ END IF;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS periods_ordinal_without_month
- ON periods(product_id,ordinal) WHERE calendar_month IS NULL;
+ ON periods(product_id,ordinal) WHERE calendar_month IS NULL AND aggregate_package_id IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS periods_aggregate_month
+ ON periods(aggregate_package_id,report_month) WHERE aggregate_package_id IS NOT NULL;
 ALTER TABLE periods DROP CONSTRAINT IF EXISTS periods_product_id_ordinal_key;
 CREATE UNIQUE INDEX IF NOT EXISTS periods_calendar_month
  ON periods(product_id, calendar_month) WHERE calendar_month IS NOT NULL;
@@ -140,7 +149,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS periods_calendar_month
 CREATE OR REPLACE VIEW pool_period_order AS
  SELECT p.id,p.product_id,p.ordinal,
   CASE WHEN product.period_mode='class' THEN p.ends_on ELSE '-infinity'::date END AS book_date,
-  CASE WHEN product.period_mode='class' AND p.calendar_month IS NOT NULL THEN 1 ELSE 0 END AS book_stage
+  CASE WHEN product.period_mode='class' AND p.calendar_month IS NOT NULL THEN 1 ELSE 0 END AS book_stage,
+  p.aggregate_package_id
  FROM periods p JOIN products product ON product.id=p.product_id;
 
 ALTER TABLE source_order_versions ADD COLUMN IF NOT EXISTS occurred_at timestamptz;
@@ -364,9 +374,12 @@ BEGIN
     JOIN calculation_draft_corrections a ON a.original_line_id=l.id
     JOIN settlements s ON s.period_id=a.period_id WHERE l.period_id=OLD.period_id AND s.id<>OLD.id
  ) OR EXISTS(
+    SELECT 1 FROM calculation_drafts d JOIN settlements s USING(period_id) WHERE d.aggregate_predecessor_id=OLD.period_id
+ ) OR EXISTS(
     SELECT 1 FROM pool_period_order original
     JOIN pool_account_activity a ON a.period_id=original.id
     JOIN pool_period_order later ON later.product_id=original.product_id
+     AND later.aggregate_package_id IS NOT DISTINCT FROM original.aggregate_package_id
      AND (later.book_date,later.book_stage,later.ordinal)>(original.book_date,original.book_stage,original.ordinal)
     JOIN pool_account_activity b ON b.period_id=later.id
       AND (a.unit_id,a.item_key,a.scenario_key)=(b.unit_id,b.item_key,b.scenario_key)
@@ -375,6 +388,7 @@ BEGIN
  ) OR EXISTS(
     SELECT 1 FROM pool_period_order original
     JOIN pool_period_order later ON later.product_id=original.product_id
+     AND later.aggregate_package_id IS NOT DISTINCT FROM original.aggregate_package_id
      AND (later.book_date,later.book_stage,later.ordinal)>(original.book_date,original.book_stage,original.ordinal)
     JOIN settlements s ON s.period_id=later.id AND s.id>OLD.id
     WHERE original.id=OLD.period_id AND settlement_changes_pool_carry(OLD.period_id,OLD.draft_version)
@@ -406,7 +420,9 @@ BEGIN
    JOIN calculation_draft_performance o ON o.source_version_id=a.payment_version_id WHERE o.period_id=OLD.period_id)
  AND period_id<>OLD.period_id;
  INSERT INTO draft_refresh_queue(period_id)
- SELECT p.id FROM periods p WHERE (p.id=OLD.period_id AND p.source_period_key IS NOT NULL)
+ SELECT p.id FROM periods p WHERE (p.id=OLD.period_id AND (p.source_period_key IS NOT NULL OR p.aggregate_package_id IS NOT NULL))
+ OR (p.id IN (SELECT period_id FROM calculation_drafts WHERE aggregate_predecessor_id=OLD.period_id)
+  AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id))
  OR p.id IN (SELECT period_id FROM health_completion_open_periods(OLD.period_id))
  OR ((p.id=ANY(refund_dependents) OR p.id=ANY(correction_dependents) OR p.id=ANY(adjustment_dependents)
   OR p.id IN (SELECT period_id FROM practice_payment_dependents(OLD.period_id)))
@@ -430,6 +446,9 @@ BEGIN
        WHERE a.source_version_id=OLD.id OR a.payment_version_id=OLD.id OR a.completion_version_id=OLD.id OR a.prior_refund_version_id=OLD.id)
      OR EXISTS(SELECT 1 FROM calculation_draft_refunds a JOIN settlements s USING(period_id) WHERE a.refund_source_version_id=OLD.id)
      OR EXISTS(SELECT 1 FROM calculation_draft_corrections a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id)
+     OR EXISTS(SELECT 1 FROM catalog_aggregate_draft_events a JOIN settlements s USING(period_id)
+       WHERE a.source_version_id=OLD.id OR a.payment_version_id=OLD.id)
+     OR EXISTS(SELECT 1 FROM catalog_aggregate_draft_groups g JOIN settlements s USING(period_id) WHERE g.anchor_payment_id=OLD.id)
      OR EXISTS(SELECT 1 FROM calculation_draft_practice_changes a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id) THEN
    RAISE EXCEPTION 'source version is referenced by a confirmed calculation' USING ERRCODE='55000';
   END IF;
@@ -711,6 +730,15 @@ CREATE TABLE IF NOT EXISTS product_rule_packages (
  resume_from timestamptz
 );
 CREATE INDEX IF NOT EXISTS product_rule_packages_product ON product_rule_packages(product_id);
+CREATE UNIQUE INDEX IF NOT EXISTS product_rule_package_scope_product ON product_rule_packages(source_id,product_id);
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='periods'::regclass AND conname='period_aggregate_package_product') THEN
+  ALTER TABLE periods ADD CONSTRAINT period_aggregate_package_product FOREIGN KEY (aggregate_package_id,product_id)
+   REFERENCES product_rule_packages(source_id,product_id),
+   ADD CONSTRAINT period_aggregate_month_shape CHECK (aggregate_package_id IS NULL OR
+    (report_month IS NOT NULL AND calendar_month IS NULL AND source_period_key IS NULL));
+ END IF;
+END $$;
 
 CREATE TABLE IF NOT EXISTS product_rule_versions (
  source_id uuid PRIMARY KEY,
@@ -1008,7 +1036,7 @@ RETURNS TABLE(period_id bigint) LANGUAGE sql STABLE AS $$
   SELECT p.id,p.product_id,p.starts_on FROM periods p
   JOIN products pro ON pro.id=p.product_id AND pro.period_mode='calendar'
   JOIN product_catalog_settings c ON c.product_id=p.product_id
-  WHERE p.id=opening_id AND EXISTS (
+  WHERE p.id=opening_id AND p.aggregate_package_id IS NULL AND EXISTS (
    SELECT 1 FROM catalog_business_routes r WHERE r.product_id=c.product_id AND r.observed_at=c.captured_at
     AND r.source='DCAI' AND r.domain='HEALTH_IDENTITY'
   )
@@ -1016,7 +1044,7 @@ RETURNS TABLE(period_id bigint) LANGUAGE sql STABLE AS $$
  SELECT id FROM opening
  UNION ALL
  SELECT next_period.id FROM opening o JOIN LATERAL (
-  SELECT p.id FROM periods p WHERE p.product_id=o.product_id AND p.starts_on>o.starts_on
+  SELECT p.id FROM periods p WHERE p.product_id=o.product_id AND p.starts_on>o.starts_on AND p.aggregate_package_id IS NULL
    AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id)
   ORDER BY p.starts_on LIMIT 1
  ) next_period ON true
@@ -1217,12 +1245,14 @@ $$;
 CREATE OR REPLACE FUNCTION protect_confirmed_catalog_scope() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_TABLE_NAME='product_rule_versions' THEN
-  IF OLD.published_at IS NOT NULL OR EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.catalog_rule_id=OLD.source_id) THEN
+  IF OLD.published_at IS NOT NULL OR EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.catalog_rule_id=OLD.source_id)
+   OR EXISTS(SELECT 1 FROM catalog_aggregate_draft_groups g JOIN settlements s USING(period_id) WHERE g.rule_id=OLD.source_id) THEN
    RAISE EXCEPTION 'confirmed rule version cannot be changed' USING ERRCODE='55000';
   END IF;
  ELSIF TG_TABLE_NAME='product_rule_packages' THEN
   IF EXISTS(SELECT 1 FROM product_rule_versions v JOIN calculation_draft_lines l ON l.catalog_rule_id=v.source_id
-   JOIN settlements s USING(period_id) WHERE v.package_id=OLD.source_id) THEN
+   JOIN settlements s USING(period_id) WHERE v.package_id=OLD.source_id)
+   OR EXISTS(SELECT 1 FROM periods p JOIN settlements s ON s.period_id=p.id WHERE p.aggregate_package_id=OLD.source_id) THEN
    RAISE EXCEPTION 'confirmed rule scope cannot be changed' USING ERRCODE='55000';
   END IF;
  ELSIF EXISTS(SELECT 1 FROM settlements WHERE period_id=OLD.id) THEN
@@ -1247,9 +1277,51 @@ CREATE OR REPLACE TRIGGER protect_confirmed_catalog_package BEFORE UPDATE ON pro
        (NEW.source_id,NEW.product_id,NEW.code,NEW.project_code,NEW.policy_kind,NEW.scope_type,NEW.scope_id))
  EXECUTE FUNCTION protect_confirmed_catalog_scope();
 CREATE OR REPLACE TRIGGER protect_confirmed_period_scope BEFORE UPDATE ON periods FOR EACH ROW
- WHEN ((OLD.id,OLD.product_id,OLD.ordinal,OLD.starts_on,OLD.ends_on,OLD.source_period_key,OLD.calendar_month,OLD.report_month) IS DISTINCT FROM
-       (NEW.id,NEW.product_id,NEW.ordinal,NEW.starts_on,NEW.ends_on,NEW.source_period_key,NEW.calendar_month,NEW.report_month))
+ WHEN ((OLD.id,OLD.product_id,OLD.ordinal,OLD.starts_on,OLD.ends_on,OLD.source_period_key,OLD.calendar_month,OLD.report_month,OLD.aggregate_package_id) IS DISTINCT FROM
+       (NEW.id,NEW.product_id,NEW.ordinal,NEW.starts_on,NEW.ends_on,NEW.source_period_key,NEW.calendar_month,NEW.report_month,NEW.aggregate_package_id))
  EXECUTE FUNCTION protect_confirmed_catalog_scope();
+
+CREATE TABLE IF NOT EXISTS catalog_aggregate_draft_groups (
+ period_id bigint NOT NULL REFERENCES calculation_drafts(period_id) ON DELETE CASCADE,
+ group_key text NOT NULL,
+ rule_id uuid NOT NULL REFERENCES product_rule_versions(source_id),
+ anchor_payment_id bigint NOT NULL REFERENCES source_order_versions(id),
+ targets jsonb NOT NULL CHECK(jsonb_typeof(targets)='array'),
+ receipts_minor bigint NOT NULL CHECK(receipts_minor>=0),
+ refunds_minor bigint NOT NULL CHECK(refunds_minor>=0),
+ carry_in_minor bigint NOT NULL CHECK(carry_in_minor<=0),
+ carry_out_minor bigint NOT NULL CHECK(carry_out_minor<=0),
+ carry_from_period_id bigint REFERENCES periods(id),
+ CHECK ((carry_in_minor=0 AND carry_from_period_id IS NULL) OR (carry_in_minor<0 AND carry_from_period_id IS NOT NULL)),
+ PRIMARY KEY(period_id,group_key)
+);
+ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS aggregate_predecessor_id bigint REFERENCES periods(id);
+CREATE INDEX IF NOT EXISTS catalog_aggregate_draft_predecessor ON calculation_drafts(aggregate_predecessor_id)
+ WHERE aggregate_predecessor_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS catalog_aggregate_draft_events (
+ period_id bigint NOT NULL,
+ group_key text NOT NULL,
+ source_version_id bigint NOT NULL REFERENCES source_order_versions(id),
+ payment_version_id bigint NOT NULL REFERENCES source_order_versions(id),
+ sku_code text NOT NULL,
+ PRIMARY KEY(period_id,source_version_id),
+ FOREIGN KEY (period_id,group_key) REFERENCES catalog_aggregate_draft_groups(period_id,group_key) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS catalog_aggregate_events_source ON catalog_aggregate_draft_events(source_version_id,period_id);
+CREATE INDEX IF NOT EXISTS catalog_aggregate_events_payment ON catalog_aggregate_draft_events(payment_version_id,period_id);
+CREATE INDEX IF NOT EXISTS catalog_aggregate_events_group ON catalog_aggregate_draft_events(period_id,group_key);
+CREATE INDEX IF NOT EXISTS catalog_aggregate_groups_rule ON catalog_aggregate_draft_groups(rule_id,period_id);
+CREATE OR REPLACE TRIGGER protect_confirmed_aggregate_groups BEFORE INSERT OR UPDATE OR DELETE ON catalog_aggregate_draft_groups
+ FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+CREATE OR REPLACE TRIGGER protect_confirmed_aggregate_events BEFORE INSERT OR UPDATE OR DELETE ON catalog_aggregate_draft_events
+ FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS aggregate_group_key text;
+DO $$ BEGIN
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass AND conname='draft_line_aggregate_group') THEN
+  ALTER TABLE calculation_draft_lines ADD CONSTRAINT draft_line_aggregate_group FOREIGN KEY (period_id,aggregate_group_key)
+   REFERENCES catalog_aggregate_draft_groups(period_id,group_key) DEFERRABLE INITIALLY DEFERRED;
+ END IF;
+END $$;
 
 -- A sales company uses the same stable unit as its organization and memberships.
 ALTER TABLE organization_units ADD COLUMN IF NOT EXISTS sales_company_type text

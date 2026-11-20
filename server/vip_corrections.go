@@ -13,7 +13,7 @@ import (
 // basis and organization payments belong to the already confirmed transaction.
 const vipCorrectionPaymentsSQL = `WITH booked AS (
  SELECT a.source_version_id,a.period_id FROM periods target
- JOIN periods origin ON origin.product_id=target.product_id AND origin.ends_on<target.starts_on
+ JOIN periods origin ON origin.product_id=target.product_id AND origin.ends_on<target.starts_on AND origin.aggregate_package_id IS NULL
  JOIN settlements s ON s.period_id=origin.id
  JOIN calculation_drafts d ON d.period_id=s.period_id AND d.catalog_refunds_ready
  JOIN calculation_draft_performance a ON a.period_id=d.period_id AND a.payment_version_id IS NULL
@@ -64,7 +64,7 @@ LEFT JOIN LATERAL (
  AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=active.period_id)
  ORDER BY p.starts_on,p.id LIMIT 1
 ) reserved ON true
-LEFT JOIN periods observed ON reserved.period_id IS NULL AND observed.product_id=target.product_id
+LEFT JOIN periods observed ON reserved.period_id IS NULL AND observed.product_id=target.product_id AND observed.aggregate_package_id IS NULL
  AND (receipt.received_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN observed.starts_on AND observed.ends_on
  AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=observed.id)
 CROSS JOIN LATERAL (

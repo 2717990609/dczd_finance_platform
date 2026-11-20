@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 
@@ -7,6 +7,7 @@ const props = defineProps({options:Object, component:Object, api:Function, peopl
 const draft = defineModel({type:Object,required:true})
 const editing = defineModel('editing', {type:Boolean,default:false})
 const form = ref()
+const itemName = ref()
 const error = ref('')
 const targets = [{value:'person',label:'个人'},{value:'company',label:'公司'},{value:'pool',label:'团队池'}]
 const formats = [{value:'fixed',label:'统一比例'},{value:'table',label:'按类别或公司设置比例'}]
@@ -30,6 +31,11 @@ function begin(kind,scope) {
     ? {kind,target:'person',format:'fixed',rows:[blankCondition()]}
     : {kind,scope,itemKey:props.component.itemKey,itemLabel:props.component.label,
       row:{...blankCondition(),company:scope==='company' ? undefined : 'ANY'}}
+}
+async function addRecipient() {
+  begin('item')
+  await nextTick()
+  itemName.value?.focus()
 }
 function changeTarget() {
   form.value.role = undefined
@@ -73,12 +79,12 @@ function stage() {
   }
 }
 watch(form, value => { editing.value = !!value })
+defineExpose({addRecipient})
 </script>
 
 <template>
   <section class="catalog-rule-structure" aria-label="分润分项和费率条件">
     <div v-if="!form" class="topbar-actions">
-      <a-button @click="begin('item')">添加分润分项</a-button>
       <template v-if="component?.rows?.length">
         <a-button v-if="options.categories.length" @click="begin('row','category')">添加类别默认比例</a-button>
         <a-button @click="begin('row','company')">添加公司单独比例</a-button>
@@ -92,8 +98,8 @@ watch(form, value => { editing.value = !!value })
         <CatalogRateCondition v-model="form.row" :options="options" :scope="form.scope"/>
       </template>
       <template v-else>
-        <a-form-item label="分项名称" html-for="catalog-add-label" required>
-          <a-input id="catalog-add-label" v-model:value="form.label" :maxlength="80"/>
+        <a-form-item label="收款安排名称" html-for="catalog-add-label" required>
+          <a-input id="catalog-add-label" ref="itemName" v-model:value="form.label" :maxlength="80"/>
         </a-form-item>
         <h3 class="form-subhead">发给谁</h3>
         <a-form-item label="收款对象" html-for="catalog-add-target">
@@ -129,7 +135,7 @@ watch(form, value => { editing.value = !!value })
       </template>
       <div class="form-actions">
         <a-button @click="cancel">取消添加</a-button>
-        <a-button type="primary" @click="stage">{{ form.kind==='item' ? '暂存分项' : '暂存比例' }}</a-button>
+        <a-button type="primary" @click="stage">{{ form.kind==='item' ? '加入规则' : '加入比例表' }}</a-button>
       </div>
     </div>
     <ul v-if="draft.items.length || draft.rateRows.length" class="catalog-staged-entries" aria-label="待发布新增配置">

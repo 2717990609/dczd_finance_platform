@@ -56,6 +56,7 @@ const poolAllocationBasisSQL = `SELECT md5(concat_ws('|',
  (SELECT coalesce(string_agg(st.id::text,',' ORDER BY st.id),'') FROM settlements st
   JOIN pool_period_order prior ON prior.id=st.period_id
   WHERE prior.product_id=target.product_id
+   AND prior.aggregate_package_id IS NOT DISTINCT FROM target.aggregate_package_id
    AND (prior.book_date,prior.book_stage,prior.ordinal)<(target.book_date,target.book_stage,target.ordinal)
    AND (closed.id IS NULL OR st.id<closed.id))))
  FROM pool_period_order target LEFT JOIN product_catalog_settings config ON config.product_id=target.product_id
@@ -78,6 +79,13 @@ const poolCatalogRoleSQL = `EXISTS (
  )
 )`
 
+const poolAggregateMembersSQL = `SELECT member.id
+ FROM catalog_aggregate_draft_groups g
+ CROSS JOIN LATERAL jsonb_to_recordset(g.targets) target("Item" text,"Unit" text,"Owner" bigint,"Members" bigint[])
+ CROSS JOIN LATERAL unnest(target."Members") member(id)
+ WHERE (g.period_id,g.group_key)=(l.period_id,l.aggregate_group_key)
+  AND (target."Item",target."Unit",target."Owner")=(l.component_type,l.beneficiary_unit_id::text,l.allocation_owner_id)`
+
 const poolAllocationCurrentSQL = `(a.draft_version=d.version AND
  (EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=a.period_id) OR (
   a.basis_token=(` + poolAllocationBasisSQL + `a.period_id) AND NOT EXISTS(
@@ -85,11 +93,13 @@ const poolAllocationCurrentSQL = `(a.draft_version=d.version AND
    JOIN monthly_pool_allocation_funding f ON f.share_id=s.id
    JOIN calculation_draft_lines l ON l.id=f.source_line_id
    JOIN source_order_versions v ON v.id=l.source_version_id
-   WHERE s.allocation_id=a.id AND s.person_id IS NOT NULL AND NOT EXISTS(
+   WHERE s.allocation_id=a.id AND s.person_id IS NOT NULL AND NOT (
+    l.aggregate_group_key IS NOT NULL AND s.person_id IN (` + poolAggregateMembersSQL + `)
+    OR l.aggregate_group_key IS NULL AND EXISTS(
     SELECT 1 FROM organization_assignments m WHERE m.person_id=s.person_id AND m.unit_id=l.beneficiary_unit_id
      AND m.valid_from<=v.occurred_at AND (m.valid_to IS NULL OR v.occurred_at<m.valid_to)
      AND (l.practice_pool_id IS NOT NULL OR ` + poolCatalogRoleSQL + `)
-   )
+   ))
   )
  ))
  AND NOT EXISTS (
@@ -105,6 +115,7 @@ const poolEntriesSQL = `WITH scope AS (
  SELECT p.id,p.book_date<>'-infinity'::date AS practice,row_number() OVER (ORDER BY p.book_date,p.book_stage,p.ordinal) AS seq
  FROM pool_period_order target
  JOIN pool_period_order p ON p.product_id=target.product_id
+  AND p.aggregate_package_id IS NOT DISTINCT FROM target.aggregate_package_id
   AND (p.book_date,p.book_stage,p.ordinal)<=(target.book_date,target.book_stage,target.ordinal)
  JOIN calculation_drafts d ON d.period_id=p.id
  LEFT JOIN settlements final ON final.period_id=target.id
@@ -179,7 +190,12 @@ const poolEligibilitySQL = `SELECT DISTINCT l.id,m.person_id,person.name FROM un
  JOIN organization_assignments m ON m.unit_id=l.beneficiary_unit_id
   AND m.valid_from<=v.occurred_at AND (m.valid_to IS NULL OR m.valid_to>v.occurred_at)
  JOIN people person ON person.id=m.person_id
- WHERE l.practice_pool_id IS NOT NULL OR ` + poolCatalogRoleSQL + `
+ WHERE l.aggregate_group_key IS NULL AND (l.practice_pool_id IS NOT NULL OR ` + poolCatalogRoleSQL + `)
+ UNION
+ SELECT l.id,person.id,person.name FROM unnest($1::bigint[]) source(id)
+ JOIN calculation_draft_lines l ON l.id=source.id AND l.aggregate_group_key IS NOT NULL
+ JOIN LATERAL (` + poolAggregateMembersSQL + `) member ON true
+ JOIN people person ON person.id=member.id
  ORDER BY 1,2`
 
 func readPoolDraftVersion(ctx context.Context, tx pgx.Tx, periodID int64) (int64, bool, error) {
@@ -187,7 +203,7 @@ func readPoolDraftVersion(ctx context.Context, tx pgx.Tx, periodID int64) (int64
 	var closed bool
 	err := tx.QueryRow(ctx, `SELECT d.version,EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=d.period_id)
 	 FROM calculation_drafts d JOIN periods period ON period.id=d.period_id JOIN products product ON product.id=period.product_id
-	 WHERE d.period_id=$1 AND (d.rule_id IS NULL AND d.catalog_refunds_ready OR d.practice_roster_id IS NOT NULL
+	 WHERE d.period_id=$1 AND (d.rule_id IS NULL AND d.catalog_refunds_ready OR period.aggregate_package_id IS NOT NULL OR d.practice_roster_id IS NOT NULL
 	  OR (`+practiceRefundMonthScope+`))`, periodID).Scan(&version, &closed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = errPoolStale

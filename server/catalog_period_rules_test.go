@@ -30,6 +30,7 @@ func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t 
 		{ItemKey: "operations", Label: "交付", TargetKind: "pool", OrganizationKey: "pool", PoolName: "交付池",
 			OwnerRole: "OWNER", MemberRole: "MEMBER", Tiers: []catalogPeriodTier{{Rate: 125}}},
 		{Label: "技术公司", TargetKind: "company", OrganizationKey: "company", Tiers: []catalogPeriodTier{{Rate: 250}}},
+		{Label: "个人分润", TargetKind: "person", PersonID: 22, Tiers: []catalogPeriodTier{{Rate: 210}}},
 	}
 	body, err := editCatalogPeriodComponents(raw, edits, choices)
 	if err != nil {
@@ -39,16 +40,17 @@ func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed.Items) != 2 || parsed.Items[0].ItemKey != "operations" || parsed.Items[0].unit != "pool-unit" ||
+	if len(parsed.Items) != 3 || parsed.Items[0].ItemKey != "operations" || parsed.Items[0].unit != "pool-unit" ||
 		parsed.Items[0].PoolName != "交付池" || parsed.Items[0].OwnerRole != "OWNER" || parsed.Items[0].MemberRole != "MEMBER" ||
-		parsed.Items[1].OrganizationKey != "company" || parsed.Items[1].TargetKind != "company" {
+		parsed.Items[1].OrganizationKey != "company" || parsed.Items[1].TargetKind != "company" ||
+		parsed.Items[2].PersonID != 22 || parsed.Items[2].TargetKind != "person" {
 		t.Fatalf("wrong version contents: %+v", parsed.Items)
 	}
 	original, err := parseCatalogPeriodRule(raw)
 	if err != nil || len(original.Items) != 1 || original.Items[0].Label != "运营" || len(original.Items[0].Tiers) != 2 {
 		t.Fatalf("original changed: %+v, %v", original, err)
 	}
-	edits = edits[1:]
+	edits = edits[1:2]
 	edits[0].ItemKey = parsed.Items[1].ItemKey
 	body, err = editCatalogPeriodComponents(body, edits, choices)
 	if err != nil {

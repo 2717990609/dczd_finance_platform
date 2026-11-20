@@ -38,7 +38,7 @@ const statuses = {
   SETTLED:{label:'已结算',color:'green'}, DRAFT:{label:'草稿',color:'blue'},
   PENDING:{label:'待重新试算',color:'orange'}, NOT_CALCULATED:{label:'未试算',color:'orange'}, NEEDS_REVIEW:{label:'有待核项',color:'orange'},
 }
-const periodKinds = {calendar:'固定账期', class:'开班期次', refund_month:'退款账期'}
+const periodKinds = {calendar:'固定账期', aggregate:'整期分润', class:'开班期次', refund_month:'退款账期'}
 const pendingCount = computed(() => report.value?.periods.filter(period => period.status === 'PENDING' || period.status === 'NOT_CALCULATED').length || 0)
 const unresolvedCount = computed(() => report.value?.periods.filter(period => period.issueCount>0 && period.status !== 'SETTLED').length || 0)
 const includedCount = computed(() => report.value?.periods.filter(period => period.version != null).length || 0)

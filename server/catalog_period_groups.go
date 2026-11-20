@@ -13,12 +13,14 @@ import (
 )
 
 type catalogActivityEvent struct {
+	EventID   int64
 	PaymentID int64
 	PaidAt    time.Time
 	Scenario  string
 	Amount    int64
 	Refund    bool
 	selection *catalogAggregateMatch
+	frozen    catalogFrozenGroupReference
 }
 
 type catalogAggregateRule struct {
@@ -41,6 +43,7 @@ type catalogAggregateDirectory struct {
 	Organizations []vipBenefitOrganization
 	Duties        map[catalogAggregateDutyKey][]catalogAggregateDuty
 	InactiveUnits map[string]bool
+	People        map[int64]string
 }
 
 type catalogPeriodGroupReport struct {
@@ -48,6 +51,7 @@ type catalogPeriodGroupReport struct {
 	TrialOnPaused bool                 `json:"trialOnPaused,omitempty"`
 	Groups        []catalogPeriodGroup `json:"groups"`
 	Issues        map[string]int       `json:"issues"`
+	postingIssues []draftIssue
 }
 
 type catalogPeriodGroup struct {
@@ -60,6 +64,8 @@ type catalogPeriodGroup struct {
 	Net         int64                      `json:"netMinor"`
 	Payments    int                        `json:"paymentCount"`
 	BeforeCarry catalogPeriodQuote         `json:"beforeCarry"`
+	posting     catalogAggregateGroupInput
+	items       []catalogPeriodItem
 }
 
 type catalogPeriodGroupTarget struct {
@@ -73,6 +79,7 @@ type catalogGroupTargetKey struct {
 	Item, Unit string
 	Owner      int64
 	Members    []int64
+	Person     int64 `json:"person,omitempty"`
 }
 
 func catalogAggregateMemberRole(role, eligibility string) string {
@@ -101,6 +108,13 @@ func (d catalogAggregateDirectory) members(unit, role string, at time.Time) []in
 func (d catalogAggregateDirectory) groupTarget(item catalogPeriodItem, at time.Time) (catalogPeriodGroupTarget, catalogGroupTargetKey, string) {
 	target := catalogPeriodGroupTarget{ItemKey: item.ItemKey}
 	key := catalogGroupTargetKey{Item: item.ItemKey}
+	if item.TargetKind == "person" {
+		key.Person, target.Name = item.PersonID, d.People[item.PersonID]
+		if target.Name == "" {
+			return target, key, "BENEFIT_PERSON_MISSING"
+		}
+		return target, key, ""
+	}
 	for _, org := range d.Organizations {
 		if org.Party == item.OrganizationKey && (item.unit == "" || org.Unit == item.unit) {
 			if key.Unit != "" && key.Unit != org.Unit {
@@ -174,7 +188,8 @@ func matchCatalogAggregateRule(rules []catalogAggregateRule, event catalogActivi
 	return result
 }
 
-func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggregateRule, directory catalogAggregateDirectory) (catalogPeriodGroupReport, error) {
+func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggregateRule, directory catalogAggregateDirectory,
+	frozen map[catalogFrozenGroupReference]catalogPeriodGroup) (catalogPeriodGroupReport, error) {
 	report := catalogPeriodGroupReport{Groups: []catalogPeriodGroup{}, Issues: map[string]int{}}
 	type assignment struct {
 		group *catalogPeriodGroup
@@ -182,13 +197,21 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 	}
 	byPayment := make(map[int64]assignment)
 	groups := make(map[string]*catalogPeriodGroup)
-	ruleItems := make(map[string][]catalogPeriodItem, len(rules))
-	for _, rule := range rules {
-		ruleItems[rule.ID] = rule.Definition.Items
-	}
 	for _, event := range events {
 		applied, found := byPayment[event.PaymentID]
-		if !found {
+		if !found && event.frozen.PeriodID != 0 {
+			original, known := frozen[event.frozen]
+			if known {
+				applied.group = groups[original.ID]
+				if applied.group == nil {
+					applied.group = &original
+					groups[original.ID] = applied.group
+				}
+			} else {
+				applied.issue = "ORIGINAL_RULE_MISSING"
+			}
+			byPayment[event.PaymentID] = applied
+		} else if !found {
 			var selected catalogAggregateMatch
 			if event.selection != nil {
 				selected = *event.selection
@@ -219,11 +242,12 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					if err != nil {
 						return report, err
 					}
-					key := string(raw)
+					hash := sha256.Sum256(raw)
+					key := hex.EncodeToString(hash[:])
 					applied.group = groups[key]
 					if applied.group == nil {
-						hash := sha256.Sum256(raw)
-						applied.group = &catalogPeriodGroup{ID: hex.EncodeToString(hash[:]), RuleID: rule.ID, Version: rule.Version, Targets: targets}
+						applied.group = &catalogPeriodGroup{ID: key, RuleID: rule.ID, Version: rule.Version, Targets: targets,
+							posting: catalogAggregateGroupInput{Targets: keys}, items: rule.Definition.Items}
 						groups[key] = applied.group
 					}
 				}
@@ -232,7 +256,17 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 		}
 		if applied.issue != "" {
 			report.Issues[applied.issue]++
+			if event.EventID != 0 {
+				report.postingIssues = append(report.postingIssues, draftIssue{FactID: event.EventID, Code: applied.issue})
+			}
 			continue
+		}
+		if event.EventID != 0 {
+			posting := &applied.group.posting
+			posting.Events = append(posting.Events, catalogAggregateEventReference{event.EventID, event.PaymentID, event.Scenario})
+			if posting.AnchorID == 0 || event.PaymentID < posting.AnchorID {
+				posting.AnchorID = event.PaymentID
+			}
 		}
 		sum := &applied.group.Refunds
 		if !event.Refund {
@@ -254,7 +288,7 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 		group := groups[key]
 		group.Net = group.Receipts - group.Refunds
 		var err error
-		group.BeforeCarry, err = quoteCatalogPeriod(ruleItems[group.RuleID], group.Receipts, group.Refunds, 0)
+		group.BeforeCarry, err = quoteCatalogPeriod(group.items, group.Receipts, group.Refunds, 0)
 		if err != nil {
 			return report, err
 		}
@@ -300,13 +334,33 @@ const catalogAggregateDutySQL = `SELECT a.scope_key,a.role,person.id,person.name
 func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catalogAggregateRule, from, through time.Time) (catalogAggregateDirectory, error) {
 	directory := catalogAggregateDirectory{Duties: map[catalogAggregateDutyKey][]catalogAggregateDuty{}, InactiveUnits: make(map[string]bool)}
 	var parties, units, roles []string
+	var people []int64
 	for _, version := range rules {
 		for _, item := range version.Definition.Items {
-			parties = append(parties, item.OrganizationKey)
+			if item.PersonID > 0 {
+				people = append(people, item.PersonID)
+			} else {
+				parties = append(parties, item.OrganizationKey)
+			}
 			if item.TargetKind == "pool" {
 				units = append(units, item.unit)
 				roles = append(roles, item.OwnerRole, item.MemberRole)
 			}
+		}
+	}
+	if len(people) > 0 {
+		rows, err := tx.Query(ctx, "SELECT id,name FROM people WHERE id=ANY($1::bigint[])", people)
+		if err != nil {
+			return directory, err
+		}
+		directory.People = make(map[int64]string)
+		var id int64
+		var name string
+		if _, err := pgx.ForEachRow(rows, []any{&id, &name}, func() error {
+			directory.People[id] = name
+			return nil
+		}); err != nil {
+			return directory, err
 		}
 	}
 	rows, err := tx.Query(ctx, `SELECT b.party_uuid::text,o.id::text,o.name

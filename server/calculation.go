@@ -47,6 +47,7 @@ type draftLine struct {
 	Catalog                              *catalogDraftBenefit `json:",omitempty"`
 	BeneficiaryUnit                      *pgtype.UUID         `json:",omitempty"`
 	PracticePool                         *practicePoolTarget  `json:",omitempty"`
+	AggregateGroup                       string               `json:",omitempty"`
 }
 
 type draftIssue struct {
@@ -62,19 +63,21 @@ type draftIssue struct {
 }
 
 type paymentDraft struct {
-	PracticeStartsAt    time.Time
-	PracticeEnrollments []int64
-	practicePriorCounts map[int64]int64
-	practiceReplay      *practiceReplayInputs
-	practiceChanges     []practiceCorrectionRevision
-	Lines               []draftLine
-	Performance         []draftPerformance
-	Issues              []draftIssue
-	Refunds             []refundLine
-	Corrections         []correctionLine
-	Total               int64
-	RefundTotal         int64
-	CorrectionTotal     int64
+	PracticeStartsAt     time.Time
+	PracticeEnrollments  []int64
+	practicePriorCounts  map[int64]int64
+	practiceReplay       *practiceReplayInputs
+	practiceChanges      []practiceCorrectionRevision
+	aggregateGroups      []catalogAggregateGroupInput
+	aggregatePredecessor int64
+	Lines                []draftLine
+	Performance          []draftPerformance
+	Issues               []draftIssue
+	Refunds              []refundLine
+	Corrections          []correctionLine
+	Total                int64
+	RefundTotal          int64
+	CorrectionTotal      int64
 }
 
 func (d paymentDraft) blockingIssues() int {

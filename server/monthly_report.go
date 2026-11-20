@@ -18,9 +18,11 @@ const periodReportMonthSQL = `coalesce(p.report_month,p.calendar_month,date_trun
 // rows still come from the same postings used by the single-period report.
 var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, scopes AS MATERIALIZED (
  SELECT p.id AS period_id,pro.name AS product_name,p.name,p.starts_on,p.ends_on,
-  CASE WHEN pro.period_mode='calendar' THEN 'calendar' WHEN p.calendar_month IS NOT NULL THEN 'refund_month' ELSE 'class' END AS kind,
+  CASE WHEN p.aggregate_package_id IS NOT NULL THEN 'aggregate' WHEN pro.period_mode='calendar' THEN 'calendar'
+   WHEN p.calendar_month IS NOT NULL THEN 'refund_month' ELSE 'class' END AS kind,
   d.version,d.calculated_at,d.issue_count,
-  d.performance_ready AND (d.rule_id IS NOT NULL OR d.catalog_refunds_ready OR pro.period_mode='class' AND p.calendar_month IS NOT NULL) AS performance_ready,
+  d.performance_ready AND (p.aggregate_package_id IS NOT NULL OR d.rule_id IS NOT NULL OR d.catalog_refunds_ready
+   OR pro.period_mode='class' AND p.calendar_month IS NOT NULL) AS performance_ready,
   d.total_minor+d.refund_minor+d.correction_minor AS commission,st.id AS settlement_id,q.generation
  FROM periods p JOIN products pro ON pro.id=p.product_id
  LEFT JOIN calculation_drafts d ON d.period_id=p.id

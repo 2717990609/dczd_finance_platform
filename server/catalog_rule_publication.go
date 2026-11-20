@@ -94,7 +94,7 @@ AND (SELECT count(*)=1 AND bool_and(best.source_id=$5::uuid) FROM (
 const catalogRateDraftPeriodsSQL = catalogRateDraftCandidates + `, windows AS (
  SELECT p.id,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai' AS starts_at,
  (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai' AS ends_at FROM periods p
- WHERE p.product_id=$1 AND $3<((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
+ WHERE p.product_id=$1 AND p.aggregate_package_id IS NULL AND $3<((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
  AND ($4::timestamptz IS NULL OR p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'<$4)
  AND NOT EXISTS(SELECT 1 FROM settlements st WHERE st.period_id=p.id)
 )

@@ -93,7 +93,7 @@ func (s workspace) refreshPendingDrafts(ctx context.Context) error {
 }
 
 func draftRefreshFailure(err error) (string, bool) {
-	for _, known := range []error{errDraftRule, errDraftLimit, errProductRuleUnavailable, errPracticeNotReady, errPracticeStart} {
+	for _, known := range []error{errDraftRule, errDraftLimit, errProductRuleUnavailable, errPracticeNotReady, errPracticeStart, errCatalogAggregatePaused, errCatalogAggregatePeriod} {
 		if errors.Is(err, known) {
 			return known.Error(), false
 		}

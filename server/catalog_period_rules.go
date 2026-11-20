@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"slices"
 	"strconv"
+	"strings"
 )
 
 type catalogPeriodTier struct {
@@ -23,6 +24,7 @@ type catalogPeriodItem struct {
 	TargetKind      string              `json:"targetKind"`
 	TargetName      string              `json:"targetName,omitempty"`
 	OrganizationKey string              `json:"organizationKey"`
+	PersonID        int64               `json:"personId,omitempty"`
 	PoolName        string              `json:"poolName,omitempty"`
 	OwnerRole       string              `json:"ownerRole,omitempty"`
 	MemberRole      string              `json:"memberRole,omitempty"`
@@ -79,7 +81,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 	}
 	items := make(map[string]bool)
 	for _, action := range stored.Actions {
-		if action.Item == "" || items[action.Item] || action.Label == "" || !action.validTarget() || action.Designated != "" ||
+		if action.Item == "" || items[action.Item] || action.Label == "" || !action.validTarget() ||
 			action.Type != "TIER_RATE" || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" ||
 			!validCatalogPeriodTiers(action.Tiers) {
 			return result, errCatalogRateUnavailable
@@ -87,12 +89,21 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		items[action.Item] = true
 		org := action.Company
 		memberRole := ""
+		var personID int64
+		if action.Designated != "" {
+			key, local := strings.CutPrefix(action.Designated, "person:")
+			id, err := strconv.ParseInt(key, 10, 64)
+			if !local || err != nil || id <= 0 {
+				return result, errCatalogRateUnavailable
+			}
+			personID = id
+		}
 		if action.Mode == "TEAM_POOL" {
 			org = action.PoolParty
 			memberRole = catalogAggregateMemberRole(action.Role, action.EligibilityRole)
 		}
 		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: action.targetKind(),
-			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OrganizationKey: org, Tiers: action.Tiers,
+			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
 			MemberRole: memberRole, unit: action.PoolUnit})
 	}
 	return result, nil

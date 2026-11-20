@@ -26,7 +26,7 @@ const notice = ref('')
 let request = 0
 let settingsRequest = 0
 
-const titles = {add:'登记计提任职',transfer:'交接计提任职',end:'结束计提任职'}
+const titles = {add:'登记分润岗位',transfer:'交接分润岗位',end:'结束分润岗位'}
 const scopeOptions = (key, activeOnly = false) => (settings.value?.options[key] || [])
   .filter(option=>!activeOnly || option.active)
   .map(option=>option.active ? option : {...option,label:option.label+'（已停用）'})
@@ -138,8 +138,11 @@ defineExpose({refresh})
   <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
   <section class="records organization-directory">
     <div class="records-head">
-      <h2>大春 AI 计提任职</h2>
-      <a-button v-if="canWrite && settings?.ready" type="primary" @click="open('add')">登记计提任职</a-button>
+      <div class="organization-heading">
+        <h2>大春 AI 分润岗位</h2>
+        <span class="organization-context">按订单付款时的岗位和生效时间确定收款人</span>
+      </div>
+      <a-button v-if="canWrite && settings?.ready" type="primary" @click="open('add')">登记分润岗位</a-button>
     </div>
     <a-alert v-if="settings && !settings.ready" class="feedback" message="请先初始化大春 AI 核算资料。" type="info" show-icon/>
     <template v-else>
@@ -150,11 +153,11 @@ defineExpose({refresh})
             @search="search" @change="!nameInput && search()"/>
         </div>
         <div>
-          <label for="catalog-appointment-role-filter">计提角色</label>
+          <label for="catalog-appointment-role-filter">岗位</label>
           <a-select id="catalog-appointment-role-filter" v-model:value="roleFilter" :options="roles" placeholder="全部角色" allow-clear/>
         </div>
         <div>
-          <label for="catalog-appointment-scope-filter">范围类型</label>
+          <label for="catalog-appointment-scope-filter">适用范围</label>
           <a-select id="catalog-appointment-scope-filter" v-model:value="scopeFilter" :options="scopes" placeholder="全部范围" allow-clear/>
         </div>
         <div v-if="scopeFilter">
@@ -175,7 +178,7 @@ defineExpose({refresh})
             <a-button type="link" size="small" @click="open('end',record)">结束</a-button>
           </a-space>
         </template>
-        <template #emptyText>{{ waitingForDate ? '请选择任职日期' : '当前条件下没有计提任职' }}</template>
+        <template #emptyText>{{ waitingForDate ? '请选择任职日期' : '当前条件下没有分润岗位记录' }}</template>
       </a-table>
     </template>
   </section>
@@ -185,14 +188,14 @@ defineExpose({refresh})
       <a-alert v-if="saveError" class="feedback" type="error" :message="saveError" show-icon/>
       <p v-if="form.record">{{ form.record.personName }} · {{ roleLabel(form.record.role) }} · {{ form.record.scopeName }}</p>
       <template v-if="form.mode==='add'">
-        <a-form-item label="范围类型" html-for="catalog-appointment-scope" required>
+        <a-form-item label="适用范围" html-for="catalog-appointment-scope" required>
           <a-select id="catalog-appointment-scope" v-model:value="form.scope" :options="scopes" @change="selectScope"/>
         </a-form-item>
         <a-form-item label="适用对象" html-for="catalog-appointment-key" required>
           <a-select id="catalog-appointment-key" v-model:value="form.scopeKey" :options="scopeOptions(form.scope,true)"
             :disabled="!form.scope" option-filter-prop="label" show-search/>
         </a-form-item>
-        <a-form-item label="计提角色" html-for="catalog-appointment-role" required>
+        <a-form-item label="岗位" html-for="catalog-appointment-role" required>
           <a-select id="catalog-appointment-role" v-model:value="form.role" :options="roleOptions"
             :disabled="!form.scope" option-filter-prop="label" show-search/>
         </a-form-item>

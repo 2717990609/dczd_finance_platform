@@ -31,7 +31,7 @@ const draftRefreshFacts = `WITH keys AS (
 ), events AS MATERIALIZED (
  SELECT v.id,v.source,v.fact,v.order_id,v.kind,v.record_key,v.occurred_at FROM changed c
  JOIN source_order_versions v ON v.id=c.current_id OR v.id=c.previous_id
- WHERE v.kind IN ('ORDER_PAID','REFUND_SUCCEEDED')
+ WHERE v.kind IN ('ORDER_PAID','REFUND_SUCCEEDED') OR v.source='DCAI' AND v.kind='REFUND_ADJUSTED'
 ), mapped AS (
  SELECT v.id,m.product_id,v.occurred_at,v.kind FROM events v JOIN source_mappings m
   ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'
@@ -40,7 +40,8 @@ const draftRefreshFacts = `WITH keys AS (
  SELECT v.id,c.product_id,v.occurred_at,v.kind FROM events v JOIN catalog_business_routes m ON ` + catalogRouteFactSQL + `
  JOIN product_catalog_settings c ON c.product_id=m.product_id AND c.captured_at=m.observed_at
 ), calendar AS (
- SELECT p.id,p.product_id,p.starts_on,p.ends_on FROM periods p JOIN products pro ON pro.id=p.product_id WHERE pro.period_mode='calendar'
+ SELECT p.id,p.product_id,p.starts_on,p.ends_on FROM periods p JOIN products pro ON pro.id=p.product_id
+ WHERE pro.period_mode='calendar' AND p.aggregate_package_id IS NULL
 ), origin AS (
  SELECT p.id,p.product_id,v.id AS event_id,v.kind FROM mapped v JOIN calendar p USING(product_id)
  WHERE v.occurred_at>=p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
@@ -96,7 +97,7 @@ const draftRefreshFacts = `WITH keys AS (
 ), corrected_originals AS (
  SELECT DISTINCT line.id,prior.product_id FROM events v JOIN source_order_versions paid
   ON paid.source=v.source AND paid.order_id=v.order_id AND paid.kind='ORDER_PAID'
- JOIN calculation_draft_lines line ON line.source_version_id=paid.id
+ JOIN calculation_draft_lines line ON line.source_version_id=paid.id AND line.aggregate_group_key IS NULL
   AND (line.component_type='referral' OR line.catalog_rule_id IS NOT NULL)
  JOIN settlements final ON final.period_id=line.period_id JOIN periods prior ON prior.id=line.period_id WHERE v.kind='ORDER_PAID'
 ), late AS (
@@ -120,7 +121,15 @@ const draftRefreshFacts = `WITH keys AS (
  WHERE v.source='DCAI' AND v.kind='REFUND_SUCCEEDED' AND v.fact->>'domain'='HEALTH_IDENTITY'
   AND split_part(v.record_key,':',1)='ai_health_ambassador_order' AND b.completion_version_id IS NOT NULL
 )
-SELECT id FROM origin
+SELECT id FROM origin WHERE kind<>'REFUND_ADJUSTED'
+UNION SELECT p.id FROM mapped events JOIN product_catalog_settings source ON source.product_id=events.product_id
+ JOIN product_catalog_settings anchor ON (anchor.project_code,anchor.source_system)=(source.project_code,source.source_system)
+ JOIN periods p ON p.product_id=anchor.product_id AND p.aggregate_package_id IS NOT NULL
+ WHERE (events.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
+  OR (events.kind IN ('REFUND_SUCCEEDED','REFUND_ADJUSTED') AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
+   AND EXISTS(SELECT 1 FROM periods earlier JOIN settlements final ON final.period_id=earlier.id
+    WHERE earlier.aggregate_package_id=p.aggregate_package_id
+     AND (events.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN earlier.starts_on AND earlier.ends_on))
 UNION ` + healthCompletionAffectedPeriodsSQL + `
 UNION SELECT p.id FROM late l JOIN calendar p USING(product_id)
  WHERE (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
@@ -177,6 +186,7 @@ const draftRefreshAfterClose = `WITH closing AS (
  UNION SELECT original_line_id FROM calculation_draft_refunds WHERE period_id=$1
 )
 SELECT p.id FROM closing original JOIN periods p ON p.product_id=original.product_id AND p.id<>original.id
+ AND p.aggregate_package_id IS NOT DISTINCT FROM original.aggregate_package_id
 WHERE (original.period_mode='class' AND p.calendar_month IS NOT NULL OR original.period_mode<>'class' AND p.ordinal>original.ordinal)
  AND (
  (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
@@ -185,6 +195,8 @@ WHERE (original.period_mode='class' AND p.calendar_month IS NOT NULL OR original
  OR original.period_mode='class' AND EXISTS(SELECT 1 FROM calculation_draft_performance refund
   JOIN payments paid ON paid.source_version_id=refund.payment_version_id WHERE refund.period_id=p.id))
 UNION SELECT period_id FROM practice_payment_dependents($1)
+UNION SELECT p.id FROM closing original JOIN periods p ON p.aggregate_package_id=original.aggregate_package_id
+ AND p.starts_on=original.ends_on+1
 UNION SELECT c.period_id FROM closed_adjustments a JOIN calculation_draft_corrections c USING(original_line_id)
 UNION SELECT i.period_id FROM closed_adjustments a JOIN calculation_draft_issues i ON i.correction_line_id=a.original_line_id
 UNION SELECT r.period_id FROM closed_adjustments a JOIN calculation_draft_refunds r USING(original_line_id)
@@ -193,6 +205,7 @@ UNION SELECT i.period_id FROM affected_classes a JOIN calculation_draft_lines l 
  JOIN calculation_draft_issues i ON i.correction_line_id=l.id
 UNION SELECT c.period_id FROM closing later
  JOIN periods earlier ON earlier.product_id=later.product_id AND earlier.ordinal<later.ordinal
+  AND earlier.aggregate_package_id IS NOT DISTINCT FROM later.aggregate_package_id
   AND split_part(earlier.source_period_key,':',3)=split_part(later.source_period_key,':',3)
  JOIN calculation_draft_practice_changes c ON c.class_period_id=earlier.id
  WHERE later.period_mode='class' AND later.source_period_key IS NOT NULL`

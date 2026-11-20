@@ -41,7 +41,7 @@ func TestCatalogPeriodGroupsKeepOriginalRuleAndSplitOnPoolMembership(t *testing.
 		{PaymentID: 14, PaidAt: change, Scenario: "SECOND", Amount: 2000, Refund: true},
 		{PaymentID: 16, PaidAt: month.AddDate(0, -2, 0), Scenario: "FIRST", Amount: 1000, Refund: true},
 	}
-	report, err := groupCatalogPeriodEvents(events, versions, owners)
+	report, err := groupCatalogPeriodEvents(events, versions, owners, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,13 +62,13 @@ func TestCatalogPeriodGroupsKeepOriginalRuleAndSplitOnPoolMembership(t *testing.
 		{PaymentID: 30, PaidAt: month, Scenario: "SECOND", Amount: 30000},
 		{PaymentID: 31, PaidAt: month.Add(-time.Second), Scenario: "SECOND", Amount: 6000, Refund: true},
 	}
-	report, err = groupCatalogPeriodEvents(onlyFirst, versions, owners)
+	report, err = groupCatalogPeriodEvents(onlyFirst, versions, owners, nil)
 	if err != nil || len(report.Groups) != 1 || len(report.Issues) != 0 || report.Groups[0].Version != 1 || report.Groups[0].Refunds != 6000 {
 		t.Fatalf("a removed scenario still contributes its refunds on old eligible orders: %+v %v", report, err)
 	}
 	owners.Organizations = nil
 	owners.InactiveUnits = map[string]bool{"unit": true}
-	report, err = groupCatalogPeriodEvents(onlyFirst, versions, owners)
+	report, err = groupCatalogPeriodEvents(onlyFirst, versions, owners, nil)
 	if err != nil || len(report.Groups) != 0 || report.Issues["BENEFIT_ORG_INACTIVE"] != 1 {
 		t.Fatalf("a missing mapping for a known inactive unit needs the specific warning: %+v %v", report, err)
 	}

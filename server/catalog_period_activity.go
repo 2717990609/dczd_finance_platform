@@ -10,13 +10,14 @@ import (
 )
 
 type catalogPeriodActivityRequest struct {
-	ProductID   int64
-	Scenarios   []string
-	Window      periodWindow
-	Provider    string
-	MaxAge      time.Duration
-	GroupRule   *catalogPeriodVersion
-	TrialPaused bool
+	ProductID     int64
+	Scenarios     []string
+	Window        periodWindow
+	Provider      string
+	MaxAge        time.Duration
+	GroupRule     *catalogPeriodVersion
+	TrialPaused   bool
+	DraftPeriodID int64
 }
 
 type catalogPeriodScenarioActivity struct {
@@ -39,6 +40,7 @@ type catalogPeriodActivity struct {
 	Refunds            int64                           `json:"refundsMinor"`
 	PriorPeriodRefunds int64                           `json:"priorPeriodRefundsMinor"`
 	Grouping           *catalogPeriodGroupReport       `json:"grouping,omitempty"`
+	postingIssues      []draftIssue
 }
 
 const catalogAggregateRoutes = `
@@ -58,22 +60,55 @@ const catalogActivityEventColumns = `v.id,v.source,v.kind,v.occurred_at,v.fact,
   CASE WHEN jsonb_typeof(v.fact->'amountMinor')='number' THEN (v.fact->>'amountMinor')::bigint END AS amount`
 
 const catalogActivityAmountsSQL = `WITH routes AS MATERIALIZED (` + catalogAggregateRoutes + `),
+draft_scope AS (SELECT aggregate_package_id,starts_on,ends_on FROM periods WHERE id=$6::bigint),
 current_events AS MATERIALIZED (
- SELECT ` + catalogActivityEventColumns + `
+ SELECT ` + catalogActivityEventColumns + `,true AS in_scope,coalesce(booked.changed,false) AS booked_changed
  FROM source_order_versions v
+ LEFT JOIN LATERAL (
+  SELECT min(a.period_id) FILTER(WHERE final.id IS NULL) AS reserved_period,
+   bool_or((original.order_id,original.line_id,original.occurred_at,original.fact->'amountMinor',
+   original.fact->'refundsPayment',original.fact->'sourceKey') IS DISTINCT FROM
+   (v.order_id,v.line_id,v.occurred_at,v.fact->'amountMinor',v.fact->'refundsPayment',v.fact->'sourceKey'))
+    FILTER(WHERE final.id IS NOT NULL) AS changed
+  FROM source_order_versions original JOIN catalog_aggregate_draft_events a ON a.source_version_id=original.id
+  JOIN periods p ON p.id=a.period_id LEFT JOIN settlements final ON final.period_id=p.id
+  JOIN draft_scope draft ON draft.aggregate_package_id=p.aggregate_package_id
+  WHERE v.kind='REFUND_SUCCEEDED' AND original.source=v.source AND original.kind='REFUND_SUCCEEDED'
+   AND (original.fact->>'domain',original.fact->>'refundId')=(v.fact->>'domain',v.fact->>'refundId')
+ ) booked ON true
  WHERE v.source='DCAI' AND v.kind IN ('ORDER_PAID','REFUND_SUCCEEDED','REFUND_ADJUSTED')
-  AND v.occurred_at>=$3 AND v.occurred_at<$4 AND v.occurred_at<=CURRENT_TIMESTAMP
-  AND EXISTS(SELECT 1 FROM routes m WHERE m.sku_code=ANY($2) AND ` + catalogRouteFactSQL + `)
+  AND v.occurred_at<$4 AND v.occurred_at<=CURRENT_TIMESTAMP AND booked.changed IS DISTINCT FROM false
+  AND ($7::timestamptz IS NULL OR v.kind<>'ORDER_PAID' OR v.occurred_at<$7)
+  AND v.occurred_at>=least($3,(
+   SELECT min(earlier.starts_on)::timestamp AT TIME ZONE 'Asia/Shanghai'
+   FROM draft_scope draft JOIN periods earlier USING(aggregate_package_id) JOIN settlements final ON final.period_id=earlier.id
+   WHERE earlier.starts_on<draft.starts_on
+  ))
+  AND (v.occurred_at>=$3 OR (v.kind IN ('REFUND_SUCCEEDED','REFUND_ADJUSTED') AND EXISTS(
+   SELECT 1 FROM draft_scope draft JOIN periods earlier USING(aggregate_package_id) JOIN settlements final ON final.period_id=earlier.id
+   WHERE (booked.reserved_period=$6 OR (booked.reserved_period IS NULL AND
+     (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN draft.starts_on AND draft.ends_on))
+    AND (v.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN earlier.starts_on AND earlier.ends_on
+  )))
+  AND (EXISTS(SELECT 1 FROM routes m WHERE m.sku_code=ANY($2) AND ` + catalogRouteFactSQL + `)
+   OR v.kind='REFUND_SUCCEEDED' AND EXISTS(
+    SELECT 1 FROM source_order_versions original JOIN catalog_aggregate_draft_events a
+     ON original.id=a.source_version_id AND a.source_version_id=a.payment_version_id
+    JOIN settlements closed USING(period_id) JOIN periods prior ON prior.id=closed.period_id
+    JOIN draft_scope draft ON draft.aggregate_package_id=prior.aggregate_package_id
+    WHERE original.source=v.source AND original.order_id=v.fact#>>'{refundsPayment,0,orderId}' AND original.kind='ORDER_PAID'
+     AND (original.fact->>'domain',original.fact->>'sourceKey')=(v.fact->>'domain',v.fact->>'sourceKey')
+   ))
   AND ` + catalogActivityLatest + `
 ), refund_orders AS (
  SELECT DISTINCT fact#>>'{refundsPayment,0,orderId}' AS order_id FROM current_events WHERE kind='REFUND_SUCCEEDED'
 ), events AS (
  SELECT * FROM current_events
  UNION ALL
- SELECT ` + catalogActivityEventColumns + `
+ SELECT ` + catalogActivityEventColumns + `,false,false
  FROM refund_orders original JOIN source_order_versions v
   ON v.source='DCAI' AND v.kind='REFUND_SUCCEEDED' AND v.fact#>>'{refundsPayment,0,orderId}'=original.order_id
- WHERE v.occurred_at<$3 AND ` + catalogActivityLatest + `
+ WHERE v.occurred_at<$3 AND NOT EXISTS(SELECT 1 FROM current_events incoming WHERE incoming.id=v.id) AND ` + catalogActivityLatest + `
 ), linked AS MATERIALIZED (
  SELECT e.*,e.fact->'refundsPayment'->0 AS reference,
   count(*) OVER (PARTITION BY e.kind,e.fact->>'domain',e.event_id) AS copies
@@ -94,9 +129,13 @@ current_events AS MATERIALIZED (
    AND v.occurred_at<=e.occurred_at AND ` + catalogActivityLatest + `
  ) p ON true
 ), mapped AS MATERIALIZED (
- SELECT v.id,v.occurred_at,c.source_version_id AS classified,m.matches,m.sku,
-  CASE WHEN jsonb_typeof(v.fact->'amountMinor')='number' THEN (v.fact->>'amountMinor')::bigint END AS amount,
-  v.fact->>'paymentId' AS identity
+ SELECT v.id,v.occurred_at,c.source_version_id AS classified,
+  CASE WHEN frozen.payment_version_id IS NOT NULL THEN 1 ELSE m.matches END AS matches,
+  coalesce(frozen.sku_code,m.sku) AS sku,
+  CASE WHEN jsonb_typeof(coalesce(frozen.amount,v.fact->'amountMinor'))='number'
+   THEN (coalesce(frozen.amount,v.fact->'amountMinor')#>>'{}')::bigint END AS amount,
+  v.fact->>'paymentId' AS identity,frozen.payment_version_id,frozen.period_id,frozen.group_key,
+  frozen.payment_version_id IS NOT NULL AND frozen.amount IS DISTINCT FROM v.fact->'amountMinor' AS amount_changed
  FROM (SELECT DISTINCT payment_id FROM origins WHERE payment_id IS NOT NULL) ids
  JOIN source_order_versions v ON v.id=ids.payment_id
  LEFT JOIN source_order_classifications c ON c.source_version_id=v.id
@@ -106,28 +145,41 @@ current_events AS MATERIALIZED (
    AND (m.entity_type,m.business_key,m.classifier)=(c.entity_type,c.business_key,c.classifier)
    AND m.effective_from<=v.occurred_at AND (m.effective_to IS NULL OR v.occurred_at<m.effective_to)
  ) m ON true
+ LEFT JOIN LATERAL (
+  SELECT a.payment_version_id,a.sku_code,a.period_id,a.group_key,original.fact->'amountMinor' AS amount
+  FROM source_order_versions original JOIN catalog_aggregate_draft_events a
+   ON original.id=a.source_version_id AND a.source_version_id=a.payment_version_id
+  JOIN settlements closed USING(period_id) JOIN periods prior ON prior.id=closed.period_id
+  JOIN draft_scope draft ON draft.aggregate_package_id=prior.aggregate_package_id
+  WHERE (original.source,original.order_id,original.line_id,original.record_key,original.kind)=
+   (v.source,v.order_id,v.line_id,v.record_key,v.kind)
+  ORDER BY closed.id LIMIT 1
+ ) frozen ON true
 ), assessed AS (
  SELECT e.*,CASE WHEN p.matches=1 THEN p.sku END AS sku,p.occurred_at AS paid_at,p.amount AS original_amount,
+  p.payment_version_id AS frozen_payment_id,p.period_id AS frozen_period_id,p.group_key AS frozen_group_key,
   CASE
-   WHEN e.kind='REFUND_ADJUSTED' THEN 'REFUND_ADJUSTMENT'
+   WHEN e.kind='REFUND_ADJUSTED' OR e.booked_changed THEN 'REFUND_ADJUSTMENT'
    WHEN coalesce(e.event_id,'')='' OR e.amount IS NULL OR e.amount<0 THEN 'INVALID_EVENT'
    WHEN e.copies>1 THEN 'DUPLICATE_EVENT'
    WHEN p.id IS NULL THEN 'REFUND_ORIGIN_MISSING'
-   WHEN p.classified IS NULL THEN 'UNCLASSIFIED'
+   WHEN p.amount_changed THEN 'AGGREGATE_ORIGINAL_AMOUNT_CHANGED'
+   WHEN p.classified IS NULL AND p.payment_version_id IS NULL THEN 'UNCLASSIFIED'
    WHEN p.matches=0 THEN 'MAPPING_MISSING'
    WHEN p.matches>1 THEN 'MAPPING_CONFLICT'
    WHEN coalesce(p.identity,'')='' OR p.amount IS NULL OR p.amount<0 THEN 'INVALID_PAYMENT'
    ELSE '' END AS issue
  FROM origins e LEFT JOIN mapped p ON p.id=e.payment_id
- WHERE p.matches IS DISTINCT FROM 1 OR p.sku=ANY($2)
+ WHERE (p.matches IS DISTINCT FROM 1 OR p.sku=ANY($2) OR p.payment_version_id IS NOT NULL)
+  AND ($7::timestamptz IS NULL OR p.occurred_at IS NULL OR p.occurred_at<$7 OR p.payment_version_id IS NOT NULL)
 ), capped AS (
  SELECT *,sum(amount) FILTER(WHERE kind='REFUND_SUCCEEDED' AND issue='') OVER (PARTITION BY payment_id) AS linked_refunds
  FROM assessed
 )
-SELECT coalesce(sku,''),kind,coalesce(amount,0),coalesce(paid_at<$3,false),
- coalesce(payment_id,0),coalesce(paid_at,occurred_at),
+SELECT id,coalesce(sku,''),kind,coalesce(amount,0),coalesce(paid_at<$3,false),
+ coalesce(frozen_payment_id,payment_id,0),coalesce(paid_at,occurred_at),coalesce(frozen_period_id,0),coalesce(frozen_group_key,''),
  CASE WHEN issue='' AND kind='REFUND_SUCCEEDED' AND linked_refunds>original_amount THEN 'REFUND_EXCEEDS_PAYMENT' ELSE issue END
-FROM capped WHERE occurred_at>=$3 LIMIT $5`
+FROM capped WHERE in_scope LIMIT $5`
 
 const catalogActivityMappedSQL = `WITH routes AS (` + catalogAggregateRoutes + `)
  SELECT DISTINCT sku_code FROM routes
@@ -211,27 +263,36 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 	}); err != nil {
 		return result, err
 	}
-	rows, err = tx.Query(ctx, catalogActivityAmountsSQL, in.ProductID, in.Scenarios, in.Window.Start, in.Window.Through, maxDraftPayments+1)
+	var retiredFrom *time.Time
+	if in.GroupRule != nil {
+		retiredFrom = in.GroupRule.retiredFrom
+	}
+	rows, err = tx.Query(ctx, catalogActivityAmountsSQL, in.ProductID, in.Scenarios, in.Window.Start, in.Window.Through,
+		maxDraftPayments+1, in.DraftPeriodID, retiredFrom)
 	if err != nil {
 		return result, err
 	}
 	var kind, issue string
 	var amount int64
 	var prior bool
-	var paymentID int64
+	var eventID, paymentID int64
 	var paidAt time.Time
+	var frozen catalogFrozenGroupReference
 	var events []catalogActivityEvent
 	selections := make(map[int64]*catalogAggregateMatch)
 	firstPayment := in.Window.Start
 	seen := 0
-	_, err = pgx.ForEachRow(rows, []any{&code, &kind, &amount, &prior, &paymentID, &paidAt, &issue}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&eventID, &code, &kind, &amount, &prior, &paymentID, &paidAt, &frozen.PeriodID, &frozen.Key, &issue}, func() error {
 		seen++
 		if seen > maxDraftPayments {
 			return errDraftLimit
 		}
 		event := catalogActivityEvent{PaymentID: paymentID, PaidAt: paidAt, Scenario: code,
-			Amount: amount, Refund: kind != "ORDER_PAID"}
-		if groupPayments && paymentID != 0 && code != "" {
+			Amount: amount, Refund: kind != "ORDER_PAID", frozen: frozen}
+		if in.DraftPeriodID != 0 {
+			event.EventID = eventID
+		}
+		if groupPayments && paymentID != 0 && code != "" && frozen.PeriodID == 0 {
 			selected := selections[paymentID]
 			if selected == nil {
 				newMatch := matchCatalogAggregateRule(rules, event)
@@ -245,9 +306,19 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 		}
 		if issue != "" {
 			result.Issues[issue]++
+			if in.DraftPeriodID != 0 {
+				result.postingIssues = append(result.postingIssues, draftIssue{FactID: eventID, Code: issue})
+			}
 			return nil
 		}
 		item := byCode[code]
+		if item == nil && frozen.PeriodID != 0 {
+			result.Scenarios = append(result.Scenarios, catalogPeriodScenarioActivity{Code: code, Mapped: true})
+			for i := range result.Scenarios {
+				byCode[result.Scenarios[i].Code] = &result.Scenarios[i]
+			}
+			item = byCode[code]
+		}
 		if item == nil {
 			return errProductConfigConflict
 		}
@@ -281,7 +352,11 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 			if err != nil {
 				return result, err
 			}
-			grouping, err := groupCatalogPeriodEvents(events, rules, directory)
+			original, err := readFrozenCatalogAggregateGroups(ctx, tx, events)
+			if err != nil {
+				return result, err
+			}
+			grouping, err := groupCatalogPeriodEvents(events, rules, directory, original)
 			if err != nil {
 				return result, err
 			}

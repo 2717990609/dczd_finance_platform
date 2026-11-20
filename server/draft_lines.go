@@ -12,7 +12,7 @@ const draftLineInput = "draft_lines_input"
 
 var draftLineFields = strings.Fields(`period_id source_version_id component_type rule_id identity_id person_id
  base_minor amount_minor practice_enrollment_id company_id department_id catalog_rule_id beneficiary_unit_id
- allocation_owner_id applied_rate_bps practice_pool_id group_id`)
+ allocation_owner_id applied_rate_bps practice_pool_id group_id aggregate_group_key`)
 
 const sameDraftLineKey = `stored.period_id=incoming.period_id AND stored.source_version_id=incoming.source_version_id
  AND stored.component_type=incoming.component_type`
@@ -84,9 +84,13 @@ func copyDraftLines(ctx context.Context, tx pgx.Tx, periodID int64, lines []draf
 		if l.PracticePool != nil {
 			practicePoolID, benefit.AllocationOwnerID = l.PracticePool.PoolID, l.PracticePool.OwnerID
 		}
+		var aggregateGroup *string
+		if l.AggregateGroup != "" {
+			aggregateGroup = &l.AggregateGroup
+		}
 		values := []any{periodID, l.FactID, l.Component, optionalDraftID(l.RuleID), optionalDraftID(l.IdentityID),
 			optionalDraftID(l.PersonID), l.Base, l.Amount, optionalDraftID(l.EnrollmentID), l.organization.Company, l.organization.Department,
-			benefit.Rule, benefit.Unit, optionalDraftID(benefit.AllocationOwnerID), appliedRate, optionalDraftID(practicePoolID), l.organization.groupID()}
+			benefit.Rule, benefit.Unit, optionalDraftID(benefit.AllocationOwnerID), appliedRate, optionalDraftID(practicePoolID), l.organization.groupID(), aggregateGroup}
 		if staging {
 			values = append(values, i)
 		}

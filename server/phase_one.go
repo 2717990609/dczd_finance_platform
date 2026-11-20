@@ -152,6 +152,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/catalog-period-rules", Handler: s.postCatalogPeriodRule},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-period-rules/preview", Handler: s.postCatalogPeriodQuote},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-period-activity", Handler: s.getCatalogPeriodActivity},
+		{Method: http.MethodPost, Path: "/api/v1/catalog-aggregate-drafts", Handler: submit(s.openCatalogAggregateDraft)},
+		{Method: http.MethodGet, Path: "/api/v1/catalog-aggregate-drafts/events", Handler: s.getCatalogAggregateDraftEvents},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-people", Handler: s.getCatalogRulePeople},
 		{Method: http.MethodGet, Path: "/api/v1/practice-count-openings", Handler: s.listForAuthorizedProducts(practiceCountOpeningsSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-rule-recipients", Handler: s.practiceRuleRecipients},
@@ -258,6 +260,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
+		errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod),
 		errors.Is(err, errPracticeRosterSource), errors.Is(err, errPracticeRosterRoute), errors.Is(err, errPracticeRosterAccess),
 		errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap),
 		errors.Is(err, errPracticeMonthSettlementDependency),
@@ -325,9 +328,10 @@ const mappingsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'
  FROM source_mappings m JOIN products p ON p.id=m.product_id ORDER BY m.id DESC LIMIT 500) p`
 const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
  (SELECT p.id,p.product_id AS "productId",pro.name AS "productName",pro.period_mode AS "periodMode",p.name,p.ordinal,
- (pro.period_mode='calendar' AND EXISTS(SELECT 1 FROM catalog_business_routes m JOIN product_catalog_settings c USING(product_id)
+ p.aggregate_package_id AS "aggregatePackageId",
+ (p.aggregate_package_id IS NULL AND pro.period_mode='calendar' AND EXISTS(SELECT 1 FROM catalog_business_routes m JOIN product_catalog_settings c USING(product_id)
   WHERE m.product_id=p.product_id AND m.observed_at=c.captured_at)) AS "ruleMatchingAvailable",
- ` + catalogDraftAvailableSQL + ` AS "catalogDraftAvailable",
+ (p.aggregate_package_id IS NOT NULL OR ` + catalogDraftAvailableSQL + `) AS "catalogDraftAvailable",
  p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",
  to_char(` + periodReportMonthSQL + `,'YYYY-MM') AS "reportMonth",to_char(p.report_month,'YYYY-MM') AS "reportMonthOverride",
  (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL) AS "reportMonthEditable",
@@ -520,7 +524,7 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 		}
 		if mode == "calendar" || month != "" {
 			var overlaps bool
-			err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM periods WHERE product_id=$1
+			err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM periods WHERE product_id=$1 AND aggregate_package_id IS NULL
 				AND starts_on<=$3::text::date AND ends_on>=$2::text::date AND ($4='calendar' OR calendar_month IS NOT NULL))`,
 				p.ProductID, from, to, mode).Scan(&overlaps)
 			if err != nil {

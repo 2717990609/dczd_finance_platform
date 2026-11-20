@@ -67,7 +67,7 @@ const catalogRefundInputsSQL = refundInputSelectionSQL + `
 ` + refundPeriodSQL + refundEligibilitySQL
 
 const refundPeriodSQL = `
- JOIN periods origin ON origin.product_id=target.product_id
+ JOIN periods origin ON origin.product_id=target.product_id AND origin.aggregate_package_id IS NULL
   AND v.occurred_at >= (origin.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')
   AND v.occurred_at < ((origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
 ` + refundPostingHistorySQL + `
@@ -129,7 +129,7 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
  JOIN source_order_versions p ON p.source=q.source AND p.order_id=q.order_id AND p.kind='ORDER_PAID'
   AND (q.line_id='' OR p.line_id=q.line_id)
   AND (q.record_id='' OR substr(p.record_key,strpos(p.record_key,':')+1)=q.record_id AND strpos(p.record_key,':')>0)
- JOIN calculation_draft_lines l ON l.source_version_id=p.id
+ JOIN calculation_draft_lines l ON l.source_version_id=p.id AND l.aggregate_group_key IS NULL
  JOIN settlements s ON s.period_id=l.period_id
  JOIN calculation_drafts d ON d.period_id=l.period_id
  JOIN periods original ON original.id=l.period_id

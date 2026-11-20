@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { Drawer } from 'ant-design-vue'
+import { DownOutlined } from '@ant-design/icons-vue'
 import { ruleComponentLabel } from './rule-component-form'
 
 const props = defineProps({
@@ -10,7 +11,7 @@ const props = defineProps({
 })
 const emit = defineEmits(['close','copy'])
 const loadedRecipients = ref()
-const activePart = ref(0)
+const activePart = ref(props.embedded || props.rule.components.length===1 ? 0 : undefined)
 const directoryError = ref('')
 const directory = computed(() => loadedRecipients.value ?? props.recipients)
 const label = (group, key) => props.optionLabel(group, key) || key
@@ -75,25 +76,16 @@ onMounted(async () => {
         <a-descriptions-item label="生效时间">{{ rule.effectiveFrom ? formatTime(rule.effectiveFrom) : '范围默认' }}<template v-if="rule.effectiveTo"> 至 {{ formatTime(rule.effectiveTo) }}</template></a-descriptions-item>
         <a-descriptions-item v-if="rule.retiredFrom" label="停用时间">{{ formatTime(rule.retiredFrom) }}</a-descriptions-item>
       </a-descriptions>
-      <div class="rule-edit-layout">
-        <aside class="rule-item-nav" aria-label="规则分项">
-          <h3 class="form-subhead">分润分项</h3>
-          <div class="rule-item-nav-list">
-            <button v-for="(part,index) in rule.components" :key="index" type="button" :aria-pressed="activePart===index" @click="activePart=index">
-              <span>{{ ruleComponentLabel(part,label) }}
-                <small v-if="part.periodBenefit?.personId" class="rule-nav-recipient">{{ personName(part.periodBenefit.personId) }}</small>
-              </span>
-              <small v-if="part.classMember">{{ label('classMember',part.classMember) }}</small>
-            </button>
-          </div>
-        </aside>
-        <div class="rule-editor-pane">
-        <template v-for="(part,index) in rule.components" :key="index">
-      <article v-if="activePart===index" class="rule-preview-part">
-        <header>
-          <h3>{{ ruleComponentLabel(part,label) }}</h3>
-          <a-tag v-if="part.classMember">{{ label('classMember', part.classMember) }}</a-tag>
-        </header>
+      <div class="rule-blocks" aria-label="收款安排">
+      <article v-for="(part,index) in rule.components" :key="index" class="rule-block">
+        <button type="button" class="rule-block-header" :aria-expanded="activePart===index" :aria-controls="'rule-preview-'+index"
+          @click="activePart=activePart===index ? undefined : index">
+          <DownOutlined aria-hidden="true"/>
+          <strong>{{ ruleComponentLabel(part,label) }}</strong>
+          <span v-if="part.classMember" class="rule-block-badge">{{ label('classMember',part.classMember) }}</span>
+          <small>{{ recipient(part) }}</small>
+        </button>
+        <div v-if="activePart===index" :id="'rule-preview-'+index" class="rule-block-body rule-preview-part">
         <a-descriptions size="small" :column="1">
           <a-descriptions-item label="发给谁">{{ recipient(part) }}</a-descriptions-item>
           <a-descriptions-item label="提成怎么算">{{ formula(part) }}</a-descriptions-item>
@@ -146,9 +138,8 @@ onMounted(async () => {
             </li>
           </ul>
         </details>
-      </article>
-        </template>
         </div>
+      </article>
       </div>
       <div v-if="!embedded" class="workspace-edit-footer">
         <a-button @click="emit('close')">关闭</a-button>
@@ -161,9 +152,6 @@ onMounted(async () => {
 <style scoped>
 .rule-preview h2 { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin:0 0 12px; font-size:18px; }
 .rule-preview-scope { margin-bottom:16px; }
-.rule-preview-part { padding:18px; margin-bottom:12px; border:1px solid var(--line); border-radius:8px; }
-.rule-preview-part header { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:8px; }
-.rule-preview-part h3 { margin:0; font-size:15px; }
 .rule-preview-part h4, .rule-preview-part p { margin:8px 0 4px; font-size:13px; }
 .rule-preview-part ul { margin:4px 0; padding-left:20px; }
 .rule-preview-part summary { color:var(--accent); cursor:pointer; }

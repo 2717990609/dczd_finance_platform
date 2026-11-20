@@ -120,8 +120,12 @@ func retireCatalogPackage(ctx context.Context, tx pgx.Tx, product int64, version
 		return verifyRepeatedRetirement(at, tx.QueryRow(ctx,
 			`SELECT effective_from FROM catalog_rule_retirements WHERE package_id=$1::uuid`, packageID))
 	}
+	if scope == "CROSS_SCENARIO_AGGREGATE" {
+		return enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods
+		 WHERE aggregate_package_id=$1::uuid AND $2<((ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')`, packageID, at)
+	}
 	return enqueueDraftConfiguration(ctx, tx, `SELECT id FROM periods
-	 WHERE product_id=$1 AND $2<((ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')`, product, at)
+	 WHERE product_id=$1 AND aggregate_package_id IS NULL AND $2<((ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')`, product, at)
 }
 
 func verifyRepeatedRetirement(at time.Time, row pgx.Row) error {
