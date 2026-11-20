@@ -1,13 +1,16 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 
-const props = defineProps({periods:Array, periodId:Number, simulate:Function, formatMoney:Function})
+const props = defineProps({periods:Array, periodId:Number, simulate:Function, formatMoney:Function, formatTime:Function})
 const loading = defineModel('busy', {type:Boolean, default:false})
 const selected = ref(props.periodId)
 const result = ref()
 const error = ref('')
 const keyword = ref('')
-const options = computed(() => props.periods.map(period=>({value:period.id,label:period.name+' · '+period.startsOn+' 至 '+period.endsOn})))
+const options = computed(() => props.periods.map(period=>({
+  value:period.id,
+  label:period.name+' · '+(period.classStartsAt && props.formatTime ? props.formatTime(period.classStartsAt) : period.startsOn+' 至 '+period.endsOn),
+})))
 const rows = computed(() => {
   const term = keyword.value.trim().toLowerCase()
   return (result.value?.items || []).filter(row=>!term || [row.orderId,row.orderNo,row.recipient].some(value=>value?.toLowerCase().includes(term)))

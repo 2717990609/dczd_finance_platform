@@ -240,10 +240,13 @@ const periodOptions = computed(() => data.value.periods.filter(p => p.productId 
   .map(p => ({value:p.id,label:p.name})))
 const previewPeriods = computed(() => {
   const rule = rulePreview.value
-  return rule ? data.value.periods.filter(period=>period.productId===rule.productId
+  if (!rule) return []
+  const effective = rule.effectiveFrom ? Date.parse(rule.effectiveFrom) : -Infinity
+  return data.value.periods.filter(period=>period.productId===rule.productId
     && !period.settled && !period.practiceRefundMonth && (!rule.periodId || period.id===rule.periodId)
     && (!rule.fromOrdinal || period.ordinal>=rule.fromOrdinal)
-    && (!rule.activityType || Number(period.sourcePeriodKey?.split(':')[1])===rule.activityType)) : []
+    && (!rule.activityType || Number(period.sourcePeriodKey?.split(':')[1])===rule.activityType)
+    && (period.periodMode!=='class' || !period.classStartOutsidePeriod && Date.parse(period.classStartsAt)>=effective))
 })
 const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
 const calculationPeriods = computed(() => data.value.periods.filter(p =>
@@ -1636,7 +1639,7 @@ async function save() {
         :option-label="optionLabel" :people="data.people" :opening-label="savedOpeningLabel"
         :format-time="formatTime" :format-money="formatMoney"/>
       <RuleImpactPreview v-model:busy="ruleImpactBusy" :periods="previewPeriods" :period-id="rulePreview.periodId"
-        :simulate="compareComponentRule" :format-money="formatMoney"/>
+        :simulate="compareComponentRule" :format-money="formatMoney" :format-time="formatTime"/>
     </div>
     <a-form v-show="!rulePreview" id="finance-edit-form" :model="draft" layout="vertical"
       :size="drawer==='rule' ? 'small' : 'middle'" @finish="save">

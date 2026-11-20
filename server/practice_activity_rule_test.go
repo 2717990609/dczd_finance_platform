@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"testing"
 	"time"
@@ -78,6 +79,42 @@ func TestPracticeReusableRuleUsesConfirmedOpeningType(t *testing.T) {
 	}
 	check(offline, offlineVersion, 6000)
 	onlineRuleID := check(online, onlineVersion, 3000)
+	candidate := publishRuleInput{ProductID: product, Label: "拟发布线下规则", ActivityType: 1, EffectiveFrom: &at,
+		Components: []component{{Type: "sales", Mode: "fixed", Value: 6500, ClassMember: "retrain", SourceRole: "DIRECT_REFERRER"}}}
+	var ruleCount int
+	if err := s.db.QueryRow(ctx, "SELECT count(*) FROM rule_versions WHERE product_id=$1", product).Scan(&ruleCount); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.postComponentRuleImpact(ctx, componentRuleImpactInput{PeriodID: offline, Rule: candidate})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report := result.(ruleImpactReport); report.BeforeMinor != 6000 || report.AfterMinor != 6500 || report.DeltaMinor != 500 {
+		t.Fatalf("the rule must apply to the class that started at the exact cutoff: %+v", report)
+	}
+	sameAmount := candidate
+	sameAmount.Components = []component{{Type: "sales", Mode: "fixed", Value: 6000, ClassMember: "retrain", SourceRole: "DIRECT_REFERRER"}}
+	result, err = s.postComponentRuleImpact(ctx, componentRuleImpactInput{PeriodID: offline, Rule: sameAmount})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report := result.(ruleImpactReport); report.BeforeMinor != 6000 || report.AfterMinor != 6000 || len(report.Items) != 0 {
+		t.Fatalf("a matched rule may legitimately have no amount changes: %+v", report)
+	}
+	oneMinuteLater := at.Add(time.Minute)
+	for _, check := range []componentRuleImpactInput{
+		{PeriodID: online, Rule: candidate},
+		{PeriodID: offline, Rule: publishRuleInput{ProductID: product, Label: "迟于开班", ActivityType: 1,
+			EffectiveFrom: &oneMinuteLater, Components: candidate.Components}},
+	} {
+		if result, err := s.postComponentRuleImpact(ctx, check); !errors.Is(err, errPracticeRuleImpactNoMatch) {
+			t.Errorf("preview must identify a class rule mismatch for period %d: %+v %v", check.PeriodID, result, err)
+		}
+	}
+	var afterPreview int
+	if err := s.db.QueryRow(ctx, "SELECT count(*) FROM rule_versions WHERE product_id=$1", product).Scan(&afterPreview); err != nil || afterPreview != ruleCount {
+		t.Fatalf("successful and rejected previews must both leave published rules unchanged: %d -> %d: %v", ruleCount, afterPreview, err)
+	}
 	onlineEdit := publish(fmt.Sprintf(`"editBaseId":%d,`, onlineRuleID), 3500)
 	revisedOnlineRuleID := check(online, onlineEdit, 3500)
 	check(offline, offlineVersion, 6000)
@@ -88,9 +125,15 @@ func TestPracticeReusableRuleUsesConfirmedOpeningType(t *testing.T) {
 	check(online, defaultVersion, 4000)
 	exactVersion := publish(fmt.Sprintf(`"periodId":%d,`, offline), 8000)
 	originalRuleID := check(offline, exactVersion, 8000)
+	if result, err := s.postComponentRuleImpact(ctx, componentRuleImpactInput{PeriodID: offline, Rule: candidate}); !errors.Is(err, errPracticeRuleImpactNoMatch) {
+		t.Errorf("preview must identify the overridden candidate: %+v %v", result, err)
+	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by)
 	 SELECT period_id,version,'fixture' FROM calculation_drafts WHERE period_id=$1`, offline); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := s.postComponentRuleImpact(ctx, componentRuleImpactInput{PeriodID: offline, Rule: candidate}); !errors.Is(err, errSettlementClosed) {
+		t.Fatalf("settled class must not be offered a prospective preview: %v", err)
 	}
 	publish(fmt.Sprintf(`"periodId":%d,`, offline), 12000)
 	refundPeriod := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "九月退款", SettlementMonth: "2026-09"}))
