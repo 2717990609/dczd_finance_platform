@@ -68,7 +68,7 @@ function formula(part) {
 onMounted(async () => {
   if (props.embedded || props.recipients || !props.classProduct ||
     !props.rule.components.some(part=>part.periodBenefit || part.retrainSplits?.length ||
-    part.tiers?.personCountStarts?.length || part.companySales?.recommendationRecipients?.length ||
+    part.tiers?.personCountStarts?.length || part.tiers?.personSchedules?.length || part.companySales?.recommendationRecipients?.length ||
     ['person','company','pool'].includes(part.companySales?.payee?.kind))) return
   try {
     loadedRecipients.value = await props.api('/practice-rule-recipients?ruleId='+props.rule.id)
@@ -117,8 +117,11 @@ onMounted(async () => {
             <ul v-if="part.tiers.personCountStarts?.length">
               <li v-for="start in part.tiers.personCountStarts" :key="start.personId">{{ personName(start.personId) }} · 从 {{ countStart(start) }} 起</li>
             </ul>
-            <template v-for="schedule in [part.tiers, ...(part.tiers.companySchedules || [])]" :key="schedule.companyId || ''">
-              <h4 v-if="schedule.count?.length || schedule.performance?.length">{{ schedule.companyId ? companyName(schedule.companyId) : '通用阶梯' }}</h4>
+            <template v-for="schedule in [part.tiers, ...(part.tiers.companySchedules || []), ...(part.tiers.personSchedules || [])]"
+              :key="schedule.personId ? 'person-'+schedule.personId : schedule.companyId || ''">
+              <h4 v-if="schedule.count?.length || schedule.performance?.length">
+                {{ schedule.personId ? '个人特例 · '+personName(schedule.personId) : schedule.companyId ? companyName(schedule.companyId) : '通用阶梯' }}
+              </h4>
               <ul>
                 <li v-for="row in schedule.count" :key="'count-'+row.from">
                   累计 {{ range(row,true) }} · {{ standard(row) }}<template v-if="row.retrain">（新报） · 复训 {{ standard(row.retrain) }}</template>

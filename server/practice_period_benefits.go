@@ -91,6 +91,9 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 			for _, start := range part.Tiers.PersonCountStarts {
 				people = append(people, start.PersonID)
 			}
+			for _, schedule := range part.Tiers.PersonSchedules {
+				people = append(people, schedule.PersonID)
+			}
 		}
 		if part.CompanySales != nil {
 			units = append(units, part.CompanySales.RecommendationRecipients...)

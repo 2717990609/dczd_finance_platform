@@ -75,19 +75,32 @@ function countStart(start) {
   }
 }
 
+function tierMetric(schedules) {
+  const hasCount = schedules.some(schedule => schedule.count?.length)
+  const hasPerformance = schedules.some(schedule => schedule.performance?.length)
+  return hasCount ? (hasPerformance ? 'fallback' : 'count') : 'performance'
+}
+
+export function tierFormHasCount(form) {
+  return form.metric!=='performance' && (!form.onlyOverrides || form.companies.length>0) ||
+    form.people.some(row=>row.metric!=='performance')
+}
+
 function tierForm(tiers) {
   const schedules = tiers.companySchedules || []
-  const hasCount = [tiers, ...schedules].some(schedule => schedule.count?.length)
-  const hasPerformance = [tiers, ...schedules].some(schedule => schedule.performance?.length)
   return {
     ...countStart(tiers),
     includeRetrain:Boolean(tiers.includeRetrain),
-    metric:hasCount ? (hasPerformance ? 'fallback' : 'count') : 'performance',
-    onlyCompanies:!tiers.count?.length && !tiers.performance?.length,
+    metric:tierMetric([tiers,...schedules]),
+    onlyOverrides:!tiers.count?.length && !tiers.performance?.length,
     count:tierRows(tiers.count,1), performance:tierRows(tiers.performance,100),
     personCountStarts:(tiers.personCountStarts || []).map(start => ({personId:start.personId, ...countStart(start)})),
     companies:schedules.map(schedule => ({
       companyId:schedule.companyId, count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
+    })),
+    people:(tiers.personSchedules || []).map(schedule => ({
+      personId:schedule.personId, metric:tierMetric([schedule]),
+      count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
     })),
   }
 }

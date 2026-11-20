@@ -332,16 +332,17 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 			issues.people[practicePurchaseOwner(purchase, part.SourceRole, identities)] = "PRACTICE_TIER_GROUP_INCOMPLETE"
 			continue
 		}
+		person := practicePurchaseOwner(purchase, part.SourceRole, identities)
+		_, hasPersonalSchedule := schedules.people[person]
 		var company, companyIssue string
-		if len(config.CompanySchedules) != 0 && purchase.issue == "" {
+		if !hasPersonalSchedule && len(config.CompanySchedules) != 0 && purchase.issue == "" {
 			company, companyIssue = practicePurchaseCompany(purchase.payments)
 		}
-		schedule, configured := companyTierSchedule(schedules, company)
+		schedule, configured := schedules.forSale(person, company)
 		if company != "" && !configured {
 			issues.enrollments[member.ID] = "PRACTICE_TIER_COMPANY_NOT_CONFIGURED"
 			continue
 		}
-		person := practicePurchaseOwner(purchase, part.SourceRole, identities)
 		if person == 0 || repeatedPracticePayment(purchase.payments, seenPayments) {
 			if retrain {
 				issues.enrollments[member.ID] = "PRACTICE_TIER_GROUP_INCOMPLETE"

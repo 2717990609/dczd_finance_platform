@@ -11,6 +11,92 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func TestPracticePersonalTierOverridesCompanyForThatSellerOnly(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(result any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.(map[string]int64)["id"]
+	}
+	product := id(s.createProduct(ctx, createProductInput{Code: "PERSONAL_TIER", Name: "个人阶梯验收", PeriodMode: "class"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "person-tier"}))
+	key := "PRACTICE:2:1:8"
+	period := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "班次", Ordinal: 1, StartsOn: "2026-06-08", EndsOn: "2026-06-08", SourcePeriodKey: key}))
+	refundPeriod := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "退款", SettlementMonth: "2026-07"}))
+	ordinary := id(s.createPerson(ctx, createPersonInput{Name: "普通销售"}))
+	special := id(s.createPerson(ctx, createPersonInput{Name: "特殊标准销售"}))
+	for account, person := range map[string]int64{"ordinary": ordinary, "special": special} {
+		id(s.assignIdentity(ctx, assignIdentityInput{PersonID: person, Source: "DCZD", ExternalID: account, ValidFrom: "2026-01-01T00:00:00Z"}))
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO configuration_options(group_key,option_key,label,display_order)
+	 VALUES('practiceSalesCompany','30','样本公司',10)`); err != nil {
+		t.Fatal(err)
+	}
+	rule := publishRuleInput{ProductID: product, PeriodID: &period, Label: "按个人单独选档"}
+	reply := fmt.Sprintf(`[{"type":"sales","mode":"tiered","classMember":"new","sourceRole":"DIRECT_REFERRER","value":0,
+	 "tiers":{"countFromOrdinal":1,"performance":[{"from":0,"mode":"rate","value":1000}],
+	  "companySchedules":[{"companyId":"30","performance":[{"from":0,"mode":"rate","value":500}]}],
+	  "personSchedules":[{"personId":%d,"count":[{"from":0,"mode":"fixed","value":2000},{"from":1,"mode":"fixed","value":4000}]}]}}]`, special)
+	if err := json.Unmarshal([]byte(reply), &rule.Components); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.publishRule(ctx, rule); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Date(2026, 6, 8, 9, 0, 0, 0, shanghai)
+	roster := practiceRoster{Key: key, Hash: "personal-tier", SourceVersion: 1, StartsAt: start, ConfirmedAt: start.Add(time.Hour)}
+	amount := int64(10000)
+	var facts []sourceFact
+	for i, account := range []string{"ordinary", "special", "special"} {
+		order := fmt.Sprint(100 + i)
+		paid := start.Add(time.Duration(i-3) * time.Hour)
+		roster.Enrollments = append(roster.Enrollments, practiceEnrollment{SourceEnrollmentID: order, ParticipantID: order,
+			MembershipType: 3, CommissionEligible: true, SignedAt: start, PaidOrderIDs: []string{order}, ContentHash: fmt.Sprintf("%064x", i+1)})
+		facts = append(facts, sourceFact{Source: "DCZD", Kind: "ORDER_PAID", Domain: "PRACTICE", SourceKey: "person-tier",
+			OrderID: order, PaymentID: order, RecordKey: "paid:" + order, Version: "1", AmountMinor: &amount,
+			ReferrerID: account, SalesCompanyID: "30", OccurredAt: paid, UpdatedAt: paid})
+	}
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if _, err := storePracticeRoster(ctx, tx, roster); err != nil {
+			return err
+		}
+		_, err := storeSourceFacts(ctx, tx, facts)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	draft, err := s.calculateCurrentDraft(ctx, period, 0)
+	if err != nil || draft.Total != 6500 || draft.LineCount != 3 || draft.IssueCount != 0 {
+		t.Fatalf("the ordinary seller gets 500, the special seller gets 2000 and 4000: %+v %v", draft, err)
+	}
+	var actual []int64
+	if err := s.db.QueryRow(ctx, `SELECT array_agg(l.amount_minor ORDER BY v.order_id) FROM calculation_draft_lines l
+	 JOIN source_order_versions v ON v.id=l.source_version_id WHERE l.period_id=$1`, period).Scan(&actual); err != nil ||
+		len(actual) != 3 || actual[0] != 500 || actual[1] != 2000 || actual[2] != 4000 {
+		t.Fatalf("incorrect winner for the three payments: %v %v", actual, err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, draft.Version); err != nil {
+		t.Fatal(err)
+	}
+	refundedAt := start.AddDate(0, 1, 0)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCZD", Kind: "REFUND_SUCCEEDED", Domain: "PRACTICE",
+			SourceKey: "person-tier", OrderID: "101", RefundID: "1", RecordKey: "refund:1", Version: "1",
+			AmountMinor: &amount, OccurredAt: refundedAt, UpdatedAt: refundedAt,
+			RefundsPayment: []sourcePaymentReference{{OrderID: "101", RecordID: "101"}}}})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	refund, err := s.calculateCurrentDraft(ctx, refundPeriod, 0)
+	if err != nil || refund.RefundTotal != -4000 || refund.IssueCount != 0 {
+		t.Fatalf("the original personal award and that seller's later tier difference should both be reversed: %+v %v", refund, err)
+	}
+}
+
 func TestPracticeRetrainSharesNewEnrollmentTierWithoutRaisingIt(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}

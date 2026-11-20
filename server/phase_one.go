@@ -753,6 +753,9 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				for _, start := range c.Tiers.PersonCountStarts {
 					personIDs = append(personIDs, start.PersonID)
 				}
+				for _, schedule := range c.Tiers.PersonSchedules {
+					personIDs = append(personIDs, schedule.PersonID)
+				}
 			}
 		}
 		if len(receivingCompanies) != 0 {
