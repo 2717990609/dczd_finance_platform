@@ -454,11 +454,12 @@ async function publish() {
             </div>
             <p v-else class="rule-formula">{{ componentStandard(item) }}</p>
           </template>
-          <template v-if="hasRateTable">
-            <div class="catalog-rate-toolbar">
+          <div v-if="hasRateTable" class="catalog-rate-toolbar">
               <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" size="small"
                 :disabled="structureEditing" role="radiogroup" aria-label="查看比例">
-                <a-radio-button v-for="group in rateGroups" :key="group.key" :value="group.key">{{ group.title }}</a-radio-button>
+                <a-radio-button v-for="group in rateGroups" :key="group.key" :value="group.key">
+                  <span>{{ group.title }}</span><small class="finance-rate-count">{{ group.rows.length }}</small>
+                </a-radio-button>
               </a-radio-group>
               <strong v-else-if="activeRateGroup">{{ activeRateGroup.title }}</strong>
               <small v-if="ratePriority" class="finance-rate-priority">优先匹配 {{ ratePriority }}</small>
@@ -466,7 +467,9 @@ async function publish() {
                 placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
               <a-button v-if="activeRateGroup?.add" class="catalog-rate-add" size="small" :disabled="!editable || structureEditing || !!targetDraft"
                 @click="structureEditor?.addRateCondition(activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
-            </div>
+          </div>
+          <div v-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
+          <template v-if="hasRateTable">
             <p v-if="!activeRateGroup?.rows.length" class="catalog-rate-empty">暂无{{ activeRateGroup?.title }}</p>
             <a-table v-else :key="selected + filter + rateGroup + rateTableRevision" class="catalog-rate-table"
               :columns="displayedColumns" :data-source="displayedRates" :row-key="rateRowKey" size="small"
@@ -501,7 +504,6 @@ async function publish() {
               </template>
             </a-table>
           </template>
-          <div v-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
           <a-collapse v-if="team && teamSplit" ghost class="catalog-more">
             <a-collapse-panel key="team" header="内部团队收款人">
               <a-form-item label="销售公司" html-for="catalog-team-company">

@@ -98,7 +98,7 @@ watch(amounts, choices => {
     <a-radio-group v-if="standardGroups.length>1" :value="activeGroup.scope" role="radiogroup" aria-label="查看计提标准"
       button-style="solid" size="small" @update:value="standardScope=$event">
       <a-radio-button v-for="group in standardGroups" :key="group.scope" :value="group.scope">
-        <span>{{ group.label }}</span><small v-if="standardCount(group)" class="company-standard-count">{{ standardCount(group) }}</small>
+        <span>{{ group.label }}</span><small class="finance-rate-count">{{ standardCount(group) }}</small>
       </a-radio-button>
     </a-radio-group>
     <strong v-else>{{ activeGroup.label }}</strong>
@@ -106,16 +106,16 @@ watch(amounts, choices => {
     <a-button v-if="activeGroup.scope==='companies' || salesCategories.length" class="company-standard-add" size="small"
       @click="addStandard(activeGroup.scope)">{{ activeGroup.action }}</a-button>
   </div>
-  <section v-for="group in standardGroups" v-show="group.scope===activeGroup.scope" :key="group.scope" :aria-label="group.label"
+  <section :key="activeGroup.scope" :aria-label="activeGroup.label"
     class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':component.classMember==='new'}">
-    <p v-if="!standardCount(group)" class="company-standard-empty">{{ group.scope==='category' ? '暂无类别标准' : '暂无公司特例' }}</p>
+    <p v-if="!standardCount(activeGroup)" class="company-standard-empty">{{ activeGroup.scope==='category' ? '暂无类别标准' : '暂无公司特例' }}</p>
     <div v-else class="company-standard-fields company-standard-column-labels" aria-hidden="true">
-      <span>{{ group.scope==='category' ? '销售类别' : '适用公司' }}</span>
+      <span>{{ activeGroup.scope==='category' ? '销售类别' : '适用公司' }}</span>
       <span v-if="amounts.length>1">计算方式</span>
       <span>{{ amounts.length>1 ? '计提标准' : '按报名净实收（%）' }}</span>
       <span v-if="component.classMember==='new'">推荐比例（%）</span>
     </div>
-    <div v-for="({standard:category,index:i}) in group.rows" :key="i" class="company-category company-standard-fields">
+    <div v-for="({standard:category,index:i}) in activeGroup.rows" :key="i" class="company-category company-standard-fields">
       <a-form-item v-if="category.scope==='category'" class="company-scope-field" label="销售类别" :html-for="field('sales-category-'+i)" required>
         <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryIds" :options="salesCategoryOptions(category)" size="small"
           mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择销售类别"/>
@@ -137,7 +137,7 @@ watch(amounts, choices => {
       </a-form-item>
       <a-button v-if="categories.length>1" size="small" type="link" danger class="company-standard-remove" @click="categories.splice(i,1)">移除</a-button>
     </div>
-    <template v-if="group.scope==='companies'">
+    <template v-if="activeGroup.scope==='companies'">
       <div class="company-category company-standard-fields" v-for="({category,index:i,override,position:j}) in overrides" :key="i+'-'+j">
         <a-form-item class="company-scope-field" label="特例公司" :html-for="field('override-'+i+'-'+j)" required>
           <a-select :id="field('override-'+i+'-'+j)" v-model:value="override.companyIds"
@@ -181,7 +181,6 @@ watch(amounts, choices => {
 <style scoped>
 .company-standard-toolbar {display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;border-top:1px solid var(--line);padding:6px 0}
 .company-standard-add {margin-inline-start:auto}
-.company-standard-count {margin-inline-start:5px;font-size:12px}
 .company-standard-empty {margin:0;padding:3px 0 7px;color:var(--muted);font-size:13px}
 .company-standard-table {container-type:inline-size}
 .company-standard-table.has-method {--company-method-column:minmax(0,1.25fr)}

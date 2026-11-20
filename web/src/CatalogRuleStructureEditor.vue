@@ -130,7 +130,7 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
 
 <template>
   <section class="catalog-rule-structure" aria-label="分润分项和费率条件">
-    <div v-if="form" class="catalog-add-form">
+    <div v-if="form" class="catalog-add-form" :class="{'catalog-add-rate-row':form.kind==='row'}">
       <a-alert v-if="error" :message="error" type="error" show-icon class="feedback"/>
       <template v-if="form.kind==='row'">
         <CatalogRateCondition v-model="form.row" :options="options" :scope="form.scope" :sales-payee="component?.targetKind==='seller'"/>
@@ -165,8 +165,8 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
         </template>
       </template>
       <div class="form-actions">
-        <a-button @click="cancel">{{ revising ? '取消编辑' : '取消添加' }}</a-button>
-        <a-button type="primary" @click="stage">
+        <a-button :size="form.kind==='row' ? 'small' : undefined" @click="cancel">{{ revising ? '取消编辑' : '取消添加' }}</a-button>
+        <a-button :size="form.kind==='row' ? 'small' : undefined" type="primary" @click="stage">
           {{ revising ? '应用修改' : form.kind==='item' ? '加入规则' : '加入比例表' }}
         </a-button>
       </div>

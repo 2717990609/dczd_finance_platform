@@ -85,7 +85,10 @@ function formula(part) {
       (part.periodBenefit.fixedPerClass ? ' / 班次' : ' / 报名')
     return '本班适用报名净实收 × '+(part.periodBenefit?.tiers?.length ? '档位比例' : rate(part.value,10000))
   }
-  if (part.companySales) return '按销售类别或公司标准计提'
+  if (part.companySales) {
+    const {defaults,exceptions} = companyStandards.value
+    return defaults.length && exceptions.length ? catalogRatePriorityLabel : defaults.length ? '按销售类别' : '按指定公司'
+  }
   if (part.tiers) return '按累计人数或本班业绩匹配档位'
   if (part.mode==='rate') return (props.classProduct ? '报名净实收' : '付款实收')+' × '+standard(part)
   return standard(part)+fixedUnit.value
@@ -136,9 +139,6 @@ onMounted(async () => {
           <a-descriptions-item v-if="part.refundPolicy" label="退款处理">{{ label('refundPolicy',part.refundPolicy) }}</a-descriptions-item>
         </a-descriptions>
         <template v-if="part.companySales">
-          <div v-if="companyStandards.defaults.length && companyStandards.exceptions.length" class="finance-rate-priority">
-            {{ catalogRatePriorityLabel }}
-          </div>
           <table class="rule-company-standards" aria-label="计提标准">
             <thead>
               <tr>
@@ -229,7 +229,6 @@ onMounted(async () => {
 .rule-preview-part h4, .rule-preview-part p { margin:8px 0 4px; font-size:13px; }
 .rule-preview-part ul { margin:4px 0; padding-left:20px; }
 .rule-preview-part summary { color:var(--accent); cursor:pointer; }
-.rule-preview-part > .finance-rate-priority { margin:4px 0; }
 .rule-company-standards { width:100%; border-collapse:collapse; margin:4px 0 6px; }
 .rule-company-standards th, .rule-company-standards td { padding:4px 8px; border-bottom:1px solid var(--line); text-align:left; }
 .rule-company-standards th { font-weight:500; overflow-wrap:anywhere; }
