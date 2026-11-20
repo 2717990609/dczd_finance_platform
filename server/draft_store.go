@@ -537,6 +537,9 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 	return err
 }
 
+var draftLinePageScope = `l.period_id=d.period_id AND l.id>$2
+ AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `))`
+
 var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
  SELECT jsonb_build_object(
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
@@ -579,7 +582,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
    coalesce(l.catalog_rule_id::text,l.rule_id::text) AS "ruleId",coalesce(package.name,rv.label) AS "ruleLabel",
    e.source_enrollment_id AS "enrollmentId",e.membership_type AS "membershipType",coalesce(company_label.label,company.company_id) AS "salesCompany",
    CASE WHEN e.id IS NOT NULL THEN (o.fact->>'amountMinor')::bigint-l.base_minor END AS "classRefundMinor"
-  FROM calculation_draft_lines l JOIN source_order_versions o ON o.id=l.source_version_id
+  FROM {{lineSource}} l JOIN source_order_versions o ON o.id=l.source_version_id
   LEFT JOIN calculation_draft_performance recognition ON recognition.period_id=l.period_id AND recognition.source_version_id=l.source_version_id
    AND recognition.completion_version_id IS NOT NULL
   LEFT JOIN source_order_versions completed ON completed.id=recognition.completion_version_id
@@ -596,8 +599,6 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
   LEFT JOIN practice_enrollments e ON e.id=l.practice_enrollment_id
   LEFT JOIN source_payment_companies company ON company.source_version_id=l.source_version_id AND e.id IS NOT NULL
   LEFT JOIN configuration_options company_label ON company_label.group_key='practiceSalesCompany' AND company_label.option_key=company.company_id
-  WHERE l.period_id=d.period_id AND l.id>$2
-  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `))
   {{lineSearch}} ORDER BY l.id LIMIT {{detailLimit}}
  ) l),'[]'),
  'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (
@@ -671,12 +672,20 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
 
 const draftDetailPageSize = 50
 
-var standardDraftDetailsSQL = strings.NewReplacer("{{lineSearch}}", "", "{{refundSearch}}", "",
+// A normal page has no joined-field filters. Bound its rows before loading
+// rule definitions and other display fields. Searches still filter before
+// limiting because their matches can depend on those fields.
+var standardDraftDetailsSQL = strings.NewReplacer(
+	"{{lineSource}}", "(SELECT l.* FROM calculation_draft_lines l WHERE "+draftLinePageScope+
+		" ORDER BY l.id LIMIT "+strconv.Itoa(draftDetailPageSize)+")",
+	"{{lineSearch}}", "", "{{refundSearch}}", "",
 	"{{correctionSearch}}", "", "{{detailLimit}}", strconv.Itoa(draftDetailPageSize)).Replace(draftDetailTemplateSQL)
 var draftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "NULL")
 var scopedDraftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "$7")
 var filteredDraftDetailSQL = organizationScopeQuery(strings.NewReplacer(
-	"{{lineSearch}}", draftDetailFilter("o", "o.fact->>'orderNo'", "coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name)"),
+	"{{lineSource}}", "calculation_draft_lines",
+	"{{lineSearch}}", "WHERE "+draftLinePageScope+
+		draftDetailFilter("o", "o.fact->>'orderNo'", "coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name)"),
 	"{{refundSearch}}", draftDetailFilter("o", "o.fact->>'orderNo'", "coalesce(p.name,practice_pool.name,pool.name,beneficiary.name)"),
 	"{{correctionSearch}}", draftDetailFilter("paid",
 		"CASE WHEN paid.order_id=v.order_id AND v.kind='ORDER_PAID' THEN v.fact->>'orderNo' ELSE paid.fact->>'orderNo' END",

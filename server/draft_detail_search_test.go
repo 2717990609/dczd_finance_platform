@@ -84,3 +84,72 @@ func TestDraftDetailSearchIncludesRefundsAndBothCorrectionRecipients(t *testing.
 	}
 	get("order-1", "", "", "1", http.StatusConflict)
 }
+
+func TestConfirmedDraftLinePageUsesOrganizationBeforeLimit(t *testing.T) {
+	service := workspace{db: integrationDB(t)}
+	const department = "20000000-0000-0000-0000-000000000002"
+	const seed = `
+	 INSERT INTO products(code,name,period_mode) VALUES('DETAIL_PAGE','明细分页','calendar');
+	 INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month)
+	  VALUES(1,'六月',202606,'2026-06-01','2026-06-30','2026-06-01');
+	 INSERT INTO people(name) VALUES('受益人');
+	 INSERT INTO identity_mappings(person_id,source,external_id,valid_from) VALUES(1,'DCAI','seller','2026-01-01');
+	 INSERT INTO organization_units(id,kind,name,status) VALUES
+	  ('20000000-0000-0000-0000-000000000001','DEPARTMENT','甲部门','ACTIVE'),
+	  ('20000000-0000-0000-0000-000000000002','DEPARTMENT','乙部门','ACTIVE');
+	 INSERT INTO rule_versions(product_id,version,label,components) VALUES(1,1,'销售分润','[]');
+	 INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
+	  SELECT 'DCAI','PAY-'||n,'','paid-'||n,'v1','ORDER_PAID','2026-06-05','2026-06-05',
+	         jsonb_build_object('orderNo','显示订单 '||n)
+	  FROM generate_series(1,120) n ORDER BY n;
+	 INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at)
+	  VALUES(1,1,2,'\x01',120000,120,0,'2026-07-01');
+	 INSERT INTO calculation_draft_lines(period_id,source_version_id,component_type,identity_id,person_id,base_minor,amount_minor,rule_id,department_id)
+	  SELECT 1,id,'sales',1,1,10000,1000,1,CASE WHEN id<=60
+	   THEN '20000000-0000-0000-0000-000000000001'::uuid ELSE '20000000-0000-0000-0000-000000000002'::uuid END
+	  FROM source_order_versions ORDER BY id;
+	 INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,2,'财务');
+	 INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
+	  VALUES('DCAI','PAY-120','','paid-120','v2','ORDER_PAID','2026-07-02','2026-06-05','{"orderNo":"变更后订单"}');`
+	if _, err := service.db.Exec(context.Background(), seed); err != nil {
+		t.Fatal(err)
+	}
+
+	get := func(after, order string) []string {
+		t.Helper()
+		query := url.Values{"periodId": {"1"}, "version": {"2"}, "unitId": {department}, "afterLineId": {after}, "orderQuery": {order}}
+		response := httptest.NewRecorder()
+		service.getDraft(response, httptest.NewRequest(http.MethodGet, "/api/v1/drafts?"+query.Encode(), nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("HTTP %d: %s", response.Code, response.Body)
+		}
+		var page struct {
+			ScopeLineCount int
+			Settlement     struct{ DraftVersion int }
+			Lines          []struct{ OrderNo, SourceVersion string }
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+		if page.ScopeLineCount != 60 || page.Settlement.DraftVersion != 2 {
+			t.Fatalf("organization count %d or confirmed version %d changed", page.ScopeLineCount, page.Settlement.DraftVersion)
+		}
+		orders := make([]string, 0, len(page.Lines))
+		for _, row := range page.Lines {
+			if row.SourceVersion != "v1" {
+				t.Fatalf("confirmed row picked source version %s", row.SourceVersion)
+			}
+			orders = append(orders, row.OrderNo)
+		}
+		return orders
+	}
+	if page := get("", ""); len(page) != 50 || page[0] != "显示订单 61" || page[49] != "显示订单 110" {
+		t.Fatalf("wrong first organization page: %v", page)
+	}
+	if page := get("110", ""); len(page) != 10 || page[0] != "显示订单 111" || page[9] != "显示订单 120" {
+		t.Fatalf("wrong second organization page: %v", page)
+	}
+	if page := get("", "PAY-120"); len(page) != 1 || page[0] != "显示订单 120" {
+		t.Fatalf("search did not reach past the first page: %v", page)
+	}
+}
