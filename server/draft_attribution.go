@@ -1,7 +1,9 @@
 package main
 
 import (
+	"cmp"
 	"context"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -11,6 +13,25 @@ import (
 type reportOrganization struct {
 	Company, Department pgtype.UUID
 	Group               *pgtype.UUID `json:",omitempty"`
+	scopeAlternatives   []organizationScopeCandidate
+}
+
+type organizationScopeCandidate struct {
+	Department string `json:"department,omitempty"`
+	Group      string `json:"group,omitempty"`
+}
+
+func matchOrganizationScope(units []string, department, group string, alternatives []organizationScopeCandidate) (matches, conflict bool) {
+	if slices.Contains(units, department) || slices.Contains(units, group) {
+		return true, false
+	}
+	inside := 0
+	for _, candidate := range alternatives {
+		if slices.Contains(units, candidate.Department) || slices.Contains(units, candidate.Group) {
+			inside++
+		}
+	}
+	return inside != 0 && inside == len(alternatives), inside > 0 && inside < len(alternatives)
 }
 
 func (o reportOrganization) groupID() pgtype.UUID {
@@ -137,6 +158,37 @@ func (u uniqueUnit) value() pgtype.UUID {
 	return u.ID
 }
 
+// Keep a single assignment allocation-free and retain distinct alternatives only when needed.
+type reportUnitChoices struct {
+	first pgtype.UUID
+	other []pgtype.UUID
+}
+
+func (u *reportUnitChoices) add(id pgtype.UUID) {
+	if !id.Valid {
+		return
+	}
+	if !u.first.Valid {
+		u.first = id
+	} else if u.first != id && !slices.Contains(u.other, id) {
+		u.other = append(u.other, id)
+	}
+}
+
+func (u reportUnitChoices) value() pgtype.UUID {
+	if len(u.other) != 0 {
+		return pgtype.UUID{}
+	}
+	return u.first
+}
+
+func (u reportUnitChoices) values() []pgtype.UUID {
+	if !u.first.Valid {
+		return nil
+	}
+	return append([]pgtype.UUID{u.first}, u.other...)
+}
+
 func (i reportAttribution) ancestors(id pgtype.UUID) reportOrganization {
 	var out reportOrganization
 	if id.Valid && i.Units[id].Kind != "COMPANY" && i.Units[id].Kind != "DEPARTMENT" {
@@ -173,7 +225,8 @@ func (i reportAttribution) resolve(person int64, at time.Time, sourceCompany ide
 }
 
 func (i reportAttribution) resolveAssignments(person int64, at time.Time, company pgtype.UUID, inferCompany bool) reportOrganization {
-	var companies, hierarchy, primary, concurrent uniqueUnit
+	var companies, hierarchy uniqueUnit
+	var primary, concurrent reportUnitChoices
 	for _, assignment := range i.Assignments[person] {
 		if at.Before(assignment.From) || assignment.To != nil && !at.Before(*assignment.To) {
 			continue
@@ -195,7 +248,7 @@ func (i reportAttribution) resolveAssignments(person int64, at time.Time, compan
 			concurrent.add(unit.Department)
 		}
 	}
-	if !primary.ID.Valid {
+	if !primary.first.Valid {
 		primary = concurrent
 	}
 	department := primary.value()
@@ -210,7 +263,19 @@ func (i reportAttribution) resolveAssignments(person int64, at time.Time, compan
 			}
 		}
 	}
-	var primaryGroup, concurrentGroup uniqueUnit
+	groups := i.assignedGroups(person, at, company, department)
+	result := reportOrganization{Company: company, Department: department}
+	if group := groups.value(); group.Valid {
+		result.Group = &group
+	}
+	if len(primary.other)+len(groups.other) != 0 {
+		result.scopeAlternatives = i.alternativeScopes(person, at, company, primary, groups)
+	}
+	return result
+}
+
+func (i reportAttribution) assignedGroups(person int64, at time.Time, company, department pgtype.UUID) reportUnitChoices {
+	var primaryGroup, concurrentGroup reportUnitChoices
 	for _, assignment := range i.Assignments[person] {
 		if at.Before(assignment.From) || assignment.To != nil && !at.Before(*assignment.To) {
 			continue
@@ -225,13 +290,39 @@ func (i reportAttribution) resolveAssignments(person int64, at time.Time, compan
 			concurrentGroup.add(*unit.Group)
 		}
 	}
-	if !primaryGroup.ID.Valid {
-		primaryGroup = concurrentGroup
+	if !primaryGroup.first.Valid {
+		return concurrentGroup
 	}
-	result := reportOrganization{Company: company, Department: department}
-	if group := primaryGroup.value(); group.Valid {
-		result.Group = &group
+	return primaryGroup
+}
+
+func (i reportAttribution) alternativeScopes(person int64, at time.Time, company pgtype.UUID, departments, groups reportUnitChoices) []organizationScopeCandidate {
+	var result []organizationScopeCandidate
+	for _, department := range departments.values() {
+		if company.Valid && i.ancestors(department).Company != company {
+			continue
+		}
+		choices := groups
+		if len(departments.other) != 0 {
+			choices = i.assignedGroups(person, at, company, department)
+		}
+		if !choices.first.Valid {
+			result = append(result, organizationScopeCandidate{Department: department.String()})
+		}
+		for _, group := range choices.values() {
+			result = append(result, organizationScopeCandidate{Department: department.String(), Group: group.String()})
+		}
 	}
+	noDepartment := len(result) == 0
+	for _, group := range groups.values() {
+		department := i.ancestors(group).Department
+		if noDepartment || !department.Valid {
+			result = append(result, organizationScopeCandidate{Department: department.String(), Group: group.String()})
+		}
+	}
+	slices.SortFunc(result, func(a, b organizationScopeCandidate) int {
+		return cmp.Or(cmp.Compare(a.Department, b.Department), cmp.Compare(a.Group, b.Group))
+	})
 	return result
 }
 

@@ -13,6 +13,40 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func TestPracticeScopeUsesSavedGroupAlternatives(t *testing.T) {
+	const role = "DIRECT_REFERRER"
+	payment := paymentInput{ID: 11, Fact: sourceFact{Source: "DCZD", ReferrerID: "seller", SalesCompanyID: "company"}}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{ID: 1, PersonID: 24}}}
+	inputs := practiceReplayInputs{SalesOrganizations: practiceSalesOrganizations{11: {role: {
+		PersonID: 24, SourceCompany: "company", Department: "department",
+		ScopeAlternatives: []organizationScopeCandidate{{Department: "department", Group: "first"}, {Department: "department", Group: "second"}},
+	}}}}
+	snapshot, err := json.Marshal(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved practiceReplayInputs
+	if err := json.Unmarshal(snapshot, &saved); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		location []string
+		eligible bool
+		issue    string
+	}{
+		{[]string{"department"}, true, ""},
+		{[]string{"first", "second"}, true, ""},
+		{[]string{"first"}, false, "SALES_ORGANIZATION_SCOPE_CONFLICT"},
+		{[]string{"third"}, false, ""},
+	} {
+		benefit := practicePeriodBenefit{SalesUnits: tc.location}
+		eligible, issue := benefit.eligiblePayment(payment, role, nil, identities, saved.SalesOrganizations)
+		if eligible != tc.eligible || issue != tc.issue {
+			t.Fatalf("scope %v resolved to %v/%q, want %v/%q", tc.location, eligible, issue, tc.eligible, tc.issue)
+		}
+	}
+}
+
 func TestPracticeFixedSignupBenefitKeepsOriginalPaymentShares(t *testing.T) {
 	var part component
 	if err := json.Unmarshal([]byte(`{"type":"delivery","mode":"period_rate","classMember":"new",

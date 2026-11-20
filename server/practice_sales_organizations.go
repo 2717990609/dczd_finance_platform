@@ -7,10 +7,11 @@ import (
 )
 
 type practiceSalesOrganization struct {
-	PersonID      int64  `json:"personId"`
-	SourceCompany string `json:"sourceCompany,omitempty"`
-	Department    string `json:"department,omitempty"`
-	Group         string `json:"group,omitempty"`
+	PersonID          int64                        `json:"personId"`
+	SourceCompany     string                       `json:"sourceCompany,omitempty"`
+	Department        string                       `json:"department,omitempty"`
+	Group             string                       `json:"group,omitempty"`
+	ScopeAlternatives []organizationScopeCandidate `json:"scopeAlternatives,omitempty"`
 }
 
 // The payment version and its source role identify the attribution used by
@@ -75,11 +76,12 @@ func loadPracticeSalesOrganizations(ctx context.Context, tx pgx.Tx, rule payment
 		for role, entry := range byRole {
 			company := identityKey{Source: payment.Fact.Source, ExternalID: entry.SourceCompany}
 			resolved := index.resolve(entry.PersonID, payment.Fact.OccurredAt, company)
-			if resolved.present() == nil || entry.SourceCompany != "" && !resolved.Company.Valid {
+			if resolved.present() == nil && len(resolved.scopeAlternatives) == 0 || entry.SourceCompany != "" && !resolved.Company.Valid {
 				delete(byRole, role)
 				continue
 			}
 			entry.Department, entry.Group = resolved.Department.String(), resolved.groupID().String()
+			entry.ScopeAlternatives = resolved.scopeAlternatives
 			byRole[role] = entry
 		}
 		if len(byRole) == 0 {

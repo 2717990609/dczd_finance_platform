@@ -318,9 +318,12 @@ func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPe
 		return catalogPerformanceDecision{issue: "SALES_PERSON_MISSING"}
 	}
 	org := d.organization.resolveAssignments(person, event.PaidAt, company, !company.Valid)
-	if !org.Department.Valid && org.Group == nil {
+	if !org.Department.Valid && org.Group == nil && len(org.scopeAlternatives) == 0 {
 		return catalogPerformanceDecision{issue: "AGGREGATE_SALES_ORGANIZATION_MISSING"}
 	}
-	return catalogPerformanceDecision{excluded: !slices.Contains(scope.UnitIDs, org.Department.String()) &&
-		!slices.Contains(scope.UnitIDs, org.groupID().String())}
+	matches, conflict := matchOrganizationScope(scope.UnitIDs, org.Department.String(), org.groupID().String(), org.scopeAlternatives)
+	if conflict {
+		return catalogPerformanceDecision{issue: "SALES_ORGANIZATION_SCOPE_CONFLICT"}
+	}
+	return catalogPerformanceDecision{excluded: !matches}
 }

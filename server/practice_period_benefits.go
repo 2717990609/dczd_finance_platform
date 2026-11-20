@@ -299,7 +299,11 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 	if !ok || organization.PersonID != seller.PersonID || organization.SourceCompany != f.SalesCompanyID {
 		return false, "PRACTICE_SALES_ORGANIZATION_MISSING"
 	}
-	return slices.Contains(b.SalesUnits, organization.Department) || slices.Contains(b.SalesUnits, organization.Group), ""
+	matches, conflict := matchOrganizationScope(b.SalesUnits, organization.Department, organization.Group, organization.ScopeAlternatives)
+	if conflict {
+		return false, "SALES_ORGANIZATION_SCOPE_CONFLICT"
+	}
+	return matches, ""
 }
 
 func collectPracticeBenefitShares(part component, purchases []practicePurchase, assignments []practiceAppointment,

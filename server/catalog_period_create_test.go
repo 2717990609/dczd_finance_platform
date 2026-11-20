@@ -32,6 +32,7 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		 ('10000000-0000-4000-8000-000000000982','10000000-0000-4000-8000-000000000981','DEPARTMENT','销售一部','ACTIVE'),
 		 ('10000000-0000-4000-8000-000000000983','10000000-0000-4000-8000-000000000981','DEPARTMENT','销售二部','ACTIVE'),
 		 ('10000000-0000-4000-8000-000000000984','10000000-0000-4000-8000-000000000982','TEAM','销售一组','ACTIVE'),
+		 ('10000000-0000-4000-8000-000000000988','10000000-0000-4000-8000-000000000982','TEAM','并行销售组','ACTIVE'),
 		 ('10000000-0000-4000-8000-000000000985','10000000-0000-4000-8000-000000000981','TEAM','直属小组','ACTIVE'),
 		 ('10000000-0000-4000-8000-000000000987','10000000-0000-4000-8000-000000000986','DEPARTMENT','其他公司销售部','ACTIVE')`,
 		`INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES(9802,'整期销售'),
@@ -43,6 +44,7 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		 ('DCAI','outside','10000000-0000-4000-8000-000000000986','2026-09-01')`,
 		`INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from,valid_to) VALUES
 		 (gen_random_uuid(),9802,'10000000-0000-4000-8000-000000000984','MEMBER','2026-09-01','2026-10-03T00:00Z'),
+		 (gen_random_uuid(),9802,'10000000-0000-4000-8000-000000000988','MEMBER','2026-09-01','2026-10-03T00:00Z'),
 		 (gen_random_uuid(),9802,'10000000-0000-4000-8000-000000000983','MEMBER','2026-10-03T00:00Z',NULL),
 		 (gen_random_uuid(),9802,'10000000-0000-4000-8000-000000000987','PRIMARY','2026-09-01',NULL),
 		 (gen_random_uuid(),9803,'10000000-0000-4000-8000-000000000984','PRIMARY','2026-09-01',NULL),
@@ -160,6 +162,31 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	scoped := trial.(draftSummary)
 	if scoped.Total != 2800 || scoped.LineCount != 2 || scoped.IssueCount != 0 {
 		t.Fatalf("count the seller's in-company team at appointment start and the direct team once each, without blocking on an unrelated seller: %+v", scoped)
+	}
+	for _, tc := range []struct {
+		label, selection string
+		wantTotal        int64
+		wantIssues       int
+	}{
+		{"仅销售一组", `"10000000-0000-4000-8000-000000000984"`, 0, 1},
+		{"两个并行组", `"10000000-0000-4000-8000-000000000984","10000000-0000-4000-8000-000000000988"`, 2000, 0},
+		{"只算直属组", `"10000000-0000-4000-8000-000000000985"`, 800, 0},
+	} {
+		body := strings.Replace(scopedInput, "销售一部负责人", tc.label, 1)
+		body = strings.Replace(body, `"10000000-0000-4000-8000-000000000982","10000000-0000-4000-8000-000000000984","10000000-0000-4000-8000-000000000985"`, tc.selection, 1)
+		versionResponse := submit(980, path, s.postCatalogPeriodRule, body)
+		var version catalogPublication
+		if err := json.Unmarshal(versionResponse.Body.Bytes(), &version); err != nil || versionResponse.Code != 200 {
+			t.Fatalf("%s scope failed to publish: %d %s %v", tc.label, versionResponse.Code, versionResponse.Body.String(), err)
+		}
+		value, err := s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: version.ID, Month: "2026-10"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		actual := value.(draftSummary)
+		if actual.Total != tc.wantTotal || actual.IssueCount != tc.wantIssues {
+			t.Fatalf("%s must include, exclude or flag the concurrent group based on selected units: %+v", tc.label, actual)
+		}
 	}
 	for _, sql := range []string{
 		`UPDATE products SET settlement_enabled=true WHERE id=980`,
