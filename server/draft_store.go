@@ -644,7 +644,9 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
   AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `)) ORDER BY c.id LIMIT 50
  ) c),'[]'),
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
-  SELECT i.id,i.component_type AS "component",i.code,i.advisory,o.source,o.order_id AS "orderId",e.source_enrollment_id AS "enrollmentId",
+  SELECT i.id,i.component_type AS "component",i.code,i.advisory,o.source,o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",
+   o.id AS "sourceVersionId",o.version AS "sourceVersion",e.source_enrollment_id AS "enrollmentId",
+   CASE WHEN o.id IS NULL THEN e.paid_order_ids END AS "enrollmentOrderIds",
    CASE WHEN r.id IS NOT NULL AND starts_with(i.component_type,'period:')
      THEN r.components->(split_part(i.component_type,':',3)::int)->'periodBenefit'->>'label' END AS "componentLabel",
    CASE WHEN i.recovery_person_id IS NOT NULL THEN jsonb_build_object(
@@ -665,6 +667,59 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
 
 var draftDetailSQL = organizationScopeQuery(draftDetailTemplateSQL, "NULL")
 var scopedDraftDetailSQL = organizationScopeQuery(draftDetailTemplateSQL, "$7")
+
+const draftRuleReferenceSQL = `SELECT rule_id,catalog_rule_id::text,component_type
+ FROM calculation_draft_lines WHERE $3::text='lines' AND period_id=$1 AND id=$2
+ UNION ALL
+ SELECT l.rule_id,l.catalog_rule_id::text,l.component_type FROM calculation_draft_refunds r
+ JOIN calculation_draft_lines l ON l.id=r.original_line_id
+ WHERE $3::text='refunds' AND r.period_id=$1 AND r.id=$2
+ UNION ALL
+ SELECT l.rule_id,l.catalog_rule_id::text,l.component_type FROM calculation_draft_corrections c
+ JOIN calculation_draft_lines l ON l.id=c.original_line_id
+ WHERE $3::text='corrections' AND c.period_id=$1 AND c.id=$2`
+
+type draftRuleDetails struct {
+	Rule      json.RawMessage   `json:"rule,omitempty"`
+	Catalog   *catalogRateSheet `json:"catalog,omitempty"`
+	Directory json.RawMessage   `json:"directory,omitempty"`
+	Component string            `json:"component"`
+}
+
+func (s workspace) getDraftRule(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query()
+	periodID, periodErr := strconv.ParseInt(query.Get("periodId"), 10, 64)
+	rowID, rowErr := strconv.ParseInt(query.Get("rowId"), 10, 64)
+	section := query.Get("section")
+	if periodErr != nil || periodID < 1 || rowErr != nil || rowID < 1 ||
+		section != "lines" && section != "refunds" && section != "corrections" {
+		respond(w, nil, invalid)
+		return
+	}
+	ctx := r.Context()
+	var result draftRuleDetails
+	var ruleID *int64
+	var catalogID *string
+	err := s.db.QueryRow(ctx, draftRuleReferenceSQL, periodID, rowID, section).Scan(&ruleID, &catalogID, &result.Component)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	switch {
+	case catalogID != nil:
+		sheet, sheetErr := s.catalogRuleRateSheet(ctx, *catalogID)
+		sheet.MayPublish = false
+		result.Catalog, err = &sheet, sheetErr
+	case ruleID != nil:
+		err = s.db.QueryRow(ctx, `SELECT to_jsonb(rv_row) FROM (`+ruleVersionRowsSQL+` WHERE rv.id=$1) rv_row`, *ruleID).Scan(&result.Rule)
+		if err == nil {
+			result.Directory, err = s.appliedRuleRecipients(ctx, result.Rule)
+		}
+	default:
+		err = pgx.ErrNoRows
+	}
+	respond(w, result, err)
+}
 
 func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()

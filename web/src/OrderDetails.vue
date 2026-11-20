@@ -2,7 +2,7 @@
 import { ref, watch } from 'vue'
 
 const props = defineProps({ selection: Object, api: Function, formatMoney: Function, formatTime: Function,
-  sourceLabel: Function, labels: Object, canPull: Boolean })
+  sourceLabel: Function, labels: Object, roleLabel: Function, canPull: Boolean })
 const emit = defineEmits(['close', 'pull'])
 const order = ref()
 const loading = ref(false)
@@ -17,7 +17,7 @@ watch(() => props.selection, async (selection, _, onCleanup) => {
   onCleanup(() => { active = false })
   try {
     const result = await props.api('/orders/version?id=' + selection.versionId)
-    if (active) order.value = result
+    if (active) order.value = {...selection.order, ...result}
   } catch (err) {
     if (active) error.value = err.message
   } finally {
@@ -42,6 +42,21 @@ watch(() => props.selection, async (selection, _, onCleanup) => {
           <a-descriptions-item v-if="order.paymentId" label="付款编号">{{ order.paymentId }}</a-descriptions-item>
           <a-descriptions-item v-if="order.refundId" label="退款编号">{{ order.refundId }}</a-descriptions-item>
           <a-descriptions-item v-if="order.referrerId" label="来源推荐人 ID">{{ order.referrerId }}</a-descriptions-item>
+          <a-descriptions-item v-if="order.salesAttribution?.length" label="来源销售归属">
+            <ul class="order-attribution">
+              <li v-for="(claim,index) in order.salesAttribution" :key="index">
+                <strong>{{ roleLabel(claim.role) }}</strong>
+                <small v-if="claim.user" class="order-version">人员标识 <span>{{ claim.user }}</span></small>
+                <small v-if="claim.company" class="order-version">公司或组织标识 <span>{{ claim.company }}</span></small>
+              </li>
+            </ul>
+          </a-descriptions-item>
+          <a-descriptions-item v-if="order.salesCompanyId" label="来源销售公司">
+            <div>{{ order.salesCompanyName || order.salesCompanyId }}
+              <small v-if="order.salesCompanyName" class="order-version">公司标识 {{ order.salesCompanyId }}</small>
+            </div>
+          </a-descriptions-item>
+          <a-descriptions-item v-if="order.referrerCompanyId" label="来源推荐公司标识">{{ order.referrerCompanyId }}</a-descriptions-item>
           <a-descriptions-item label="订单版本">{{ order.version }}</a-descriptions-item>
           <a-descriptions-item label="来源更新时间">{{ formatTime(order.updatedAt) }}</a-descriptions-item>
         </a-descriptions>
@@ -50,7 +65,7 @@ watch(() => props.selection, async (selection, _, onCleanup) => {
     <template #footer>
       <div class="order-details-actions">
         <a-button @click="emit('close')">关闭</a-button>
-        <a-button v-if="canPull" type="primary" @click="emit('pull')">重新拉取订单</a-button>
+        <a-button v-if="canPull && order?.sourceConfigured && !loading && !error" type="primary" @click="emit('pull',order)">重新拉取订单</a-button>
       </div>
     </template>
   </a-drawer>
@@ -58,5 +73,7 @@ watch(() => props.selection, async (selection, _, onCleanup) => {
 
 <style scoped>
 .order-details-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.order-attribution { list-style: none; margin: 0; padding: 0; }
+.order-attribution li + li { margin-top: 6px; }
 :deep(.ant-descriptions-item-content) { overflow-wrap: anywhere; }
 </style>

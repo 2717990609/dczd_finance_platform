@@ -50,6 +50,7 @@ const requestedReview = ref(false)
 const orderSyncTarget = ref()
 const orderSyncReturnPeriod = ref()
 const workbenchPeriod = ref()
+const workbench = ref()
 const active = computed(() => navigation.find(x => x.key === current.value))
 const workspacePages = computed(() => visibleNavigation.value.filter(page => page.area === active.value?.area))
 const visibleWorkspaces = computed(() => workspaces.flatMap(workspace => {
@@ -76,6 +77,8 @@ const orderSync = ref()
 const orderDetails = ref()
 const rateRule = ref()
 const ruleDetails = ref()
+const appliedRule = ref()
+const viewedRule = computed(() => ruleDetails.value || appliedRule.value?.rule)
 const emptyData = () => ({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
 const data = ref(emptyData())
 const loading = ref(false)
@@ -98,6 +101,7 @@ const scopeUnits = ref()
 const options = group => configuration.value[group] || []
 const firstOption = group => options(group)[0]?.value
 const optionLabel = (group, value) => options(group).find(option => option.value === value)?.label || value
+const orderRoleLabel = role => role==='SALES_COMPANY' ? '销售公司' : optionLabel('orderAttributionRole',role)
 const scopeTree = computed(() => organizationTree(scopeUnits.value || [],kind=>optionLabel('organizationKind',kind)))
 const sources = computed(() => options('source'))
 const classMembers = computed(() => options('classMember'))
@@ -349,7 +353,9 @@ function changeRoute() {
   orderSyncTarget.value = isOrders && stream ? {stream,fromDate} : undefined
   orderSyncReturnPeriod.value = isOrders && Number.isSafeInteger(returnPeriod) && returnPeriod > 0 ? returnPeriod : undefined
   orderDetails.value = undefined
+  rateRule.value = undefined
   ruleDetails.value = undefined
+  appliedRule.value = undefined
   if (requestedPeriod.value && productScope.value && data.value.periods.find(period => period.id === requestedPeriod.value)?.productId !== productScope.value) {
     productScope.value = undefined
   }
@@ -382,6 +388,7 @@ function clearWorkspace() {
   draft.value = {}
   rateRule.value = undefined
   ruleDetails.value = undefined
+  appliedRule.value = undefined
   saving.value = false
   formError.value = ''
   globalError.value = ''
@@ -493,10 +500,14 @@ function open(kind, row) {
   drawer.value = kind
   draft.value = {
     periodMode:firstOption('periodMode'),practicePeriodKind:firstOption('practicePeriodKind'),source:row?.source || firstOption('source'),
-    stream:row?.source==='DCAI' && String(row.domain).includes('HEALTH') && options('dcaiOrderStream').some(option => option.value==='HEALTH_IDENTITY_ORDERS')
-      ? 'HEALTH_IDENTITY_ORDERS' : firstOption('dcaiOrderStream'),
     orderId:row?.orderId || '',scope:firstOption('ruleScope'),
     productId:['mapping','period','rule'].includes(kind) ? productScope.value : undefined,
+  }
+  if (kind === 'pull') {
+    const stream = row?.domain?.includes('HEALTH') ? 'HEALTH_IDENTITY_ORDERS' : row?.domain==='VIP' ? 'VIP_ORDERS' : undefined
+    draft.value.stream = options('dcaiOrderStream').find(option=>option.value===stream)?.value || firstOption('dcaiOrderStream')
+    draft.value.lockedOrder = Boolean(row?.orderId)
+    draft.value.sourceConfigured = row?.sourceConfigured
   }
   if (kind === 'reportMonth') draft.value = {periodId:row.id, periodName:row.name, reportMonth:row.reportMonthOverride || ''}
   if (kind === 'rule') {
@@ -508,8 +519,7 @@ function open(kind, row) {
     } else draft.value.components = [newRuleComponent()]
   }
 }
-function pullFromDetails() {
-  const order = orderDetails.value.order
+function pullFromDetails(order) {
   orderDetails.value = undefined
   open('pull', order)
 }
@@ -517,6 +527,16 @@ function copyRuleDetails() {
   const rule = ruleDetails.value
   ruleDetails.value = undefined
   open('rule', rule)
+}
+async function showAppliedRule(selection) {
+  appliedRule.value = {loading:true}
+  const request = appliedRule.value
+  try {
+    const result = await api('/drafts/rule?'+new URLSearchParams(selection))
+    if (appliedRule.value === request) appliedRule.value = result
+  } catch (err) {
+    if (appliedRule.value === request) appliedRule.value = {error:err.message}
+  }
 }
 function close() { if (!saving.value) drawer.value = '' }
 function must(value, msg = '请补齐必填内容') {
@@ -665,9 +685,12 @@ async function save() {
       : kind === 'rule' ? '规则 v'+result.version+' 已保存。' : '保存成功。'
     drawer.value = ''
     if (kind === 'pull') {
-      filter.value = payload.orderId
-      sourceFilter.value = payload.source
-      resetOrders()
+      if (current.value === 'settlement') await workbench.value?.checkRefresh()
+      if (current.value === 'orders') {
+        filter.value = payload.orderId
+        sourceFilter.value = payload.source
+        resetOrders()
+      }
     } else refresh()
   } catch (err) {
     if (issuedFor===sessionRequest) formError.value = err.message
@@ -762,11 +785,13 @@ async function save() {
         <div class="workspace-page-body">
         <template v-if="current==='settlement'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
-          <DraftWorkbench v-model:period-id="workbenchPeriod" :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
+          <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
+          <DraftWorkbench ref="workbench" v-model:period-id="workbenchPeriod" :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
             :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" :requested-period="requestedPeriod"
             :periods-loading="loading" :month="workspaceMonth" :requested-review="requestedReview"
-            @show-order="orderDetails={versionId:$event}" />
+            @show-order="orderDetails={versionId:$event}" @show-issue-order="orderDetails={versionId:$event,allowPull:true}"
+            @show-applied-rule="showAppliedRule" />
         </template>
         <template v-else-if="current==='monthly'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
@@ -867,7 +892,7 @@ async function save() {
                   </div>
                 </template>
                 <template v-else-if="column.key==='source'">{{ sourceLabel(text) }}</template>
-                <template v-else-if="column.key==='orderNo'"><button class="order-link" type="button" @click="orderDetails={order:record}" :title="'原订单 ID '+record.orderId">{{ text || record.orderId }}</button><small class="order-version">版本 {{ record.version }}</small></template>
+                <template v-else-if="column.key==='orderNo'"><button class="order-link" type="button" @click="orderDetails={order:record,versionId:record.id,allowPull:true}" :title="'原订单 ID '+record.orderId">{{ text || record.orderId }}</button><small class="order-version">版本 {{ record.version }}</small></template>
                 <template v-else-if="column.key==='kind'"><a-tag>{{ labels[text] || text }}</a-tag></template>
                 <template v-else-if="column.key==='productName'&&current==='orders'"><a-tag v-if="!text" color="orange">待映射</a-tag><span v-else>{{ text }}</span></template>
                 <template v-else-if="column.key==='amountMinor'"><span class="numeric">{{ formatMoney(text) }}</span></template>
@@ -898,7 +923,7 @@ async function save() {
         </a-form-item>
       </template>
       <a-form-item v-if="['mapping','period','rule'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='rule' ? ruleProductOptions : productOptions" :disabled="Boolean(draft.copiedFrom)"/></a-form-item>
-      <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" :label="drawer==='pull' ? '订单来源' : '业务来源'"><a-select v-model:value="draft.source" :aria-label="drawer==='pull' ? '订单来源' : '业务来源'" :options="sources"/></a-form-item>
+      <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" :label="drawer==='pull' ? '订单来源' : '业务来源'"><a-select v-model:value="draft.source" :aria-label="drawer==='pull' ? '订单来源' : '业务来源'" :options="sources" :disabled="drawer==='pull' && draft.lockedOrder"/></a-form-item>
       <template v-if="drawer==='mapping'">
         <a-form-item label="来源业务域" required><a-input v-model:value="draft.domain" aria-label="来源业务域" placeholder="填写业务接口返回的业务域"/></a-form-item>
         <a-form-item label="源产品标识" required><a-input v-model:value="draft.sourceKey" aria-label="源产品标识"/></a-form-item>
@@ -979,9 +1004,10 @@ async function save() {
         <a-form-item label="生效日期" required><a-input v-model:value="draft.validFrom" aria-label="生效日期" type="date"/></a-form-item>
       </template>
       <template v-if="drawer==='pull'">
-        <a-alert v-if="!data.sources.find(x=>x.source===draft.source)?.configured" class="feedback" type="info" message="此来源尚未配置接口，请先在本机服务配置连接。" show-icon/>
+        <a-alert v-if="!(draft.lockedOrder ? draft.sourceConfigured : data.sources.find(x=>x.source===draft.source)?.configured)"
+          class="feedback" type="info" message="此来源尚未配置接口，请先在本机服务配置连接。" show-icon/>
         <a-form-item v-if="draft.source==='DCAI'" label="订单类型"><a-select v-model:value="draft.stream" aria-label="订单类型" :options="options('dcaiOrderStream')"/></a-form-item>
-        <a-form-item label="原订单 ID" required><a-input v-model:value="draft.orderId" aria-label="原订单 ID"/></a-form-item>
+        <a-form-item label="原订单 ID" required><a-input v-model:value="draft.orderId" aria-label="原订单 ID" :disabled="draft.lockedOrder"/></a-form-item>
       </template>
     </a-form>
     <template #footer>
@@ -989,14 +1015,21 @@ async function save() {
     </template>
   </a-drawer>
   <OrderDetails v-if="orderDetails" :selection="orderDetails" :api="api" :format-money="formatMoney" :format-time="formatTime" :source-label="sourceLabel"
-    :labels="labels" :can-pull="Boolean(orderDetails.order && configurationReady && data.sources.some(source=>source.source===orderDetails.order.source && source.configured))"
+    :labels="labels" :role-label="orderRoleLabel" :can-pull="Boolean(orderDetails.allowPull && configurationReady)"
     @close="orderDetails=undefined" @pull="pullFromDetails"/>
-  <CatalogRuleRates v-if="rateRule && active && !sessionError && !sessionChecking && !loginRequested"
-    :rule="rateRule" :api="api" :format-time="formatTime" @close="rateRule=undefined" @published="ratePublished"/>
-  <RuleVersionDetails v-if="ruleDetails && active && !sessionError && !sessionChecking && !loginRequested"
-    :rule="ruleDetails" :can-copy="configurationReady && canPublishRule(ruleDetails.productId)"
-    :class-product="data.products.find(product => product.id===ruleDetails.productId)?.periodMode==='class'"
+  <a-drawer v-if="appliedRule?.loading || appliedRule?.error" open title="计提使用的规则" @close="appliedRule=undefined">
+    <a-alert v-if="appliedRule.error" :message="appliedRule.error" type="error" show-icon/>
+    <a-spin v-else tip="正在读取规则"/>
+  </a-drawer>
+  <CatalogRuleRates v-if="(rateRule || appliedRule?.catalog) && active && !sessionError && !sessionChecking && !loginRequested"
+    :rule="rateRule" :applied="appliedRule?.catalog ? appliedRule : undefined" :api="api" :format-time="formatTime"
+    @close="rateRule=undefined; appliedRule=undefined" @published="ratePublished"/>
+  <RuleVersionDetails v-if="viewedRule && active && !sessionError && !sessionChecking && !loginRequested"
+    :rule="viewedRule" :can-copy="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId))"
+    :title="appliedRule?.rule ? '计提使用的规则' : undefined"
+    :recipients="appliedRule?.directory"
+    :class-product="data.products.find(product => product.id===viewedRule.productId)?.periodMode==='class'"
     :api="api" :people="data.people" :option-label="optionLabel" :opening-label="savedOpeningLabel"
-    :format-time="formatTime" :format-money="formatMoney" @close="ruleDetails=undefined" @copy="copyRuleDetails"/>
+    :format-time="formatTime" :format-money="formatMoney" @close="ruleDetails=undefined; appliedRule=undefined" @copy="copyRuleDetails"/>
 </a-config-provider>
 </template>

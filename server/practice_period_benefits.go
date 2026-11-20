@@ -37,6 +37,50 @@ func (s workspace) practiceRuleRecipients(w http.ResponseWriter, r *http.Request
 	respond(w, result, err)
 }
 
+func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessage) (json.RawMessage, error) {
+	var version struct {
+		Components []component `json:"components"`
+	}
+	if err := json.Unmarshal(rule, &version); err != nil {
+		return nil, err
+	}
+	var people, pools []int64
+	var units []string
+	for _, target := range practicePoolTargets(version.Components) {
+		pools = append(pools, target.PoolID)
+		people = append(people, target.OwnerID)
+	}
+	for _, part := range version.Components {
+		if benefit := part.PeriodBenefit; benefit != nil {
+			people = append(people, benefit.PersonID)
+			people = append(people, benefit.SalesPeople...)
+			units = append(units, benefit.UnitID, benefit.AppointmentUnitID)
+		}
+		if part.Tiers != nil {
+			for _, start := range part.Tiers.PersonCountStarts {
+				people = append(people, start.PersonID)
+			}
+		}
+		if part.CompanySales != nil {
+			units = append(units, part.CompanySales.RecommendationRecipients...)
+		}
+		for _, split := range part.retrainSplits() {
+			people = append(people, split.ServicePersonID)
+		}
+	}
+	if len(people)+len(units)+len(pools) == 0 {
+		return nil, nil
+	}
+	var result json.RawMessage
+	err := s.db.QueryRow(ctx, `SELECT jsonb_build_object(
+	 'people',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name)) FROM people WHERE id=ANY($1::bigint[])),'[]'),
+	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name)) FROM organization_units
+	  WHERE id IN (SELECT nullif(ref,'')::uuid FROM unnest($2::text[]) ref)),'[]'),
+	 'pools',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name)) FROM practice_pools WHERE id=ANY($3::bigint[])),'[]'))`,
+		people, units, pools).Scan(&result)
+	return result, err
+}
+
 type practicePeriodBenefit struct {
 	Label             string               `json:"label"`
 	PersonID          int64                `json:"personId,omitempty"`

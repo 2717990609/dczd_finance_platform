@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
-const props = defineProps({ rule: Object, api: Function, formatTime: Function })
+const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function })
 const emit = defineEmits(['close', 'published'])
 const sheet = ref()
 const selected = ref()
@@ -69,7 +69,7 @@ function setTeamPerson(field, id, option) {
   else teamEdits.value.delete(key)
 }
 
-watch(() => props.rule, async rule => {
+watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   const request = ++sequence
   sheet.value = undefined
   edits.value = {}
@@ -79,6 +79,15 @@ watch(() => props.rule, async rule => {
   filter.value = ''
   effectiveFrom.value = ''
   error.value = ''
+  if (applied) {
+    const result = applied.catalog
+    sheet.value = result
+    selected.value = result.components.find(item=>item.itemKey===applied.component || applied.component.startsWith(item.itemKey+':'))?.itemKey
+      || result.components[0]?.itemKey
+    selectedTeam.value = result.teams?.[0]?.key
+    loading.value = false
+    return
+  }
   if (!rule) return
   loading.value = true
   try {
@@ -125,8 +134,9 @@ async function publish() {
 </script>
 
 <template>
-  <a-drawer :open="!!rule" :width="'min(760px, 100vw)'" title="产品分润配置"
+  <a-drawer :open="!!(rule || applied)" :width="'min(760px, 100vw)'" :title="applied ? '计提使用的规则' : '产品分润配置'"
     :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="emit('close')">
+    <section :aria-label="applied ? '计提使用的规则' : '产品分润配置'">
     <a-alert v-if="error" type="error" :message="error" show-icon class="feedback"/>
     <a-spin :spinning="loading">
       <template v-if="sheet">
@@ -147,8 +157,9 @@ async function publish() {
             <span v-else>{{ recipient.name }}</span>
           </a-form-item>
           <a-form-item v-if="component?.rateBps != null" label="比例（%）" html-for="catalog-fixed-rate">
-            <a-input-number id="catalog-fixed-rate" :value="displayRate(component.rateBps)" :disabled="!sheet.mayPublish || saving"
+            <a-input-number v-if="!applied" id="catalog-fixed-rate" :value="displayRate(component.rateBps)" :disabled="!sheet.mayPublish || saving"
               :min="0" :max="100" :precision="2" string-mode @update:value="setRate($event,component.rateBps)"/>
+            <span v-else>{{ displayRate(component.rateBps) }}%</span>
           </a-form-item>
           <template v-if="component?.rows?.length">
             <a-form-item label="筛选费率表" html-for="catalog-rate-filter">
@@ -162,9 +173,10 @@ async function publish() {
                 </template>
                 <template v-if="column.key==='category'">{{ record.category || '不限' }}</template>
                 <template v-if="column.key==='rate'">
-                  <a-input-number :aria-label="'第 '+record.row+' 行比例'"
+                  <a-input-number v-if="!applied" :aria-label="'第 '+record.row+' 行比例'"
                     :value="displayRate(record.rateBps,record.row)" :disabled="!sheet.mayPublish || saving || record.teamRate"
                     :min="0" :max="100" :precision="2" string-mode @update:value="setRate($event,record.rateBps,record.row)"/>
+                  <span v-else>{{ displayRate(record.rateBps,record.row) }}%</span>
                   <small v-if="record.teamRate" class="order-version">内部团队拆分</small>
                 </template>
               </template>
@@ -205,5 +217,7 @@ async function publish() {
         </a-form>
       </template>
     </a-spin>
+    <div v-if="applied" class="form-actions"><a-button @click="emit('close')">关闭</a-button></div>
+    </section>
   </a-drawer>
 </template>

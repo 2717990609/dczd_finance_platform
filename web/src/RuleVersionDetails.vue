@@ -3,10 +3,10 @@ import { onMounted, ref } from 'vue'
 
 const props = defineProps({
   rule: Object, canCopy: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
-  formatTime: Function, formatMoney: Function, people: Array, openingLabel: Function,
+  formatTime: Function, formatMoney: Function, people: Array, openingLabel: Function, title: String, recipients: Object,
 })
 const emit = defineEmits(['close','copy'])
-const directory = ref()
+const directory = ref(props.recipients)
 const label = (group, key) => props.optionLabel(group, key) || key
 const roleName = key => label('orderAttributionRole', key) !== key
   ? label('orderAttributionRole', key) : label('practicePeriodSourceRole', key)
@@ -46,7 +46,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <a-drawer open title="查看规则" :width="'min(660px, 100vw)'" @close="emit('close')">
+  <a-drawer open :title="title || '查看规则'" :width="'min(660px, 100vw)'" @close="emit('close')">
     <section aria-label="规则详情" class="rule-preview">
       <h2>{{ rule.label }} <a-tag>v{{ rule.version }}</a-tag></h2>
       <a-descriptions bordered size="small" :column="1" class="rule-preview-scope">
@@ -95,7 +95,7 @@ onMounted(async () => {
           </template>
           <template v-if="part.companySales">
             <p v-if="part.companySales.internalCompanies?.length">内部销售公司 {{ part.companySales.internalCompanies.map(companyName).join('、') }}</p>
-            <p v-if="part.companySales.recommendationRecipients?.length">公司推荐收款范围 {{ part.companySales.recommendationRecipients.map(companyName).join('、') }}</p>
+            <p v-if="part.companySales.recommendationRecipients?.length">公司推荐收款范围 {{ part.companySales.recommendationRecipients.map(unitName).join('、') }}</p>
             <template v-for="group in part.companySales.categories" :key="group.label">
               <h4>{{ group.label }} · {{ standard(group,10000) }}<template v-if="group.recommendationRate!=null"> · 推荐 {{ rate(group.recommendationRate,10000) }}</template></h4>
               <p>{{ group.companies.map(companyName).join('、') }}</p>

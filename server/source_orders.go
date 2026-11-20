@@ -589,8 +589,20 @@ func (s workspace) orderVersion(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, invalid)
 		return
 	}
+	configured := make([]string, 0, len(s.sources))
+	for source := range s.sources {
+		configured = append(configured, source)
+	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), `SELECT fact FROM source_order_versions WHERE id=$1`, id).Scan(&result)
+	err = s.db.QueryRow(r.Context(), `SELECT v.fact || jsonb_build_object(
+	 'sourceConfigured',v.source=ANY($2::text[]),'salesAttribution',c.sales_claims,
+	 'salesCompanyId',company.company_id,'salesCompanyName',company_label.label,
+	 'referrerCompanyId',company.recommendation_company_id)
+	 FROM source_order_versions v
+	 LEFT JOIN source_order_classifications c ON c.source_version_id=v.id
+	 LEFT JOIN source_payment_companies company ON company.source_version_id=v.id
+	 LEFT JOIN configuration_options company_label ON company_label.group_key='practiceSalesCompany' AND company_label.option_key=company.company_id
+	 WHERE v.id=$1`, id, configured).Scan(&result)
 	respond(w, result, err)
 }
 

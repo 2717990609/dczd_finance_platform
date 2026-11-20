@@ -152,9 +152,28 @@ func TestDraftStoreReusesUnchangedVersionAndReplacesOnlyChangedOrdinaryLines(t *
 	}}); err != nil {
 		t.Fatal(err)
 	}
+	appliedRequest := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/drafts/rule?periodId=%d&section=lines&rowId=%d", period, updated), nil)
+	appliedResponse := httptest.NewRecorder()
+	service.getDraftRule(appliedResponse, appliedRequest)
+	var applied struct {
+		Rule struct {
+			Version    int         `json:"version"`
+			Components []component `json:"components"`
+		} `json:"rule"`
+	}
+	if err := json.Unmarshal(appliedResponse.Body.Bytes(), &applied); err != nil ||
+		appliedResponse.Code != http.StatusOK || applied.Rule.Version != 1 ||
+		len(applied.Rule.Components) != 1 || applied.Rule.Components[0].Value != 1000 {
+		t.Fatalf("expected the applied version rather than the latest publication: %d %s", appliedResponse.Code, appliedResponse.Body)
+	}
 	check(3, 263)
 	if idFor("O1") == updated || idFor("O2") == second {
 		t.Fatal("both orders should use the new rule and receive new detail rows")
+	}
+	appliedResponse = httptest.NewRecorder()
+	service.getDraftRule(appliedResponse, appliedRequest)
+	if appliedResponse.Code != http.StatusNotFound {
+		t.Fatalf("a replaced draft row must not open a different rule: %d", appliedResponse.Code)
 	}
 }
 

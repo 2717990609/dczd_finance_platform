@@ -10,7 +10,7 @@ import { benefitStatus, salesRoles, salesStatus } from './catalog-labels'
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
   recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
   requestedPeriod: Number, requestedReview:Boolean, periodsLoading: Boolean, month: String })
-const emit = defineEmits(['show-order'])
+const emit = defineEmits(['show-order', 'show-issue-order', 'show-applied-rule'])
 const selected = defineModel('periodId', {type:Number})
 const view = ref('detail')
 const draft = ref()
@@ -49,6 +49,9 @@ const componentLabel = code => {
   return props.componentOptions.find(option=>option.value===type)?.label || type
 }
 const memberLabel = type => props.memberOptions.find(option=>option.value===(type===3 ? 'new' : 'retrain'))?.label
+function showAppliedRule(section, record) {
+  emit('show-applied-rule', {periodId:selected.value, section, rowId:record.id})
+}
 const reason = {
   ...salesStatus,
   ...benefitStatus,
@@ -198,6 +201,7 @@ async function checkRefresh() {
     }
   }
 }
+defineExpose({ checkRefresh })
 
 function visibilityChanged() {
   if (document.visibilityState === 'hidden') clearTimeout(statusTimer)
@@ -386,7 +390,12 @@ async function loadMore(section, cursorName) {
             <small v-else-if="record.beneficiaryKind==='company'" class="order-version">{{ record.beneficiaryUnitKind==='DEPARTMENT' ? '部门分润' : '公司分润' }}</small>
           </template>
           <template v-else-if="column.key === 'component'">{{ salesRoles[record.componentRole] || record.componentLabel || componentLabel(record.component) }}</template>
-          <template v-else-if="column.key === 'rule'">v{{ record.ruleVersion }}<small v-if="record.ruleLabel" class="order-version rule-reference" :title="record.ruleLabel">{{ record.ruleLabel }}</small></template>
+          <template v-else-if="column.key === 'rule'">
+            <button v-if="record.ruleVersion" type="button" class="order-link" :aria-label="'查看规则 v'+record.ruleVersion"
+              @click="showAppliedRule('lines',record)">v{{ record.ruleVersion }}</button>
+            <span v-else>—</span>
+            <small v-if="record.ruleLabel" class="order-version rule-reference" :title="record.ruleLabel">{{ record.ruleLabel }}</small>
+          </template>
           <template v-else-if="column.key === 'base'">
             {{ formatMoney(record.baseMinor) }}<small v-if="record.classRefundMinor>0" class="order-version">已扣退款 {{ formatMoney(record.classRefundMinor) }}</small>
           </template>
@@ -404,7 +413,9 @@ async function loadMore(section, cursorName) {
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
             <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.originalOrderNo || record.originalOrderId }}</button>
-            <small class="order-version">计提时规则 v{{ record.ruleVersion }}<template v-if="record.ruleLabel"> · {{ record.ruleLabel }}</template>
+            <small class="order-version">
+              <button v-if="record.ruleVersion" type="button" class="order-link" @click="showAppliedRule('refunds',record)">计提时规则 v{{ record.ruleVersion }}</button>
+              <template v-if="record.ruleLabel"> · {{ record.ruleLabel }}</template>
               <template v-if="record.replayTriggerOrderId"> · 班次联动 · 订单 {{ record.replayTriggerOrderId }} 的退款 {{ record.refundId }}</template>
               <template v-else> · 退款 {{ record.refundId }}</template>
             </small>
@@ -426,7 +437,10 @@ async function loadMore(section, cursorName) {
         <template #bodyCell="{column,record}">
           <template v-if="column.key==='order'">
             <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>
-            <small class="order-version">结算时规则 v{{ record.ruleVersion }}<template v-if="record.ruleLabel"> · {{ record.ruleLabel }}</template></small>
+            <small class="order-version">
+              <button v-if="record.ruleVersion" type="button" class="order-link" @click="showAppliedRule('corrections',record)">结算时规则 v{{ record.ruleVersion }}</button>
+              <template v-if="record.ruleLabel"> · {{ record.ruleLabel }}</template>
+            </small>
             <small class="order-version">更正来源版本 {{ record.sourceVersion }}</small>
             <small v-if="record.triggerOrderId || record.triggerRefundId" class="order-version">
               联动来源 {{ record.triggerOrderId || record.orderId }}<template v-if="record.triggerRefundId"> · 退款 {{ record.triggerRefundId }}</template>
@@ -444,10 +458,17 @@ async function loadMore(section, cursorName) {
     <div v-if="draft.issueCount || draft.advisoryCount" class="table-container">
       <a-table :columns="issueColumns" :data-source="draft.issues" :pagination="false" row-key="id" :scroll="{ x: 510 }">
         <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'source'">{{ record.orderId || '—' }}<small v-if="record.enrollmentId" class="order-version">报名 {{ record.enrollmentId }}</small></template>
+          <template v-if="column.key === 'source'">
+            <button v-if="record.sourceVersionId" type="button" class="order-link" @click="emit('show-issue-order', record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>
+            <span v-else>{{ record.orderId || '—' }}</span>
+            <small v-if="record.sourceVersion" class="order-version">订单版本 {{ record.sourceVersion }}</small>
+            <small v-if="record.enrollmentId" class="order-version">报名 {{ record.enrollmentId }}</small>
+            <small v-if="record.enrollmentOrderIds?.length" class="order-version">关联付款单 {{ record.enrollmentOrderIds.join('、') }}</small>
+          </template>
           <template v-else-if="column.key === 'component'">{{ record.componentLabel || componentLabel(record.component) || '—' }}</template>
           <template v-else-if="column.key === 'reason'">
             <a-tag v-if="record.advisory" color="blue">提示</a-tag>{{ reason[record.code] || record.code }}
+            <small v-if="record.code==='SALES_COMPANY_REVIEW'" class="order-version">请在大春 AI 核对成交人和销售公司，更正后重新拉取。</small>
             <template v-if="record.recovery">
               <small class="order-version">{{ record.recovery.personName }}（人员 {{ record.recovery.personId }}） · {{ formatMoney(-record.recovery.amountMinor) }}</small>
               <a-button v-if="canReviewRecovery" type="link" size="small" :disabled="refreshStatus?.pending || calculating || savingRecovery" @click="openRecovery(record)">登记扣回处理</a-button>
