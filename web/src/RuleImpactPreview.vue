@@ -13,11 +13,12 @@ const options = computed(() => props.periods.map(period=>({
 })))
 const rows = computed(() => {
   const term = keyword.value.trim().toLowerCase()
-  return (result.value?.items || []).filter(row=>!term || [row.orderId,row.orderNo,row.recipient].some(value=>value?.toLowerCase().includes(term)))
+  return (result.value?.items || []).filter(row=>!term ||
+    [row.orderId,row.orderNo,row.recipient,row.allocationOwner].some(value=>value?.toLowerCase().includes(term)))
 })
 const columns = [
   {title:'原订单',key:'order',width:145},
-  {title:'受益对象',dataIndex:'recipient',key:'recipient',width:125},
+  {title:'收款对象',dataIndex:'recipient',key:'recipient',width:125},
   {title:'类型',dataIndex:'entryKind',key:'entryKind',width:75},
   {title:'现行',dataIndex:'beforeMinor',key:'beforeMinor',width:82,align:'right'},
   {title:'拟发布',dataIndex:'afterMinor',key:'afterMinor',width:82,align:'right'},
@@ -86,13 +87,17 @@ onBeforeUnmount(() => {
       </div>
       <p class="workbench-scope-note">待核项 {{ result.beforeIssueCount }} → {{ result.afterIssueCount }} 条</p>
       <a-input v-if="result.items.length" v-model:value="keyword" aria-label="搜索差额明细"
-        placeholder="搜索原订单号或受益对象" allow-clear/>
+        placeholder="搜索订单号、收款对象或负责人" allow-clear/>
       <a-table :columns="columns" :data-source="rows" size="small" row-key="key"
         :scroll="{x:591}" :pagination="{pageSize:10,hideOnSinglePage:true,showSizeChanger:false}">
         <template #bodyCell="{column,record,text}">
           <template v-if="column.key==='order'">
             {{ record.orderNo || record.orderId }}
             <small v-if="record.orderNo && record.orderNo!==record.orderId" class="order-version">{{ record.orderId }}</small>
+          </template>
+          <template v-else-if="column.key==='recipient'">
+            {{ text }}
+            <small v-if="record.allocationOwner" class="order-version">分配负责人 {{ record.allocationOwner }}</small>
           </template>
           <template v-else-if="column.key==='entryKind'">{{ entryLabels[text] || text }}</template>
           <span v-else-if="column.key==='deltaMinor'" class="numeric">{{ delta(text) }}</span>

@@ -24,20 +24,21 @@ type ruleImpactReport struct {
 }
 
 type ruleImpactItem struct {
-	Key         int    `json:"key"`
-	OrderID     string `json:"orderId"`
-	OrderNo     string `json:"orderNo"`
-	Recipient   string `json:"recipient"`
-	EntryKind   string `json:"entryKind"`
-	BeforeMinor int64  `json:"beforeMinor"`
-	AfterMinor  int64  `json:"afterMinor"`
-	DeltaMinor  int64  `json:"deltaMinor"`
+	Key             int    `json:"key"`
+	OrderID         string `json:"orderId"`
+	OrderNo         string `json:"orderNo"`
+	Recipient       string `json:"recipient"`
+	AllocationOwner string `json:"allocationOwner,omitempty"`
+	EntryKind       string `json:"entryKind"`
+	BeforeMinor     int64  `json:"beforeMinor"`
+	AfterMinor      int64  `json:"afterMinor"`
+	DeltaMinor      int64  `json:"deltaMinor"`
 }
 
 type ruleImpactRecipient struct {
-	person, practicePool int64
-	unit, catalogRule    pgtype.UUID
-	poolItem             string
+	person, practicePool, owner int64
+	unit, catalogRule           pgtype.UUID
+	poolItem                    string
 }
 
 type ruleImpactPosting struct {
@@ -51,9 +52,11 @@ func impactRecipient(line draftLine) ruleImpactRecipient {
 	party := ruleImpactRecipient{person: line.PersonID}
 	if line.PracticePool != nil {
 		party.practicePool = line.PracticePool.PoolID
+		party.owner = line.PracticePool.OwnerID
 	} else if line.Catalog != nil && line.Catalog.Unit.Valid {
 		party.unit = line.Catalog.Unit
 		if line.Catalog.AllocationOwnerID > 0 {
+			party.owner = line.Catalog.AllocationOwnerID
 			party.catalogRule = line.Catalog.Rule
 			party.poolItem = line.Component
 		}
@@ -79,7 +82,7 @@ func readImpactOriginals(ctx context.Context, tx pgx.Tx, before, after paymentDr
 	if len(ids) == 0 {
 		return result, nil
 	}
-	rows, err := tx.Query(ctx, `SELECT id,source_version_id,coalesce(person_id,0),coalesce(practice_pool_id,0),
+	rows, err := tx.Query(ctx, `SELECT id,source_version_id,coalesce(person_id,0),coalesce(practice_pool_id,0),coalesce(allocation_owner_id,0),
 	 beneficiary_unit_id,catalog_rule_id,CASE WHEN allocation_owner_id IS NOT NULL AND catalog_rule_id IS NOT NULL THEN component_type ELSE '' END
 	 FROM calculation_draft_lines WHERE id=ANY($1::bigint[])`, slices.Collect(maps.Keys(ids)))
 	if err != nil {
@@ -90,7 +93,7 @@ func readImpactOriginals(ctx context.Context, tx pgx.Tx, before, after paymentDr
 		var id int64
 		var item ruleImpactPosting
 		party := &item.recipient
-		if err := rows.Scan(&id, &item.fact, &party.person, &party.practicePool, &party.unit, &party.catalogRule, &party.poolItem); err != nil {
+		if err := rows.Scan(&id, &item.fact, &party.person, &party.practicePool, &party.owner, &party.unit, &party.catalogRule, &party.poolItem); err != nil {
 			return nil, err
 		}
 		result[id] = item
@@ -165,6 +168,9 @@ func impactLookups(ctx context.Context, tx pgx.Tx, all ...[]ruleImpactPosting) (
 			party := posting.recipient
 			if party.person != 0 {
 				people[party.person] = true
+			}
+			if party.owner != 0 {
+				people[party.owner] = true
 			}
 			if party.practicePool != 0 {
 				pools[party.practicePool] = true
@@ -269,7 +275,10 @@ func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentD
 	if err != nil {
 		return report, err
 	}
-	type group struct{ source, order, recipient, kind string }
+	type group struct {
+		source, order, recipient, kind string
+		owner                          int64
+	}
 	items := make(map[group]ruleImpactItem)
 	for step, postings := range [][]ruleImpactPosting{previous, proposed} {
 		for _, posting := range postings {
@@ -277,7 +286,7 @@ func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentD
 			if source.id == "" {
 				return report, conflict
 			}
-			key := group{source.source, source.id, posting.recipient.identity(), posting.kind}
+			key := group{source.source, source.id, posting.recipient.identity(), posting.kind, posting.recipient.owner}
 			item := items[key]
 			item.OrderID, item.OrderNo, item.EntryKind = source.id, source.name, posting.kind
 			if item.Recipient == "" || step == 1 {
@@ -302,11 +311,17 @@ func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentD
 	}
 	slices.SortFunc(changed, func(a, b group) int {
 		return cmp.Or(cmp.Compare(a.source, b.source), cmp.Compare(a.order, b.order),
-			cmp.Compare(a.kind, b.kind), cmp.Compare(a.recipient, b.recipient))
+			cmp.Compare(a.kind, b.kind), cmp.Compare(a.recipient, b.recipient), cmp.Compare(a.owner, b.owner))
 	})
 	for index, key := range changed {
 		item := items[key]
 		item.Key = index + 1
+		if key.owner > 0 {
+			item.AllocationOwner = names["person:"+strconv.FormatInt(key.owner, 10)]
+			if item.AllocationOwner == "" {
+				item.AllocationOwner = "人员待核"
+			}
+		}
 		item.DeltaMinor, err = impactDelta(item.BeforeMinor, item.AfterMinor)
 		if err != nil {
 			return report, err

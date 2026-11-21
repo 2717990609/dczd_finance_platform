@@ -743,6 +743,23 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		noCandidate.MatchedPaymentCount != nil || noCandidate.DeltaMinor != 0 {
 		t.Fatalf("an unchanged definition must not report the old rule's payments as a new match: %d %s", noChange.Code, noChange.Body)
 	}
+	ownerPreview := preview(next, publishCatalogRatesInput{
+		BaseID: id(4), EffectiveFrom: newAt,
+		TargetChanges: []catalogBenefitTargetChange{{ItemKey: "delivery",
+			catalogBenefitTarget: catalogBenefitTarget{Target: "pool", Role: "PROJECT_OWNER", Organization: id(16)}}},
+	})
+	var ownership ruleImpactReport
+	if err := json.Unmarshal(ownerPreview.Body.Bytes(), &ownership); ownerPreview.Code != http.StatusOK || err != nil ||
+		ownership.BeforeMinor != prior.Total || ownership.DeltaMinor != 0 || len(ownership.Items) != 2 {
+		t.Fatalf("changing only a pool owner should produce two attributed rows with zero net change: %d %s", ownerPreview.Code, ownerPreview.Body)
+	}
+	for _, row := range ownership.Items {
+		if row.Recipient != "交付池" || row.OrderID != "new-rate" ||
+			!(row.AllocationOwner == "分配负责人" && row.BeforeMinor == 300 && row.AfterMinor == 0 ||
+				row.AllocationOwner == "负责人甲" && row.BeforeMinor == 0 && row.AfterMinor == 300) {
+			t.Fatalf("wrong pool or owner affected by the rule: %+v", row)
+		}
+	}
 	var aggregatePeriod int64
 	if err := s.db.QueryRow(ctx, `WITH pkg AS (
 	 INSERT INTO product_rule_packages(source_id,product_id,code,name,project_code,policy_kind,scope_type,scope_id,paused)

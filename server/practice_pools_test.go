@@ -152,6 +152,42 @@ func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testi
 	if draft.Total != 10400 || draft.LineCount != 8 || draft.IssueCount != 0 {
 		t.Fatalf("unexpected normal draft: %+v", draft)
 	}
+	t.Run("共用团队池只换分配负责人", func(t *testing.T) {
+		next := rule
+		next.Components = append([]component(nil), rule.Components...)
+		newPool := practicePoolTarget{PoolID: pool, OwnerID: member}
+		split := (*rule.Components[0].RetrainSplits)[0]
+		split.Pool = newPool
+		next.Components[0].RetrainSplits = &[]practiceRetrainSplit{split}
+		delivery := *rule.Components[1].PeriodBenefit
+		delivery.Pool = &newPool
+		next.Components[1].PeriodBenefit = &delivery
+		result, err := s.postComponentRuleImpact(ctx, componentRuleImpactInput{PeriodID: period, Rule: next})
+		if err != nil {
+			t.Fatal(err)
+		}
+		report := result.(ruleImpactReport)
+		if report.BeforeMinor != draft.Total || report.AfterMinor != draft.Total || report.DeltaMinor != 0 || len(report.Items) != 4 {
+			t.Fatalf("two payments must show both owners for the same pool without changing the total: %+v", report)
+		}
+		var current, proposed int64
+		for _, row := range report.Items {
+			if row.Recipient != "共用资金池" || row.EntryKind != "accrual" {
+				t.Fatalf("expected only pool accrual changes: %+v", row)
+			}
+			switch {
+			case row.AllocationOwner == "服务" && row.AfterMinor == 0:
+				current += row.BeforeMinor
+			case row.AllocationOwner == "成员" && row.BeforeMinor == 0:
+				proposed += row.AfterMinor
+			default:
+				t.Fatalf("unexpected owner allocation: %+v", row)
+			}
+		}
+		if current != 4800 || proposed != current {
+			t.Fatalf("same pool should receive 4800 cents with either owner: %d, %d", current, proposed)
+		}
+	})
 	params := fmt.Sprintf("periodId=%d&version=%d", period, draft.Version)
 	readPools := func() poolDraftReport {
 		t.Helper()
