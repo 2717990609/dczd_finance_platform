@@ -157,3 +157,21 @@ func TestImpactArrangementsFollowNamedPracticeBenefitsAcrossVersionEdits(t *test
 		t.Fatal(err)
 	}
 }
+
+func TestRuleImpactShowsDifferentReasonsWithTheSameBlockingTotal(t *testing.T) {
+	previous := []draftIssue{
+		{Code: "RULE_MISSING"}, {Code: "MISSING_IDENTITY"},
+		{Code: "PRACTICE_REFUND_AFTER_ROSTER", Advisory: true},
+	}
+	proposed := []draftIssue{
+		{Code: "MISSING_IDENTITY"}, {Code: "PRACTICE_TIER_NOT_MATCHED"},
+	}
+	want := []ruleImpactIssueReason{
+		{Code: "PRACTICE_TIER_NOT_MATCHED", AfterCount: 1},
+		{Code: "MISSING_IDENTITY", BeforeCount: 1, AfterCount: 1},
+		{Code: "RULE_MISSING", BeforeCount: 1},
+	}
+	if got := impactIssueReasons(previous, proposed); !reflect.DeepEqual(got, want) {
+		t.Fatalf("issue reasons = %+v, want %+v", got, want)
+	}
+}

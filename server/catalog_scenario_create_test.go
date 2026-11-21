@@ -107,6 +107,9 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		preview.BeforeIssueCount != 2 || preview.AfterIssueCount != 0 || len(preview.Items) != 7 {
 		t.Errorf("first rule should be compared with the previously unmatched payments: %d %s %v", w.Code, w.Body, err)
 	}
+	if len(preview.IssueReasons) != 1 || preview.IssueReasons[0] != (ruleImpactIssueReason{Code: "RULE_MISSING", BeforeCount: 2}) {
+		t.Errorf("preview must show why the existing payments were blocked: %+v", preview.IssueReasons)
+	}
 	wantRecipients := map[string]int64{"成交销售样本": 1250, "原推荐人": 1000, "收款公司样本": 1502, "类别默认公司": 1000}
 	for _, item := range preview.Items {
 		wantRecipients[item.Recipient] -= item.AfterMinor

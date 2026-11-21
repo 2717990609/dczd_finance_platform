@@ -186,6 +186,13 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .rule-impact-totals > div { flex: 1 1 115px; background: var(--accent-soft); padding: 8px 10px; border-radius: 5px; }
 .rule-impact-totals small { display: block; color: var(--muted); }
 .rule-impact-totals strong { font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.rule-impact-issues { margin-bottom: 10px; }
+.rule-impact-issues summary { color: var(--accent); cursor: pointer; }
+.rule-impact-issues table { border-collapse: collapse; margin-top: 6px; width: 100%; }
+.rule-impact-issues th, .rule-impact-issues td { padding: 5px 8px; text-align: left; border-bottom: 1px solid var(--line); }
+.rule-impact-issues tbody th { font-weight: normal; }
+.rule-impact-issues th:not(:first-child), .rule-impact-issues td { width: 68px; text-align: right; font-variant-numeric: tabular-nums; }
+.rule-impact-issue-increase { font-weight: 600; }
 .catalog-add-form { padding: 10px; background: var(--accent-soft); border-radius: 6px; }
 .catalog-add-form,.catalog-staged-entries { margin:6px 0; }
 .catalog-add-form .ant-select, .catalog-add-form .ant-input-number { width: 100%; }

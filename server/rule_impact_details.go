@@ -13,14 +13,21 @@ import (
 )
 
 type ruleImpactReport struct {
-	CurrentRuleAvailable bool             `json:"currentRuleAvailable"`
-	MatchedPaymentCount  *int             `json:"matchedPaymentCount,omitempty"`
-	BeforeMinor          int64            `json:"beforeMinor"`
-	AfterMinor           int64            `json:"afterMinor"`
-	DeltaMinor           int64            `json:"deltaMinor"`
-	BeforeIssueCount     int              `json:"beforeIssueCount"`
-	AfterIssueCount      int              `json:"afterIssueCount"`
-	Items                []ruleImpactItem `json:"items"`
+	CurrentRuleAvailable bool                    `json:"currentRuleAvailable"`
+	MatchedPaymentCount  *int                    `json:"matchedPaymentCount,omitempty"`
+	BeforeMinor          int64                   `json:"beforeMinor"`
+	AfterMinor           int64                   `json:"afterMinor"`
+	DeltaMinor           int64                   `json:"deltaMinor"`
+	BeforeIssueCount     int                     `json:"beforeIssueCount"`
+	AfterIssueCount      int                     `json:"afterIssueCount"`
+	IssueReasons         []ruleImpactIssueReason `json:"issueReasons,omitempty"`
+	Items                []ruleImpactItem        `json:"items"`
+}
+
+type ruleImpactIssueReason struct {
+	Code        string `json:"code"`
+	BeforeCount int    `json:"beforeCount"`
+	AfterCount  int    `json:"afterCount"`
 }
 
 type ruleImpactItem struct {
@@ -340,7 +347,8 @@ func impactTotal(draft paymentDraft) (int64, error) {
 }
 
 func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentDraft) (ruleImpactReport, error) {
-	report := ruleImpactReport{BeforeIssueCount: before.blockingIssues(), AfterIssueCount: after.blockingIssues(), Items: []ruleImpactItem{}}
+	report := ruleImpactReport{BeforeIssueCount: before.blockingIssues(), AfterIssueCount: after.blockingIssues(),
+		IssueReasons: impactIssueReasons(before.Issues, after.Issues), Items: []ruleImpactItem{}}
 	var err error
 	if report.BeforeMinor, err = impactTotal(before); err != nil {
 		return report, err
@@ -428,4 +436,29 @@ func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentD
 		report.Items = append(report.Items, item)
 	}
 	return report, nil
+}
+
+func impactIssueReasons(before, after []draftIssue) []ruleImpactIssueReason {
+	reasons := make(map[string]ruleImpactIssueReason)
+	for _, issue := range before {
+		if !issue.Advisory {
+			reason := reasons[issue.Code]
+			reason.Code = issue.Code
+			reason.BeforeCount++
+			reasons[issue.Code] = reason
+		}
+	}
+	for _, issue := range after {
+		if !issue.Advisory {
+			reason := reasons[issue.Code]
+			reason.Code = issue.Code
+			reason.AfterCount++
+			reasons[issue.Code] = reason
+		}
+	}
+	result := slices.Collect(maps.Values(reasons))
+	slices.SortFunc(result, func(a, b ruleImpactIssueReason) int {
+		return cmp.Or(cmp.Compare(b.AfterCount-b.BeforeCount, a.AfterCount-a.BeforeCount), cmp.Compare(a.Code, b.Code))
+	})
+	return result
 }

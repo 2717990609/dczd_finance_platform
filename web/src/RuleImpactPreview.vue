@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { salesRoles } from './catalog-labels'
+import { draftIssueLabels } from './draft-issue-labels'
 
 const props = defineProps({periods:Array, periodId:Number, simulate:Function, formatMoney:Function, formatTime:Function})
 const loading = defineModel('busy', {type:Boolean, default:false})
@@ -86,7 +87,20 @@ onBeforeUnmount(() => {
         <div><small>拟发布规则净分润</small><strong>{{ formatMoney(result.afterMinor) }}</strong></div>
         <div><small>净差额</small><strong>{{ delta(result.deltaMinor) }}</strong></div>
       </div>
-      <p class="workbench-scope-note">待核项 {{ result.beforeIssueCount }} → {{ result.afterIssueCount }} 条</p>
+      <details v-if="result.issueReasons?.length" class="rule-impact-issues">
+        <summary>待核项 {{ result.beforeIssueCount }} → {{ result.afterIssueCount }} 条</summary>
+        <table aria-label="待核原因对比">
+          <thead><tr><th scope="col">待核原因</th><th scope="col">现行</th><th scope="col">拟发布</th></tr></thead>
+          <tbody>
+            <tr v-for="issue in result.issueReasons" :key="issue.code">
+              <th scope="row">{{ draftIssueLabels[issue.code] || issue.code }}</th>
+              <td>{{ issue.beforeCount }}</td>
+              <td :class="{'rule-impact-issue-increase':issue.afterCount>issue.beforeCount}">{{ issue.afterCount }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </details>
+      <p v-else class="workbench-scope-note">待核项 {{ result.beforeIssueCount }} → {{ result.afterIssueCount }} 条</p>
       <a-input v-if="result.items.length" v-model:value="keyword" aria-label="搜索差额明细"
         placeholder="搜索订单号、收款对象、负责人或安排" allow-clear/>
       <a-table :columns="columns" :data-source="rows" size="small" row-key="key"
@@ -110,7 +124,8 @@ onBeforeUnmount(() => {
           <span v-else-if="column.key==='beforeMinor' || column.key==='afterMinor'" class="numeric">{{ formatMoney(text) }}</span>
         </template>
         <template #emptyText>
-          {{ keyword ? '未找到符合条件的差额' : result.matchedPaymentCount===0 ? '本期暂无适用付款' : '本期金额无变化' }}
+          {{ keyword ? '未找到符合条件的差额' : result.matchedPaymentCount===0 ? '本期暂无适用付款' :
+            result.afterIssueCount ? '暂未算出金额差额，请查看待核项。' : '本期金额无变化' }}
         </template>
       </a-table>
     </template>
