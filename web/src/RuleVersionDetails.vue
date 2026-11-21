@@ -33,6 +33,8 @@ const companyName = key => label('practiceSalesCompany', key)
 const registrationCompanyName = key => props.registrationCompanies?.find(company=>company.value===key)?.label || companyName(key)
 function scheduleLabel(schedule) {
   if (schedule.personId) return '个人特例 · '+personName(schedule.personId)
+  const categories = standardCategoryIDs(schedule)
+  if (categories.length) return '销售类别默认 · '+categories.map(id=>label('practiceSalesCategory',id)).join('、')
   const companies = exceptionCompanyIDs(schedule)
   return companies.length ? '公司档位 · '+companies.map(companyName).join('、') : '通用阶梯'
 }
@@ -184,7 +186,7 @@ onMounted(async () => {
             <ul v-if="part.tiers.personCountStarts?.length">
               <li v-for="start in part.tiers.personCountStarts" :key="start.personId">{{ personName(start.personId) }} · 从 {{ countStart(start) }} 起</li>
             </ul>
-            <template v-for="(schedule, index) in [part.tiers, ...(part.tiers.companySchedules || []), ...(part.tiers.personSchedules || [])]"
+            <template v-for="(schedule, index) in [part.tiers, ...(part.tiers.categorySchedules || []), ...(part.tiers.companySchedules || []), ...(part.tiers.personSchedules || [])]"
               :key="index">
               <h4 v-if="schedule.count?.length || schedule.performance?.length">
                 {{ scheduleLabel(schedule) }}

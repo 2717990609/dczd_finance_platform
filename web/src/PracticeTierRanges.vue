@@ -10,7 +10,7 @@ function addRow(section) {
       <legend>{{ section.title }}</legend>
       <p class="tier-note">上下限均含当前值。上限留空时，延续至下一档的起点之前。</p>
       <div v-for="(row, index) in config[section.key]" :key="index" class="tier-range">
-        <div class="tier-values" :class="{'tier-values-with-retrain':includeRetrain}">
+        <div class="tier-values tier-row-values">
           <a-form-item :html-for="prefix+'tier-from-'+section.key+index" :label="'下限（'+section.unit+'）'" required>
             <a-input-number :id="prefix+'tier-from-'+section.key+index" v-model:value="row.from" :min="0" :precision="section.decimals"/>
           </a-form-item>
@@ -40,6 +40,3 @@ function addRow(section) {
       <a-button type="dashed" block @click="addRow(section.key)">添加{{ section.title }}</a-button>
     </fieldset>
 </template>
-<style scoped>
-.tier-values-with-retrain { grid-template-columns: repeat(auto-fit,minmax(min(100%,130px),1fr)); }
-</style>

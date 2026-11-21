@@ -8,6 +8,7 @@ import (
 
 type practiceSalesTiers struct {
 	IncludeRetrain    bool                       `json:"includeRetrain,omitempty"`
+	CategorySchedules []practiceCategorySchedule `json:"categorySchedules,omitempty"`
 	CompanySchedules  []practiceCompanySchedule  `json:"companySchedules,omitempty"`
 	PersonSchedules   []practicePersonSchedule   `json:"personSchedules,omitempty"`
 	OpeningID         int64                      `json:"openingId,omitempty"`
@@ -78,6 +79,11 @@ type practiceTierSchedule struct {
 	Performance []practiceTier `json:"performance,omitempty"`
 }
 
+type practiceCategorySchedule struct {
+	SalesCategoryIDs []string `json:"salesCategoryIds"`
+	practiceTierSchedule
+}
+
 type practiceCompanySchedule struct {
 	CompanyID   string         `json:"companyId,omitempty"`
 	CompanyIDs  []string       `json:"companyIds,omitempty"`
@@ -98,17 +104,24 @@ type practicePersonSchedule struct {
 }
 
 type practiceTierScheduleIndex struct {
-	companies map[string]practiceTierSchedule
-	people    map[int64]practiceTierSchedule
+	categories map[string]practiceTierSchedule
+	companies  map[string]practiceTierSchedule
+	people     map[int64]practiceTierSchedule
 }
 
 func (t practiceSalesTiers) schedules() practiceTierScheduleIndex {
 	result := practiceTierScheduleIndex{
-		companies: make(map[string]practiceTierSchedule, len(t.CompanySchedules)+1),
-		people:    make(map[int64]practiceTierSchedule, len(t.PersonSchedules)),
+		categories: make(map[string]practiceTierSchedule, len(t.CategorySchedules)),
+		companies:  make(map[string]practiceTierSchedule, len(t.CompanySchedules)+1),
+		people:     make(map[int64]practiceTierSchedule, len(t.PersonSchedules)),
 	}
 	if len(t.Count)+len(t.Performance) != 0 {
 		result.companies[""] = practiceTierSchedule{Count: t.Count, Performance: t.Performance}
+	}
+	for _, schedule := range t.CategorySchedules {
+		for _, category := range schedule.SalesCategoryIDs {
+			result.categories[category] = schedule.practiceTierSchedule
+		}
 	}
 	for _, schedule := range t.CompanySchedules {
 		tiers := practiceTierSchedule{Count: schedule.Count, Performance: schedule.Performance}
@@ -122,11 +135,14 @@ func (t practiceSalesTiers) schedules() practiceTierScheduleIndex {
 	return result
 }
 
-func (s practiceTierScheduleIndex) forSale(person int64, company string) (practiceTierSchedule, bool) {
+func (s practiceTierScheduleIndex) forSale(person int64, company, category string) (practiceTierSchedule, bool) {
 	if schedule, ok := s.people[person]; ok {
 		return schedule, true
 	}
-	if schedule, ok := s.companies[company]; ok {
+	if schedule, ok := s.companies[company]; company != "" && ok {
+		return schedule, true
+	}
+	if schedule, ok := s.categories[category]; ok {
 		return schedule, true
 	}
 	schedule, ok := s.companies[""]
@@ -136,6 +152,11 @@ func (s practiceTierScheduleIndex) forSale(person int64, company string) (practi
 func (t practiceSalesTiers) hasCountTiers() bool {
 	if len(t.Count) != 0 {
 		return true
+	}
+	for _, schedule := range t.CategorySchedules {
+		if len(schedule.Count) != 0 {
+			return true
+		}
 	}
 	for _, schedule := range t.CompanySchedules {
 		if len(schedule.Count) != 0 {
@@ -151,13 +172,14 @@ func (t practiceSalesTiers) hasCountTiers() bool {
 }
 
 type practiceTierPurchase struct {
-	EnrollmentID int64
-	SequenceKey  string
-	CompanyID    string
-	PaidAt       time.Time
-	PersonID     int64
-	Base         int64
-	Retrain      bool
+	EnrollmentID    int64
+	SequenceKey     string
+	CompanyID       string
+	SalesCategoryID string
+	PaidAt          time.Time
+	PersonID        int64
+	Base            int64
+	Retrain         bool
 }
 
 func (part component) tierIncludesRetrain() bool {
@@ -171,7 +193,7 @@ func (part component) matchesPracticeMember(member string) bool {
 func validPracticeSalesTiers(part component) bool {
 	tiers := part.Tiers
 	if part.Type != "sales" || part.ClassMember != "new" || part.SourceRole == "" ||
-		part.Value != 0 || tiers == nil || len(tiers.Count)+len(tiers.Performance)+len(tiers.CompanySchedules)+len(tiers.PersonSchedules) == 0 {
+		part.Value != 0 || tiers == nil || len(tiers.Count)+len(tiers.Performance)+len(tiers.CategorySchedules)+len(tiers.CompanySchedules)+len(tiers.PersonSchedules) == 0 {
 		return false
 	}
 	switch {
@@ -194,6 +216,20 @@ func validPracticeSalesTiers(part component) bool {
 			return false
 		}
 		seen[start.PersonID] = true
+	}
+	categories := make(map[string]bool)
+	for _, category := range tiers.CategorySchedules {
+		if len(category.SalesCategoryIDs) == 0 || len(category.Count)+len(category.Performance) == 0 ||
+			!category.practiceTierSchedule.valid(tiers.IncludeRetrain) {
+			return false
+		}
+		for _, id := range category.SalesCategoryIDs {
+			normalized, ok := canonicalSourceUUID(id)
+			if !ok || normalized != id || categories[id] {
+				return false
+			}
+			categories[id] = true
+		}
 	}
 	companies := make(map[string]bool, len(tiers.CompanySchedules))
 	for _, company := range tiers.CompanySchedules {
@@ -254,6 +290,11 @@ func practiceTierComponent(rule paymentRule) *component {
 	return nil
 }
 
+func practiceTierUsesCategories(rule paymentRule) bool {
+	part := practiceTierComponent(rule)
+	return part != nil && part.Tiers != nil && len(part.Tiers.CategorySchedules) != 0
+}
+
 func matchingPracticeTier(rows []practiceTier, metric int64) (practiceTier, bool) {
 	index := sort.Search(len(rows), func(i int) bool { return rows[i].From > metric }) - 1
 	if index < 0 || (rows[index].Through != nil && *rows[index].Through < metric) {
@@ -282,7 +323,7 @@ func choosePracticeSalesTiers(config practiceSalesTiers, purchases []practiceTie
 	schedules := config.schedules()
 	metrics := make(map[int64]*personalMetric)
 	for _, purchase := range ordered {
-		schedule, ok := schedules.forSale(purchase.PersonID, purchase.CompanyID)
+		schedule, ok := schedules.forSale(purchase.PersonID, purchase.CompanyID, purchase.SalesCategoryID)
 		if !ok {
 			continue
 		}
@@ -301,7 +342,7 @@ func choosePracticeSalesTiers(config practiceSalesTiers, purchases []practiceTie
 	awards := make(map[int64]practiceTier, len(ordered))
 	var fallback []practiceTierPurchase
 	for _, purchase := range ordered {
-		schedule, ok := schedules.forSale(purchase.PersonID, purchase.CompanyID)
+		schedule, ok := schedules.forSale(purchase.PersonID, purchase.CompanyID, purchase.SalesCategoryID)
 		if !ok {
 			continue
 		}
@@ -333,7 +374,7 @@ func choosePracticeSalesTiers(config practiceSalesTiers, purchases []practiceTie
 		}
 	}
 	for _, purchase := range fallback {
-		schedule, _ := schedules.forSale(purchase.PersonID, purchase.CompanyID)
+		schedule, _ := schedules.forSale(purchase.PersonID, purchase.CompanyID, purchase.SalesCategoryID)
 		metric := metrics[purchase.PersonID]
 		performance := metric.full
 		if len(schedule.Count) != 0 {

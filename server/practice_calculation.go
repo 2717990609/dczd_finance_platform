@@ -48,15 +48,16 @@ func (p practicePurchase) salesIssue(code string, rule paymentRule, part string)
 }
 
 type practiceDraftRuntime struct {
-	appointments           map[practiceAppointmentKey][]practiceAppointment
-	registrations          map[int64]practiceRegistrationInput
-	salesOrganizations     practiceSalesOrganizations
-	companyOffers          *practiceCompanyOffers
-	companyClassifications map[string]string
-	companyRecipients      map[string][]companySourceAssignment
-	recommendations        practiceCompanyRecommendations
-	poolUnits              map[int64]pgtype.UUID
-	legacyGrossRateShares  bool
+	appointments            map[practiceAppointmentKey][]practiceAppointment
+	registrations           map[int64]practiceRegistrationInput
+	salesOrganizations      practiceSalesOrganizations
+	companyOffers           *practiceCompanyOffers
+	companyClassifications  map[string]string
+	internalSalesCategories map[string]string
+	companyRecipients       map[string][]companySourceAssignment
+	recommendations         practiceCompanyRecommendations
+	poolUnits               map[int64]pgtype.UUID
+	legacyGrossRateShares   bool
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -135,7 +136,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 		}
 	}
-	awards, tierIssues, err := practiceTierAwards(rule, purchases, orders, identities, blocked, history, refunds, runtime.companyOffers != nil)
+	awards, tierIssues, err := practiceTierAwards(rule, purchases, orders, identities, blocked, history, refunds, runtime)
 	if err != nil {
 		return draft, err
 	}
@@ -319,7 +320,7 @@ func practicePurchaseCompany(payments []paymentInput) (string, string) {
 
 func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map[string][]paymentInput,
 	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory,
-	refunds map[int64][]practiceRefundMatch, strictCompanyScope bool) (map[int64]practiceTier, practiceTierIssues, error) {
+	refunds map[int64][]practiceRefundMatch, runtime practiceDraftRuntime) (map[int64]practiceTier, practiceTierIssues, error) {
 	part := practiceTierComponent(rule)
 	if part == nil {
 		return nil, practiceTierIssues{}, nil
@@ -348,12 +349,15 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		}
 		person := practicePurchaseOwner(purchase, part.SourceRole, identities)
 		_, hasPersonalSchedule := schedules.people[person]
-		var company, companyIssue string
-		if !hasPersonalSchedule && len(config.CompanySchedules) != 0 && purchase.issue == "" {
+		var company, category, companyIssue string
+		if !hasPersonalSchedule && len(config.CompanySchedules)+len(config.CategorySchedules) != 0 && purchase.issue == "" {
 			company, companyIssue = practicePurchaseCompany(purchase.payments)
 		}
-		schedule, configured := schedules.forSale(person, company)
-		if company != "" && !configured {
+		if _, exception := schedules.companies[company]; company != "" && !exception && len(schedules.categories) != 0 {
+			category, companyIssue = practicePurchaseSalesCategory(purchase.payments, runtime.companyClassifications, runtime.internalSalesCategories)
+		}
+		schedule, configured := schedules.forSale(person, company, category)
+		if company != "" && companyIssue == "" && !configured {
 			issues.enrollments[member.ID] = "PRACTICE_TIER_COMPANY_NOT_CONFIGURED"
 			continue
 		}
@@ -375,7 +379,7 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		if len(schedule.Count) != 0 {
 			needsCount[person] = true
 		}
-		row := practiceTierPurchase{EnrollmentID: member.ID, PersonID: person, CompanyID: company, Base: purchase.base,
+		row := practiceTierPurchase{EnrollmentID: member.ID, PersonID: person, CompanyID: company, SalesCategoryID: category, Base: purchase.base,
 			SequenceKey: purchase.payments[0].Fact.OrderID, PaidAt: purchase.payments[0].Fact.OccurredAt, Retrain: retrain}
 		if len(purchase.payments) == 2 {
 			row.SequenceKey = member.SourceEnrollmentID
@@ -398,7 +402,7 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 	var index practicePriorIndex
 	if len(needsCount) != 0 {
 		var err error
-		index, err = indexPracticePrior(history, part.SourceRole, orders, identities, blocked, refunds, strictCompanyScope)
+		index, err = indexPracticePrior(history, part.SourceRole, orders, identities, blocked, refunds, runtime.companyOffers != nil)
 		if err != nil {
 			return nil, issues, err
 		}

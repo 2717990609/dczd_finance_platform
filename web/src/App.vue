@@ -306,9 +306,10 @@ function updateAmountMode(row, mode) {
       count:[{mode:baseModes.value[0]?.value}],
       performance:[{from:0,mode:baseModes.value[0]?.value}],
       personCountStarts:[],
+      categories:[],
       companies:[],
       people:[],
-      onlyOverrides:false,
+      onlyOverrides:options('practiceSalesCategory').length > 0,
     }
   }
 }
@@ -1238,7 +1239,11 @@ function ruleComponentBody(row) {
       ...countStartBody(item),
     }))
   }
-  if (form.onlyOverrides && !form.companies.length && !form.people.length) throw new Error('请添加公司或个人档位')
+  if (form.onlyOverrides && !form.categories.length && !form.companies.length && !form.people.length) throw new Error('请添加销售类别、公司或个人档位')
+  if (form.categories.length) component.tiers.categorySchedules = form.categories.map(category => {
+    if (!category.salesCategoryIds?.length) throw new Error('请选择销售类别')
+    return {salesCategoryIds:category.salesCategoryIds,...scheduleBody(category,must(category.metric,'请选择销售类别阶梯指标'))}
+  })
   if (form.companies.length) component.tiers.companySchedules = form.companies.map(company => {
     const ids = company.companyIds || []
     if (!ids.length) throw new Error('请选择销售公司')
@@ -1778,6 +1783,7 @@ async function save() {
           <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')"
             :start-modes="options('tierStartMode')" :amounts="baseModes" :people="classPeopleOptions"
             :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"
+            :sales-categories="options('practiceSalesCategory')"
             :retrain-unavailable="draft.components.some(other=>other!==c && other.type==='sales' && matchesPracticeMember(other,'retrain'))"/>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
             :registration-companies="registrationCompanies" :registration-loading="registrationCompaniesLoading" :registration-error="registrationCompaniesError"

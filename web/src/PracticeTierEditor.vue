@@ -11,6 +11,7 @@ const props = defineProps({
   people: { type: Array, required: true },
   openings: { type: Array, required: true },
   companies: { type: Array, required: true },
+  salesCategories: { type: Array, required: true },
   retrainUnavailable: Boolean,
 })
 const personalStartModes = computed(() => props.startModes.filter(option =>
@@ -22,6 +23,8 @@ function sectionsFor(metric) {
   return result
 }
 const sections = computed(() => sectionsFor(props.config.metric))
+const assignedCategories = computed(() => new Set(props.config.categories.flatMap(row=>row.salesCategoryIds)))
+const canAddCategory = computed(() => props.salesCategories.some(category=>!assignedCategories.value.has(category.value)))
 const assignedCompanies = computed(() => new Set(props.config.companies.flatMap(row=>row.companyIds || [])))
 const canAddCompany = computed(() => props.companies.some(company=>!assignedCompanies.value.has(company.value)))
 function eligiblePeople(rows, row) {
@@ -32,6 +35,10 @@ function eligibleCompanies(row) {
   return props.companies.filter(company =>
     row.companyIds?.includes(company.value) || !assignedCompanies.value.has(company.value))
 }
+function eligibleCategories(row) {
+  return props.salesCategories.filter(category =>
+    row.salesCategoryIds.includes(category.value) || !assignedCategories.value.has(category.value))
+}
 function newSchedule() {
   const mode = props.amounts[0]?.value
   const payout = () => props.config.includeRetrain ? {mode,retrain:{mode}} : {mode}
@@ -40,38 +47,41 @@ function newSchedule() {
 function setIncludeRetrain(checked) {
   props.config.includeRetrain = checked
   if (!checked) return
-  for (const schedule of [props.config,...props.config.companies,...props.config.people]) {
+  for (const schedule of [props.config,...props.config.categories,...props.config.companies,...props.config.people]) {
     for (const row of [...schedule.count,...schedule.performance]) row.retrain ??= {mode:props.amounts[0]?.value}
   }
 }
 function removeSchedule(schedules, index) {
   schedules.splice(index,1)
-  if (!props.config.companies.length && !props.config.people.length) props.config.onlyOverrides = false
 }
 </script>
 
 <template>
   <div class="tier-editor">
-    <a-form-item html-for="tier-metric" label="阶梯指标">
-      <a-select id="tier-metric" v-model:value="config.metric" :options="metrics"/>
-    </a-form-item>
-    <a-checkbox :checked="config.includeRetrain" :disabled="retrainUnavailable && !config.includeRetrain"
-      @change="setIncludeRetrain($event.target.checked)">复训共用此阶梯</a-checkbox>
+    <div class="tier-settings">
+      <a-form-item v-if="!config.onlyOverrides || config.companies.length" html-for="tier-metric" label="通用与公司档位指标">
+        <a-select id="tier-metric" v-model:value="config.metric" :options="metrics"/>
+      </a-form-item>
+      <a-checkbox :checked="config.includeRetrain" :disabled="retrainUnavailable && !config.includeRetrain"
+        @change="setIncludeRetrain($event.target.checked)">复训共用此阶梯</a-checkbox>
+    </div>
     <p v-if="retrainUnavailable" class="tier-note">移除单独的复训销售安排后可启用。</p>
     <template v-if="tierFormHasCount(config)">
-      <a-form-item html-for="tier-start-mode" label="默认累计起点">
-        <a-select id="tier-start-mode" v-model:value="config.startMode" :options="startModes"/>
-      </a-form-item>
-      <a-form-item v-if="config.startMode==='ordinal'" html-for="tier-start-ordinal" label="起始期数" required>
-        <a-input-number id="tier-start-ordinal" v-model:value="config.countFromOrdinal" :min="1" :precision="0"/>
-      </a-form-item>
-      <a-form-item v-else-if="config.startMode==='opening'" html-for="tier-opening" label="冻结期初"
-        :extra="openings.length ? '从冻结截止时刻之后开始追加新报。' : '当前产品尚未登记累计期初。'" required>
-        <a-select id="tier-opening" v-model:value="config.openingId" :options="openings" />
-      </a-form-item>
-      <a-form-item v-else html-for="tier-start-time" label="起始开班时间" extra="使用北京时间。" required>
-        <a-input id="tier-start-time" v-model:value="config.countFromAt" type="datetime-local" step="any"/>
-      </a-form-item>
+      <div class="tier-values tier-start">
+        <a-form-item html-for="tier-start-mode" label="默认累计起点">
+          <a-select id="tier-start-mode" v-model:value="config.startMode" :options="startModes"/>
+        </a-form-item>
+        <a-form-item v-if="config.startMode==='ordinal'" html-for="tier-start-ordinal" label="起始期数" required>
+          <a-input-number id="tier-start-ordinal" v-model:value="config.countFromOrdinal" :min="1" :precision="0"/>
+        </a-form-item>
+        <a-form-item v-else-if="config.startMode==='opening'" html-for="tier-opening" label="冻结期初"
+          :extra="openings.length ? '从冻结截止时刻之后开始追加新报。' : '当前产品尚未登记累计期初。'" required>
+          <a-select id="tier-opening" v-model:value="config.openingId" :options="openings" />
+        </a-form-item>
+        <a-form-item v-else html-for="tier-start-time" label="起始开班时间" extra="使用北京时间。" required>
+          <a-input id="tier-start-time" v-model:value="config.countFromAt" type="datetime-local" step="any"/>
+        </a-form-item>
+      </div>
       <details class="tier-person-starts">
         <summary>按人员设置累计起点</summary>
         <p class="tier-note">指定起点到达后，该人员按自己的起点累计。</p>
@@ -93,11 +103,28 @@ function removeSchedule(schedules, index) {
         <a-button type="dashed" block @click="config.personCountStarts.push({startMode:personalStartModes[0]?.value})">添加个人起点</a-button>
       </details>
     </template>
-    <a-checkbox v-if="config.companies.length || config.people.length" v-model:checked="config.onlyOverrides">仅使用指定公司或个人的档位</a-checkbox>
-    <PracticeTierRanges v-if="!config.onlyOverrides" :config="config" :sections="sections" :amounts="amounts" :include-retrain="config.includeRetrain"/>
+    <p class="tier-note">匹配顺序　个人特例 → 公司特例 → 销售类别 → 通用档位</p>
+    <details v-if="salesCategories.length || config.categories.length" class="tier-person-starts" open>
+      <summary>销售类别默认档位</summary>
+      <div v-for="(category,index) in config.categories" :key="index" class="tier-range">
+        <div class="tier-values">
+          <a-form-item :html-for="'tier-category-'+index" label="销售类别" required>
+            <a-select :id="'tier-category-'+index" v-model:value="category.salesCategoryIds" :options="eligibleCategories(category)"
+              mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label"/>
+          </a-form-item>
+          <a-form-item :html-for="'tier-category-metric-'+index" label="阶梯指标">
+            <a-select :id="'tier-category-metric-'+index" v-model:value="category.metric" :options="metrics"/>
+          </a-form-item>
+        </div>
+        <PracticeTierRanges :config="category" :sections="sectionsFor(category.metric)" :amounts="amounts"
+          :include-retrain="config.includeRetrain" :prefix="'category-'+index+'-'"/>
+        <a-button type="link" danger @click="removeSchedule(config.categories,index)">移除类别档位</a-button>
+      </div>
+      <a-button v-if="canAddCategory" type="dashed" block
+        @click="config.categories.push({salesCategoryIds:[],metric:config.metric,...newSchedule()})">添加类别档位</a-button>
+    </details>
     <details class="tier-person-starts">
-      <summary>按销售公司配置档位</summary>
-      <p class="tier-note">一套档位可选多家公司。按原付款的销售公司选档，累计人数按销售人员计算。</p>
+      <summary>公司特例</summary>
       <div v-for="(company,index) in config.companies" :key="index" class="tier-range">
         <a-form-item :html-for="'tier-company-'+index" label="销售公司" required>
           <a-select :id="'tier-company-'+index" v-model:value="company.companyIds" :options="eligibleCompanies(company)"
@@ -111,8 +138,7 @@ function removeSchedule(schedules, index) {
       <p v-else-if="!companies.length" class="tier-note">暂无可选销售公司。</p>
     </details>
     <details class="tier-person-starts">
-      <summary>按销售人员配置档位</summary>
-      <p class="tier-note">个人档位优先于公司与通用档位。</p>
+      <summary>个人特例</summary>
       <div v-for="(person,index) in config.people" :key="index" class="tier-range">
         <div class="tier-values">
           <a-form-item :html-for="'tier-seller-'+index" label="销售人员" required>
@@ -130,6 +156,11 @@ function removeSchedule(schedules, index) {
       <a-button v-if="config.people.length<people.length" type="dashed" block
         @click="config.people.push({metric:config.metric,...newSchedule()})">添加个人档位</a-button>
       <p v-else-if="!people.length" class="tier-note">暂无可选销售人员。</p>
+    </details>
+    <details class="tier-person-starts" :open="!config.onlyOverrides">
+      <summary>通用档位</summary>
+      <a-checkbox :checked="!config.onlyOverrides" @change="config.onlyOverrides = !$event.target.checked">未命中特例或类别时使用</a-checkbox>
+      <PracticeTierRanges v-if="!config.onlyOverrides" :config="config" :sections="sections" :amounts="amounts" :include-retrain="config.includeRetrain"/>
     </details>
   </div>
 </template>

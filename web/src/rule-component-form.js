@@ -90,6 +90,7 @@ function tierMetric(schedules) {
 
 export function tierFormHasCount(form) {
   return form.metric!=='performance' && (!form.onlyOverrides || form.companies.length>0) ||
+    form.categories.some(row=>row.metric!=='performance') ||
     form.people.some(row=>row.metric!=='performance')
 }
 
@@ -104,6 +105,10 @@ function tierForm(tiers) {
     personCountStarts:(tiers.personCountStarts || []).map(start => ({personId:start.personId, ...countStart(start)})),
     companies:schedules.map(schedule => ({
       companyIds:[...exceptionCompanyIDs(schedule)], count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
+    })),
+    categories:(tiers.categorySchedules || []).map(schedule => ({
+      salesCategoryIds:[...standardCategoryIDs(schedule)], metric:tierMetric([schedule]),
+      count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
     })),
     people:(tiers.personSchedules || []).map(schedule => ({
       personId:schedule.personId, metric:tierMetric([schedule]),

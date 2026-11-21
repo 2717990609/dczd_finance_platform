@@ -328,11 +328,12 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 		return paymentDraft{}, nil, err
 	}
 	companyOffers := practiceCompanyStandards(rule)
-	var companyClassifications map[string]string
-	if companyOffers.usesCategories() || slices.ContainsFunc(history.periods, func(period practiceHistoryPeriod) bool {
+	var companyClassifications, internalSalesCategories map[string]string
+	includeInternalCategories := practiceTierUsesCategories(rule)
+	if includeInternalCategories || companyOffers.usesCategories() || slices.ContainsFunc(history.periods, func(period practiceHistoryPeriod) bool {
 		return !period.settled && period.companyOffers.usesCategories()
 	}) {
-		companyClassifications, err = loadPracticeCompanyClassifications(ctx, tx, facts)
+		companyClassifications, internalSalesCategories, err = loadPracticeCompanyClassifications(ctx, tx, facts, includeInternalCategories)
 		if err != nil {
 			return paymentDraft{}, nil, err
 		}
@@ -351,7 +352,8 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 		return paymentDraft{}, nil, err
 	}
 	runtime := practiceDraftRuntime{appointments: appointments, salesOrganizations: salesOrganizations, companyOffers: companyOffers,
-		companyClassifications: companyClassifications, companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
+		companyClassifications: companyClassifications, internalSalesCategories: internalSalesCategories,
+		companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
 	if usesPracticeRegistrations(rule) {
 		runtime.registrations, err = readPracticeRegistrationInputs(ctx, tx, *summary.PracticeRosterID, true, nil)
 		if err != nil {

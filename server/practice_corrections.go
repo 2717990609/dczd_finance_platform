@@ -362,6 +362,7 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 	  AND l.person_id=ANY($2::bigint[]) AND (
 	   jsonb_path_exists(rule.components,'$[*].tiers.count[*]')
 	   OR jsonb_path_exists(rule.components,'$[*].tiers.companySchedules[*].count[*]')
+	   OR jsonb_path_exists(rule.components,'$[*].tiers.categorySchedules[*].count[*]')
 	   OR jsonb_path_exists(rule.components,'$[*].tiers.personSchedules[*] ? (@.personId == $person).count[*]',
 	    jsonb_build_object('person',l.person_id))))
 	)`, classID, slices.Sorted(maps.Keys(people))).Scan(&affected)
@@ -401,6 +402,7 @@ func (r practiceReplay) applyRecipientRevisions(ctx context.Context, tx pgx.Tx, 
 				// The captured category belongs to the original company. An explicitly
 				// configured replacement can still be priced without a category lookup.
 				delete(r.runtime.companyClassifications, old.PaymentID)
+				delete(r.runtime.internalSalesCategories, old.PaymentID)
 			}
 			for _, user := range practiceCorrectionUsers(revised) {
 				key := identityKey{old.Source, user}
