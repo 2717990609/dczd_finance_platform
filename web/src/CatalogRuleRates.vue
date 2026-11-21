@@ -139,12 +139,14 @@ const rateGroup = ref()
 const rateTableRevision = ref(0)
 const rateRowKey = row => row.draftKey || row.row
 const rateEditorTarget = computed(() => '#'+CSS.escape('catalog-rates-edit-'+selected.value))
-watch([selected,rateGroups], ([,groups]) => {
-  if (!groups.some(group=>group.key===rateGroup.value)) rateGroup.value = groups[0]?.key
-})
-watch(selected, () => {
-  rateGroup.value = rateGroups.value[0]?.key
-  more.value = []
+watch([selected,rateGroups], ([item,groups],[previousItem]) => {
+  const changedItem = item!==previousItem
+  if (changedItem) more.value = []
+  if (changedItem || !groups.some(group=>group.key===rateGroup.value)) {
+    const populated = groups.filter(group=>group.rows.length)
+    rateGroup.value = (populated.find(group=>group.key==='category') ||
+      populated.find(group=>group.key==='general') || populated[0] || groups[0])?.key
+  }
 })
 const ratePriority = computed(() => {
   const titles = ['company','category','inherited','general']
@@ -502,6 +504,7 @@ async function publish() {
             {{ [targetKindLabels[targetKind],targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}
           </p>
           <div v-if="hasRateTable" class="finance-rate-toolbar catalog-rate-toolbar">
+            <div class="catalog-rate-controls">
               <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" size="small"
                 :disabled="structureEditing" role="radiogroup" aria-label="查看比例">
                 <a-radio-button v-for="group in rateGroups" :key="group.key" :value="group.key">
@@ -509,11 +512,12 @@ async function publish() {
                 </a-radio-button>
               </a-radio-group>
               <strong v-else-if="activeRateGroup">{{ activeRateGroup.title }}</strong>
-              <small v-if="ratePriority" class="finance-rate-priority">匹配顺序 {{ ratePriority }}</small>
-              <a-input v-if="activeRateGroup?.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
-                placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
-              <a-button v-if="activeRateGroup?.add" class="finance-rate-add" size="small" :disabled="!editable || structureEditing"
+              <a-button v-if="activeRateGroup?.add" size="small" :disabled="!editable || structureEditing"
                 @click="structureEditor?.addRateCondition(activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
+            </div>
+            <small v-if="ratePriority" class="finance-rate-priority">匹配顺序 {{ ratePriority }}</small>
+            <a-input v-if="activeRateGroup?.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
+              placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
           </div>
           <div v-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
           <template v-if="hasRateTable">
@@ -655,6 +659,7 @@ async function publish() {
 </template>
 
 <style scoped>
+.catalog-rate-controls {display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;min-width:0}
 .catalog-rate-toolbar :deep(.ant-input-affix-wrapper) {width:min(100%,190px)}
 .catalog-rate-table :deep(.ant-table.ant-table-small .ant-table-cell) {padding-block:4px}
 .catalog-rate-table :deep(.ant-table-pagination) {margin-block:6px}
