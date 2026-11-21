@@ -66,7 +66,9 @@ func TestFinanceAccountLoginScopesRulesAndRevokesSession(t *testing.T) {
 		t.Fatalf("scoped rules account saw unrelated order data: %d", w.Code)
 	}
 	postRule := func(product int64) *httptest.ResponseRecorder {
-		payload, _ := json.Marshal(publishRuleInput{ProductID: product, Label: "样本", Components: []component{{Type: "sales", ClassMember: "new", Mode: "rate", Value: 250}}})
+		payload, _ := json.Marshal(publishRuleInput{ProductID: product, Label: "样本", Components: []component{
+			{Type: "sales", ClassMember: "new", Mode: "rate", Value: 250, SourceRole: "DIRECT_REFERRER"},
+		}})
 		return call(http.MethodPost, "/api/v1/rules", string(payload), cookie)
 	}
 	if w := postRule(denied); w.Code != http.StatusForbidden {

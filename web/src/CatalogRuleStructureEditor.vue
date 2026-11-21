@@ -138,7 +138,7 @@ function stage() {
         return
       }
       const item = {label,target:staged.target,role:staged.role,personId:staged.personId,
-        personName:staged.personName,organization:staged.organization,salesScopeUnitIds,...calculationBody(staged)}
+        personName:staged.personName,organization:staged.organization,memberRole:staged.memberRole,salesScopeUnitIds,...calculationBody(staged)}
       if (staged.itemIndex==null) draft.value.items.push(item)
       else draft.value.items.splice(staged.itemIndex,1,item)
     }

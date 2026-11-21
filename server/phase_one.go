@@ -50,6 +50,7 @@ var errPracticeTierCompany = errors.New("规则引用的销售公司未配置或
 
 var errPracticeCountPerson = errors.New("个人累计起点引用的人员不存在")
 var errRuleEditStale = errors.New("此范围已有更新的规则版本，请打开最新版本编辑")
+var errRuleOrderRole = errors.New("请选择销售或推荐分项的订单角色")
 
 var invalid = errors.New("请核对名称、范围与必填配置")
 var conflict = errors.New("记录与现有配置冲突，请重新读取")
@@ -291,7 +292,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope), errors.Is(err, errCatalogPeriodResumeDate),
 		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany),
-		errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap):
+		errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap), errors.Is(err, errRuleOrderRole):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod), errors.Is(err, errCatalogPeriodResumeState), errors.Is(err, errCatalogPeriodResumeTarget),
@@ -691,6 +692,9 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			}
 		}
 		for _, c := range p.Components {
+			if mode == "class" && (c.Type == "sales" || c.Type == "referral") && c.SourceRole == "" {
+				return errRuleOrderRole
+			}
 			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil || len(c.salesCompanies()) != 0) {
 				return invalid
 			}

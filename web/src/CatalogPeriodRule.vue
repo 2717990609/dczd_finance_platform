@@ -472,7 +472,7 @@ async function resumeRule() {
               <a-button v-if="canSave" type="link" :disabled="saving" @click="editingScenarios=true">编辑参与场景</a-button>
             </template>
           </a-descriptions-item>
-          <a-descriptions-item label="业绩范围" :span="2">
+          <a-descriptions-item label="各收款安排共用的业绩范围" :span="2">
             <template v-if="editingPerformance">
               <a-form layout="vertical" class="rule-basics">
                 <a-form-item label="部门、小组" html-for="period-scope-units">
@@ -481,7 +481,7 @@ async function resumeRule() {
                 </a-form-item>
                 <a-form-item>
                   <a-checkbox :checked="!!performanceScope.appointment" :disabled="saving"
-                    @update:checked="performanceScope.appointment=$event ? {} : undefined">仅在任职期间计提</a-checkbox>
+                    @update:checked="performanceScope.appointment=$event ? {} : undefined">只纳入任职期间的订单</a-checkbox>
                 </a-form-item>
                 <template v-if="performanceScope.appointment">
                   <a-form-item label="任职人员" html-for="period-scope-person">

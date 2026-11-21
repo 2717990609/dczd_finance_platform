@@ -103,6 +103,9 @@ const calculationMethods = [
     </template>
   </div>
   <a-alert v-if="registration && registrationError" type="warning" :message="registrationError" show-icon/>
+  <a-form-item v-if="registration">
+    <a-checkbox v-model:checked="registration.exclusive">与其他已标记互斥的报名安排不重复匹配</a-checkbox>
+  </a-form-item>
   <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <template v-if="config.method==='tiers'">

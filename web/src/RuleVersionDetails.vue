@@ -75,9 +75,10 @@ const scope = computed(() => [
   props.rule.periodName || (props.rule.fromOrdinal ? '从第 '+props.rule.fromOrdinal+' 期起' : '产品默认'),
   props.rule.activityType ? label('practiceActivityType', String(props.rule.activityType)) : '',
 ].filter(Boolean).join(' · '))
-const range = (row, count) => {
+const range = (row, count, next) => {
   const value = n => count ? n+' 人' : props.formatMoney(n)
-  return row.through == null ? value(row.from)+' 起' : value(row.from)+' 至 '+value(row.through)
+  if (row.through != null) return value(row.from)+' 至 '+value(row.through)
+  return next ? value(row.from)+' 至 '+value(next.from)+'（不含）' : value(row.from)+' 起'
 }
 function recipient(part) {
   const benefit = part.periodBenefit
@@ -200,11 +201,11 @@ onMounted(async () => {
                 {{ scheduleLabel(schedule) }}
               </h4>
               <ul>
-                <li v-for="row in schedule.count" :key="'count-'+row.from">
-                  累计 {{ range(row,true) }} · {{ standard(row) }}<template v-if="row.retrain">（新报） · 复训 {{ standard(row.retrain) }}</template>
+                <li v-for="(row,index) in schedule.count" :key="'count-'+row.from">
+                  累计 {{ range(row,true,schedule.count[index+1]) }} · {{ standard(row) }}<template v-if="row.retrain">（新报） · 复训 {{ standard(row.retrain) }}</template>
                 </li>
-                <li v-for="row in schedule.performance" :key="'paid-'+row.from">
-                  本期新报净实收 {{ range(row,false) }} · {{ standard(row) }}<template v-if="row.retrain">（新报） · 复训 {{ standard(row.retrain) }}</template>
+                <li v-for="(row,index) in schedule.performance" :key="'paid-'+row.from">
+                  本期新报净实收 {{ range(row,false,schedule.performance[index+1]) }} · {{ standard(row) }}<template v-if="row.retrain">（新报） · 复训 {{ standard(row.retrain) }}</template>
                 </li>
               </ul>
             </template>
@@ -213,18 +214,21 @@ onMounted(async () => {
             <template v-if="part.periodBenefit.registrationScope">
               <p v-if="part.periodBenefit.registrationScope.sellerId">报名销售本人 {{ part.periodBenefit.registrationScope.sellerId }} · {{ registrationCompanyName(part.periodBenefit.registrationScope.sellerCompanyId) }}</p>
               <p v-if="part.periodBenefit.registrationScope.companies?.length">下属公司 {{ part.periodBenefit.registrationScope.companies.map(registrationCompanyName).join('、') }}</p>
+              <p v-if="part.periodBenefit.registrationScope.exclusive">与其他已标记互斥的报名安排不重复匹配</p>
             </template>
             <p v-if="part.periodBenefit.salesCompanies?.length">销售公司 {{ part.periodBenefit.salesCompanies.map(companyName).join('、') }}</p>
             <p v-if="part.periodBenefit.salesPeople?.length">销售人员 {{ part.periodBenefit.salesPeople.map(personName).join('、') }} · {{ roleName(part.sourceRole) }}</p>
             <p v-if="part.periodBenefit.salesUnits?.length">业绩部门或小组 {{ part.periodBenefit.salesUnits.map(unitName).join('、') }} · {{ roleName(part.sourceRole) }}</p>
             <p v-if="part.periodBenefit.appointmentUnitId">任职期间 {{ unitName(part.periodBenefit.appointmentUnitId) }} · {{ label('appointmentKind',part.periodBenefit.appointmentKind) }}</p>
             <ul v-if="part.periodBenefit.tiers?.length">
-              <li v-for="row in part.periodBenefit.tiers" :key="row.from">{{ range(row,false) }} · {{ rate(row.value,10000) }}</li>
+              <li v-for="(row,index) in part.periodBenefit.tiers" :key="row.from">
+                {{ range(row,false,part.periodBenefit.tiers[index+1]) }} · {{ rate(row.value,10000) }}
+              </li>
             </ul>
             <p v-if="!part.periodBenefit.registrationScope && !part.periodBenefit.salesCompanies?.length && !part.periodBenefit.salesPeople?.length && !part.periodBenefit.salesUnits?.length && !part.periodBenefit.appointmentUnitId && !part.periodBenefit.tiers?.length">按本班符合条件的净实收计提</p>
           </template>
           <template v-if="part.companySales">
-            <p v-if="part.companySales.internalCompanies?.length">内部销售公司 {{ part.companySales.internalCompanies.map(companyName).join('、') }}</p>
+            <p v-if="part.companySales.internalCompanies?.length">新报和复训共用的内部销售公司 {{ part.companySales.internalCompanies.map(companyName).join('、') }}</p>
             <p v-if="part.companySales.recommendationRecipients?.length">公司推荐收款范围 {{ part.companySales.recommendationRecipients.map(unitName).join('、') }}</p>
           </template>
           <ul v-if="part.retrainSplits?.length">

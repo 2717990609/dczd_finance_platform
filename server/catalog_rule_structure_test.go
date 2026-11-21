@@ -8,6 +8,25 @@ import (
 	"testing"
 )
 
+func TestCatalogPoolOwnerAndMembersUseIndependentRoles(t *testing.T) {
+	options := catalogStructureOptions{
+		Organizations: []catalogStructureOption{{Value: "pool-party", UnitID: "team-unit", Kind: "DEPARTMENT"}},
+		Roles:         []catalogStructureOption{{Value: "PROJECT_OWNER", Personal: true}, {Value: "DELIVERY_TEAM", Organization: true}},
+	}
+	action := vipBenefitAction{Item: "delivery", Label: "交付"}
+	target := catalogBenefitTarget{Target: "pool", Organization: "pool-party", Role: "PROJECT_OWNER", MemberRole: "DELIVERY_TEAM"}
+	if err := configureCatalogBenefitTarget(&action, target, options, nil); err != nil {
+		t.Fatal(err)
+	}
+	if action.OwnerRole != "PROJECT_OWNER" || action.Role != "DELIVERY_TEAM" {
+		t.Fatalf("owner and member eligibility must be distinct: %+v", action)
+	}
+	target.MemberRole = "PROJECT_OWNER"
+	if err := configureCatalogBenefitTarget(&action, target, options, nil); err == nil {
+		t.Fatal("a project-only appointment cannot become the required role of distribution members")
+	}
+}
+
 func TestCatalogGroupedRateConditionsKeepOneRowAndCompanyPriority(t *testing.T) {
 	base := json.RawMessage(`{"sales_organization_party_id":"ANY","sales_category_ids":["partner","regional"],"sales_relationship":"ANY","rate_bps":1200}`)
 	special := json.RawMessage(`{"sales_organization_party_ids":["alpha","beta"],"sales_relationship":"ANY","rate_bps":2000}`)

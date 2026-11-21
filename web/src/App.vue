@@ -1247,10 +1247,14 @@ function ruleComponentBody(row) {
       value:minor(must(tier.retrain?.value,'请填写各档位复训计提值')),
     }} : {}),
   })).sort((a,b) => a.from-b.from)
-  const scheduleBody = (schedule, metric) => ({
-    ...(metric!=='performance' ? {count:serialize(schedule.count,Number)} : {}),
-    ...(metric!=='count' ? {performance:serialize(schedule.performance,minor)} : {}),
-  })
+  const scheduleBody = (schedule, metric) => {
+    if (metric!=='performance' && !schedule.count.length) throw new Error('请添加至少一档累计人数标准。')
+    if (metric!=='count' && !schedule.performance.length) throw new Error('请添加至少一档本期实付标准。')
+    return {
+      ...(metric!=='performance' ? {count:serialize(schedule.count,Number)} : {}),
+      ...(metric!=='count' ? {performance:serialize(schedule.performance,minor)} : {}),
+    }
+  }
   component.tiers = form.onlyOverrides ? {} : scheduleBody(form,form.metric)
   if (form.includeRetrain) component.tiers.includeRetrain = true
   if (tierFormHasCount(form)) {
@@ -1271,7 +1275,7 @@ function ruleComponentBody(row) {
     if (!ids.length) throw new Error('请选择销售公司')
     return {
       ...(ids.length===1 ? {companyId:ids[0]} : {companyIds:ids}),
-      ...scheduleBody(company,form.metric),
+      ...scheduleBody(company,must(company.metric,'请选择公司阶梯指标')),
     }
   })
   if (form.people.length) component.tiers.personSchedules = form.people.map(person => ({

@@ -150,7 +150,7 @@ func (d catalogAggregateDirectory) groupTarget(item catalogPeriodItem, at time.T
 		}
 	}
 	if key.Unit == "" {
-		if d.InactiveUnits[item.unit] {
+		if d.InactiveUnits[item.unit] || d.InactiveUnits[item.OrganizationKey] {
 			return target, key, "BENEFIT_ORG_INACTIVE"
 		}
 		return target, key, "BENEFIT_ORG_MISSING"
@@ -493,7 +493,8 @@ func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catal
 			return directory, err
 		}
 	}
-	rows, err := tx.Query(ctx, `SELECT b.party_uuid::text,o.id::text,o.name
+	rows, err := tx.Query(ctx, `SELECT CASE WHEN o.status='ACTIVE' THEN b.party_uuid::text ELSE '' END,
+	 CASE WHEN o.status='ACTIVE' THEN o.id::text ELSE b.party_uuid::text END,o.name
 	 FROM catalog_benefit_organizations b JOIN catalog_sales_context c ON c.source=b.source AND c.captured_at=b.observed_at
 	 JOIN organization_units o ON o.id=b.unit_id
 	 WHERE b.source='DCAI' AND c.benefit_ready AND b.party_uuid::text=ANY($1)

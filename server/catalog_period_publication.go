@@ -319,6 +319,15 @@ func prepareCatalogPeriodRevision(ctx context.Context, db catalogPeriodReader, b
 	if err != nil {
 		return nil, err
 	}
+	var closed bool
+	if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM periods p JOIN settlements final ON final.period_id=p.id
+	 WHERE p.aggregate_package_id=$1::uuid AND (p.starts_on,p.ends_on)=($2::date,$3::date))`,
+		base.packageID, at.Format(time.DateOnly), at.AddDate(0, 1, -1).Format(time.DateOnly)).Scan(&closed); err != nil {
+		return nil, err
+	}
+	if closed {
+		return nil, errSettlementClosed
+	}
 	body, err := applyCatalogPeriodChanges(ctx, db, base.raw, input.Edits, input.Components)
 	if err != nil {
 		return nil, err

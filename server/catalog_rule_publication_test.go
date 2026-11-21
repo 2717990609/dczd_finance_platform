@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -78,6 +79,19 @@ func TestEditCatalogTeamSplitRatesKeepsLinkedRateAndFrozenDefinition(t *testing.
 		`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY",
 		  "rate_table":[{"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":1000}]`,
 	).Replace(testVIPBenefits))
+	teamRate := int64(250)
+	rename, err := editCatalogLeaderArrangements(context.Background(), nil, definition, []catalogLeaderChange{{
+		ItemKey: vipTeamLeaderItem, Label: "改名后的负责人", Target: "inherit", Scope: vipLeaderScope{Orders: "all"},
+		catalogBenefitCalculation: catalogBenefitCalculation{Rate: &teamRate},
+	}})
+	if err != nil {
+		t.Fatalf("rename inherited team leader: %v", err)
+	}
+	renamedSales, _ := readVIPSalesPolicy(rename)
+	renamedBenefits, _ := readVIPBenefits(rename)
+	if renamedSales.Split.independentTeam || catalogLeaderComponents(renamedBenefits)[1].Label != "改名后的负责人" {
+		t.Fatal("renaming should keep the leader within the original rounded split")
+	}
 	rates := catalogSplitRates{Total: 1000, Sales: 450, HeadSales: 600, GroupLead: 150, Service: 175, TeamLead: 225}
 	body, changed, err := editCatalogTeamSplitRates(definition, rates)
 	if err != nil || !changed {

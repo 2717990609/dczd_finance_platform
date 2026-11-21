@@ -280,12 +280,12 @@ function targetName(item) {
   return sheet.value.structureOptions.organizations.find(org=>org.value===edit.organization)?.label
 }
 function originalTarget(item) {
-  return {target:item.targetKind,role:item.targetRole,organization:item.targetOrganization,
+  return {target:item.targetKind,role:item.targetRole,memberRole:item.memberRole,organization:item.targetOrganization,
     personId:item.recipient?.id,personName:item.recipient?.name}
 }
 function setTarget(item, payee) {
   const original = originalTarget(item)
-  if (['target','role','organization','personId'].every(field=>payee[field]===original[field])) {
+  if (['target','role','memberRole','organization','personId'].every(field=>payee[field]===original[field])) {
     targetEdits.value.delete(item.itemKey)
   } else {
     targetEdits.value.set(item.itemKey,payee)
@@ -323,7 +323,8 @@ function setLeader(item, form) {
 }
 function leaderSummary(item) {
   const form = leaderForm(item)
-  const payee = form.target==='person' ? form.personName : item.itemKey==='internal-group-leader' ? '各小组的在任负责人' : '各团队的在任负责人'
+  const payee = form.target==='person' ? form.personName : item.itemKey==='internal-group-leader' ? '各小组的在任负责人' :
+    form.target==='inherit' ? '规则登记的团队负责人' : '各团队的在任负责人'
   return [payee,form.amount==null || form.amount==='' ? '' : form.amount+(form.method==='fixed' ? ' 元/笔' : '%')].filter(Boolean).join(' · ')
 }
 const commissionUnitNames = computed(() => ({...sheet.value?.scopeUnitNames,
@@ -670,6 +671,7 @@ async function publish() {
               <a-descriptions v-else size="small" bordered :column="1">
                 <a-descriptions-item v-for="row in splitRows" :key="row.key" :label="row.label">{{ percent(row.rate) }}</a-descriptions-item>
               </a-descriptions>
+              <p class="rule-formula">销售总比例的拆分校验使用登记的小组负责人 {{ percent(teamSplit.groupLead) }} 和团队负责人 {{ percent(teamSplit.teamLead) }}。</p>
               <template v-if="team">
               <div class="catalog-rule-fields">
               <a-form-item label="销售公司" html-for="catalog-team-company">
@@ -700,7 +702,20 @@ async function publish() {
             <div v-if="selected===leader.itemKey" :id="'catalog-rate-'+leader.itemKey" class="rule-block-body">
               <CatalogLeaderArrangement :item-key="leader.itemKey" :model-value="leaderForm(leader)" :teams="sheet.teams || []"
                 :api="api" :people-filters="peopleFilters" :disabled="!editable || structureEditing"
-                @update:model-value="setLeader(leader,$event)"/>
+                :inherited="leader.targetKind==='inherit' ? originalLeader(leader) : undefined"
+                @update:model-value="setLeader(leader,$event)">
+                <div v-if="leader.itemKey==='internal-team-leader' && leaderForm(leader).target==='inherit' && team" class="catalog-rule-fields">
+                  <a-form-item label="查看登记人所属团队" html-for="catalog-head-company">
+                    <a-select id="catalog-head-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
+                  </a-form-item>
+                  <a-form-item label="规则登记负责人" html-for="catalog-team-head">
+                    <AppointmentPersonSelect v-if="!applied && sheet.mayPublish" id="catalog-team-head" :key="selectedTeam"
+                      :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('head')" :value="teamPerson('head')?.id"
+                      :disabled="!editable" @change="(id,option)=>setTeamPerson('head',id,option)"/>
+                    <span v-else>{{ team.head.name }}</span>
+                  </a-form-item>
+                </div>
+              </CatalogLeaderArrangement>
             </div>
           </section>
           </div>

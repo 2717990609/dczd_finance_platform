@@ -20,6 +20,7 @@ type catalogRateComponent struct {
 	TargetLabel     string             `json:"targetLabel,omitempty"`
 	TargetOrg       string             `json:"targetOrganization,omitempty"`
 	TargetRole      string             `json:"targetRole,omitempty"`
+	MemberRole      string             `json:"memberRole,omitempty"`
 	TeamSplit       *catalogSplitRates `json:"teamSplit,omitempty"`
 	LeaderScope     *vipLeaderScope    `json:"leaderScope,omitempty"`
 	CommissionUnits []string           `json:"salesScopeUnitIds,omitempty"`
@@ -124,6 +125,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		}
 		if item.TargetKind == "pool" {
 			item.TargetOrg, item.TargetRole = action.PoolParty, action.OwnerRole
+			item.MemberRole = action.Role
 			item.TargetLabel = action.PoolName
 			if name := organizations[action.PoolParty]; name != "" {
 				item.TargetLabel += " · " + name

@@ -80,6 +80,7 @@ type vipInternalSplit struct {
 	Service                           int64             `json:"service_rate_bps"`
 	TeamHead                          int64             `json:"team_head_rate_bps"`
 	Teams                             []vipInternalTeam `json:"teams"`
+	LeaderLabels                      map[string]string `json:"leader_labels,omitempty"`
 	independentGroup, independentTeam bool
 	Reviews                           []struct {
 		Order   string `json:"source_order_id"`

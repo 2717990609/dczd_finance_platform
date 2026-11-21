@@ -168,7 +168,7 @@ watch(amounts, choices => {
         <a-form-item label="业绩归给订单里的谁" :html-for="field('role')" required>
           <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles" size="small"/>
         </a-form-item>
-        <a-form-item label="沿用个人提成的内部公司" :html-for="field('internal')">
+        <a-form-item label="新报和复训共用的内部销售公司" :html-for="field('internal')" extra="这些公司沿用个人提成">
           <a-select :id="field('internal')" v-model:value="component.companySales.internalCompanies" :options="internalOptions"
             mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" size="small"/>
         </a-form-item>

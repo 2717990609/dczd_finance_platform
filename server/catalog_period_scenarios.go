@@ -15,7 +15,7 @@ const catalogPeriodScenarioOptionsSQL = `WITH routes AS (` + catalogAggregateRou
   'requiresCompletion',requires_completion) ORDER BY label,sku_code),'[]')
  FROM (SELECT sku_code,min(sku_label) AS label,array_agg(DISTINCT product_id) AS products,
    coalesce(bool_and(` + catalogScenarioCompletion + `),false) AS requires_completion FROM routes r
-  WHERE ($2::timestamptz IS NULL OR effective_to IS NULL OR $2<effective_to)
+  WHERE (` + catalogScenarioSupportedRoute + `) AND ($2::timestamptz IS NULL OR effective_to IS NULL OR $2<effective_to)
    AND ($3::timestamptz IS NULL OR effective_from<$3)
   GROUP BY sku_code) scopes`
 

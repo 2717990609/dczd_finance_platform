@@ -417,7 +417,7 @@ func applyVIPBenefitQuote(row *catalogPaymentMatch, data vipRuntimeData, benefit
 	if policy, ok := benefits[row.RuleID]; ok {
 		row.FixedParts = row.FixedParts[:0]
 		row.BenefitParts = quoteVIPBenefits(req, issue, policy, data)
-	} else if data.Product == "DCAI_VIP" {
+	} else {
 		row.BenefitStatus = "BENEFIT_RULE_UNSUPPORTED"
 	}
 }

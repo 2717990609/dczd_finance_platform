@@ -393,18 +393,6 @@ func (s workspace) postCatalogPeriodActivity(w http.ResponseWriter, r *http.Requ
 			}
 			base.Cycle = proposal.Cycle
 			window := periodWindow{Start: at, Through: at.AddDate(0, 1, 0)}
-			if base.packageID != "" {
-				var closed bool
-				err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM periods p JOIN settlements final ON final.period_id=p.id
-				 WHERE p.aggregate_package_id=$1::uuid AND (p.starts_on,p.ends_on)=($2::date,$3::date))`,
-					base.packageID, window.Start.Format(time.DateOnly), window.Through.AddDate(0, 0, -1).Format(time.DateOnly)).Scan(&closed)
-				if err != nil {
-					return err
-				}
-				if closed {
-					return errSettlementClosed
-				}
-			}
 			var proposed *catalogAggregateRule
 			if !bytes.Equal(body, base.raw) {
 				proposed = &catalogAggregateRule{From: at, Through: base.Through, Definition: proposal}

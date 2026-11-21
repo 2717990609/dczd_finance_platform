@@ -22,6 +22,10 @@ func TestPracticeReusableRuleUsesConfirmedOpeningType(t *testing.T) {
 		return value.(map[string]int64)["id"]
 	}
 	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_OPENING_TYPES", Name: "开班方式验收", PeriodMode: "class"}))
+	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, Label: "缺少订单角色",
+		Components: []component{{Type: "sales", Mode: "rate", ClassMember: "new", Value: 100}}}); !errors.Is(err, errRuleOrderRole) {
+		t.Fatalf("publishing a class sales item without an order role: %v", err)
+	}
 	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "activity-rules"}))
 	person := id(s.createPerson(ctx, createPersonInput{Name: "样本销售"}))
 	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: person, Source: "DCZD", ExternalID: "seller", ValidFrom: "2026-08-01T00:00:00Z"}))

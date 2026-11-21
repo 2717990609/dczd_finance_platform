@@ -24,19 +24,23 @@ func catalogLeaderComponents(policy vipBenefitPolicy) []catalogRateComponent {
 	}
 	group, team := policy.split.Group, policy.split.TeamHead
 	arrangements := []catalogRateComponent{
-		{ItemKey: vipGroupLeaderItem, Label: "小组负责人提成", TargetKind: "appointment", Rate: &group,
+		{ItemKey: vipGroupLeaderItem, Label: "小组负责人提成", TargetKind: "inherit", Rate: &group,
 			LeaderScope: &vipLeaderScope{Orders: "members"}},
-		{ItemKey: vipTeamLeaderItem, Label: "团队负责人提成", TargetKind: "appointment", Rate: &team,
+		{ItemKey: vipTeamLeaderItem, Label: "团队负责人提成", TargetKind: "inherit", Rate: &team,
 			LeaderScope: &vipLeaderScope{Orders: "all"}},
 	}
 	for i := range arrangements {
 		row := &arrangements[i]
 		index := slices.IndexFunc(policy.actions, func(a vipBenefitAction) bool { return a.Item == row.ItemKey })
 		if index < 0 {
+			if label := policy.split.LeaderLabels[row.ItemKey]; label != "" {
+				row.Label = label
+			}
 			continue
 		}
 		a := policy.actions[index]
 		row.Label, row.Rate, row.Fixed, row.LeaderScope = a.Label, a.Rate, a.Fixed, a.Leader
+		row.TargetKind = "appointment"
 		if a.Designated != "" {
 			row.TargetKind = "person"
 		}
@@ -62,6 +66,7 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 		}
 	}
 	var people map[int64]string
+	var inheritedLabels map[string]string
 	if len(recipients) > 0 {
 		people, err = catalogNewRecipientKeys(ctx, tx, recipients, nil)
 		if err != nil {
@@ -72,6 +77,34 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 		label := strings.TrimSpace(change.Label)
 		if !textOK(label, 80) || len(change.Rows) > 0 {
 			return nil, invalid
+		}
+		if change.Target == "inherit" {
+			var amount int64
+			var orders string
+			switch change.ItemKey {
+			case vipGroupLeaderItem:
+				if policy.Split.independentGroup {
+					return nil, invalid
+				}
+				amount, orders = policy.Split.Group, "members"
+			case vipTeamLeaderItem:
+				if policy.Split.independentTeam {
+					return nil, invalid
+				}
+				amount, orders = policy.Split.TeamHead, "all"
+			}
+			if change.PersonID != 0 || change.Fixed != nil || change.Rate == nil || *change.Rate != amount ||
+				change.Scope.Orders != orders || len(change.Scope.Companies)+len(change.Scope.Groups) != 0 {
+				return nil, invalid
+			}
+			if inheritedLabels == nil {
+				inheritedLabels = policy.Split.LeaderLabels
+				if inheritedLabels == nil {
+					inheritedLabels = make(map[string]string)
+				}
+			}
+			inheritedLabels[change.ItemKey] = label
+			continue
 		}
 		action := vipBenefitAction{
 			Item: change.ItemKey, Label: label, Role: vipLeaderRole(change.ItemKey), Leader: &change.Scope,
@@ -108,6 +141,14 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 		} else {
 			actions[index] = fields
 		}
+	}
+	if inheritedLabels != nil {
+		var split map[string]json.RawMessage
+		if err := json.Unmarshal(root["internal_sales_direct_split"], &split); err != nil {
+			return nil, err
+		}
+		split["leader_labels"], _ = json.Marshal(inheritedLabels)
+		root["internal_sales_direct_split"], _ = json.Marshal(split)
 	}
 	root["benefit_actions"], err = json.Marshal(actions)
 	if err != nil {

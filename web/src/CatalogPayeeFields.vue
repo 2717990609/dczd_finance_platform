@@ -15,12 +15,18 @@ const targets = computed(() => [
 const organizations = computed(() => props.options.organizations.filter(option=>
   payee.value.target!=='company' || option.kind==='COMPANY'))
 const roles = computed(() => props.options.roles.filter(option=>payee.value.target==='pool' || option.personal))
+const memberRoles = computed(() => {
+  const available = props.options.roles.filter(option=>option.organization || option.value==='SALES')
+  if (!payee.value.memberRole || available.some(option=>option.value===payee.value.memberRole)) return available
+  const original = props.options.roles.find(option=>option.value===payee.value.memberRole)
+  return [...available,original || {value:payee.value.memberRole,label:payee.value.memberRole}]
+})
 const field = key => props.prefix+'-'+key
 function update(fields) {
   payee.value = {...payee.value,...fields}
 }
 function changeTarget(target) {
-  update({target,role:undefined,personId:undefined,personName:undefined,organization:undefined})
+  update({target,role:undefined,memberRole:undefined,personId:undefined,personName:undefined,organization:undefined})
 }
 </script>
 
@@ -43,5 +49,9 @@ function changeTarget(target) {
     :html-for="field('role')" required>
     <a-select :id="field('role')" :value="payee.role" :options="roles" show-search option-filter-prop="label" :disabled="disabled"
       @update:value="update({role:$event})"/>
+  </a-form-item>
+  <a-form-item v-if="payee.target==='pool'" label="可参与分配的成员岗位" :html-for="field('member-role')" required>
+    <a-select :id="field('member-role')" :value="payee.memberRole" :options="memberRoles" show-search option-filter-prop="label"
+      :disabled="disabled" @update:value="update({memberRole:$event})"/>
   </a-form-item>
 </template>

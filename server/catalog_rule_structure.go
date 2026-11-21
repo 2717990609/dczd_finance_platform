@@ -51,6 +51,7 @@ type catalogNewRateRow struct {
 type catalogBenefitTarget struct {
 	Target       string `json:"target"`
 	Role         string `json:"role,omitempty"`
+	MemberRole   string `json:"memberRole,omitempty"`
 	PersonID     int64  `json:"personId,omitempty"`
 	Organization string `json:"organization,omitempty"`
 }
@@ -494,6 +495,9 @@ func configureCatalogBenefitCalculation(action *vipBenefitAction, calculation ca
 
 func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenefitTarget,
 	options catalogStructureOptions, people map[int64]string) error {
+	if target.Target != "pool" && target.MemberRole != "" {
+		return invalid
+	}
 	before := *action
 	action.Mode, action.Role = "PARTY", ""
 	action.Designated, action.Company = "", ""
@@ -528,6 +532,16 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 		action.PoolCode, action.PoolName = action.Item, action.Label
 		if before.Mode == "TEAM_POOL" {
 			action.Role, action.PoolCode, action.PoolName = before.Role, before.PoolCode, before.PoolName
+		}
+		if target.MemberRole != "" && target.MemberRole != action.Role {
+			member := catalogStructureOptionFor(options.Roles, target.MemberRole)
+			if member.Value == "" || !member.Organization && member.Value != "SALES" {
+				return invalid
+			}
+			action.Role = member.Value
+		} else if before.Mode != "TEAM_POOL" && target.MemberRole != "" &&
+			!role.Organization && role.Value != "SALES" {
+			return invalid
 		}
 	default:
 		return invalid

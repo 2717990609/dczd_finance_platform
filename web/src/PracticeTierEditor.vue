@@ -59,9 +59,6 @@ function removeSchedule(schedules, index) {
 <template>
   <div class="tier-editor">
     <div class="tier-settings">
-      <a-form-item v-if="!config.onlyOverrides || config.companies.length" html-for="tier-metric" label="通用与公司档位指标">
-        <a-select id="tier-metric" v-model:value="config.metric" :options="metrics"/>
-      </a-form-item>
       <a-checkbox :checked="config.includeRetrain" :disabled="retrainUnavailable && !config.includeRetrain"
         @change="setIncludeRetrain($event.target.checked)">复训共用此阶梯</a-checkbox>
     </div>
@@ -126,15 +123,20 @@ function removeSchedule(schedules, index) {
     <details class="tier-person-starts">
       <summary>公司特例</summary>
       <div v-for="(company,index) in config.companies" :key="index" class="tier-range">
-        <a-form-item :html-for="'tier-company-'+index" label="销售公司" required>
-          <a-select :id="'tier-company-'+index" v-model:value="company.companyIds" :options="eligibleCompanies(company)"
-            mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label"/>
-        </a-form-item>
-        <PracticeTierRanges :config="company" :sections="sections" :amounts="amounts"
+        <div class="tier-values">
+          <a-form-item :html-for="'tier-company-'+index" label="销售公司" required>
+            <a-select :id="'tier-company-'+index" v-model:value="company.companyIds" :options="eligibleCompanies(company)"
+              mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label"/>
+          </a-form-item>
+          <a-form-item :html-for="'tier-company-metric-'+index" label="公司阶梯指标">
+            <a-select :id="'tier-company-metric-'+index" v-model:value="company.metric" :options="metrics"/>
+          </a-form-item>
+        </div>
+        <PracticeTierRanges :config="company" :sections="sectionsFor(company.metric)" :amounts="amounts"
           :include-retrain="config.includeRetrain" :prefix="'company-'+index+'-'"/>
         <a-button type="link" danger @click="removeSchedule(config.companies,index)">移除公司档位</a-button>
       </div>
-      <a-button v-if="canAddCompany" type="dashed" block @click="config.companies.push({companyIds:[],...newSchedule()})">添加公司档位</a-button>
+      <a-button v-if="canAddCompany" type="dashed" block @click="config.companies.push({companyIds:[],metric:config.metric,...newSchedule()})">添加公司档位</a-button>
       <p v-else-if="!companies.length" class="tier-note">暂无可选销售公司。</p>
     </details>
     <details class="tier-person-starts">
@@ -160,6 +162,9 @@ function removeSchedule(schedules, index) {
     <details class="tier-person-starts" :open="!config.onlyOverrides">
       <summary>通用档位</summary>
       <a-checkbox :checked="!config.onlyOverrides" @change="config.onlyOverrides = !$event.target.checked">未命中特例或类别时使用</a-checkbox>
+      <a-form-item v-if="!config.onlyOverrides" html-for="tier-metric" label="通用阶梯指标">
+        <a-select id="tier-metric" v-model:value="config.metric" :options="metrics"/>
+      </a-form-item>
       <PracticeTierRanges v-if="!config.onlyOverrides" :config="config" :sections="sections" :amounts="amounts" :include-retrain="config.includeRetrain"/>
     </details>
   </div>

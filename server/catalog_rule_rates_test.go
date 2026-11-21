@@ -60,6 +60,9 @@ func TestCatalogRateComponentsDescribeActualRecipients(t *testing.T) {
 	if len(items) != 4 {
 		t.Fatalf("want four configured items, got %d", len(items))
 	}
+	if items[3].TargetRole != "TEAM_LEAD" || items[3].MemberRole != "DELIVERY_TEAM" {
+		t.Fatalf("the pool must show its owner role and allocation member role separately: %+v", items[3])
+	}
 	if rows := items[0].Rows; len(rows) != 2 || rows[0].LimitsRelationship || !rows[1].LimitsRelationship {
 		t.Fatalf("only the direct-sales row should show a relationship condition: %+v", rows)
 	}

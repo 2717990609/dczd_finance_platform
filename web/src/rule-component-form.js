@@ -81,7 +81,7 @@ export function catalogPayeeComplete(payee) {
     case 'referrer': return true
     case 'person': return !!(payee.personId && payee.role)
     case 'company': return !!payee.organization
-    case 'pool': return !!(payee.organization && payee.role)
+    case 'pool': return !!(payee.organization && payee.role && payee.memberRole)
     default: return false
   }
 }
@@ -145,14 +145,13 @@ function countStart(start) {
   }
 }
 
-function tierMetric(schedules) {
-  const hasCount = schedules.some(schedule => schedule.count?.length)
-  const hasPerformance = schedules.some(schedule => schedule.performance?.length)
-  return hasCount ? (hasPerformance ? 'fallback' : 'count') : 'performance'
+function tierMetric(schedule) {
+  return schedule.count?.length ? (schedule.performance?.length ? 'fallback' : 'count') : 'performance'
 }
 
 export function tierFormHasCount(form) {
-  return form.metric!=='performance' && (!form.onlyOverrides || form.companies.length>0) ||
+  return !form.onlyOverrides && form.metric!=='performance' ||
+    form.companies.some(row=>row.metric!=='performance') ||
     form.categories.some(row=>row.metric!=='performance') ||
     form.people.some(row=>row.metric!=='performance')
 }
@@ -162,19 +161,20 @@ function tierForm(tiers) {
   return {
     ...countStart(tiers),
     includeRetrain:Boolean(tiers.includeRetrain),
-    metric:tierMetric([tiers,...schedules]),
+    metric:tierMetric(tiers),
     onlyOverrides:!tiers.count?.length && !tiers.performance?.length,
     count:tierRows(tiers.count,1), performance:tierRows(tiers.performance,100),
     personCountStarts:(tiers.personCountStarts || []).map(start => ({personId:start.personId, ...countStart(start)})),
     companies:schedules.map(schedule => ({
-      companyIds:[...exceptionCompanyIDs(schedule)], count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
+      companyIds:[...exceptionCompanyIDs(schedule)], metric:tierMetric(schedule),
+      count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
     })),
     categories:(tiers.categorySchedules || []).map(schedule => ({
-      salesCategoryIds:[...standardCategoryIDs(schedule)], metric:tierMetric([schedule]),
+      salesCategoryIds:[...standardCategoryIDs(schedule)], metric:tierMetric(schedule),
       count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
     })),
     people:(tiers.personSchedules || []).map(schedule => ({
-      personId:schedule.personId, metric:tierMetric([schedule]),
+      personId:schedule.personId, metric:tierMetric(schedule),
       count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
     })),
   }
