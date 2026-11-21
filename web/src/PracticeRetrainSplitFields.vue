@@ -33,28 +33,11 @@ function setBasis(field, amount, basis) {
       </a-form-item>
     </fieldset>
     <fieldset>
-      <legend>服务分成</legend>
-      <a-form-item label="服务人员" :html-for="prefix+'-service'">
-        <a-select :id="prefix+'-service'" v-model:value="split.servicePersonId" :options="people" allow-clear
-          show-search option-filter-prop="label" placeholder="选择服务人员"/>
-      </a-form-item>
-      <template v-if="split.servicePersonId">
-        <a-form-item label="服务计提方式" :html-for="prefix+'-service-basis'" required>
-          <a-select :id="prefix+'-service-basis'" :value="split.serviceBasis" :options="practiceRetrainShareMethods"
-            @update:value="setBasis('serviceBasis','service',$event)"/>
-        </a-form-item>
-        <a-form-item :label="split.serviceBasis==='fixed' ? '服务份额（元）' : '服务比例（%）'" :html-for="prefix+'-service-amount'" required>
-          <a-input-number :id="prefix+'-service-amount'" v-model:value="split.service" :min="0"
-            :max="split.serviceBasis==='fixed' ? amount : 100" :precision="split.serviceBasis==='fixed' ? 2 : 4"/>
-        </a-form-item>
-      </template>
-    </fieldset>
-    <fieldset>
       <legend>资金池分成</legend>
       <p v-if="remainder!=null" class="tier-note" role="status">
-        {{ remainder<0 ? '销售和服务份额合计超出复训总提成' : '每份报名归入 '+formatMoney(remainder) }}
+        {{ remainder<0 ? '已配置份额合计超出复训总提成' : '每份报名归入 '+formatMoney(remainder) }}
       </p>
-      <p v-else-if="dynamic" class="tier-note">归入每份复训提成扣除销售和服务后的余额</p>
+      <p v-else-if="dynamic" class="tier-note">归入每份复训提成扣除已配置份额后的余额</p>
       <PracticePoolFields :target="split.pool" :prefix="prefix+'-split'" :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
     </fieldset>
   </div>

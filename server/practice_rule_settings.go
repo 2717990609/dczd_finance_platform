@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strconv"
@@ -121,6 +122,8 @@ type savePracticeRuleSettingsInput struct {
 	ExistingCompanyID string
 }
 
+var errPracticeServiceSeparate = errors.New("请在分润规则中单独配置服务提成")
+
 func (s workspace) savePracticeRuleSettings(ctx context.Context, input savePracticeRuleSettingsInput) (any, error) {
 	countChange := input.CountStart != nil || input.ExistingPersonID > 0
 	splitChange := input.RetrainSplit != nil || input.ExistingCompanyID != ""
@@ -209,14 +212,28 @@ func editPracticeRuleSettings(pub *publishRuleInput, input savePracticeRuleSetti
 	}
 	company := input.ExistingCompanyID
 	editing := company != ""
-	if split := input.RetrainSplit; split != nil {
+	part := &pub.Components[i]
+	split := input.RetrainSplit
+	if split != nil {
 		if editing && split.CompanyID != company {
 			return invalid
 		}
 		company = split.CompanyID
+		if split.ServicePersonID != 0 || split.ServiceMinor != 0 || split.ServiceRate != nil {
+			return errPracticeServiceSeparate
+		}
+		if editing {
+			for _, saved := range part.retrainSplits() {
+				if saved.CompanyID == company {
+					next := *split
+					next.ServicePersonID, next.ServiceMinor, next.ServiceRate = saved.ServicePersonID, saved.ServiceMinor, saved.ServiceRate
+					split = &next
+					break
+				}
+			}
+		}
 	}
-	part := &pub.Components[i]
-	rows, err := replacePracticeRuleSetting(part.retrainSplits(), input.RetrainSplit,
+	rows, err := replacePracticeRuleSetting(part.retrainSplits(), split,
 		func(row practiceRetrainSplit) bool { return row.CompanyID == company }, editing)
 	if len(rows) > 0 {
 		part.RetrainSplits = &rows

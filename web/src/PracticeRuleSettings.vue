@@ -61,7 +61,7 @@ const rows = computed(() => {
 const columns = computed(() => [
   {title:isCount.value ? '人员' : '销售公司',key:'name',width:160},
   ...(isCount.value ? [{title:'累计起点',key:'start',width:190}] : [
-    {title:'销售份额',key:'sales',width:105},{title:'服务份额',key:'service',width:155},{title:'资金池份额',key:'pool',width:180},
+    {title:'销售份额',key:'sales',width:150},{title:'资金池份额',key:'pool',width:180},
   ]),
   {title:'适用规则',key:'scope',width:235},
   ...(props.canEdit ? [{title:'操作',key:'action',width:80}] : []),
@@ -123,9 +123,14 @@ async function save() {
   saving.value = true
   try {
     if (!currentRule.value) throw new Error('请选择适用规则')
-    const body = {productId:props.productId,ruleId,
-      ...(isCount.value ? {countStart:countPayload(entry),existingPersonId:existing?.personId}
-        : {retrainSplit:practiceRetrainSplitBody(entry,fixedRetrainTotal(currentRule.value)),existingCompanyId:existing?.companyId}),
+    const body = {productId:props.productId,ruleId}
+    if (isCount.value) {
+      body.countStart = countPayload(entry)
+      body.existingPersonId = existing?.personId
+    } else {
+      const {companyId,pool,personalMinor,salesRate} = practiceRetrainSplitBody(entry,fixedRetrainTotal(currentRule.value))
+      body.retrainSplit = {companyId,pool,personalMinor,salesRate}
+      body.existingCompanyId = existing?.companyId
     }
     const {version} = await props.api('/practice-rule-settings',{method:'POST',body:JSON.stringify(body)})
     form.value = undefined
@@ -158,7 +163,7 @@ async function save() {
     </a-alert>
     <div class="table-container">
       <a-table :columns="columns" :data-source="rows" :loading="loading" row-key="id" size="middle"
-        :pagination="{pageSize:15,hideOnSinglePage:true,showSizeChanger:false}" :scroll="{x:isCount ? 630 : 915}">
+        :pagination="{pageSize:15,hideOnSinglePage:true,showSizeChanger:false}" :scroll="{x:isCount ? 630 : 805}">
         <template #bodyCell="{column,record}">
           <template v-if="column.key==='name'">
             <strong>{{ record.name }}</strong><small v-if="isCount" class="order-version">人员 ID {{ record.key }}</small>
@@ -167,13 +172,6 @@ async function save() {
             {{ record.item.countFromOrdinal ? '第 '+record.item.countFromOrdinal+' 期' : formatTime(record.item.countFromAt) }}
           </template>
           <template v-else-if="column.key==='sales'">{{ practiceRetrainShareText(record.item.personalMinor,record.item.salesRate,formatMoney) }}</template>
-          <template v-else-if="column.key==='service'">
-            <template v-if="record.item.servicePersonId">
-              {{ personName(record.item.servicePersonId) }}
-              <small class="order-version">{{ practiceRetrainShareText(record.item.serviceMinor,record.item.serviceRate,formatMoney) }}</small>
-            </template>
-            <span v-else>—</span>
-          </template>
           <template v-else-if="column.key==='pool'">
             {{ poolName(record.item.pool.poolId) }} · {{ record.poolRemainder==null ? '按余额归集' : formatMoney(record.poolRemainder) }}
             <small class="order-version">分配负责人 {{ personName(record.item.pool.ownerId) }}</small>
@@ -222,6 +220,7 @@ async function save() {
         <PracticeRetrainSplitFields :split="form.entry" prefix="practice-settings-retrain"
           :amount="currentRule.retrainRateBps==null ? currentRule.retrainTotalMinor/100 : undefined"
           :pools="pools" :people="people" :units="units" :create-pool="createPool" :format-money="formatMoney"/>
+        <p v-if="form.existing?.servicePersonId" class="order-version">已配置的服务提成在分润规则中单独显示。</p>
       </template>
     </a-form>
   </a-modal>

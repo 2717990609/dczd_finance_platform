@@ -74,6 +74,10 @@ func TestPracticeRuleSettingsSaveOnlyTheSelectedConfiguration(t *testing.T) {
 	split := practiceRetrainSplit{CompanyID: "settings-company", PersonalMinor: 5000,
 		ServicePersonID: personID, ServiceMinor: 600, Pool: practicePoolTarget{PoolID: poolID, OwnerID: personID}}
 	input.CountStart, input.RetrainSplit = nil, &split
+	if _, err := s.savePracticeRuleSettings(ctx, input); !errors.Is(err, errPracticeServiceSeparate) {
+		t.Fatalf("the sales-split editor must require an independent service arrangement: %v", err)
+	}
+	split.ServicePersonID, split.ServiceMinor = 0, 0
 	if _, err := s.savePracticeRuleSettings(ctx, input); err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +87,7 @@ func TestPracticeRuleSettingsSaveOnlyTheSelectedConfiguration(t *testing.T) {
 		t.Fatalf("saving a split must keep the start and its existing total: %+v", list[0])
 	}
 	input.RuleID, input.ExistingCompanyID = publishedID(), split.CompanyID
-	split.ServiceMinor = 8000
+	split.PersonalMinor = 18000
 	if _, err := s.savePracticeRuleSettings(ctx, input); !errors.Is(err, invalid) {
 		t.Fatalf("split must fit the original per-enrollment total: %v", err)
 	}
@@ -96,15 +100,28 @@ func TestPracticeRuleSettingsSaveOnlyTheSelectedConfiguration(t *testing.T) {
 	}
 	input.RuleID, input.ExistingCompanyID = publishedID(), ""
 	input.RetrainSplit = &split
-	split.PersonalMinor, split.ServiceMinor = 0, 0
+	split.PersonalMinor = 0
 	split.SalesRate = &practiceRetrainRate{Basis: practiceRetrainCommissionBasis, Value: 500000}
-	split.ServiceRate = &practiceRetrainRate{Basis: practiceRetrainReceiptsBasis, Value: 12500}
 	if _, err := s.savePracticeRuleSettings(ctx, input); err != nil {
 		t.Fatal(err)
 	}
 	saved := read()[0].RetrainSplits[0]
-	if saved.SalesRate == nil || saved.ServiceRate == nil || *saved.SalesRate != *split.SalesRate || *saved.ServiceRate != *split.ServiceRate {
-		t.Fatalf("the split should retain both chosen rate bases: %+v", saved)
+	if saved.SalesRate == nil || *saved.SalesRate != *split.SalesRate || saved.ServicePersonID != 0 {
+		t.Fatalf("the split should retain only the sales rate: %+v", saved)
+	}
+	legacyVersion := publishedID()
+	if _, err := db.Exec(ctx, `UPDATE rule_versions SET components=jsonb_set(components,'{1,retrainSplits,0}',
+	 (components#>'{1,retrainSplits,0}') || jsonb_build_object('servicePersonId',$2::bigint,'serviceMinor',600))
+	 WHERE id=$1`, legacyVersion, personID); err != nil {
+		t.Fatal(err)
+	}
+	input.RuleID, input.ExistingCompanyID = legacyVersion, split.CompanyID
+	split.SalesRate.Value = 450000
+	if _, err := s.savePracticeRuleSettings(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	if saved := read()[0].RetrainSplits[0]; saved.ServicePersonID != personID || saved.ServiceMinor != 600 {
+		t.Fatalf("editing the sales split must preserve the service from the original rule: %+v", saved)
 	}
 	var unchanged int64
 	scan(&unchanged, `SELECT count(*) FROM rule_versions WHERE id=$1 AND components=$2::jsonb`, ruleID, base)

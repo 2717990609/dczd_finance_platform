@@ -52,6 +52,8 @@ const retrainRemainder = (part, split) => {
   const amount = practiceRetrainPoolRemainder(split,part.mode==='fixed' ? part.value : undefined)
   return amount==null ? '按余额归集' : props.formatMoney(amount)
 }
+const recordedServiceShares = computed(() => props.rule.components.flatMap(part=>
+  (part.retrainSplits || []).filter(split=>split.servicePersonId)))
 const fixedUnit = computed(() => props.classProduct ? ' / 报名' : ' / 付款')
 const companyStandards = computed(() => {
   const defaults = [], exceptions = []
@@ -254,14 +256,21 @@ onMounted(async () => {
           <ul v-if="part.retrainSplits?.length">
             <li v-for="split in part.retrainSplits" :key="split.companyId">
               {{ companyName(split.companyId) }} · 销售 {{ practiceRetrainShareText(split.personalMinor,split.salesRate,formatMoney) }}
-              <template v-if="split.servicePersonId"> · 服务 {{ personName(split.servicePersonId) }}
-                {{ practiceRetrainShareText(split.serviceMinor,split.serviceRate,formatMoney) }}</template>
               · {{ poolName(split.pool) }} {{ retrainRemainder(part,split) }}
             </li>
           </ul>
         </details>
         </div>
       </article>
+      <section v-for="split in recordedServiceShares" :key="'recorded-service-'+split.companyId" class="rule-block saved-service-share">
+        <div>
+          <strong>服务提成</strong>
+          <span class="rule-block-badge">复训</span>
+          <span>提成范围 · {{ companyName(split.companyId) }}</span>
+          <span>{{ personName(split.servicePersonId) }} · {{ practiceRetrainShareText(split.serviceMinor,split.serviceRate,formatMoney) }}</span>
+          <small>从复训总提成划出</small>
+        </div>
+      </section>
       </div>
       <div v-if="!embedded" class="workspace-edit-footer">
         <a-button @click="emit('close')">关闭</a-button>

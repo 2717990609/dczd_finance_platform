@@ -92,6 +92,9 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .rule-blocks-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px; margin-bottom:4px; }
 .rule-blocks-heading h3 { margin:0; }
 .rule-block { border:1px solid var(--line); border-radius:7px; background:#fff; min-width:0; }
+.saved-service-share { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; padding:8px 12px; }
+.saved-service-share > div { display:flex; flex-wrap:wrap; align-items:center; gap:6px 10px; }
+.saved-service-share small { color:var(--muted); }
 .rule-block-header { display:flex; align-items:center; gap:8px 12px; flex-wrap:wrap; width:100%; min-height:49px; padding:10px 14px;
   text-align:left; font:inherit; color:inherit; border:0; border-radius:6px; background:#f6f8fb; cursor:pointer; }
 .rule-block-header:hover, .rule-block-header[aria-expanded=true] { color:var(--accent); background:var(--accent-soft); }

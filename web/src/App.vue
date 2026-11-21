@@ -22,7 +22,7 @@ import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
-  practicePeriodScopeText, practiceRetrainSplitBody, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
+  practicePeriodScopeText, practiceRetrainShareText, practiceRetrainSplitBody, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -288,6 +288,7 @@ watch(() => data.value.periods.find(period => period.id === requestedPeriod.valu
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
 const practiceRetrainSales = computed(() => classRule.value
   ? draft.value.components?.find(part=>part.type==='sales' && ['fixed','rate'].includes(part.mode) && part.classMember==='retrain') : undefined)
+const recordedServiceShares = computed(() => (practiceRetrainSales.value?.retrainSplits || []).filter(split=>split.servicePersonId))
 const practiceCountConfig = computed(() => {
   if (!classRule.value) return
   const config = draft.value.components?.find(part=>part.mode==='tiered')?.tierConfig
@@ -312,7 +313,7 @@ const calendarDates = computed(() => {
   return startsOn+' 至 '+endsOn
 })
 const periodBenefitMode = computed(() => options('amountMode').find(option=>option.value==='period_rate'))
-const isPeriodBenefit = type => classRule.value && ['manager','delivery'].includes(type)
+const isPeriodBenefit = type => classRule.value && ['manager','delivery','service'].includes(type)
 const companySalesMode = computed(() => options('amountMode').find(option=>option.value==='company_sales'))
 const componentMode = type => isPeriodBenefit(type) ? 'period_rate' : type==='company_sales' ? 'company_sales' : undefined
 const amountModes = row => {
@@ -376,6 +377,8 @@ const recipientChoices = computed(() => {
     {type:'referral',label:'订单上的推荐人'},
     ...(classRule.value ? [
       {type:'company_sales',label:'按公司或类别计提'},
+      {type:'service',label:'服务提成'},
+      {type:'delivery',label:'交付提成'},
       {type:'manager',label:'独立收款安排'},
     ] : []),
   ]
@@ -391,6 +394,7 @@ function addRuleComponent(type) {
   const row = {type,classMember:member?.value,
     mode:baseModes.value[0]?.value}
   resetAmountMode(row)
+  if (row.periodBenefit && ['service','delivery'].includes(type)) row.periodBenefit.label=optionLabel('component',type)
   draft.value.components.push(row)
   activeRuleComponent.value = draft.value.components.length-1
 }
@@ -422,12 +426,6 @@ function addPracticeRegistrationImport(preview) {
     if (!Number.isFinite(effectiveAt) || effectiveAt<startsAt) {
       form.effectiveFrom = new Date(startsAt+8*3600000).toISOString().slice(0,19)
     }
-  }
-  const starter = newRuleComponent()
-  const firstPart = form.components[0]
-  if (!form.copiedFrom && form.components.length===1 && !firstPart.sourceRole &&
-    firstPart.amount===0 && firstPart.type===starter.type && firstPart.mode===starter.mode && firstPart.classMember===starter.classMember) {
-    form.components.pop()
   }
   const first = form.components.length
   form.components.push(...imported)
@@ -916,8 +914,8 @@ watch(() => draft.value.productId, (next, previous) => {
   if (drawer.value === 'rule' && next !== previous && !draft.value.copiedFrom && !draft.value.lockedPeriod) {
     draft.value.periodId = undefined
     draft.value.effectiveFrom = undefined
-    draft.value.components = [newRuleComponent()]
-    activeRuleComponent.value = 0
+    draft.value.components = []
+    activeRuleComponent.value = undefined
   }
 })
 watch(() => drawer.value==='rule' && classRule.value ? draft.value.productId : undefined, async (product, _, onCleanup) => {
@@ -1020,10 +1018,6 @@ function nextOrders() {
 }
 function prevOrders() { olderThan.value = pageStack.value.pop() || ''; refresh() }
 
-function newRuleComponent() {
-  return {type:componentTypes.value[0]?.value, classMember:classRule.value ? firstOption('classMember') : undefined,
-    mode:baseModes.value[0]?.value, amount:0}
-}
 function open(kind, row, edit = false) {
   if (!configurationReady.value) return
   formError.value = ''
@@ -1062,7 +1056,7 @@ function open(kind, row, edit = false) {
         activityType:row.activityType || 0,
         components:copiedRuleComponents(row.components,optionLabel),
       }
-    } else draft.value.components = [newRuleComponent()]
+    } else draft.value.components = []
     if (edit) {
       draft.value.editBaseId = row.id
       draft.value.periodId = row.periodId
@@ -1327,6 +1321,7 @@ function bodyFor(kind,f) {
     expectedSourcePeriodKey:f.expectedSourcePeriodKey || '', startsOn:must(f.startsOn), endsOn:must(f.endsOn),
     expectedStartsOn:f.expectedStartsOn,expectedEndsOn:f.expectedEndsOn}
   if (kind === 'rule') {
+    if (!f.components.length) throw new Error('请添加至少一项收款安排')
     const components = f.components.map(ruleComponentBody)
     checkPracticeCompanyArrangementScopes(components)
     return {productId:must(f.productId),label:must(f.label),
@@ -1793,7 +1788,7 @@ async function save() {
           :index="draft.components.indexOf(practiceRetrainSales)" :people="classPeopleOptions"
           :units="unitOptions" :companies="options('practiceSalesCompany')" :pools="practicePoolOptions"
           :create-pool="createPracticePool" :format-money="formatMoney"/>
-        <div v-if="draft.components?.length" class="rule-blocks" aria-label="收款安排">
+        <div v-if="selectedProduct" class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
             <a-dropdown v-if="recipientChoices.length" :trigger="['click']">
@@ -1879,6 +1874,18 @@ async function save() {
             </a-collapse-panel>
           </a-collapse>
           </div>
+          </section>
+          <section v-for="split in recordedServiceShares" :key="'recorded-service-'+split.companyId" class="rule-block saved-service-share">
+            <div>
+              <strong>服务提成</strong>
+              <span class="rule-block-badge">复训</span>
+              <span>提成范围 · {{ practiceScopeNames.company(split.companyId) }}</span>
+              <span>{{ practiceScopeNames.person(split.servicePersonId) }} ·
+                {{ practiceRetrainShareText(Math.round(split.service*100),
+                  split.serviceBasis==='fixed' ? undefined : {basis:split.serviceBasis,value:Math.round(split.service*10000)},formatMoney) }}</span>
+              <small>从复训总提成划出</small>
+            </div>
+            <a-button type="link" danger @click="split.servicePersonId=undefined; split.service=undefined">移除此服务提成</a-button>
           </section>
         </div>
       </template>

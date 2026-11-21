@@ -62,7 +62,7 @@ func validateComponents(items []component) error {
 	seen := make(map[string]uint8)
 	for _, c := range items {
 		switch c.Type {
-		case "sales", "referral", "manager", "delivery", "company_sales":
+		case "sales", "referral", "manager", "delivery", "service", "company_sales":
 		default:
 			return invalid
 		}
@@ -110,7 +110,7 @@ func validateComponents(items []component) error {
 			}
 			continue
 		}
-		if c.PeriodBenefit != nil || seen[c.Type]&members != 0 {
+		if c.Type == "service" || c.PeriodBenefit != nil || seen[c.Type]&members != 0 {
 			return invalid
 		}
 		seen[c.Type] |= members
@@ -294,6 +294,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope), errors.Is(err, errCatalogPeriodResumeDate),
 		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany),
+		errors.Is(err, errPracticeServiceSeparate),
 		errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap), errors.Is(err, errRuleOrderRole):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),

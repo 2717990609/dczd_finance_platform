@@ -649,6 +649,7 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('component','manager','负责人提成',30,'{}'),
  ('component','delivery','交付提成',40,'{}'),
  ('component','company_sales','外部销售公司提成',50,'{"periodModes":["class"]}'),
+ ('component','service','服务提成',60,'{"periodModes":["class"]}'),
  ('classMember','','全部',10,'{}'),
  ('classMember','new','新报',20,'{}'),
  ('classMember','retrain','复训',30,'{}'),
@@ -686,6 +687,10 @@ ON CONFLICT (group_key,option_key) DO NOTHING;
 UPDATE configuration_options SET applies_to='{}'
  WHERE group_key='component' AND option_key IN ('manager','delivery')
   AND applies_to='{"periodModes":["calendar"]}'::jsonb;
+UPDATE configuration_options
+ SET applies_to=jsonb_set(applies_to,'{componentTypes}',(applies_to->'componentTypes') || '["service"]'::jsonb)
+ WHERE group_key='amountMode' AND option_key='period_rate'
+  AND jsonb_typeof(applies_to->'componentTypes')='array' AND NOT ((applies_to->'componentTypes') ? 'service');
 
 ALTER TABLE people ADD COLUMN IF NOT EXISTS legacy_party_id uuid;
 CREATE UNIQUE INDEX IF NOT EXISTS people_legacy_party_id ON people(legacy_party_id);

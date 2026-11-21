@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -223,6 +224,44 @@ func TestPracticePeriodBenefitChecksTheConfiguredPaymentRole(t *testing.T) {
 	shares, base, issue, err = collectPracticeBenefitShares(part, purchases, nil, identities, nil, practiceDraftRuntime{legacyBenefitAttribution: true})
 	if err != nil || issue.Code != "" || len(shares) != 1 || base != amount {
 		t.Fatalf("a legacy replay must preserve the original attribution and scope for refunds: %+v %d %+v %v", shares, base, issue, err)
+	}
+}
+
+func TestPracticeServiceCommissionRequiresAnExplicitArrangement(t *testing.T) {
+	amount := int64(50000)
+	at := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	members := []practiceEnrollment{{ID: 1, MembershipType: 2, CommissionEligible: true, ConfirmedAt: at, PaidOrderIDs: []string{"11"}}}
+	orders := map[string][]paymentInput{"11": {{ID: 1, Fact: sourceFact{Source: "DCZD", OrderID: "11", PaymentID: "11",
+		AmountMinor: &amount, OccurredAt: at.Add(-time.Hour)}}}}
+	service := component{Type: "service", ClassMember: "retrain", Mode: "period_rate", Value: 12000,
+		PeriodBenefit: &practicePeriodBenefit{Label: "服务提成", PersonID: 4}}
+	delivery := component{Type: "delivery", ClassMember: "retrain", Mode: "period_rate", Value: 20000,
+		PeriodBenefit: &practicePeriodBenefit{Label: "交付提成", PersonID: 5}}
+	for _, tc := range []struct {
+		name  string
+		parts []component
+		total int64
+		lines int
+	}{
+		{"配置服务和交付", []component{delivery, service}, 1600, 2},
+		{"移除服务仍计提交付", []component{delivery}, 1000, 1},
+		{"仅配置服务无需销售", []component{service}, 600, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateComponents(tc.parts); err != nil {
+				t.Fatal(err)
+			}
+			rule := paymentRule{ID: 1, Components: tc.parts}
+			draft, err := calculatePracticeDraft(members, rule, orders, nil, nil, practiceTierHistory{}, nil, practiceDraftRuntime{})
+			if err != nil || len(draft.Issues) != 0 || draft.Total != tc.total || len(draft.Lines) != tc.lines {
+				t.Fatalf("expected only the configured arrangements: %+v %v", draft, err)
+			}
+			for _, line := range draft.Lines {
+				if line.PersonID == service.PeriodBenefit.PersonID && (line.Amount != 600 || !strings.HasPrefix(line.Component, "period:service:")) {
+					t.Fatalf("service must produce its own payout line: %+v", line)
+				}
+			}
+		})
 	}
 }
 

@@ -158,7 +158,7 @@ func (b practicePeriodBenefit) hasSalesScope() bool {
 
 func validPracticePeriodBenefit(c component) bool {
 	b := c.PeriodBenefit
-	if (c.Type != "manager" && c.Type != "delivery") || b == nil || c.Value > periodRateScale || c.RefundPolicy != "" {
+	if (c.Type != "manager" && c.Type != "delivery" && c.Type != "service") || b == nil || c.Value > periodRateScale || c.RefundPolicy != "" {
 		return false
 	}
 	recipients := 0
