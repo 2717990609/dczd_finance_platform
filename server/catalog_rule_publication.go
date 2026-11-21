@@ -43,6 +43,7 @@ type publishCatalogRatesInput struct {
 	TeamSplitRates     *catalogSplitRates                `json:"teamSplitRates,omitempty"`
 	NewItems           []catalogNewBenefitItem           `json:"newItems"`
 	NewSalesRates      []catalogConditionInput           `json:"newSalesRates,omitempty"`
+	NewSalesLabel      string                            `json:"newSalesLabel,omitempty"`
 	NewRateRows        []catalogNewRateRow               `json:"newRateRows"`
 	TargetChanges      []catalogBenefitTargetChange      `json:"targetChanges"`
 	CalculationChanges []catalogBenefitCalculationChange `json:"calculationChanges,omitempty"`
@@ -161,8 +162,9 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 
 func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRatesInput, actor string, refreshDrafts bool) (catalogPublication, error) {
 	if input.Create != nil {
-		if input.BaseID != "" || input.Copy != nil || input.TeamSplitRates != nil || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges)+
-			len(input.NewSalesRates)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges)+len(input.RemovedItems)+len(input.RemovedRateRows) != 0 {
+		if input.BaseID != "" || input.Copy != nil || input.TeamSplitRates != nil || input.NewSalesLabel != "" ||
+			len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges)+
+				len(input.NewSalesRates)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges)+len(input.RemovedItems)+len(input.RemovedRateRows) != 0 {
 			return catalogPublication{}, invalid
 		}
 		return createCatalogScenarioRule(ctx, tx, *input.Create, input.EffectiveFrom, input.NewItems, actor, refreshDrafts)
@@ -170,6 +172,9 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 	published := catalogPublication{ID: input.BaseID}
 	id, valid := canonicalSourceUUID(input.BaseID)
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
+	if input.NewSalesLabel != "" && len(input.NewSalesRates) == 0 {
+		return published, invalid
+	}
 	structureChanged := len(input.NewItems)+len(input.NewSalesRates)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges) != 0
 	removals := len(input.RemovedItems)+len(input.RemovedRateRows) != 0
 	if !valid || from.IsZero() || input.Copy == nil && input.TeamSplitRates == nil && len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 &&

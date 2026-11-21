@@ -5,7 +5,8 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
-import { catalogCalculationMethods, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import RuleArrangementFields from './RuleArrangementFields.vue'
+import { catalogCalculationMethods, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesCalculationMethods, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
@@ -84,7 +85,7 @@ const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
 const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
   Object.keys(splitEdits.value).length > 0 || labelEdits.value.size ||
-  structure.value.items.length || structure.value.salesRates?.length || structure.value.rateRows.length || structure.value.calculations.length ||
+  structure.value.items.length || structure.value.sales || structure.value.rateRows.length || structure.value.calculations.length ||
   removedItems.value.size || removedRateRows.value.size)
 const impactPeriods = computed(() => catalogRuleImpactPeriods(props.periods,sheet.value?.productId,impactInput.value?.effectiveFrom))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
@@ -117,6 +118,12 @@ const rateRows = computed(() => {
   const replaced = new Set(staged.map(row=>row.row))
   return [...staged.map(change=>stagedRateRow(change,byRow.get(change.row))),...stored.filter(row=>!replaced.has(row.row))]
 })
+const singleSalesRate = computed(() => {
+  const [row,...others] = rateRows.value
+  if (targetKind.value==='seller' && !teamSplit.value && row?.scope==='general' && !row.limitsRelationship && !others.length) return row
+})
+const calculationMethods = computed(() => targetKind.value!=='seller' ? catalogCalculationMethods :
+  singleSalesRate.value ? catalogSalesCalculationMethods : catalogSalesCalculationMethods.filter(method=>method.value==='table'))
 const rateGroups = computed(() => {
   const mayAdd = canAddRates.value
   return [
@@ -163,11 +170,6 @@ async function addRecipient() {
   await nextTick()
   await structureEditor.value?.addRecipient()
 }
-async function addSales() {
-  selected.value = undefined
-  await nextTick()
-  structureEditor.value?.editSales()
-}
 async function editRateScope(row) {
   await nextTick()
   structureEditor.value?.editRateScope(row,row.staged ? String(row.rateBps/100) : displayRate(row.rateBps,row.row))
@@ -209,12 +211,17 @@ const displayRate = (rate, row, item=selected.value) => {
 const savedMethod = item => item.fixedMinor == null ? 'rate' : 'fixed'
 const flatMethod = item => edits.value[cellKey(item.itemKey)]?.method || savedMethod(item)
 function calculationMethod(item) {
+  if (targetKind.value==='seller') return singleSalesRate.value ? 'rate' : 'table'
   const staged = calculationFor(item.itemKey)
   if (staged) return staged.rows?.length ? 'table' : staged.fixedMinor != null ? 'fixed' : 'rate'
   return item.rows?.length ? 'table' : flatMethod(item)
 }
 function chooseCalculation(item, method) {
   if (method===calculationMethod(item)) return
+  if (targetKind.value==='seller') {
+    structureEditor.value?.addRateCondition(sheet.value.structureOptions.categories.length ? 'category' : 'company')
+    return
+  }
   if (!item.rows?.length && !selectedCalculation.value && method!=='table') {
     setFlat(item,method,method===savedMethod(item) ? (item.fixedMinor ?? item.rateBps)/100 : undefined)
   } else {
@@ -238,7 +245,10 @@ function componentStandard(item) {
     if (calculation.fixedMinor!=null) return (calculation.fixedMinor/100).toFixed(2)+' 元/笔'
     return percent(calculation.rateBps)
   }
-  if (item.rows?.length) return '按销售条件取比例'
+  if (item.rows?.length) {
+    const row = item===component.value ? singleSalesRate.value : undefined
+    return row ? displayRate(row.rateBps,row.row)+'%' : '按销售条件取比例'
+  }
   if (item.fixedMinor == null && item.rateBps == null) return ''
   const value = flatValue(item)
   return value == null || value==='' ? '' : value+(flatMethod(item)==='fixed' ? ' 元/笔' : '%')
@@ -386,7 +396,8 @@ function publicationInput() {
     })),
     teamSplitRates,
     newItems:structure.value.items.map(({personName,...item})=>item),
-    newSalesRates:structure.value.salesRates,
+    newSalesRates:structure.value.sales?.rows,
+    newSalesLabel:structure.value.sales?.label,
     calculationChanges:structure.value.calculations.filter(({itemKey})=>!removedItems.value.has(itemKey)),
     newRateRows:structure.value.rateRows.filter(({itemKey,row})=>!removedItems.value.has(itemKey) &&
       !removedRateRows.value.has(cellKey(itemKey,row)) && !calculationFor(itemKey))
@@ -447,8 +458,6 @@ async function publish() {
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
             <a-space v-if="sheet.mayPublish && !applied && sheet.structureOptions" wrap :size="4">
-              <a-button v-if="!hasSales && !structure.salesRates?.length" size="small" :disabled="saving || structureEditing"
-                @click="addSales">添加成交销售</a-button>
               <a-button size="small" :disabled="saving || structureEditing" @click="addRecipient">添加收款安排</a-button>
             </a-space>
           </div>
@@ -464,25 +473,20 @@ async function publish() {
           <div v-if="selected===item.itemKey" :id="'catalog-rate-'+item.itemKey" class="rule-block-body">
           <a-alert v-if="itemRemoved" type="warning" :message="teamSplit ? '成交销售及其内部团队拆分将从新版移除' : '此分项将从新版移除'" show-icon class="feedback"/>
           <template v-if="!applied && sheet.mayPublish && sheet.structureOptions && !itemRemoved">
-            <div class="catalog-rule-fields">
-              <a-form-item label="收款安排名称" html-for="catalog-rate-label" required>
-                <a-input id="catalog-rate-label" :value="labelEdits.get(item.itemKey) ?? item.label" :maxlength="80"
-                  :disabled="!editable || structureEditing" @update:value="setLabel(item,$event)"/>
-              </a-form-item>
-              <CatalogPayeeFields v-if="targetKind!=='seller'" :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
+            <RuleArrangementFields name-id="catalog-rate-label" :name="labelEdits.get(item.itemKey) ?? item.label"
+              :disabled="!editable || structureEditing" @update:name="setLabel(item,$event)">
+              <CatalogPayeeFields :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
                 prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters"
                 :disabled="!editable || structureEditing" @update:model-value="setTarget(item,$event)"/>
-            </div>
-            <div v-if="targetKind!=='seller'" class="catalog-rule-fields catalog-calculation-fields">
               <a-form-item label="计提方式" html-for="catalog-flat-method">
-                <a-select id="catalog-flat-method" :value="calculationMethod(item)" :options="catalogCalculationMethods"
-                  :disabled="!editable || structureEditing" @update:value="chooseCalculation(item,$event)"/>
+                <a-select id="catalog-flat-method" :value="calculationMethod(item)" :options="calculationMethods"
+                  :disabled="!editable || structureEditing || calculationMethods.length===1" @update:value="chooseCalculation(item,$event)"/>
               </a-form-item>
-              <a-form-item v-if="!selectedCalculation && !item.rows?.length && flatMethod(item)==='fixed'" label="金额（元/笔）" html-for="catalog-fixed-amount">
+              <a-form-item v-if="targetKind!=='seller' && !selectedCalculation && !item.rows?.length && flatMethod(item)==='fixed'" label="金额（元/笔）" html-for="catalog-fixed-amount">
                 <a-input-number id="catalog-fixed-amount" aria-label="金额（元/笔）" :value="flatValue(item)" :disabled="!editable"
                   :min="0" :precision="2" string-mode @update:value="setFlat(item,'fixed',$event)"/>
               </a-form-item>
-              <a-form-item v-else-if="!selectedCalculation && !item.rows?.length" label="比例（%）" html-for="catalog-fixed-rate">
+              <a-form-item v-else-if="targetKind!=='seller' && !selectedCalculation && !item.rows?.length" label="比例（%）" html-for="catalog-fixed-rate">
                 <a-input-number id="catalog-fixed-rate" :value="flatValue(item)" :disabled="!editable"
                   :min="0" :max="100" :precision="2" string-mode @update:value="setFlat(item,'rate',$event)"/>
               </a-form-item>
@@ -492,7 +496,7 @@ async function publish() {
                   @click="structureEditor?.editCalculation(selectedCalculation,calculationMethod(item))">编辑计算条件</a-button>
                 <a-button size="small" type="link" :disabled="!editable || structureEditing" @click="undoCalculation">撤销更换</a-button>
               </a-space>
-            </div>
+            </RuleArrangementFields>
           </template>
           <p v-else-if="targetKind!=='seller' && !itemRemoved" class="rule-formula">
             {{ [targetKindLabels[targetKind],targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}
@@ -591,7 +595,8 @@ async function publish() {
               :to="component && !itemRemoved ? rateEditorTarget : 'body'">
               <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id"
                 v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
-                :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" @rate-staged="showRateGroup"/>
+                :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!hasSales && !structure.sales"
+                @rate-staged="showRateGroup"/>
             </Teleport>
             <a-collapse v-model:active-key="more" ghost class="catalog-more">
               <a-collapse-panel key="more" header="更多配置">
@@ -661,9 +666,7 @@ async function publish() {
 .catalog-rate-effective :deep(.ant-input) {width:min(100%,280px)}
 .catalog-rule-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:4px 10px}
 .catalog-rule-fields :deep(.ant-form-item) {min-width:0;margin-bottom:6px}
-.catalog-calculation-fields {grid-template-columns:minmax(0,280px) minmax(0,168px) auto;align-items:end}
 .catalog-rule-fields :deep(.ant-input-number) {width:100%}
-@media (max-width:600px) {.catalog-calculation-fields {grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr))}}
 .catalog-more {margin:6px 0}
 .catalog-rate-options {display:flex;flex-wrap:wrap;align-items:end;gap:4px 8px}
 .catalog-more :deep(.ant-collapse-header) {padding-block:6px}

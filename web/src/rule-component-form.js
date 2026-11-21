@@ -12,6 +12,7 @@ export const catalogFlatMethods = [
   {value:'fixed',label:'每笔付款固定金额'},
 ]
 export const catalogCalculationMethods = [...catalogFlatMethods,{value:'table',label:'按类别或公司设置比例'}]
+export const catalogSalesCalculationMethods = catalogCalculationMethods.filter(method=>method.value!=='fixed')
 
 export function moneyAsMinor(value) {
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value ?? ''))
@@ -76,6 +77,7 @@ export const catalogSalesPayees = [
 
 export function catalogPayeeComplete(payee) {
   switch (payee.target) {
+    case 'seller':
     case 'referrer': return true
     case 'person': return !!(payee.personId && payee.role)
     case 'company': return !!payee.organization
@@ -86,11 +88,16 @@ export function catalogPayeeComplete(payee) {
 
 export function ruleComponentLabel(component, optionLabel) {
   if (component.companySales?.label != null) return component.companySales.label.trim() || '未命名收款安排'
-  const label = component.periodBenefit?.label
-  const type = optionLabel('component',component.type) || '分润分项'
-  if (!label) return type
-  const title = optionLabel('catalogAppointmentRole',label)
-  return title!==label ? title : /^[A-Z][A-Z0-9_]*$/.test(label) ? type : label
+  if (component.periodBenefit) {
+    const label = component.periodBenefit.label?.trim()
+    if (!label) return '未命名收款安排'
+    return component.periodBenefit.labelIsCustom ? label : practiceLegacyArrangementLabel(label,optionLabel)
+  }
+  return optionLabel('component',component.type) || '分润分项'
+}
+
+export function practiceLegacyArrangementLabel(label, optionLabel) {
+  return label==='SERVICE' ? '服务' : optionLabel('catalogAppointmentRole',label) || label
 }
 
 function tierRows(rows, scale) {

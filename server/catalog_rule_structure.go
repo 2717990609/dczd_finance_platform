@@ -278,13 +278,21 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage, i
 			return nil, err
 		}
 		rawKey, _ := json.Marshal(key)
+		label := strings.TrimSpace(input.NewSalesLabel)
+		if input.NewSalesLabel == "" {
+			label = "成交销售"
+		}
+		if !textOK(label, 80) {
+			return nil, invalid
+		}
+		rawLabel, _ := json.Marshal(label)
 		rawRates, err := json.Marshal(rates)
 		if err != nil {
 			return nil, err
 		}
 		positions[key] = len(actions)
 		actions = append(actions, map[string]json.RawMessage{
-			"item_key": rawKey, "label": json.RawMessage(`"成交销售"`), "role": json.RawMessage(`"SALES"`),
+			"item_key": rawKey, "label": rawLabel, "role": json.RawMessage(`"SALES"`),
 			"type": json.RawMessage(`"RATE_TABLE"`), "beneficiary_mode": json.RawMessage(`"PARTY"`), "rate_table": rawRates,
 		})
 	}

@@ -121,6 +121,7 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 
 type practicePeriodBenefit struct {
 	Label             string                     `json:"label"`
+	LabelIsCustom     bool                       `json:"labelIsCustom,omitempty"`
 	PersonID          int64                      `json:"personId,omitempty"`
 	UnitID            string                     `json:"unitId,omitempty"`
 	SalesCompanies    []string                   `json:"salesCompanies,omitempty"`

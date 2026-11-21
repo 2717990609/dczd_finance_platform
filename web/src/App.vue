@@ -20,7 +20,7 @@ import PracticeTierEditor from './PracticeTierEditor.vue'
 import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
-import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
+import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, practiceLegacyArrangementLabel, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -1160,10 +1160,12 @@ function ruleComponentBody(row) {
   if (row.mode === 'period_rate') {
     const b = row.periodBenefit
     const registration = b.registrationScope
+    const label = must(b.label?.trim(),'请填写收款安排名称')
     must(b.recipient,'请选择收款对象')
     component.value = b.method==='rate' ? periodRate(row.amount) : 0
     component.periodBenefit = {
-      label:must(b.label?.trim(),'请填写收款安排名称'),
+      label,
+      ...(b.labelIsCustom && practiceLegacyArrangementLabel(label,optionLabel)!==label ? {labelIsCustom:true} : {}),
       ...(b.recipient==='pool' ? {pool:practicePoolBody(b.pool)} : b.recipient==='unit'
         ? {unitId:must(b.unitId,'请选择收款组织')} : {personId:must(b.personId,'请选择收款人员')}),
       ...(!registration && b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
@@ -1759,12 +1761,13 @@ async function save() {
           <button type="button" class="rule-block-header" :aria-expanded="activeRuleComponent===i"
             :aria-controls="'practice-rule-part-'+i" @click="activeRuleComponent=activeRuleComponent===i ? undefined : i">
             <DownOutlined aria-hidden="true"/>
-            <strong>{{ c.periodBenefit && !c.periodBenefit.label?.trim() ? '未命名收款安排' : ruleComponentLabel(c,optionLabel) }}</strong>
+            <strong>{{ ruleComponentLabel(c,optionLabel) }}</strong>
             <span v-if="classRule" class="rule-block-badge">{{ tierIncludesRetrain(c) ? '新报和复训' : c.classMember ? optionLabel('classMember',c.classMember) : '通用报名' }}</span>
-            <small>{{ ruleRecipientSummary(c) }}</small>
+            <span v-if="c.periodBenefit" class="rule-block-recipient">{{ ruleRecipientSummary(c) }}</span>
+            <small v-else>{{ ruleRecipientSummary(c) }}</small>
           </button>
           <div v-if="i===activeRuleComponent" :id="'practice-rule-part-'+i" class="rule-block-body component-editor">
-          <div v-if="c.mode!=='company_sales'" class="rule-item-heading">
+          <div v-if="!['company_sales','period_rate'].includes(c.mode)" class="rule-item-heading">
             <a-form-item v-if="classRule" :html-for="'rule-member-'+i" label="适用报名">
               <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="classMemberChoices(c)" @change="resetAmountMode(c)"/>
             </a-form-item>
@@ -1777,16 +1780,14 @@ async function save() {
               <a-select :id="'rule-sales-companies-'+i" v-model:value="c.salesCompanies" :options="options('practiceSalesCompany')"
                 mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label" placeholder="不限公司"/>
             </a-form-item>
-            <template v-if="c.mode!=='period_rate'">
-              <a-form-item :html-for="'rule-mode-'+i" label="计算方式">
-                <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
-              </a-form-item>
-              <a-form-item v-if="c.mode==='fixed' || c.mode==='rate'" :html-for="'rule-amount-'+i"
-                :label="c.mode==='rate' ? '计提比例（%）' : classRule ? '每份报名（元）' : '每笔付款（元）'">
-                <a-input-number :id="'rule-amount-'+i" v-model:value="c.amount"
-                  :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
-              </a-form-item>
-            </template>
+            <a-form-item :html-for="'rule-mode-'+i" label="计提方式">
+              <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
+            </a-form-item>
+            <a-form-item v-if="c.mode==='fixed' || c.mode==='rate'" :html-for="'rule-amount-'+i"
+              :label="c.mode==='rate' ? '计提比例（%）' : classRule ? '每份报名（元）' : '每笔付款（元）'">
+              <a-input-number :id="'rule-amount-'+i" v-model:value="c.amount"
+                :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
+            </a-form-item>
             <a-button v-if="draft.components.length>1" type="link" danger class="rule-remove"
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
           </div>
@@ -1799,7 +1800,11 @@ async function save() {
             :registration-companies="registrationCompanies" :registration-loading="registrationCompaniesLoading" :registration-error="registrationCompaniesError"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
             :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')" :sales-units="salesUnitOptions"
-            :pools="practicePoolOptions" :create-pool="createPracticePool"/>
+            :pools="practicePoolOptions" :create-pool="createPracticePool" :member-choices="classMemberChoices(c)"/>
+          <div v-if="c.mode==='period_rate' && draft.components.length>1" class="form-actions">
+            <a-button type="link" size="small" danger class="rule-remove"
+              @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
+          </div>
           <PracticeRetrainSplitEditor v-if="classRule && c.type==='sales' && c.mode==='fixed' && c.classMember==='retrain'"
             :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"
             :pools="practicePoolOptions" :create-pool="createPracticePool"/>

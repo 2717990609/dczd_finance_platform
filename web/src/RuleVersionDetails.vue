@@ -133,7 +133,8 @@ onMounted(async () => {
           <DownOutlined aria-hidden="true"/>
           <strong>{{ ruleComponentLabel(part,label) }}</strong>
           <span v-if="classProduct" class="rule-block-badge">{{ part.tiers?.includeRetrain ? '新报和复训' : part.classMember ? label('classMember',part.classMember) : '通用报名' }}</span>
-          <small>{{ recipient(part) }}</small>
+          <span v-if="part.periodBenefit" class="rule-block-recipient">{{ recipient(part) }}</span>
+          <small v-else>{{ recipient(part) }}</small>
         </button>
         <div v-if="activePart===index" :id="'rule-preview-'+index" class="rule-block-body rule-preview-part">
         <a-descriptions size="small" :column="{xs:1,sm:2}">

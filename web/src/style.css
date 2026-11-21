@@ -99,6 +99,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .rule-block-header[aria-expanded=true] > .anticon { transform:rotate(180deg); }
 .rule-block-header:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
 .rule-block-header strong { overflow-wrap:anywhere; }
+.rule-block-recipient { color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
 .rule-block-header small { margin-inline-start:auto; color:var(--muted); text-align:right; overflow-wrap:anywhere; }
 .rule-block-badge { font-size:12px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:1px 6px; white-space:nowrap; }
 .rule-block-body { border-top:1px solid var(--line); padding:16px; min-width:0; }
@@ -201,7 +202,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .catalog-add-rate-row > .ant-alert { flex:1 0 100%; }
 .catalog-add-rate-row > .catalog-rate-fields { flex:1 1 min(100%,760px); min-width:0; }
 .catalog-add-rate-row > .form-actions { gap:6px; margin-inline-start:auto; }
-.catalog-first-rates { margin-bottom:8px; }
 .catalog-rate-fields { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:end; }
 .catalog-rate-fields > div { flex:1 1 120px; min-width:0; }
 .catalog-rate-fields > .catalog-rate-selector { flex:2 1 180px; }

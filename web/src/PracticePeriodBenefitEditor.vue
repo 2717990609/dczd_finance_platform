@@ -1,11 +1,13 @@
 <script setup>
 import { computed } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
+import RuleArrangementFields from './RuleArrangementFields.vue'
 
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array,
   registrationCompanies:Array, registrationLoading:Boolean, registrationError:String,
   recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
+  memberChoices:Array,
 })
 const config = computed(() => props.component.periodBenefit)
 const registration = computed(() => config.value.registrationScope)
@@ -22,9 +24,10 @@ const calculationMethods = [
 </script>
 
 <template>
-  <div class="period-fields">
-    <a-form-item label="收款安排名称" required>
-      <a-input v-model:value="config.label" aria-label="收款安排名称" :maxlength="80" placeholder="例如交付团队分润"/>
+  <RuleArrangementFields :name="config.label" :name-id="field('name')"
+    @update:name="config.label=$event; config.labelIsCustom=true">
+    <a-form-item label="适用报名" :html-for="'rule-member-'+index">
+      <a-select :id="'rule-member-'+index" v-model:value="component.classMember" :options="memberChoices"/>
     </a-form-item>
     <a-form-item label="收款对象" :html-for="field('recipient')" required>
       <a-select :id="field('recipient')" v-model:value="config.recipient" :options="recipientTypes" placeholder="选择收款对象"/>
@@ -35,7 +38,7 @@ const calculationMethods = [
     <a-form-item v-if="config.recipient==='person'" label="收款人员" :html-for="field('person')" required>
       <a-select :id="field('person')" v-model:value="config.personId" :options="people" show-search :filter-option="byName"/>
     </a-form-item>
-    <a-form-item label="计算方式" :html-for="field('method')">
+    <a-form-item label="计提方式" :html-for="field('method')">
       <a-select :id="field('method')" v-model:value="config.method" :options="calculationMethods"/>
     </a-form-item>
     <a-form-item v-if="config.method==='rate'" label="班次计提比例（%）" required>
@@ -45,7 +48,7 @@ const calculationMethods = [
       :label="config.method==='class_fixed' ? '整班金额（元）' : '每份报名（元）'" :html-for="field('fixed')" required>
       <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
     </a-form-item>
-  </div>
+  </RuleArrangementFields>
   <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <template v-if="config.method==='tiers'">

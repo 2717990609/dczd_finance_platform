@@ -2,15 +2,17 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
-import { catalogCalculationMethods, catalogPayeeComplete, catalogRateConditionBody, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
+import RuleArrangementFields from './RuleArrangementFields.vue'
+import { catalogCalculationMethods, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesCalculationMethods, catalogSalesPayees, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
-const props = defineProps({options:Object, component:Object, api:Function, peopleFilters:Object, parseRate:Function})
+const props = defineProps({options:Object, component:Object, api:Function, peopleFilters:Object, parseRate:Function,salesAvailable:Boolean})
 const emit = defineEmits(['rate-staged'])
 const draft = defineModel({type:Object,required:true})
 const editing = defineModel('editing', {type:Boolean,default:false})
 const form = ref()
 const revising = computed(() => form.value?.kind==='calculation' || form.value?.itemIndex!=null ||
-  form.value?.rowNumber || form.value?.draftKey || form.value?.kind==='sales' && draft.value.salesRates?.length)
+  form.value?.rowNumber || form.value?.draftKey || form.value?.editingSales)
+const isSales = computed(() => form.value?.kind==='item' && form.value.target==='seller')
 const itemName = ref()
 const error = ref('')
 let nextDraftKey = 0
@@ -36,9 +38,22 @@ async function addRecipient() {
   await nextTick()
   itemName.value?.focus()
 }
-function editSales() {
+async function editSales() {
   error.value = ''
-  form.value = {kind:'sales',...calculationForm({rows:draft.value.salesRates},'table')}
+  const {label,rows,format} = draft.value.sales
+  form.value = {kind:'item',target:'seller',editingSales:true,label,...calculationForm({rows},format),
+    format,rate:format==='rate' ? String(rows[0].rateBps/100) : undefined,salesPayee:rows[0].payee}
+  await nextTick()
+  itemName.value?.focus()
+}
+function changePayee(payee) {
+  const previous = form.value.target
+  form.value = payee
+  if (payee.target==='seller' && previous!=='seller') {
+    form.value.format = 'table'
+  } else if (previous==='seller' && payee.target!=='seller') {
+    form.value.rows.forEach(row=>{ delete row.payee })
+  }
 }
 async function editRecipient(index) {
   const {fixedMinor,rateBps,rows,...payee} = draft.value.items[index]
@@ -102,8 +117,6 @@ function stage() {
       if (existing>=0) draft.value.rateRows.splice(existing,1,change)
       else draft.value.rateRows.push(change)
       emit('rate-staged',scope)
-    } else if (staged.kind==='sales') {
-      draft.value.salesRates = calculationBody(staged).rows
     } else if (staged.kind==='calculation') {
       const change = {itemKey:staged.itemKey,...calculationBody(staged)}
       const existing = draft.value.calculations.findIndex(row=>row.itemKey===change.itemKey)
@@ -112,7 +125,14 @@ function stage() {
     } else {
       const label = staged.label?.trim()
       if (!label || !catalogPayeeComplete(staged)) {
-        throw new Error('请填写分项名称，并选好收款对象及适用任职。')
+        throw new Error('请填写收款安排名称，并补齐收款对象。')
+      }
+      if (isSales.value) {
+        const calculation = calculationBody(staged)
+        const rows = calculation.rows || [{company:'ANY',relationship:'ANY',rateBps:calculation.rateBps,payee:staged.salesPayee}]
+        draft.value.sales = {label,format:staged.format,rows}
+        cancel()
+        return
       }
       const item = {label,target:staged.target,role:staged.role,personId:staged.personId,
         personName:staged.personName,organization:staged.organization,...calculationBody(staged)}
@@ -125,7 +145,7 @@ function stage() {
   }
 }
 watch(form, value => { editing.value = !!value })
-defineExpose({addRecipient,editSales,editCalculation,editRateScope,addRateCondition:scope=>begin('row',scope)})
+defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=>begin('row',scope)})
 </script>
 
 <template>
@@ -136,15 +156,14 @@ defineExpose({addRecipient,editSales,editCalculation,editRateScope,addRateCondit
         <CatalogRateCondition v-model="form.row" :options="options" :scope="form.scope" :sales-payee="component?.targetKind==='seller'"/>
       </template>
       <template v-else>
-        <div v-if="form.kind!=='sales'" class="rule-basics">
-          <template v-if="form.kind==='item'">
-            <a-form-item label="收款安排名称" html-for="catalog-add-label" required>
-              <a-input id="catalog-add-label" ref="itemName" v-model:value="form.label" :maxlength="80"/>
-            </a-form-item>
-            <CatalogPayeeFields v-model="form" prefix="catalog-add" :options="options" :api="api" :people-filters="peopleFilters"/>
-          </template>
+        <RuleArrangementFields ref="itemName" v-model:name="form.label" :name-id="form.kind==='item' ? 'catalog-add-label' : undefined">
+          <CatalogPayeeFields v-if="form.kind==='item'" :model-value="form" prefix="catalog-add" :options="options" :api="api" :people-filters="peopleFilters"
+            :sales-available="!form.editingSales && form.itemIndex==null && salesAvailable" @update:model-value="changePayee"/>
           <a-form-item v-if="form.kind==='item'" label="计提方式" html-for="catalog-add-format">
-            <a-select id="catalog-add-format" v-model:value="form.format" :options="catalogCalculationMethods"/>
+            <a-select id="catalog-add-format" v-model:value="form.format" :options="isSales ? catalogSalesCalculationMethods : catalogCalculationMethods"/>
+          </a-form-item>
+          <a-form-item v-if="isSales && form.format==='rate'" label="比例收款方" html-for="catalog-add-sales-payee">
+            <a-select id="catalog-add-sales-payee" :value="form.salesPayee || 'seller'" :options="catalogSalesPayees" @change="form.salesPayee=$event"/>
           </a-form-item>
           <a-form-item v-if="form.format==='rate'" label="比例（%）" html-for="catalog-add-fixed" required>
             <a-input-number id="catalog-add-fixed" aria-label="比例（%）" v-model:value="form.rate"
@@ -154,10 +173,13 @@ defineExpose({addRecipient,editSales,editCalculation,editRateScope,addRateCondit
             <a-input-number id="catalog-add-amount" aria-label="金额（元/笔）" v-model:value="form.amount"
               :min="0" :precision="2" string-mode/>
           </a-form-item>
-        </div>
+        </RuleArrangementFields>
         <template v-if="form.format==='table'">
+          <small v-if="options.categories.length" class="finance-rate-priority">
+            匹配顺序 {{ catalogRatePriorityLabel }} → 通用比例
+          </small>
           <div v-for="(_,index) in form.rows" :key="index" class="catalog-add-condition">
-            <CatalogRateCondition v-model="form.rows[index]" :options="options" :suffix="'-'+index" :sales-payee="form.kind==='sales'">
+            <CatalogRateCondition v-model="form.rows[index]" :options="options" :suffix="'-'+index" :sales-payee="isSales">
               <a-button v-if="form.rows.length>1" type="link" danger size="small" @click="form.rows.splice(index,1)">移除</a-button>
             </CatalogRateCondition>
           </div>
@@ -171,12 +193,12 @@ defineExpose({addRecipient,editSales,editCalculation,editRateScope,addRateCondit
         </a-button>
       </div>
     </div>
-    <ul v-if="draft.items.length || draft.salesRates?.length" class="catalog-staged-entries" aria-label="待发布新增配置">
-      <li v-if="draft.salesRates?.length">
-        <div><span>成交销售 · {{ draft.salesRates.length }} 条费率条件</span><small class="order-version">未保存</small></div>
+    <ul v-if="draft.items.length || draft.sales" class="catalog-staged-entries" aria-label="待发布新增配置">
+      <li v-if="draft.sales">
+        <div><span>{{ draft.sales.label }} · {{ draft.sales.rows.length }} 条费率条件</span><small class="order-version">未保存</small></div>
         <a-space :size="0">
           <a-button type="link" size="small" :disabled="!!form" @click="editSales">编辑</a-button>
-          <a-button type="link" danger size="small" :disabled="!!form" @click="draft.salesRates=undefined">移除</a-button>
+          <a-button type="link" danger size="small" :disabled="!!form" @click="draft.sales=undefined">移除</a-button>
         </a-space>
       </li>
       <li v-for="(item,index) in draft.items" :key="'item-'+index">

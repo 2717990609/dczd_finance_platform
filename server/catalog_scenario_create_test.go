@@ -389,12 +389,14 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	withSales, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{
 		BaseID: onlyBenefits.ID, EffectiveFrom: firstAt.AddDate(0, 0, 3),
 		NewSalesRates: []catalogConditionInput{{Company: "ANY", Relationship: "ANY", Rate: &salesRate}},
+		NewSalesLabel: "  成交提成 ARR-01  ",
 	}, "fixture")
 	if err != nil {
 		t.Fatalf("could not add sales to an existing rule: %v", err)
 	}
 	withSalesSheet, err := s.catalogRuleRateSheet(ctx, withSales.ID)
-	if err != nil || len(withSalesSheet.Components) != 3 || withSalesSheet.Components[2].TargetKind != "seller" {
+	if err != nil || len(withSalesSheet.Components) != 3 || withSalesSheet.Components[2].TargetKind != "seller" ||
+		withSalesSheet.Components[2].Label != "成交提成 ARR-01" {
 		t.Fatalf("could not reopen added sales arrangement: %+v %v", withSalesSheet, err)
 	}
 	withoutSales, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{
