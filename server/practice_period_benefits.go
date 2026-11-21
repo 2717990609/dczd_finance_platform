@@ -142,6 +142,10 @@ type practicePeriodRate struct {
 	Value   int64  `json:"value"`
 }
 
+func (b practicePeriodBenefit) hasSalesScope() bool {
+	return len(b.SalesCompanies)+len(b.SalesPeople)+len(b.SalesUnits) != 0
+}
+
 func validPracticePeriodBenefit(c component) bool {
 	b := c.PeriodBenefit
 	if (c.Type != "manager" && c.Type != "delivery") || b == nil || c.Value > periodRateScale || c.RefundPolicy != "" {
@@ -180,7 +184,7 @@ func validPracticePeriodBenefit(c component) bool {
 	if b.AppointmentKind != "" && !validSourceRole(b.AppointmentKind) {
 		return false
 	}
-	if s := b.RegistrationScope; s != nil && (!s.valid() || len(b.SalesCompanies)+len(b.SalesPeople)+len(b.SalesUnits) != 0) {
+	if s := b.RegistrationScope; s != nil && (!s.valid() || b.hasSalesScope()) {
 		return false
 	}
 	for _, company := range b.SalesCompanies {
@@ -309,6 +313,7 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 func collectPracticeBenefitShares(part component, purchases []practicePurchase, assignments []practiceAppointment,
 	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int, runtime practiceDraftRuntime) ([]practiceBenefitShare, int64, draftIssue, error) {
 	b := part.PeriodBenefit
+	checkSalesAgreement := b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
 	var eligible []practiceBenefitShare
 	var tierBase int64
 	for _, p := range purchases {
@@ -335,7 +340,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		if !memberMatches {
 			continue
 		}
-		if p.noReferrer && (b.RegistrationScope != nil || len(b.SalesCompanies)+len(b.SalesPeople)+len(b.SalesUnits) != 0) {
+		if p.noReferrer && (b.RegistrationScope != nil || b.hasSalesScope()) {
 			continue
 		}
 		if scope := b.RegistrationScope; scope != nil {
@@ -348,7 +353,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		if b.FixedMinor != nil && len(p.originalPayments) != 0 {
 			payments = p.originalPayments
 		}
-		if len(payments) == 2 && b.RegistrationScope == nil {
+		if len(payments) == 2 && checkSalesAgreement {
 			left, right := payments[0].Fact, payments[1].Fact
 			if left.SalesCompanyID != right.SalesCompanyID ||
 				(left.ReferrerID != "" && right.ReferrerID != "" && left.ReferrerID != right.ReferrerID) {

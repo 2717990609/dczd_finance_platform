@@ -241,11 +241,14 @@ func TestPracticeFixedSignupBenefitKeepsOriginalPaymentShares(t *testing.T) {
 func TestPracticePercentageBenefitSplitsNetPaymentsAndPreservesSettledShares(t *testing.T) {
 	for _, tc := range []struct {
 		name          string
-		legacy        bool
+		legacyVersion int
+		fixedPerClass bool
 		deposit, tail int64
 	}{
-		{"new settlement", false, 200, 600},
-		{"previous settlement", true, 320, 480},
+		{"new percentage settlement", 0, false, 200, 600},
+		{"previous gross-share settlement", 1, false, 320, 480},
+		{"previous net-share settlement", 2, false, 200, 600},
+		{"fixed class with different sales attribution", 0, true, 200, 600},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -271,17 +274,27 @@ func TestPracticePercentageBenefitSplitsNetPaymentsAndPreservesSettledShares(t *
 				StartsOn: "2026-08-08", EndsOn: "2026-08-08", SourcePeriodKey: rosterKey}))
 			september := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "九月退款", SettlementMonth: "2026-09"}))
 			person := id(s.createPerson(ctx, createPersonInput{Name: "交付人员"}))
-			if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &class, Label: "原交付规则", Components: []component{{
+			part := component{
 				Type: "delivery", Mode: "period_rate", Value: 100000,
 				PeriodBenefit: &practicePeriodBenefit{Label: "交付分润", PersonID: person},
-			}}}); err != nil {
+			}
+			if tc.fixedPerClass {
+				award := int64(1000)
+				part.Value = 0
+				part.PeriodBenefit.FixedMinor, part.PeriodBenefit.FixedPerClass = &award, true
+			}
+			if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &class, Label: "原交付规则", Components: []component{part}}); err != nil {
 				t.Fatal(err)
 			}
 			start := time.Date(2026, 8, 8, 9, 0, 0, 0, shanghai)
 			paid := func(order string, amount int64) sourceFact {
 				at := start.Add(-48 * time.Hour)
-				return sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: sourceKey, Kind: "ORDER_PAID",
+				fact := sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: sourceKey, Kind: "ORDER_PAID",
 					OrderID: order, PaymentID: order, RecordKey: "payment:" + order, AmountMinor: &amount, Version: "1", OccurredAt: at, UpdatedAt: at}
+				if tc.fixedPerClass {
+					fact.SalesCompanyID, fact.ReferrerID = "company-"+order, "seller-"+order
+				}
+				return fact
 			}
 			refund := func(order, key string, amount int64, at time.Time) sourceFact {
 				return sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: sourceKey, Kind: "REFUND_SUCCEEDED",
@@ -303,12 +316,14 @@ func TestPracticePercentageBenefitSplitsNetPaymentsAndPreservesSettledShares(t *
 			}
 			original, err := s.calculateCurrentDraft(ctx, class, 0)
 			if err != nil || original.Total != 800 || original.LineCount != 2 || original.IssueCount != 0 {
-				t.Fatalf("expected 10%% of 80 yuan, got %+v %v", original, err)
+				t.Fatalf("expected 8 yuan total, got %+v %v", original, err)
 			}
-			if tc.legacy {
+			if tc.legacyVersion != 0 {
+				exec(`UPDATE calculation_drafts SET practice_replay_inputs=jsonb_set(practice_replay_inputs,'{version}',to_jsonb($2::int))
+				 WHERE period_id=$1`, class, tc.legacyVersion)
+			}
+			if tc.legacyVersion == 1 {
 				// Recreate the allocation and persisted replay version produced by the previous calculator.
-				exec(`UPDATE calculation_drafts SET practice_replay_inputs=jsonb_set(practice_replay_inputs,'{version}','1')
-				 WHERE period_id=$1`, class)
 				exec(`UPDATE calculation_draft_lines l SET amount_minor=CASE v.order_id WHEN '1' THEN $2::bigint ELSE $3::bigint END
 				 FROM source_order_versions v WHERE l.period_id=$1 AND l.source_version_id=v.id`, class, tc.deposit, tc.tail)
 			}
@@ -356,7 +371,8 @@ func TestPracticeFixedClassBenefitDoesNotRedistributeFullRefund(t *testing.T) {
 	for i, amount := range []int64{4000, 6000, 30000} {
 		id := int64(i + 1)
 		order := strconv.FormatInt(id, 10)
-		orders[order] = []paymentInput{{ID: id, Fact: sourceFact{Source: "DCZD", PaymentID: order, OrderID: order, AmountMinor: &amount}}}
+		orders[order] = []paymentInput{{ID: id, Fact: sourceFact{Source: "DCZD", PaymentID: order, OrderID: order, AmountMinor: &amount,
+			SalesCompanyID: "company-" + order, ReferrerID: "referrer-" + order}}}
 	}
 	for _, tc := range []struct {
 		name          string
@@ -386,6 +402,17 @@ func TestPracticeFixedClassBenefitDoesNotRedistributeFullRefund(t *testing.T) {
 			}
 		})
 	}
+	t.Run("sales-scoped benefit", func(t *testing.T) {
+		scoped := part
+		benefit := *part.PeriodBenefit
+		benefit.SalesCompanies = []string{"company-1", "company-2", "company-3"}
+		scoped.PeriodBenefit = &benefit
+		draft, err := calculatePracticeDraft(members, paymentRule{ID: 1, Components: []component{scoped}},
+			orders, nil, nil, practiceTierHistory{}, nil, practiceDraftRuntime{})
+		if err != nil || draft.Total != 0 || len(draft.Issues) != 1 || draft.Issues[0].Code != "PRACTICE_PERIOD_BENEFIT_INCOMPLETE" {
+			t.Fatalf("sales-scoped award should still check the two payments' attribution: %+v %v", draft, err)
+		}
+	})
 }
 
 func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *testing.T) {

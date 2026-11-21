@@ -48,16 +48,17 @@ func (p practicePurchase) salesIssue(code string, rule paymentRule, part string)
 }
 
 type practiceDraftRuntime struct {
-	appointments            map[practiceAppointmentKey][]practiceAppointment
-	registrations           map[int64]practiceRegistrationInput
-	salesOrganizations      practiceSalesOrganizations
-	companyOffers           *practiceCompanyOffers
-	companyClassifications  map[string]string
-	internalSalesCategories map[string]string
-	companyRecipients       map[string][]companySourceAssignment
-	recommendations         practiceCompanyRecommendations
-	poolUnits               map[int64]pgtype.UUID
-	legacyGrossRateShares   bool
+	appointments                map[practiceAppointmentKey][]practiceAppointment
+	registrations               map[int64]practiceRegistrationInput
+	salesOrganizations          practiceSalesOrganizations
+	companyOffers               *practiceCompanyOffers
+	companyClassifications      map[string]string
+	internalSalesCategories     map[string]string
+	companyRecipients           map[string][]companySourceAssignment
+	recommendations             practiceCompanyRecommendations
+	poolUnits                   map[int64]pgtype.UUID
+	legacyGrossRateShares       bool
+	legacyBenefitSalesAgreement bool
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,

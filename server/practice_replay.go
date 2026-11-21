@@ -29,6 +29,7 @@ type practiceReplayInputs struct {
 }
 
 const practiceReplayNetRateShares = 2
+const practiceReplayIndependentBenefits = 3
 
 const practiceRefundReplaySQL = `(d.practice_replay_inputs IS NOT NULL
  AND d.practice_replay_inputs->'independentRefunds' IS DISTINCT FROM 'true'::jsonb)`
@@ -122,6 +123,9 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 	}
 	for index, part := range rule.Components {
 		if benefit := part.PeriodBenefit; benefit != nil {
+			if benefit.RegistrationScope == nil && !benefit.hasSalesScope() {
+				inputs.Version = practiceReplayIndependentBenefits
+			}
 			if assignments := runtime.appointments[benefit.appointmentKey()]; len(assignments) != 0 {
 				inputs.Appointments[index] = assignments
 			}
@@ -162,7 +166,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 	if err != nil {
 		return replay, err
 	}
-	if saved != nil && saved.Version != 1 && saved.Version != practiceReplayNetRateShares {
+	if saved != nil && (saved.Version < 1 || saved.Version > practiceReplayIndependentBenefits) {
 		return replay, errPracticeRefundReplay
 	}
 	replay.members, err = readPracticeMembers(ctx, tx, []int64{rosterID}, false)
@@ -238,7 +242,8 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 		recommendations: practiceCompanyRecommendations{
 			directory: make(map[pgtype.UUID]pgtype.UUID), explicit: values.ReferrerCompanies,
 		},
-		legacyGrossRateShares: values.Version == 1,
+		legacyGrossRateShares:       values.Version == 1,
+		legacyBenefitSalesAgreement: values.Version < practiceReplayIndependentBenefits,
 	}
 	if usesPracticeRegistrations(replay.rule) {
 		replay.runtime.registrations, err = readPracticeRegistrationInputs(ctx, tx, rosterID, false, values.RegistrationVersions)
