@@ -299,7 +299,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap), errors.Is(err, errPracticeRosterProduct),
 		errors.Is(err, errPracticeMonthSettlementDependency), errors.Is(err, errPracticeRuleImpactNoMatch), errors.Is(err, errRuleImpactAggregatePeriod),
 		errors.Is(err, errCatalogRateStale), errors.Is(err, errCatalogRateUnavailable), errors.Is(err, errCatalogRateDates), errors.Is(err, errCatalogTeamRate),
-		errors.Is(err, errCatalogTeamSplitTotal), errors.Is(err, errCatalogTeamSplitService),
+		errors.Is(err, errCatalogTeamSplitTotal), errors.Is(err, errCatalogTeamSplitService), errors.Is(err, errCatalogTeamSplitStandard),
 		errors.Is(err, errCatalogRateConditions), errors.Is(err, errCatalogRequiredEntry), errors.Is(err, errCatalogPeriodRecipient), errors.Is(err, errCatalogPeriodComponents), errors.Is(err, errCatalogPeriodScenarios),
 		errors.Is(err, errCatalogScenarioTarget), errors.Is(err, errCatalogScenarioOccupied), errors.Is(err, errCatalogPeriodName),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),

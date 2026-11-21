@@ -15,14 +15,12 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 	sales, _ := readVIPSalesPolicy(raw)
 	removeItems := make(map[string]bool, len(items))
 	for _, key := range items {
-		if key == sales.Split.Item {
-			return nil, errCatalogRequiredEntry
-		}
 		if removeItems[key] {
 			return nil, invalid
 		}
 		removeItems[key] = true
 	}
+	removeSplit := sales.Split.Item != "" && removeItems[sales.Split.Item]
 	removeRows := make(map[string]map[int]bool)
 	for _, row := range rows {
 		if row.Row < 1 || removeItems[row.ItemKey] || removeRows[row.ItemKey][row.Row] {
@@ -80,6 +78,9 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 	if len(kept) == 0 {
 		return nil, errCatalogRequiredEntry
 	}
+	if removeSplit {
+		delete(root, "internal_sales_direct_split")
+	}
 	root["benefit_actions"], err = json.Marshal(kept)
 	if err != nil {
 		return nil, err
@@ -92,7 +93,7 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 	if !ok {
 		return nil, errCatalogRateUnavailable
 	}
-	if len(sales.Split.Teams) != 0 && internalTeamRatesChanged(sales, next) {
+	if !removeSplit && len(sales.Split.Teams) != 0 && internalTeamRatesChanged(sales, next) {
 		return nil, errCatalogTeamRate
 	}
 	return body, nil

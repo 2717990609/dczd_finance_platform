@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ var (
 	errCatalogTeamRate           = errors.New("此调整会改变内部团队的拆分比例或收款方式，请核对团队规则")
 	errCatalogTeamSplitTotal     = errors.New("普通销售成交和团队负责人亲自成交的岗位比例合计，都须等于销售总比例")
 	errCatalogTeamSplitService   = errors.New("服务人员比例大于零时，请为每个内部团队选择服务人员")
+	errCatalogTeamSplitStandard  = errors.New("请先确认内部团队有独立的公司销售标准，再调整总比例")
 	errCatalogRequiredEntry      = errors.New("请至少保留一项收款安排。成交团队拆分及在用的费率表须保留适用费率")
 )
 
@@ -233,12 +235,6 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 				return err
 			}
 		}
-		if input.TeamSplitRates != nil {
-			body, splitChanged, err = editCatalogTeamSplitRates(body, *input.TeamSplitRates)
-			if err != nil {
-				return err
-			}
-		}
 		if len(input.RecipientChanges)+len(input.TeamChanges) != 0 {
 			keys, err := catalogNewRecipientKeys(ctx, tx, input.RecipientChanges, input.TeamChanges)
 			if err != nil {
@@ -247,12 +243,6 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			body, recipientsChanged, err = editCatalogRecipients(body, input.RecipientChanges, input.TeamChanges, keys)
 			if err != nil {
 				return err
-			}
-		}
-		if splitChanged && input.TeamSplitRates.Service > 0 {
-			policy, ok := readVIPSalesPolicy(body)
-			if !ok || slices.ContainsFunc(policy.Split.Teams, func(team vipInternalTeam) bool { return team.ServiceParty == "" }) {
-				return errCatalogTeamSplitService
 			}
 		}
 		if structureChanged {
@@ -267,6 +257,20 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			body, err = removeCatalogEntries(body, input.RemovedItems, input.RemovedRateRows)
 			if err != nil {
 				return err
+			}
+		}
+		if input.TeamSplitRates != nil {
+			// Rate edits use the original row indexes. A team change can split
+			// grouped companies into separate rows after those edits are applied.
+			body, splitChanged, err = editCatalogTeamSplitRates(body, *input.TeamSplitRates)
+			if err != nil {
+				return err
+			}
+			if splitChanged && input.TeamSplitRates.Service > 0 {
+				policy, ok := readVIPSalesPolicy(body)
+				if !ok || slices.ContainsFunc(policy.Split.Teams, func(team vipInternalTeam) bool { return team.ServiceParty == "" }) {
+					return errCatalogTeamSplitService
+				}
 			}
 		}
 		if input.Copy == nil && !ratesChanged && !splitChanged && !recipientsChanged && !structureChanged && !removals {
@@ -520,7 +524,11 @@ func internalTeamRatesChanged(before, after vipSalesPolicy) bool {
 			for _, category := range categoryChecks {
 				oldRate, oldIssue := selectVIPRate(before.Sales, team.Company, relationship, category)
 				newRate, newIssue := selectVIPRate(after.Sales, team.Company, relationship, category)
-				if oldRate.Rate != newRate.Rate || oldRate.Payee != newRate.Payee || oldIssue != newIssue {
+				expected := oldRate.Rate
+				if oldIssue == "" && oldRate.Payee != vipPayeeSalesCompany && oldRate.Rate == before.Split.Total {
+					expected = after.Split.Total
+				}
+				if expected != newRate.Rate || oldRate.Payee != newRate.Payee || oldIssue != newIssue {
 					return true
 				}
 			}
@@ -535,30 +543,100 @@ func editCatalogTeamSplitRates(raw json.RawMessage, rates catalogSplitRates) (js
 	if !ok || len(split.Teams) == 0 {
 		return nil, false, errCatalogRateUnavailable
 	}
-	for _, value := range []int64{rates.Sales, rates.HeadSales, rates.GroupLead, rates.Service, rates.TeamLead} {
+	for _, value := range []int64{rates.Total, rates.Sales, rates.HeadSales, rates.GroupLead, rates.Service, rates.TeamLead} {
 		if value < 0 || value > 10000 {
 			return nil, false, invalid
 		}
 	}
 	common := rates.Service + rates.TeamLead
-	if rates.Total != split.Total || rates.Sales+rates.GroupLead+common != split.Total || rates.HeadSales+common != split.Total {
+	if rates.Sales+rates.GroupLead+common != rates.Total || rates.HeadSales+common != rates.Total {
 		return nil, false, errCatalogTeamSplitTotal
 	}
-	if rates.Sales == split.Assistant && rates.HeadSales == split.HeadSeller &&
+	if rates.Total == split.Total && rates.Sales == split.Assistant && rates.HeadSales == split.HeadSeller &&
 		rates.GroupLead == split.Group && rates.Service == split.Service && rates.TeamLead == split.TeamHead {
 		return raw, false, nil
 	}
-	var root, fields map[string]json.RawMessage
-	if json.Unmarshal(raw, &root) != nil || json.Unmarshal(root["internal_sales_direct_split"], &fields) != nil {
+	root, actions, err := catalogRateActions(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(root["internal_sales_direct_split"], &fields) != nil {
 		return nil, false, errCatalogRateUnavailable
 	}
 	for key, value := range map[string]int64{
+		"total_rate_bps":            rates.Total,
 		"assistant_seller_rate_bps": rates.Sales, "head_seller_rate_bps": rates.HeadSales,
 		"group_lead_rate_bps": rates.GroupLead, "service_rate_bps": rates.Service, "team_head_rate_bps": rates.TeamLead,
 	} {
 		fields[key], _ = json.Marshal(value)
 	}
 	root["internal_sales_direct_split"], _ = json.Marshal(fields)
+	if rates.Total != split.Total {
+		if err := changeCatalogTeamStandards(actions, policy, rates.Total); err != nil {
+			return nil, false, err
+		}
+		root["benefit_actions"], err = json.Marshal(actions)
+		if err != nil {
+			return nil, false, err
+		}
+	}
 	body, err := json.Marshal(root)
-	return body, err == nil, err
+	if err != nil {
+		return nil, false, err
+	}
+	if rates.Total != split.Total {
+		revised, ok := readVIPSalesPolicy(body)
+		if !ok || internalTeamRatesChanged(policy, revised) {
+			return nil, false, errCatalogTeamSplitStandard
+		}
+	}
+	return body, true, nil
+}
+
+func changeCatalogTeamStandards(actions []map[string]json.RawMessage, policy vipSalesPolicy, total int64) error {
+	for _, action := range actions {
+		var key string
+		if json.Unmarshal(action["item_key"], &key) != nil || key != policy.Item {
+			continue
+		}
+		var rows []map[string]json.RawMessage
+		if json.Unmarshal(action["rate_table"], &rows) != nil || len(rows) != len(policy.Sales) {
+			return errCatalogRateUnavailable
+		}
+		teams := make(map[string]bool)
+		for _, team := range policy.Split.Teams {
+			teams[team.Company] = true
+		}
+		revised := make([]map[string]json.RawMessage, 0, len(rows))
+		for index, row := range rows {
+			standard := policy.Sales[index]
+			var internal, external []string
+			for _, company := range standard.companies() {
+				if teams[company] {
+					internal = append(internal, company)
+				} else {
+					external = append(external, company)
+				}
+			}
+			if len(internal) == 0 || standard.Rate != policy.Split.Total || standard.Payee == vipPayeeSalesCompany {
+				revised = append(revised, row)
+				continue
+			}
+			if len(external) != 0 {
+				// Keep the existing condition for other companies at its old rate.
+				old := maps.Clone(row)
+				old["sales_organization_party_ids"], _ = json.Marshal(external)
+				revised = append(revised, old)
+				row["sales_organization_party_ids"], _ = json.Marshal(internal)
+				delete(row, "id")
+			}
+			row["rate_bps"], _ = json.Marshal(total)
+			revised = append(revised, row)
+		}
+		var err error
+		action["rate_table"], err = json.Marshal(revised)
+		return err
+	}
+	return errCatalogRateUnavailable
 }

@@ -95,6 +95,59 @@ func TestEditCatalogTeamSplitRatesKeepsLinkedRateAndFrozenDefinition(t *testing.
 	if _, _, err := editCatalogTeamSplitRates(definition, rates); !errors.Is(err, errCatalogTeamSplitTotal) {
 		t.Fatalf("unbalanced direct head sale was accepted: %v", err)
 	}
+	rates.Total, rates.Sales, rates.HeadSales = 1200, 650, 800
+	if _, _, err := editCatalogTeamSplitRates(definition, rates); !errors.Is(err, errCatalogTeamSplitStandard) {
+		t.Fatalf("changing a shared fallback would also change unrelated companies: %v", err)
+	}
+}
+
+func TestEditCatalogTeamTotalRetainsEachExternalRate(t *testing.T) {
+	base := json.RawMessage(strings.NewReplacer(
+		`"sales_item_key":"sales"`,
+		`"sales_item_key":"sales","total_rate_bps":1000,"assistant_seller_rate_bps":500,
+		 "head_seller_rate_bps":600,"group_lead_rate_bps":100,"service_rate_bps":150,
+		 "team_head_rate_bps":250,"teams":[{"sales_company_party_id":"internal"}]`,
+		`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY"`,
+		`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY",
+		  "rate_table":[{"id":"company-row","sales_organization_party_ids":["internal","external"],
+		   "sales_relationship":"ANY","rate_bps":1000},
+		  {"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":700}]`,
+	).Replace(testVIPBenefits))
+	rates := catalogSplitRates{Total: 1200, Sales: 700, HeadSales: 800, GroupLead: 100, Service: 150, TeamLead: 250}
+	body, changed, err := editCatalogTeamSplitRates(base, rates)
+	if err != nil || !changed {
+		t.Fatalf("revised total and shares should be published together: %t %v", changed, err)
+	}
+	original, _ := readVIPSalesPolicy(base)
+	revised, ok := readVIPSalesPolicy(body)
+	if !ok || original.Split.Total != 1000 || revised.Split.Total != 1200 {
+		t.Fatalf("wrong total in either version: %d/%d", original.Split.Total, revised.Split.Total)
+	}
+	for company, amount := range map[string]int64{"internal": 1200, "external": 1000, "other": 700} {
+		rate, issue := selectVIPRate(revised.Sales, company, "DIRECT", nil)
+		if rate.Rate != amount || issue != "" {
+			t.Fatalf("%s should receive %d, got %+v %q", company, amount, rate, issue)
+		}
+	}
+}
+
+func TestRemovingLinkedSalesArrangementAlsoRemovesItsTeamSplit(t *testing.T) {
+	base := json.RawMessage(strings.Replace(testVIPBenefits,
+		`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY"`,
+		`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY",
+		  "rate_table":[{"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":1000}]`, 1))
+	next, err := removeCatalogEntries(base, []string{"sales"}, nil)
+	if err != nil {
+		t.Fatalf("must be able to remove the sales arrangement and its split together: %v", err)
+	}
+	oldPolicy, _ := readVIPSalesPolicy(base)
+	newPolicy, ok := readVIPSalesPolicy(next)
+	oldBenefits, _ := readVIPBenefits(base)
+	newBenefits, benefitOK := readVIPBenefits(next)
+	if !ok || !benefitOK || oldPolicy.Split.Item != "sales" || newPolicy.Split.Item != "" || newPolicy.Item != "" ||
+		!reflect.DeepEqual(oldBenefits.actions, newBenefits.actions) {
+		t.Fatal("removal must preserve all independent benefits and the original rule")
+	}
 }
 
 func TestCatalogRateTableRequiresARow(t *testing.T) {

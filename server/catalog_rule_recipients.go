@@ -214,12 +214,10 @@ func editCatalogTeamRecipients(root map[string]json.RawMessage, changes []catalo
 		}
 		byCompany[key] = row
 	}
-	var serviceRate int64
-	_ = json.Unmarshal(split["service_rate_bps"], &serviceRate)
 	changed := false
 	for _, change := range changes {
 		row := byCompany[change.TeamKey]
-		if row == nil || change.HeadPersonID == nil && change.ServicePersonID == nil || change.ServicePersonID != nil && serviceRate <= 0 {
+		if row == nil || change.HeadPersonID == nil && change.ServicePersonID == nil {
 			return false, invalid
 		}
 		delete(byCompany, change.TeamKey)
