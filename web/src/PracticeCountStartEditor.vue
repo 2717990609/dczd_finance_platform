@@ -1,5 +1,6 @@
 <script setup>
 import { computed } from 'vue'
+import PracticePersonCountFields from './PracticePersonCountFields.vue'
 
 const props = defineProps({
   config: { type: Object, required: true },
@@ -42,15 +43,7 @@ function eligiblePeople(row) {
       <a-form-item :html-for="'tier-person-'+index" label="人员" required>
         <a-select :id="'tier-person-'+index" v-model:value="row.personId" :options="eligiblePeople(row)" show-search option-filter-prop="label"/>
       </a-form-item>
-      <a-form-item :html-for="'tier-person-start-mode-'+index" label="起点类型">
-        <a-select :id="'tier-person-start-mode-'+index" v-model:value="row.startMode" :options="personalStartModes"/>
-      </a-form-item>
-      <a-form-item v-if="row.startMode==='ordinal'" :html-for="'tier-person-start-ordinal-'+index" label="起始期数" required>
-        <a-input-number :id="'tier-person-start-ordinal-'+index" v-model:value="row.countFromOrdinal" :min="1" :precision="0"/>
-      </a-form-item>
-      <a-form-item v-else :html-for="'tier-person-start-time-'+index" label="起始开班时间（北京时间）" required>
-        <a-input :id="'tier-person-start-time-'+index" v-model:value="row.countFromAt" type="datetime-local" step="any"/>
-      </a-form-item>
+      <PracticePersonCountFields :start="row" :prefix="'tier-person-count-'+index" :start-modes="personalStartModes"/>
       <a-button type="link" danger aria-label="移除个人起点" @click="config.personCountStarts.splice(index,1)">移除</a-button>
     </div>
   </section>

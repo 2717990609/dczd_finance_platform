@@ -1,0 +1,221 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"slices"
+	"strconv"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+type practiceRuleSettings struct {
+	ID                int64                      `json:"id"`
+	Label             string                     `json:"label"`
+	Version           int                        `json:"version"`
+	PeriodID          *int64                     `json:"periodId,omitempty"`
+	PeriodName        string                     `json:"periodName,omitempty"`
+	FromOrdinal       *int                       `json:"fromOrdinal,omitempty"`
+	EffectiveFrom     *time.Time                 `json:"effectiveFrom,omitempty"`
+	ActivityType      int                        `json:"activityType,omitempty"`
+	HasCount          bool                       `json:"hasCount"`
+	PersonCountStarts []practicePersonCountStart `json:"personCountStarts,omitempty"`
+	HasRetrain        bool                       `json:"hasRetrain"`
+	RetrainTotal      int64                      `json:"retrainTotalMinor"`
+	RetrainSplits     []practiceRetrainSplit     `json:"retrainSplits,omitempty"`
+	SalesCompanies    []string                   `json:"salesCompanies,omitempty"`
+}
+
+func isPracticeFixedRetrain(part component) bool {
+	return part.Type == "sales" && part.Mode == "fixed" && part.ClassMember == "retrain"
+}
+
+const practiceRuleSettingsSQL = `WITH latest AS (
+ SELECT DISTINCT ON (rv.period_id,rv.from_ordinal,rv.activity_type,rv.effective_from)
+  rv.id,rv.period_id,rv.from_ordinal,rv.activity_type,rv.effective_from,rv.version,rv.label,rv.components
+ FROM rule_versions rv JOIN products p ON p.id=rv.product_id
+ WHERE rv.product_id=$1 AND p.period_mode='class' AND ` + componentRuleRetiredAtSQL + ` IS NULL
+ ORDER BY rv.period_id,rv.from_ordinal,rv.activity_type,rv.effective_from,rv.version DESC
+)
+SELECT l.id,l.label,l.version,l.period_id,coalesce(p.name,''),l.from_ordinal,l.activity_type,l.effective_from,l.components
+FROM latest l LEFT JOIN periods p ON p.id=l.period_id ORDER BY l.version DESC`
+
+func readPracticeRuleSettings(ctx context.Context, db *pgxpool.Pool, productID int64) ([]practiceRuleSettings, error) {
+	rows, err := db.Query(ctx, practiceRuleSettingsSQL, productID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]practiceRuleSettings, 0)
+	for rows.Next() {
+		var setting practiceRuleSettings
+		var parts []component
+		if err := rows.Scan(&setting.ID, &setting.Label, &setting.Version, &setting.PeriodID, &setting.PeriodName,
+			&setting.FromOrdinal, &setting.ActivityType, &setting.EffectiveFrom, &parts); err != nil {
+			return nil, err
+		}
+		for _, part := range parts {
+			switch {
+			case part.Mode == "tiered" && part.Tiers != nil && part.Tiers.hasCountTiers():
+				setting.HasCount, setting.PersonCountStarts = true, part.Tiers.PersonCountStarts
+			case isPracticeFixedRetrain(part):
+				setting.HasRetrain, setting.RetrainTotal = true, part.Value
+				setting.RetrainSplits, setting.SalesCompanies = part.retrainSplits(), part.salesCompanies()
+			}
+		}
+		if setting.HasCount || setting.HasRetrain {
+			items = append(items, setting)
+		}
+	}
+	return items, rows.Err()
+}
+
+func (s workspace) getPracticeRuleSettings(w http.ResponseWriter, r *http.Request) {
+	productID, err := strconv.ParseInt(r.URL.Query().Get("productId"), 10, 64)
+	if err != nil || productID < 1 {
+		respond(w, nil, invalid)
+		return
+	}
+	if actor := financeUser(r.Context()); actor != nil && !actor.permitsRule(productID, false) {
+		respond(w, nil, errFinanceForbidden)
+		return
+	}
+	ctx := r.Context()
+	rules, err := readPracticeRuleSettings(ctx, s.db, productID)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	var people, pools []int64
+	for _, rule := range rules {
+		for _, start := range rule.PersonCountStarts {
+			people = append(people, start.PersonID)
+		}
+		for _, split := range rule.RetrainSplits {
+			people = append(people, split.ServicePersonID, split.Pool.OwnerID)
+			pools = append(pools, split.Pool.PoolID)
+		}
+	}
+	directory, err := s.practiceRecipientNames(ctx, people, nil, pools)
+	respond(w, struct {
+		Rules     []practiceRuleSettings `json:"rules"`
+		Directory json.RawMessage        `json:"directory,omitempty"`
+	}{rules, directory}, err)
+}
+
+type savePracticeRuleSettingsInput struct {
+	ProductID         int64
+	RuleID            int64
+	CountStart        *practicePersonCountStart
+	ExistingPersonID  int64
+	RetrainSplit      *practiceRetrainSplit
+	ExistingCompanyID string
+}
+
+func (s workspace) savePracticeRuleSettings(ctx context.Context, input savePracticeRuleSettingsInput) (any, error) {
+	countChange := input.CountStart != nil || input.ExistingPersonID > 0
+	splitChange := input.RetrainSplit != nil || input.ExistingCompanyID != ""
+	if input.ProductID < 1 || input.RuleID < 1 || input.ExistingPersonID < 0 || countChange == splitChange {
+		return nil, invalid
+	}
+	actor := financeUser(ctx)
+	if actor != nil && !actor.permitsRule(input.ProductID, true) {
+		return nil, errFinanceForbidden
+	}
+	var version int
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if actor != nil {
+			if err := lockFinanceOperatorSession(ctx, tx, actor); err != nil {
+				return err
+			}
+		}
+		// The product lock also serializes retirement and publication from the full rule editor.
+		var productID int64
+		if err := tx.QueryRow(ctx, `SELECT id FROM products WHERE id=$1 AND period_mode='class' FOR UPDATE`, input.ProductID).Scan(&productID); err != nil {
+			return err
+		}
+		pub := publishRuleInput{ProductID: productID, EditBaseID: &input.RuleID}
+		var retired *time.Time
+		if err := tx.QueryRow(ctx, `SELECT rv.label,rv.components,`+componentRuleRetiredAtSQL+`
+		 FROM rule_versions rv WHERE rv.id=$1 AND rv.product_id=$2`, input.RuleID, productID).
+			Scan(&pub.Label, &pub.Components, &retired); err != nil {
+			return err
+		}
+		if retired != nil {
+			return errRuleEditStale
+		}
+		if err := editPracticeRuleSettings(&pub, input, countChange); err != nil {
+			return err
+		}
+		if err := validateRulePublication(pub); err != nil {
+			return err
+		}
+		var err error
+		version, err = writeComponentRule(ctx, tx, pub, true)
+		return err
+	})
+	return map[string]int{"version": version}, err
+}
+
+func replacePracticeRuleSetting[T any](rows []T, next *T, matches func(T) bool, editing bool) ([]T, error) {
+	index := slices.IndexFunc(rows, matches)
+	if editing {
+		if index == -1 {
+			return nil, errRuleEditStale
+		}
+		if next == nil {
+			return slices.Delete(rows, index, index+1), nil
+		}
+		rows[index] = *next
+		return rows, nil
+	}
+	if index != -1 {
+		return nil, conflict
+	}
+	return append(rows, *next), nil
+}
+
+func editPracticeRuleSettings(pub *publishRuleInput, input savePracticeRuleSettingsInput, countChange bool) error {
+	if countChange {
+		part := practiceTierComponent(paymentRule{Components: pub.Components})
+		if part == nil || part.Tiers == nil || !part.Tiers.hasCountTiers() {
+			return invalid
+		}
+		person := input.ExistingPersonID
+		editing := person != 0
+		if start := input.CountStart; start != nil {
+			if editing && start.PersonID != person {
+				return invalid
+			}
+			person = start.PersonID
+		}
+		rows, err := replacePracticeRuleSetting(part.Tiers.PersonCountStarts, input.CountStart,
+			func(row practicePersonCountStart) bool { return row.PersonID == person }, editing)
+		part.Tiers.PersonCountStarts = rows
+		return err
+	}
+	i := slices.IndexFunc(pub.Components, isPracticeFixedRetrain)
+	if i == -1 {
+		return invalid
+	}
+	company := input.ExistingCompanyID
+	editing := company != ""
+	if split := input.RetrainSplit; split != nil {
+		if editing && split.CompanyID != company {
+			return invalid
+		}
+		company = split.CompanyID
+	}
+	part := &pub.Components[i]
+	rows, err := replacePracticeRuleSetting(part.retrainSplits(), input.RetrainSplit,
+		func(row practiceRetrainSplit) bool { return row.CompanyID == company }, editing)
+	if len(rows) > 0 {
+		part.RetrainSplits = &rows
+	} else {
+		part.RetrainSplits = nil
+	}
+	return err
+}

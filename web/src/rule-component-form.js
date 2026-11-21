@@ -138,7 +138,7 @@ function tierRows(rows, scale) {
   }))
 }
 
-function countStart(start) {
+export function practiceCountStartForm(start) {
   return {
     startMode:start.openingId ? 'opening' : start.countFromOrdinal ? 'ordinal' : 'time',
     openingId:start.openingId, countFromOrdinal:start.countFromOrdinal, countFromAt:localTime(start.countFromAt),
@@ -159,12 +159,12 @@ export function tierFormHasCount(form) {
 function tierForm(tiers) {
   const schedules = tiers.companySchedules || []
   return {
-    ...countStart(tiers),
+    ...practiceCountStartForm(tiers),
     includeRetrain:Boolean(tiers.includeRetrain),
     metric:tierMetric(tiers),
     onlyOverrides:!tiers.count?.length && !tiers.performance?.length,
     count:tierRows(tiers.count,1), performance:tierRows(tiers.performance,100),
-    personCountStarts:(tiers.personCountStarts || []).map(start => ({personId:start.personId, ...countStart(start)})),
+    personCountStarts:(tiers.personCountStarts || []).map(start => ({personId:start.personId, ...practiceCountStartForm(start)})),
     companies:schedules.map(schedule => ({
       companyIds:[...exceptionCompanyIDs(schedule)], metric:tierMetric(schedule),
       count:tierRows(schedule.count,1), performance:tierRows(schedule.performance,100),
@@ -187,6 +187,11 @@ function companyValue(row) {
 
 export const standardCategoryIDs = row => row.salesCategoryIds || (row.salesCategoryId ? [row.salesCategoryId] : [])
 export const exceptionCompanyIDs = row => row.companyIds || (row.companyId ? [row.companyId] : [])
+
+export function practiceRetrainSplitForm(split) {
+  return {companyId:split.companyId, pool:{...split.pool}, personal:split.personalMinor / 100,
+    servicePersonId:split.servicePersonId, service:(split.serviceMinor || 0) / 100}
+}
 
 export function copiedRuleComponents(savedComponents, optionLabel) {
   const components = JSON.parse(JSON.stringify(savedComponents))
@@ -218,9 +223,7 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
         })),
       }
     }
-    if (retrainSplits) form.retrainSplits = retrainSplits.map(split => ({companyId:split.companyId,
-      pool:split.pool, personal:split.personalMinor / 100, servicePersonId:split.servicePersonId, service:(split.serviceMinor || 0) / 100,
-    }))
+    if (retrainSplits) form.retrainSplits = retrainSplits.map(practiceRetrainSplitForm)
     return form
   })
 }

@@ -108,6 +108,10 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 			people = append(people, split.ServicePersonID)
 		}
 	}
+	return s.practiceRecipientNames(ctx, people, units, pools)
+}
+
+func (s workspace) practiceRecipientNames(ctx context.Context, people []int64, units []string, pools []int64) (json.RawMessage, error) {
 	if len(people)+len(units)+len(pools) == 0 {
 		return nil, nil
 	}

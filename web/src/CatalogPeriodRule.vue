@@ -83,6 +83,10 @@ const firstStart = computed(() => sheet.value && !creating.value ? nextStart(she
 const cutoff = computed(() => sheet.value?.effectiveTo
   ? localDate(new Date(Date.parse(sheet.value.effectiveTo)-86400000).toISOString()) : undefined)
 const canSave = computed(() => sheet.value?.mayPublish && (!cutoff.value || firstStart.value<=cutoff.value))
+function defaultEffectiveDate() {
+  const next = nextStart(new Date().toISOString(),sheet.value.cycle)
+  return next>=firstStart.value && (!cutoff.value || next<=cutoff.value) ? next : firstStart.value
+}
 const firstResumeDate = computed(() => {
   if (creating.value || !sheet.value?.paused) return ''
   const next = nextStart(new Date().toISOString(),sheet.value.cycle)
@@ -97,7 +101,8 @@ const scenariosChanged = computed(() => {
   const published = sheet.value?.scenarios || []
   return scenarioCodes.value.length !== published.length || !published.every(sku=>scenarioCodes.value.includes(sku.code))
 })
-const performanceChanged = computed(() => JSON.stringify(performanceScope.value) !== JSON.stringify(performanceForm(sheet.value?.performanceScope)))
+const scopeKey = scope => JSON.stringify({unitIds:[...scope.unitIds].sort(),appointment:scope.appointment})
+const performanceChanged = computed(() => scopeKey(performanceScope.value)!==scopeKey(performanceForm(sheet.value?.performanceScope)))
 const changed = computed(() => creating.value ? Boolean(ruleName.value.trim() && scenarioCodes.value.length && rows.value.length)
   : componentsChanged.value || scenariosChanged.value || performanceChanged.value)
 const scenarioOptions = computed(() => {
@@ -124,8 +129,11 @@ function editableRows(items) {
       tiers:tiers.length===1 ? [] : tiers.map(row=>({from:(row.min_inclusive || 0)/100,rate:row.rate_bps/100}))}
   })
 }
-function configuredRow({method,uniformRate,tiers,...item}) {
-  return {...item,tiers:method==='rate' ? [{from:0,rate:uniformRate}] : tiers}
+function configuredRow(item) {
+  const target = {itemKey:item.itemKey,label:item.label.trim(),targetKind:item.targetKind,organizationKey:item.organizationKey,
+    personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole}
+  if (item.method==='fixed') return {...target,fixedAmount:item.fixedAmount}
+  return {...target,tiers:item.method==='rate' ? [{from:0,rate:item.uniformRate}] : item.tiers}
 }
 const methodLabels = {rate:'统一比例',tiers:'按净额阶梯',fixed:'整期固定金额'}
 function setMethod(item, method) {
@@ -290,7 +298,7 @@ watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,pro
     activeComponent.value = rows.value.length===1 ? rows.value[0].uid : undefined
     editingComponent.value = undefined
     if (creating.value) initializeCreation(data,product)
-    else effectiveDate.value = canSave.value ? firstStart.value : ''
+    else effectiveDate.value = canSave.value ? defaultEffectiveDate() : ''
     if (props.rule?.focusItemKey) void openArrangement(props.rule.focusItemKey)
   } catch (err) {
     if (request === versionRequest) error.value = err.message
@@ -456,6 +464,11 @@ async function resumeRule() {
         <p v-if="copiedFrom" class="rule-formula">复制自 {{ copiedFrom.label }} v{{ copiedFrom.version }}，按各 SKU 当前的确认时点归期。</p>
         <a-alert v-if="sheet.paused && !applied" class="feedback" type="info" show-icon
           message="当前暂停执行。保存新版本后，可另选账期恢复执行。"/>
+        <a-form v-if="canSave && !creating" layout="vertical" size="small" class="rule-basics">
+          <a-form-item label="新版本生效账期（北京时间）" html-for="period-rule-effective">
+            <a-input id="period-rule-effective" v-model:value="effectiveDate" type="date" :min="firstStart" :max="cutoff" :disabled="saving"/>
+          </a-form-item>
+        </a-form>
         <a-descriptions size="small" :column="{xs:1,sm:1,md:2}" bordered>
           <a-descriptions-item v-if="!creating" label="结算周期">{{ cycleLabels[sheet.cycle] }}</a-descriptions-item>
           <a-descriptions-item v-if="!creating" label="有效范围">{{ formatTime(sheet.effectiveFrom) }}<template v-if="sheet.effectiveTo"> 至 {{ formatTime(sheet.effectiveTo) }}</template></a-descriptions-item>
@@ -752,11 +765,6 @@ async function resumeRule() {
           <a-descriptions-item label="下期结转退款">{{ formatMoney(-quote.carryForwardMinor) }}</a-descriptions-item>
         </a-descriptions>
         </template>
-        <a-form v-if="canSave && !creating" layout="vertical" class="period-quote-result">
-          <a-form-item label="新版本生效日期（北京时间零点）" html-for="period-rule-effective" :extra="cycleLabels[sheet.cycle]+'的账期起点生效。'">
-            <a-input id="period-rule-effective" v-model:value="effectiveDate" type="date" :min="firstStart" :max="cutoff" :disabled="saving"/>
-          </a-form-item>
-        </a-form>
       </section>
     </a-spin>
     <template #footer>

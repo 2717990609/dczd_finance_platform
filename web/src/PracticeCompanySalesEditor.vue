@@ -56,6 +56,10 @@ function salesCategoryOptions(category) {
 function addStandard(scope) {
   categories.value.push({scope,mode:amounts.value[0]?.value,companies:[],salesCategoryIds:[],overrides:[]})
 }
+function addCategoryOverride(category) {
+  category.overrides.push({companyIds:[],mode:category.mode})
+  standardScope.value = 'companies'
+}
 function modeChanged(item, mode) {
   item.mode = mode
   item.value = undefined
@@ -135,12 +139,17 @@ watch(amounts, choices => {
         <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" size="small" :min="0" :max="100" :precision="4"/>
       </a-form-item>
       <a-button v-if="categories.length>1" size="small" type="link" danger class="company-standard-remove" @click="categories.splice(i,1)">移除</a-button>
+      <a-button v-if="category.scope==='category' && category.salesCategoryIds.length && overrideOptions(category).length"
+        class="company-category-override" type="link" size="small" @click="addCategoryOverride(category)">为此类别添加公司特例</a-button>
     </div>
     <template v-if="activeGroup.scope==='companies'">
       <div class="company-category company-standard-fields" v-for="({category,index:i,override,position:j}) in overrides" :key="i+'-'+j">
         <a-form-item class="company-scope-field" label="特例公司" :html-for="field('override-'+i+'-'+j)" required>
           <a-select :id="field('override-'+i+'-'+j)" v-model:value="override.companyIds"
             :options="overrideOptions(category,override)" size="small" mode="multiple" :max-tag-count="3" :filter-option="byName"/>
+          <small v-if="category.salesCategoryIds.length" class="order-version">
+            {{ category.salesCategoryIds.map(id=>salesCategories.find(option=>option.value===id)?.label || id).join('、') }}
+          </small>
         </a-form-item>
         <a-form-item v-if="amounts.length>1" label="计算方式" :html-for="field('override-method-'+i+'-'+j)">
           <a-select :id="field('override-method-'+i+'-'+j)" :value="override.mode" :options="amounts" size="small" @change="modeChanged(override,$event)"/>
@@ -192,6 +201,7 @@ watch(amounts, choices => {
 .company-standard-fields :deep(.ant-form-item.company-scope-field) {flex:3 1 220px}
 .company-meta :deep(.ant-form-item-label),.company-standard-fields :deep(.ant-form-item-label) {padding-bottom:2px}
 .company-standard-remove {margin:0 0 0 auto}
+.company-category-override {justify-self:start;grid-column:1 / -1;padding-inline:0}
 .company-advanced :deep(.ant-collapse-header) {padding:4px 0}
 .company-advanced :deep(.ant-collapse-content-box) {padding:4px 0}
 .company-standard-fields :deep(.ant-input-number),.company-standard-fields :deep(.ant-input-number-group-wrapper) {width:100%}

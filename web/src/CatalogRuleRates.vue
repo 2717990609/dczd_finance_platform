@@ -10,7 +10,8 @@ import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import { catalogCalculationMethods, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesCalculationMethods, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
-const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array, skus:Array })
+const props = defineProps({ rule:Object, applied:Object, api:Function, formatTime:Function, formatMoney:Function,
+  optionLabel:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
 const sheet = ref()
 const selected = ref()
@@ -109,17 +110,20 @@ function stagedRateRow(change, original) {
     relationship:names.relationships.get(relationship) || original?.relationship || relationship,
   }
 }
-const rateRows = computed(() => {
-  if (selectedCalculation.value) {
-    return (selectedCalculation.value.rows || []).map((row,index)=>stagedRateRow({...row,draftKey:'method-'+index}))
+function configuredRateRows(item) {
+  if (!item) return []
+  const calculation = calculationFor(item.itemKey)
+  if (calculation) {
+    return (calculation.rows || []).map((row,index)=>stagedRateRow({...row,draftKey:'method-'+index}))
   }
-  const stored = component.value?.rows || []
-  const staged = structure.value.rateRows.filter(row=>row.itemKey===selected.value)
+  const stored = item.rows || []
+  const staged = structure.value.rateRows.filter(row=>row.itemKey===item.itemKey)
   if (!staged.length) return stored
   const byRow = new Map(stored.map(row=>[row.row,row]))
   const replaced = new Set(staged.map(row=>row.row))
   return [...staged.map(change=>stagedRateRow(change,byRow.get(change.row))),...stored.filter(row=>!replaced.has(row.row))]
-})
+}
+const rateRows = computed(() => configuredRateRows(component.value))
 const singleSalesRate = computed(() => {
   const [row,...others] = rateRows.value
   if (targetKind.value==='seller' && !teamSplit.value && row?.scope==='general' && !row.limitsRelationship && !others.length) return row
@@ -279,6 +283,7 @@ function targetName(item) {
   if (edit.target==='person') return edit.personName
   return sheet.value.structureOptions.organizations.find(org=>org.value===edit.organization)?.label
 }
+const roleLabel = role => props.optionLabel('catalogAppointmentRole',role) || role
 function originalTarget(item) {
   return {target:item.targetKind,role:item.targetRole,memberRole:item.memberRole,organization:item.targetOrganization,
     personId:item.recipient?.id,personName:item.recipient?.name}
@@ -354,7 +359,7 @@ function setCommissionScope(item, units) {
 }
 function commissionScopeNames(item) {
   const units = commissionScope(item)
-  const rows = item===component.value ? rateRows.value : (calculationFor(item.itemKey) || item).rows
+  const rows = configuredRateRows(item)
   if (units==null && rows?.length) {
     const positive = rows.filter(row=>!removedRateRows.value.has(cellKey(item.itemKey,row.row)) &&
       (edits.value[cellKey(item.itemKey,row.row)] ? Number(edits.value[cellKey(item.itemKey,row.row)].value)>0 : row.rateBps>0))
@@ -603,9 +608,17 @@ async function publish() {
               :by-rate-table="hasRateTable"
               @update:model-value="setCommissionScope(item,$event)"/>
           </template>
-          <p v-else-if="targetKind!=='seller' && !itemRemoved" class="rule-formula">
-            {{ [targetKindLabels[targetKind],targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}
-          </p>
+          <template v-else-if="targetKind!=='seller' && !itemRemoved">
+            <p class="rule-formula">{{ [targetKindLabels[targetKind],targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}</p>
+            <a-descriptions v-if="item.targetRole || item.memberRole" size="small" :column="{xs:1,sm:2}">
+              <a-descriptions-item v-if="item.targetRole" :label="targetKind==='pool' ? '负责人岗位' : '收款人任职岗位'">
+                {{ roleLabel(item.targetRole) }}
+              </a-descriptions-item>
+              <a-descriptions-item v-if="item.memberRole" label="可参与分配的成员岗位">
+                {{ roleLabel(item.memberRole) }}
+              </a-descriptions-item>
+            </a-descriptions>
+          </template>
           <div v-if="hasRateTable" class="finance-rate-toolbar catalog-rate-toolbar">
             <div class="catalog-rate-controls">
               <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" size="small"

@@ -4,6 +4,11 @@ function addRow(section) {
   const mode = props.amounts[0]?.value
   props.config[section].push(props.includeRetrain ? {mode,retrain:{mode}} : {mode})
 }
+function setMode(row, mode) {
+  if (row.mode===mode) return
+  row.mode = mode
+  row.value = undefined
+}
 </script>
 <template>
     <fieldset v-for="section in sections" :key="section.key" class="tier-ranges">
@@ -18,10 +23,12 @@ function addRow(section) {
             <a-input-number :id="prefix+'tier-through-'+section.key+index" v-model:value="row.through" :min="0" :precision="section.decimals"/>
           </a-form-item>
           <a-form-item :html-for="prefix+'tier-mode-'+section.key+index" :label="includeRetrain ? '新报计提方式' : '计提方式'">
-            <a-select :id="prefix+'tier-mode-'+section.key+index" v-model:value="row.mode" :options="amounts"/>
+            <a-select :id="prefix+'tier-mode-'+section.key+index" :value="row.mode" :options="amounts" @change="setMode(row,$event)"/>
           </a-form-item>
-          <a-form-item :html-for="prefix+'tier-value-'+section.key+index" :label="includeRetrain ? '新报计提值' : '计提值'" required>
-            <a-input-number :id="prefix+'tier-value-'+section.key+index" v-model:value="row.value" :min="0" :precision="2"/>
+          <a-form-item :html-for="prefix+'tier-value-'+section.key+index"
+            :label="(includeRetrain ? '新报' : '')+(row.mode==='rate' ? '比例（%）' : '每份金额（元）')" required>
+            <a-input-number :id="prefix+'tier-value-'+section.key+index" v-model:value="row.value"
+              :min="0" :max="row.mode==='rate' ? 100 : undefined" :precision="2"/>
           </a-form-item>
           <template v-if="includeRetrain">
             <a-form-item :html-for="prefix+'tier-retrain-mode-'+section.key+index" label="复训计提方式">

@@ -27,6 +27,7 @@ const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetai
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
 const CatalogScenarioCreate = defineAsyncComponent(() => import('./CatalogScenarioCreate.vue'))
 const PracticeRegistrationImport = defineAsyncComponent(() => import('./PracticeRegistrationImport.vue'))
+const PracticeRuleSettings = defineAsyncComponent(() => import('./PracticeRuleSettings.vue'))
 const navigation = [
   {key:'tasks', area:'work', title:'待办'},
   {key:'settlement', area:'work', title:'分润试算'},
@@ -56,6 +57,7 @@ const current = ref()
 const requestedPeriod = ref()
 const requestedView = ref()
 const requestedRulePeriod = ref()
+const requestedPracticeSettings = ref()
 const ruleReturn = ref()
 const reviewRootPeriod = ref()
 const configurationReturn = ref()
@@ -187,6 +189,17 @@ const scopedProducts = computed(() => data.value.products.filter(p => current.va
 const scopeProductOptions = computed(() => scopedProducts.value.map(p=>({value:p.id,label:p.name})))
 const canPublishRule = productId => session.value?.user
   ? session.value.user.rules.some(rule => rule.productId===productId && rule.publish) : session.value?.development
+const practiceRuleTabs = [
+  {key:'',label:'分润规则'}, {key:'count-starts',label:'累计起点'}, {key:'retrain-splits',label:'复训提成拆分'},
+]
+const practiceRulesProduct = computed(() => current.value==='rules' && !requestedRulePeriod.value && canReadRules(productScope.value)
+  ? data.value.products.find(product=>product.id===productScope.value && product.periodMode==='class') : undefined)
+const practiceSettingsView = computed(() => practiceRulesProduct.value ? requestedPracticeSettings.value : undefined)
+function practiceRulesLink(tab) {
+  const params = new URLSearchParams({productId:practiceRulesProduct.value.id})
+  if (tab) params.set('practiceConfig',tab)
+  return '#rules?'+params
+}
 function classRuleSetupLink(period, fromWorkbench = false) {
   if (period?.periodMode==='class' && period.classStartsAt && !period.classStartOutsidePeriod
       && !period.ruleVersion && canPublishRule(period.productId)) {
@@ -272,6 +285,8 @@ watch(() => data.value.periods.find(period => period.id === requestedPeriod.valu
   if (month) workspaceMonth.value = month
 })
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
+const practiceFixedRetrain = computed(() => classRule.value
+  ? draft.value.components?.find(part=>part.type==='sales' && part.mode==='fixed' && part.classMember==='retrain') : undefined)
 const practiceCountConfig = computed(() => {
   if (!classRule.value) return
   const config = draft.value.components?.find(part=>part.mode==='tiered')?.tierConfig
@@ -717,6 +732,9 @@ function changeRoute() {
   }
   const periodID = routeId(params.get('periodId'))
   requestedRulePeriod.value = key==='rules' && current.value===key ? periodID : undefined
+  const practiceConfig = params.get('practiceConfig')
+  requestedPracticeSettings.value = key==='rules' && current.value===key && practiceRuleTabs.some(tab=>tab.key===practiceConfig)
+    ? practiceConfig : undefined
   requestedPeriod.value = key==='settlement' && current.value===key ? periodID : undefined
   const rootPeriodId = routeId(params.get('reviewRootPeriodId'))
   reviewRootPeriod.value = requestedPeriod.value && rootPeriodId!==requestedPeriod.value ? rootPeriodId : undefined
@@ -805,6 +823,7 @@ function clearWorkspace() {
   requestedPeriod.value = undefined
   requestedView.value = undefined
   requestedRulePeriod.value = undefined
+  requestedPracticeSettings.value = undefined
   ruleReturn.value = undefined
   reviewRootPeriod.value = undefined
   configurationReturn.value = undefined
@@ -1455,7 +1474,7 @@ async function save() {
             <a v-else-if="periodOrigin" class="workspace-return" :href="'#'+periodOrigin"><LeftOutlined aria-hidden="true"/>返回{{ periodOrigins[periodOrigin] }}</a>
             <a v-if="configurationReturn" class="workspace-return" :href="configurationReturn.href"><LeftOutlined aria-hidden="true"/>{{ configurationReturn.label }}</a>
             <a v-else-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
-            <div v-if="actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length) && !identityAccount" class="topbar-actions">
+            <div v-if="!practiceSettingsView && actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length) && !identityAccount" class="topbar-actions">
               <a v-if="orderReturn" class="workspace-return" :href="orderReturn.href"><LeftOutlined aria-hidden="true"/>{{ orderReturn.label }}</a>
               <a-button v-if="canOpenAction" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : titles[actions] }}</a-button>
               <a-button v-if="catalogScenarioProducts.length" :type="canOpenAction ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogScenarioCreation">新增逐单规则</a-button>
@@ -1464,6 +1483,10 @@ async function save() {
           </div>
           <nav v-if="workspacePages.length>1" class="workspace-nav" :aria-label="activeWorkspace?.title+'导航'">
             <a v-for="entry in workspacePages" :key="entry.key" :href="'#'+entry.key" :aria-current="current===entry.key ? 'page' : undefined">{{ entry.title }}</a>
+          </nav>
+          <nav v-if="practiceRulesProduct" class="workspace-nav practice-rules-nav" aria-label="实战班配置">
+            <a v-for="entry in practiceRuleTabs" :key="entry.key" :href="practiceRulesLink(entry.key)"
+              :aria-current="(practiceSettingsView || '')===entry.key ? 'page' : undefined">{{ entry.label }}</a>
           </nav>
         </section>
         <div class="workspace-page-body">
@@ -1498,6 +1521,13 @@ async function save() {
           <OrganizationDirectory ref="organization" :api="api" :option-label="optionLabel" :format-time="formatTime"
             :can-write="session.user ? session.user.organizationWrite : session.development" :appointment-kinds="options('appointmentKind')"
             :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"/>
+        </template>
+        <template v-else-if="practiceSettingsView">
+          <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
+          <PracticeRuleSettings :key="practiceRulesProduct.id+':'+practiceSettingsView" :kind="practiceSettingsView"
+            :product-id="practiceRulesProduct.id" :can-edit="canPublishRule(practiceRulesProduct.id)" :api="api"
+            :start-modes="options('tierStartMode')" :companies="options('practiceSalesCompany')"
+            :option-label="optionLabel" :format-time="formatTime" :format-money="formatMoney"/>
         </template>
         <template v-else>
         <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
@@ -1765,6 +1795,10 @@ async function save() {
         </div>
         <PracticeCountStartEditor v-if="practiceCountConfig" :config="practiceCountConfig"
           :start-modes="options('tierStartMode')" :people="classPeopleOptions" :openings="practiceOpeningOptions"/>
+        <PracticeRetrainSplitEditor v-if="practiceFixedRetrain" :component="practiceFixedRetrain"
+          :index="draft.components.indexOf(practiceFixedRetrain)" :people="classPeopleOptions"
+          :units="unitOptions" :companies="options('practiceSalesCompany')" :pools="practicePoolOptions"
+          :create-pool="createPracticePool" :format-money="formatMoney"/>
         <div v-if="draft.components?.length" class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
@@ -1833,9 +1867,6 @@ async function save() {
             <a-button type="link" size="small" danger class="rule-remove"
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
           </div>
-          <PracticeRetrainSplitEditor v-if="classRule && c.type==='sales' && c.mode==='fixed' && c.classMember==='retrain'"
-            :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"
-            :pools="practicePoolOptions" :create-pool="createPracticePool"/>
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
             :sales-categories="options('practiceSalesCategory')" :recipients="companyRecipientOptions" :amounts="baseModes"
             :source-roles="options('practicePeriodSourceRole')" :payee-roles="componentSourceRoles(c.companySales.payee.role)"
@@ -1922,7 +1953,7 @@ async function save() {
   </a-drawer>
   <CatalogRuleRates v-if="(rateRule || appliedRule?.catalog) && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="rateRule" :applied="appliedRule?.catalog ? appliedRule : undefined" :api="api" :format-time="formatTime"
-    :format-money="formatMoney" :periods="data.periods"
+    :format-money="formatMoney" :option-label="optionLabel" :periods="data.periods"
     :skus="data.products.find(product=>product.id===rateRule?.productId)?.businessSkus"
     @close="rateRule=undefined; appliedRule=undefined" @published="ratePublished"/>
   <CatalogPeriodRule v-if="(periodRule || appliedRule?.aggregate) && active && !sessionError && !sessionChecking && !loginRequested"
