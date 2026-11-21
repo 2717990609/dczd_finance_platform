@@ -424,13 +424,40 @@ func TestPracticeCorporateAndIndividualClaimsCannotPayTheSamePayment(t *testing.
 }
 
 func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *testing.T) {
-	t.Run("公司比例", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false) })
-	t.Run("公司比例和整班阶梯", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, false, false) })
-	t.Run("仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false) })
-	t.Run("历史结算保留尾款补计", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, true) })
+	t.Run("公司比例", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false, false) })
+	t.Run("公司比例和整班阶梯", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, false, false, false) })
+	t.Run("仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false, false) })
+	t.Run("历史结算保留尾款补计", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, true, false) })
+	t.Run("公司新报固定金额", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false, true) })
+	t.Run("公司新报固定金额仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false, true) })
 }
 
-func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacyShares bool) {
+func TestPracticeNewFixedCompanyAwardProratesRefundBeforeConfirmation(t *testing.T) {
+	deposit, balance := int64(40000), int64(60000)
+	payments := []paymentInput{
+		{ID: 1, Fact: sourceFact{Source: "DCZD", ReferrerID: "seller", AmountMinor: &deposit}},
+		{ID: 2, Fact: sourceFact{Source: "DCZD", ReferrerID: "seller", AmountMinor: &balance}},
+	}
+	purchase := practicePurchase{
+		member:   practiceEnrollment{MembershipType: 3},
+		payments: payments, gross: 100000, base: 80000, netPayments: map[int64]int64{1: 20000},
+		companyAward: &practiceCompanyAward{
+			practiceCompanyValue: practiceCompanyValue{Mode: "fixed", Value: 10000},
+			role:                 "DIRECT_REFERRER", payee: &practiceCompanyPayee{Kind: "person", PersonID: 2},
+		},
+	}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{PersonID: 1}}}
+	var draft paymentDraft
+	if err := appendPracticeCompanySale(&draft, paymentRule{ID: 1}, purchase, practiceDraftRuntime{}, identities); err != nil {
+		t.Fatal(err)
+	}
+	if len(draft.Issues) != 0 || len(draft.Lines) != 2 || draft.Total != 8000 ||
+		draft.Lines[0].Amount != 2000 || draft.Lines[1].Amount != 6000 {
+		t.Fatalf("expected the deposit's award to be halved and the balance award preserved: %+v", draft)
+	}
+}
+
+func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacyShares, fixedNew bool) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
 	id := func(value any, err error) int64 {
@@ -464,6 +491,9 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 					{SalesCategoryID: first, practiceCompanyValue: practiceCompanyValue{"rate", 400000}},
 					{SalesCategoryID: second, practiceCompanyValue: practiceCompanyValue{"rate", 100000}},
 				}}}}}
+	if fixedNew {
+		rule.Components[1].CompanySales.Categories[0].practiceCompanyValue = practiceCompanyValue{"fixed", 4000}
+	}
 	if withTier {
 		delivery := id(s.createPerson(ctx, createPersonInput{Name: "整班交付"}))
 		through := int64(29499)

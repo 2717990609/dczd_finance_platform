@@ -30,8 +30,7 @@ const hasRecommendations = computed(() => props.component.classMember==='new' &&
   category.recommendationRate>0 || category.overrides.some(override=>override.recommendationRate>0)))
 const internalOptions = computed(() => props.companies.filter(option=>!categories.value.some(c=>
   (c.scope==='companies' && c.companies.includes(option.value)) || c.overrides.some(row=>row.companyIds?.includes(option.value)))))
-const amounts = computed(() => props.amounts.filter(option =>
-  props.component.classMember==='retrain' || option.value==='rate'))
+const amounts = computed(() => props.amounts)
 const field = name => 'practice-company-'+props.index+'-'+name
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 

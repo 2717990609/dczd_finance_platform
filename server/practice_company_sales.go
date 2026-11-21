@@ -94,12 +94,12 @@ func (o practiceCompanyOverride) companyIDs() []string {
 	return o.CompanyIDs
 }
 
-func (v practiceCompanyValue) valid(member string) bool {
+func (v practiceCompanyValue) valid() bool {
 	switch v.Mode {
 	case "rate":
 		return v.Value >= 0 && v.Value <= periodRateScale
 	case "fixed":
-		return member == "retrain" && v.Value >= 0 && v.Value <= 100000000000
+		return v.Value >= 0 && v.Value <= 100000000000
 	default:
 		return false
 	}
@@ -136,7 +136,7 @@ func validPracticeCompanySales(c component) bool {
 		categoryIDs := category.categoryIDs()
 		if (len(categoryIDs) == 0) == (len(category.Companies) == 0) ||
 			category.SalesCategoryID != "" && len(category.SalesCategoryIDs) != 0 || category.Label != "" && !textOK(category.Label, 80) ||
-			!category.practiceCompanyValue.valid(c.ClassMember) || !validRate(category.RecommendationRate) {
+			!category.practiceCompanyValue.valid() || !validRate(category.RecommendationRate) {
 			return false
 		}
 		for _, id := range categoryIDs {
@@ -156,7 +156,7 @@ func validPracticeCompanySales(c component) bool {
 		for _, override := range category.Overrides {
 			companyIDs := override.companyIDs()
 			if len(companyIDs) == 0 || override.CompanyID != "" && len(override.CompanyIDs) != 0 ||
-				!override.practiceCompanyValue.valid(c.ClassMember) || !validRate(override.RecommendationRate) {
+				!override.practiceCompanyValue.valid() || !validRate(override.RecommendationRate) {
 				return false
 			}
 			for _, id := range companyIDs {
@@ -499,8 +499,9 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		draft.Issues = append(draft.Issues, practiceIssue(issue, p.member, rule, award.key))
 		return nil
 	}
+	fixedNew := award.Mode == "fixed" && classMember(p.member.MembershipType) == "new"
 	line := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: award.key,
-		practiceProportionalRefund: award.Mode == "rate"}
+		practiceProportionalRefund: award.Mode == "rate" || fixedNew}
 	var salesCompany pgtype.UUID
 	var companyIssue string
 	kind := award.payee.kind()
@@ -537,14 +538,30 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		return nil
 	}
 	amount := award.Value
-	if award.Mode == "rate" {
+	share := practiceBenefitShare{purchase: p, payments: p.payments}
+	if fixedNew {
+		if len(p.originalPayments) != 0 {
+			share.payments = p.originalPayments
+		}
+		shares := []practiceBenefitShare{share}
+		var err error
+		amount, err = allocatePracticeFixedBenefit(shares, amount, false)
+		if err != nil {
+			return err
+		}
+		share = shares[0]
+	} else if award.Mode == "rate" {
 		amount = practiceCompanyRate(p.base, award.Value)
 	}
 	if amount > p.base {
 		draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_COMPANY_AWARD_EXCEEDS_PAYMENT", p.member, rule, award.key))
 		return nil
 	}
-	if err := appendPracticeCompanyShare(draft, p, line, amount, !runtime.legacyGrossRateShares && award.Mode == "rate"); err != nil {
+	amounts := share.fixed
+	if !fixedNew {
+		amounts = p.benefitShares(p.payments, amount, !runtime.legacyGrossRateShares && award.Mode == "rate")
+	}
+	if err := appendPracticeCompanyShare(draft, line, share, amount, amounts); err != nil {
 		return err
 	}
 	if award.recommendationRate > 0 {
@@ -563,7 +580,9 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		} else if parent.Valid {
 			referral := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: key, BeneficiaryUnit: &parent,
 				practiceProportionalRefund: true}
-			return appendPracticeCompanyShare(draft, p, referral, practiceCompanyRate(p.base, award.recommendationRate), !runtime.legacyGrossRateShares)
+			amount := practiceCompanyRate(p.base, award.recommendationRate)
+			referralShare := practiceBenefitShare{purchase: p, payments: p.payments}
+			return appendPracticeCompanyShare(draft, referral, referralShare, amount, p.benefitShares(p.payments, amount, !runtime.legacyGrossRateShares))
 		}
 	}
 	return nil
@@ -573,12 +592,12 @@ func practiceCompanyRate(base, rate int64) int64 {
 	return base/periodRateScale*rate + (base%periodRateScale*rate+periodRateScale/2)/periodRateScale
 }
 
-func appendPracticeCompanyShare(draft *paymentDraft, p practicePurchase, line draftLine, amount int64, useNet bool) error {
+func appendPracticeCompanyShare(draft *paymentDraft, line draftLine, share practiceBenefitShare, amount int64, amounts [2]int64) error {
 	var err error
 	draft.Total, err = addMinor(draft.Total, amount)
 	if err != nil {
 		return err
 	}
-	appendPracticePeriodShare(draft, line, practiceBenefitShare{purchase: p, payments: p.payments}, p.benefitShares(p.payments, amount, useNet))
+	appendPracticePeriodShare(draft, line, share, amounts)
 	return nil
 }
