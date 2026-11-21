@@ -89,9 +89,10 @@ type vipInternalSplit struct {
 }
 
 type vipSalesPolicy struct {
-	Item  string
-	Sales []vipRateRow
-	Split vipInternalSplit
+	Item            string
+	Sales           []vipRateRow
+	Split           vipInternalSplit
+	CommissionUnits []string
 }
 
 type vipCommissionDefinition struct {
@@ -125,12 +126,13 @@ func readVIPSalesPolicy(raw json.RawMessage) (vipSalesPolicy, bool) {
 		return def.directSalesPolicy()
 	}
 	type salesAction struct {
-		Type       string            `json:"type"`
-		Mode       string            `json:"beneficiary_mode"`
-		Role       string            `json:"role"`
-		Item       string            `json:"item_key"`
-		Designated string            `json:"designated_party_id"`
-		RateTable  []json.RawMessage `json:"rate_table"`
+		Type            string            `json:"type"`
+		Mode            string            `json:"beneficiary_mode"`
+		Role            string            `json:"role"`
+		Item            string            `json:"item_key"`
+		Designated      string            `json:"designated_party_id"`
+		RateTable       []json.RawMessage `json:"rate_table"`
+		CommissionUnits []string          `json:"sales_scope_unit_ids"`
 	}
 	policy := vipSalesPolicy{Split: *def.Split}
 	for _, payload := range def.Actions {
@@ -150,7 +152,10 @@ func readVIPSalesPolicy(raw json.RawMessage) (vipSalesPolicy, bool) {
 		if policy.Item != "" || action.Type != "RATE_TABLE" || action.Mode != "PARTY" || action.Role != "SALES" || action.Designated != "" {
 			return vipSalesPolicy{}, false
 		}
-		policy.Item = action.Item
+		if !validVIPCommissionUnits(action.CommissionUnits) {
+			return vipSalesPolicy{}, false
+		}
+		policy.Item, policy.CommissionUnits = action.Item, action.CommissionUnits
 		policy.Sales, ok = parseVIPRateTable(action.RateTable)
 		if !ok {
 			return vipSalesPolicy{}, false
@@ -178,23 +183,25 @@ func (d vipCommissionDefinition) directSalesPolicy() (vipSalesPolicy, bool) {
 			continue
 		}
 		var action struct {
-			Item      string            `json:"item_key"`
-			Role      string            `json:"role"`
-			Label     string            `json:"label"`
-			Type      string            `json:"type"`
-			Mode      string            `json:"beneficiary_mode"`
-			RateTable []json.RawMessage `json:"rate_table"`
+			Item            string            `json:"item_key"`
+			Role            string            `json:"role"`
+			Label           string            `json:"label"`
+			Type            string            `json:"type"`
+			Mode            string            `json:"beneficiary_mode"`
+			RateTable       []json.RawMessage `json:"rate_table"`
+			CommissionUnits []string          `json:"sales_scope_unit_ids"`
 		}
 		decoder := json.NewDecoder(bytes.NewReader(payload))
 		decoder.DisallowUnknownFields()
-		if decoder.Decode(&action) != nil || policy.Item != "" || action.Type != "RATE_TABLE" || action.Mode != "PARTY" {
+		if decoder.Decode(&action) != nil || policy.Item != "" || action.Type != "RATE_TABLE" || action.Mode != "PARTY" ||
+			!validVIPCommissionUnits(action.CommissionUnits) {
 			return vipSalesPolicy{}, false
 		}
 		rates, ok := parseVIPRateTable(action.RateTable)
 		if !ok {
 			return vipSalesPolicy{}, false
 		}
-		policy = vipSalesPolicy{Item: action.Item, Sales: rates}
+		policy = vipSalesPolicy{Item: action.Item, Sales: rates, CommissionUnits: action.CommissionUnits}
 	}
 	return policy, policy.Item != "" || d.Attribution == "ORDER_SELLER" && len(d.Actions) != 0
 }
@@ -328,6 +335,7 @@ type vipSalesRequest struct {
 	Paid, OriginalPaid                                     int64
 	At                                                     time.Time
 	Referrer                                               vipOrderReferrer
+	commissionSalesOrg                                     *reportOrganization
 }
 
 type vipSalesPart struct {

@@ -16,6 +16,9 @@ export const salesStatus = {
   SALES_COMPANY_REVIEW:'销售公司更正待核',
   SALES_TEAM_PENDING:'成交时的团队任职待核',
   SALES_GROUP_PENDING:'成交时的销售小组待核',
+  OUTSIDE_COMMISSION_SCOPE:'超出提成范围',
+  COMMISSION_SALES_ORGANIZATION_MISSING:'付款时的销售组织待核',
+  SALES_ORGANIZATION_SCOPE_CONFLICT:'付款时的销售组织归属有冲突',
 }
 export const salesRoles = {SALES:'成交人',DCAI_GROUP_LEAD:'小组组长',DCAI_SERVICE:'服务岗',DCAI_TEAM_HEAD:'团队负责人'}
 export const benefitStatus = {

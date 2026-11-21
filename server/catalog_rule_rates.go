@@ -10,18 +10,19 @@ import (
 )
 
 type catalogRateComponent struct {
-	ItemKey     string             `json:"itemKey"`
-	Label       string             `json:"label"`
-	Rate        *int64             `json:"rateBps,omitempty"`
-	Fixed       *int64             `json:"fixedMinor,omitempty"`
-	Rows        []catalogRateRow   `json:"rows,omitempty"`
-	Recipient   *catalogRulePerson `json:"recipient,omitempty"`
-	TargetKind  string             `json:"targetKind"`
-	TargetLabel string             `json:"targetLabel,omitempty"`
-	TargetOrg   string             `json:"targetOrganization,omitempty"`
-	TargetRole  string             `json:"targetRole,omitempty"`
-	TeamSplit   *catalogSplitRates `json:"teamSplit,omitempty"`
-	LeaderScope *vipLeaderScope    `json:"leaderScope,omitempty"`
+	ItemKey         string             `json:"itemKey"`
+	Label           string             `json:"label"`
+	Rate            *int64             `json:"rateBps,omitempty"`
+	Fixed           *int64             `json:"fixedMinor,omitempty"`
+	Rows            []catalogRateRow   `json:"rows,omitempty"`
+	Recipient       *catalogRulePerson `json:"recipient,omitempty"`
+	TargetKind      string             `json:"targetKind"`
+	TargetLabel     string             `json:"targetLabel,omitempty"`
+	TargetOrg       string             `json:"targetOrganization,omitempty"`
+	TargetRole      string             `json:"targetRole,omitempty"`
+	TeamSplit       *catalogSplitRates `json:"teamSplit,omitempty"`
+	LeaderScope     *vipLeaderScope    `json:"leaderScope,omitempty"`
+	CommissionUnits []string           `json:"salesScopeUnitIds,omitempty"`
 }
 
 type catalogSplitRates struct {
@@ -62,6 +63,7 @@ type catalogRateSheet struct {
 	LeaderArrangements []catalogRateComponent   `json:"leaderArrangements,omitempty"`
 	Teams              []catalogRuleTeam        `json:"teams,omitempty"`
 	StructureOptions   *catalogStructureOptions `json:"structureOptions,omitempty"`
+	ScopeUnitNames     map[string]string        `json:"scopeUnitNames,omitempty"`
 }
 
 func catalogRateComponents(raw json.RawMessage, companies, categories, relationships, organizations map[string]string) ([]catalogRateComponent, error) {
@@ -100,6 +102,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 			continue
 		}
 		item := catalogRateComponent{ItemKey: action.Item, Label: action.Label, Rate: action.Rate, Fixed: action.Fixed, TargetKind: action.targetKind()}
+		item.CommissionUnits = action.CommissionUnits
 		if item.ItemKey == sales.Item {
 			item.TargetKind = "seller"
 			if split := sales.Split; split.Item != "" {
@@ -268,9 +271,15 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	 coalesce((SELECT jsonb_object_agg(party_uuid,name) FROM organizations),'{}'),
 	 coalesce((SELECT jsonb_object_agg(u.id,u.name) FROM organization_units u
 	  WHERE u.id::text IN (SELECT group_id#>>'{}' FROM jsonb_path_query(r.definition,
-	   '$.internal_sales_direct_split.teams[*].seller_group_unit_ids[*]') group_id)),'{}')
+	   '$.internal_sales_direct_split.teams[*].seller_group_unit_ids[*]') group_id)),'{}'),
+	 coalesce((SELECT jsonb_object_agg(u.id,concat_ws(' / ',gp.name,p.name,u.name))
+	  FROM organization_units u LEFT JOIN organization_units p ON p.id=u.parent_id
+	  LEFT JOIN organization_units gp ON gp.id=p.parent_id
+	  WHERE u.id::text IN (SELECT unit_id#>>'{}' FROM jsonb_path_query(r.definition,
+	   '$.benefit_actions[*].sales_scope_unit_ids[*]') unit_id)),'{}')
 	FROM rule r`, id).Scan(&sheet.ProductID, &sheet.ProductName, &sheet.Label, &sheet.Version, &sheet.EffectiveFrom, &sheet.EffectiveTo,
-		&definition, &sheet.MayPublish, &supported, &sheet.RequiresCompletion, &companyNames, &categoryNames, &relationshipNames, &organizationNames, &groupNames)
+		&definition, &sheet.MayPublish, &supported, &sheet.RequiresCompletion, &companyNames, &categoryNames, &relationshipNames,
+		&organizationNames, &groupNames, &sheet.ScopeUnitNames)
 	if err != nil {
 		return sheet, err
 	}

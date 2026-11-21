@@ -69,6 +69,8 @@ func (c *vipDraftQuoteCache) apply(periodID int64, items []catalogPaymentMatch, 
 		input := vipDraftQuoteInput{request: req, rule: row.RuleID, issue: issue,
 			memberships: memberships[req.Seller], definition: definitions[row.RuleID]}
 		input.request.At = req.At.UTC()
+		// Seller memberships are hashed separately, including validity dates.
+		input.request.commissionSalesOrg = nil
 		if req.Category != nil {
 			input.category, input.hasCategory = *req.Category, true
 			input.request.Category = nil
@@ -104,15 +106,23 @@ func (p *vipDraftQuotePeriod) add(id int64, quote vipDraftQuote) {
 func vipDraftQuoteContext(data vipRuntimeData) ([sha256.Size]byte, map[string][sha256.Size]byte, error) {
 	// SQL returns roles, organizations, and memberships in deterministic order.
 	// Keep seller memberships separate so one affected seller need not invalidate the period.
+	var commissionUnits map[string]reportUnit
+	if data.CommissionDirectory != nil {
+		commissionUnits = make(map[string]reportUnit, len(data.CommissionDirectory.Units))
+		for id, unit := range data.CommissionDirectory.Units {
+			commissionUnits[id.String()] = unit
+		}
+	}
 	scope, err := json.Marshal(struct {
-		Revision      int64
-		Product       string
-		Project       string
-		BenefitReady  bool
-		Directory     string
-		Roles         []vipRole
-		Organizations []vipBenefitOrganization
-	}{data.ConfigurationRevision, data.Product, data.Project, data.BenefitReady, data.DirectoryFingerprint, data.Roles, data.Organizations})
+		Revision        int64
+		Product         string
+		Project         string
+		BenefitReady    bool
+		Directory       string
+		Roles           []vipRole
+		Organizations   []vipBenefitOrganization
+		CommissionUnits map[string]reportUnit
+	}{data.ConfigurationRevision, data.Product, data.Project, data.BenefitReady, data.DirectoryFingerprint, data.Roles, data.Organizations, commissionUnits})
 	if err != nil {
 		return [sha256.Size]byte{}, nil, err
 	}

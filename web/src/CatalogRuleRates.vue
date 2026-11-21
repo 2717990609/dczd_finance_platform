@@ -6,6 +6,7 @@ import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
+import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import { catalogCalculationMethods, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesCalculationMethods, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
@@ -20,6 +21,7 @@ const labelEdits = ref(new Map())
 const targetEdits = ref(new Map())
 const teamEdits = ref(new Map())
 const leaderEdits = ref(new Map())
+const scopeEdits = ref(new Map())
 const splitEdits = ref({})
 const selectedTeam = ref()
 const loading = ref(false)
@@ -84,7 +86,7 @@ const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKi
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
 const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
-  Object.keys(splitEdits.value).length > 0 || labelEdits.value.size || leaderEdits.value.size ||
+  Object.keys(splitEdits.value).length > 0 || labelEdits.value.size || leaderEdits.value.size || scopeEdits.value.size ||
   structure.value.items.length || structure.value.sales || structure.value.rateRows.length || structure.value.calculations.length ||
   removedItems.value.size || removedRateRows.value.size)
 const impactPeriods = computed(() => catalogRuleImpactPeriods(props.periods,sheet.value?.productId,impactInput.value?.effectiveFrom))
@@ -322,6 +324,36 @@ function leaderSummary(item) {
   const payee = form.target==='person' ? form.personName : item.itemKey==='internal-group-leader' ? '付款时的小组负责人' : '付款时的团队负责人'
   return [payee,form.amount==null || form.amount==='' ? '' : form.amount+(form.method==='fixed' ? ' 元/笔' : '%')].filter(Boolean).join(' · ')
 }
+const commissionUnitNames = computed(() => ({...sheet.value?.scopeUnitNames,
+  ...Object.fromEntries((sheet.value?.structureOptions?.salesUnits || []).map(unit=>[unit.value,unit.label]))}))
+const leaderScopeNames = computed(() => new Map((sheet.value?.teams || []).flatMap(team=>[
+  [team.key,team.label],...(team.groups || []).map(group=>[group.value,team.label+' / '+group.label]),
+])))
+function formatScope(names, order) {
+  return [names.length>2 ? names.slice(0,2).join('、')+' 等 '+names.length+' 个' : names.join('、'),order].filter(Boolean).join(' · ')
+}
+function leaderScopeText(item) {
+  const {companies,groups,orders} = leaderForm(item).scope
+  const identifiers = groups.length ? groups : companies
+  const names = identifiers.map(id=>leaderScopeNames.value.get(id) || '已选组织')
+  return formatScope(names.length ? names : [item.itemKey==='internal-group-leader' ? '内部团队的全部小组' : '全部内部团队'],
+    {all:'全部成交',members:'其他团队成员成交',head:'负责人亲自成交'}[orders])
+}
+const commissionScope = item => scopeEdits.value.has(item.itemKey) ? scopeEdits.value.get(item.itemKey) : item.salesScopeUnitIds || null
+function setCommissionScope(item, units) {
+  const original = item.salesScopeUnitIds || null
+  if (JSON.stringify(units && [...units].sort())===JSON.stringify(original && [...original].sort())) {
+    scopeEdits.value.delete(item.itemKey)
+  } else {
+    scopeEdits.value.set(item.itemKey,units)
+  }
+}
+function commissionScopeNames(item) {
+  const units = commissionScope(item)
+  if (units==null) return ['本规则全部订单']
+  if (!units.length) return ['待选择销售组织']
+  return units.map(id=>commissionUnitNames.value[id] || '已选组织名称待核')
+}
 
 watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   const request = ++sequence
@@ -335,6 +367,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   targetEdits.value.clear()
   teamEdits.value.clear()
   leaderEdits.value.clear()
+  scopeEdits.value.clear()
   splitEdits.value = {}
   selectedTeam.value = undefined
   filter.value = ''
@@ -425,6 +458,13 @@ function publicationInput() {
     return {itemKey,label,target:form.target,personId:form.personId,scope:form.scope,
       ...(form.method==='fixed' ? {fixedMinor:value} : {rateBps:value})}
   })
+  const scopeChanges = [...scopeEdits.value].filter(([itemKey])=>!removedItems.value.has(itemKey)).map(([itemKey,unitIds])=>{
+    if (unitIds?.length===0) {
+      selected.value = itemKey
+      throw new Error('请为收款安排选择至少一个销售组织。')
+    }
+    return {itemKey,unitIds:unitIds || []}
+  })
   return {
     baseId:props.rule.id,
     copy:copy.value,
@@ -437,9 +477,11 @@ function publicationInput() {
     })),
     teamSplitRates,
     leaderChanges,
+    scopeChanges,
     newItems:structure.value.items.map(({personName,...item})=>item),
     newSalesRates:structure.value.sales?.rows,
     newSalesLabel:structure.value.sales?.label,
+    newSalesScope:structure.value.sales?.salesScopeUnitIds,
     calculationChanges:structure.value.calculations.filter(({itemKey})=>!removedItems.value.has(itemKey)),
     newRateRows:structure.value.rateRows.filter(({itemKey,row})=>!removedItems.value.has(itemKey) &&
       !removedRateRows.value.has(cellKey(itemKey,row)) && !calculationFor(itemKey))
@@ -510,6 +552,10 @@ async function publish() {
             <DownOutlined aria-hidden="true"/>
             <strong>{{ labelEdits.get(item.itemKey)?.trim() || item.label }}</strong>
             <span class="rule-block-badge">{{ removedItems.has(item.itemKey) ? '待删除' : targetShortLabels[targetEdits.get(item.itemKey)?.target || item.targetKind] }}</span>
+            <span class="rule-block-recipient" :title="commissionScopeNames(item).join('、')">
+              提成范围 · {{ formatScope(commissionScopeNames(item)) }}
+              <template v-if="(calculationFor(item.itemKey) || item).rows?.length"> · 按比例条件匹配</template>
+            </span>
             <small>{{ [targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}</small>
           </button>
           <div v-if="selected===item.itemKey" :id="'catalog-rate-'+item.itemKey" class="rule-block-body">
@@ -539,6 +585,9 @@ async function publish() {
                 <a-button size="small" type="link" :disabled="!editable || structureEditing" @click="undoCalculation">撤销更换</a-button>
               </a-space>
             </RuleArrangementFields>
+            <CatalogCommissionScopeFields prefix="catalog-edit" :model-value="commissionScope(item)"
+              :options="sheet.structureOptions.salesUnits" :unit-names="commissionUnitNames" :disabled="!editable || structureEditing"
+              @update:model-value="setCommissionScope(item,$event)"/>
           </template>
           <p v-else-if="targetKind!=='seller' && !itemRemoved" class="rule-formula">
             {{ [targetKindLabels[targetKind],targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}
@@ -632,6 +681,7 @@ async function publish() {
               @click="selected=selected===leader.itemKey ? undefined : leader.itemKey">
               <DownOutlined aria-hidden="true"/>
               <strong>{{ leaderForm(leader).label.trim() || leader.label }}</strong>
+              <span class="rule-block-recipient">提成范围 · {{ leaderScopeText(leader) }}</span>
               <small>{{ leaderSummary(leader) }}</small>
             </button>
             <div v-if="selected===leader.itemKey" :id="'catalog-rate-'+leader.itemKey" class="rule-block-body">

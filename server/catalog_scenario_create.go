@@ -18,6 +18,7 @@ type catalogScenarioCreate struct {
 	catalogScenarioCopy
 	SalesRates []catalogConditionInput `json:"salesRates"`
 	SalesLabel string                  `json:"salesLabel,omitempty"`
+	SalesScope []string                `json:"salesScopeUnitIds,omitempty"`
 }
 
 type catalogScenarioSetup struct {
@@ -82,7 +83,7 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	if input.ProductID <= 0 || !textOK(input.Label, 80) || !textOK(input.SKU, 128) || at.IsZero() || !textOK(actor, 128) {
 		return result, invalid
 	}
-	if len(input.SalesRates)+len(items) == 0 || input.SalesLabel != "" && len(input.SalesRates) == 0 {
+	if len(input.SalesRates)+len(items) == 0 || (input.SalesLabel != "" || len(input.SalesScope) > 0) && len(input.SalesRates) == 0 {
 		return result, errCatalogRequiredEntry
 	}
 	if operator := financeUser(ctx); operator != nil {
@@ -130,7 +131,7 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 		return result, err
 	}
 	body, err := editCatalogStructure(ctx, tx, base, publishCatalogRatesInput{
-		Create: &input, NewItems: items, NewSalesRates: input.SalesRates, NewSalesLabel: input.SalesLabel,
+		Create: &input, NewItems: items, NewSalesRates: input.SalesRates, NewSalesLabel: input.SalesLabel, NewSalesScope: input.SalesScope,
 	})
 	if err != nil {
 		return result, err

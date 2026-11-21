@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 type catalogPaymentMatch struct {
@@ -77,6 +78,8 @@ type vipRuntimeData struct {
 	Organizations                         []vipBenefitOrganization
 	PersonIDs                             map[string]int64
 	CompanyNames                          map[string]string
+	HasCommissionScopes                   bool
+	CommissionDirectory                   *reportAttribution `json:"-"`
 	vipSalesData
 }
 
@@ -145,6 +148,8 @@ const vipRuntimeSQL = `WITH scope AS (
 )
 SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitReady',coalesce(s.benefit_ready,false),
  'configurationRevision',CASE WHEN $4 THEN coalesce((SELECT revision FROM source_write_state WHERE source='CONFIG'),0) END,
+ 'hasCommissionScopes',EXISTS(SELECT 1 FROM definitions WHERE
+  jsonb_path_exists(definition,'$.benefit_actions[*].sales_scope_unit_ids[*]')),
  'directoryFingerprint',CASE WHEN $4 THEN (SELECT encode(sha256(convert_to(
   coalesce(jsonb_agg(jsonb_build_array(` + vipPersonKey + `,p.name) ORDER BY p.id)::text,'[]'),'UTF8')),'hex') FROM people p) END,
  'organizations',(SELECT jsonb_agg(jsonb_build_object('party',b.party_uuid,'unit',o.id,'name',o.name) ORDER BY b.party_uuid,o.id)
@@ -211,7 +216,21 @@ func loadVIPRuntimeData(ctx context.Context, tx pgx.Tx, periodID int64, matched 
 		return vipRuntimeData{}, err
 	}
 	var data vipRuntimeData
-	err := json.Unmarshal(raw, &data)
+	if err := json.Unmarshal(raw, &data); err != nil || !data.HasCommissionScopes {
+		return data, err
+	}
+	people := make([]int64, 0, len(data.Users)+len(data.DirectoryUsers))
+	seenPeople := make(map[int64]bool)
+	for _, links := range [][]vipLink{data.Users, data.DirectoryUsers} {
+		for _, link := range links {
+			if id := data.PersonIDs[link.Value]; id != 0 && !seenPeople[id] {
+				people = append(people, id)
+				seenPeople[id] = true
+			}
+		}
+	}
+	directory, err := loadReportAttribution(ctx, tx, people, nil)
+	data.CommissionDirectory = &directory
 	return data, err
 }
 
@@ -272,6 +291,14 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 	}
 	req.Company, req.CompanyUnit = company.Value, company.Unit
 	req.CompanyName = d.CompanyNames[company.Unit]
+	if d.CommissionDirectory != nil && (company.Unit != "" || claim.Company == "") {
+		var companyID pgtype.UUID
+		_ = companyID.Scan(company.Unit)
+		org := d.CommissionDirectory.resolveAssignments(
+			d.PersonIDs[req.Seller], req.At, companyID, claim.Company == "" && company.Unit == "",
+		)
+		req.commissionSalesOrg = &org
+	}
 	category, conflict := resolveVIPLinkRecord(d.LocalCategories, req.CompanyUnit, sale.PaidAt)
 	if companyFromDirectory {
 		category, conflict = resolveVIPLinkRecord(d.DirectoryCategories, req.CompanyUnit, sale.PaidAt)
@@ -350,6 +377,11 @@ func (p vipQuotePolicies) apply(row *catalogPaymentMatch, data vipRuntimeData, r
 		row.SalesParts, row.SalesStatus = nil, issue
 		if policy.Item == "" {
 			row.SalesStatus = vipSalesNotConfigured
+		} else if eligible, scopeIssue := vipCommissionScope(policy.CommissionUnits, req, issue, data); !eligible {
+			row.SalesStatus = vipCommissionOutsideScope
+			if scopeIssue != "" {
+				row.SalesStatus = scopeIssue
+			}
 		} else if issue == "" {
 			row.SalesParts, row.SalesStatus = calculateVIPSales(policy, req, data.vipSalesData)
 		}

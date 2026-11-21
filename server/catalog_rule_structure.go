@@ -29,6 +29,7 @@ type catalogStructureOptions struct {
 	Categories    []catalogStructureOption `json:"categories"`
 	Roles         []catalogStructureOption `json:"roles"`
 	Organizations []catalogStructureOption `json:"organizations"`
+	SalesUnits    []catalogStructureOption `json:"salesUnits"`
 }
 
 type catalogConditionInput struct {
@@ -60,7 +61,8 @@ type catalogBenefitTargetChange struct {
 }
 
 type catalogNewBenefitItem struct {
-	Label string `json:"label"`
+	Label           string   `json:"label"`
+	CommissionUnits []string `json:"salesScopeUnitIds,omitempty"`
 	catalogBenefitTarget
 	catalogBenefitCalculation
 }
@@ -90,6 +92,11 @@ const catalogStructureOptionsSQL = `WITH company_keys AS (` + catalogSalesCompan
  FROM company_keys a
  JOIN organization_units u ON u.id=a.unit AND u.kind='COMPANY' AND u.status='ACTIVE'
  GROUP BY a.key HAVING count(DISTINCT u.id)=1
+), sales_units AS (
+ SELECT u.id::text AS value,concat_ws(' / ',gp.name,p.name,u.name) AS label,u.kind
+ FROM organization_units u LEFT JOIN organization_units p ON p.id=u.parent_id
+ LEFT JOIN organization_units gp ON gp.id=p.parent_id
+ WHERE u.kind IN ('COMPANY','DEPARTMENT','TEAM') AND u.status='ACTIVE'
 ), organizations AS (
  SELECT b.party_uuid::text AS value,min(u.name) AS label,min(u.kind) AS kind,min(u.id::text) AS "unitId"
  FROM catalog_benefit_organizations b JOIN catalog_sales_context c ON c.source=b.source AND c.captured_at=b.observed_at
@@ -108,6 +115,7 @@ SELECT jsonb_build_object(
  'companies',jsonb_build_array(jsonb_build_object('value','ANY','label','不限公司'))||
   coalesce((SELECT jsonb_agg(to_jsonb(c) ORDER BY label,value) FROM companies c),'[]'),
  'organizations',coalesce((SELECT jsonb_agg(to_jsonb(o) ORDER BY label,value) FROM organizations o),'[]'),
+ 'salesUnits',coalesce((SELECT jsonb_agg(to_jsonb(u) ORDER BY label,value) FROM sales_units u),'[]'),
  'categories',coalesce((SELECT jsonb_agg(jsonb_build_object('value',key,'label',label) ORDER BY label,key)
   FROM catalog_sales_category_options WHERE active),'[]'),
  'relationships',coalesce((SELECT items FROM configured WHERE group_key='catalogSalesRelationship'),'[]'),
@@ -290,11 +298,18 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage, i
 		if err != nil {
 			return nil, err
 		}
-		positions[key] = len(actions)
-		actions = append(actions, map[string]json.RawMessage{
+		fields := map[string]json.RawMessage{
 			"item_key": rawKey, "label": rawLabel, "role": json.RawMessage(`"SALES"`),
 			"type": json.RawMessage(`"RATE_TABLE"`), "beneficiary_mode": json.RawMessage(`"PARTY"`), "rate_table": rawRates,
-		})
+		}
+		if !catalogCommissionUnitsValid(input.NewSalesScope, options.SalesUnits) {
+			return nil, errCatalogCommissionScope
+		}
+		if len(input.NewSalesScope) > 0 {
+			fields[catalogCommissionScopeKey], _ = json.Marshal(input.NewSalesScope)
+		}
+		positions[key] = len(actions)
+		actions = append(actions, fields)
 	}
 	for _, item := range input.NewItems {
 		var key string
@@ -432,7 +447,10 @@ func newCatalogBenefitAction(key string,
 	if !textOK(label, 80) {
 		return nil, invalid
 	}
-	action := vipBenefitAction{Item: key, Label: label}
+	if !catalogCommissionUnitsValid(item.CommissionUnits, options.SalesUnits) {
+		return nil, errCatalogCommissionScope
+	}
+	action := vipBenefitAction{Item: key, Label: label, CommissionUnits: item.CommissionUnits}
 	if err := configureCatalogBenefitCalculation(&action, item.catalogBenefitCalculation, options); err != nil {
 		return nil, err
 	}

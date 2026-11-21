@@ -5,7 +5,52 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
+
+func TestVIPCommissionScopeUsesPaymentSalesOrganization(t *testing.T) {
+	unit := func(value string) pgtype.UUID {
+		t.Helper()
+		var id pgtype.UUID
+		if err := id.Scan(value); err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	company := unit("10000000-0000-4000-8000-000000000101")
+	department := unit("10000000-0000-4000-8000-000000000102")
+	first := unit("10000000-0000-4000-8000-000000000103")
+	second := unit("10000000-0000-4000-8000-000000000104")
+	otherCompany := unit("10000000-0000-4000-8000-000000000105")
+	parentTeam := unit("10000000-0000-4000-8000-000000000106")
+	data := vipRuntimeData{CommissionDirectory: &reportAttribution{Units: map[pgtype.UUID]reportUnit{
+		company: {Kind: "COMPANY"}, otherCompany: {Kind: "COMPANY"},
+		department: {Kind: "DEPARTMENT", Parent: company}, parentTeam: {Kind: "TEAM", Parent: department},
+		first: {Kind: "TEAM", Parent: parentTeam}, second: {Kind: "TEAM", Parent: department},
+	}}}
+	req := vipSalesRequest{CompanyUnit: company.String(), commissionSalesOrg: &reportOrganization{Company: company}}
+	if eligible, issue := vipCommissionScope([]string{company.String()}, req, "", data); !eligible || issue != "" {
+		t.Fatalf("source company should suffice for a company-wide rule: %v %s", eligible, issue)
+	}
+	if eligible, issue := vipCommissionScope([]string{otherCompany.String()}, req, "", data); eligible || issue != "" {
+		t.Fatalf("orders from a company outside the scope should be skipped: %v %s", eligible, issue)
+	}
+	req.commissionSalesOrg = &reportOrganization{Company: company, Department: department, Group: &first}
+	if eligible, issue := vipCommissionScope([]string{parentTeam.String()}, req, "", data); !eligible || issue != "" {
+		t.Fatalf("the team scope should include a descendant group: %v %s", eligible, issue)
+	}
+	if eligible, issue := vipCommissionScope([]string{first.String(), second.String()}, req, "", data); !eligible || issue != "" {
+		t.Fatalf("the selected groups are a union: %v %s", eligible, issue)
+	}
+	req.commissionSalesOrg.Group = nil
+	req.commissionSalesOrg.scopeAlternatives = []organizationScopeCandidate{
+		{Department: department.String(), Group: first.String()}, {Department: department.String(), Group: second.String()},
+	}
+	if eligible, issue := vipCommissionScope([]string{first.String()}, req, "", data); eligible || issue != "SALES_ORGANIZATION_SCOPE_CONFLICT" {
+		t.Fatalf("only one possible group is in scope: %v %s", eligible, issue)
+	}
+}
 
 const testVIPBenefits = `{
  "amount_basis":"ACTUAL_RECEIVED","stacking_policy":"SUM","rounding_policy":{"mode":"HALF_UP","scale":2},

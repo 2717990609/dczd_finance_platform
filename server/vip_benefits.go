@@ -8,23 +8,24 @@ import (
 )
 
 type vipBenefitAction struct {
-	Item       string            `json:"item_key"`
-	Label      string            `json:"label"`
-	Role       string            `json:"role"`
-	Type       string            `json:"type"`
-	Mode       string            `json:"beneficiary_mode"`
-	Designated string            `json:"designated_party_id"`
-	Company    string            `json:"company_beneficiary_party_id"`
-	PoolParty  string            `json:"pool_party_id"`
-	PoolUnit   string            `json:"pool_organization_unit_id"`
-	PoolCode   string            `json:"pool_code"`
-	PoolName   string            `json:"pool_name"`
-	OwnerRole  string            `json:"allocation_owner_role"`
-	Rate       *int64            `json:"rate_bps"`
-	Fixed      *int64            `json:"amount_minor,omitempty"`
-	RateTable  []json.RawMessage `json:"rate_table"`
-	rates      []vipRateRow
-	Leader     *vipLeaderScope `json:"leader_scope,omitempty"`
+	Item            string            `json:"item_key"`
+	Label           string            `json:"label"`
+	Role            string            `json:"role"`
+	Type            string            `json:"type"`
+	Mode            string            `json:"beneficiary_mode"`
+	Designated      string            `json:"designated_party_id"`
+	Company         string            `json:"company_beneficiary_party_id"`
+	PoolParty       string            `json:"pool_party_id"`
+	PoolUnit        string            `json:"pool_organization_unit_id"`
+	PoolCode        string            `json:"pool_code"`
+	PoolName        string            `json:"pool_name"`
+	OwnerRole       string            `json:"allocation_owner_role"`
+	Rate            *int64            `json:"rate_bps"`
+	Fixed           *int64            `json:"amount_minor,omitempty"`
+	RateTable       []json.RawMessage `json:"rate_table"`
+	rates           []vipRateRow
+	Leader          *vipLeaderScope `json:"leader_scope,omitempty"`
+	CommissionUnits []string        `json:"sales_scope_unit_ids,omitempty"`
 }
 
 type vipBenefitPolicy struct {
@@ -87,11 +88,12 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 		var action vipBenefitAction
 		dec := json.NewDecoder(bytes.NewReader(payload))
 		dec.DisallowUnknownFields()
-		if dec.Decode(&action) != nil || action.Label == "" || action.Role == "" || !action.validTarget() {
+		if dec.Decode(&action) != nil || action.Label == "" || action.Role == "" || !action.validTarget() ||
+			!validVIPCommissionUnits(action.CommissionUnits) {
 			return vipBenefitPolicy{}, false
 		}
 		if action.Leader != nil {
-			if !action.Leader.validFor(policy.split.Teams) || action.Type == "RATE_TABLE" {
+			if !action.Leader.validFor(policy.split.Teams) || action.Type == "RATE_TABLE" || len(action.CommissionUnits) != 0 {
 				return vipBenefitPolicy{}, false
 			}
 			if policy.leaderSales == nil {
@@ -161,6 +163,17 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 			continue
 		}
 		line := vipBenefitPart{Item: a.Item, Label: a.Label, Role: a.Role, Kind: a.targetKind()}
+		if req.Paid > 0 && (a.Rate == nil || *a.Rate > 0) && (a.Fixed == nil || *a.Fixed > 0) &&
+			!(a.Mode == vipOrderReferrerMode && req.Referrer.Party == "" && req.Referrer.Issue == "") {
+			if eligible, issue := vipCommissionScope(a.CommissionUnits, req, sourceIssue, data); !eligible {
+				line.Status = vipCommissionOutsideScope
+				if issue != "" {
+					line.Status = issue
+				}
+				out = append(out, line)
+				continue
+			}
+		}
 		rate, amount, issue := a.quote(req, sourceIssue)
 		switch {
 		case req.Paid == 0:

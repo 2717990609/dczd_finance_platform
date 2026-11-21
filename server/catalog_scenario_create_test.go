@@ -188,6 +188,25 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		}
 	}
 	cut := time.Date(2026, 10, 1, 12, 0, 0, 0, shanghai)
+	group := "10000000-0000-4000-8000-000000000960"
+	if _, err := db.Exec(ctx, `INSERT INTO organization_units(id,kind,name,status,parent_id) VALUES
+	 ('10000000-0000-4000-8000-000000000959','DEPARTMENT','范围部门','ACTIVE','10000000-0000-4000-8000-000000000953'),
+	 ('10000000-0000-4000-8000-000000000960','TEAM','范围小组','ACTIVE','10000000-0000-4000-8000-000000000959');
+	 INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from,valid_to)
+	 VALUES(gen_random_uuid(),9501,'10000000-0000-4000-8000-000000000960','MEMBER','2026-10-01','2026-10-03')`); err != nil {
+		t.Fatal(err)
+	}
+	scoped, err := s.compareRuleImpact(ctx, 951, 950, nil, false, func(tx pgx.Tx) (ruleImpactCandidate, error) {
+		version, err := writeCatalogRates(ctx, tx, publishCatalogRatesInput{
+			BaseID: published.ID, EffectiveFrom: cut,
+			ScopeChanges: []catalogCommissionScopeChange{{ItemKey: fixedKey, UnitIDs: []string{group}}},
+		}, "fixture", false)
+		return ruleImpactCandidate{catalog: &catalogRuleImpactMatch{ruleID: version.ID}}, err
+	})
+	if err != nil || scoped.AfterIssueCount != 0 || scoped.BeforeMinor != 4752 || scoped.AfterMinor != 4251 {
+		t.Fatalf("a fixed arrangement for one group should only pay the order within that scope: %+v %v", scoped, err)
+	}
+
 	revisedRate := int64(1250)
 	var revision publishCatalogRatesInput
 	if err := json.Unmarshal([]byte(`{"changes":[{"itemKey":"`+fixedKey+`","fixedMinor":603}]}`), &revision); err != nil {

@@ -58,7 +58,8 @@ function publicationInput() {
   if (!sales && !items.length) throw new Error('请至少添加一项收款安排。')
   return {
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
-    create:{productId:productId.value,sku:sku.value,label:name.value.trim(),salesRates:sales?.rows,salesLabel:sales?.label},
+    create:{productId:productId.value,sku:sku.value,label:name.value.trim(),salesRates:sales?.rows,salesLabel:sales?.label,
+      salesScopeUnitIds:sales?.salesScopeUnitIds},
     newItems:items.map(({personName,...item})=>item),
   }
 }

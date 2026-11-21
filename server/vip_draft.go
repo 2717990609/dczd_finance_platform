@@ -193,7 +193,8 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	}
 	if row.SalesStatus == "" {
 		issue("sales", "VIP_SALES_RULE_UNSUPPORTED")
-	} else if row.SalesStatus != "CALCULATED" && row.SalesStatus != vipSalesAppointmentInactive && row.SalesStatus != vipSalesNotConfigured {
+	} else if row.SalesStatus != "CALCULATED" && row.SalesStatus != vipSalesAppointmentInactive &&
+		row.SalesStatus != vipSalesNotConfigured && row.SalesStatus != vipCommissionOutsideScope {
 		issue("sales", row.SalesStatus)
 	}
 	var salesRate int64
@@ -219,7 +220,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 			if err := appendVIPDraftLine(result, row, rule, part.Item, part.Party, part.Unit, part.Owner, part.Amount, part.Rate, data, organizations); err != nil {
 				return err
 			}
-		case "ZERO", "INACTIVE":
+		case "ZERO", "INACTIVE", vipCommissionOutsideScope:
 		default:
 			issue(part.Label, part.Status)
 		}
