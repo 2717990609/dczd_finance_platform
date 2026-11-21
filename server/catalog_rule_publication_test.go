@@ -68,6 +68,35 @@ func TestChangingSalesRatesPreservesInternalTeamSplit(t *testing.T) {
 	}
 }
 
+func TestEditCatalogTeamSplitRatesKeepsLinkedRateAndFrozenDefinition(t *testing.T) {
+	definition := json.RawMessage(strings.NewReplacer(
+		`"sales_item_key":"sales"`,
+		`"sales_item_key":"sales","total_rate_bps":1000,"assistant_seller_rate_bps":500,
+		 "head_seller_rate_bps":600,"group_lead_rate_bps":100,"service_rate_bps":150,
+		 "team_head_rate_bps":250,"teams":[{"sales_company_party_id":"internal"}]`,
+		`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY"`,
+		`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY",
+		  "rate_table":[{"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":1000}]`,
+	).Replace(testVIPBenefits))
+	rates := catalogSplitRates{Total: 1000, Sales: 450, HeadSales: 600, GroupLead: 150, Service: 175, TeamLead: 225}
+	body, changed, err := editCatalogTeamSplitRates(definition, rates)
+	if err != nil || !changed {
+		t.Fatalf("balanced team rates should be editable: changed=%t %v", changed, err)
+	}
+	before, beforeOK := readVIPSalesPolicy(definition)
+	after, afterOK := readVIPSalesPolicy(body)
+	if !beforeOK || !afterOK || before.Split.Assistant != 500 ||
+		after.Split.Assistant != 450 || after.Split.Group != 150 ||
+		after.Split.Service != 175 || after.Split.TeamHead != 225 ||
+		!reflect.DeepEqual(before.Sales, after.Sales) || !reflect.DeepEqual(before.Split.Teams, after.Split.Teams) {
+		t.Fatal("editing shares must preserve the old definition, team directory and matching rates")
+	}
+	rates.HeadSales++
+	if _, _, err := editCatalogTeamSplitRates(definition, rates); !errors.Is(err, errCatalogTeamSplitTotal) {
+		t.Fatalf("unbalanced direct head sale was accepted: %v", err)
+	}
+}
+
 func TestCatalogRateTableRequiresARow(t *testing.T) {
 	actions := strings.Replace(creatorActionsFixture,
 		`"role":"TECHNOLOGY","type":"RATE","beneficiary_mode":"PARTY","company_beneficiary_party_id":"tech","rate_bps":200`,

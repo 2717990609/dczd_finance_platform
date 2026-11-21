@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -18,6 +19,8 @@ var (
 	errCatalogRateDates          = errors.New("生效时间须晚于所选版本的起点")
 	errCatalogConfigurationOwned = errors.New("此产品已在本平台发布规则，请通过规则配置维护")
 	errCatalogTeamRate           = errors.New("此调整会改变内部团队的拆分比例或收款方式，请核对团队规则")
+	errCatalogTeamSplitTotal     = errors.New("普通销售成交和团队负责人亲自成交的岗位比例合计，都须等于销售总比例")
+	errCatalogTeamSplitService   = errors.New("服务人员比例大于零时，请为每个内部团队选择服务人员")
 	errCatalogRequiredEntry      = errors.New("请至少保留一项收款安排。成交团队拆分及在用的费率表须保留适用费率")
 )
 
@@ -35,6 +38,7 @@ type publishCatalogRatesInput struct {
 	Changes            []catalogRateChange               `json:"changes"`
 	RecipientChanges   []catalogRuleRecipientChange      `json:"recipientChanges"`
 	TeamChanges        []catalogTeamRecipientChange      `json:"teamChanges"`
+	TeamSplitRates     *catalogSplitRates                `json:"teamSplitRates,omitempty"`
 	NewItems           []catalogNewBenefitItem           `json:"newItems"`
 	NewSalesRates      []catalogConditionInput           `json:"newSalesRates,omitempty"`
 	NewRateRows        []catalogNewRateRow               `json:"newRateRows"`
@@ -155,7 +159,7 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 
 func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRatesInput, actor string, refreshDrafts bool) (catalogPublication, error) {
 	if input.Create != nil {
-		if input.BaseID != "" || input.Copy != nil || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges)+
+		if input.BaseID != "" || input.Copy != nil || input.TeamSplitRates != nil || len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges)+
 			len(input.NewSalesRates)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges)+len(input.RemovedItems)+len(input.RemovedRateRows) != 0 {
 			return catalogPublication{}, invalid
 		}
@@ -166,7 +170,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
 	structureChanged := len(input.NewItems)+len(input.NewSalesRates)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges) != 0
 	removals := len(input.RemovedItems)+len(input.RemovedRateRows) != 0
-	if !valid || from.IsZero() || input.Copy == nil && len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 &&
+	if !valid || from.IsZero() || input.Copy == nil && input.TeamSplitRates == nil && len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 &&
 		!structureChanged && !removals || !textOK(actor, 128) {
 		return published, invalid
 	}
@@ -222,9 +226,15 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			}
 		}
 		body := definition
-		var ratesChanged, recipientsChanged bool
+		var ratesChanged, splitChanged, recipientsChanged bool
 		if len(input.Changes) != 0 {
 			body, ratesChanged, err = editCatalogRates(body, input.Changes)
+			if err != nil {
+				return err
+			}
+		}
+		if input.TeamSplitRates != nil {
+			body, splitChanged, err = editCatalogTeamSplitRates(body, *input.TeamSplitRates)
 			if err != nil {
 				return err
 			}
@@ -237,6 +247,12 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			body, recipientsChanged, err = editCatalogRecipients(body, input.RecipientChanges, input.TeamChanges, keys)
 			if err != nil {
 				return err
+			}
+		}
+		if splitChanged && input.TeamSplitRates.Service > 0 {
+			policy, ok := readVIPSalesPolicy(body)
+			if !ok || slices.ContainsFunc(policy.Split.Teams, func(team vipInternalTeam) bool { return team.ServiceParty == "" }) {
+				return errCatalogTeamSplitService
 			}
 		}
 		if structureChanged {
@@ -253,7 +269,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 				return err
 			}
 		}
-		if input.Copy == nil && !ratesChanged && !recipientsChanged && !structureChanged && !removals {
+		if input.Copy == nil && !ratesChanged && !splitChanged && !recipientsChanged && !structureChanged && !removals {
 			return nil
 		}
 		if _, _, err := catalogRateActions(body); err != nil {
@@ -511,4 +527,38 @@ func internalTeamRatesChanged(before, after vipSalesPolicy) bool {
 		}
 	}
 	return false
+}
+
+func editCatalogTeamSplitRates(raw json.RawMessage, rates catalogSplitRates) (json.RawMessage, bool, error) {
+	policy, ok := readVIPSalesPolicy(raw)
+	split := policy.Split
+	if !ok || len(split.Teams) == 0 {
+		return nil, false, errCatalogRateUnavailable
+	}
+	for _, value := range []int64{rates.Sales, rates.HeadSales, rates.GroupLead, rates.Service, rates.TeamLead} {
+		if value < 0 || value > 10000 {
+			return nil, false, invalid
+		}
+	}
+	common := rates.Service + rates.TeamLead
+	if rates.Total != split.Total || rates.Sales+rates.GroupLead+common != split.Total || rates.HeadSales+common != split.Total {
+		return nil, false, errCatalogTeamSplitTotal
+	}
+	if rates.Sales == split.Assistant && rates.HeadSales == split.HeadSeller &&
+		rates.GroupLead == split.Group && rates.Service == split.Service && rates.TeamLead == split.TeamHead {
+		return raw, false, nil
+	}
+	var root, fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &root) != nil || json.Unmarshal(root["internal_sales_direct_split"], &fields) != nil {
+		return nil, false, errCatalogRateUnavailable
+	}
+	for key, value := range map[string]int64{
+		"assistant_seller_rate_bps": rates.Sales, "head_seller_rate_bps": rates.HeadSales,
+		"group_lead_rate_bps": rates.GroupLead, "service_rate_bps": rates.Service, "team_head_rate_bps": rates.TeamLead,
+	} {
+		fields[key], _ = json.Marshal(value)
+	}
+	root["internal_sales_direct_split"], _ = json.Marshal(fields)
+	body, err := json.Marshal(root)
+	return body, err == nil, err
 }

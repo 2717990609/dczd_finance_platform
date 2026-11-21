@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
-import { catalogFlatMethods, catalogPayeeComplete, catalogRateConditionBody, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
+import { catalogCalculationMethods, catalogPayeeComplete, catalogRateConditionBody, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object, component:Object, api:Function, peopleFilters:Object, parseRate:Function})
 const emit = defineEmits(['rate-staged'])
@@ -14,12 +14,6 @@ const revising = computed(() => form.value?.kind==='calculation' || form.value?.
 const itemName = ref()
 const error = ref('')
 let nextDraftKey = 0
-const formats = [...catalogFlatMethods,{value:'table',label:'按类别或公司设置比例'}]
-const calculationFormats = computed(() => {
-  if (form.value?.kind!=='calculation') return formats
-  const savedFormat = props.component.rows?.length ? 'table' : props.component.fixedMinor!=null ? 'fixed' : 'rate'
-  return formats.filter(option=>option.value!==savedFormat)
-})
 const blankCondition = scope => newCatalogRateCondition(props.options,scope)
 const labelFor = (choices,value) => choices.find(option=>option.value===value)?.label || value
 const percent = basisPoints => (basisPoints/100)+'%'
@@ -68,10 +62,9 @@ function calculationForm({fixedMinor,rateBps,rows}, defaultFormat='rate') {
     })) || [blankCondition()],
   }
 }
-function editCalculation(pending) {
+function editCalculation(pending, format) {
   error.value = ''
-  const defaultFormat = props.component.rows?.length ? 'rate' : 'table'
-  form.value = {kind:'calculation',itemKey:props.component.itemKey,...calculationForm(pending || {},defaultFormat)}
+  form.value = {kind:'calculation',itemKey:props.component.itemKey,...calculationForm(pending || {},format),format}
 }
 function editRateScope(entry, rate) {
   error.value = ''
@@ -150,8 +143,8 @@ defineExpose({addRecipient,editSales,editCalculation,editRateScope,addRateCondit
             </a-form-item>
             <CatalogPayeeFields v-model="form" prefix="catalog-add" :options="options" :api="api" :people-filters="peopleFilters"/>
           </template>
-          <a-form-item :label="form.kind==='calculation' ? '新计提方式' : '计提方式'" html-for="catalog-add-format">
-            <a-select id="catalog-add-format" v-model:value="form.format" :options="calculationFormats"/>
+          <a-form-item v-if="form.kind==='item'" label="计提方式" html-for="catalog-add-format">
+            <a-select id="catalog-add-format" v-model:value="form.format" :options="catalogCalculationMethods"/>
           </a-form-item>
           <a-form-item v-if="form.format==='rate'" label="比例（%）" html-for="catalog-add-fixed" required>
             <a-input-number id="catalog-add-fixed" aria-label="比例（%）" v-model:value="form.rate"

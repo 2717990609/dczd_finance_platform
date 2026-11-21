@@ -5,7 +5,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
-import { catalogFlatMethods, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogCalculationMethods, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule: Object, applied: Object, api: Function, formatTime: Function, formatMoney:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
@@ -16,8 +16,8 @@ const effectiveFrom = ref('')
 const edits = ref({})
 const labelEdits = ref(new Map())
 const targetEdits = ref(new Map())
-const targetDraft = ref()
 const teamEdits = ref(new Map())
+const splitEdits = ref({})
 const selectedTeam = ref()
 const loading = ref(false)
 const saving = ref(false)
@@ -52,23 +52,31 @@ const targetKind = computed(() => targetEdits.value.get(selected.value)?.target 
 const targetKindLabels = {seller:'按下表结算',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人'}
 const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人'}
 const teamSplit = computed(() => component.value?.teamSplit)
+const splitFields = [
+  {key:'sales',label:'普通成交销售'},
+  {key:'headSales',label:'负责人亲自成交'},
+  {key:'groupLead',label:'小组组长'},
+  {key:'teamLead',label:'团队负责人'},
+  {key:'service',label:'服务人员'},
+]
 const splitRows = computed(() => {
   const split = teamSplit.value
-  return split ? [
-    {label:'成交销售（非团队负责人）', rate:split.sales},
-    {label:'小组组长（按付款时任职）', rate:split.groupLead},
-    {label:'团队负责人', rate:split.teamLead},
-    {label:'服务人员', rate:split.service},
-  ].filter(row=>row.rate > 0) : []
+  return split ? splitFields.map(field=>({...field,rate:split[field.key]})) : []
 })
+const splitValue = field => Object.hasOwn(splitEdits.value,field) ? splitEdits.value[field] : (teamSplit.value[field]/100).toFixed(2)
+function setSplitRate(field,value) {
+  if (rateAsBasisPoints(value)===teamSplit.value[field]) delete splitEdits.value[field]
+  else splitEdits.value[field] = value
+}
 const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:item.key,label:item.label})))
 const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
 const itemRemoved = computed(() => removedItems.value.has(selected.value))
-const editable = computed(() => sheet.value?.mayPublish && !saving.value && !itemRemoved.value)
+const editable = computed(() => sheet.value?.mayPublish && !props.applied && !saving.value && !itemRemoved.value)
 const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKind==='seller'))
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
-const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 || labelEdits.value.size ||
+const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
+  Object.keys(splitEdits.value).length > 0 || labelEdits.value.size ||
   structure.value.items.length || structure.value.salesRates?.length || structure.value.rateRows.length || structure.value.calculations.length ||
   removedItems.value.size || removedRateRows.value.size)
 const impactPeriods = computed(() => catalogRuleImpactPeriods(props.periods,sheet.value?.productId,impactInput.value?.effectiveFrom))
@@ -193,6 +201,19 @@ const displayRate = (rate, row, item=selected.value) => {
 }
 const savedMethod = item => item.fixedMinor == null ? 'rate' : 'fixed'
 const flatMethod = item => edits.value[cellKey(item.itemKey)]?.method || savedMethod(item)
+function calculationMethod(item) {
+  const staged = calculationFor(item.itemKey)
+  if (staged) return staged.rows?.length ? 'table' : staged.fixedMinor != null ? 'fixed' : 'rate'
+  return item.rows?.length ? 'table' : flatMethod(item)
+}
+function chooseCalculation(item, method) {
+  if (method===calculationMethod(item)) return
+  if (!item.rows?.length && !selectedCalculation.value && method!=='table') {
+    setFlat(item,method,method===savedMethod(item) ? (item.fixedMinor ?? item.rateBps)/100 : undefined)
+  } else {
+    structureEditor.value?.editCalculation(undefined,method)
+  }
+}
 const flatValue = item => {
   const edit = edits.value[cellKey(item.itemKey)]
   return edit ? edit.value : ((item.fixedMinor ?? item.rateBps)/100).toFixed(2)
@@ -239,30 +260,20 @@ function originalTarget(item) {
   return {target:item.targetKind,role:item.targetRole,organization:item.targetOrganization,
     personId:item.recipient?.id,personName:item.recipient?.name}
 }
-function beginTarget() {
-  error.value = ''
-  targetDraft.value = {...(targetEdits.value.get(selected.value) || originalTarget(component.value))}
-}
-function stageTarget() {
-  const payee = targetDraft.value
-  if (!catalogPayeeComplete(payee)) {
-    error.value = '请选择收款对象并填写对应岗位。'
-    return
-  }
-  const original = originalTarget(component.value)
+function setTarget(item, payee) {
+  const original = originalTarget(item)
   if (['target','role','organization','personId'].every(field=>payee[field]===original[field])) {
-    targetEdits.value.delete(selected.value)
+    targetEdits.value.delete(item.itemKey)
   } else {
-    targetEdits.value.set(selected.value,payee)
+    targetEdits.value.set(item.itemKey,payee)
   }
-  targetDraft.value = undefined
   error.value = ''
 }
 const teamPerson = field => teamEdits.value.get(selectedTeam.value)?.[field] || team.value?.[field]
 function setTeamPerson(field, id, option) {
   const key = selectedTeam.value
   const changes = {...teamEdits.value.get(key)}
-  if (id===team.value[field].id) delete changes[field]
+  if (id===team.value[field]?.id) delete changes[field]
   else changes[field] = {id,name:option.name}
   if (Object.keys(changes).length) teamEdits.value.set(key,changes)
   else teamEdits.value.delete(key)
@@ -278,8 +289,8 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   removedItems.value.clear()
   removedRateRows.value.clear()
   targetEdits.value.clear()
-  targetDraft.value = undefined
   teamEdits.value.clear()
+  splitEdits.value = {}
   selectedTeam.value = undefined
   filter.value = ''
   effectiveFrom.value = ''
@@ -313,9 +324,30 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
 watch([selected, rateGroup], () => { filter.value = '' })
 
 function publicationInput() {
-  if (structureEditing.value || targetDraft.value) throw new Error('请先完成正在编辑的配置。')
+  if (structureEditing.value) throw new Error('请先完成正在编辑的配置。')
+  for (const [itemKey,payee] of targetEdits.value) {
+    if (!removedItems.value.has(itemKey) && !catalogPayeeComplete(payee)) {
+      const item = sheet.value.components.find(component=>component.itemKey===itemKey)
+      selected.value = itemKey
+      throw new Error('请补齐「'+(labelEdits.value.get(itemKey)?.trim() || item.label)+'」的收款对象和适用岗位。')
+    }
+  }
   if (!effectiveFrom.value) throw new Error('请选择生效时间。')
   if (copy.value && (!copy.value.sku || !copy.value.label?.trim())) throw new Error('请选择目标 SKU，并填写规则名称。')
+  let teamSplitRates
+  if (Object.keys(splitEdits.value).length) {
+    const item = sheet.value.components.find(component=>component.teamSplit)
+    const original = item.teamSplit
+    teamSplitRates = {total:original.total}
+    for (const {key} of splitFields) {
+      teamSplitRates[key] = Object.hasOwn(splitEdits.value,key) ? rateAsBasisPoints(splitEdits.value[key]) : original[key]
+    }
+    const {total,sales,headSales,groupLead,service,teamLead} = teamSplitRates
+    if (sales+groupLead+service+teamLead!==total || headSales+service+teamLead!==total) {
+      selected.value = item.itemKey
+      throw new Error('普通销售成交和团队负责人亲自成交的岗位比例合计，都须等于销售总比例。')
+    }
+  }
   const changes = Object.values(edits.value)
     .filter(({itemKey,row})=>!removedItems.value.has(itemKey) && !removedRateRows.value.has(cellKey(itemKey,row)) &&
       !pendingScope(itemKey,row) && !calculationFor(itemKey))
@@ -345,6 +377,7 @@ function publicationInput() {
     teamChanges:Array.from(teamEdits.value,([teamKey,changes])=>({
       teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
     })),
+    teamSplitRates,
     newItems:structure.value.items.map(({personName,...item})=>item),
     newSalesRates:structure.value.salesRates,
     calculationChanges:structure.value.calculations.filter(({itemKey})=>!removedItems.value.has(itemKey)),
@@ -407,13 +440,13 @@ async function publish() {
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
             <a-space v-if="sheet.mayPublish && !applied && sheet.structureOptions" wrap :size="4">
-              <a-button v-if="!hasSales && !structure.salesRates?.length" size="small" :disabled="saving || structureEditing || !!targetDraft"
+              <a-button v-if="!hasSales && !structure.salesRates?.length" size="small" :disabled="saving || structureEditing"
                 @click="addSales">添加成交销售</a-button>
-              <a-button size="small" :disabled="saving || structureEditing || !!targetDraft" @click="addRecipient">添加收款安排</a-button>
+              <a-button size="small" :disabled="saving || structureEditing" @click="addRecipient">添加收款安排</a-button>
             </a-space>
           </div>
           <section v-for="item in sheet.components" :key="item.itemKey" class="rule-block">
-          <button type="button" class="rule-block-header" :disabled="saving || structureEditing || !!targetDraft"
+          <button type="button" class="rule-block-header" :disabled="saving || structureEditing"
             :aria-expanded="selected===item.itemKey" :aria-controls="'catalog-rate-'+item.itemKey"
             @click="selected=selected===item.itemKey ? undefined : item.itemKey">
             <DownOutlined aria-hidden="true"/>
@@ -423,47 +456,40 @@ async function publish() {
           </button>
           <div v-if="selected===item.itemKey" :id="'catalog-rate-'+item.itemKey" class="rule-block-body">
           <a-alert v-if="itemRemoved" type="warning" message="此分项将从新版移除" show-icon class="feedback"/>
-          <div v-if="targetKind!=='seller' || !component?.rows?.length" class="rule-blocks-heading catalog-receipt">
-            <span v-if="!targetDraft">{{ targetKindLabels[targetKind] }}<template v-if="targetName(item)"> · {{ targetName(item) }}</template></span>
-            <a-space v-if="!applied && sheet.structureOptions && targetKind!=='seller' && !targetDraft" wrap :size="4">
-              <a-button size="small" :disabled="!editable || structureEditing" @click="beginTarget">编辑收款对象</a-button>
-              <a-button size="small" :disabled="!editable || structureEditing" @click="structureEditor?.editCalculation(selectedCalculation)">
-                {{ selectedCalculation ? '编辑新计提方式' : '更换计提方式' }}
-              </a-button>
-              <a-button v-if="selectedCalculation" size="small" type="link" :disabled="!editable || structureEditing"
-                @click="undoCalculation">撤销更换</a-button>
-            </a-space>
-          </div>
-          <template v-if="targetDraft">
-            <div class="rule-basics">
-              <CatalogPayeeFields v-model="targetDraft" prefix="catalog-edit" :options="sheet.structureOptions" :api="api"
-                :people-filters="peopleFilters" :disabled="saving"/>
-            </div>
-            <a-space class="feedback">
-              <a-button @click="targetDraft=undefined; error=''">取消修改</a-button>
-              <a-button type="primary" @click="stageTarget">确认收款对象</a-button>
-            </a-space>
-          </template>
-          <p v-if="selectedCalculation && !hasRateTable" class="rule-formula">
-            {{ selectedCalculation.fixedMinor!=null ? '每笔付款固定金额' : '统一比例' }} · {{ componentStandard(item) }} · 未保存
-          </p>
-          <template v-else-if="!selectedCalculation && (item.fixedMinor != null || item.rateBps != null)">
-            <div v-if="!applied && sheet.mayPublish" class="rule-basics">
-              <a-form-item label="计提方式" html-for="catalog-flat-method">
-                <a-select id="catalog-flat-method" :value="flatMethod(item)" :options="catalogFlatMethods" :disabled="!editable"
-                  @update:value="setFlat(item,$event,$event===savedMethod(item) ? (item.fixedMinor ?? item.rateBps)/100 : undefined)"/>
+          <template v-if="!applied && sheet.mayPublish && sheet.structureOptions && !itemRemoved">
+            <div class="catalog-rule-fields">
+              <a-form-item label="收款安排名称" html-for="catalog-rate-label" required>
+                <a-input id="catalog-rate-label" :value="labelEdits.get(item.itemKey) ?? item.label" :maxlength="80"
+                  :disabled="!editable || structureEditing" @update:value="setLabel(item,$event)"/>
               </a-form-item>
-              <a-form-item v-if="flatMethod(item)==='fixed'" label="金额（元/笔）" html-for="catalog-fixed-amount">
+              <CatalogPayeeFields v-if="targetKind!=='seller'" :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
+                prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters"
+                :disabled="!editable || structureEditing" @update:model-value="setTarget(item,$event)"/>
+            </div>
+            <div v-if="targetKind!=='seller'" class="catalog-rule-fields catalog-calculation-fields">
+              <a-form-item label="计提方式" html-for="catalog-flat-method">
+                <a-select id="catalog-flat-method" :value="calculationMethod(item)" :options="catalogCalculationMethods"
+                  :disabled="!editable || structureEditing" @update:value="chooseCalculation(item,$event)"/>
+              </a-form-item>
+              <a-form-item v-if="!selectedCalculation && !item.rows?.length && flatMethod(item)==='fixed'" label="金额（元/笔）" html-for="catalog-fixed-amount">
                 <a-input-number id="catalog-fixed-amount" aria-label="金额（元/笔）" :value="flatValue(item)" :disabled="!editable"
                   :min="0" :precision="2" string-mode @update:value="setFlat(item,'fixed',$event)"/>
               </a-form-item>
-              <a-form-item v-else label="比例（%）" html-for="catalog-fixed-rate">
+              <a-form-item v-else-if="!selectedCalculation && !item.rows?.length" label="比例（%）" html-for="catalog-fixed-rate">
                 <a-input-number id="catalog-fixed-rate" :value="flatValue(item)" :disabled="!editable"
                   :min="0" :max="100" :precision="2" string-mode @update:value="setFlat(item,'rate',$event)"/>
               </a-form-item>
+              <a-space v-if="selectedCalculation" wrap :size="4">
+                <span v-if="!hasRateTable">{{ componentStandard(item) }}</span>
+                <a-button size="small" type="link" :disabled="!editable || structureEditing"
+                  @click="structureEditor?.editCalculation(selectedCalculation,calculationMethod(item))">编辑计算条件</a-button>
+                <a-button size="small" type="link" :disabled="!editable || structureEditing" @click="undoCalculation">撤销更换</a-button>
+              </a-space>
             </div>
-            <p v-else class="rule-formula">{{ componentStandard(item) }}</p>
           </template>
+          <p v-else-if="targetKind!=='seller' && !itemRemoved" class="rule-formula">
+            {{ [targetKindLabels[targetKind],targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}
+          </p>
           <div v-if="hasRateTable" class="finance-rate-toolbar catalog-rate-toolbar">
               <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" size="small"
                 :disabled="structureEditing" role="radiogroup" aria-label="查看比例">
@@ -475,7 +501,7 @@ async function publish() {
               <small v-if="ratePriority" class="finance-rate-priority">匹配顺序 {{ ratePriority }}</small>
               <a-input v-if="activeRateGroup?.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
                 placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
-              <a-button v-if="activeRateGroup?.add" class="finance-rate-add" size="small" :disabled="!editable || structureEditing || !!targetDraft"
+              <a-button v-if="activeRateGroup?.add" class="finance-rate-add" size="small" :disabled="!editable || structureEditing"
                 @click="structureEditor?.addRateCondition(activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
           </div>
           <div v-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
@@ -514,33 +540,38 @@ async function publish() {
               </template>
             </a-table>
           </template>
-          <a-collapse v-if="team && teamSplit" ghost class="catalog-more">
+          <a-collapse v-if="teamSplit" ghost class="catalog-more">
             <a-collapse-panel key="team" header="内部团队收款人">
+              <div v-if="!applied && sheet.mayPublish" class="catalog-rule-fields">
+                <a-form-item v-for="row in splitRows" :key="row.key" :label="row.label+'（%）'" :html-for="'catalog-split-'+row.key">
+                  <a-input-number :id="'catalog-split-'+row.key" :value="splitValue(row.key)"
+                    :disabled="!editable || structureEditing" :min="0" :max="100" :precision="2" string-mode
+                    @update:value="setSplitRate(row.key,$event)"/>
+                </a-form-item>
+              </div>
+              <a-descriptions v-else size="small" bordered :column="1">
+                <a-descriptions-item v-for="row in splitRows" :key="row.key" :label="row.label">{{ percent(row.rate) }}</a-descriptions-item>
+              </a-descriptions>
+              <p class="rule-formula">销售分项总比例 {{ percent(teamSplit.total) }}。普通成交为销售、组长、负责人和服务之和。负责人亲自成交时不计组长份额。</p>
+              <template v-if="team">
+              <div class="catalog-rule-fields">
               <a-form-item label="销售公司" html-for="catalog-team-company">
                 <a-select id="catalog-team-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
               </a-form-item>
               <a-form-item label="团队负责人" html-for="catalog-team-head">
-                <AppointmentPersonSelect v-if="sheet.mayPublish" id="catalog-team-head" :key="selectedTeam"
+                <AppointmentPersonSelect v-if="!applied && sheet.mayPublish" id="catalog-team-head" :key="selectedTeam"
                   :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('head')" :value="teamPerson('head')?.id"
                   :disabled="!editable" :placeholder="teamPerson('head')?.id?'输入姓名搜索':teamPerson('head')?.name" @change="(id,option)=>setTeamPerson('head',id,option)"/>
                 <span v-else>{{ team.head.name }}</span>
               </a-form-item>
-              <a-form-item v-if="team.service" label="服务人员" html-for="catalog-team-service">
-                <AppointmentPersonSelect v-if="sheet.mayPublish" id="catalog-team-service" :key="selectedTeam"
+              <a-form-item v-if="team.service || (!applied && sheet.mayPublish && Number(splitValue('service'))>0)"
+                label="服务人员" html-for="catalog-team-service">
+                <AppointmentPersonSelect v-if="!applied && sheet.mayPublish" id="catalog-team-service" :key="selectedTeam"
                   :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('service')" :value="teamPerson('service')?.id"
                   :disabled="!editable" :placeholder="teamPerson('service')?.id?'输入姓名搜索':teamPerson('service')?.name" @change="(id,option)=>setTeamPerson('service',id,option)"/>
                 <span v-else>{{ team.service.name }}</span>
               </a-form-item>
-              <template v-if="teamSplit">
-                <a-descriptions size="small" bordered :column="1">
-                  <a-descriptions-item v-for="row in splitRows" :key="row.label" :label="row.label">
-                    {{ percent(row.rate) }}
-                  </a-descriptions-item>
-                  <a-descriptions-item label="销售分项总比例">{{ percent(teamSplit.total) }}</a-descriptions-item>
-                </a-descriptions>
-                <p class="rule-formula">
-                  团队负责人亲自成交时，成交份额为 {{ percent(teamSplit.headSales) }}，另计团队负责人及服务份额。
-                </p>
+              </div>
               </template>
             </a-collapse-panel>
           </a-collapse>
@@ -557,10 +588,6 @@ async function publish() {
             <a-collapse v-model:active-key="more" ghost class="catalog-more">
               <a-collapse-panel key="more" header="更多配置">
                 <div class="catalog-rate-options">
-                  <a-form-item v-if="component && !itemRemoved" label="收款安排名称" html-for="catalog-rate-label" class="catalog-rate-label">
-                    <a-input id="catalog-rate-label" :value="labelEdits.get(component.itemKey) ?? component.label" :maxlength="80"
-                      :disabled="!editable || structureEditing || !!targetDraft" @update:value="setLabel(component,$event)"/>
-                  </a-form-item>
                   <a-space wrap :size="4">
                     <a-button v-if="component && !component.teamSplit" size="small" :danger="!itemRemoved" :disabled="structureEditing || saving"
                       @click="toggleItemRemoval">{{ itemRemoved ? '撤销删除分项' : '删除分项' }}</a-button>
@@ -606,9 +633,9 @@ async function publish() {
       </div>
       <div class="workspace-edit-footer" v-else>
         <a-button :disabled="saving" @click="emit('close')">取消</a-button>
-        <a-button :disabled="saving || structureEditing || !!targetDraft || !hasEdits" @click="previewImpact">预览差额</a-button>
+        <a-button :disabled="saving || structureEditing || !hasEdits" @click="previewImpact">预览差额</a-button>
         <a-button html-type="submit" form="catalog-rate-form" type="primary" :loading="saving"
-          :disabled="structureEditing || !!targetDraft || !hasEdits">保存并生效</a-button>
+          :disabled="structureEditing || !hasEdits">保存并生效</a-button>
       </div>
     </template>
   </a-drawer>
@@ -624,10 +651,13 @@ async function publish() {
 .catalog-rate-context {display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;color:var(--muted);font-size:13px}
 .catalog-rate-context :deep(.ant-tag) {margin-inline-end:0}
 .catalog-rate-effective :deep(.ant-input) {width:min(100%,280px)}
-.catalog-receipt {margin-bottom:6px}
+.catalog-rule-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:4px 10px}
+.catalog-rule-fields :deep(.ant-form-item) {min-width:0;margin-bottom:6px}
+.catalog-calculation-fields {grid-template-columns:minmax(0,280px) minmax(0,168px) auto;align-items:end}
+.catalog-rule-fields :deep(.ant-input-number) {width:100%}
+@media (max-width:600px) {.catalog-calculation-fields {grid-template-columns:repeat(auto-fit,minmax(min(100%,140px),1fr))}}
 .catalog-more {margin:6px 0}
 .catalog-rate-options {display:flex;flex-wrap:wrap;align-items:end;gap:4px 8px}
-.catalog-rate-options .catalog-rate-label {flex:1 1 180px;max-width:380px;margin-bottom:0}
 .catalog-more :deep(.ant-collapse-header) {padding-block:6px}
 .catalog-more :deep(.ant-collapse-content-box) {padding-block:4px}
 .catalog-copy {padding:16px;margin:12px 0;border:1px solid var(--line);border-radius:8px}
