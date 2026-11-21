@@ -36,8 +36,10 @@ func (s workspace) practiceRuleRecipients(w http.ResponseWriter, r *http.Request
 	 'people',(`+peopleSQL+`),
 	 'pools',coalesce((SELECT jsonb_agg(jsonb_build_object('id',pool.id,'name',pool.name,'unitName',u.name) ORDER BY pool.name,pool.id)
 	  FROM practice_pools pool JOIN organization_units u ON u.id=pool.unit_id WHERE pool.product_id=$1 AND u.status='ACTIVE'),'[]'),
-	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name,'kind',kind) ORDER BY name,id)
-	  FROM organization_units WHERE status='ACTIVE'),'[]'))
+	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',u.id,'name',u.name,'kind',u.kind,
+	  'scopeName',concat_ws(' / ',gp.name,p.name,u.name)) ORDER BY u.name,u.id)
+	  FROM organization_units u LEFT JOIN organization_units p ON p.id=u.parent_id
+	  LEFT JOIN organization_units gp ON gp.id=p.parent_id WHERE u.status='ACTIVE'),'[]'))
 	 FROM products WHERE id=$1 AND period_mode='class'`, product).Scan(&result)
 	respond(w, result, err)
 }
@@ -112,8 +114,11 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 	var result json.RawMessage
 	err := s.db.QueryRow(ctx, `SELECT jsonb_build_object(
 	 'people',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name)) FROM people WHERE id=ANY($1::bigint[])),'[]'),
-	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name)) FROM organization_units
-	  WHERE id IN (SELECT nullif(ref,'')::uuid FROM unnest($2::text[]) ref)),'[]'),
+	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',u.id,'name',u.name,
+	  'scopeName',concat_ws(' / ',gp.name,p.name,u.name)))
+	  FROM organization_units u LEFT JOIN organization_units p ON p.id=u.parent_id
+	  LEFT JOIN organization_units gp ON gp.id=p.parent_id
+	  WHERE u.id IN (SELECT nullif(ref,'')::uuid FROM unnest($2::text[]) ref)),'[]'),
 	 'pools',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name)) FROM practice_pools WHERE id=ANY($3::bigint[])),'[]'))`,
 		people, units, pools).Scan(&result)
 	return result, err

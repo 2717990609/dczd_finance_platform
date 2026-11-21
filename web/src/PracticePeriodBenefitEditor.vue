@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
+import { hasPracticePaymentScope } from './rule-component-form'
 
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array,
@@ -11,7 +12,23 @@ const props = defineProps({
 })
 const config = computed(() => props.component.periodBenefit)
 const registration = computed(() => config.value.registrationScope)
-const salesSources = [{value:'payment',label:'付款订单'}, {value:'registration',label:'签到报名'}]
+const scopeModes = [
+  {value:'all',label:'本班全部适用报名'},
+  {value:'payment',label:'指定付款销售范围'},
+  {value:'registration',label:'签到报名归属'},
+]
+const scopeMode = computed(() => registration.value ? 'registration' :
+  config.value.restrictPayments || hasPracticePaymentScope(config.value) ? 'payment' : 'all')
+function changeScope(mode) {
+  const benefit = config.value
+  benefit.registrationScope = mode==='registration' ? {} : undefined
+  benefit.restrictPayments = mode==='payment'
+  if (mode==='all') {
+    benefit.salesCompanies = []
+    benefit.salesPeople = []
+    benefit.salesUnits = []
+  }
+}
 const registrationCompanies = computed(() => (props.registrationCompanies ?? props.companies).filter(option=>/^[1-9]\d*$/.test(option.value)))
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 const field = name => 'practice-benefit-'+props.index+'-'+name
@@ -49,6 +66,43 @@ const calculationMethods = [
       <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
     </a-form-item>
   </RuleArrangementFields>
+  <div class="period-fields period-scope" :class="{'period-scope-all':scopeMode==='all'}">
+    <a-form-item label="提成范围" :html-for="field('sales-source')">
+      <a-select :id="field('sales-source')" :value="scopeMode" :options="scopeModes" @change="changeScope"/>
+    </a-form-item>
+    <template v-if="scopeMode==='payment'">
+      <a-form-item label="适用销售团队或小组" :html-for="field('sales-units')">
+        <a-select :id="field('sales-units')" v-model:value="config.salesUnits" :options="salesUnits"
+          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限团队和小组"/>
+      </a-form-item>
+      <a-form-item label="销售公司" :html-for="field('companies')">
+        <a-select :id="field('companies')" v-model:value="config.salesCompanies" :options="companies"
+          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售公司"/>
+      </a-form-item>
+      <a-form-item label="销售人员" :html-for="field('sales')">
+        <a-select :id="field('sales')" v-model:value="config.salesPeople" :options="people"
+          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售人员"/>
+      </a-form-item>
+      <a-form-item v-if="config.salesPeople?.length || config.salesUnits?.length" label="销售来源角色" :html-for="field('role')" required>
+        <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
+      </a-form-item>
+    </template>
+    <template v-if="registration">
+      <a-form-item label="本人销售账号" :html-for="field('registration-seller')">
+        <a-input :id="field('registration-seller')" v-model:value="registration.sellerId" inputmode="numeric"
+          :maxlength="19" placeholder="大春之道销售账号" allow-clear/>
+      </a-form-item>
+      <a-form-item label="本人销售公司" :html-for="field('registration-company')">
+        <a-select :id="field('registration-company')" v-model:value="registration.sellerCompanyId" :options="registrationCompanies"
+          :loading="registrationLoading" show-search allow-clear :filter-option="byName"/>
+      </a-form-item>
+      <a-form-item label="下属公司" :html-for="field('registration-companies')">
+        <a-select :id="field('registration-companies')" v-model:value="registration.companies" :options="registrationCompanies"
+          :loading="registrationLoading" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
+      </a-form-item>
+    </template>
+  </div>
+  <a-alert v-if="registration && registrationError" type="warning" :message="registrationError" show-icon/>
   <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <template v-if="config.method==='tiers'">
@@ -69,47 +123,9 @@ const calculationMethods = [
     </div>
     <a-button type="dashed" block @click="config.tiers.push({})">添加档位</a-button>
   </template>
-  <a-collapse ghost class="period-scope">
-    <a-collapse-panel key="scope" header="哪些业绩参与">
-      <a-form-item label="业绩来源" :html-for="field('sales-source')">
-        <a-select :id="field('sales-source')" :value="registration ? 'registration' : 'payment'" :options="salesSources"
-          @change="config.registrationScope=$event==='registration' ? {} : undefined"/>
-      </a-form-item>
-      <template v-if="registration">
-        <a-alert v-if="registrationError" type="warning" :message="registrationError" show-icon/>
-        <div class="period-fields">
-          <a-form-item label="本人销售账号" :html-for="field('registration-seller')">
-            <a-input :id="field('registration-seller')" v-model:value="registration.sellerId" inputmode="numeric"
-              :maxlength="19" placeholder="大春之道销售账号" allow-clear/>
-          </a-form-item>
-          <a-form-item label="本人销售公司" :html-for="field('registration-company')">
-            <a-select :id="field('registration-company')" v-model:value="registration.sellerCompanyId" :options="registrationCompanies"
-              :loading="registrationLoading" show-search allow-clear :filter-option="byName"/>
-          </a-form-item>
-          <a-form-item label="下属公司" :html-for="field('registration-companies')">
-            <a-select :id="field('registration-companies')" v-model:value="registration.companies" :options="registrationCompanies"
-              :loading="registrationLoading" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
-          </a-form-item>
-        </div>
-      </template>
-      <div v-else class="period-fields">
-        <a-form-item label="销售公司" :html-for="field('companies')">
-          <a-select :id="field('companies')" v-model:value="config.salesCompanies" :options="companies"
-            mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="全部销售公司"/>
-        </a-form-item>
-        <a-form-item label="销售人员" :html-for="field('sales')">
-          <a-select :id="field('sales')" v-model:value="config.salesPeople" :options="people"
-            mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="全部销售人员"/>
-        </a-form-item>
-        <a-form-item label="业绩部门或小组" :html-for="field('sales-units')" :extra="config.salesUnits?.length ? '按付款时归属匹配' : undefined">
-          <a-select :id="field('sales-units')" v-model:value="config.salesUnits" :options="salesUnits"
-            mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="全部部门和小组"/>
-        </a-form-item>
-        <a-form-item v-if="config.salesPeople?.length || config.salesUnits?.length" label="销售来源角色" :html-for="field('role')" required>
-          <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
-        </a-form-item>
-      </div>
-      <div v-if="config.recipient==='person'" class="period-fields">
+  <a-collapse v-if="config.recipient==='person'" ghost class="period-appointment">
+    <a-collapse-panel key="scope" header="收款人任职条件">
+      <div class="period-fields">
         <a-form-item label="任职组织" :html-for="field('appointment')" extra="填写后，仅计提任职有效期间的付款。">
           <a-select :id="field('appointment')" v-model:value="config.appointmentUnitId" :options="units"
             show-search allow-clear :filter-option="byName"/>
@@ -126,7 +142,7 @@ const calculationMethods = [
 .period-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:0 10px;align-items:start}
 .period-tier {grid-template-columns:repeat(3,minmax(0,1fr));align-items:end}
 .period-fields :deep(.ant-input-number) {width:100%}
-.period-scope {margin-top:4px}
-.period-scope :deep(.ant-collapse-header),.period-scope :deep(.ant-collapse-content-box) {padding:4px 0}
+.period-scope-all {max-width:280px}
+.period-appointment :deep(.ant-collapse-header),.period-appointment :deep(.ant-collapse-content-box) {padding:4px 0}
 @media (max-width:480px) { .period-tier {grid-template-columns:repeat(2,minmax(0,1fr))} }
 </style>

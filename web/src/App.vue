@@ -20,7 +20,7 @@ import PracticeTierEditor from './PracticeTierEditor.vue'
 import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
-import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, practiceLegacyArrangementLabel, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
+import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel, practicePeriodScopeText, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -222,7 +222,18 @@ const registrationCompaniesError = ref('')
 const classPeopleOptions = computed(() => classRuleDirectory.value?.people.map(person=>({value:person.id,label:person.name})) || peopleOptions.value)
 const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({value:unit.id,label:unit.name})) || [])
 const salesUnitOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>['DEPARTMENT','TEAM'].includes(unit.kind))
-  .map(unit=>({value:unit.id,label:unit.name+' · '+optionLabel('organizationKind',unit.kind)})) || [])
+  .map(unit=>({value:unit.id,label:(unit.scopeName || unit.name)+' · '+optionLabel('organizationKind',unit.kind)})) || [])
+const practiceScopeNames = computed(() => {
+  const names = new Map((classRuleDirectory.value?.units || []).map(unit=>[unit.id,unit.scopeName || unit.name]))
+  const personNames = new Map(classPeopleOptions.value.map(person=>[person.value,person.label]))
+  const company = id => optionLabel('practiceSalesCompany',id) || '未选公司'
+  return {
+    unit:id=>names.get(id) || '组织名称待核',
+    person:id=>personNames.get(id) || '人员 '+id,
+    company,
+    registrationCompany:id=>registrationCompanies.value?.find(option=>option.value===id)?.label || company(id),
+  }
+})
 function latestComponentRuleIDs(sameEffectiveTime) {
   const latest = new Map()
   for (const rule of data.value.rules) {
@@ -1162,6 +1173,9 @@ function ruleComponentBody(row) {
     const registration = b.registrationScope
     const label = must(b.label?.trim(),'请填写收款安排名称')
     must(b.recipient,'请选择收款对象')
+    if (!registration && b.restrictPayments && !hasPracticePaymentScope(b)) {
+      throw new Error('请为「'+label+'」选择团队、小组、销售公司或销售人员。')
+    }
     component.value = b.method==='rate' ? periodRate(row.amount) : 0
     component.periodBenefit = {
       label,
@@ -1762,9 +1776,12 @@ async function save() {
             :aria-controls="'practice-rule-part-'+i" @click="activeRuleComponent=activeRuleComponent===i ? undefined : i">
             <DownOutlined aria-hidden="true"/>
             <strong>{{ ruleComponentLabel(c,optionLabel) }}</strong>
-            <span v-if="classRule" class="rule-block-badge">{{ tierIncludesRetrain(c) ? '新报和复训' : c.classMember ? optionLabel('classMember',c.classMember) : '通用报名' }}</span>
-            <span v-if="c.periodBenefit" class="rule-block-recipient">{{ ruleRecipientSummary(c) }}</span>
-            <small v-else>{{ ruleRecipientSummary(c) }}</small>
+            <span v-if="classRule" class="rule-block-badge">{{ tierIncludesRetrain(c) || !c.classMember ? '新报和复训' : optionLabel('classMember',c.classMember) }}</span>
+            <span v-if="c.periodBenefit" class="rule-block-recipient" :title="practicePeriodScopeText(c.periodBenefit,practiceScopeNames,Infinity)">
+              提成范围 · {{ practicePeriodScopeText(c.periodBenefit,practiceScopeNames) }}
+            </span>
+            <span v-if="c.periodBenefit?.method==='tiers' && c.periodBenefit.tierOnWholeClass" class="rule-block-badge">全班净实收选档</span>
+            <small>{{ ruleRecipientSummary(c) }}</small>
           </button>
           <div v-if="i===activeRuleComponent" :id="'practice-rule-part-'+i" class="rule-block-body component-editor">
           <div v-if="!['company_sales','period_rate'].includes(c.mode)" class="rule-item-heading">

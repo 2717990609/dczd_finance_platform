@@ -146,8 +146,10 @@ watch([selected,rateGroups], ([item,groups],[previousItem]) => {
   if (changedItem) more.value = []
   if (changedItem || !groups.some(group=>group.key===rateGroup.value)) {
     const populated = groups.filter(group=>group.rows.length)
-    rateGroup.value = (populated.find(group=>group.key==='category') ||
-      populated.find(group=>group.key==='general') || populated[0] || groups[0])?.key
+    const positive = populated.filter(group=>group.rows.some(row=>row.rateBps>0))
+    const candidates = positive.length ? positive : populated
+    rateGroup.value = (candidates.find(group=>group.key==='category') ||
+      candidates.find(group=>group.key==='general') || candidates[0] || groups[0])?.key
   }
 })
 const ratePriority = computed(() => {
@@ -321,7 +323,7 @@ function setLeader(item, form) {
 }
 function leaderSummary(item) {
   const form = leaderForm(item)
-  const payee = form.target==='person' ? form.personName : item.itemKey==='internal-group-leader' ? '付款时的小组负责人' : '付款时的团队负责人'
+  const payee = form.target==='person' ? form.personName : item.itemKey==='internal-group-leader' ? '各小组的在任负责人' : '各团队的在任负责人'
   return [payee,form.amount==null || form.amount==='' ? '' : form.amount+(form.method==='fixed' ? ' 元/笔' : '%')].filter(Boolean).join(' · ')
 }
 const commissionUnitNames = computed(() => ({...sheet.value?.scopeUnitNames,
@@ -334,10 +336,11 @@ function formatScope(names, order) {
 }
 function leaderScopeText(item) {
   const {companies,groups,orders} = leaderForm(item).scope
-  const identifiers = groups.length ? groups : companies
+  const identifiers = groups.length ? groups : companies.length ? companies : (sheet.value?.teams || []).map(team=>team.key)
   const names = identifiers.map(id=>leaderScopeNames.value.get(id) || '已选组织')
-  return formatScope(names.length ? names : [item.itemKey==='internal-group-leader' ? '内部团队的全部小组' : '全部内部团队'],
-    {all:'全部成交',members:'其他团队成员成交',head:'负责人亲自成交'}[orders])
+  const groupScope = item.itemKey==='internal-group-leader' && !groups.length ? '各团队下属小组' : ''
+  return formatScope(names,[groupScope,{all:'范围内全部成交',members:'范围内其他团队成员成交',head:'范围内负责人亲自成交'}[orders]]
+    .filter(Boolean).join(' · '))
 }
 const commissionScope = item => scopeEdits.value.has(item.itemKey) ? scopeEdits.value.get(item.itemKey) : item.salesScopeUnitIds || null
 function setCommissionScope(item, units) {
@@ -350,6 +353,15 @@ function setCommissionScope(item, units) {
 }
 function commissionScopeNames(item) {
   const units = commissionScope(item)
+  const rows = item===component.value ? rateRows.value : (calculationFor(item.itemKey) || item).rows
+  if (units==null && rows?.length) {
+    const positive = rows.filter(row=>!removedRateRows.value.has(cellKey(item.itemKey,row.row)) &&
+      (edits.value[cellKey(item.itemKey,row.row)] ? Number(edits.value[cellKey(item.itemKey,row.row)].value)>0 : row.rateBps>0))
+    if (!positive.length) return ['当前无正比例']
+    if (positive.some(row=>row.scope==='general' || !row.company && !row.category)) return ['按比例条件匹配']
+    return [...new Set(positive.map(row=>[row.scope==='category' ? '' : row.company,row.category]
+      .filter(Boolean).join(' / ')))].filter(Boolean)
+  }
   if (units==null) return ['本规则全部订单']
   if (!units.length) return ['待选择销售组织']
   return units.map(id=>commissionUnitNames.value[id] || '已选组织名称待核')
@@ -554,7 +566,7 @@ async function publish() {
             <span class="rule-block-badge">{{ removedItems.has(item.itemKey) ? '待删除' : targetShortLabels[targetEdits.get(item.itemKey)?.target || item.targetKind] }}</span>
             <span class="rule-block-recipient" :title="commissionScopeNames(item).join('、')">
               提成范围 · {{ formatScope(commissionScopeNames(item)) }}
-              <template v-if="(calculationFor(item.itemKey) || item).rows?.length"> · 按比例条件匹配</template>
+              <template v-if="commissionScope(item) && (calculationFor(item.itemKey) || item).rows?.length"> · 按比例条件匹配</template>
             </span>
             <small>{{ [targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}</small>
           </button>
@@ -587,6 +599,7 @@ async function publish() {
             </RuleArrangementFields>
             <CatalogCommissionScopeFields prefix="catalog-edit" :model-value="commissionScope(item)"
               :options="sheet.structureOptions.salesUnits" :unit-names="commissionUnitNames" :disabled="!editable || structureEditing"
+              :by-rate-table="hasRateTable"
               @update:model-value="setCommissionScope(item,$event)"/>
           </template>
           <p v-else-if="targetKind!=='seller' && !itemRemoved" class="rule-formula">

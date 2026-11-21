@@ -9,12 +9,12 @@ const form = defineModel({type:Object,required:true})
 const field = name => props.itemKey+'-'+name
 const isGroup = computed(() => props.itemKey==='internal-group-leader')
 const targets = [
-  {value:'appointment',label:'付款时的在任负责人'},
+  {value:'appointment',label:'各组织付款时的在任负责人'},
   {value:'person',label:'指定个人'},
 ]
 const orderScopes = [
-  {value:'all',label:'全部成交'},
-  {value:'members',label:'仅其他团队成员成交'},
+  {value:'all',label:'范围内全部成交'},
+  {value:'members',label:'范围内其他团队成员成交'},
   {value:'head',label:'仅团队负责人亲自成交'},
 ]
 const teamOptions = computed(() => props.teams.map(team=>({value:team.key,label:team.label})))
@@ -56,7 +56,7 @@ function selectCompanies(companies) {
     </a-form-item>
   </RuleArrangementFields>
   <div class="rule-basics">
-    <a-form-item label="适用销售公司" :html-for="field('companies')">
+    <a-form-item label="适用内部团队" :html-for="field('companies')">
       <a-select :id="field('companies')" :value="form.scope.companies" :options="teamOptions"
         :disabled="disabled" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="全部内部团队"
         @change="selectCompanies"/>

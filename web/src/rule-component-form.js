@@ -100,6 +100,37 @@ export function practiceLegacyArrangementLabel(label, optionLabel) {
   return label==='SERVICE' ? '服务' : optionLabel('catalogAppointmentRole',label) || label
 }
 
+export const hasPracticePaymentScope = benefit =>
+  !!(benefit.salesCompanies?.length || benefit.salesPeople?.length || benefit.salesUnits?.length)
+
+export function practicePeriodScopeText(benefit, names, limit = 2) {
+  const entries = []
+  const list = (label, ids, name) => {
+    if (!ids?.length) return
+    const visible = ids.slice(0,limit).map(name).join('、')
+    entries.push(label+' '+visible+(ids.length>limit ? ' 等 '+ids.length+' 个' : ''))
+  }
+  const registration = benefit.registrationScope
+  if (registration) {
+    entries.push('签到报名')
+    if (registration.sellerId) {
+      const company = registration.sellerCompanyId ? '（'+names.registrationCompany(registration.sellerCompanyId)+'）' : ''
+      entries.push('本人报名'+company)
+    }
+    list('下属公司',registration.companies,names.registrationCompany)
+    if (entries.length===1) entries.push('待选择报名归属')
+  } else {
+    list('团队或小组',benefit.salesUnits,names.unit)
+    list('销售公司',benefit.salesCompanies,names.company)
+    list('销售人员',benefit.salesPeople,names.person)
+    if (!entries.length) entries.push(benefit.restrictPayments ? '待选择销售范围' : '本班全部适用报名')
+  }
+  if (benefit.appointmentUnitId && (benefit.recipient == null || benefit.recipient==='person')) {
+    entries.push(names.unit(benefit.appointmentUnitId)+'任职期间')
+  }
+  return entries.join(' · ')
+}
+
 function tierRows(rows, scale) {
   return (rows || []).map(row => ({
     ...row, from:row.from / scale, through:row.through == null ? undefined : row.through / scale, value:row.value / 100,
@@ -166,6 +197,7 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
     if (tiers) form.tierConfig = tierForm(tiers)
     if (periodBenefit) {
       form.periodBenefit = {...periodBenefit,
+        restrictPayments:hasPracticePaymentScope(periodBenefit),
         recipient:periodBenefit.pool ? 'pool' : periodBenefit.unitId ? 'unit' : 'person',
         pool:periodBenefit.pool || {},
         method:periodBenefit.fixedMinor != null ? (periodBenefit.fixedPerClass ? 'class_fixed' : 'fixed')

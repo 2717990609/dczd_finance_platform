@@ -177,7 +177,8 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
               :min="0" :precision="2" string-mode/>
           </a-form-item>
         </RuleArrangementFields>
-        <CatalogCommissionScopeFields v-if="form.kind==='item'" prefix="catalog-add" v-model="form.salesScopeUnitIds" :options="options.salesUnits"/>
+        <CatalogCommissionScopeFields v-if="form.kind==='item'" prefix="catalog-add" v-model="form.salesScopeUnitIds"
+          :options="options.salesUnits" :by-rate-table="form.format==='table'"/>
         <template v-if="form.format==='table'">
           <small v-if="options.categories.length" class="finance-rate-priority">
             匹配顺序 {{ catalogRatePriorityLabel }} → 通用比例

@@ -1,9 +1,12 @@
 <script setup>
 import { computed } from 'vue'
 
-const props = defineProps({prefix:String,options:Array,unitNames:Object,disabled:Boolean})
+const props = defineProps({prefix:String,options:Array,unitNames:Object,disabled:Boolean,byRateTable:Boolean})
 const units = defineModel({type:Array,default:null})
-const modes = [{value:'all',label:'本规则全部订单'},{value:'units',label:'指定销售组织'}]
+const modes = computed(() => [
+  {value:'all',label:props.byRateTable ? '按下方比例条件匹配' : '本规则全部订单'},
+  {value:'units',label:'指定销售组织'},
+])
 const availableUnits = computed(() => {
   const options = props.options || []
   const active = new Set(options.map(option=>option.value))

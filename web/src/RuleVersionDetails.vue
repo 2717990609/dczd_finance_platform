@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { catalogRatePriorityLabel, exceptionCompanyIDs, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
+import { catalogRatePriorityLabel, exceptionCompanyIDs, practicePeriodScopeText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
   rule: Object, canCopy: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
@@ -31,6 +31,10 @@ const poolName = target => {
 }
 const companyName = key => label('practiceSalesCompany', key)
 const registrationCompanyName = key => props.registrationCompanies?.find(company=>company.value===key)?.label || companyName(key)
+const practiceScopeNames = computed(() => {
+  const units = new Map((directory.value?.units || []).map(unit=>[unit.id,unit.scopeName || unit.name]))
+  return {unit:id=>units.get(id) || '组织名称待核',person:personName,company:companyName,registrationCompany:registrationCompanyName}
+})
 function scheduleLabel(schedule) {
   if (schedule.personId) return '个人特例 · '+personName(schedule.personId)
   const categories = standardCategoryIDs(schedule)
@@ -132,9 +136,12 @@ onMounted(async () => {
           @click="activePart=activePart===index ? undefined : index">
           <DownOutlined aria-hidden="true"/>
           <strong>{{ ruleComponentLabel(part,label) }}</strong>
-          <span v-if="classProduct" class="rule-block-badge">{{ part.tiers?.includeRetrain ? '新报和复训' : part.classMember ? label('classMember',part.classMember) : '通用报名' }}</span>
-          <span v-if="part.periodBenefit" class="rule-block-recipient">{{ recipient(part) }}</span>
-          <small v-else>{{ recipient(part) }}</small>
+          <span v-if="classProduct" class="rule-block-badge">{{ part.tiers?.includeRetrain || !part.classMember ? '新报和复训' : label('classMember',part.classMember) }}</span>
+          <span v-if="part.periodBenefit" class="rule-block-recipient" :title="practicePeriodScopeText(part.periodBenefit,practiceScopeNames,Infinity)">
+            提成范围 · {{ practicePeriodScopeText(part.periodBenefit,practiceScopeNames) }}
+          </span>
+          <span v-if="part.periodBenefit?.tiers?.length && part.periodBenefit.tierOnWholeClass" class="rule-block-badge">全班净实收选档</span>
+          <small>{{ recipient(part) }}</small>
         </button>
         <div v-if="activePart===index" :id="'rule-preview-'+index" class="rule-block-body rule-preview-part">
         <a-descriptions size="small" :column="{xs:1,sm:2}">
