@@ -108,6 +108,42 @@ type catalogGroupTargetKey struct {
 	Person     int64 `json:"person,omitempty"`
 }
 
+// Posting keys preserve the applied version. Carry uses the same scope and
+// arrangements, with the resolved recipients of each payment group.
+func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []catalogGroupTargetKey) (string, error) {
+	type fixedArrangement struct {
+		Item, Kind, Unit, OwnerRole, MemberRole string
+		Person                                  int64
+	}
+	var fixed []fixedArrangement
+	for _, item := range definition.Items {
+		if item.FixedMinor != nil {
+			unit := item.unit
+			if unit == "" {
+				unit = item.OrganizationKey
+			}
+			fixed = append(fixed, fixedArrangement{item.ItemKey, item.TargetKind, unit, item.OwnerRole, item.MemberRole, item.PersonID})
+		}
+	}
+	slices.SortFunc(fixed, func(a, b fixedArrangement) int { return cmp.Compare(a.Item, b.Item) })
+	canonicalTargets := slices.Clone(targets)
+	slices.SortFunc(canonicalTargets, func(a, b catalogGroupTargetKey) int { return cmp.Compare(a.Item, b.Item) })
+	scope := catalogPerformanceScope{}
+	if definition.Performance.active() {
+		scope = *definition.Performance
+		scope.UnitIDs = slices.Sorted(slices.Values(scope.UnitIDs))
+	}
+	raw, err := json.Marshal(struct {
+		Cycle       string
+		Scenarios   []string
+		Recognition bool
+		Scope       catalogPerformanceScope
+		Targets     []catalogGroupTargetKey
+		Fixed       []fixedArrangement
+	}{definition.Cycle, slices.Sorted(slices.Values(definition.Scenarios)), definition.ProductRecognition, scope, canonicalTargets, fixed})
+	return string(raw), err
+}
+
 func catalogAggregateMemberRole(role, eligibility string) string {
 	if eligibility != "" && eligibility != role {
 		return eligibility

@@ -609,7 +609,7 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 			}
 			resumed := in.GroupRule.ResumeFrom != nil && in.GroupRule.ResumeFrom.Equal(in.Window.Start)
 			if packageID != "" && (resumed || slices.ContainsFunc(rules, func(rule catalogAggregateRule) bool { return rule.From.Before(in.Window.Start) })) {
-				if err := readCatalogAggregateCarry(ctx, tx, &grouping, packageID, in.Window.Start, in.DraftPeriodID == 0, resumed); err != nil {
+				if err := readCatalogAggregateCarry(ctx, tx, &grouping, packageID, in.Window.Start, rules, in.DraftPeriodID == 0, resumed); err != nil {
 					return result, err
 				}
 			}

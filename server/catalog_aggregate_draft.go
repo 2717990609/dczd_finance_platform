@@ -301,12 +301,18 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 	return result, digest, err
 }
 
-func readCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, report *catalogPeriodGroupReport, packageID string, start time.Time, display, resumed bool) error {
-	err := tx.QueryRow(ctx, `SELECT p.id FROM periods p JOIN settlements final ON final.period_id=p.id
+func readCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, report *catalogPeriodGroupReport, packageID string,
+	start time.Time, rules []catalogAggregateRule, display, resumed bool) error {
+	var confirmedPeriod int64
+	err := tx.QueryRow(ctx, `SELECT p.id,coalesce((
+	  SELECT booked.id FROM periods booked JOIN settlements locked ON locked.period_id=booked.id
+	  WHERE booked.aggregate_package_id=p.aggregate_package_id
+	   AND booked.starts_on=($2::timestamptz AT TIME ZONE 'Asia/Shanghai')::date
+	 ),0) FROM periods p JOIN settlements final ON final.period_id=p.id
 	 WHERE p.aggregate_package_id=$1::uuid AND p.ends_on<($2::timestamptz AT TIME ZONE 'Asia/Shanghai')::date
 	 AND ($3 OR p.ends_on=($2::timestamptz AT TIME ZONE 'Asia/Shanghai')::date-1)
 	 ORDER BY p.ends_on DESC,p.id DESC LIMIT 1`, packageID, start, resumed).
-		Scan(&report.carryFromPeriod)
+		Scan(&report.carryFromPeriod, &confirmedPeriod)
 	if errors.Is(err, pgx.ErrNoRows) {
 		report.PriorUnsettled = !resumed
 		return nil
@@ -314,44 +320,105 @@ func readCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, report *catalogPe
 	if err != nil {
 		return err
 	}
-	report.Groups, err = applyCatalogAggregateCarry(ctx, tx, report.carryFromPeriod, report.Groups, display)
+	report.Groups, err = applyCatalogAggregateCarry(ctx, tx, report.carryFromPeriod, confirmedPeriod, report.Groups, rules, display)
 	return err
 }
 
-func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior int64, groups []catalogPeriodGroup, display bool) ([]catalogPeriodGroup, error) {
+func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior, confirmed int64, groups []catalogPeriodGroup,
+	rules []catalogAggregateRule, display bool) ([]catalogPeriodGroup, error) {
+	byRule := make(map[string]catalogAggregateRule, len(rules))
+	for _, rule := range rules {
+		byRule[rule.ID] = rule
+	}
 	index := make(map[string]int, len(groups))
+	type carryDestination struct {
+		index int
+		from  time.Time
+	}
+	byArrangement := make(map[string]carryDestination, len(groups))
 	for i, group := range groups {
 		index[group.ID] = i
+		if confirmed != 0 || group.Receipts == 0 {
+			continue
+		}
+		rule := byRule[group.RuleID]
+		key, err := catalogAggregateCarryKey(rule.Definition, group.posting.Targets)
+		if err != nil {
+			return nil, err
+		}
+		if current, ok := byArrangement[key]; !ok || rule.From.After(current.from) {
+			byArrangement[key] = carryDestination{index: i, from: rule.From}
+		}
 	}
-	rows, err := tx.Query(ctx, `SELECT g.group_key,g.rule_id::text,g.targets,g.carry_out_minor
-	 FROM catalog_aggregate_draft_groups g WHERE g.period_id=$1 AND g.carry_out_minor<0 ORDER BY g.group_key`, prior)
+	// For closed periods, read their stored carry instead of assigning the prior balance again.
+	balancePeriod := prior
+	if confirmed != 0 {
+		balancePeriod = confirmed
+	}
+	rows, err := tx.Query(ctx, `SELECT g.group_key,g.rule_id::text,g.targets,
+	 CASE WHEN $2 THEN g.carry_in_minor ELSE g.carry_out_minor END,v.definition
+	 FROM catalog_aggregate_draft_groups g JOIN product_rule_versions v ON v.source_id=g.rule_id
+	 WHERE g.period_id=$1 AND (CASE WHEN $2 THEN g.carry_in_minor ELSE g.carry_out_minor END)<0 ORDER BY g.group_key`,
+		balancePeriod, confirmed != 0)
 	if err != nil {
 		return nil, err
 	}
 	var previous catalogAggregateGroupInput
+	var raw json.RawMessage
+	definitions := make(map[string]catalogPeriodDefinition)
 	firstCarryOnly := len(groups)
 	var carryOnly []catalogFrozenGroupReference
-	_, err = pgx.ForEachRow(rows, []any{&previous.Key, &previous.RuleID, &previous.Targets, &previous.CarryOut}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&previous.Key, &previous.RuleID, &previous.Targets, &previous.CarryOut, &raw}, func() error {
 		targets := previous.Targets
 		previous.Targets = nil
-		if i, found := index[previous.Key]; found {
+		i, found := index[previous.Key]
+		if len(byArrangement) > 0 && (!found || groups[i].Receipts == 0) {
+			definition, parsed := definitions[previous.RuleID]
+			if !parsed {
+				var err error
+				definition, err = parseCatalogPeriodRule(raw)
+				if err != nil {
+					return err
+				}
+				definitions[previous.RuleID] = definition
+			}
+			key, err := catalogAggregateCarryKey(definition, targets)
+			if err != nil {
+				return err
+			}
+			if target, ok := byArrangement[key]; ok {
+				i, found = target.index, true
+			}
+		}
+		if found {
 			group := &groups[i]
-			group.CarryIn, group.posting.CarryFromPeriod = previous.CarryOut, prior
-			quote, err := quoteCatalogPeriod(group.items, group.Receipts, group.Refunds, previous.CarryOut)
-			group.AfterCarry = &quote
-			return err
+			group.posting.CarryFromPeriod = prior
+			return addCatalogActivityAmount(previous.CarryOut, &group.CarryIn)
 		}
 		// A period with no new payments still passes its original group's debt forward.
 		posting := catalogAggregateGroupInput{Targets: targets, CarryFromPeriod: prior}
 		groups = append(groups, catalogPeriodGroup{ID: previous.Key, RuleID: previous.RuleID, posting: posting,
 			CarryIn: previous.CarryOut, AfterCarry: &catalogPeriodQuote{CarryForward: previous.CarryOut}})
 		if display {
-			carryOnly = append(carryOnly, catalogFrozenGroupReference{PeriodID: prior, Key: previous.Key})
+			carryOnly = append(carryOnly, catalogFrozenGroupReference{PeriodID: balancePeriod, Key: previous.Key})
 		}
 		return nil
 	})
-	if err != nil || len(carryOnly) == 0 {
-		return groups, err
+	if err != nil {
+		return nil, err
+	}
+	for i := range groups[:firstCarryOnly] {
+		group := &groups[i]
+		if group.CarryIn != 0 {
+			quote, err := quoteCatalogPeriod(group.items, group.Receipts, group.Refunds, group.CarryIn)
+			if err != nil {
+				return nil, err
+			}
+			group.AfterCarry = &quote
+		}
+	}
+	if len(carryOnly) == 0 {
+		return groups, nil
 	}
 	original, err := readCatalogAggregateGroupsByReference(ctx, tx, carryOnly, true)
 	if err != nil {

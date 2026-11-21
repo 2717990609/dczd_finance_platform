@@ -255,15 +255,74 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 	 VALUES($1,'ORDER','second','VIP')`, sourceID); err != nil {
 		t.Fatal(err)
 	}
+	revision := func(handler http.HandlerFunc, changes string) *httptest.ResponseRecorder {
+		t.Helper()
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/catalog-period-rules", strings.NewReader(`{
+		 "baseId":"`+versionID+`","effectiveFrom":"2026-10-01T00:00:00+08:00",`+changes+`}`))
+		request.Header.Set("Content-Type", "application/json")
+		request.Header.Set("Sec-Fetch-Site", "same-origin")
+		reply := httptest.NewRecorder()
+		handler(reply, request)
+		if reply.Code/100 != 2 {
+			t.Fatalf("expected a valid rule revision: %d %s", reply.Code, reply.Body.String())
+		}
+		return reply
+	}
+	company := `{"itemKey":"ops","label":"新版运营","targetKind":"company",
+	 "organizationKey":"10000000-0000-4000-8000-000000000822","tiers":[{"rate_bps":2000}]}`
+	person := `{"itemKey":"individual","label":"个人分润","targetKind":"person","personId":5801,"tiers":[{"rate_bps":500}]}`
+	changes := `"components":[` + company + "," + person + "]"
+	if _, err := db.Exec(ctx, `INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES(5802,'另一位收款人')`); err != nil {
+		t.Fatal(err)
+	}
+	for _, different := range []string{
+		changes + `,"scenarioCodes":["SECOND"]`,
+		`"components":[` + company + "," + strings.Replace(person, "5801", "5802", 1) + "]",
+	} {
+		reply := revision(trialWorkspace.postCatalogPeriodActivity, different)
+		var trial catalogPeriodActivity
+		if err := json.Unmarshal(reply.Body.Bytes(), &trial); err != nil || trial.Grouping == nil || len(trial.Grouping.Groups) != 2 ||
+			trial.Grouping.Groups[0].Receipts != 10000 || trial.Grouping.Groups[0].CarryIn != 0 ||
+			trial.Grouping.Groups[1].quote().CarryForward != -5000 {
+			t.Fatalf("a different scope or payee must keep the original carry separate: %s %v", reply.Body.String(), err)
+		}
+	}
+	reply := revision(trialWorkspace.postCatalogPeriodActivity, changes+`,"scenarioCodes":["SECOND","FIRST"]`)
+	var trial catalogPeriodActivity
+	if err := json.Unmarshal(reply.Body.Bytes(), &trial); err != nil || trial.Grouping == nil || len(trial.Grouping.Groups) != 1 ||
+		trial.Grouping.Groups[0].CarryIn != -5000 || trial.Grouping.Groups[0].quote().Total != 1250 {
+		t.Fatalf("a rename and rate change should carry into the trial while a reordered SKU list keeps the same scope: %s %v", reply.Body.String(), err)
+	}
+	revision(trialWorkspace.postCatalogPeriodRule, changes)
+	setOctoberReceipt := func(amount int64) {
+		t.Helper()
+		if _, err := db.Exec(ctx, `UPDATE source_order_versions SET fact=jsonb_set(fact,'{amountMinor}',to_jsonb($2::bigint)) WHERE id=$1`,
+			sourceID, amount); err != nil {
+			t.Fatal(err)
+		}
+	}
+	setOctoberReceipt(3000)
+	if result, err := s.calculateCurrentDraft(ctx, october, 0); err != nil || result.Total != 0 || result.IssueCount != 0 {
+		t.Fatalf("partial offset should have no payout: %+v %v", result, err)
+	}
+	if err := db.QueryRow(ctx, `SELECT carry_in_minor,carry_out_minor,carry_from_period_id
+	 FROM catalog_aggregate_draft_groups WHERE period_id=$1`, october).Scan(&carried, &remaining, &predecessor); err != nil ||
+		carried != -5000 || remaining != -2000 || predecessor != september {
+		t.Fatalf("partial offset must persist only the remaining balance: %d %d %d %v", carried, remaining, predecessor, err)
+	}
+	setOctoberReceipt(10000)
 	preview := activity(input.Month)
 	if preview.PriorUnsettled || len(preview.Groups) != 1 || preview.Groups[0].CarryIn != -5000 ||
-		preview.Groups[0].BeforeCarry.Total != 2000 || preview.Groups[0].AfterCarry == nil ||
-		preview.Groups[0].AfterCarry.Total != 1000 || preview.Groups[0].AfterCarry.Basis != 5000 {
-		t.Fatalf("preview must offset the prior refund against the original group: %+v", preview)
+		preview.Groups[0].Version != 2 || preview.Groups[0].BeforeCarry.Total != 2500 || preview.Groups[0].AfterCarry == nil ||
+		preview.Groups[0].AfterCarry.Total != 1250 || preview.Groups[0].AfterCarry.Basis != 5000 {
+		t.Fatalf("preview must offset the prior refund before applying the new rate: %+v", preview)
 	}
-	if result, err := s.calculateCurrentDraft(ctx, october, 0); err != nil || result.Total != 1000 || result.IssueCount != 0 || result.Version <= carry.Version {
+	if result, err := s.calculateCurrentDraft(ctx, october, 0); err != nil || result.Total != 1250 || result.IssueCount != 0 || result.Version <= carry.Version {
 		t.Fatalf("same group offsets the earlier refund before its rate is applied: %+v %v", result, err)
 	} else {
+		if again, err := s.calculateCurrentDraft(ctx, october, 0); err != nil || again.Version != result.Version || again.Total != result.Total {
+			t.Fatalf("retry must not deduct the same carry again: %+v %v", again, err)
+		}
 		// Simulate an earlier release's settled group and payment references.
 		if _, err := db.Exec(ctx, `UPDATE catalog_aggregate_draft_groups SET anchor_payment_id=$2 WHERE period_id=$1`,
 			october, sourceID); err != nil {
@@ -274,6 +333,10 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 			t.Fatal(err)
 		}
 		freeze(october, result.Version)
+		if report := activity("2026-10"); len(report.Groups) != 1 || report.Groups[0].Version != 2 ||
+			report.Groups[0].CarryIn != -5000 || report.Groups[0].quote().Total != result.Total {
+			t.Fatalf("a confirmed period must display its booked carry and award: %+v", report)
+		}
 		if err := migrate(ctx, db); err != nil {
 			t.Fatal(err)
 		}
