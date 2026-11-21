@@ -92,7 +92,7 @@ const poolAllocationCurrentSQL = `(a.draft_version=d.version AND
    SELECT 1 FROM monthly_pool_allocation_shares s
    JOIN monthly_pool_allocation_funding f ON f.share_id=s.id
    JOIN calculation_draft_lines l ON l.id=f.source_line_id
-   JOIN source_order_versions v ON v.id=l.source_version_id
+   LEFT JOIN source_order_versions v ON v.id=l.source_version_id
    WHERE s.allocation_id=a.id AND s.person_id IS NOT NULL AND NOT (
     l.aggregate_group_key IS NOT NULL AND s.person_id IN (` + poolAggregateMembersSQL + `)
     OR l.aggregate_group_key IS NULL AND EXISTS(
@@ -145,13 +145,20 @@ const poolEntriesSQL = `WITH scope AS (
  UNION SELECT original_line_id FROM corrections
 ), lines AS MATERIALIZED (
  SELECT l.id,account.unit_id::text AS unit,account.item_key AS item,account.scenario_key AS scenario,
-  coalesce(pool.name,a.name,l.component_type) AS name,l.period_id,l.amount_minor,scope.seq,v.occurred_at
+  coalesce(pool.name,a.name,l.component_type) AS name,l.period_id,l.amount_minor,scope.seq,
+  coalesce(v.occurred_at,(origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai') AS occurred_at
  FROM required_lines needed JOIN pool_line_accounts account ON account.line_id=needed.line_id
  JOIN calculation_draft_lines l ON l.id=account.line_id
+ JOIN periods origin ON origin.id=l.period_id
  LEFT JOIN scope ON scope.id=l.period_id
  LEFT JOIN product_rule_versions r ON r.source_id=l.catalog_rule_id
  LEFT JOIN practice_pools pool ON pool.id=l.practice_pool_id
- JOIN source_order_versions v ON v.id=l.source_version_id
+ LEFT JOIN LATERAL (
+  SELECT e.payment_version_id FROM catalog_aggregate_draft_events e
+  WHERE (e.period_id,e.group_key)=(l.period_id,l.aggregate_group_key)
+  ORDER BY e.payment_version_id LIMIT 1
+ ) first_payment ON l.source_version_id IS NULL
+ LEFT JOIN source_order_versions v ON v.id=coalesce(l.source_version_id,first_payment.payment_version_id)
  LEFT JOIN LATERAL (
   SELECT b->>'pool_name' AS name FROM jsonb_array_elements(r.definition->'benefit_actions') b
   WHERE b->>'item_key'=l.component_type LIMIT 1

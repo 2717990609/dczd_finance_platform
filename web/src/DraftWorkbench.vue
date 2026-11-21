@@ -366,7 +366,7 @@ async function loadMore(section, cursorName) {
       </a-table>
     </div>
   </section>
-  <section v-if="!draft.aggregatePackageId && (draft.lineCount || draft.refundCount || draft.correctionCount)"
+  <section v-if="draft.lineCount || draft.refundCount || draft.correctionCount"
     class="records draft-detail-search" aria-label="明细筛选">
     <form class="draft-detail-fields" @submit.prevent="searchDetails">
       <div>

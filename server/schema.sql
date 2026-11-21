@@ -1347,12 +1347,20 @@ CREATE OR REPLACE TRIGGER protect_confirmed_aggregate_groups BEFORE INSERT OR UP
 CREATE OR REPLACE TRIGGER protect_confirmed_aggregate_events BEFORE INSERT OR UPDATE OR DELETE ON catalog_aggregate_draft_events
  FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
 ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS aggregate_group_key text;
+ALTER TABLE calculation_draft_lines ALTER COLUMN source_version_id DROP NOT NULL;
+ALTER TABLE catalog_aggregate_draft_groups ALTER COLUMN anchor_payment_id DROP NOT NULL;
 DO $$ BEGIN
  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass AND conname='draft_line_aggregate_group') THEN
   ALTER TABLE calculation_draft_lines ADD CONSTRAINT draft_line_aggregate_group FOREIGN KEY (period_id,aggregate_group_key)
    REFERENCES catalog_aggregate_draft_groups(period_id,group_key) DEFERRABLE INITIALLY DEFERRED;
  END IF;
+ IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass AND conname='draft_line_source_reference') THEN
+  ALTER TABLE calculation_draft_lines ADD CONSTRAINT draft_line_source_reference
+   CHECK (source_version_id IS NOT NULL OR (aggregate_group_key IS NOT NULL AND catalog_rule_id IS NOT NULL));
+ END IF;
 END $$;
+CREATE UNIQUE INDEX IF NOT EXISTS calculation_draft_group_component ON calculation_draft_lines(period_id,aggregate_group_key,component_type)
+ WHERE aggregate_group_key IS NOT NULL;
 
 -- A sales company uses the same stable unit as its organization and memberships.
 ALTER TABLE organization_units ADD COLUMN IF NOT EXISTS sales_company_type text

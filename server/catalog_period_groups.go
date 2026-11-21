@@ -308,9 +308,6 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 			posting.Events = append(posting.Events, catalogAggregateEventReference{
 				EventID: event.EventID, PaymentID: event.PaymentID, Scenario: event.Scenario, CompletionVersionID: event.CompletionVersionID,
 			})
-			if posting.AnchorID == 0 || event.PaymentID < posting.AnchorID {
-				posting.AnchorID = event.PaymentID
-			}
 		}
 		sum := &applied.group.Refunds
 		if !event.Refund {

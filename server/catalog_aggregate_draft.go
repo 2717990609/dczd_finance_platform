@@ -34,7 +34,6 @@ type catalogFrozenGroupReference struct {
 
 type catalogAggregateGroupInput struct {
 	Key, RuleID       string
-	AnchorID          int64
 	Targets           []catalogGroupTargetKey
 	Events            []catalogAggregateEventReference
 	Receipts, Refunds int64
@@ -283,7 +282,7 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 			if err != nil {
 				return result, nil, err
 			}
-			result.Lines = append(result.Lines, draftLine{FactID: posting.AnchorID, Component: award.ItemKey, PersonID: target.Person,
+			result.Lines = append(result.Lines, draftLine{Component: award.ItemKey, PersonID: target.Person,
 				AggregateGroup: group.ID, Catalog: benefit, Amount: award.Amount, Base: quote.Basis,
 				organization: organizations.ancestors(benefit.Unit)})
 		}
@@ -314,7 +313,7 @@ func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior int64, gro
 	for i, group := range groups {
 		index[group.ID] = i
 	}
-	rows, err := tx.Query(ctx, `SELECT g.group_key,g.rule_id::text,g.anchor_payment_id,g.targets,g.carry_out_minor
+	rows, err := tx.Query(ctx, `SELECT g.group_key,g.rule_id::text,g.targets,g.carry_out_minor
 	 FROM catalog_aggregate_draft_groups g WHERE g.period_id=$1 AND g.carry_out_minor<0 ORDER BY g.group_key`, prior)
 	if err != nil {
 		return nil, err
@@ -322,7 +321,7 @@ func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior int64, gro
 	var previous catalogAggregateGroupInput
 	firstCarryOnly := len(groups)
 	var carryOnly []catalogFrozenGroupReference
-	_, err = pgx.ForEachRow(rows, []any{&previous.Key, &previous.RuleID, &previous.AnchorID, &previous.Targets, &previous.CarryOut}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&previous.Key, &previous.RuleID, &previous.Targets, &previous.CarryOut}, func() error {
 		targets := previous.Targets
 		previous.Targets = nil
 		if i, found := index[previous.Key]; found {
@@ -333,7 +332,7 @@ func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior int64, gro
 			return err
 		}
 		// A period with no new payments still passes its original group's debt forward.
-		posting := catalogAggregateGroupInput{AnchorID: previous.AnchorID, Targets: targets, CarryFromPeriod: prior}
+		posting := catalogAggregateGroupInput{Targets: targets, CarryFromPeriod: prior}
 		groups = append(groups, catalogPeriodGroup{ID: previous.Key, RuleID: previous.RuleID, posting: posting,
 			CarryIn: previous.CarryOut, AfterCarry: &catalogPeriodQuote{CarryForward: previous.CarryOut}})
 		if display {
@@ -371,14 +370,14 @@ func storeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, periodID int64, 
 	}
 	var events []eventRow
 	_, err := tx.CopyFrom(ctx, pgx.Identifier{"catalog_aggregate_draft_groups"},
-		[]string{"period_id", "group_key", "rule_id", "anchor_payment_id", "targets", "receipts_minor", "refunds_minor",
+		[]string{"period_id", "group_key", "rule_id", "targets", "receipts_minor", "refunds_minor",
 			"carry_in_minor", "carry_out_minor", "carry_from_period_id"},
 		pgx.CopyFromSlice(len(groups), func(i int) ([]any, error) {
 			g := groups[i]
 			for _, event := range g.Events {
 				events = append(events, eventRow{g.Key, event})
 			}
-			return []any{periodID, g.Key, g.RuleID, g.AnchorID, g.Targets, g.Receipts, g.Refunds,
+			return []any{periodID, g.Key, g.RuleID, g.Targets, g.Receipts, g.Refunds,
 				g.CarryIn, g.CarryOut, optionalDraftID(g.CarryFromPeriod)}, nil
 		}))
 	if err != nil || len(events) == 0 {

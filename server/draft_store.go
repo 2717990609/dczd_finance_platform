@@ -542,7 +542,8 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 		if refund.CurrentPaymentVersion == 0 || len(current) != 0 {
 			continue
 		}
-		rows, err := tx.Query(ctx, `SELECT id,source_version_id,component_type FROM calculation_draft_lines WHERE period_id=$1`, periodID)
+		rows, err := tx.Query(ctx, `SELECT id,source_version_id,component_type FROM calculation_draft_lines
+		 WHERE period_id=$1 AND aggregate_group_key IS NULL`, periodID)
 		if err != nil {
 			return err
 		}
@@ -630,7 +631,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
    coalesce(l.catalog_rule_id::text,l.rule_id::text) AS "ruleId",coalesce(package.name,rv.label) AS "ruleLabel",
    e.source_enrollment_id AS "enrollmentId",e.membership_type AS "membershipType",coalesce(company_label.label,company.company_id) AS "salesCompany",
    CASE WHEN e.id IS NOT NULL THEN (o.fact->>'amountMinor')::bigint-l.base_minor END AS "classRefundMinor"
-  FROM {{lineSource}} l JOIN source_order_versions o ON o.id=l.source_version_id
+  FROM {{lineSource}} l LEFT JOIN source_order_versions o ON o.id=l.source_version_id
   LEFT JOIN calculation_draft_performance recognition ON recognition.period_id=l.period_id AND recognition.source_version_id=l.source_version_id
    AND recognition.completion_version_id IS NOT NULL
   LEFT JOIN source_order_versions completed ON completed.id=recognition.completion_version_id
@@ -733,24 +734,36 @@ var standardDraftDetailsSQL = strings.NewReplacer(
 	"{{correctionSearch}}", "", "{{detailLimit}}", strconv.Itoa(draftDetailPageSize)).Replace(draftDetailTemplateSQL)
 var draftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "NULL")
 var scopedDraftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "$7")
+
+const draftAggregateOrderMatch = `(l.aggregate_group_key IS NOT NULL AND EXISTS(
+ SELECT 1 FROM catalog_aggregate_draft_events e
+ JOIN source_order_versions paid ON paid.id=e.payment_version_id
+ WHERE (e.period_id,e.group_key)=(l.period_id,l.aggregate_group_key)
+  AND (strpos(lower(paid.order_id),lower($8))>0 OR strpos(lower(paid.fact->>'orderNo'),lower($8))>0)))`
+
 var filteredDraftDetailSQL = organizationScopeQuery(strings.NewReplacer(
 	"{{lineSource}}", "calculation_draft_lines",
 	"{{lineSearch}}", "WHERE "+draftLinePageScope+
-		draftDetailFilter("o", "o.fact->>'orderNo'", "coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name)"),
-	"{{refundSearch}}", draftDetailFilter("o", "o.fact->>'orderNo'", "coalesce(p.name,practice_pool.name,pool.name,beneficiary.name)"),
-	"{{correctionSearch}}", draftDetailFilter("paid",
-		"CASE WHEN paid.order_id=v.order_id AND v.kind='ORDER_PAID' THEN v.fact->>'orderNo' ELSE paid.fact->>'orderNo' END",
+		draftDetailFilter(draftDetailOrderMatch("o", "o.fact->>'orderNo'")+" OR "+draftAggregateOrderMatch,
+			"coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name)"),
+	"{{refundSearch}}", draftDetailFilter(draftDetailOrderMatch("o", "o.fact->>'orderNo'"),
+		"coalesce(p.name,practice_pool.name,pool.name,beneficiary.name)"),
+	"{{correctionSearch}}", draftDetailFilter(draftDetailOrderMatch("paid",
+		"CASE WHEN paid.order_id=v.order_id AND v.kind='ORDER_PAID' THEN v.fact->>'orderNo' ELSE paid.fact->>'orderNo' END"),
 		"coalesce(p.name,pool.name,recipient.name)", "coalesce(old_person.name,pool.name,old_recipient.name)"),
 	"{{detailLimit}}", strconv.Itoa(draftDetailPageSize+1),
 ).Replace(draftDetailTemplateSQL), "$7")
 
-func draftDetailFilter(orderAlias, orderName string, beneficiaryNames ...string) string {
+func draftDetailOrderMatch(orderAlias, orderName string) string {
+	return "strpos(lower(" + orderAlias + ".order_id),lower($8))>0 OR strpos(lower(" + orderName + "),lower($8))>0"
+}
+
+func draftDetailFilter(orderMatch string, beneficiaryNames ...string) string {
 	beneficiaryMatches := []string{"$9::text=''"}
 	for _, name := range beneficiaryNames {
 		beneficiaryMatches = append(beneficiaryMatches, "strpos(lower("+name+"),lower($9))>0")
 	}
-	return " AND ($8::text='' OR strpos(lower(" + orderAlias + ".order_id),lower($8))>0 OR strpos(lower(" +
-		orderName + "),lower($8))>0) AND (" + strings.Join(beneficiaryMatches, " OR ") + ")"
+	return " AND ($8::text='' OR " + orderMatch + ") AND (" + strings.Join(beneficiaryMatches, " OR ") + ")"
 }
 
 func withDraftDetailPagination(raw json.RawMessage) (json.RawMessage, error) {

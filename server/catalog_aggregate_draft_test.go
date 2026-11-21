@@ -69,6 +69,15 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 	 VALUES($1,'ORDER','first','VIP')`, sourceID); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(ctx, `WITH paid AS (
+	  INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
+	  VALUES('DCAI','104','','vip:104','1','ORDER_PAID','2026-08-06',
+	   '{"domain":"VIP","sourceKey":"fixture","paymentId":"104","orderNo":"第二笔订单","amountMinor":5000}','2026-08-06')
+	  RETURNING id
+	 ) INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier)
+	 SELECT id,'ORDER','first','VIP' FROM paid`); err != nil {
+		t.Fatal(err)
+	}
 	actor := financeRuleActor{subject: "fixture", permits: func(product int64, _ bool) bool { return product == productID }}
 	var periodID int64
 	input := catalogAggregatePeriodInput{RuleID: versionID, Month: "2026-08"}
@@ -101,14 +110,29 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 		t.Fatal("reopening the same rule package and month should reuse its period")
 	}
 	draft, err := s.calculateCurrentDraft(ctx, periodID, 0)
-	if err != nil || draft.Total != 4000 || draft.IssueCount != 0 || draft.LineCount != 2 {
+	if err != nil || draft.Total != 5000 || draft.IssueCount != 0 || draft.LineCount != 2 {
 		t.Fatalf("one rule should calculate both company and personal awards: %+v %v", draft, err)
 	}
 	var individualAmount int64
 	if err := db.QueryRow(ctx, `SELECT amount_minor FROM calculation_draft_lines
 	 WHERE period_id=$1 AND person_id=5801 AND beneficiary_unit_id IS NULL AND allocation_owner_id IS NULL`, periodID).
-		Scan(&individualAmount); err != nil || individualAmount != 1000 {
+		Scan(&individualAmount); err != nil || individualAmount != 1250 {
 		t.Fatalf("individual award %d should be booked against the person: %v", individualAmount, err)
+	}
+	var grouped int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM calculation_draft_lines l
+	 JOIN catalog_aggregate_draft_groups g ON (g.period_id,g.group_key)=(l.period_id,l.aggregate_group_key)
+	 WHERE l.period_id=$1 AND l.source_version_id IS NULL AND g.anchor_payment_id IS NULL`, periodID).Scan(&grouped); err != nil || grouped != 2 {
+		t.Fatalf("period awards should reference the group directly: %d %v", grouped, err)
+	}
+	for order, count := range map[string]int{"101": 2, "第二笔订单": 2, "不存在的订单": 0} {
+		var detail struct {
+			Lines []struct{ AggregateGroupKey string }
+		}
+		err := db.QueryRow(ctx, filteredDraftDetailSQL, periodID, 0, 0, draft.Version, 0, 0, nil, order, "").Scan(&detail)
+		if err != nil || len(detail.Lines) != count || count > 0 && detail.Lines[0].AggregateGroupKey == "" {
+			t.Fatalf("search by order %q should find its group awards: %+v %v", order, detail, err)
+		}
 	}
 	var facts, performance, ordinaryPeriods int
 	if err := db.QueryRow(ctx, `SELECT
@@ -159,6 +183,9 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 		}
 	}
 	freeze(periodID, draft.Version)
+	if _, err := db.Exec(ctx, "UPDATE source_order_versions SET updated_at=updated_at+interval '1 second' WHERE id=$1", sourceID); err == nil {
+		t.Fatal("source versions referenced by a frozen aggregate group must remain protected")
+	}
 	if _, err := db.Exec(ctx, `INSERT INTO organization_units(id,name,kind,status)
 	 VALUES('10000000-0000-4000-8000-000000000823','后续组织','COMPANY','ACTIVE');
 	 INSERT INTO catalog_benefit_organizations(source,party_uuid,unit_id,observed_at)
@@ -227,7 +254,30 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 	if result, err := s.calculateCurrentDraft(ctx, october, 0); err != nil || result.Total != 1000 || result.IssueCount != 0 || result.Version <= carry.Version {
 		t.Fatalf("same group offsets the earlier refund before its rate is applied: %+v %v", result, err)
 	} else {
+		// Simulate an earlier release's settled group and payment references.
+		if _, err := db.Exec(ctx, `UPDATE catalog_aggregate_draft_groups SET anchor_payment_id=$2 WHERE period_id=$1`,
+			october, sourceID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(ctx, `UPDATE calculation_draft_lines SET source_version_id=$2 WHERE period_id=$1`,
+			october, sourceID); err != nil {
+			t.Fatal(err)
+		}
 		freeze(october, result.Version)
+		if err := migrate(ctx, db); err != nil {
+			t.Fatal(err)
+		}
+		var legacy struct {
+			Lines []struct {
+				SourceVersionID int64
+				AmountMinor     int64
+			}
+		}
+		if err := db.QueryRow(ctx, draftDetailSQL, october, 0, 0, result.Version, 0, 0).Scan(&legacy); err != nil ||
+			len(legacy.Lines) != 2 || legacy.Lines[0].SourceVersionID != sourceID ||
+			legacy.Lines[0].AmountMinor+legacy.Lines[1].AmountMinor != result.Total {
+			t.Fatalf("migration must preserve and display the frozen legacy references: %+v %v", legacy, err)
+		}
 	}
 	if _, err := db.Exec(ctx, `INSERT INTO catalog_rule_retirements(package_id,effective_from)
 	 VALUES('10000000-0000-4000-8000-000000000820','2026-11-01 00:00+08')`); err != nil {
