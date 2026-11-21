@@ -41,11 +41,8 @@ const calculationMethods = [
 </script>
 
 <template>
-  <RuleArrangementFields :name="config.label" :name-id="field('name')"
+  <RuleArrangementFields class="period-arrangement" :name="config.label" :name-id="field('name')"
     @update:name="config.label=$event; config.labelIsCustom=true">
-    <a-form-item label="适用报名" :html-for="'rule-member-'+index">
-      <a-select :id="'rule-member-'+index" v-model:value="component.classMember" :options="memberChoices"/>
-    </a-form-item>
     <a-form-item label="收款对象" :html-for="field('recipient')" required>
       <a-select :id="field('recipient')" v-model:value="config.recipient" :options="recipientTypes" placeholder="选择收款对象"/>
     </a-form-item>
@@ -54,6 +51,11 @@ const calculationMethods = [
     </a-form-item>
     <a-form-item v-if="config.recipient==='person'" label="收款人员" :html-for="field('person')" required>
       <a-select :id="field('person')" v-model:value="config.personId" :options="people" show-search :filter-option="byName"/>
+    </a-form-item>
+    <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
+      :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
+    <a-form-item label="适用报名" :html-for="'rule-member-'+index">
+      <a-select :id="'rule-member-'+index" v-model:value="component.classMember" :options="memberChoices"/>
     </a-form-item>
     <a-form-item label="计提方式" :html-for="field('method')">
       <a-select :id="field('method')" v-model:value="config.method" :options="calculationMethods"/>
@@ -106,8 +108,6 @@ const calculationMethods = [
   <a-form-item v-if="registration">
     <a-checkbox v-model:checked="registration.exclusive">与其他已标记互斥的报名安排不重复匹配</a-checkbox>
   </a-form-item>
-  <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
-    :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <template v-if="config.method==='tiers'">
     <a-form-item>
       <a-checkbox v-model:checked="config.tierOnWholeClass">用全班净实收选档（含新报和复训）</a-checkbox>
@@ -142,6 +142,7 @@ const calculationMethods = [
 </template>
 
 <style scoped>
+.period-arrangement :deep(.pool-create) {grid-column:1 / -1}
 .period-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:0 10px;align-items:start}
 .period-tier {grid-template-columns:repeat(3,minmax(0,1fr));align-items:end}
 .period-fields :deep(.ant-input-number) {width:100%}

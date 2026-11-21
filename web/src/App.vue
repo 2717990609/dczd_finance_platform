@@ -1812,6 +1812,9 @@ async function save() {
             <DownOutlined aria-hidden="true"/>
             <strong>{{ ruleComponentLabel(c,optionLabel) }}</strong>
             <span v-if="classRule" class="rule-block-badge">{{ tierIncludesRetrain(c) || !c.classMember ? '新报和复训' : optionLabel('classMember',c.classMember) }}</span>
+            <span v-if="c.periodBenefit?.recipient" class="rule-block-badge">
+              {{ optionLabel('practicePeriodRecipient',c.periodBenefit.recipient) }}
+            </span>
             <span v-if="c.periodBenefit" class="rule-block-recipient" :title="practicePeriodScopeText(c.periodBenefit,practiceScopeNames,Infinity)">
               提成范围 · {{ practicePeriodScopeText(c.periodBenefit,practiceScopeNames) }}
             </span>
