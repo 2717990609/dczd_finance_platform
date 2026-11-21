@@ -36,7 +36,13 @@ type catalogDraftBenefit struct {
 	Rate              int64
 }
 
-func computeVIPDraft(ctx context.Context, tx pgx.Tx, periodID int64, window periodWindow, quotes *vipDraftQuoteCache) (paymentDraft, []byte, error) {
+type catalogRuleImpactMatch struct {
+	ruleID   string
+	payments int
+}
+
+func computeVIPDraft(ctx context.Context, tx pgx.Tx, periodID int64, window periodWindow, quotes *vipDraftQuoteCache,
+	impact *catalogRuleImpactMatch) (paymentDraft, []byte, error) {
 	matches, err := readCatalogMatches(ctx, tx, periodID, 0, maxDraftPayments)
 	if err != nil {
 		return paymentDraft{}, nil, err
@@ -69,6 +75,9 @@ func computeVIPDraft(ctx context.Context, tx pgx.Tx, periodID int64, window peri
 	})
 	var result paymentDraft
 	for _, row := range matches.Items {
+		if impact != nil && row.Status == "MATCHED" && row.RuleID == impact.ruleID {
+			impact.payments++
+		}
 		if err := addVIPDraftPayment(&result, row, data, organizations); err != nil {
 			return paymentDraft{}, nil, err
 		}

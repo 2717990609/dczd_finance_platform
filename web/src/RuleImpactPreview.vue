@@ -78,6 +78,7 @@ onBeforeUnmount(() => {
     <a-alert v-if="error" class="feedback" :message="error" type="error" show-icon/>
     <template v-if="result">
       <p v-if="!result.currentRuleAvailable" class="workbench-scope-note">现行规则尚未覆盖所选期次，现行金额按零显示。</p>
+      <p v-if="result.matchedPaymentCount!=null" class="workbench-scope-note">拟发布规则匹配 {{ result.matchedPaymentCount }} 笔付款</p>
       <div class="rule-impact-totals">
         <div><small>现行规则净分润</small><strong>{{ formatMoney(result.beforeMinor) }}</strong></div>
         <div><small>拟发布规则净分润</small><strong>{{ formatMoney(result.afterMinor) }}</strong></div>
@@ -97,7 +98,9 @@ onBeforeUnmount(() => {
           <span v-else-if="column.key==='deltaMinor'" class="numeric">{{ delta(text) }}</span>
           <span v-else-if="column.key==='beforeMinor' || column.key==='afterMinor'" class="numeric">{{ formatMoney(text) }}</span>
         </template>
-        <template #emptyText>{{ keyword ? '未找到符合条件的差额' : '本期金额无变化' }}</template>
+        <template #emptyText>
+          {{ keyword ? '未找到符合条件的差额' : result.matchedPaymentCount===0 ? '本期暂无适用付款' : '本期金额无变化' }}
+        </template>
       </a-table>
     </template>
   </section>

@@ -143,7 +143,7 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 		return computePracticeRefundMonth(ctx, tx, summary.PeriodID, window)
 	}
 	if summary.Catalog {
-		return computeVIPDraft(ctx, tx, summary.PeriodID, window, quotes)
+		return computeVIPDraft(ctx, tx, summary.PeriodID, window, quotes, nil)
 	}
 	if summary.PracticeRosterID != nil {
 		return computePracticeDraft(ctx, tx, summary, rules[0])

@@ -697,6 +697,67 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	}, TargetChanges: []catalogBenefitTargetChange{
 		{ItemKey: id(14), catalogBenefitTarget: catalogBenefitTarget{Target: "company", Organization: id(72)}},
 	}}
+	preview := func(period int64, input publishCatalogRatesInput) *httptest.ResponseRecorder {
+		t.Helper()
+		body, err := json.Marshal(catalogRuleImpactInput{PeriodID: period, Rule: input})
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest(http.MethodPost, "http://localhost/api/v1/catalog-rule-impact", bytes.NewReader(body))
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Origin", "http://localhost")
+		w := httptest.NewRecorder()
+		local := s
+		local.development = true
+		local.postCatalogRuleImpact(w, r)
+		return w
+	}
+	verifyPreview := func(input publishCatalogRatesInput, matched int, delta int64) {
+		t.Helper()
+		w := preview(next, input)
+		var result ruleImpactReport
+		if err := json.Unmarshal(w.Body.Bytes(), &result); w.Code != http.StatusOK || err != nil || result.MatchedPaymentCount == nil ||
+			*result.MatchedPaymentCount != matched || result.BeforeMinor != prior.Total || result.DeltaMinor != delta {
+			t.Errorf("unexpected preview for %d applicable payments: %d %s", matched, w.Code, w.Body)
+		}
+		for _, row := range result.Items {
+			if row.OrderID != "new-rate" {
+				t.Errorf("forecast changed a payment outside the candidate's effective time: %+v", row)
+			}
+		}
+	}
+	verifyPreview(inputRates, 1, 300)
+	later := inputRates
+	later.EffectiveFrom = newAt.AddDate(0, 0, 1)
+	verifyPreview(later, 0, 0)
+	renamed := "负责人新版名称"
+	verifyPreview(publishCatalogRatesInput{BaseID: id(4), EffectiveFrom: newAt, Changes: []catalogRateChange{
+		{ItemKey: "owner", Label: &renamed},
+	}}, 1, 0)
+	unchangedRate := int64(700)
+	noChange := preview(next, publishCatalogRatesInput{BaseID: id(4), EffectiveFrom: newAt, Changes: []catalogRateChange{
+		{ItemKey: "owner", Rate: &unchangedRate},
+	}})
+	var noCandidate ruleImpactReport
+	if err := json.Unmarshal(noChange.Body.Bytes(), &noCandidate); noChange.Code != http.StatusOK || err != nil ||
+		noCandidate.MatchedPaymentCount != nil || noCandidate.DeltaMinor != 0 {
+		t.Fatalf("an unchanged definition must not report the old rule's payments as a new match: %d %s", noChange.Code, noChange.Body)
+	}
+	var aggregatePeriod int64
+	if err := s.db.QueryRow(ctx, `WITH pkg AS (
+	 INSERT INTO product_rule_packages(source_id,product_id,code,name,project_code,policy_kind,scope_type,scope_id,paused)
+	 VALUES($2,$1,'impact-aggregate','整期试算','AI','COMPONENT_RULE','CROSS_SCENARIO_AGGREGATE','impact-aggregate',false) RETURNING source_id
+	 ) INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,report_month,aggregate_package_id)
+	 SELECT $1,'整期试算',203202,'2032-01-25','2032-02-24','2032-02-01',source_id FROM pkg RETURNING id`,
+		productID, id(73)).Scan(&aggregatePeriod); err != nil {
+		t.Fatal(err)
+	}
+	if blocked := preview(aggregatePeriod, inputRates); blocked.Code != http.StatusConflict || !strings.Contains(blocked.Body.String(), "请选择逐单账期") {
+		t.Errorf("per-payment preview accepted an aggregate period: %d %s", blocked.Code, blocked.Body)
+	}
+	if after := draftAt(next); after.Version != prior.Version || after.Total != prior.Total {
+		t.Fatalf("preview changed the saved draft: %+v", after)
+	}
 	published, err := s.publishCatalogRates(ctx, inputRates, "finance-fixture")
 	if err != nil || published.ID == id(4) || published.Version != 3 {
 		t.Fatalf("publication failed: %+v, %v", published, err)

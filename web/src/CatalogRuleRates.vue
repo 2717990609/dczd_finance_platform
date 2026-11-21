@@ -71,7 +71,13 @@ const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.valu
 const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 || labelEdits.value.size ||
   structure.value.items.length || structure.value.salesRates?.length || structure.value.rateRows.length || structure.value.calculations.length ||
   removedItems.value.size || removedRateRows.value.size)
-const impactPeriods = computed(() => (props.periods || []).filter(period=>period.productId===sheet.value?.productId && !period.settled))
+const impactPeriods = computed(() => {
+  if (!impactInput.value) return []
+  const effective = Date.parse(impactInput.value.effectiveFrom)
+  return (props.periods || []).filter(period=>period.productId===sheet.value?.productId && !period.settled &&
+    !period.aggregatePackageId && period.catalogDraftAvailable &&
+    effective < Date.parse(period.endsOn+'T00:00:00+08:00') + 86400000)
+})
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
 const percent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
 const canAddRates = computed(() => sheet.value?.mayPublish && !props.applied && !!sheet.value.structureOptions &&

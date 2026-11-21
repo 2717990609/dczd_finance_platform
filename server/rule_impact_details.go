@@ -14,6 +14,7 @@ import (
 
 type ruleImpactReport struct {
 	CurrentRuleAvailable bool             `json:"currentRuleAvailable"`
+	MatchedPaymentCount  *int             `json:"matchedPaymentCount,omitempty"`
 	BeforeMinor          int64            `json:"beforeMinor"`
 	AfterMinor           int64            `json:"afterMinor"`
 	DeltaMinor           int64            `json:"deltaMinor"`
