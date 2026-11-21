@@ -104,12 +104,18 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &preview); err != nil || w.Code != http.StatusOK ||
 		preview.CurrentRuleAvailable || preview.MatchedPaymentCount == nil || *preview.MatchedPaymentCount != 2 ||
 		preview.BeforeMinor != 0 || preview.AfterMinor != 4752 || preview.DeltaMinor != 4752 ||
-		preview.BeforeIssueCount != 2 || preview.AfterIssueCount != 0 || len(preview.Items) != 5 {
+		preview.BeforeIssueCount != 2 || preview.AfterIssueCount != 0 || len(preview.Items) != 7 {
 		t.Errorf("first rule should be compared with the previously unmatched payments: %d %s %v", w.Code, w.Body, err)
 	}
 	wantRecipients := map[string]int64{"成交销售样本": 1250, "原推荐人": 1000, "收款公司样本": 1502, "类别默认公司": 1000}
 	for _, item := range preview.Items {
 		wantRecipients[item.Recipient] -= item.AfterMinor
+		if item.Recipient == "收款公司样本" {
+			want, named := map[string]int64{"公司安排": 250, "固定交付": 501}[item.Arrangement]
+			if !named || item.AfterMinor != want {
+				t.Errorf("company's two arrangements must be itemized: %+v", item)
+			}
+		}
 	}
 	if w.Code == http.StatusOK {
 		for recipient, outstanding := range wantRecipients {

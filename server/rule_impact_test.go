@@ -29,6 +29,7 @@ func TestComponentRuleImpactUsesSamePeriodRefundsAndLeavesDraftUntouched(t *test
 
 	rule := publishRuleInput{ProductID: product, Label: "现行", Components: []component{
 		{Type: "sales", Mode: "rate", Value: 1000, SourceRole: "PID_USER", RefundPolicy: "proportional"},
+		{Type: "referral", Mode: "rate", Value: 1000, SourceRole: "PID_USER", RefundPolicy: "proportional"},
 	}}
 	if _, err := s.publishRule(ctx, rule); err != nil {
 		t.Fatal(err)
@@ -59,20 +60,23 @@ func TestComponentRuleImpactUsesSamePeriodRefundsAndLeavesDraftUntouched(t *test
 		return value.(draftSummary)
 	}
 	initial := readDraft()
-	if initial.Total != 600 || initial.RefundTotal != -400 {
+	if initial.Total != 1200 || initial.RefundTotal != -800 {
 		t.Fatalf("same-period refund fixture: %+v", initial)
 	}
 	rule.Label, rule.Components[0].Value = "拟发布", 1500
+	rule.Components[1].Value = 500
 	result, err := s.postComponentRuleImpact(ctx, componentRuleImpactInput{PeriodID: period, Rule: rule})
 	if err != nil {
 		t.Fatal(err)
 	}
 	report := result.(ruleImpactReport)
 	want := []ruleImpactItem{
-		{Key: 1, OrderID: "order-1", Recipient: "销售样本", EntryKind: "accrual", BeforeMinor: 1000, AfterMinor: 1500, DeltaMinor: 500},
-		{Key: 2, OrderID: "order-1", Recipient: "销售样本", EntryKind: "refund", BeforeMinor: -400, AfterMinor: -600, DeltaMinor: -200},
+		{Key: 1, OrderID: "order-1", Recipient: "销售样本", Arrangement: "推荐提成", EntryKind: "accrual", BeforeMinor: 1000, AfterMinor: 500, DeltaMinor: -500},
+		{Key: 2, OrderID: "order-1", Recipient: "销售样本", Arrangement: "销售提成", EntryKind: "accrual", BeforeMinor: 1000, AfterMinor: 1500, DeltaMinor: 500},
+		{Key: 3, OrderID: "order-1", Recipient: "销售样本", Arrangement: "推荐提成", EntryKind: "refund", BeforeMinor: -400, AfterMinor: -200, DeltaMinor: 200},
+		{Key: 4, OrderID: "order-1", Recipient: "销售样本", Arrangement: "销售提成", EntryKind: "refund", BeforeMinor: -400, AfterMinor: -600, DeltaMinor: -200},
 	}
-	if !report.CurrentRuleAvailable || report.BeforeMinor != 600 || report.AfterMinor != 900 || report.DeltaMinor != 300 ||
+	if !report.CurrentRuleAvailable || report.BeforeMinor != 1200 || report.AfterMinor != 1200 || report.DeltaMinor != 0 ||
 		report.BeforeIssueCount != 0 || report.AfterIssueCount != 0 || !reflect.DeepEqual(report.Items, want) {
 		t.Fatalf("impact: %+v", report)
 	}
@@ -95,5 +99,61 @@ func TestComponentRuleImpactUsesSamePeriodRefundsAndLeavesDraftUntouched(t *test
 	}
 	if _, err := s.postComponentRuleImpact(ctx, componentRuleImpactInput{PeriodID: period, Rule: rule}); !errors.Is(err, errSettlementClosed) {
 		t.Fatalf("settled preview: %v", err)
+	}
+}
+
+func TestImpactArrangementsFollowNamedPracticeBenefitsAcrossVersionEdits(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	value, err := s.createProduct(ctx, createProductInput{Code: "IMPACT_ARRANGEMENT", Name: "试算收款安排", PeriodMode: "class"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	product := value.(map[string]int64)["id"]
+	benefit := func(name string) component {
+		return component{Type: "delivery", Mode: "period_rate", Value: 10000, PeriodBenefit: &practicePeriodBenefit{Label: name, PersonID: 1}}
+	}
+	insert := func(version int, parts ...component) int64 {
+		t.Helper()
+		var id int64
+		err := s.db.QueryRow(ctx, `INSERT INTO rule_versions(product_id,version,label,components) VALUES($1,$2,'试算样本',$3) RETURNING id`,
+			product, version, parts).Scan(&id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return id
+	}
+	before := insert(1, benefit("可移除安排"), benefit("现场交付"), benefit("现场交付"), benefit("培训支持"))
+	after := insert(2, benefit("培训支持"), benefit("现场交付"), benefit("现场交付"))
+	lookup := func(rule int64, code string) impactComponentRef {
+		return impactComponentRef{rule: rule, code: "period:delivery:" + code}
+	}
+	pairs := [][2]impactComponentRef{
+		{lookup(before, "1"), lookup(after, "1")},
+		{lookup(before, "2"), lookup(after, "2")},
+		{lookup(before, "3"), lookup(after, "0")},
+	}
+	var postings []ruleImpactPosting
+	for _, pair := range pairs {
+		postings = append(postings, ruleImpactPosting{component: pair[0]}, ruleImpactPosting{component: pair[1]})
+	}
+	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		arrangements, err := impactArrangements(ctx, tx, postings)
+		if err != nil {
+			return err
+		}
+		for i, pair := range pairs {
+			a, b := arrangements[pair[0]], arrangements[pair[1]]
+			if a.key == "" || a.key != b.key || a.name != b.name {
+				t.Fatalf("arrangement %d changed after reorder: %+v, %+v", i, a, b)
+			}
+		}
+		if arrangements[pairs[0][0]].key == arrangements[pairs[1][0]].key {
+			t.Fatal("two benefits with the same display name were merged")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 }

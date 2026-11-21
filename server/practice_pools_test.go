@@ -167,25 +167,27 @@ func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testi
 			t.Fatal(err)
 		}
 		report := result.(ruleImpactReport)
-		if report.BeforeMinor != draft.Total || report.AfterMinor != draft.Total || report.DeltaMinor != 0 || len(report.Items) != 4 {
-			t.Fatalf("two payments must show both owners for the same pool without changing the total: %+v", report)
+		if report.BeforeMinor != draft.Total || report.AfterMinor != draft.Total || report.DeltaMinor != 0 || len(report.Items) != 8 {
+			t.Fatalf("two payments must show both arrangements and owners without changing the total: %+v", report)
 		}
-		var current, proposed int64
+		current, proposed := make(map[string]int64), make(map[string]int64)
 		for _, row := range report.Items {
 			if row.Recipient != "共用资金池" || row.EntryKind != "accrual" {
 				t.Fatalf("expected only pool accrual changes: %+v", row)
 			}
 			switch {
 			case row.AllocationOwner == "服务" && row.AfterMinor == 0:
-				current += row.BeforeMinor
+				current[row.Arrangement] += row.BeforeMinor
 			case row.AllocationOwner == "成员" && row.BeforeMinor == 0:
-				proposed += row.AfterMinor
+				proposed[row.Arrangement] += row.AfterMinor
 			default:
 				t.Fatalf("unexpected owner allocation: %+v", row)
 			}
 		}
-		if current != 4800 || proposed != current {
-			t.Fatalf("same pool should receive 4800 cents with either owner: %d, %d", current, proposed)
+		for arrangement, amount := range map[string]int64{"交付分润归集": 500, "复训销售归集": 4300} {
+			if current[arrangement] != amount || proposed[arrangement] != amount {
+				t.Fatalf("%s: pool amount should be %d with either owner: %v, %v", arrangement, amount, current, proposed)
+			}
 		}
 	})
 	params := fmt.Sprintf("periodId=%d&version=%d", period, draft.Version)
