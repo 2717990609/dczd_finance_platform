@@ -22,6 +22,30 @@ export function moneyAsMinor(value) {
 
 export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
 
+export function checkPracticeCompanyArrangementScopes(components) {
+  const arrangements = new Map()
+  function register(member, scope, ids, arrangement) {
+    for (const id of ids) {
+      const key = JSON.stringify([member,scope,id])
+      const previous = arrangements.get(key)
+      if (previous && previous!==arrangement) {
+        throw new Error('「'+previous.label+'」与「'+arrangement.label+'」的'+scope+'重复，请调整适用范围。')
+      }
+      arrangements.set(key,arrangement)
+    }
+  }
+  for (const {classMember,companySales:arrangement} of components) {
+    if (!arrangement) continue
+    for (const standard of arrangement.categories) {
+      register(classMember,'销售类别',standard.salesCategoryIds || [],arrangement)
+      register(classMember,'公司特例',standard.companies,arrangement)
+      for (const override of standard.overrides || []) {
+        register(classMember,'公司特例',override.companyIds,arrangement)
+      }
+    }
+  }
+}
+
 export function catalogRuleImpactPeriods(periods, productId, effectiveFrom) {
   const effective = Date.parse(effectiveFrom)
   return (periods || []).filter(period=>period.productId===productId && period.periodMode==='calendar' &&

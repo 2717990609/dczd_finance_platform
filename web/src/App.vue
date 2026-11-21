@@ -20,7 +20,7 @@ import PracticeTierEditor from './PracticeTierEditor.vue'
 import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
-import { copiedRuleComponents, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
+import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -295,9 +295,7 @@ function updateAmountMode(row, mode) {
   }
   if (mode==='company_sales' && !row.companySales) {
     row.sourceRole = row.sourceRole || firstOption('practicePeriodSourceRole')
-    row.companySales = {label:'',internalCompanies:[],payee:{kind:'sales_company',pool:{}},
-      categories:[{mode:baseModes.value[0]?.value,companies:[],salesCategoryIds:[],overrides:[],
-      scope:options('practiceSalesCategory').length ? 'category' : 'companies'}]}
+    row.companySales = {label:'',internalCompanies:[],payee:{kind:'sales_company',pool:{}},categories:[]}
   }
   if (mode === 'tiered' && !row.tierConfig) {
     row.tierConfig = {
@@ -329,7 +327,10 @@ const componentTypes = computed(() => options('component').filter(option=>
   (option.value!=='company_sales' || !!companySalesMode.value)))
 function classMemberChoices(row,type = row.type) {
   if (isPeriodBenefit(type)) return classMembers.value
-  return classMembers.value.filter(member=>type!=='company_sales' || companySalesMode.value?.scope?.classMembers?.includes(member.value)).map(member=>{
+  if (type==='company_sales') {
+    return classMembers.value.filter(member=>companySalesMode.value?.scope?.classMembers?.includes(member.value))
+  }
+  return classMembers.value.map(member=>{
     const occupied = draft.value.components.some(c=>c!==row && c.type===type &&
       (!member.value || matchesPracticeMember(c,member.value)))
     return occupied ? {...member,disabled:true,label:member.label+'（已配置）'} : member
@@ -341,7 +342,7 @@ const recipientChoices = computed(() => {
     {type:'sales',label:'订单上的成交销售'},
     {type:'referral',label:'订单上的推荐人'},
     ...(classRule.value ? [
-      {type:'company_sales',label:'外部销售提成'},
+      {type:'company_sales',label:'按公司或类别计提'},
       {type:'manager',label:'独立收款安排'},
     ] : []),
   ]
@@ -351,7 +352,10 @@ const recipientChoices = computed(() => {
   }))
 })
 function addRuleComponent(type) {
-  const row = {type,classMember:classRule.value ? classMemberChoices({},type).find(member=>!member.disabled)?.value : undefined,
+  const members = classRule.value ? classMemberChoices({},type).filter(member=>!member.disabled) : []
+  const member = type==='company_sales' ? members.find(option=>!draft.value.components.some(
+    part=>part.type===type && part.classMember===option.value)) || members[0] : members[0]
+  const row = {type,classMember:member?.value,
     mode:baseModes.value[0]?.value}
   resetAmountMode(row)
   draft.value.components.push(row)
@@ -1117,6 +1121,8 @@ function ruleComponentBody(row) {
   if (row.mode==='company_sales') {
     must(sourceRole,'请选择业绩使用的订单销售角色')
     const sales = row.companySales
+    must(sales.label?.trim(),'请填写收款安排名称')
+    if (!sales.categories.length) throw new Error('请给「'+sales.label.trim()+'」添加销售类别标准或公司特例。')
     const payee = {kind:must(sales.payee?.kind,'请选择收款对象')}
     if (payee.kind==='order_person') payee.role=must(sales.payee.role,'请选择从订单读取的收款人')
     if (payee.kind==='person') payee.personId=must(sales.payee.personId,'请选择收款人员')
@@ -1127,7 +1133,7 @@ function ruleComponentBody(row) {
       return {mode,value:mode==='rate' ? periodRate(item.value) : minor(must(item.value,'请填写计提金额')),
         ...(row.classMember==='new' && item.recommendationRate != null ? {recommendationRate:periodRate(item.recommendationRate)} : {})}
     }
-    component.companySales = {label:must(sales.label?.trim(),'请填写收款安排名称'),payee,
+    component.companySales = {label:sales.label.trim(),payee,
       internalCompanies:sales.internalCompanies,categories:sales.categories.map(category=>{
       const byCategory = category.scope==='category'
       const companies = byCategory ? [] : category.companies
@@ -1281,13 +1287,17 @@ function bodyFor(kind,f) {
   if (kind === 'periodRoster') return {periodId:f.periodId,sourcePeriodKey:f.sourcePeriodKey?.trim() || '',
     expectedSourcePeriodKey:f.expectedSourcePeriodKey || '', startsOn:must(f.startsOn), endsOn:must(f.endsOn),
     expectedStartsOn:f.expectedStartsOn,expectedEndsOn:f.expectedEndsOn}
-  if (kind === 'rule') return {productId:must(f.productId),label:must(f.label),
-    ...(f.scope === 'period' ? {periodId:must(f.periodId,'请选择适用期次。')} : {}),
-    ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal,'请填写适用的起始期数。')} : {}),
-    ...(classRule.value && f.scope!=='period' && f.activityType ? {activityType:f.activityType} : {}),
-    ...(f.editBaseId ? {editBaseId:f.editBaseId, effectiveFrom:f.effectiveFrom} :
-      f.effectiveFrom ? {effectiveFrom:new Date(f.effectiveFrom+'+08:00').toISOString()} : {}),
-    components:f.components.map(ruleComponentBody),
+  if (kind === 'rule') {
+    const components = f.components.map(ruleComponentBody)
+    checkPracticeCompanyArrangementScopes(components)
+    return {productId:must(f.productId),label:must(f.label),
+      ...(f.scope === 'period' ? {periodId:must(f.periodId,'请选择适用期次。')} : {}),
+      ...(f.scope === 'ordinal' ? {fromOrdinal:must(f.fromOrdinal,'请填写适用的起始期数。')} : {}),
+      ...(classRule.value && f.scope!=='period' && f.activityType ? {activityType:f.activityType} : {}),
+      ...(f.editBaseId ? {editBaseId:f.editBaseId, effectiveFrom:f.effectiveFrom} :
+        f.effectiveFrom ? {effectiveFrom:new Date(f.effectiveFrom+'+08:00').toISOString()} : {}),
+      components,
+    }
   }
   if (kind === 'person') return {name:must(f.name)}
   if (kind === 'identity') {

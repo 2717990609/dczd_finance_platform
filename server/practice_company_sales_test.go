@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func TestPracticeCompanySalesSeparatesSellerPerformanceAndCompanyProceeds(t *testing.T) {
@@ -727,6 +728,79 @@ func TestPracticeCompanyMultiSelectAndExceptionsUseOneStandard(t *testing.T) {
 		purchase.classifyCompany(offers, map[string]string{"payment": tc.category})
 		if purchase.companyRoutingIssue != "" || purchase.companyAward == nil || purchase.companyAward.Value != tc.want {
 			t.Fatalf("%s should use exactly %d, got %+v %q", tc.company, tc.want, purchase.companyAward, purchase.companyRoutingIssue)
+		}
+	}
+}
+
+func TestPracticeCompanyArrangementsUseDefaultAndExceptionPayees(t *testing.T) {
+	const firstCategory = "41000000-0000-4000-8000-000000000001"
+	const secondCategory = "41000000-0000-4000-8000-000000000002"
+	const unitID = "41000000-0000-4000-8000-000000000003"
+	companyPart := func(payee *practiceCompanyPayee, standard practiceCompanyCategory) component {
+		return component{Type: "company_sales", Mode: "company_sales", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
+			CompanySales: &practiceCompanySales{Payee: payee, Categories: []practiceCompanyCategory{standard}}}
+	}
+	rule := paymentRule{ID: 11, Components: []component{
+		companyPart(nil, practiceCompanyCategory{SalesCategoryID: firstCategory, practiceCompanyValue: practiceCompanyValue{"rate", 100000}}),
+		companyPart(&practiceCompanyPayee{Kind: "pool", Pool: &practicePoolTarget{PoolID: 6, OwnerID: 9}},
+			practiceCompanyCategory{SalesCategoryID: secondCategory, practiceCompanyValue: practiceCompanyValue{"rate", 250000}}),
+		companyPart(&practiceCompanyPayee{Kind: "person", PersonID: 8},
+			practiceCompanyCategory{Companies: []string{"special"}, practiceCompanyValue: practiceCompanyValue{"fixed", 4000}}),
+	}}
+	if err := validateComponents(rule.Components); err != nil {
+		t.Fatalf("same signup type should allow separate default and company payees: %v", err)
+	}
+	for _, repeated := range []component{rule.Components[0], rule.Components[2]} {
+		if err := validateComponents(append(slices.Clone(rule.Components), repeated)); err != errPracticeCompanyScopeOverlap {
+			t.Fatalf("same-priority overlap must be reported, got %v", err)
+		}
+	}
+	var unit pgtype.UUID
+	if err := unit.Scan(unitID); err != nil {
+		t.Fatal(err)
+	}
+	runtime := practiceDraftRuntime{
+		companyOffers:     practiceCompanyStandards(rule),
+		companyRecipients: map[string][]companySourceAssignment{"ordinary": {{Company: unit}}},
+		poolUnits:         map[int64]pgtype.UUID{6: unit},
+	}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{PersonID: 7}}}
+	principal := int64(10000)
+	for _, tc := range []struct {
+		company, category, componentKey string
+		amount, person, pool            int64
+	}{
+		{"ordinary", firstCategory, "period:company_sales:0", 1000, 0, 0},
+		{"ordinary", secondCategory, "period:company_sales:1", 2500, 0, 6},
+		{"special", firstCategory, "period:company_sales:2", 4000, 8, 0},
+	} {
+		purchase := practicePurchase{
+			member: practiceEnrollment{MembershipType: 3}, base: principal, gross: principal,
+			payments: []paymentInput{{ID: 5, Fact: sourceFact{Source: "DCZD", PaymentID: "paid",
+				SalesCompanyID: tc.company, ReferrerID: "seller", AmountMinor: &principal}}},
+		}
+		purchase.classifyCompany(runtime.companyOffers, map[string]string{"paid": tc.category})
+		if purchase.companyAward == nil || purchase.companyRoutingIssue != "" {
+			t.Fatalf("failed to match %s / %s: %s", tc.company, tc.category, purchase.companyRoutingIssue)
+		}
+		var draft paymentDraft
+		if err := appendPracticeCompanySale(&draft, rule, purchase, runtime, identities); err != nil {
+			t.Fatal(err)
+		}
+		if len(draft.Lines) != 1 || len(draft.Issues) != 0 || draft.Total != tc.amount {
+			t.Fatalf("expected one sale at the selected standard: %+v", draft)
+		}
+		line := draft.Lines[0]
+		if line.Component != tc.componentKey || line.PersonID != tc.person ||
+			tc.person == 0 && (line.BeneficiaryUnit == nil || *line.BeneficiaryUnit != unit) ||
+			tc.pool > 0 && (line.PracticePool == nil || line.PracticePool.PoolID != tc.pool) {
+			t.Fatalf("wrong receiver or rule component: %+v", line)
+		}
+		terms := practiceMonthlyRefundPolicy(rule.Components,
+			refundObligation{ComponentType: line.Component, Base: line.Base, Accrued: line.Amount}, 1, 3, tc.company, tc.category)
+		delta, err := refundDelta(terms, line.Base, line.Amount, principal/2, 0)
+		if err != nil || delta != -tc.amount/2 {
+			t.Fatalf("refund must use the original company arrangement: %d %v", delta, err)
 		}
 	}
 }

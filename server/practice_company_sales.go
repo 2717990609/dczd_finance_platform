@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strconv"
 	"time"
@@ -9,6 +10,8 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
+
+var errPracticeCompanyScopeOverlap = errors.New("同一报名类型的收款安排有重复的销售类别或公司特例，请调整适用范围")
 
 type practiceCompanySales struct {
 	Label                    string                    `json:"label,omitempty"`
@@ -171,44 +174,61 @@ func validPracticeCompanySales(c component) bool {
 	return true
 }
 
-func validPracticeCompanyScopes(items []component) bool {
-	var internal, external []string
-	externalByMember := make(map[string][]string)
-	for _, part := range items {
+func checkPracticeCompanyScopes(items []component) error {
+	type scope struct{ member, id string }
+	categoryBlocks, companyBlocks := make(map[scope]int), make(map[scope]int)
+	allNamedCompanies := make(map[string]bool)
+	var internal []string
+	register := func(blocks map[scope]int, member string, ids []string, index int) bool {
+		for _, id := range ids {
+			key := scope{member, id}
+			if previous, exists := blocks[key]; exists && previous != index {
+				return false
+			}
+			blocks[key] = index
+		}
+		return true
+	}
+	for index, part := range items {
 		for _, split := range part.retrainSplits() {
 			internal = append(internal, split.CompanyID)
 		}
-		if s := part.CompanySales; s != nil {
-			internal = append(internal, s.InternalCompanies...)
-			first := len(external)
-			for _, category := range s.Categories {
-				external = append(external, category.Companies...)
-				for _, override := range category.Overrides {
-					external = append(external, override.companyIDs()...)
+		arrangement := part.CompanySales
+		if arrangement == nil {
+			continue
+		}
+		internal = append(internal, arrangement.InternalCompanies...)
+		for _, category := range arrangement.Categories {
+			if !register(categoryBlocks, part.ClassMember, category.categoryIDs(), index) ||
+				!register(companyBlocks, part.ClassMember, category.Companies, index) {
+				return errPracticeCompanyScopeOverlap
+			}
+			for _, override := range category.Overrides {
+				if !register(companyBlocks, part.ClassMember, override.companyIDs(), index) {
+					return errPracticeCompanyScopeOverlap
 				}
 			}
-			externalByMember[part.ClassMember] = append(externalByMember[part.ClassMember], external[first:]...)
 		}
 	}
-	companies := make(map[string]bool, len(external))
-	for _, company := range external {
-		companies[company] = true
+	for key := range companyBlocks {
+		allNamedCompanies[key.id] = true
 	}
 	for _, company := range internal {
-		if !textOK(company, 128) || companies[company] {
-			return false
+		if !textOK(company, 128) || allNamedCompanies[company] {
+			return invalid
 		}
 	}
 	for _, part := range items {
-		for member, explicit := range externalByMember {
-			if (part.ClassMember == "" || part.ClassMember == member) && slices.ContainsFunc(part.salesCompanies(), func(company string) bool {
-				return slices.Contains(explicit, company)
-			}) {
-				return false
+		for _, company := range part.salesCompanies() {
+			_, newSales := companyBlocks[scope{"new", company}]
+			_, retrainSales := companyBlocks[scope{"retrain", company}]
+			if (part.ClassMember == "" || part.ClassMember == "new") && newSales ||
+				(part.ClassMember == "" || part.ClassMember == "retrain") && retrainSales {
+				return invalid
 			}
 		}
 	}
-	return true
+	return nil
 }
 
 type practiceCompanyAward struct {

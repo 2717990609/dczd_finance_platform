@@ -55,7 +55,7 @@ var invalid = errors.New("请核对名称、范围与必填配置")
 var conflict = errors.New("记录与现有配置冲突，请重新读取")
 
 func validateComponents(items []component) error {
-	if len(items) == 0 || !validPracticeCompanyScopes(items) {
+	if len(items) == 0 {
 		return invalid
 	}
 	seen := make(map[string]uint8)
@@ -98,10 +98,9 @@ func validateComponents(items []component) error {
 			}
 		}
 		if c.Type == "company_sales" || c.CompanySales != nil {
-			if seen[c.Type]&members != 0 || !validPracticeCompanySales(c) {
+			if !validPracticeCompanySales(c) {
 				return invalid
 			}
-			seen[c.Type] |= members
 			continue
 		}
 		if c.Mode == "period_rate" {
@@ -133,6 +132,9 @@ func validateComponents(items []component) error {
 		default:
 			return invalid
 		}
+	}
+	if err := checkPracticeCompanyScopes(items); err != nil {
+		return err
 	}
 	return checkPracticeRegistrationScopes(items)
 }
@@ -289,7 +291,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope), errors.Is(err, errCatalogPeriodResumeDate),
 		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany),
-		errors.Is(err, errPracticeRegistrationOverlap):
+		errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod), errors.Is(err, errCatalogPeriodResumeState), errors.Is(err, errCatalogPeriodResumeTarget),
