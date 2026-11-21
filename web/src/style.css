@@ -280,7 +280,23 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .tier-settings { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; margin-bottom: 8px; }
 .tier-settings .ant-form-item { flex: 1 1 210px; max-width: 330px; margin-bottom: 0; }
 .tier-settings .ant-checkbox-wrapper { padding-block: 5px; }
-.tier-start { margin-bottom: 8px; }
+.practice-count-starts { padding: 12px; margin-bottom: 14px; }
+.practice-count-default { grid-template-columns: repeat(auto-fit,minmax(min(100%,150px),1fr)); margin-bottom: 12px; }
+.practice-count-starts .rule-item-section { margin: 0; }
+.practice-count-row {
+  grid-template-columns: repeat(3,minmax(0,1fr)) auto;
+  align-items: end;
+  border-top: 1px solid var(--line);
+  padding-block: 8px;
+}
+.practice-count-row:last-child { padding-bottom: 0; }
+@media (max-width: 700px) {
+  .practice-count-row { grid-template-columns: repeat(2,minmax(0,1fr)); }
+  .practice-count-row > .ant-btn { justify-self: end; }
+}
+@media (max-width: 480px) {
+  .practice-count-default { grid-template-columns: minmax(0,1fr); }
+}
 
 .tier-person-starts { margin-bottom: 6px; }
 .tier-person-starts:last-child { margin-bottom: 0; }

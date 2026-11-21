@@ -1,21 +1,16 @@
 <script setup>
 import { computed } from 'vue'
 import PracticeTierRanges from './PracticeTierRanges.vue'
-import { tierFormHasCount } from './rule-component-form'
 
 const props = defineProps({
   config: { type: Object, required: true },
   metrics: { type: Array, required: true },
-  startModes: { type: Array, required: true },
   amounts: { type: Array, required: true },
   people: { type: Array, required: true },
-  openings: { type: Array, required: true },
   companies: { type: Array, required: true },
   salesCategories: { type: Array, required: true },
   retrainUnavailable: Boolean,
 })
-const personalStartModes = computed(() => props.startModes.filter(option =>
-  !option.scope?.countScopes || option.scope.countScopes.includes('person')))
 function sectionsFor(metric) {
   const result = []
   if (metric !== 'performance') result.push({ key: 'count', title: '累计人数档', unit: '人', decimals: 0 })
@@ -63,43 +58,6 @@ function removeSchedule(schedules, index) {
         @change="setIncludeRetrain($event.target.checked)">复训共用此阶梯</a-checkbox>
     </div>
     <p v-if="retrainUnavailable" class="tier-note">移除单独的复训销售安排后可启用。</p>
-    <template v-if="tierFormHasCount(config)">
-      <div class="tier-values tier-start">
-        <a-form-item html-for="tier-start-mode" label="默认累计起点">
-          <a-select id="tier-start-mode" v-model:value="config.startMode" :options="startModes"/>
-        </a-form-item>
-        <a-form-item v-if="config.startMode==='ordinal'" html-for="tier-start-ordinal" label="起始期数" required>
-          <a-input-number id="tier-start-ordinal" v-model:value="config.countFromOrdinal" :min="1" :precision="0"/>
-        </a-form-item>
-        <a-form-item v-else-if="config.startMode==='opening'" html-for="tier-opening" label="冻结期初"
-          :extra="openings.length ? '从冻结截止时刻之后开始追加新报。' : '当前产品尚未登记累计期初。'" required>
-          <a-select id="tier-opening" v-model:value="config.openingId" :options="openings" />
-        </a-form-item>
-        <a-form-item v-else html-for="tier-start-time" label="起始开班时间" extra="使用北京时间。" required>
-          <a-input id="tier-start-time" v-model:value="config.countFromAt" type="datetime-local" step="any"/>
-        </a-form-item>
-      </div>
-      <details class="tier-person-starts">
-        <summary>按人员设置累计起点</summary>
-        <p class="tier-note">指定起点到达后，该人员按自己的起点累计。</p>
-        <div v-for="(row,index) in config.personCountStarts" :key="index" class="tier-range">
-          <a-form-item :html-for="'tier-person-'+index" label="人员" required>
-            <a-select :id="'tier-person-'+index" v-model:value="row.personId" :options="eligiblePeople(config.personCountStarts,row)" show-search option-filter-prop="label"/>
-          </a-form-item>
-          <a-form-item :html-for="'tier-person-start-mode-'+index" label="个人累计起点">
-            <a-select :id="'tier-person-start-mode-'+index" v-model:value="row.startMode" :options="personalStartModes"/>
-          </a-form-item>
-          <a-form-item v-if="row.startMode==='ordinal'" :html-for="'tier-person-start-ordinal-'+index" label="个人起始期数" required>
-            <a-input-number :id="'tier-person-start-ordinal-'+index" v-model:value="row.countFromOrdinal" :min="1" :precision="0"/>
-          </a-form-item>
-          <a-form-item v-else :html-for="'tier-person-start-time-'+index" label="个人起始开班时间" extra="使用北京时间。" required>
-            <a-input :id="'tier-person-start-time-'+index" v-model:value="row.countFromAt" type="datetime-local" step="any"/>
-          </a-form-item>
-          <a-button type="link" danger @click="config.personCountStarts.splice(index,1)">移除个人起点</a-button>
-        </div>
-        <a-button type="dashed" block @click="config.personCountStarts.push({startMode:personalStartModes[0]?.value})">添加个人起点</a-button>
-      </details>
-    </template>
     <p class="tier-note">匹配顺序　个人特例 → 公司特例 → 销售类别 → 通用档位</p>
     <details v-if="salesCategories.length || config.categories.length" class="tier-person-starts" open>
       <summary>销售类别默认档位</summary>

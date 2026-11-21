@@ -71,6 +71,7 @@ const showsRecommendation = computed(() => activeStandard.value?.rows
   .some(({row,inheritedRate})=>row.recommendationRate!=null || inheritedRate!=null))
 const countStart = rule => rule.openingId ? props.openingLabel(rule.openingId)
   : rule.countFromOrdinal ? '第 '+rule.countFromOrdinal+' 期' : rule.countFromAt && props.formatTime(rule.countFromAt)
+const countConfig = computed(() => props.rule.components.find(part=>part.tiers && countStart(part.tiers))?.tiers)
 const scope = computed(() => [
   props.rule.periodName || (props.rule.fromOrdinal ? '从第 '+props.rule.fromOrdinal+' 期起' : '产品默认'),
   props.rule.activityType ? label('practiceActivityType', String(props.rule.activityType)) : '',
@@ -131,6 +132,21 @@ onMounted(async () => {
         <a-descriptions-item label="生效时间">{{ rule.effectiveFrom ? formatTime(rule.effectiveFrom) : '范围默认' }}<template v-if="rule.effectiveTo"> 至 {{ formatTime(rule.effectiveTo) }}</template></a-descriptions-item>
         <a-descriptions-item v-if="rule.retiredFrom" label="停用时间">{{ formatTime(rule.retiredFrom) }}</a-descriptions-item>
       </a-descriptions>
+      <section v-if="countConfig" class="rule-block practice-count-starts" aria-label="累计起点">
+        <h3 class="form-subhead">累计起点</h3>
+        <a-descriptions size="small" :column="1">
+          <a-descriptions-item label="默认累计起点">{{ countStart(countConfig) }}</a-descriptions-item>
+        </a-descriptions>
+        <table v-if="countConfig.personCountStarts?.length" class="rule-company-standards" aria-label="人员特例">
+          <thead><tr><th scope="col">人员</th><th scope="col">累计起点</th></tr></thead>
+          <tbody>
+            <tr v-for="start in countConfig.personCountStarts" :key="start.personId">
+              <th scope="row">{{ personName(start.personId) }}</th>
+              <td>{{ countStart(start) }}</td>
+            </tr>
+          </tbody>
+        </table>
+      </section>
       <div class="rule-blocks" aria-label="收款安排">
       <article v-for="(part,index) in rule.components" :key="index" class="rule-block">
         <button type="button" class="rule-block-header" :aria-expanded="activePart===index" :aria-controls="'rule-preview-'+index"
@@ -191,10 +207,6 @@ onMounted(async () => {
           part.companySales?.internalCompanies?.length || part.companySales?.recommendationRecipients?.length">
           <summary>查看计算条件</summary>
           <template v-if="part.tiers">
-            <p v-if="countStart(part.tiers)">累计起点 {{ countStart(part.tiers) }}</p>
-            <ul v-if="part.tiers.personCountStarts?.length">
-              <li v-for="start in part.tiers.personCountStarts" :key="start.personId">{{ personName(start.personId) }} · 从 {{ countStart(start) }} 起</li>
-            </ul>
             <template v-for="(schedule, index) in [part.tiers, ...(part.tiers.categorySchedules || []), ...(part.tiers.companySchedules || []), ...(part.tiers.personSchedules || [])]"
               :key="index">
               <h4 v-if="schedule.count?.length || schedule.performance?.length">

@@ -17,6 +17,7 @@ import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
 import OrderDetails from './OrderDetails.vue'
 import OrderSyncPanel from './OrderSyncPanel.vue'
 import PracticeTierEditor from './PracticeTierEditor.vue'
+import PracticeCountStartEditor from './PracticeCountStartEditor.vue'
 import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
@@ -271,6 +272,11 @@ watch(() => data.value.periods.find(period => period.id === requestedPeriod.valu
   if (month) workspaceMonth.value = month
 })
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
+const practiceCountConfig = computed(() => {
+  if (!classRule.value) return
+  const config = draft.value.components?.find(part=>part.mode==='tiered')?.tierConfig
+  return config && tierFormHasCount(config) ? config : undefined
+})
 const classRefundMonth = computed(() => classRule.value && draft.value.practicePeriodKind === 'refund_month')
 const calendarPeriod = computed(() => classRefundMonth.value || !classRule.value && !!selectedProduct.value?.cycleStartDay)
 const calendarDates = computed(() => {
@@ -1757,6 +1763,8 @@ async function save() {
           <a-input v-else v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local" step="1"/>
         </a-form-item>
         </div>
+        <PracticeCountStartEditor v-if="practiceCountConfig" :config="practiceCountConfig"
+          :start-modes="options('tierStartMode')" :people="classPeopleOptions" :openings="practiceOpeningOptions"/>
         <div v-if="draft.components?.length" class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
@@ -1813,8 +1821,7 @@ async function save() {
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
           </div>
           <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')"
-            :start-modes="options('tierStartMode')" :amounts="baseModes" :people="classPeopleOptions"
-            :openings="practiceOpeningOptions" :companies="options('practiceSalesCompany')"
+            :amounts="baseModes" :people="classPeopleOptions" :companies="options('practiceSalesCompany')"
             :sales-categories="options('practiceSalesCategory')"
             :retrain-unavailable="draft.components.some(other=>other!==c && other.type==='sales' && matchesPracticeMember(other,'retrain'))"/>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
