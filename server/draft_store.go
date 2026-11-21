@@ -587,7 +587,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
  'aggregatePredecessorId',d.aggregate_predecessor_id,
  'aggregateGroups',CASE WHEN period.aggregate_package_id IS NOT NULL AND {{unit}} IS NULL THEN (
   SELECT coalesce(jsonb_agg(jsonb_build_object('key',g.group_key,'ruleVersion',v.version_no,'receiptsMinor',g.receipts_minor,
-   'refundsMinor',g.refunds_minor,'carryInMinor',g.carry_in_minor,'carryOutMinor',g.carry_out_minor)
+   'refundsMinor',g.refunds_minor,'carryInMinor',g.carry_in_minor,'carryOutMinor',g.carry_out_minor,'fixedOnly',g.fixed_only)
   ORDER BY v.version_no,g.group_key),'[]')
   FROM catalog_aggregate_draft_groups g JOIN product_rule_versions v ON v.source_id=g.rule_id WHERE g.period_id=d.period_id
  ) END,
@@ -738,7 +738,8 @@ var scopedDraftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "$7")
 const draftAggregateOrderMatch = `(l.aggregate_group_key IS NOT NULL AND EXISTS(
  SELECT 1 FROM catalog_aggregate_draft_events e
  JOIN source_order_versions paid ON paid.id=e.payment_version_id
- WHERE (e.period_id,e.group_key)=(l.period_id,l.aggregate_group_key)
+ WHERE e.period_id=l.period_id AND (e.group_key=l.aggregate_group_key OR EXISTS(
+  SELECT 1 FROM catalog_aggregate_draft_groups g WHERE (g.period_id,g.group_key)=(l.period_id,l.aggregate_group_key) AND g.fixed_only))
   AND (strpos(lower(paid.order_id),lower($8))>0 OR strpos(lower(paid.fact->>'orderNo'),lower($8))>0)))`
 
 var filteredDraftDetailSQL = organizationScopeQuery(strings.NewReplacer(

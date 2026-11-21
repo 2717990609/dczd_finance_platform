@@ -1349,6 +1349,7 @@ CREATE OR REPLACE TRIGGER protect_confirmed_aggregate_events BEFORE INSERT OR UP
 ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS aggregate_group_key text;
 ALTER TABLE calculation_draft_lines ALTER COLUMN source_version_id DROP NOT NULL;
 ALTER TABLE catalog_aggregate_draft_groups ALTER COLUMN anchor_payment_id DROP NOT NULL;
+ALTER TABLE catalog_aggregate_draft_groups ADD COLUMN IF NOT EXISTS fixed_only boolean NOT NULL DEFAULT false;
 DO $$ BEGIN
  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass AND conname='draft_line_aggregate_group') THEN
   ALTER TABLE calculation_draft_lines ADD CONSTRAINT draft_line_aggregate_group FOREIGN KEY (period_id,aggregate_group_key)

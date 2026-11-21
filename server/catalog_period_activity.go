@@ -625,6 +625,9 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 					return result, err
 				}
 			}
+			if err := appendCatalogPeriodFixedGroup(&grouping, rules, directory, in.Window.Through.Add(-time.Microsecond)); err != nil {
+				return result, err
+			}
 			grouping.Paused, grouping.TrialOnPaused = in.GroupRule.Paused, in.GroupRule.Paused && in.TrialPaused
 			result.Grouping = &grouping
 		}

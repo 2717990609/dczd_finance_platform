@@ -79,6 +79,7 @@ type catalogPeriodGroup struct {
 	Refunds     int64                      `json:"refundsMinor"`
 	Net         int64                      `json:"netMinor"`
 	Payments    int                        `json:"paymentCount"`
+	FixedOnly   bool                       `json:"fixedOnly,omitempty"`
 	BeforeCarry catalogPeriodQuote         `json:"beforeCarry"`
 	CarryIn     int64                      `json:"carryInMinor,omitempty"`
 	AfterCarry  *catalogPeriodQuote        `json:"afterCarry,omitempty"`
@@ -254,7 +255,11 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 			if rule != nil {
 				targets := make([]catalogPeriodGroupTarget, 0, len(rule.Definition.Items))
 				keys := make([]catalogGroupTargetKey, 0, len(rule.Definition.Items))
+				var items []catalogPeriodItem
 				for index, item := range rule.Definition.Items {
+					if item.FixedMinor != nil {
+						continue
+					}
 					target, key, issue := directory.groupTarget(item, event.PaidAt)
 					if issue != "" {
 						applied.issue = issue
@@ -272,6 +277,7 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 						break
 					}
 					targets, keys = append(targets, target), append(keys, key)
+					items = append(items, item)
 				}
 				if applied.issue == "" {
 					raw, err := json.Marshal(struct {
@@ -286,7 +292,7 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					applied.group = groups[key]
 					if applied.group == nil {
 						applied.group = &catalogPeriodGroup{ID: key, RuleID: rule.ID, Version: rule.Version, Targets: targets,
-							posting: catalogAggregateGroupInput{Targets: keys}, items: rule.Definition.Items}
+							posting: catalogAggregateGroupInput{Targets: keys}, items: items}
 						groups[key] = applied.group
 					}
 				}
@@ -342,6 +348,78 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 		return cmp.Or(cmp.Compare(a.Version, b.Version), cmp.Compare(a.ItemKey, b.ItemKey), cmp.Compare(a.Code, b.Code))
 	})
 	return report, nil
+}
+
+func appendCatalogPeriodFixedGroup(report *catalogPeriodGroupReport, rules []catalogAggregateRule, directory catalogAggregateDirectory, at time.Time) error {
+	index := slices.IndexFunc(rules, func(rule catalogAggregateRule) bool {
+		return !at.Before(rule.From) && (rule.Through == nil || at.Before(*rule.Through))
+	})
+	if index < 0 {
+		return nil
+	}
+	rule := rules[index]
+	if !slices.ContainsFunc(rule.Definition.Items, func(item catalogPeriodItem) bool { return item.FixedMinor != nil && *item.FixedMinor > 0 }) {
+		return nil
+	}
+	group := catalogPeriodGroup{RuleID: rule.ID, Version: rule.Version, FixedOnly: true}
+	for _, other := range report.Groups {
+		if err := addCatalogActivityAmount(other.Receipts, &group.Receipts); err != nil {
+			return err
+		}
+		if err := addCatalogActivityAmount(other.Refunds, &group.Refunds); err != nil {
+			return err
+		}
+		if err := addCatalogActivityAmount(other.CarryIn, &group.CarryIn); err != nil {
+			return err
+		}
+		group.Payments += other.Payments
+	}
+	group.Net = group.Receipts - group.Refunds
+	net, err := addMinor(group.Net, group.CarryIn)
+	if err != nil {
+		return err
+	}
+	if net <= 0 {
+		return nil
+	}
+	for index, item := range rule.Definition.Items {
+		if item.FixedMinor == nil || *item.FixedMinor == 0 {
+			continue
+		}
+		target, key, issue := directory.groupTarget(item, at)
+		if issue != "" {
+			report.Issues[issue]++
+			problem := catalogPeriodTargetIssue{RuleID: rule.ID, Version: rule.Version, ItemKey: item.ItemKey,
+				Label: item.Label, Code: issue, Count: 1}
+			if rule.ID == "" {
+				problem.ProposedItemIndex = &index
+			}
+			report.TargetIssues = append(report.TargetIssues, problem)
+			report.postingIssues = append(report.postingIssues, draftIssue{Component: item.Label, Code: issue})
+			continue
+		}
+		group.Targets = append(group.Targets, target)
+		group.posting.Targets = append(group.posting.Targets, key)
+		group.items = append(group.items, item)
+	}
+	if len(group.items) == 0 {
+		return nil
+	}
+	groupID := sha256.Sum256([]byte("fixed-period:" + rule.ID))
+	group.ID = hex.EncodeToString(groupID[:])
+	group.BeforeCarry, err = quoteCatalogPeriod(group.items, group.Receipts, group.Refunds, 0)
+	if err != nil {
+		return err
+	}
+	if group.CarryIn != 0 {
+		quote, err := quoteCatalogPeriod(group.items, group.Receipts, group.Refunds, group.CarryIn)
+		if err != nil {
+			return err
+		}
+		group.AfterCarry = &quote
+	}
+	report.Groups = append(report.Groups, group)
+	return nil
 }
 
 const catalogAggregateVersionsSQL = `SELECT v.source_id::text,v.version_no,greatest(v.effective_from,p.resume_from),

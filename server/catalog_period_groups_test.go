@@ -133,3 +133,69 @@ func TestCatalogPeriodTargetIssueIdentifiesProposedArrangement(t *testing.T) {
 		}
 	}
 }
+
+func TestCatalogPeriodFixedAwardUsesWholeNetAndClosingPoolOwner(t *testing.T) {
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, shanghai)
+	handoff := start.AddDate(0, 0, 15)
+	end := start.AddDate(0, 1, 0)
+	amount := int64(25000)
+	items := []catalogPeriodItem{
+		{ItemKey: "pool-rate", Label: "比例分润", TargetKind: "pool", OrganizationKey: "p", OwnerRole: "OWNER", MemberRole: "MEMBER",
+			Tiers: []catalogPeriodTier{{Rate: 1000}}},
+		{ItemKey: "pool-fixed", Label: "整期补贴", TargetKind: "pool", OrganizationKey: "p", OwnerRole: "OWNER", MemberRole: "MEMBER",
+			FixedMinor: &amount},
+	}
+	rules := []catalogAggregateRule{{ID: "rule", Version: 1, From: start, Definition: catalogPeriodDefinition{
+		Items: items, Scenarios: []string{"IN"},
+	}}}
+	directory := catalogAggregateDirectory{
+		Organizations: []vipBenefitOrganization{{Party: "p", Unit: "pool", Name: "运营池"}},
+		Duties: map[catalogAggregateDutyKey][]catalogAggregateDuty{
+			{"pool", "OWNER"}: {
+				{ID: 1, Name: "原负责人", vipInterval: vipInterval{From: start, To: &handoff}},
+				{ID: 2, Name: "新负责人", vipInterval: vipInterval{From: handoff, To: &end}},
+				{ID: 3, Name: "次期负责人", vipInterval: vipInterval{From: end}},
+			},
+			{"pool", "MEMBER"}: {{ID: 8, vipInterval: vipInterval{From: start}}},
+		},
+	}
+	first := catalogActivityEvent{EventID: 1, PaymentID: 1, PaidAt: start, Scenario: "IN", Amount: 20000}
+	last := catalogActivityEvent{EventID: 2, PaymentID: 2, PaidAt: handoff, Scenario: "IN", Amount: 10000}
+	outside := catalogActivityEvent{EventID: 3, PaymentID: 3, PaidAt: start, Scenario: "OUT", Amount: 90000}
+	report, err := groupCatalogPeriodEvents([]catalogActivityEvent{first, last, outside}, rules, directory, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Groups) != 2 {
+		t.Fatalf("the proportional part still uses the two payment-date groups: %+v", report)
+	}
+	for _, group := range report.Groups {
+		if group.quote().Total != group.Receipts/10 || len(group.Targets) != 1 {
+			t.Fatalf("the fixed amount must not be duplicated in proportional groups: %+v", group)
+		}
+	}
+	if err := appendCatalogPeriodFixedGroup(&report, rules, directory, end.Add(-time.Microsecond)); err != nil {
+		t.Fatal(err)
+	}
+	fixed := report.Groups[len(report.Groups)-1]
+	if len(report.Groups) != 3 || !fixed.FixedOnly || fixed.Receipts != 30000 ||
+		fixed.quote().Total != amount || fixed.posting.Targets[0].Owner != 2 || fixed.Targets[0].OwnerName != "新负责人" {
+		t.Fatalf("one complete fixed payout should go to the person in office at the close: %+v", fixed)
+	}
+	for _, tc := range []struct {
+		label  string
+		groups []catalogPeriodGroup
+	}{
+		{"empty period", nil},
+		{"full refund", []catalogPeriodGroup{{Receipts: 15000, Refunds: 15000}}},
+		{"prior refund offsets this month", []catalogPeriodGroup{{Receipts: 15000, CarryIn: -16000}}},
+	} {
+		t.Run(tc.label, func(t *testing.T) {
+			report := catalogPeriodGroupReport{Groups: tc.groups, Issues: map[string]int{}}
+			if err := appendCatalogPeriodFixedGroup(&report, rules, catalogAggregateDirectory{}, end.Add(-time.Microsecond)); err != nil ||
+				len(report.Groups) != len(tc.groups) || len(report.Issues) != 0 {
+				t.Fatalf("no payable fixed amount or payee lookup is needed: %+v %v", report, err)
+			}
+		})
+	}
+}

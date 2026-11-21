@@ -22,6 +22,7 @@ type catalogPeriodComponentEdit struct {
 	OwnerRole       string              `json:"ownerRole,omitempty"`
 	MemberRole      string              `json:"memberRole,omitempty"`
 	Tiers           []catalogPeriodTier `json:"tiers"`
+	FixedMinor      *int64              `json:"fixedMinor,omitempty"`
 }
 
 func editCatalogPeriodComponents(raw json.RawMessage, edits []catalogPeriodComponentEdit, options catalogStructureOptions) (json.RawMessage, error) {
@@ -55,7 +56,10 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 		if !textOK(edit.Label, 80) {
 			return nil, invalid
 		}
-		if !validCatalogPeriodTiers(edit.Tiers) {
+		if edit.FixedMinor != nil && (!validCatalogPeriodFixed(edit.FixedMinor) || len(edit.Tiers) != 0) {
+			return nil, invalid
+		}
+		if edit.FixedMinor == nil && !validCatalogPeriodTiers(edit.Tiers) {
 			return nil, errCatalogPeriodTiers
 		}
 		var before catalogPeriodItem
@@ -82,7 +86,21 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 			fields["label"], _ = json.Marshal(edit.Label)
 			changed = true
 		}
-		if !slices.EqualFunc(before.Tiers, edit.Tiers, sameCatalogPeriodTier) {
+		if edit.FixedMinor != nil {
+			if before.FixedMinor == nil || *before.FixedMinor != *edit.FixedMinor {
+				fields["type"] = json.RawMessage(`"FIXED"`)
+				fields["amount_minor"], _ = json.Marshal(edit.FixedMinor)
+				delete(fields, "tier_table")
+				delete(fields, "rate_bps")
+				delete(fields, "metric_code")
+				delete(fields, "metric_unit")
+				changed = true
+			}
+		} else if before.FixedMinor != nil || !slices.EqualFunc(before.Tiers, edit.Tiers, sameCatalogPeriodTier) {
+			fields["type"] = json.RawMessage(`"TIER_RATE"`)
+			fields["metric_code"] = json.RawMessage(`"MONTHLY_NET_RECEIPTS"`)
+			fields["metric_unit"] = json.RawMessage(`"AMOUNT_MINOR"`)
+			delete(fields, "amount_minor")
 			fields["tier_table"], err = encodeCatalogPeriodTiers(edit.Tiers)
 			if err != nil {
 				return nil, err
@@ -112,7 +130,7 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 	if edit.TargetKind != "person" && (org.Value == "" || edit.PersonID != 0) {
 		return errCatalogPeriodRecipient
 	}
-	action := vipBenefitAction{Item: edit.ItemKey, Type: "TIER_RATE", Mode: "PARTY", Role: "COMPANY", Company: org.Value}
+	action := vipBenefitAction{Item: edit.ItemKey, Mode: "PARTY", Role: "COMPANY", Company: org.Value}
 	switch edit.TargetKind {
 	case "person":
 		if edit.PersonID <= 0 || edit.OrganizationKey != "" || edit.PoolName != "" || edit.OwnerRole != "" || edit.MemberRole != "" {
@@ -147,11 +165,10 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 		"pool_code", "pool_name", "allocation_owner_role", "eligibility_role"} {
 		delete(fields, key)
 	}
-	values := map[string]string{"item_key": action.Item, "type": action.Type, "role": action.Role, "beneficiary_mode": action.Mode,
+	values := map[string]string{"item_key": action.Item, "role": action.Role, "beneficiary_mode": action.Mode,
 		"designated_party_id":          action.Designated,
 		"company_beneficiary_party_id": action.Company, "pool_party_id": action.PoolParty, "pool_organization_unit_id": action.PoolUnit,
-		"pool_code": action.PoolCode, "pool_name": action.PoolName, "allocation_owner_role": action.OwnerRole,
-		"metric_code": "MONTHLY_NET_RECEIPTS", "metric_unit": "AMOUNT_MINOR"}
+		"pool_code": action.PoolCode, "pool_name": action.PoolName, "allocation_owner_role": action.OwnerRole}
 	for key, value := range values {
 		if value != "" {
 			fields[key], _ = json.Marshal(value)

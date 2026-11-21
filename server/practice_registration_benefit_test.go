@@ -13,7 +13,7 @@ import (
 
 func TestPracticeRegistrationBenefitMatchesConfirmedSignupAndKeepsRefundPayee(t *testing.T) {
 	ctx := context.Background()
-	s := workspace{db: integrationDB(t)}
+	s := workspace{db: integrationDB(t), sources: map[string]sourceConfig{"DCZD": {BaseURL: "https://fixture.invalid", Token: "fixture"}}}
 	createID := func(result any, err error) int64 {
 		t.Helper()
 		if err != nil {
@@ -118,8 +118,12 @@ func TestPracticeRegistrationBenefitMatchesConfirmedSignupAndKeepsRefundPayee(t 
 	}
 	save(facts, true)
 	preview, err := s.calculateCurrentDraft(ctx, period, 0)
-	if err != nil || preview.IssueCount != 4 || preview.Total != 0 {
-		t.Fatalf("all invalid signups must be listed once and prevent guessing, got %+v %v", preview, err)
+	if err != nil || preview.IssueCount != 4 || preview.Total != 23200 || preview.LineCount != 2 {
+		t.Fatalf("preview should price only the verified signup and list all invalid signups once, got %+v %v", preview, err)
+	}
+	exec("UPDATE products SET settlement_enabled=true WHERE id=$1", product)
+	if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: period, ExpectedVersion: preview.Version}, "fixture"); !errors.Is(err, errSettlementPending) {
+		t.Fatalf("the known part is visible but awaiting the missing signups before settlement: %v", err)
 	}
 	var issues []string
 	if err := s.db.QueryRow(ctx, `SELECT array_agg(v.order_id||':'||i.code ORDER BY v.order_id)
@@ -190,5 +194,31 @@ func TestPracticeRegistrationBenefitMatchesConfirmedSignupAndKeepsRefundPayee(t 
 	 JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1`, refundPeriod, person, delivery).
 		Scan(&refundedPerson, &refundedCompany); err != nil || refundedPerson != -3000 || refundedCompany != -2000 {
 		t.Fatalf("expected both original recipients to have the refund, got %d %d %v", refundedPerson, refundedCompany, err)
+	}
+}
+
+func TestRegistrationIssuesBlockClassDependentAmountsOnly(t *testing.T) {
+	perClass, perSignup := int64(2500), int64(125)
+	scope := &practiceRegistrationScope{Companies: []string{"30"}}
+	rule := paymentRule{ID: 1, Components: []component{
+		{Type: "delivery", PeriodBenefit: &practicePeriodBenefit{Label: "整班固定", PersonID: 2, RegistrationScope: scope, FixedMinor: &perClass, FixedPerClass: true}},
+		{Type: "manager", PeriodBenefit: &practicePeriodBenefit{Label: "整班阶梯", PersonID: 2, RegistrationScope: scope, Tiers: []practicePeriodRate{{Value: 100000}}}},
+		{Type: "delivery", PeriodBenefit: &practicePeriodBenefit{Label: "每人固定", PersonID: 2, RegistrationScope: scope, FixedMinor: &perSignup}},
+	}}
+	paid := int64(10000)
+	members := []practiceEnrollment{{ID: 1, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"1"}},
+		{ID: 2, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"2"}}}
+	orders := map[string][]paymentInput{
+		"1": {{ID: 1, Fact: sourceFact{Source: "DCZD", PaymentID: "1", AmountMinor: &paid}}},
+		"2": {{ID: 2, Fact: sourceFact{Source: "DCZD", PaymentID: "2", AmountMinor: &paid}}},
+	}
+	runtime := practiceDraftRuntime{registrations: map[int64]practiceRegistrationInput{
+		1: {VersionID: 10, CompanyID: "30"},
+		2: {VersionID: 20, CompanyID: "30", Issue: "PRACTICE_REGISTRATION_PERIOD_MISMATCH"},
+	}}
+	draft, err := calculatePracticeDraft(members, rule, orders, nil, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || len(draft.Issues) != 1 || len(draft.Lines) != 1 || draft.Total != perSignup ||
+		draft.Lines[0].FactID != 1 || draft.Lines[0].Component != "period:delivery:2" {
+		t.Fatalf("preview should only pay the verified signup's independent amount: %+v %v", draft, err)
 	}
 }

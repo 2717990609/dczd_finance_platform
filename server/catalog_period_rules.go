@@ -28,7 +28,8 @@ type catalogPeriodItem struct {
 	PoolName        string              `json:"poolName,omitempty"`
 	OwnerRole       string              `json:"ownerRole,omitempty"`
 	MemberRole      string              `json:"memberRole,omitempty"`
-	Tiers           []catalogPeriodTier `json:"tiers"`
+	Tiers           []catalogPeriodTier `json:"tiers,omitempty"`
+	FixedMinor      *int64              `json:"fixedMinor,omitempty"`
 	unit            string
 }
 
@@ -116,9 +117,19 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 				action.PoolUnit = directUnit
 			}
 		}
-		if action.Item == "" || items[action.Item] || action.Label == "" || !action.validTarget() || action.Mode == vipOrderReferrerMode ||
-			action.Type != "TIER_RATE" || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" ||
-			!validCatalogPeriodTiers(action.Tiers) {
+		if action.Item == "" || items[action.Item] || action.Label == "" || !action.validTarget() || action.Mode == vipOrderReferrerMode {
+			return result, errCatalogRateUnavailable
+		}
+		switch action.Type {
+		case "TIER_RATE":
+			if action.Fixed != nil || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" || !validCatalogPeriodTiers(action.Tiers) {
+				return result, errCatalogRateUnavailable
+			}
+		case "FIXED":
+			if !validCatalogPeriodFixed(action.Fixed) || action.Rate != nil || len(action.Tiers) != 0 {
+				return result, errCatalogRateUnavailable
+			}
+		default:
 			return result, errCatalogRateUnavailable
 		}
 		items[action.Item] = true
@@ -137,9 +148,13 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		}
 		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: action.targetKind(),
 			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
-			MemberRole: memberRole, unit: unit})
+			MemberRole: memberRole, FixedMinor: action.Fixed, unit: unit})
 	}
 	return result, nil
+}
+
+func validCatalogPeriodFixed(amount *int64) bool {
+	return amount != nil && *amount >= 0 && *amount <= 100000000000
 }
 
 func validCatalogPeriodTiers(tiers []catalogPeriodTier) bool {
@@ -182,6 +197,9 @@ func editCatalogPeriodTiers(raw json.RawMessage, edits []catalogPeriodTierEdit) 
 		tiers, found := replacements[item.ItemKey]
 		if !found {
 			continue
+		}
+		if item.FixedMinor != nil {
+			return nil, errCatalogPeriodTiers
 		}
 		delete(replacements, item.ItemKey)
 		if slices.EqualFunc(tiers, item.Tiers, sameCatalogPeriodTier) {
@@ -232,6 +250,7 @@ type catalogPeriodAward struct {
 	Label   string `json:"label"`
 	Rate    int64  `json:"rateBps"`
 	Amount  int64  `json:"amountMinor"`
+	Fixed   bool   `json:"fixed,omitempty"`
 }
 
 type catalogPeriodQuote struct {
@@ -252,19 +271,26 @@ func quoteCatalogPeriod(items []catalogPeriodItem, received, refunds, carry int6
 	}
 	result.Basis, result.CarryForward = max(net, 0), min(net, 0)
 	for _, item := range items {
-		i := slices.IndexFunc(item.Tiers, func(t catalogPeriodTier) bool {
-			return result.Basis >= t.From && (t.Until == nil || result.Basis < *t.Until)
-		})
-		if i < 0 {
-			return result, errCatalogPeriodTiers
+		award := catalogPeriodAward{ItemKey: item.ItemKey, Label: item.Label, Fixed: item.FixedMinor != nil}
+		if award.Fixed {
+			if result.Basis > 0 {
+				award.Amount = *item.FixedMinor
+			}
+		} else {
+			i := slices.IndexFunc(item.Tiers, func(t catalogPeriodTier) bool {
+				return result.Basis >= t.From && (t.Until == nil || result.Basis < *t.Until)
+			})
+			if i < 0 {
+				return result, errCatalogPeriodTiers
+			}
+			award.Rate = item.Tiers[i].Rate
+			award.Amount = calculatePaymentAmount(result.Basis, component{Mode: "rate", Value: award.Rate})
 		}
-		rate := item.Tiers[i].Rate
-		amount := calculatePaymentAmount(result.Basis, component{Mode: "rate", Value: rate})
-		result.Total, err = addMinor(result.Total, amount)
+		result.Total, err = addMinor(result.Total, award.Amount)
 		if err != nil {
 			return result, err
 		}
-		result.Awards = append(result.Awards, catalogPeriodAward{item.ItemKey, item.Label, rate, amount})
+		result.Awards = append(result.Awards, award)
 	}
 	return result, nil
 }

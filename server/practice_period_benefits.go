@@ -345,7 +345,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		}
 		if scope := b.RegistrationScope; scope != nil {
 			input := runtime.registrations[p.member.ID]
-			if !scope.matches(input.SellerID, input.CompanyID) {
+			if input.VersionID == 0 || input.Issue != "" || !scope.matches(input.SellerID, input.CompanyID) {
 				continue
 			}
 		}
@@ -546,7 +546,8 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 			participants = classPurchases
 		}
 		if b.RegistrationScope != nil &&
-			appendPracticeRegistrationIssues(draft, rule.ID, part.ClassMember, participants, runtime.registrations, reportedRegistrations) {
+			appendPracticeRegistrationIssues(draft, rule.ID, part.ClassMember, participants, runtime.registrations, reportedRegistrations) &&
+			(b.FixedPerClass || len(b.Tiers) != 0) {
 			continue
 		}
 		shares, basis, issue, err := collectPracticeBenefitShares(part, participants, validAppointments, identities, paymentCounts, runtime)

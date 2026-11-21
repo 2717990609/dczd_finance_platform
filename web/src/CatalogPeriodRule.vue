@@ -113,23 +113,28 @@ const scenarioOptions = computed(() => {
 })
 
 function editableRows(items) {
-  return items.map(item => ({uid:item.itemKey,itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,
-    organizationKey:item.organizationKey,personId:item.personId,personName:item.personId ? item.targetName : undefined,
-    poolName:item.poolName || '',ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
-    method:item.tiers.length===1 ? 'rate' : 'tiers',
-    uniformRate:item.tiers.length===1 ? item.tiers[0].rate_bps/100 : undefined,
-    tiers:item.tiers.length===1 ? [] : item.tiers.map(row=>({from:(row.min_inclusive || 0)/100,rate:row.rate_bps/100}))}))
+  return items.map(item => {
+    const tiers = item.tiers || []
+    return {uid:item.itemKey,itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,
+      organizationKey:item.organizationKey,personId:item.personId,personName:item.personId ? item.targetName : undefined,
+      poolName:item.poolName || '',ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
+      method:item.fixedMinor!=null ? 'fixed' : tiers.length===1 ? 'rate' : 'tiers',
+      fixedAmount:item.fixedMinor==null ? undefined : item.fixedMinor/100,
+      uniformRate:tiers.length===1 ? tiers[0].rate_bps/100 : undefined,
+      tiers:tiers.length===1 ? [] : tiers.map(row=>({from:(row.min_inclusive || 0)/100,rate:row.rate_bps/100}))}
+  })
 }
 function configuredRow({method,uniformRate,tiers,...item}) {
   return {...item,tiers:method==='rate' ? [{from:0,rate:uniformRate}] : tiers}
 }
-const methodLabels = {rate:'统一比例',tiers:'按净额阶梯'}
+const methodLabels = {rate:'统一比例',tiers:'按净额阶梯',fixed:'整期固定金额'}
 function setMethod(item, method) {
   if (method==='tiers' && !item.tiers.length) item.tiers = [{from:0,rate:item.uniformRate}]
   if (method==='rate' && item.uniformRate==null && item.tiers.length===1) item.uniformRate = item.tiers[0].rate
   item.method = method
 }
 function methodSummary(item) {
+  if (item.method==='fixed') return item.fixedAmount==null ? methodLabels.fixed : props.formatMoney(Math.round(item.fixedAmount*100))+' / 期'
   if (item.method==='tiers') return item.tiers.length+' 档阶梯'
   return item.uniformRate==null ? methodLabels.rate : '统一 '+item.uniformRate+'%'
 }
@@ -247,11 +252,13 @@ function componentChanges() {
     if (item.targetKind==='pool' && (!item.poolName?.trim() || !item.ownerRole || !item.memberRole)) {
       throw new Error('请填写团队池名称、负责人职责和成员职责。')
     }
+    const target = {itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,organizationKey:item.organizationKey,
+      personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole}
+    if (item.method==='fixed') return {...target,fixedMinor:minor(item.fixedAmount,'请输入整期固定金额。')}
     const {tiers} = configuredRow(item)
     const starts = tiers.map(row=>minor(row.from,'请输入每档净额起点。'))
     if (starts.some((from,index)=>index && from<=starts[index-1])) throw new Error('每一档净额起点须高于上一档。')
-    return {itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,organizationKey:item.organizationKey,
-      personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole,tiers:tiers.map((row,index)=>{
+    return {...target,tiers:tiers.map((row,index)=>{
       const rate = minor(row.rate,item.method==='rate' ? '请输入统一比例。' : '请输入每档比例。')
       if (rate>10000) throw new Error('比例须在 0% 到 100% 之间。')
       return {min_inclusive:starts[index],max_exclusive:starts[index+1],rate_bps:rate}
@@ -574,8 +581,16 @@ async function resumeRule() {
             </a-form>
             <span v-else-if="item.method==='rate'">{{ methodSummary(item) }}</span>
             <span v-if="item.method==='rate'" class="period-method-formula">本组净额 × 统一比例</span>
+            <a-form v-if="item.method==='fixed' && canSave" layout="inline">
+              <a-form-item label="整期金额（元）" html-for="period-benefit-fixed-amount">
+                <a-input-number id="period-benefit-fixed-amount" v-model:value="item.fixedAmount" size="small" :min="0"
+                  :precision="2" :disabled="saving"/>
+              </a-form-item>
+            </a-form>
+            <span v-else-if="item.method==='fixed'">{{ methodSummary(item) }}</span>
+            <span v-if="item.method==='fixed'" class="period-method-formula">符合范围的净实收大于零时，整期计提一次。<template v-if="item.targetKind==='pool'"> 由账期末有效负责人承接。</template></span>
           </div>
-          <p v-if="rows.length>1 && rows.some(row=>row.targetKind==='pool')" class="rule-formula">
+          <p v-if="item.method!=='fixed' && rows.length>1 && rows.some(row=>row.targetKind==='pool' && row.method!=='fixed')" class="rule-formula">
             团队池负责人或可分配成员变动时分组，同组各收款安排共用本组净额。
           </p>
           <template v-if="item.method==='tiers'">
@@ -672,20 +687,24 @@ async function resumeRule() {
                       <th>{{ activity.grouping.priorUnsettled ? '结转前试算' : '分润试算' }}</th></tr></thead>
                     <tbody>
                       <tr v-for="group in activity.grouping.groups" :key="group.id">
-                        <td>{{ group.ruleId ? 'v'+group.version : '待发布' }}</td>
+                        <td>{{ group.ruleId ? 'v'+group.version : '待发布' }}
+                          <small v-if="group.fixedOnly" class="order-version">整期固定</small></td>
                         <td>
                           <div v-for="target in group.targets" :key="target.itemKey">
                             {{ target.name }}
                             <small v-if="target.ownerName" class="order-version">{{ target.ownerName }}负责 · {{ target.memberCount }} 人可分配</small>
                           </div>
                         </td>
-                        <td>{{ formatMoney(group.receiptsMinor) }}</td>
-                        <td>{{ formatMoney(group.refundsMinor) }}</td>
-                        <td>{{ formatMoney(group.netMinor) }}</td>
-                        <td v-if="showsPriorCarry">{{ formatMoney(-(group.carryInMinor || 0)) }}</td>
+                        <td>{{ group.fixedOnly ? '—' : formatMoney(group.receiptsMinor) }}</td>
+                        <td>{{ group.fixedOnly ? '—' : formatMoney(group.refundsMinor) }}</td>
+                        <td>{{ group.fixedOnly ? '—' : formatMoney(group.netMinor) }}</td>
+                        <td v-if="showsPriorCarry">{{ group.fixedOnly ? '—' : formatMoney(-(group.carryInMinor || 0)) }}</td>
                         <td>
+                          <small v-if="group.fixedOnly" class="order-version">
+                            可计提净额 {{ formatMoney((group.afterCarry || group.beforeCarry).basisMinor) }}
+                          </small>
                           <div v-for="award in (group.afterCarry || group.beforeCarry).awards" :key="award.itemKey">
-                            {{ formatMoney(award.amountMinor) }} <small>· {{ award.label }} {{ award.rateBps/100 }}%</small>
+                            {{ formatMoney(award.amountMinor) }} <small>· {{ award.label }}<template v-if="!award.fixed"> {{ award.rateBps/100 }}%</template></small>
                           </div>
                           <small v-if="(group.afterCarry || group.beforeCarry).carryForwardMinor<0" class="order-version">
                             {{ activity.grouping.priorUnsettled ? '本期未抵扣退款' : '转下期退款' }} {{ formatMoney(-(group.afterCarry || group.beforeCarry).carryForwardMinor) }}
@@ -729,7 +748,7 @@ async function resumeRule() {
         <a-descriptions v-if="quote" size="small" :column="1" bordered class="period-quote-result" aria-label="金额演算结果">
           <a-descriptions-item label="可计提净额">{{ formatMoney(quote.basisMinor) }}</a-descriptions-item>
           <a-descriptions-item v-for="award in quote.awards" :key="award.itemKey"
-            :label="award.label || sheet.items.find(item=>item.itemKey===award.itemKey)?.label">{{ award.rateBps/100 }}% · {{ formatMoney(award.amountMinor) }}</a-descriptions-item>
+            :label="award.label || sheet.items.find(item=>item.itemKey===award.itemKey)?.label">{{ award.fixed ? '整期固定' : award.rateBps/100+'%' }} · {{ formatMoney(award.amountMinor) }}</a-descriptions-item>
           <a-descriptions-item label="下期结转退款">{{ formatMoney(-quote.carryForwardMinor) }}</a-descriptions-item>
         </a-descriptions>
         </template>

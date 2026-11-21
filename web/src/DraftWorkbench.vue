@@ -324,7 +324,7 @@ async function loadMore(section, cursorName) {
     </div>
     <div v-if="draft" class="workbench-totals">
       <div v-if="draft.refundsReady || draft.aggregatePackageId" class="workbench-net">
-        <small>{{ draft.aggregatePackageId ? '整期计提' : draft.practiceRosterVersion ? '本班净分润' : '本期净分润' }}</small><strong>{{ formatMoney(draft.totalMinor) }}</strong>
+        <small>{{ draft.aggregatePackageId ? '整期计提' : draft.practiceRosterVersion ? (draft.issueCount ? '已核算净分润' : '本班净分润') : '本期净分润' }}</small><strong>{{ formatMoney(draft.totalMinor) }}</strong>
       </div>
       <div v-if="!draft.aggregatePackageId && !draft.practiceRefundMonth && (!draft.practiceRosterVersion || draft.correctionCount || !draft.refundsReady)"><small>计提分润</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div>
       <div v-if="!draft.aggregatePackageId && !draft.practiceRosterVersion"><small>{{ draft.practiceRefundMonth ? '退款调整' : '退款扣减' }}</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div>
@@ -359,9 +359,9 @@ async function loadMore(section, cursorName) {
         {title:'本期退款',key:'refundsMinor'},{title:'上期转入退款',key:'carryInMinor'},
         {title:'转出到下期',key:'carryOutMinor'},{title:'明细',key:'events'}]">
         <template #bodyCell="{column,record}">
-          <template v-if="column.key==='ruleVersion'">v{{ record.ruleVersion }}</template>
+          <template v-if="column.key==='ruleVersion'">v{{ record.ruleVersion }}<small v-if="record.fixedOnly" class="order-version">整期固定</small></template>
           <button v-else-if="column.key==='events'" type="button" class="order-link" @click="aggregateGroup=record.key">查看收退款</button>
-          <span v-else class="numeric">{{ formatMoney(Math.abs(record[column.key])) }}</span>
+          <span v-else class="numeric">{{ record.fixedOnly ? '—' : formatMoney(Math.abs(record[column.key])) }}</span>
         </template>
       </a-table>
     </div>

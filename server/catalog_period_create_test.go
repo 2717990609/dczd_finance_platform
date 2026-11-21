@@ -396,4 +396,112 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		activity.Grouping.Groups[0].quote().CarryForward != -5000 {
 		t.Fatalf("the resumed period should recover the latest frozen carry even across paused months: %d %s %v", w.Code, w.Body.String(), err)
 	}
+	t.Run("fixed pool uses the closing owner", func(t *testing.T) {
+		const pool = "10000000-0000-4000-8000-000000000983"
+		var appointmentSnapshot time.Time
+		if err := db.QueryRow(ctx, `SELECT coalesce(appointments_at,captured_at) FROM catalog_sales_context WHERE source='DCAI'`).Scan(&appointmentSnapshot); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(ctx, `INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from)
+		 VALUES(gen_random_uuid(),9801,$1,'MEMBER','2026-09-01'),(gen_random_uuid(),9803,$1,'MEMBER','2026-09-01'),
+		  (gen_random_uuid(),9804,$1,'MEMBER','2026-09-01')`, pool); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(ctx, `INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,valid_from,valid_to,observed_at)
+		 VALUES(gen_random_uuid(),'DCAI',9801,'PROJECT_OWNER','ORGANIZATION_UNIT',$1,'2026-09-01','2026-10-10',$2),
+		  (gen_random_uuid(),'DCAI',9803,'PROJECT_OWNER','ORGANIZATION_UNIT',$1,'2026-10-10',NULL,$2),
+		  (gen_random_uuid(),'DCAI',9804,'DELIVERY_TEAM','ORGANIZATION_UNIT',$1,'2026-09-01',NULL,$2)`, pool, appointmentSnapshot); err != nil {
+			t.Fatal(err)
+		}
+		const fixedInput = `{"create":{"productId":980,"label":"固定规则","cycle":"MONTHLY_25_TO_24"},
+		 "effectiveFrom":"2026-09-25T00:00:00+08:00","scenarioCodes":["SECOND"],"components":[
+		 {"label":"公司比例","targetKind":"company","organizationKey":"unit:10000000-0000-4000-8000-000000000981","tiers":[{"rate_bps":1500}]},
+		 {"label":"每期固定池","targetKind":"pool","organizationKey":"unit:10000000-0000-4000-8000-000000000983",
+		  "poolName":"固定池","ownerRole":"PROJECT_OWNER","memberRole":"DELIVERY_TEAM","fixedMinor":5000}]}`
+		manual := submit(980, path+"/preview", s.postCatalogPeriodQuote, strings.TrimSuffix(fixedInput, "}")+`,"receiptsMinor":123}`)
+		var fixedQuote catalogPeriodQuote
+		if err := json.Unmarshal(manual.Body.Bytes(), &fixedQuote); err != nil || manual.Code != 200 || len(fixedQuote.Awards) != 2 ||
+			!fixedQuote.Awards[1].Fixed || fixedQuote.Awards[1].Amount != 5000 {
+			t.Fatalf("manual quote should use the configured amount on positive net receipts: %d %s %v", manual.Code, manual.Body, err)
+		}
+		proposed := submit(980, "/api/v1/catalog-period-activity", s.postCatalogPeriodActivity, fixedInput)
+		var fixedReport catalogPeriodActivity
+		if err := json.Unmarshal(proposed.Body.Bytes(), &fixedReport); err != nil || proposed.Code != 200 ||
+			fixedReport.Grouping == nil || len(fixedReport.Grouping.Groups) != 2 || !fixedReport.Grouping.Groups[1].FixedOnly ||
+			fixedReport.Grouping.Groups[1].Targets[0].OwnerName != "另一组销售" {
+			t.Fatalf("order trial should use the incoming owner even though the payment preceded the handoff: %d %s %v", proposed.Code, proposed.Body, err)
+		}
+		created := submit(980, path, s.postCatalogPeriodRule, fixedInput)
+		var publishedFixed catalogPublication
+		if err := json.Unmarshal(created.Body.Bytes(), &publishedFixed); err != nil || created.Code != 200 {
+			t.Fatalf("fixed amount publication: %d %s %v", created.Code, created.Body, err)
+		}
+		opened, err := s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: publishedFixed.ID, Month: "2026-10"})
+		if err != nil || opened.(draftSummary).Total != 9500 || opened.(draftSummary).LineCount != 2 || opened.(draftSummary).IssueCount != 0 {
+			t.Fatalf("one fixed pool award and the company percentage must survive publication: %+v %v", opened, err)
+		}
+		draft := opened.(draftSummary)
+		var owner, fixedAmount int64
+		var fixedGroup string
+		if err := db.QueryRow(ctx, `SELECT l.allocation_owner_id,l.amount_minor,g.group_key
+		 FROM calculation_draft_lines l JOIN catalog_aggregate_draft_groups g
+		  ON (g.period_id,g.group_key)=(l.period_id,l.aggregate_group_key)
+		 WHERE l.period_id=$1 AND g.fixed_only AND l.source_version_id IS NULL`, draft.PeriodID).Scan(&owner, &fixedAmount, &fixedGroup); err != nil ||
+			owner != 9803 || fixedAmount != 5000 {
+			t.Fatalf("formal draft must identify the closing owner and the full amount: %d %d %v", owner, fixedAmount, err)
+		}
+		var groupEvents struct{ Total int }
+		if err := db.QueryRow(ctx, catalogAggregateDraftEventsSQL, draft.PeriodID, draft.Version, fixedGroup, 0).Scan(&groupEvents); err != nil || groupEvents.Total != 1 {
+			t.Fatalf("fixed award should trace existing payment versions without copying them: %+v %v", groupEvents, err)
+		}
+		poolResponse := httptest.NewRecorder()
+		s.draftPools(poolResponse, httptest.NewRequest(http.MethodGet,
+			fmt.Sprintf("/api/v1/draft-pools?periodId=%d&version=%d", draft.PeriodID, draft.Version), nil))
+		var pools poolDraftReport
+		if err := json.Unmarshal(poolResponse.Body.Bytes(), &pools); err != nil || poolResponse.Code != 200 ||
+			len(pools.Items) != 1 || pools.Items[0].Balance != 5000 || len(pools.Items[0].Members) != 1 ||
+			pools.Items[0].Members[0].ID != 9804 {
+			t.Fatalf("fixed group funding and closing members are required for allocation: %d %s %v", poolResponse.Code, poolResponse.Body, err)
+		}
+		if _, err := s.savePoolAllocation(ctx, savePoolAllocationInput{PeriodID: draft.PeriodID, Version: draft.Version,
+			Basis: pools.Basis, poolScope: pools.Items[0].poolScope, Shares: []poolAllocationShare{{PersonID: 9804, Amount: 5000}}}); err != nil {
+			t.Fatal(err)
+		}
+		reviewResponse := httptest.NewRecorder()
+		s.getSettlementReview(reviewResponse, httptest.NewRequest(http.MethodGet,
+			fmt.Sprintf("/api/v1/settlement-review?periodId=%d&version=%d", draft.PeriodID, draft.Version), nil))
+		var checked settlementReview
+		if err := json.Unmarshal(reviewResponse.Body.Bytes(), &checked); err != nil || reviewResponse.Code != 200 || checked.Token == "" {
+			t.Fatalf("the fixed award should be ready for settlement: %d %s %v", reviewResponse.Code, reviewResponse.Body, err)
+		}
+		for range 2 {
+			if _, err := s.confirmSettlement(ctx, confirmSettlementInput{PeriodID: draft.PeriodID, ExpectedVersion: draft.Version,
+				ReviewToken: checked.Token}, "fixture"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		empty, err := s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: publishedFixed.ID, Month: "2026-11"})
+		if err != nil || empty.(draftSummary).Total != 0 || empty.(draftSummary).LineCount != 0 {
+			t.Fatalf("a subsequent cycle without receipts cannot generate a fixed payout: %+v %v", empty, err)
+		}
+		if _, err := db.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
+		 VALUES('DCAI','102','','refund:fixed-102','1','REFUND_SUCCEEDED','2026-11-05',
+		  '{"domain":"VIP","sourceKey":"new","refundId":"fixed-102","amountMinor":26000,"refundsPayment":[{"orderId":"102","recordId":"102"}]}',
+		  '2026-11-05')`); err != nil {
+			t.Fatal(err)
+		}
+		laterDraft, err := s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: publishedFixed.ID, Month: "2026-11"})
+		if err != nil || laterDraft.(draftSummary).Total != 0 || laterDraft.(draftSummary).IssueCount != 0 {
+			t.Fatalf("the later refund only reduces that cycle's net receipts: %+v %v", laterDraft, err)
+		}
+		var refunds, carry, closedAward int64
+		if err := db.QueryRow(ctx, `SELECT coalesce(sum(refunds_minor),0)::bigint,coalesce(sum(carry_out_minor),0)::bigint,
+		  (SELECT amount_minor FROM calculation_draft_lines WHERE period_id=$2 AND allocation_owner_id=$3)
+		 FROM catalog_aggregate_draft_groups WHERE period_id=$1`,
+			laterDraft.(draftSummary).PeriodID, draft.PeriodID, owner).Scan(&refunds, &carry, &closedAward); err != nil ||
+			refunds != 30000 || carry != -30000 || closedAward != 5000 {
+			t.Fatalf("refund must be carried once and preserve the original settled fixed award: %d %d %d %v", refunds, carry, closedAward, err)
+		}
+	})
+
 }
