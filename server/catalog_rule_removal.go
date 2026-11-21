@@ -45,6 +45,9 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 			delete(removeItems, key)
 			continue
 		}
+		if removeSplit && vipLeaderRole(key) != "" {
+			continue
+		}
 		if selected := removeRows[key]; len(selected) != 0 {
 			var table []json.RawMessage
 			if err := json.Unmarshal(action["rate_table"], &table); err != nil {

@@ -76,6 +76,48 @@ func TestVIPInternalAllocationUsesHistoricalHoldersAndConservesCents(t *testing.
 	if issue != "" || len(parts) != 3 || parts[0].Person != "head" {
 		t.Fatalf("head sale: %q %+v", issue, parts)
 	}
+
+	req.Seller = "seller"
+	original, issue := calculateVIPSales(rule, req, data)
+	if issue != "" {
+		t.Fatal(issue)
+	}
+	rule.Split.independentGroup, rule.Split.independentTeam = true, true
+	revised, issue := calculateVIPSales(rule, req, data)
+	if issue != "" || len(revised) != 2 || revised[0] != original[0] || revised[1] != original[2] {
+		t.Fatalf("replacing leader shares should keep salesperson and service amounts exactly: %s %+v", issue, revised)
+	}
+
+	rate := int64(400)
+	fixed := int64(300)
+	group := vipBenefitAction{
+		Item: vipGroupLeaderItem, Label: "group", Role: "GROUP_LEAD", Type: "RATE", Mode: vipOrganizationAppointmentMode,
+		Rate: &rate, Leader: &vipLeaderScope{Orders: "members", Groups: []string{"group"}},
+	}
+	team := vipBenefitAction{
+		Item: vipTeamLeaderItem, Label: "team", Role: "TEAM_LEAD", Type: "FIXED", Mode: "PARTY", Designated: "head",
+		Fixed: &fixed, Leader: &vipLeaderScope{Orders: "all", Companies: []string{"company"}},
+	}
+	policy := vipBenefitPolicy{split: rule.Split, actions: []vipBenefitAction{group, team}, leaderSales: rule.Sales}
+	quote := func() []vipBenefitPart {
+		return quoteVIPBenefits(req, "", policy, vipRuntimeData{BenefitReady: true, vipSalesData: data})
+	}
+	got := quote()
+	if got[0].Party != "new" || got[0].Amount != 1996 || got[1].Party != "head" || got[1].Amount != 300 {
+		t.Fatalf("scoped role quotes: %+v", got)
+	}
+	req.At = at.Add(-time.Second)
+	if got := quote(); got[0].Party != "old" {
+		t.Fatalf("the group holder should match the payment date: %+v", got)
+	}
+	req.Seller = "head"
+	if got := quote(); got[0].Status != "ZERO" || got[1].Party != "head" {
+		t.Fatalf("only the team arrangement covers the head's own sale: %+v", got)
+	}
+	req.Seller, req.Company = "seller", "another-company"
+	if got := quote(); got[0].Status != "ZERO" || got[1].Status != "ZERO" {
+		t.Fatalf("unrelated company: %+v", got)
+	}
 }
 
 func TestVIPExplicitZeroSaleNeedsNoPayeeButPreservesReview(t *testing.T) {

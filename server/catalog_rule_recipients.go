@@ -19,10 +19,11 @@ type catalogRulePerson struct {
 }
 
 type catalogRuleTeam struct {
-	Key     string             `json:"key"`
-	Label   string             `json:"label"`
-	Head    catalogRulePerson  `json:"head"`
-	Service *catalogRulePerson `json:"service,omitempty"`
+	Key     string                   `json:"key"`
+	Label   string                   `json:"label"`
+	Head    catalogRulePerson        `json:"head"`
+	Service *catalogRulePerson       `json:"service,omitempty"`
+	Groups  []catalogStructureOption `json:"groups,omitempty"`
 }
 
 type catalogRuleRecipientChange struct {
@@ -66,11 +67,7 @@ func (s workspace) getCatalogRulePeople(w http.ResponseWriter, r *http.Request) 
 	respond(w, result, err)
 }
 
-func (s workspace) catalogRuleRecipients(ctx context.Context, raw json.RawMessage, components []catalogRateComponent, companies map[string]string) ([]catalogRuleTeam, error) {
-	policy, ok := readVIPBenefits(raw)
-	if !ok {
-		return nil, errCatalogRateUnavailable
-	}
+func (s workspace) catalogRuleRecipients(ctx context.Context, policy vipBenefitPolicy, components []catalogRateComponent, companies, groups map[string]string) ([]catalogRuleTeam, error) {
 	keys := make([]string, 0, len(policy.actions)+2*len(policy.split.Teams))
 	targets := make(map[string]string)
 	for _, action := range policy.actions {
@@ -85,7 +82,7 @@ func (s workspace) catalogRuleRecipients(ctx context.Context, raw json.RawMessag
 			keys = append(keys, team.ServiceParty)
 		}
 	}
-	if len(keys) == 0 {
+	if len(keys) == 0 && len(policy.split.Teams) == 0 {
 		return nil, nil
 	}
 	people := make(map[string]catalogRulePerson)
@@ -120,6 +117,13 @@ func (s workspace) catalogRuleRecipients(ctx context.Context, raw json.RawMessag
 			label = team.Company
 		}
 		row := catalogRuleTeam{Key: team.Company, Label: label, Head: display(team.HeadParty)}
+		for _, group := range team.GroupUnits {
+			name := groups[group]
+			if name == "" {
+				name = "小组 " + group
+			}
+			row.Groups = append(row.Groups, catalogStructureOption{Value: group, Label: name})
+		}
 		if policy.split.Service > 0 {
 			person := display(team.ServiceParty)
 			row.Service = &person
@@ -274,7 +278,7 @@ func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, produc
 	}
 	for _, action := range after.actions {
 		original := beforePayees[action.Item]
-		if action.Designated != "" && (action.Designated != original.Designated || action.Role != original.Role) {
+		if action.Leader == nil && action.Designated != "" && (action.Designated != original.Designated || action.Role != original.Role) {
 			requirements = append(requirements, requiredAppointment{Label: action.Label, Key: action.Designated, Role: action.Role})
 		}
 		if action.Mode == "TEAM_POOL" && (action.PoolUnit != original.PoolUnit || action.OwnerRole != original.OwnerRole) {

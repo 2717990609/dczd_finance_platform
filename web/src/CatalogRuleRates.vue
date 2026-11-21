@@ -5,6 +5,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
+import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import { catalogCalculationMethods, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesCalculationMethods, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
@@ -18,6 +19,7 @@ const edits = ref({})
 const labelEdits = ref(new Map())
 const targetEdits = ref(new Map())
 const teamEdits = ref(new Map())
+const leaderEdits = ref(new Map())
 const splitEdits = ref({})
 const selectedTeam = ref()
 const loading = ref(false)
@@ -57,8 +59,6 @@ const splitFields = [
   {key:'total',label:'销售分项总比例'},
   {key:'sales',label:'普通成交销售'},
   {key:'headSales',label:'负责人亲自成交'},
-  {key:'groupLead',label:'小组组长'},
-  {key:'teamLead',label:'团队负责人'},
   {key:'service',label:'服务人员'},
 ]
 const splitRows = computed(() => {
@@ -84,7 +84,7 @@ const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKi
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
 const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
-  Object.keys(splitEdits.value).length > 0 || labelEdits.value.size ||
+  Object.keys(splitEdits.value).length > 0 || labelEdits.value.size || leaderEdits.value.size ||
   structure.value.items.length || structure.value.sales || structure.value.rateRows.length || structure.value.calculations.length ||
   removedItems.value.size || removedRateRows.value.size)
 const impactPeriods = computed(() => catalogRuleImpactPeriods(props.periods,sheet.value?.productId,impactInput.value?.effectiveFrom))
@@ -298,6 +298,31 @@ function setTeamPerson(field, id, option) {
   else teamEdits.value.delete(key)
 }
 
+function originalLeader(item) {
+  return {
+    label:item.label,target:item.targetKind,method:item.fixedMinor==null ? 'rate' : 'fixed',
+    amount:((item.fixedMinor ?? item.rateBps)/100).toFixed(2),
+    personId:item.recipient?.id,personName:item.recipient?.name,
+    scope:{orders:item.leaderScope.orders,companies:item.leaderScope.companies || [],groups:item.leaderScope.groups || []},
+  }
+}
+const leaderForm = item => leaderEdits.value.get(item.itemKey) || originalLeader(item)
+function setLeader(item, form) {
+  const original = originalLeader(item)
+  const normalize = value=>JSON.stringify({
+    ...value,personName:undefined,label:value.label.trim(),
+    amount:value.method==='fixed' ? moneyAsMinor(value.amount) : rateAsBasisPoints(value.amount),
+    scope:{...value.scope,companies:[...value.scope.companies].sort(),groups:[...value.scope.groups].sort()},
+  })
+  if (normalize(form)===normalize(original)) leaderEdits.value.delete(item.itemKey)
+  else leaderEdits.value.set(item.itemKey,form)
+}
+function leaderSummary(item) {
+  const form = leaderForm(item)
+  const payee = form.target==='person' ? form.personName : item.itemKey==='internal-group-leader' ? '付款时的小组负责人' : '付款时的团队负责人'
+  return [payee,form.amount==null || form.amount==='' ? '' : form.amount+(form.method==='fixed' ? ' 元/笔' : '%')].filter(Boolean).join(' · ')
+}
+
 watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   const request = ++sequence
   sheet.value = undefined
@@ -309,6 +334,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   removedRateRows.value.clear()
   targetEdits.value.clear()
   teamEdits.value.clear()
+  leaderEdits.value.clear()
   splitEdits.value = {}
   selectedTeam.value = undefined
   filter.value = ''
@@ -320,7 +346,10 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   if (applied) {
     const result = applied.catalog
     sheet.value = result
-    selected.value = result.components.find(item=>item.itemKey===applied.component || applied.component.startsWith(item.itemKey+':'))?.itemKey
+    const leaderKey = applied.component.endsWith(':DCAI_GROUP_LEAD') ? 'internal-group-leader' :
+      applied.component.endsWith(':DCAI_TEAM_HEAD') ? 'internal-team-leader' : applied.component
+    selected.value = result.leaderArrangements?.find(item=>item.itemKey===leaderKey)?.itemKey ||
+      result.components.find(item=>item.itemKey===applied.component || applied.component.startsWith(item.itemKey+':'))?.itemKey
       || result.components[0]?.itemKey
     selectedTeam.value = result.teams?.[0]?.key
     loading.value = false
@@ -357,7 +386,7 @@ function publicationInput() {
   if (!splitRemoved.value && Object.keys(splitEdits.value).length) {
     const item = splitItem.value
     const original = item.teamSplit
-    teamSplitRates = {}
+    teamSplitRates = {...original}
     for (const {key} of splitFields) {
       teamSplitRates[key] = Object.hasOwn(splitEdits.value,key) ? rateAsBasisPoints(splitEdits.value[key]) : original[key]
     }
@@ -386,6 +415,16 @@ function publicationInput() {
     if (!label) throw new Error('请填写收款安排名称。')
     changes.push({itemKey,label})
   }
+  const leaderChanges = splitRemoved.value ? [] : Array.from(leaderEdits.value,([itemKey,form])=>{
+    const label = form.label.trim()
+    const value = form.method==='fixed' ? moneyAsMinor(form.amount) : rateAsBasisPoints(form.amount)
+    if (!label || value===undefined || form.target==='person' && !form.personId) {
+      selected.value = itemKey
+      throw new Error('请补齐「'+(label || '负责人提成')+'」的名称、收款人和计提标准。')
+    }
+    return {itemKey,label,target:form.target,personId:form.personId,scope:form.scope,
+      ...(form.method==='fixed' ? {fixedMinor:value} : {rateBps:value})}
+  })
   return {
     baseId:props.rule.id,
     copy:copy.value,
@@ -397,6 +436,7 @@ function publicationInput() {
       teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
     })),
     teamSplitRates,
+    leaderChanges,
     newItems:structure.value.items.map(({personName,...item})=>item),
     newSalesRates:structure.value.sales?.rows,
     newSalesLabel:structure.value.sales?.label,
@@ -557,7 +597,7 @@ async function publish() {
             </a-table>
           </template>
           <a-collapse v-if="teamSplit" ghost class="catalog-more">
-            <a-collapse-panel key="team" header="内部团队收款人">
+            <a-collapse-panel key="team" header="内部团队销售与服务">
               <div v-if="!applied && sheet.mayPublish" class="catalog-rule-fields">
                 <a-form-item v-for="row in splitRows" :key="row.key" :label="row.label+'（%）'" :html-for="'catalog-split-'+row.key">
                   <a-input-number :id="'catalog-split-'+row.key" :value="splitValue(row.key)"
@@ -568,17 +608,10 @@ async function publish() {
               <a-descriptions v-else size="small" bordered :column="1">
                 <a-descriptions-item v-for="row in splitRows" :key="row.key" :label="row.label">{{ percent(row.rate) }}</a-descriptions-item>
               </a-descriptions>
-              <p class="rule-formula">普通成交为销售、组长、负责人和服务之和。负责人亲自成交时不计组长份额。两种情况都按销售总比例计提。</p>
               <template v-if="team">
               <div class="catalog-rule-fields">
               <a-form-item label="销售公司" html-for="catalog-team-company">
                 <a-select id="catalog-team-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
-              </a-form-item>
-              <a-form-item label="团队负责人" html-for="catalog-team-head">
-                <AppointmentPersonSelect v-if="!applied && sheet.mayPublish" id="catalog-team-head" :key="selectedTeam"
-                  :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('head')" :value="teamPerson('head')?.id"
-                  :disabled="!editable" :placeholder="teamPerson('head')?.id?'输入姓名搜索':teamPerson('head')?.name" @change="(id,option)=>setTeamPerson('head',id,option)"/>
-                <span v-else>{{ team.head.name }}</span>
               </a-form-item>
               <a-form-item v-if="team.service || (!applied && sheet.mayPublish)"
                 label="服务人员" html-for="catalog-team-service">
@@ -592,6 +625,20 @@ async function publish() {
             </a-collapse-panel>
           </a-collapse>
           </div>
+          </section>
+          <section v-for="leader in (splitRemoved ? [] : sheet.leaderArrangements)" :key="leader.itemKey" class="rule-block">
+            <button type="button" class="rule-block-header" :disabled="saving || structureEditing"
+              :aria-expanded="selected===leader.itemKey" :aria-controls="'catalog-rate-'+leader.itemKey"
+              @click="selected=selected===leader.itemKey ? undefined : leader.itemKey">
+              <DownOutlined aria-hidden="true"/>
+              <strong>{{ leaderForm(leader).label.trim() || leader.label }}</strong>
+              <small>{{ leaderSummary(leader) }}</small>
+            </button>
+            <div v-if="selected===leader.itemKey" :id="'catalog-rate-'+leader.itemKey" class="rule-block-body">
+              <CatalogLeaderArrangement :item-key="leader.itemKey" :model-value="leaderForm(leader)" :teams="sheet.teams || []"
+                :api="api" :people-filters="peopleFilters" :disabled="!editable || structureEditing"
+                @update:model-value="setLeader(leader,$event)"/>
+            </div>
           </section>
           </div>
           <template v-if="sheet.mayPublish && !applied">

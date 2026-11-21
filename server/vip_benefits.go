@@ -24,11 +24,13 @@ type vipBenefitAction struct {
 	Fixed      *int64            `json:"amount_minor,omitempty"`
 	RateTable  []json.RawMessage `json:"rate_table"`
 	rates      []vipRateRow
+	Leader     *vipLeaderScope `json:"leader_scope,omitempty"`
 }
 
 type vipBenefitPolicy struct {
-	split   vipInternalSplit
-	actions []vipBenefitAction
+	split       vipInternalSplit
+	actions     []vipBenefitAction
+	leaderSales []vipRateRow
 }
 
 const vipOrderReferrerMode = "ORDER_REFERRER"
@@ -88,6 +90,18 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 		if dec.Decode(&action) != nil || action.Label == "" || action.Role == "" || !action.validTarget() {
 			return vipBenefitPolicy{}, false
 		}
+		if action.Leader != nil {
+			if !action.Leader.validFor(policy.split.Teams) || action.Type == "RATE_TABLE" {
+				return vipBenefitPolicy{}, false
+			}
+			if policy.leaderSales == nil {
+				sales, valid := readVIPSalesPolicy(raw)
+				if !valid || len(sales.Sales) == 0 {
+					return vipBenefitPolicy{}, false
+				}
+				policy.leaderSales = sales.Sales
+			}
+		}
 		if (action.Type == "FIXED") != (action.Fixed != nil) {
 			return vipBenefitPolicy{}, false
 		}
@@ -116,6 +130,10 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 
 func (a vipBenefitAction) validTarget() bool {
 	poolFields := a.PoolParty != "" || a.PoolUnit != "" || a.PoolCode != "" || a.PoolName != "" || a.OwnerRole != ""
+	if role := vipLeaderRole(a.Item); role != "" || a.Leader != nil {
+		return role != "" && a.Leader != nil && a.Role == role && !poolFields && a.Company == "" &&
+			(a.Mode == vipOrganizationAppointmentMode && a.Designated == "" || a.Mode == "PARTY" && a.Designated != "")
+	}
 	switch a.Mode {
 	case "PARTY":
 		return !poolFields && (a.Designated == "") != (a.Company == "")
@@ -138,6 +156,10 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 	}
 	out := make([]vipBenefitPart, 0, len(policy.actions))
 	for _, a := range policy.actions {
+		if a.Leader != nil {
+			out = append(out, quoteVIPLeader(a, req, sourceIssue, policy, data))
+			continue
+		}
 		line := vipBenefitPart{Item: a.Item, Label: a.Label, Role: a.Role, Kind: a.targetKind()}
 		rate, amount, issue := a.quote(req, sourceIssue)
 		switch {

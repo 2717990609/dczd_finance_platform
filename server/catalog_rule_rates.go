@@ -21,6 +21,7 @@ type catalogRateComponent struct {
 	TargetOrg   string             `json:"targetOrganization,omitempty"`
 	TargetRole  string             `json:"targetRole,omitempty"`
 	TeamSplit   *catalogSplitRates `json:"teamSplit,omitempty"`
+	LeaderScope *vipLeaderScope    `json:"leaderScope,omitempty"`
 }
 
 type catalogSplitRates struct {
@@ -58,6 +59,7 @@ type catalogRateSheet struct {
 	MayPublish         bool                     `json:"mayPublish"`
 	RequiresCompletion bool                     `json:"requiresCompletion,omitempty"`
 	Components         []catalogRateComponent   `json:"components"`
+	LeaderArrangements []catalogRateComponent   `json:"leaderArrangements,omitempty"`
 	Teams              []catalogRuleTeam        `json:"teams,omitempty"`
 	StructureOptions   *catalogStructureOptions `json:"structureOptions,omitempty"`
 }
@@ -93,6 +95,9 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		var action vipBenefitAction
 		if err := json.Unmarshal(rawAction, &action); err != nil {
 			return nil, err
+		}
+		if action.Leader != nil {
+			continue
 		}
 		item := catalogRateComponent{ItemKey: action.Item, Label: action.Label, Rate: action.Rate, Fixed: action.Fixed, TargetKind: action.targetKind()}
 		if item.ItemKey == sales.Item {
@@ -237,7 +242,7 @@ func (s workspace) postCatalogRuleRates(w http.ResponseWriter, r *http.Request) 
 func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalogRateSheet, error) {
 	var sheet catalogRateSheet
 	var definition json.RawMessage
-	var companyNames, categoryNames, relationshipNames, organizationNames map[string]string
+	var companyNames, categoryNames, relationshipNames, organizationNames, groupNames map[string]string
 	var supported bool
 	err := s.db.QueryRow(ctx, `WITH rule AS (
 	 SELECT p.product_id,pro.name AS product_name,p.name,v.version_no,v.effective_from,`+catalogDisplayedThrough+` AS effective_to,v.definition,
@@ -260,9 +265,12 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	 coalesce((SELECT jsonb_object_agg(key,name) FROM companies),'{}'),
 	 coalesce((SELECT jsonb_object_agg(key,label) FROM catalog_sales_category_options),'{}'),
 	 coalesce((SELECT jsonb_object_agg(option_key,label) FROM configuration_options WHERE group_key='catalogSalesRelationship' AND enabled),'{}'),
-	 coalesce((SELECT jsonb_object_agg(party_uuid,name) FROM organizations),'{}')
+	 coalesce((SELECT jsonb_object_agg(party_uuid,name) FROM organizations),'{}'),
+	 coalesce((SELECT jsonb_object_agg(u.id,u.name) FROM organization_units u
+	  WHERE u.id::text IN (SELECT group_id#>>'{}' FROM jsonb_path_query(r.definition,
+	   '$.internal_sales_direct_split.teams[*].seller_group_unit_ids[*]') group_id)),'{}')
 	FROM rule r`, id).Scan(&sheet.ProductID, &sheet.ProductName, &sheet.Label, &sheet.Version, &sheet.EffectiveFrom, &sheet.EffectiveTo,
-		&definition, &sheet.MayPublish, &supported, &sheet.RequiresCompletion, &companyNames, &categoryNames, &relationshipNames, &organizationNames)
+		&definition, &sheet.MayPublish, &supported, &sheet.RequiresCompletion, &companyNames, &categoryNames, &relationshipNames, &organizationNames, &groupNames)
 	if err != nil {
 		return sheet, err
 	}
@@ -272,7 +280,11 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	companyNames["ANY"] = "不限公司"
 	sheet.Components, err = catalogRateComponents(definition, companyNames, categoryNames, relationshipNames, organizationNames)
 	if err == nil {
-		sheet.Teams, err = s.catalogRuleRecipients(ctx, definition, sheet.Components, companyNames)
+		policy, _ := readVIPBenefits(definition)
+		regular := len(sheet.Components)
+		items := append(sheet.Components, catalogLeaderComponents(policy)...)
+		sheet.Teams, err = s.catalogRuleRecipients(ctx, policy, items, companyNames, groupNames)
+		sheet.Components, sheet.LeaderArrangements = items[:regular], items[regular:]
 	}
 	return sheet, err
 }
