@@ -21,6 +21,13 @@ export function moneyAsMinor(value) {
 
 export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
 
+export function catalogRuleImpactPeriods(periods, productId, effectiveFrom) {
+  const effective = Date.parse(effectiveFrom)
+  return (periods || []).filter(period=>period.productId===productId && period.periodMode==='calendar' &&
+    !period.settled && !period.aggregatePackageId &&
+    effective < Date.parse(period.endsOn+'T00:00:00+08:00') + 86400000)
+}
+
 export function newCatalogRateCondition(options, scope = options.categories.length ? 'category' : 'general') {
   return {scope, companyIds:[], categoryIds:[],
     relationship:options.relationships.find(option=>option.value==='ANY')?.value || options.relationships[0]?.value}

@@ -39,7 +39,7 @@ func (s workspace) postComponentRuleImpact(ctx context.Context, input componentR
 	if err := validateRulePublication(p); err != nil {
 		return nil, err
 	}
-	return s.compareRuleImpact(ctx, input.PeriodID, p.ProductID, p.FromOrdinal, func(tx pgx.Tx) (ruleImpactCandidate, error) {
+	return s.compareRuleImpact(ctx, input.PeriodID, p.ProductID, p.FromOrdinal, false, func(tx pgx.Tx) (ruleImpactCandidate, error) {
 		version, err := writeComponentRule(ctx, tx, p, false)
 		return ruleImpactCandidate{classVersion: version}, err
 	})
@@ -52,9 +52,15 @@ func (s workspace) postCatalogRuleImpact(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	submitJSON(128<<10, func(ctx context.Context, input catalogRuleImpactInput) (ruleImpactReport, error) {
-		_, product, err := s.ruleRateProduct(ctx, input.Rule.BaseID)
-		if err != nil {
-			return ruleImpactReport{}, err
+		var product int64
+		if input.Rule.Create != nil {
+			product = input.Rule.Create.ProductID
+		} else {
+			var err error
+			_, product, err = s.ruleRateProduct(ctx, input.Rule.BaseID)
+			if err != nil {
+				return ruleImpactReport{}, err
+			}
 		}
 		if !actor.permits(product, true) {
 			return ruleImpactReport{}, errRulePermission
@@ -62,7 +68,7 @@ func (s workspace) postCatalogRuleImpact(w http.ResponseWriter, r *http.Request)
 		if actor.account != nil {
 			ctx = context.WithValue(ctx, financePrincipalKey{}, actor.account)
 		}
-		return s.compareRuleImpact(ctx, input.PeriodID, product, nil, func(tx pgx.Tx) (ruleImpactCandidate, error) {
+		return s.compareRuleImpact(ctx, input.PeriodID, product, nil, input.Rule.Create != nil, func(tx pgx.Tx) (ruleImpactCandidate, error) {
 			version, err := writeCatalogRates(ctx, tx, input.Rule, actor.subject, false)
 			if err != nil || version.ID == input.Rule.BaseID {
 				return ruleImpactCandidate{}, err
@@ -72,7 +78,7 @@ func (s workspace) postCatalogRuleImpact(w http.ResponseWriter, r *http.Request)
 	})(w, r)
 }
 
-func (s workspace) compareRuleImpact(ctx context.Context, periodID, productID int64, fromOrdinal *int,
+func (s workspace) compareRuleImpact(ctx context.Context, periodID, productID int64, fromOrdinal *int, firstCatalog bool,
 	apply func(pgx.Tx) (ruleImpactCandidate, error)) (ruleImpactReport, error) {
 	var report ruleImpactReport
 	if periodID < 1 {
@@ -100,7 +106,7 @@ func (s workspace) compareRuleImpact(ctx context.Context, periodID, productID in
 	if settled {
 		return report, errSettlementClosed
 	}
-	before, err := calculateRuleImpactDraft(ctx, tx, periodID, ruleImpactCandidate{})
+	before, err := calculateRuleImpactDraft(ctx, tx, periodID, ruleImpactCandidate{}, firstCatalog)
 	currentRuleAvailable := !errors.Is(err, errDraftRule)
 	if err != nil && currentRuleAvailable {
 		return report, err
@@ -109,7 +115,7 @@ func (s workspace) compareRuleImpact(ctx context.Context, periodID, productID in
 	if err != nil {
 		return report, err
 	}
-	after, err := calculateRuleImpactDraft(ctx, tx, periodID, candidate)
+	after, err := calculateRuleImpactDraft(ctx, tx, periodID, candidate, false)
 	if err != nil {
 		return report, err
 	}
@@ -126,10 +132,18 @@ func (s workspace) compareRuleImpact(ctx context.Context, periodID, productID in
 	return report, tx.Rollback(ctx)
 }
 
-func calculateRuleImpactDraft(ctx context.Context, tx pgx.Tx, periodID int64, candidate ruleImpactCandidate) (paymentDraft, error) {
+func calculateRuleImpactDraft(ctx context.Context, tx pgx.Tx, periodID int64, candidate ruleImpactCandidate, allowUnconfiguredCatalog bool) (paymentDraft, error) {
 	summary := draftSummary{PeriodID: periodID}
 	window, rules, err := readDraftScope(ctx, tx, &summary)
 	if err != nil {
+		if allowUnconfiguredCatalog && errors.Is(err, errProductRuleUnavailable) {
+			// Keep the unmatched-payment issues before the product has its first rule.
+			baseline, _, err := computeVIPDraft(ctx, tx, periodID, window, nil, nil)
+			if err != nil {
+				return paymentDraft{}, err
+			}
+			return baseline, errDraftRule
+		}
 		if summary.PracticeRosterID != nil && candidate.classVersion != 0 && errors.Is(err, errDraftRule) {
 			return paymentDraft{}, errPracticeRuleImpactNoMatch
 		}

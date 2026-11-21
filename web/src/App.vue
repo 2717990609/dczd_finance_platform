@@ -1884,6 +1884,7 @@ async function save() {
     @copy="copyCatalogPeriodRule" @open-version="showCatalogPeriodIssueVersion" @resumed="periodRuleResumed"/>
   <CatalogScenarioCreate v-if="catalogScenarioCreation && active && !sessionError && !sessionChecking && !loginRequested"
     :products="catalogScenarioProducts" :initial-product="catalogScenarioCreation.productId" :initial-sku="catalogScenarioCreation.sku" :api="api"
+    :periods="data.periods" :format-money="formatMoney"
     @close="catalogScenarioCreation=undefined" @published="catalogScenarioPublished"/>
   <RuleVersionDetails v-if="viewedRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="viewedRule" :can-copy="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId))"

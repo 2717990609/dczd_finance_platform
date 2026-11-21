@@ -2,9 +2,10 @@
 import { computed, ref, watch } from 'vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
-import { catalogRateConditionBody, catalogRatePriorityLabel, newCatalogRateCondition, rateAsBasisPoints } from './rule-component-form'
+import RuleImpactPreview from './RuleImpactPreview.vue'
+import { catalogRateConditionBody, catalogRatePriorityLabel, catalogRuleImpactPeriods, newCatalogRateCondition, rateAsBasisPoints } from './rule-component-form'
 
-const props = defineProps({products:Array,initialProduct:Number,initialSku:String,api:Function})
+const props = defineProps({products:Array,initialProduct:Number,initialSku:String,periods:Array,api:Function,formatMoney:Function})
 const emit = defineEmits(['close','published'])
 const productId = ref(props.initialProduct || (props.products.length===1 ? props.products[0].value : undefined))
 const sku = ref()
@@ -20,6 +21,9 @@ const editing = ref(false)
 const loading = ref(false)
 const publishing = ref(false)
 const error = ref('')
+const impactInput = ref()
+const impactBusy = ref(false)
+const impactPeriods = computed(() => catalogRuleImpactPeriods(props.periods,productId.value,impactInput.value?.effectiveFrom))
 const peopleFilters = computed(() => ({productId:productId.value}))
 const recognition = computed(() => {
   const selected = skus.value.find(option=>option.value===sku.value)
@@ -70,26 +74,41 @@ watch(productId, async id=>{
   }
 },{immediate:true})
 
-async function publish() {
-  if (publishing.value) return
+function publicationInput() {
+  if (!sku.value || !name.value.trim() || !effectiveFrom.value) throw new Error('请选择业务 SKU、生效时间并填写规则名称。')
+  if (!rates.value.length && !structure.value.items.length) throw new Error('请至少添加一项收款安排。')
+  const salesRates = rates.value.map(row=>{
+    try {
+      return catalogRateConditionBody(row)
+    } catch (err) {
+      rateScope.value = row.scope
+      throw err
+    }
+  })
+  return {
+    effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
+    create:{productId:productId.value,sku:sku.value,label:name.value.trim(),salesRates},
+    newItems:structure.value.items.map(({personName,...item})=>item),
+  }
+}
+function preview() {
   error.value = ''
   try {
-    if (!sku.value || !name.value.trim() || !effectiveFrom.value) throw new Error('请选择业务 SKU、生效时间并填写规则名称。')
-    if (!rates.value.length && !structure.value.items.length) throw new Error('请至少添加一项收款安排。')
-    const salesRates = rates.value.map(row=>{
-      try {
-        return catalogRateConditionBody(row)
-      } catch (err) {
-        rateScope.value = row.scope
-        throw err
-      }
-    })
+    impactInput.value = publicationInput()
+  } catch (err) {
+    error.value = err.message
+  }
+}
+function compareRule(periodId, signal) {
+  return props.api('/catalog-rule-impact',{method:'POST',body:JSON.stringify({periodId,rule:impactInput.value}),signal})
+}
+async function publish() {
+  if (publishing.value || impactBusy.value || editing.value) return
+  error.value = ''
+  try {
+    const input = impactInput.value || publicationInput()
     publishing.value = true
-    const result = await props.api('/catalog-rule-rates',{method:'POST',body:JSON.stringify({
-      effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
-      create:{productId:productId.value,sku:sku.value,label:name.value.trim(),salesRates},
-      newItems:structure.value.items.map(({personName,...item})=>item),
-    })})
+    const result = await props.api('/catalog-rule-rates',{method:'POST',body:JSON.stringify(input)})
     emit('published',result,productId.value,sku.value)
   } catch (err) {
     error.value = err.message
@@ -104,7 +123,7 @@ async function publish() {
     :closable="!publishing" :mask-closable="!publishing" :keyboard="!publishing"
     @close="emit('close')">
     <a-alert v-if="error" type="error" :message="error" show-icon class="feedback"/>
-    <a-form layout="vertical" size="small" :disabled="publishing">
+    <a-form v-show="!impactInput" layout="vertical" size="small" :disabled="publishing">
       <div class="rule-basics">
         <a-form-item label="所属产品" html-for="scenario-create-product" required>
           <a-select id="scenario-create-product" v-model:value="productId" :options="products" placeholder="选择产品"/>
@@ -150,10 +169,15 @@ async function publish() {
           :options="options" :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints"/>
       </template>
     </a-form>
+    <RuleImpactPreview v-if="impactInput" v-model:busy="impactBusy" :periods="impactPeriods" :simulate="compareRule" :format-money="formatMoney"/>
     <template #footer>
       <div class="form-actions">
-        <a-button :disabled="publishing" @click="emit('close')">取消</a-button>
-        <a-button type="primary" :loading="publishing" :disabled="!options || !sku || editing" @click="publish">保存并生效</a-button>
+        <a-button v-if="impactInput" :disabled="publishing" @click="impactInput=undefined; error=''">返回编辑</a-button>
+        <template v-else>
+          <a-button :disabled="publishing" @click="emit('close')">取消</a-button>
+          <a-button :disabled="publishing || !options || !sku || editing" @click="preview">预览差额</a-button>
+        </template>
+        <a-button type="primary" :loading="publishing" :disabled="!options || !sku || editing || impactBusy" @click="publish">保存并生效</a-button>
       </div>
     </template>
   </a-drawer>

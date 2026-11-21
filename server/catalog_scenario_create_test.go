@@ -64,7 +64,7 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	}
 	s := workspace{db: db, development: true, ruleAuth: catalogRuleAuth{issuer: "finance-test", key: []byte("isolated-finance-scenario-test-key")},
 		sources: map[string]sourceConfig{"DCAI": {BaseURL: "https://fixture.invalid", Token: "fixture"}}}
-	post := func(productGrant int64) *httptest.ResponseRecorder {
+	post := func(productGrant int64, preview bool) *httptest.ResponseRecorder {
 		t.Helper()
 		claims := catalogRuleClaims{RegisteredClaims: jwt.RegisteredClaims{Issuer: s.ruleAuth.issuer, Subject: "fixture",
 			Audience: jwt.ClaimStrings{"finance-platform"}, ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))},
@@ -73,23 +73,64 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		r := httptest.NewRequest(http.MethodPost, "/api/v1/catalog-rule-rates", strings.NewReader(`{
+		body := `{
 		 "effectiveFrom":"2026-10-01T00:00:00+08:00","create":{"productId":950,"sku":"FIRST","label":"首版分润",
 		 "salesRates":[{"company":"ANY","categoryIds":["10000000-0000-4000-8000-000000000957","10000000-0000-4000-8000-000000000958"],"relationship":"ANY","rateBps":1000,"payee":"sales_company"},
 		 {"companyIds":["10000000-0000-4000-8000-000000000953","10000000-0000-4000-8000-000000000955"],"relationship":"ANY","rateBps":1250}]},
 		 "newItems":[{"label":"公司安排","target":"company","organization":"10000000-0000-4000-8000-000000000954","rateBps":250},
 		 {"label":"固定交付","target":"company","organization":"10000000-0000-4000-8000-000000000954","fixedMinor":501},
-		 {"label":"推荐提成","target":"referrer","rateBps":1000}]}`))
+		 {"label":"推荐提成","target":"referrer","rateBps":1000}]}`
+		path := "/api/v1/catalog-rule-rates"
+		if preview {
+			path = "/api/v1/catalog-rule-impact"
+			body = `{"periodId":951,"rule":` + body + `}`
+		}
+		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+token)
 		r.Header.Set("Content-Type", "application/json")
 		w := httptest.NewRecorder()
-		s.postCatalogRuleRates(w, r)
+		if preview {
+			s.postCatalogRuleImpact(w, r)
+		} else {
+			s.postCatalogRuleRates(w, r)
+		}
 		return w
 	}
-	w := post(950)
+	if denied := post(999, true); denied.Code != http.StatusForbidden {
+		t.Errorf("another product's grant authorized the first-rule preview: %d %s", denied.Code, denied.Body)
+	}
+	w := post(950, true)
+	var preview ruleImpactReport
+	if err := json.Unmarshal(w.Body.Bytes(), &preview); err != nil || w.Code != http.StatusOK ||
+		preview.CurrentRuleAvailable || preview.MatchedPaymentCount == nil || *preview.MatchedPaymentCount != 2 ||
+		preview.BeforeMinor != 0 || preview.AfterMinor != 4752 || preview.DeltaMinor != 4752 ||
+		preview.BeforeIssueCount != 2 || preview.AfterIssueCount != 0 || len(preview.Items) != 5 {
+		t.Errorf("first rule should be compared with the previously unmatched payments: %d %s %v", w.Code, w.Body, err)
+	}
+	wantRecipients := map[string]int64{"成交销售样本": 1250, "原推荐人": 1000, "收款公司样本": 1502, "类别默认公司": 1000}
+	for _, item := range preview.Items {
+		wantRecipients[item.Recipient] -= item.AfterMinor
+	}
+	if w.Code == http.StatusOK {
+		for recipient, outstanding := range wantRecipients {
+			if outstanding != 0 {
+				t.Errorf("preview attributed the wrong amount to %s, difference %d", recipient, outstanding)
+			}
+		}
+	}
+	var versions, drafts, queuedDrafts int
+	if err := db.QueryRow(ctx, `SELECT (SELECT count(*) FROM product_rule_versions),
+	 (SELECT count(*) FROM calculation_drafts), (SELECT count(*) FROM draft_refresh_queue)`).Scan(&versions, &drafts, &queuedDrafts); err != nil ||
+		versions != 0 || drafts != 0 || queuedDrafts != 0 {
+		t.Fatalf("preview persisted rules, drafts or jobs: %d %d %d %v", versions, drafts, queuedDrafts, err)
+	}
+	w = post(950, false)
 	var published catalogPublication
 	if err := json.Unmarshal(w.Body.Bytes(), &published); err != nil || w.Code != 200 || published.Version != 1 || published.ID == "" {
 		t.Fatalf("could not create first rule: %d %s %v", w.Code, w.Body.String(), err)
+	}
+	if occupied := post(950, true); occupied.Code != http.StatusConflict {
+		t.Errorf("preview must enforce the same occupied-SKU check as publication: %d %s", occupied.Code, occupied.Body)
 	}
 	var queued, supported bool
 	if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=951),`+catalogDraftAvailableSQL+`
@@ -302,10 +343,10 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		debit != -500 || credit != 500 {
 		t.Fatalf("expected the original referrer's unrefunded 500 cents to move to the corrected referrer: %d %d %v", debit, credit, err)
 	}
-	if duplicate := post(950); duplicate.Code != 409 {
+	if duplicate := post(950, false); duplicate.Code != 409 {
 		t.Fatalf("duplicate rule must be rejected: %d %s", duplicate.Code, duplicate.Body)
 	}
-	if denied := post(949); denied.Code != 403 {
+	if denied := post(949, false); denied.Code != 403 {
 		t.Fatalf("publication must remain product-scoped: %d %s", denied.Code, denied.Body)
 	}
 

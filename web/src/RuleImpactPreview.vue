@@ -78,7 +78,7 @@ onBeforeUnmount(() => {
     <p v-if="!options.length" class="workbench-scope-note">暂无适用的开放核算期。</p>
     <a-alert v-if="error" class="feedback" :message="error" type="error" show-icon/>
     <template v-if="result">
-      <p v-if="!result.currentRuleAvailable" class="workbench-scope-note">现行规则尚未覆盖所选期次，现行金额按零显示。</p>
+      <p v-if="!result.currentRuleAvailable" class="workbench-scope-note">现行配置尚未覆盖所选核算期。</p>
       <p v-if="result.matchedPaymentCount!=null" class="workbench-scope-note">拟发布规则匹配 {{ result.matchedPaymentCount }} 笔付款</p>
       <div class="rule-impact-totals">
         <div><small>现行规则净分润</small><strong>{{ formatMoney(result.beforeMinor) }}</strong></div>
