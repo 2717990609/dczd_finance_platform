@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import PracticeRetrainSplitFields from './PracticeRetrainSplitFields.vue'
+import { newPracticeRetrainSplit } from './rule-component-form'
 
 const props = defineProps({ component:Object, index:Number, companies:Array, pools:Array, people:Array, units:Array, createPool:Function, formatMoney:Function })
 const field = (name,index) => 'practice-retrain-'+props.index+'-'+index+'-'+name
@@ -10,7 +11,7 @@ const eligibleCompanies = computed(() => props.component.salesCompanies?.length
 
 function addSplit() {
   props.component.retrainSplits ||= []
-  props.component.retrainSplits.push({personal:0,pool:{}})
+  props.component.retrainSplits.push(newPracticeRetrainSplit())
 }
 </script>
 
@@ -23,7 +24,7 @@ function addSplit() {
           <a-select :id="field('company',i)" v-model:value="split.companyId" :options="eligibleCompanies"
             show-search option-filter-prop="label"/>
         </a-form-item>
-        <PracticeRetrainSplitFields :split="split" :prefix="'practice-retrain-'+index+'-'+i" :amount="component.amount"
+        <PracticeRetrainSplitFields :split="split" :prefix="'practice-retrain-'+index+'-'+i" :amount="component.mode==='fixed' ? component.amount : undefined"
           :pools="pools" :people="people" :units="units" :create-pool="createPool" :format-money="formatMoney"/>
         <a-button type="link" danger @click="component.retrainSplits.splice(i,1)">移除公司拆分</a-button>
       </section>

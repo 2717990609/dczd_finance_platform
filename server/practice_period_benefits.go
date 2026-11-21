@@ -324,6 +324,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int, runtime practiceDraftRuntime) ([]practiceBenefitShare, int64, draftIssue, error) {
 	b := part.PeriodBenefit
 	checkSalesAgreement := b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
+	checkConfiguredRole := len(b.SalesPeople)+len(b.SalesUnits) != 0 && !runtime.legacyBenefitAttribution
 	var eligible []practiceBenefitShare
 	var tierBase int64
 	for _, p := range purchases {
@@ -366,8 +367,13 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		if len(payments) == 2 && checkSalesAgreement {
 			left, right := payments[0].Fact, payments[1].Fact
 			if left.SalesCompanyID != right.SalesCompanyID ||
-				(left.ReferrerID != "" && right.ReferrerID != "" && left.ReferrerID != right.ReferrerID) {
+				(!checkConfiguredRole && left.ReferrerID != "" && right.ReferrerID != "" && left.ReferrerID != right.ReferrerID) {
 				return nil, 0, draftIssue{Code: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"}, nil
+			}
+			if checkConfiguredRole {
+				if _, issue := practiceBeneficiaries(payments, part.SourceRole, identities); issue != "" {
+					return nil, 0, draftIssue{Code: issue}, nil
+				}
 			}
 		}
 		share := practiceBenefitShare{purchase: p}

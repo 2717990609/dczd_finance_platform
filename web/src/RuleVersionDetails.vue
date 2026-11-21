@@ -2,7 +2,8 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { catalogRatePriorityLabel, exceptionCompanyIDs, practicePeriodScopeText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
+import { catalogRatePriorityLabel, exceptionCompanyIDs, practicePeriodScopeText, practiceRetrainPoolRemainder,
+  practiceRetrainShareText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
   rule: Object, canCopy: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
@@ -24,7 +25,10 @@ const roleName = key => label('orderAttributionRole', key) !== key
   ? label('orderAttributionRole', key) : label('practicePeriodSourceRole', key)
 const personName = id => directory.value?.people.find(person=>person.id===id)?.name
   || props.people.find(person=>person.id===id)?.name || '人员 '+id
-const unitName = id => directory.value?.units.find(unit=>unit.id===id)?.name || '组织 '+id
+const unitName = id => {
+  const unit = directory.value?.units.find(unit=>unit.id===id)
+  return unit?.scopeName || unit?.name || '组织 '+id
+}
 const poolName = target => {
   const name = directory.value?.pools.find(pool=>pool.id===target.poolId)?.name || '资金池 '+target.poolId
   return name+' · 分配负责人 '+personName(target.ownerId)
@@ -44,6 +48,10 @@ function scheduleLabel(schedule) {
 }
 const rate = (value, scale = 100) => (value / scale)+'%'
 const standard = (row, scale) => row.mode==='rate' ? rate(row.value,scale) : props.formatMoney(row.value)
+const retrainRemainder = (part, split) => {
+  const amount = practiceRetrainPoolRemainder(split,part.mode==='fixed' ? part.value : undefined)
+  return amount==null ? '按余额归集' : props.formatMoney(amount)
+}
 const fixedUnit = computed(() => props.classProduct ? ' / 报名' : ' / 付款')
 const companyStandards = computed(() => {
   const defaults = [], exceptions = []
@@ -245,9 +253,10 @@ onMounted(async () => {
           </template>
           <ul v-if="part.retrainSplits?.length">
             <li v-for="split in part.retrainSplits" :key="split.companyId">
-              {{ companyName(split.companyId) }} · 个人 {{ formatMoney(split.personalMinor) }}
-              <template v-if="split.servicePersonId"> · 服务 {{ personName(split.servicePersonId) }} {{ formatMoney(split.serviceMinor) }}</template>
-              · {{ poolName(split.pool) }} {{ formatMoney(part.value - split.personalMinor - (split.serviceMinor || 0)) }}
+              {{ companyName(split.companyId) }} · 销售 {{ practiceRetrainShareText(split.personalMinor,split.salesRate,formatMoney) }}
+              <template v-if="split.servicePersonId"> · 服务 {{ personName(split.servicePersonId) }}
+                {{ practiceRetrainShareText(split.serviceMinor,split.serviceRate,formatMoney) }}</template>
+              · {{ poolName(split.pool) }} {{ retrainRemainder(part,split) }}
             </li>
           </ul>
         </details>

@@ -94,6 +94,18 @@ func TestPracticeRuleSettingsSaveOnlyTheSelectedConfiguration(t *testing.T) {
 	if list := read(); len(list[0].RetrainSplits) != 0 || list[0].PersonCountStarts[0].FromOrdinal != 175 {
 		t.Fatalf("removing a split must keep other configurations: %+v", list)
 	}
+	input.RuleID, input.ExistingCompanyID = publishedID(), ""
+	input.RetrainSplit = &split
+	split.PersonalMinor, split.ServiceMinor = 0, 0
+	split.SalesRate = &practiceRetrainRate{Basis: practiceRetrainCommissionBasis, Value: 500000}
+	split.ServiceRate = &practiceRetrainRate{Basis: practiceRetrainReceiptsBasis, Value: 12500}
+	if _, err := s.savePracticeRuleSettings(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	saved := read()[0].RetrainSplits[0]
+	if saved.SalesRate == nil || saved.ServiceRate == nil || *saved.SalesRate != *split.SalesRate || *saved.ServiceRate != *split.ServiceRate {
+		t.Fatalf("the split should retain both chosen rate bases: %+v", saved)
+	}
 	var unchanged int64
 	scan(&unchanged, `SELECT count(*) FROM rule_versions WHERE id=$1 AND components=$2::jsonb`, ruleID, base)
 	if unchanged != 1 {

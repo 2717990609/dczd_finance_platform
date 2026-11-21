@@ -189,6 +189,43 @@ func TestPracticeScopeUsesSavedGroupAlternatives(t *testing.T) {
 	}
 }
 
+func TestPracticePeriodBenefitChecksTheConfiguredPaymentRole(t *testing.T) {
+	amount := int64(5000)
+	const role = "LOCKED_SELLER"
+	payments := []paymentInput{
+		{ID: 1, Fact: sourceFact{Source: "DCZD", OrderID: "1", AmountMinor: &amount, ReferrerID: "first", SalesCompanyID: "company",
+			Participants: []sourceParticipant{{Role: role, UserID: "locked"}}}},
+		{ID: 2, Fact: sourceFact{Source: "DCZD", OrderID: "2", AmountMinor: &amount, ReferrerID: "second", SalesCompanyID: "company",
+			Participants: []sourceParticipant{{Role: role, UserID: "locked"}}}},
+	}
+	identities := map[identityKey][]identityAssignment{
+		{"DCZD", "locked"}:    {{PersonID: 30, ID: 1}},
+		{"DCZD", "different"}: {{PersonID: 31, ID: 2}},
+	}
+	part := component{Type: "delivery", Mode: "period_rate", SourceRole: role,
+		PeriodBenefit: &practicePeriodBenefit{PersonID: 3, SalesPeople: []int64{30}}}
+	snapshot := capturePracticeReplayInputs(paymentRule{Components: []component{part}}, paymentDraft{}, payments,
+		identities, practiceDraftRuntime{})
+	if snapshot.Version != practiceReplayConfiguredBenefitRole {
+		t.Fatalf("configured payment roles must be preserved in the new replay version: %+v", snapshot)
+	}
+	purchases := []practicePurchase{{payments: payments, base: amount * 2}}
+	shares, base, issue, err := collectPracticeBenefitShares(part, purchases, nil, identities, nil, practiceDraftRuntime{})
+	if err != nil || issue.Code != "" || len(shares) != 1 || base != amount*2 {
+		t.Fatalf("the selected locked seller matches both legs regardless of their referrer: %+v %d %+v %v", shares, base, issue, err)
+	}
+	payments[1].Fact.ReferrerID = "first"
+	payments[1].Fact.Participants[0].UserID = "different"
+	_, _, issue, err = collectPracticeBenefitShares(part, purchases, nil, identities, nil, practiceDraftRuntime{})
+	if err != nil || issue.Code != "PRACTICE_ATTRIBUTION_CONFLICT" {
+		t.Fatalf("different people in the selected role must be flagged: %+v %v", issue, err)
+	}
+	shares, base, issue, err = collectPracticeBenefitShares(part, purchases, nil, identities, nil, practiceDraftRuntime{legacyBenefitAttribution: true})
+	if err != nil || issue.Code != "" || len(shares) != 1 || base != amount {
+		t.Fatalf("a legacy replay must preserve the original attribution and scope for refunds: %+v %d %+v %v", shares, base, issue, err)
+	}
+}
+
 func TestPracticeFixedSignupBenefitKeepsOriginalPaymentShares(t *testing.T) {
 	var part component
 	if err := json.Unmarshal([]byte(`{"type":"delivery","mode":"period_rate","classMember":"new",

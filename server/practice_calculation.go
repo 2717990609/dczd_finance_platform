@@ -59,6 +59,7 @@ type practiceDraftRuntime struct {
 	poolUnits                   map[int64]pgtype.UUID
 	legacyGrossRateShares       bool
 	legacyBenefitSalesAgreement bool
+	legacyBenefitAttribution    bool
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -227,12 +228,21 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				continue
 			}
 			if split != nil {
+				commission := part.Value
+				if part.Mode == "rate" {
+					commission = calculatePaymentAmount(purchase.base, part)
+				}
+				amounts, valid := split.amounts(commission, purchase.base)
+				if !valid {
+					draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_RETRAIN_SPLIT_EXCEEDS_COMMISSION", member, rule, part.Type))
+					continue
+				}
 				unit := runtime.poolUnits[split.Pool.PoolID]
 				if !unit.Valid {
 					draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_POOL_MISSING", member, rule, part.Type))
 					continue
 				}
-				if err := appendPracticeRetrainSplit(&draft, purchase, rule, index, part.Value, assignments, *split, unit); err != nil {
+				if err := appendPracticeRetrainSplit(&draft, purchase, rule, index, amounts, assignments, *split, unit, part.Mode == "rate"); err != nil {
 					return paymentDraft{}, err
 				}
 				continue

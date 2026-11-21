@@ -81,6 +81,7 @@ export const draftIssueLabels = {
   PRACTICE_RECOMMENDATION_CONFLICT: '推荐公司归属冲突，请核对订金、尾款和公司关系',
   PRACTICE_RECOMMENDATION_ROUTE_MISSING: '推荐公司缺少适用的直收配置',
   PRACTICE_POOL_MISSING: '资金池或归集组织待核',
+  PRACTICE_RETRAIN_SPLIT_EXCEEDS_COMMISSION: '销售和服务份额合计超出本份报名的复训提成',
   PRACTICE_REFUND_MONTH_MISSING: '退款发生月份尚未建立退款账期',
   PRACTICE_REFUND_REPLAY_REQUIRED: '退款联动分润待核，请核对结算时的名单、付款和规则',
   PRACTICE_REFUND_REPLAY_NEW_LINE: '阶梯复算新增分润，原结算没有对应明细',

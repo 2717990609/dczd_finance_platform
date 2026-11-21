@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,6 +20,18 @@ const twoTierPeriodRule = `{
  "beneficiary_mode":"TEAM_POOL","pool_name":"运营池","pool_code":"operations","pool_party_id":"party","pool_organization_unit_id":"unit","allocation_owner_role":"owner",
  "tier_table":[{"id":"original-1","rate_bps":0,"max_exclusive":10001},{"id":"original-2","rate_bps":100,"min_inclusive":10001}]}]
 }`
+
+func TestCatalogPeriodRuleRejectsIgnoredPerArrangementScopes(t *testing.T) {
+	for _, field := range []string{
+		`"sales_scope_unit_ids":["41000000-0000-4000-8000-000000000111"]`,
+		`"leader_scope":{"orders":"all"}`,
+	} {
+		raw := strings.Replace(twoTierPeriodRule, `"tier_table":`, field+`,"tier_table":`, 1)
+		if _, err := parseCatalogPeriodRule(json.RawMessage(raw)); !errors.Is(err, errCatalogRateUnavailable) {
+			t.Fatalf("must not accept an unexecuted scope %s: %v", field, err)
+		}
+	}
+}
 
 func TestCatalogPeriodRulesUseOrganizationDirectoryWithoutImportedAliases(t *testing.T) {
 	ctx := context.Background()

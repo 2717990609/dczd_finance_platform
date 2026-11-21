@@ -189,8 +189,73 @@ export const standardCategoryIDs = row => row.salesCategoryIds || (row.salesCate
 export const exceptionCompanyIDs = row => row.companyIds || (row.companyId ? [row.companyId] : [])
 
 export function practiceRetrainSplitForm(split) {
-  return {companyId:split.companyId, pool:{...split.pool}, personal:split.personalMinor / 100,
-    servicePersonId:split.servicePersonId, service:(split.serviceMinor || 0) / 100}
+  return {
+    companyId:split.companyId,pool:{...split.pool},
+    salesBasis:split.salesRate?.basis || 'fixed',
+    personal:split.salesRate ? split.salesRate.value/10000 : split.personalMinor/100,
+    servicePersonId:split.servicePersonId,serviceBasis:split.serviceRate?.basis || 'fixed',
+    service:split.serviceRate ? split.serviceRate.value/10000 : (split.serviceMinor || 0)/100,
+  }
+}
+
+export const practiceRetrainShareMethods = [
+  {value:'commission',label:'按本份复训总提成比例'},
+  {value:'net_receipts',label:'按本份报名净实收比例'},
+  {value:'fixed',label:'每份报名固定金额'},
+]
+
+export const newPracticeRetrainSplit = () => ({salesBasis:'commission',serviceBasis:'commission',pool:{}})
+
+export function practiceRetrainSplitAmounts(split) {
+  function share(basis, amount, label) {
+    if (basis==='fixed') {
+      const fixed = moneyAsMinor(amount)
+      if (fixed==null) throw new Error('请填写'+label+'固定金额')
+      return {fixed}
+    }
+    if (!practiceRetrainShareMethods.some(method=>method.value===basis)) throw new Error('请选择'+label+'的计提方式')
+    const input = String(amount ?? '')
+    if (!/^\d+(?:\.\d{1,4})?$/.test(input) || Number(input)>100) {
+      throw new Error('请填写 0% 到 100% 之间的'+label+'比例')
+    }
+    return {rate:{basis,value:Math.round(Number(input)*10000)}}
+  }
+  const sales = share(split.salesBasis,split.personal,'销售份额')
+  const service = split.servicePersonId ? share(split.serviceBasis,split.service,'服务份额') : {}
+  return {
+    personalMinor:sales.fixed ?? 0,...(sales.rate ? {salesRate:sales.rate} : {}),
+    ...(split.servicePersonId ? {servicePersonId:split.servicePersonId,...(service.rate ? {serviceRate:service.rate} : {serviceMinor:service.fixed})} : {}),
+  }
+}
+
+export function practiceRetrainPoolRemainder(split, totalMinor) {
+  if (totalMinor==null || split.salesRate?.basis==='net_receipts' || split.serviceRate?.basis==='net_receipts') return
+  const scale = 1000000
+  const amount = rate => Math.floor(totalMinor/scale)*rate+
+    Math.floor(((totalMinor%scale)*rate+scale/2)/scale)
+  const allotted = split.salesRate && split.serviceRate ? amount(split.salesRate.value+split.serviceRate.value) :
+    (split.salesRate ? amount(split.salesRate.value) : split.personalMinor || 0) +
+    (split.serviceRate ? amount(split.serviceRate.value) : split.serviceMinor || 0)
+  return totalMinor-allotted
+}
+
+export function practiceRetrainSplitBody(split, totalMinor) {
+  if (!split.companyId) throw new Error('请选择销售公司')
+  const amounts = practiceRetrainSplitAmounts(split)
+  if (split.servicePersonId && amounts.serviceMinor===0) throw new Error('请填写大于零的服务固定金额')
+  const salesRate = amounts.salesRate
+  const serviceRate = amounts.serviceRate
+  if (salesRate && serviceRate && salesRate.basis===serviceRate.basis && salesRate.value+serviceRate.value>1000000) {
+    throw new Error('使用同一计算基数时，销售和服务比例合计不能超过 100%')
+  }
+  if (practiceRetrainPoolRemainder(amounts,totalMinor)<0) throw new Error('销售与服务份额合计不能超过复训总提成')
+  if (!split.pool?.poolId || !split.pool?.ownerId) throw new Error('请选择资金池和分配负责人')
+  return {companyId:split.companyId,pool:split.pool,...amounts}
+}
+
+export function practiceRetrainShareText(fixed, rate, formatMoney) {
+  if (!rate) return formatMoney(fixed || 0)+' / 份'
+  return rate.value/10000+'% · '+(rate.basis==='commission' ? '按复训总提成' : '按报名净实收')
 }
 
 export function copiedRuleComponents(savedComponents, optionLabel) {

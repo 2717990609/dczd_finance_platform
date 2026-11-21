@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import PracticePersonCountFields from './PracticePersonCountFields.vue'
 import PracticeRetrainSplitFields from './PracticeRetrainSplitFields.vue'
-import { moneyAsMinor, practiceCountStartForm, practiceRetrainSplitForm } from './rule-component-form'
+import { newPracticeRetrainSplit, practiceCountStartForm, practiceRetrainPoolRemainder,
+  practiceRetrainShareText, practiceRetrainSplitBody, practiceRetrainSplitForm } from './rule-component-form'
 
 const props = defineProps({
   productId:Number, kind:String, canEdit:Boolean, api:Function, formatTime:Function, formatMoney:Function, optionLabel:Function,
@@ -36,6 +37,7 @@ const ruleOptions = computed(() => rules.value.map(rule=>({
   value:rule.id,label:rule.label+' · '+scope(rule)+' · v'+rule.version,
 })))
 const currentRule = computed(() => rulesByID.value.get(form.value?.ruleId))
+const fixedRetrainTotal = rule => rule.retrainRateBps==null ? rule.retrainTotalMinor : undefined
 const personalStartModes = computed(() => props.startModes.filter(option=>
   !option.scope?.countScopes || option.scope.countScopes.includes('person')))
 const people = computed(() => (directory.value?.people || []).map(person=>({value:person.id,label:person.name+' · '+person.id})))
@@ -51,7 +53,8 @@ const rows = computed(() => {
   return rules.value.flatMap(rule => (isCount.value ? rule.personCountStarts || [] : rule.retrainSplits || []).map(item=>{
     const key = isCount.value ? item.personId : item.companyId
     const name = isCount.value ? personName(key) : companyName(key)
-    return {id:rule.id+':'+key,rule,item,name,key}
+    const poolRemainder = isCount.value ? undefined : practiceRetrainPoolRemainder(item,fixedRetrainTotal(rule))
+    return {id:rule.id+':'+key,rule,item,name,key,poolRemainder}
   })).filter(row=>!term || (row.name+' '+row.key).toLocaleLowerCase().includes(term))
     .sort((a,b)=>a.name.localeCompare(b.name,'zh-CN') || b.rule.version-a.rule.version)
 })
@@ -77,7 +80,7 @@ async function load() {
 }
 onMounted(load)
 function newEntry() {
-  return isCount.value ? {startMode:personalStartModes.value[0]?.value} : {personal:0,pool:{}}
+  return isCount.value ? {startMode:personalStartModes.value[0]?.value} : newPracticeRetrainSplit()
 }
 function selectRule() {
   form.value.entry = newEntry()
@@ -113,16 +116,6 @@ function countPayload(entry) {
   if (!Number.isFinite(at)) throw new Error('请填写起始开班时间')
   return {personId:entry.personId,countFromAt:new Date(at).toISOString()}
 }
-function splitPayload(entry) {
-  if (!entry.companyId) throw new Error('请选择销售公司')
-  const sales = moneyAsMinor(entry.personal)
-  const service = entry.servicePersonId ? moneyAsMinor(entry.service) : 0
-  if (sales==null || service==null || entry.servicePersonId && service===0) throw new Error('请填写销售和服务份额')
-  if (sales+service>currentRule.value.retrainTotalMinor) throw new Error('销售和服务份额合计不能超过固定提成')
-  if (!entry.pool.poolId || !entry.pool.ownerId) throw new Error('请选择资金池和分配负责人')
-  return {companyId:entry.companyId,personalMinor:sales,pool:entry.pool,
-    ...(entry.servicePersonId ? {servicePersonId:entry.servicePersonId,serviceMinor:service} : {})}
-}
 async function save() {
   if (saving.value) return
   editError.value = ''
@@ -132,7 +125,7 @@ async function save() {
     if (!currentRule.value) throw new Error('请选择适用规则')
     const body = {productId:props.productId,ruleId,
       ...(isCount.value ? {countStart:countPayload(entry),existingPersonId:existing?.personId}
-        : {retrainSplit:splitPayload(entry),existingCompanyId:existing?.companyId}),
+        : {retrainSplit:practiceRetrainSplitBody(entry,fixedRetrainTotal(currentRule.value)),existingCompanyId:existing?.companyId}),
     }
     const {version} = await props.api('/practice-rule-settings',{method:'POST',body:JSON.stringify(body)})
     form.value = undefined
@@ -173,13 +166,16 @@ async function save() {
           <template v-else-if="column.key==='start'">
             {{ record.item.countFromOrdinal ? '第 '+record.item.countFromOrdinal+' 期' : formatTime(record.item.countFromAt) }}
           </template>
-          <template v-else-if="column.key==='sales'">{{ formatMoney(record.item.personalMinor) }}</template>
+          <template v-else-if="column.key==='sales'">{{ practiceRetrainShareText(record.item.personalMinor,record.item.salesRate,formatMoney) }}</template>
           <template v-else-if="column.key==='service'">
-            <template v-if="record.item.servicePersonId">{{ personName(record.item.servicePersonId) }} · {{ formatMoney(record.item.serviceMinor) }}</template>
+            <template v-if="record.item.servicePersonId">
+              {{ personName(record.item.servicePersonId) }}
+              <small class="order-version">{{ practiceRetrainShareText(record.item.serviceMinor,record.item.serviceRate,formatMoney) }}</small>
+            </template>
             <span v-else>—</span>
           </template>
           <template v-else-if="column.key==='pool'">
-            {{ poolName(record.item.pool.poolId) }} · {{ formatMoney(record.rule.retrainTotalMinor-record.item.personalMinor-(record.item.serviceMinor || 0)) }}
+            {{ poolName(record.item.pool.poolId) }} · {{ record.poolRemainder==null ? '按余额归集' : formatMoney(record.poolRemainder) }}
             <small class="order-version">分配负责人 {{ personName(record.item.pool.ownerId) }}</small>
           </template>
           <template v-else-if="column.key==='scope'">
@@ -190,7 +186,7 @@ async function save() {
         </template>
         <template #emptyText>
           {{ loading ? '正在加载' : error ? '读取失败' : search ? '未找到匹配记录' : !rules.length ?
-            (isCount ? '暂无使用累计人数的规则' : '暂无使用固定金额的复训销售规则') :
+            (isCount ? '暂无使用累计人数的规则' : '暂无可配置拆分的复训销售规则') :
             (isCount ? '暂无人员起点' : '暂无公司拆分') }}
         </template>
       </a-table>
@@ -218,9 +214,13 @@ async function save() {
             <a-select id="practice-settings-company" v-model:value="form.entry.companyId" :options="eligibleCompanies"
               :disabled="!!form.existing" show-search option-filter-prop="label"/>
           </a-form-item>
-          <a-form-item label="每份报名固定提成"><strong>{{ formatMoney(currentRule.retrainTotalMinor) }}</strong></a-form-item>
+          <a-form-item label="复训总提成">
+            <strong>{{ currentRule.retrainRateBps==null ? formatMoney(currentRule.retrainTotalMinor)+' / 份'
+              : currentRule.retrainRateBps/100+'% · 按报名净实收' }}</strong>
+          </a-form-item>
         </div>
-        <PracticeRetrainSplitFields :split="form.entry" prefix="practice-settings-retrain" :amount="currentRule.retrainTotalMinor/100"
+        <PracticeRetrainSplitFields :split="form.entry" prefix="practice-settings-retrain"
+          :amount="currentRule.retrainRateBps==null ? currentRule.retrainTotalMinor/100 : undefined"
           :pools="pools" :people="people" :units="units" :create-pool="createPool" :format-money="formatMoney"/>
       </template>
     </a-form>

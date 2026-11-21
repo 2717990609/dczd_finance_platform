@@ -25,12 +25,13 @@ type practiceRuleSettings struct {
 	PersonCountStarts []practicePersonCountStart `json:"personCountStarts,omitempty"`
 	HasRetrain        bool                       `json:"hasRetrain"`
 	RetrainTotal      int64                      `json:"retrainTotalMinor"`
+	RetrainRate       *int64                     `json:"retrainRateBps,omitempty"`
 	RetrainSplits     []practiceRetrainSplit     `json:"retrainSplits,omitempty"`
 	SalesCompanies    []string                   `json:"salesCompanies,omitempty"`
 }
 
-func isPracticeFixedRetrain(part component) bool {
-	return part.Type == "sales" && part.Mode == "fixed" && part.ClassMember == "retrain"
+func isPracticeRetrainWithSplits(part component) bool {
+	return part.Type == "sales" && (part.Mode == "fixed" || part.Mode == "rate") && part.ClassMember == "retrain"
 }
 
 const practiceRuleSettingsSQL = `WITH latest AS (
@@ -61,8 +62,13 @@ func readPracticeRuleSettings(ctx context.Context, db *pgxpool.Pool, productID i
 			switch {
 			case part.Mode == "tiered" && part.Tiers != nil && part.Tiers.hasCountTiers():
 				setting.HasCount, setting.PersonCountStarts = true, part.Tiers.PersonCountStarts
-			case isPracticeFixedRetrain(part):
-				setting.HasRetrain, setting.RetrainTotal = true, part.Value
+			case isPracticeRetrainWithSplits(part):
+				setting.HasRetrain = true
+				if part.Mode == "rate" {
+					setting.RetrainRate = &part.Value
+				} else {
+					setting.RetrainTotal = part.Value
+				}
 				setting.RetrainSplits, setting.SalesCompanies = part.retrainSplits(), part.salesCompanies()
 			}
 		}
@@ -197,7 +203,7 @@ func editPracticeRuleSettings(pub *publishRuleInput, input savePracticeRuleSetti
 		part.Tiers.PersonCountStarts = rows
 		return err
 	}
-	i := slices.IndexFunc(pub.Components, isPracticeFixedRetrain)
+	i := slices.IndexFunc(pub.Components, isPracticeRetrainWithSplits)
 	if i == -1 {
 		return invalid
 	}

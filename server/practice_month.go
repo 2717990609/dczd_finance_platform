@@ -101,6 +101,9 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 			if len(part.salesCompanies()) != 0 && !slices.Contains(part.salesCompanies(), company) {
 				return replay
 			}
+			if len(part.retrainSplits()) != 0 {
+				return replay
+			}
 			switch part.Mode {
 			case "rate":
 				if calculatePaymentAmount(original.Base, part) == original.Accrued {
@@ -108,7 +111,7 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 					return part
 				}
 			case "fixed":
-				if len(part.retrainSplits()) == 0 && part.Value == original.Accrued {
+				if part.Value == original.Accrued {
 					if part.RefundPolicy != "" {
 						return part
 					}

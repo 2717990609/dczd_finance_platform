@@ -82,11 +82,59 @@ func readPracticePoolUnits(ctx context.Context, tx pgx.Tx, periodID int64, items
 }
 
 type practiceRetrainSplit struct {
-	CompanyID       string             `json:"companyId"`
-	Pool            practicePoolTarget `json:"pool"`
-	PersonalMinor   int64              `json:"personalMinor"`
-	ServicePersonID int64              `json:"servicePersonId,omitempty"`
-	ServiceMinor    int64              `json:"serviceMinor,omitempty"`
+	CompanyID       string               `json:"companyId"`
+	Pool            practicePoolTarget   `json:"pool"`
+	PersonalMinor   int64                `json:"personalMinor"`
+	SalesRate       *practiceRetrainRate `json:"salesRate,omitempty"`
+	ServicePersonID int64                `json:"servicePersonId,omitempty"`
+	ServiceMinor    int64                `json:"serviceMinor,omitempty"`
+	ServiceRate     *practiceRetrainRate `json:"serviceRate,omitempty"`
+}
+
+const (
+	practiceRetrainCommissionBasis = "commission"
+	practiceRetrainReceiptsBasis   = "net_receipts"
+)
+
+type practiceRetrainRate struct {
+	Basis string `json:"basis"`
+	Value int64  `json:"value"`
+}
+
+func (r *practiceRetrainRate) validWith(fixed int64) bool {
+	if r == nil {
+		return fixed >= 0 && fixed <= 100000000000
+	}
+	return fixed == 0 && r.Value >= 0 && r.Value <= periodRateScale &&
+		(r.Basis == practiceRetrainCommissionBasis || r.Basis == practiceRetrainReceiptsBasis)
+}
+
+func (r *practiceRetrainRate) amount(commission, net, fixed int64) int64 {
+	if r == nil {
+		return fixed
+	}
+	if r.Basis == practiceRetrainReceiptsBasis {
+		return practiceCompanyRate(net, r.Value)
+	}
+	return practiceCompanyRate(commission, r.Value)
+}
+
+type practiceRetrainAmounts struct {
+	commission, sales, service int64
+}
+
+func (r practiceRetrainSplit) amounts(commission, net int64) (practiceRetrainAmounts, bool) {
+	sales := r.SalesRate.amount(commission, net, r.PersonalMinor)
+	service := r.ServiceRate.amount(commission, net, r.ServiceMinor)
+	if a, b := r.SalesRate, r.ServiceRate; a != nil && b != nil && a.Basis == b.Basis {
+		if a.Value > periodRateScale-b.Value {
+			return practiceRetrainAmounts{}, false
+		}
+		// Allocate cents once across shares using the same base, then pass the remainder to the pool.
+		combined := practiceRetrainRate{Basis: a.Basis, Value: a.Value + b.Value}
+		service = combined.amount(commission, net, 0) - sales
+	}
+	return practiceRetrainAmounts{commission, sales, service}, sales <= commission-service
 }
 
 func (part component) retrainSplits() []practiceRetrainSplit {
@@ -100,14 +148,22 @@ func validPracticeRetrainSplits(part component) bool {
 	if len(part.retrainSplits()) == 0 {
 		return true
 	}
-	if part.Type != "sales" || part.Mode != "fixed" || part.ClassMember != "retrain" || !validSourceRole(part.SourceRole) {
+	if !isPracticeRetrainWithSplits(part) || !validSourceRole(part.SourceRole) {
 		return false
 	}
 	seen := make(map[string]bool)
 	for _, r := range part.retrainSplits() {
-		if !textOK(r.CompanyID, 128) || seen[r.CompanyID] || !r.Pool.valid() || r.PersonalMinor < 0 || r.PersonalMinor > part.Value ||
-			r.ServiceMinor < 0 || r.ServiceMinor > part.Value-r.PersonalMinor || r.ServicePersonID < 0 ||
-			(r.ServiceMinor != 0) != (r.ServicePersonID != 0) {
+		if !textOK(r.CompanyID, 128) || seen[r.CompanyID] || !r.Pool.valid() ||
+			!r.SalesRate.validWith(r.PersonalMinor) || !r.ServiceRate.validWith(r.ServiceMinor) || r.ServicePersonID < 0 ||
+			(r.ServiceMinor > 0 || r.ServiceRate != nil && r.ServiceRate.Value > 0) && r.ServicePersonID == 0 ||
+			r.ServiceRate == nil && r.ServiceMinor == 0 && r.ServicePersonID != 0 {
+			return false
+		}
+		if _, valid := r.amounts(part.Value, 0); part.Mode == "fixed" && !valid {
+			return false
+		}
+		if part.Mode == "rate" && r.SalesRate != nil && r.ServiceRate != nil &&
+			r.SalesRate.Basis == r.ServiceRate.Basis && r.SalesRate.Value > periodRateScale-r.ServiceRate.Value {
 			return false
 		}
 		seen[r.CompanyID] = true
@@ -131,16 +187,16 @@ func (p practicePurchase) retrainSplit(splits []practiceRetrainSplit) (*practice
 	return nil, ""
 }
 
-func appendPracticeRetrainSplit(draft *paymentDraft, p practicePurchase, rule paymentRule, index int, amount int64,
-	sellers []identityAssignment, split practiceRetrainSplit, unit pgtype.UUID) error {
+func appendPracticeRetrainSplit(draft *paymentDraft, p practicePurchase, rule paymentRule, index int, amounts practiceRetrainAmounts,
+	sellers []identityAssignment, split practiceRetrainSplit, unit pgtype.UUID, proportional bool) error {
 	var err error
-	draft.Total, err = addMinor(draft.Total, amount)
+	draft.Total, err = addMinor(draft.Total, amounts.commission)
 	if err != nil {
 		return err
 	}
-	total := practiceGrossShares(p.gross, p.payments, amount)
-	personal := practiceGrossShares(p.gross, p.payments, split.PersonalMinor)
-	cumulative := practiceGrossShares(p.gross, p.payments, split.PersonalMinor+split.ServiceMinor)
+	total := p.benefitShares(p.payments, amounts.commission, proportional)
+	personal := p.benefitShares(p.payments, amounts.sales, proportional)
+	cumulative := p.benefitShares(p.payments, amounts.sales+amounts.service, proportional)
 	for i, payment := range p.payments {
 		line := draftLine{FactID: payment.ID, RuleID: rule.ID, EnrollmentID: p.member.ID, Base: p.netAmount(payment)}
 		if personal[i] > 0 {

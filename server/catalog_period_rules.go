@@ -117,7 +117,9 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 				action.PoolUnit = directUnit
 			}
 		}
-		if action.Item == "" || items[action.Item] || action.Label == "" || !action.validTarget() || action.Mode == vipOrderReferrerMode {
+		if action.Item == "" || items[action.Item] || action.Label == "" ||
+			(action.Mode != "PARTY" && action.Mode != "TEAM_POOL") || action.Leader != nil || len(action.CommissionUnits) != 0 ||
+			!action.validTarget() {
 			return result, errCatalogRateUnavailable
 		}
 		switch action.Type {

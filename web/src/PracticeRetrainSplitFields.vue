@@ -1,24 +1,35 @@
 <script setup>
 import { computed } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
-import { moneyAsMinor } from './rule-component-form'
+import { moneyAsMinor, practiceRetrainPoolRemainder, practiceRetrainShareMethods, practiceRetrainSplitAmounts } from './rule-component-form'
 
 const props = defineProps({ split:Object, prefix:String, amount:Number, pools:Array, people:Array, units:Array, createPool:Function, formatMoney:Function })
 const remainder = computed(() => {
-  const sales = moneyAsMinor(props.split.personal)
-  const service = props.split.servicePersonId ? moneyAsMinor(props.split.service) : 0
-  if (sales != null && service != null && props.amount != null) {
-    return moneyAsMinor(props.amount)-sales-service
+  try {
+    return practiceRetrainPoolRemainder(practiceRetrainSplitAmounts(props.split),moneyAsMinor(props.amount))
+  } catch {
+    return undefined
   }
 })
+const dynamic = computed(() => props.amount==null || props.split.salesBasis==='net_receipts' ||
+  Boolean(props.split.servicePersonId && props.split.serviceBasis==='net_receipts'))
+function setBasis(field, amount, basis) {
+  props.split[field] = basis
+  props.split[amount] = undefined
+}
 </script>
 
 <template>
   <div class="practice-retrain-payees">
     <fieldset>
       <legend>销售分成</legend>
-      <a-form-item label="销售份额（元）" :html-for="prefix+'-sales'" required>
-        <a-input-number :id="prefix+'-sales'" v-model:value="split.personal" :min="0" :max="amount" :precision="2"/>
+      <a-form-item label="销售计提方式" :html-for="prefix+'-sales-basis'" required>
+        <a-select :id="prefix+'-sales-basis'" :value="split.salesBasis" :options="practiceRetrainShareMethods"
+          @update:value="setBasis('salesBasis','personal',$event)"/>
+      </a-form-item>
+      <a-form-item :label="split.salesBasis==='fixed' ? '销售份额（元）' : '销售比例（%）'" :html-for="prefix+'-sales'" required>
+        <a-input-number :id="prefix+'-sales'" v-model:value="split.personal" :min="0"
+          :max="split.salesBasis==='fixed' ? amount : 100" :precision="split.salesBasis==='fixed' ? 2 : 4"/>
       </a-form-item>
     </fieldset>
     <fieldset>
@@ -27,15 +38,23 @@ const remainder = computed(() => {
         <a-select :id="prefix+'-service'" v-model:value="split.servicePersonId" :options="people" allow-clear
           show-search option-filter-prop="label" placeholder="选择服务人员"/>
       </a-form-item>
-      <a-form-item v-if="split.servicePersonId" label="服务份额（元）" :html-for="prefix+'-service-amount'" required>
-        <a-input-number :id="prefix+'-service-amount'" v-model:value="split.service" :min="0" :max="amount" :precision="2"/>
-      </a-form-item>
+      <template v-if="split.servicePersonId">
+        <a-form-item label="服务计提方式" :html-for="prefix+'-service-basis'" required>
+          <a-select :id="prefix+'-service-basis'" :value="split.serviceBasis" :options="practiceRetrainShareMethods"
+            @update:value="setBasis('serviceBasis','service',$event)"/>
+        </a-form-item>
+        <a-form-item :label="split.serviceBasis==='fixed' ? '服务份额（元）' : '服务比例（%）'" :html-for="prefix+'-service-amount'" required>
+          <a-input-number :id="prefix+'-service-amount'" v-model:value="split.service" :min="0"
+            :max="split.serviceBasis==='fixed' ? amount : 100" :precision="split.serviceBasis==='fixed' ? 2 : 4"/>
+        </a-form-item>
+      </template>
     </fieldset>
     <fieldset>
       <legend>资金池分成</legend>
       <p v-if="remainder!=null" class="tier-note" role="status">
-        {{ remainder<0 ? '销售和服务份额合计超出固定提成' : '每份报名归入 '+formatMoney(remainder) }}
+        {{ remainder<0 ? '销售和服务份额合计超出复训总提成' : '每份报名归入 '+formatMoney(remainder) }}
       </p>
+      <p v-else-if="dynamic" class="tier-note">归入每份复训提成扣除销售和服务后的余额</p>
       <PracticePoolFields :target="split.pool" :prefix="prefix+'-split'" :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
     </fieldset>
   </div>

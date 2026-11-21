@@ -72,6 +72,40 @@ func TestPracticeRetrainSplitsSaleServiceAndPoolAcrossPayments(t *testing.T) {
 	if err != nil || len(result.Issues) != 0 || len(result.Lines) != 3 || result.Total != 9900 || result.Lines[0].Base != 5000 {
 		t.Fatalf("fixed commission changed after partial refund: %+v %v", result, err)
 	}
+	rule.Components[0].Mode, rule.Components[0].Value = "rate", 2000
+	rule.Components[0].RetrainSplits = &[]practiceRetrainSplit{{
+		CompanyID: "direct", Pool: practicePoolTarget{PoolID: 9, OwnerID: 7}, ServicePersonID: 4,
+		SalesRate:   &practiceRetrainRate{Basis: "commission", Value: 500000},
+		ServiceRate: &practiceRetrainRate{Basis: "net_receipts", Value: 12000},
+	}}
+	if err := validateComponents(rule.Components); err != nil {
+		t.Fatalf("configured rates should be valid with a proportional retrain commission: %v", err)
+	}
+	assertShares := func(full int64, inputs map[int64][]practiceRefundMatch, wanted map[int64]int64) {
+		t.Helper()
+		got, err := calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, inputs, runtime)
+		if err != nil || len(got.Issues) != 0 || got.Total != full {
+			t.Fatalf("expected proportional split with total %d: %+v %v", full, got, err)
+		}
+		amounts := make(map[int64]int64)
+		for _, line := range got.Lines {
+			amounts[line.PersonID] += line.Amount
+		}
+		for person, value := range wanted {
+			if amounts[person] != value {
+				t.Fatalf("recipient %d expected %d, got %d", person, value, amounts[person])
+			}
+		}
+	}
+	assertShares(10000, nil, map[int64]int64{2: 5000, 4: 600, 0: 4400})
+	assertShares(1000, refunds, map[int64]int64{2: 500, 4: 60, 0: 440})
+	split := &(*rule.Components[0].RetrainSplits)[0]
+	split.ServiceRate.Value = 900000
+	got, err := calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || got.Total != 0 || len(got.Lines) != 0 || len(got.Issues) != 1 ||
+		got.Issues[0].Code != "PRACTICE_RETRAIN_SPLIT_EXCEEDS_COMMISSION" {
+		t.Fatalf("an over-allocated commission must be flagged without negative pool funding: %+v %v", got, err)
+	}
 }
 
 func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testing.T) {

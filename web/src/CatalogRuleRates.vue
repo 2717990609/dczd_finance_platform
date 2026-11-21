@@ -62,7 +62,7 @@ const splitFields = [
   {key:'total',label:'销售分项总比例'},
   {key:'sales',label:'普通成交销售'},
   {key:'headSales',label:'负责人亲自成交'},
-  {key:'service',label:'服务人员'},
+  {key:'service',label:'服务比例'},
 ]
 const splitRows = computed(() => {
   const split = teamSplit.value
@@ -691,7 +691,7 @@ async function publish() {
                 <a-select id="catalog-team-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
               </a-form-item>
               <a-form-item v-if="team.service || (!applied && sheet.mayPublish)"
-                label="服务人员" html-for="catalog-team-service">
+                label="服务收款人" html-for="catalog-team-service">
                 <AppointmentPersonSelect v-if="!applied && sheet.mayPublish" id="catalog-team-service" :key="selectedTeam"
                   :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('service')" :value="teamPerson('service')?.id"
                   :disabled="!editable" :placeholder="teamPerson('service')?.id?'输入姓名搜索':teamPerson('service')?.name" @change="(id,option)=>setTeamPerson('service',id,option)"/>

@@ -21,7 +21,8 @@ import PracticeCountStartEditor from './PracticeCountStartEditor.vue'
 import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
-import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel, practicePeriodScopeText, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
+import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
+  practicePeriodScopeText, practiceRetrainSplitBody, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -234,7 +235,7 @@ const registrationCompanies = ref()
 const registrationCompaniesLoading = ref(false)
 const registrationCompaniesError = ref('')
 const classPeopleOptions = computed(() => classRuleDirectory.value?.people.map(person=>({value:person.id,label:person.name})) || peopleOptions.value)
-const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({value:unit.id,label:unit.name})) || [])
+const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({value:unit.id,label:unit.scopeName || unit.name})) || [])
 const salesUnitOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>['DEPARTMENT','TEAM'].includes(unit.kind))
   .map(unit=>({value:unit.id,label:(unit.scopeName || unit.name)+' · '+optionLabel('organizationKind',unit.kind)})) || [])
 const practiceScopeNames = computed(() => {
@@ -285,8 +286,8 @@ watch(() => data.value.periods.find(period => period.id === requestedPeriod.valu
   if (month) workspaceMonth.value = month
 })
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
-const practiceFixedRetrain = computed(() => classRule.value
-  ? draft.value.components?.find(part=>part.type==='sales' && part.mode==='fixed' && part.classMember==='retrain') : undefined)
+const practiceRetrainSales = computed(() => classRule.value
+  ? draft.value.components?.find(part=>part.type==='sales' && ['fixed','rate'].includes(part.mode) && part.classMember==='retrain') : undefined)
 const practiceCountConfig = computed(() => {
   if (!classRule.value) return
   const config = draft.value.components?.find(part=>part.mode==='tiered')?.tierConfig
@@ -1244,16 +1245,9 @@ function ruleComponentBody(row) {
     if (classRule.value && row.type==='sales' && row.salesCompanies?.length) {
       component.salesCompanies = row.salesCompanies
     }
-    if (classRule.value && row.type==='sales' && row.mode==='fixed' && row.classMember==='retrain' && row.retrainSplits?.length) {
+    if (classRule.value && row.type==='sales' && ['fixed','rate'].includes(row.mode) && row.classMember==='retrain' && row.retrainSplits?.length) {
       must(sourceRole,'请选择销售来源角色')
-      component.retrainSplits = row.retrainSplits.map(split=>({
-        companyId:must(split.companyId,'请选择拆分销售公司'),pool:practicePoolBody(split.pool),
-        personalMinor:minor(must(split.personal,'请填写销售份额')),
-        ...(split.servicePersonId ? {servicePersonId:split.servicePersonId,serviceMinor:minor(must(split.service,'请填写服务份额'))} : {}),
-      }))
-      if (component.retrainSplits.some(split=>split.personalMinor+(split.serviceMinor || 0)>component.value)) {
-        throw new Error('销售份额与服务份额合计不能超过固定提成。')
-      }
+      component.retrainSplits = row.retrainSplits.map(split=>practiceRetrainSplitBody(split,row.mode==='fixed' ? component.value : undefined))
       if (component.salesCompanies && component.retrainSplits.some(split=>!component.salesCompanies.includes(split.companyId))) {
         throw new Error('拆分公司须在适用销售公司范围内。')
       }
@@ -1795,8 +1789,8 @@ async function save() {
         </div>
         <PracticeCountStartEditor v-if="practiceCountConfig" :config="practiceCountConfig"
           :start-modes="options('tierStartMode')" :people="classPeopleOptions" :openings="practiceOpeningOptions"/>
-        <PracticeRetrainSplitEditor v-if="practiceFixedRetrain" :component="practiceFixedRetrain"
-          :index="draft.components.indexOf(practiceFixedRetrain)" :people="classPeopleOptions"
+        <PracticeRetrainSplitEditor v-if="practiceRetrainSales" :component="practiceRetrainSales"
+          :index="draft.components.indexOf(practiceRetrainSales)" :people="classPeopleOptions"
           :units="unitOptions" :companies="options('practiceSalesCompany')" :pools="practicePoolOptions"
           :create-pool="createPracticePool" :format-money="formatMoney"/>
         <div v-if="draft.components?.length" class="rule-blocks" aria-label="收款安排">
