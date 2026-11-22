@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -82,13 +83,16 @@ func readPracticePoolUnits(ctx context.Context, tx pgx.Tx, periodID int64, items
 }
 
 type practiceRetrainSplit struct {
-	CompanyID       string               `json:"companyId"`
-	Pool            practicePoolTarget   `json:"pool"`
-	PersonalMinor   int64                `json:"personalMinor"`
-	SalesRate       *practiceRetrainRate `json:"salesRate,omitempty"`
-	ServicePersonID int64                `json:"servicePersonId,omitempty"`
-	ServiceMinor    int64                `json:"serviceMinor,omitempty"`
-	ServiceRate     *practiceRetrainRate `json:"serviceRate,omitempty"`
+	CompanyID          string               `json:"companyId"`
+	Pool               practicePoolTarget   `json:"pool"`
+	PersonalMinor      int64                `json:"personalMinor"`
+	SalesRate          *practiceRetrainRate `json:"salesRate,omitempty"`
+	ServicePersonID    int64                `json:"servicePersonId,omitempty"`
+	ServiceMinor       int64                `json:"serviceMinor,omitempty"`
+	ServiceRate        *practiceRetrainRate `json:"serviceRate,omitempty"`
+	ServiceLabel       string               `json:"serviceLabel,omitempty"`
+	ServiceSalesPeople []int64              `json:"serviceSalesPeople,omitempty"`
+	ServiceSalesUnits  []string             `json:"serviceSalesUnits,omitempty"`
 }
 
 const (
@@ -159,6 +163,20 @@ func validPracticeRetrainSplits(part component) bool {
 			r.ServiceRate == nil && r.ServiceMinor == 0 && r.ServicePersonID != 0 {
 			return false
 		}
+		if r.ServiceLabel != "" && !textOK(r.ServiceLabel, 80) ||
+			r.ServicePersonID == 0 && (r.ServiceLabel != "" || len(r.ServiceSalesPeople)+len(r.ServiceSalesUnits) != 0) {
+			return false
+		}
+		for i, person := range r.ServiceSalesPeople {
+			if person <= 0 || slices.Contains(r.ServiceSalesPeople[:i], person) {
+				return false
+			}
+		}
+		for i, unit := range r.ServiceSalesUnits {
+			if normalized, ok := canonicalSourceUUID(unit); !ok || normalized != unit || slices.Contains(r.ServiceSalesUnits[:i], unit) {
+				return false
+			}
+		}
 		if _, valid := r.amounts(part.Value, 0); part.Mode == "fixed" && !valid {
 			return false
 		}
@@ -188,7 +206,7 @@ func (p practicePurchase) retrainSplit(splits []practiceRetrainSplit) (*practice
 }
 
 func appendPracticeRetrainSplit(draft *paymentDraft, p practicePurchase, rule paymentRule, index int, amounts practiceRetrainAmounts,
-	sellers []identityAssignment, split practiceRetrainSplit, unit pgtype.UUID, proportional bool) error {
+	sellers []identityAssignment, split practiceRetrainSplit, unit pgtype.UUID, proportional bool, serviceMatches [2]bool) error {
 	var err error
 	draft.Total, err = addMinor(draft.Total, amounts.commission)
 	if err != nil {
@@ -198,16 +216,21 @@ func appendPracticeRetrainSplit(draft *paymentDraft, p practicePurchase, rule pa
 	personal := p.benefitShares(p.payments, amounts.sales, proportional)
 	cumulative := p.benefitShares(p.payments, amounts.sales+amounts.service, proportional)
 	for i, payment := range p.payments {
+		if !serviceMatches[i] {
+			cumulative[i] = personal[i]
+		}
 		line := draftLine{FactID: payment.ID, RuleID: rule.ID, EnrollmentID: p.member.ID, Base: p.netAmount(payment)}
 		if personal[i] > 0 {
 			sale := line
 			sale.Component, sale.PersonID, sale.IdentityID, sale.Amount = "sales", sellers[i].PersonID, sellers[i].ID, personal[i]
+			sale.practiceArrangementLabel = rule.Components[index].SalesLabel
 			draft.Lines = append(draft.Lines, sale)
 		}
 		if share := cumulative[i] - personal[i]; share > 0 {
 			service := line
 			service.Component = practicePeriodComponentKey(component{Type: "retrain_service"}, index)
 			service.PersonID, service.Amount = split.ServicePersonID, share
+			service.practiceArrangementLabel = split.ServiceLabel
 			draft.Lines = append(draft.Lines, service)
 		}
 		if share := total[i] - cumulative[i]; share > 0 {

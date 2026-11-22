@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import { exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practicePeriodScopeText, practiceRetrainPoolRemainder,
-  practiceRetrainShareText, practiceSalesScopeText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
+  practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
   rule: Object, canCopy: Boolean, canEditService: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
@@ -51,7 +51,8 @@ const rate = (value, scale = 100) => (value / scale)+'%'
 const standard = (row, scale) => row.mode==='rate' ? rate(row.value,scale) : props.formatMoney(row.value)
 const retrainRemainder = (part, split) => {
   const amount = practiceRetrainPoolRemainder(split,part.mode==='fixed' ? part.value : undefined)
-  return amount==null ? '按余额归集' : props.formatMoney(amount)
+  return amount==null ? '按余额归集' :
+    (split.serviceSalesPeople?.length || split.serviceSalesUnits?.length ? '整份报名命中时 ' : '')+props.formatMoney(amount)
 }
 const recordedServiceShares = computed(() => props.rule.components.flatMap(part=>
   (part.retrainSplits || []).filter(split=>split.servicePersonId)))
@@ -272,9 +273,11 @@ onMounted(async () => {
       </article>
       <section v-for="split in recordedServiceShares" :key="'recorded-service-'+split.companyId" class="rule-block saved-service-share">
         <div>
-          <strong>服务提成</strong>
+          <strong>{{ split.serviceLabel || '服务提成' }}</strong>
           <span class="rule-block-badge">复训</span>
-          <span>提成范围 · {{ companyName(split.companyId) }}</span>
+          <span :title="practiceRetrainServiceScopeText(split,practiceScopeNames,Infinity)">
+            提成范围 · {{ practiceRetrainServiceScopeText(split,practiceScopeNames) }}
+          </span>
           <span>{{ personName(split.servicePersonId) }} · {{ practiceRetrainShareText(split.serviceMinor,split.serviceRate,formatMoney) }}</span>
           <small>从复训总提成划出</small>
         </div>

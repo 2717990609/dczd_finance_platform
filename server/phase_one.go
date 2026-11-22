@@ -736,6 +736,8 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			}
 			for _, split := range c.retrainSplits() {
 				companyIDs = append(companyIDs, split.CompanyID)
+				personIDs = append(personIDs, split.ServiceSalesPeople...)
+				salesUnitIDs = append(salesUnitIDs, split.ServiceSalesUnits...)
 				if split.ServicePersonID != 0 {
 					personIDs = append(personIDs, split.ServicePersonID)
 				}

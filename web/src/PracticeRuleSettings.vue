@@ -173,7 +173,8 @@ async function save() {
           </template>
           <template v-else-if="column.key==='sales'">{{ practiceRetrainShareText(record.item.personalMinor,record.item.salesRate,formatMoney) }}</template>
           <template v-else-if="column.key==='pool'">
-            {{ poolName(record.item.pool.poolId) }} · {{ record.poolRemainder==null ? '按余额归集' : formatMoney(record.poolRemainder) }}
+            {{ poolName(record.item.pool.poolId) }} · {{ record.poolRemainder==null ? '按余额归集' :
+              (record.item.serviceSalesPeople?.length || record.item.serviceSalesUnits?.length ? '整份报名命中时 ' : '')+formatMoney(record.poolRemainder) }}
             <small class="order-version">分配负责人 {{ personName(record.item.pool.ownerId) }}</small>
           </template>
           <template v-else-if="column.key==='scope'">

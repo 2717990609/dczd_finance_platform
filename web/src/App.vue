@@ -23,7 +23,8 @@ import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
-  practicePeriodScopeText, practiceRetrainShareText, practiceRetrainSplitBody, practiceSalesScopeText, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
+  practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
+  practiceSalesScopeText, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -298,6 +299,10 @@ function addRetrainService(companyId) {
   const split = companiesWithoutService.value.find(split=>split.companyId===companyId)
   if (!split) return
   split.serviceEnabled = true
+  split.serviceLabel = ''
+  split.serviceScopeMode = 'all'
+  split.serviceSalesPeople = []
+  split.serviceSalesUnits = []
   split.serviceBasis = 'fixed'
   split.service = undefined
   activeRuleComponent.value = serviceCardKey(companyId)
@@ -306,6 +311,7 @@ function removeRetrainService(split) {
   split.serviceEnabled = false
   split.servicePersonId = undefined
   split.service = undefined
+  split.serviceScopeMode = 'all'
   activeRuleComponent.value = undefined
 }
 const practiceCountConfig = computed(() => {
@@ -1158,9 +1164,9 @@ function returnToRuleEditor() {
   rulePreview.value = undefined
   nextTick(() => document.getElementById('rule-preview-button')?.focus())
 }
-function compareComponentRule(periodId, signal) {
+function compareComponentRule(periodId, signal, matchedOrders) {
   const {productName,periodName,...rule} = rulePreview.value
-  return api('/rule-impact',{method:'POST',body:JSON.stringify({periodId,rule}),signal})
+  return api('/rule-impact',{method:'POST',body:JSON.stringify({periodId,rule,matchedOrders}),signal})
 }
 function must(value, msg = '请补齐必填内容') {
   if (value === undefined || value === null || String(value).trim() === '') throw new Error(msg)
@@ -1738,7 +1744,7 @@ async function save() {
         :option-label="optionLabel" :people="data.people" :opening-label="savedOpeningLabel"
         :format-time="formatTime" :format-money="formatMoney"/>
       <RuleImpactPreview v-model:busy="ruleImpactBusy" :periods="previewPeriods" :period-id="rulePreview.periodId"
-        :simulate="compareComponentRule" :format-money="formatMoney" :format-time="formatTime"/>
+        :simulate="compareComponentRule" :format-money="formatMoney" :format-time="formatTime" show-matched-orders/>
     </div>
     <a-form v-show="!rulePreview" id="finance-edit-form" :model="draft" layout="vertical"
       :size="drawer==='rule' ? 'small' : 'middle'" @finish="save">
@@ -1942,9 +1948,11 @@ async function save() {
               :aria-controls="'retrain-service-form-'+i"
               @click="activeRuleComponent=activeRuleComponent===serviceCardKey(split.companyId) ? undefined : serviceCardKey(split.companyId)">
               <DownOutlined aria-hidden="true"/>
-              <strong>服务提成</strong>
+              <strong>{{ split.serviceLabel?.trim() || '服务提成' }}</strong>
               <span class="rule-block-badge">复训</span>
-              <span class="rule-block-recipient">提成范围 · {{ practiceScopeNames.company(split.companyId) }}</span>
+              <span class="rule-block-recipient" :title="practiceRetrainServiceScopeText(split,practiceScopeNames,Infinity)">
+                提成范围 · {{ practiceRetrainServiceScopeText(split,practiceScopeNames) }}
+              </span>
               <small v-if="split.servicePersonId">{{ practiceScopeNames.person(split.servicePersonId) }}
                 <template v-if="split.service!=null"> · {{ practiceRetrainShareText(Math.round(split.service*100),
                   split.serviceBasis==='fixed' ? undefined : {basis:split.serviceBasis,value:Math.round(split.service*10000)},formatMoney) }}
@@ -1953,6 +1961,7 @@ async function save() {
             </button>
             <div v-if="activeRuleComponent===serviceCardKey(split.companyId)" :id="'retrain-service-form-'+i" class="rule-block-body">
               <PracticeRetrainServiceEditor :split="split" :index="i" :people="classPeopleOptions"
+                :sales-units="salesUnitOptions"
                 :total="practiceRetrainSales.mode==='fixed' ? practiceRetrainSales.amount : undefined"
                 :format-money="formatMoney" @remove="removeRetrainService(split)"/>
             </div>

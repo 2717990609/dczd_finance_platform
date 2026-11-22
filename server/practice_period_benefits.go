@@ -109,6 +109,8 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 		}
 		for _, split := range part.retrainSplits() {
 			people = append(people, split.ServicePersonID)
+			people = append(people, split.ServiceSalesPeople...)
+			units = append(units, split.ServiceSalesUnits...)
 		}
 	}
 	return s.practiceRecipientNames(ctx, people, units, pools)

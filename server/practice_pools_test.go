@@ -63,6 +63,39 @@ func TestPracticeRetrainSplitsSaleServiceAndPoolAcrossPayments(t *testing.T) {
 	if byLeg[1] != 2445 || byLeg[2] != 7455 || byPerson[2] != 5000 || byPerson[4] != 600 || byPerson[0] != 4300 {
 		t.Fatalf("payment or recipient cents lost: payments=%v, recipients=%v", byLeg, byPerson)
 	}
+	var scoped practiceRetrainSplit
+	if err := json.Unmarshal([]byte(`{"companyId":"direct","pool":{"poolId":9,"ownerId":7},"personalMinor":5000,
+	 "servicePersonId":4,"serviceMinor":600,"serviceLabel":"客户跟进","serviceSalesPeople":[3]}`), &scoped); err != nil {
+		t.Fatal(err)
+	}
+	rule.Components[0].RetrainSplits = &[]practiceRetrainSplit{scoped}
+	result, err = calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || len(result.Issues) != 0 || len(result.Lines) != 4 || result.Total != 9900 {
+		t.Fatalf("the excluded salesperson's orders should only produce sales and pool lines: %+v %v", result, err)
+	}
+	const team = "40000000-0000-4000-8000-000000000010"
+	scoped.ServiceSalesPeople, scoped.ServiceSalesUnits = []int64{2}, []string{team}
+	rule.Components[0].RetrainSplits = &[]practiceRetrainSplit{scoped}
+	scopedRuntime := runtime
+	scopedRuntime.salesOrganizations = practiceSalesOrganizations{
+		1: {"DIRECT_REFERRER": {PersonID: 2, SourceCompany: "direct", Department: team}},
+		2: {"DIRECT_REFERRER": {PersonID: 2, SourceCompany: "direct", Department: "40000000-0000-4000-8000-000000000011"}},
+	}
+	result, err = calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil, scopedRuntime)
+	if err != nil || len(result.Issues) != 0 || len(result.Lines) != 5 || result.Total != 9900 {
+		t.Fatalf("only the eligible payment leg should produce a service line: %+v %v", result, err)
+	}
+	if line := result.Lines[1]; line.PersonID != 4 || line.FactID != 1 || line.Amount != 148 || line.practiceArrangementLabel != "客户跟进" {
+		t.Fatalf("wrong order, recipient, share or label: %+v", line)
+	}
+	scoped.ServiceMinor = 0
+	scoped.ServiceRate = &practiceRetrainRate{Basis: practiceRetrainCommissionBasis, Value: 0}
+	rule.Components[0].RetrainSplits = &[]practiceRetrainSplit{scoped}
+	result, err = calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || len(result.Issues) != 0 || len(result.Lines) != 4 || result.Total != 9900 {
+		t.Fatalf("an explicit zero share does not need the service's team attribution: %+v %v", result, err)
+	}
+	rule.Components[0] = pooledSales
 	// The approved fixed entitlement is based on a valid enrollment despite a partial refund.
 	// A partial refund may apply across both payments. Re-test with one valid payment.
 	members[0].PaidOrderIDs = []string{"32"}
@@ -127,9 +160,11 @@ func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testi
 	id(s.assignIdentity(ctx, assignIdentityInput{Source: "DCZD", ExternalID: "seller", PersonID: seller, ValidFrom: "2026-08-01T00:00:00Z"}))
 	const company = "40000000-0000-4000-8000-000000000011"
 	const dept = "40000000-0000-4000-8000-000000000012"
+	const salesDept = "40000000-0000-4000-8000-000000000015"
 	_, err := s.db.Exec(ctx, `INSERT INTO organization_units(id,parent_id,kind,name,status) VALUES
  ('40000000-0000-4000-8000-000000000011',NULL,'COMPANY','销售公司','ACTIVE'),
- ('40000000-0000-4000-8000-000000000012','40000000-0000-4000-8000-000000000011','DEPARTMENT','归集部门','ACTIVE');
+ ('40000000-0000-4000-8000-000000000012','40000000-0000-4000-8000-000000000011','DEPARTMENT','归集部门','ACTIVE'),
+ ('40000000-0000-4000-8000-000000000015','40000000-0000-4000-8000-000000000011','DEPARTMENT','销售部门','ACTIVE');
  INSERT INTO configuration_options(group_key,option_key,label,display_order) VALUES('practiceSalesCompany','direct','销售公司',10);
  INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
  VALUES('DCZD','direct','40000000-0000-4000-8000-000000000011','2026-01-01');`)
@@ -138,7 +173,8 @@ func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testi
 	}
 	at := time.Date(2026, 8, 7, 12, 0, 0, 0, time.UTC)
 	_, err = s.db.Exec(ctx, `INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from)
- VALUES('40000000-0000-4000-8000-000000000013',$1,$2::uuid,'MEMBER',$3)`, member, dept, at.Add(time.Minute))
+ VALUES('40000000-0000-4000-8000-000000000013',$1,$2::uuid,'MEMBER',$3),
+ ('40000000-0000-4000-8000-000000000014',$4,$5::uuid,'MEMBER',$6)`, member, dept, at.Add(time.Minute), seller, salesDept, at.Add(-time.Minute))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -154,7 +190,8 @@ func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testi
 	route := practicePoolTarget{PoolID: pool, OwnerID: service}
 	rule := publishRuleInput{ProductID: product, Label: "复训及班次规则", Components: []component{
 		{Type: "sales", Mode: "fixed", Value: 9900, SourceRole: "DIRECT_REFERRER", ClassMember: "retrain",
-			RetrainSplits: &[]practiceRetrainSplit{{CompanyID: "direct", Pool: route, PersonalMinor: 5000, ServicePersonID: service, ServiceMinor: 600}}},
+			RetrainSplits: &[]practiceRetrainSplit{{CompanyID: "direct", Pool: route, PersonalMinor: 5000, ServicePersonID: service, ServiceMinor: 600,
+				ServiceLabel: "复训跟进验收", ServiceSalesPeople: []int64{seller}, ServiceSalesUnits: []string{salesDept}}}},
 		{Type: "delivery", Mode: "period_rate", Value: 10000, ClassMember: "retrain",
 			PeriodBenefit: &practicePeriodBenefit{Label: "交付分润归集", Pool: &route}},
 	}}
@@ -178,6 +215,19 @@ func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
+	preview, err := s.postComponentRuleImpact(ctx, componentRuleImpactInput{PeriodID: period, Rule: rule, MatchedOrders: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var included int64
+	for _, row := range preview.(ruleImpactReport).Items {
+		if row.Arrangement == "复训跟进验收" && row.Recipient == "服务" && (row.OrderID == "31" || row.OrderID == "32") && row.DeltaMinor == 0 {
+			included += row.AfterMinor
+		}
+	}
+	if included != 600 {
+		t.Fatalf("unchanged service awards must still list their orders and configured label: %+v", preview)
+	}
 	result, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
 	if err != nil {
 		t.Fatal(err)
@@ -185,6 +235,12 @@ func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testi
 	draft := result.(draftSummary)
 	if draft.Total != 10400 || draft.LineCount != 8 || draft.IssueCount != 0 {
 		t.Fatalf("unexpected normal draft: %+v", draft)
+	}
+	var labeled int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM jsonb_array_elements((`+draftDetailSQL+`)->'lines') line
+	 WHERE line->>'componentLabel'='复训跟进验收' AND line->>'personName'='服务'`, period, 0, 0, draft.Version, 0, 0).
+		Scan(&labeled); err != nil || labeled != 2 {
+		t.Fatalf("saved orders should display the original arrangement name: %d %v", labeled, err)
 	}
 	t.Run("共用团队池只换分配负责人", func(t *testing.T) {
 		next := rule

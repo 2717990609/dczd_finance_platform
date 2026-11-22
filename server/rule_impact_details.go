@@ -55,6 +55,7 @@ type ruleImpactPosting struct {
 	recipient ruleImpactRecipient
 	component impactComponentRef
 	kind      string
+	label     string
 	amount    int64
 }
 
@@ -138,6 +139,7 @@ func impactPostings(draft paymentDraft, originals map[int64]ruleImpactPosting) (
 			ref.catalog = line.Catalog.Rule
 		}
 		posting := ruleImpactPosting{fact: line.FactID, recipient: impactRecipient(line), component: ref, kind: "accrual", amount: line.Amount}
+		posting.label = line.practiceArrangementLabel
 		current[paymentKey{line.FactID, line.Component}] = posting
 		if !line.PracticeTierReference {
 			postings = append(postings, posting)
@@ -197,7 +199,7 @@ func impactArrangements(ctx context.Context, tx pgx.Tx, all ...[]ruleImpactPosti
 	 SELECT p.rule_id,p.catalog_id,p.code,p.kind,coalesce(p.part->>'classMember',''),
 	  coalesce(title.name,''),coalesce(duplicate.ord,0)::int,
 	  coalesce(nullif(action.label,''),opt.label,
-	   CASE p.kind WHEN 'company_referral' THEN '公司推荐分润' WHEN 'retrain_service' THEN '复训服务分润'
+	   CASE p.kind WHEN 'company_referral' THEN '公司推荐分润' WHEN 'retrain_service' THEN '服务提成'
 	    WHEN 'retrain_pool' THEN '复训销售归集' ELSE p.kind END),
 	  CASE WHEN action.item IS NOT NULL AND action.item<>p.code THEN split_part(p.code,':',2) ELSE '' END
 	 FROM parts p
@@ -346,7 +348,7 @@ func impactTotal(draft paymentDraft) (int64, error) {
 	return addMinor(paid, draft.CorrectionTotal)
 }
 
-func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentDraft) (ruleImpactReport, error) {
+func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentDraft, matchedOrders bool) (ruleImpactReport, error) {
 	report := ruleImpactReport{BeforeIssueCount: before.blockingIssues(), AfterIssueCount: after.blockingIssues(),
 		IssueReasons: impactIssueReasons(before.Issues, after.Issues), Items: []ruleImpactItem{}}
 	var err error
@@ -397,6 +399,9 @@ func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentD
 			if item.Recipient == "" || step == 1 {
 				item.Recipient = posting.recipient.name(names)
 				item.Arrangement, item.ArrangementRole = arrangement.name, arrangement.role
+				if posting.label != "" {
+					item.Arrangement = posting.label
+				}
 			}
 			if step == 0 {
 				item.BeforeMinor, err = addMinor(item.BeforeMinor, posting.amount)
@@ -411,7 +416,8 @@ func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentD
 	}
 	changed := make([]group, 0)
 	for key, item := range items {
-		if item.AfterMinor != item.BeforeMinor {
+		if matchedOrders && key.kind == "accrual" && item.AfterMinor > 0 ||
+			!matchedOrders && item.AfterMinor != item.BeforeMinor {
 			changed = append(changed, key)
 		}
 	}

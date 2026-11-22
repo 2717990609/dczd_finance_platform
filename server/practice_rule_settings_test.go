@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -83,7 +84,7 @@ func TestPracticeRuleSettingsSaveOnlyTheSelectedConfiguration(t *testing.T) {
 	}
 	list := read()
 	if list[0].PersonCountStarts[0].FromOrdinal != 175 || len(list[0].RetrainSplits) != 1 ||
-		list[0].RetrainSplits[0] != split || list[0].RetrainTotal != 12000 {
+		!reflect.DeepEqual(list[0].RetrainSplits[0], split) || list[0].RetrainTotal != 12000 {
 		t.Fatalf("saving a split must keep the start and its existing total: %+v", list[0])
 	}
 	input.RuleID, input.ExistingCompanyID = publishedID(), split.CompanyID

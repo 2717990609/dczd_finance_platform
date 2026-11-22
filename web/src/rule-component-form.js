@@ -231,6 +231,9 @@ export function practiceRetrainSplitForm(split) {
     salesBasis:split.salesRate?.basis || 'fixed',
     personal:split.salesRate ? split.salesRate.value/10000 : split.personalMinor/100,
     serviceEnabled:Boolean(split.servicePersonId),
+    serviceLabel:split.serviceLabel || '',
+    serviceScopeMode:split.serviceSalesPeople?.length || split.serviceSalesUnits?.length ? 'selected' : 'all',
+    serviceSalesPeople:split.serviceSalesPeople || [],serviceSalesUnits:split.serviceSalesUnits || [],
     servicePersonId:split.servicePersonId,serviceBasis:split.serviceRate?.basis || 'fixed',
     service:split.serviceRate ? split.serviceRate.value/10000 : (split.serviceMinor || 0)/100,
   }
@@ -293,7 +296,23 @@ export function practiceRetrainSplitBody(split, totalMinor) {
   }
   if (practiceRetrainPoolRemainder(amounts,totalMinor)<0) throw new Error('销售与服务份额合计不能超过复训总提成')
   if (!split.pool?.poolId || !split.pool?.ownerId) throw new Error('请选择资金池和分配负责人')
-  return {companyId:split.companyId,pool:split.pool,...amounts}
+  const service = {}
+  if (split.servicePersonId) {
+    if (split.serviceLabel?.trim()) service.serviceLabel = split.serviceLabel.trim()
+    if (split.serviceScopeMode==='selected') {
+      if (!split.serviceSalesPeople?.length && !split.serviceSalesUnits?.length) throw new Error('请选择参与服务提成的销售人员或团队')
+      if (split.serviceSalesPeople?.length) service.serviceSalesPeople = split.serviceSalesPeople
+      if (split.serviceSalesUnits?.length) service.serviceSalesUnits = split.serviceSalesUnits
+    }
+  }
+  return {companyId:split.companyId,pool:split.pool,...amounts,...service}
+}
+
+export function practiceRetrainServiceScopeText(split, names, limit = 2) {
+  const base = names.company(split.companyId)+' · 已签到且可计提的复训报名'
+  if (split.serviceScopeMode==='all' || !split.serviceScopeMode && !split.serviceSalesPeople?.length && !split.serviceSalesUnits?.length) return base
+  return base+' · '+practicePeriodScopeText({restrictPayments:true,salesPeople:split.serviceSalesPeople,
+    salesUnits:split.serviceSalesUnits},names,limit)
 }
 
 export function practiceRetrainShareText(fixed, rate, formatMoney) {

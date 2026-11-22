@@ -26,6 +26,11 @@ func loadPracticeSalesOrganizations(ctx context.Context, tx pgx.Tx, rule payment
 		if benefit := part.PeriodBenefit; benefit != nil && len(benefit.SalesUnits) != 0 {
 			roles[part.SourceRole] = true
 		}
+		for _, split := range part.retrainSplits() {
+			if len(split.ServiceSalesUnits) != 0 {
+				roles[part.SourceRole] = true
+			}
+		}
 	}
 	if len(roles) == 0 {
 		return nil, nil

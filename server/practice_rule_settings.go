@@ -219,7 +219,8 @@ func editPracticeRuleSettings(pub *publishRuleInput, input savePracticeRuleSetti
 			return invalid
 		}
 		company = split.CompanyID
-		if split.ServicePersonID != 0 || split.ServiceMinor != 0 || split.ServiceRate != nil {
+		if split.ServicePersonID != 0 || split.ServiceMinor != 0 || split.ServiceRate != nil ||
+			split.ServiceLabel != "" || len(split.ServiceSalesPeople)+len(split.ServiceSalesUnits) != 0 {
 			return errPracticeServiceSeparate
 		}
 		if editing {
@@ -227,6 +228,7 @@ func editPracticeRuleSettings(pub *publishRuleInput, input savePracticeRuleSetti
 				if saved.CompanyID == company {
 					next := *split
 					next.ServicePersonID, next.ServiceMinor, next.ServiceRate = saved.ServicePersonID, saved.ServiceMinor, saved.ServiceRate
+					next.ServiceLabel, next.ServiceSalesPeople, next.ServiceSalesUnits = saved.ServiceLabel, saved.ServiceSalesPeople, saved.ServiceSalesUnits
 					split = &next
 					break
 				}

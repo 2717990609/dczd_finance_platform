@@ -35,7 +35,8 @@ function setBasis(field, amount, basis) {
     <fieldset>
       <legend>资金池分成</legend>
       <p v-if="remainder!=null" class="tier-note" role="status">
-        {{ remainder<0 ? '已配置份额合计超出复训总提成' : '每份报名归入 '+formatMoney(remainder) }}
+        {{ remainder<0 ? '已配置份额合计超出复训总提成' :
+          (split.serviceScopeMode==='selected' ? '整份报名命中时归入 ' : '每份报名归入 ')+formatMoney(remainder) }}
       </p>
       <p v-else-if="dynamic" class="tier-note">归入每份复训提成扣除已配置份额后的余额</p>
       <PracticePoolFields :target="split.pool" :prefix="prefix+'-split'" :pools="pools" :people="people" :units="units" :create-pool="createPool"/>

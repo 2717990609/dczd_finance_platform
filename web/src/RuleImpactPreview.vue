@@ -3,12 +3,13 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { salesRoles } from './catalog-labels'
 import { draftIssueLabels } from './draft-issue-labels'
 
-const props = defineProps({periods:Array, periodId:Number, simulate:Function, formatMoney:Function, formatTime:Function})
+const props = defineProps({periods:Array, periodId:Number, simulate:Function, formatMoney:Function, formatTime:Function, showMatchedOrders:Boolean})
 const loading = defineModel('busy', {type:Boolean, default:false})
 const selected = ref(props.periodId)
 const result = ref()
 const error = ref('')
 const keyword = ref('')
+const matchedOrders = ref(false)
 const options = computed(() => props.periods.map(period=>({
   value:period.id,
   label:period.name+' · '+(period.classStartsAt && props.formatTime ? props.formatTime(period.classStartsAt) : period.startsOn+' 至 '+period.endsOn),
@@ -26,6 +27,10 @@ const columns = [
   {title:'拟发布',dataIndex:'afterMinor',key:'afterMinor',width:82,align:'right'},
   {title:'差额',dataIndex:'deltaMinor',key:'deltaMinor',width:82,align:'right',fixed:'right'},
 ]
+const visibleColumns = computed(() => matchedOrders.value ? [
+  ...columns.slice(0,3),
+  {title:'计提金额',dataIndex:'afterMinor',key:'afterMinor',width:100,align:'right'},
+] : columns)
 const entryLabels = {accrual:'计提',refund:'退款扣减',correction:'更正'}
 const delta = minor => (minor>0 ? '+' : '')+props.formatMoney(minor)
 let sequence = 0
@@ -43,15 +48,16 @@ watch(selected, () => {
   keyword.value = ''
   loading.value = false
 })
-async function calculate() {
+async function calculate(showOrders = false) {
   if (!selected.value || loading.value) return
   const request = ++sequence
   pending = new AbortController()
   loading.value = true
+  matchedOrders.value = showOrders
   error.value = ''
   result.value = undefined
   try {
-    const report = await props.simulate(selected.value,pending.signal)
+    const report = await props.simulate(selected.value,pending.signal,showOrders)
     if (request===sequence) result.value = report
   } catch (err) {
     if (request===sequence) error.value = err.message
@@ -75,14 +81,16 @@ onBeforeUnmount(() => {
         <a-select id="rule-impact-period" v-model:value="selected" :options="options" :disabled="loading" show-search option-filter-prop="label"
           placeholder="选择开放账期或班次"/>
       </div>
-      <a-button :disabled="!selected" :loading="loading" @click="calculate">计算差额</a-button>
+      <a-button :disabled="!selected || matchedOrders && loading" :loading="!matchedOrders && loading" @click="calculate()">计算差额</a-button>
+      <a-button v-if="showMatchedOrders" :disabled="!selected || !matchedOrders && loading" :loading="matchedOrders && loading"
+        @click="calculate(true)">查看计提订单</a-button>
     </div>
     <p v-if="!options.length" class="workbench-scope-note">暂无适用的开放核算期。</p>
     <a-alert v-if="error" class="feedback" :message="error" type="error" show-icon/>
     <template v-if="result">
       <p v-if="!result.currentRuleAvailable" class="workbench-scope-note">现行配置尚未覆盖所选核算期。</p>
       <p v-if="result.matchedPaymentCount!=null" class="workbench-scope-note">拟发布规则匹配 {{ result.matchedPaymentCount }} 笔付款</p>
-      <div class="rule-impact-totals">
+      <div v-if="!matchedOrders" class="rule-impact-totals">
         <div><small>现行规则净分润</small><strong>{{ formatMoney(result.beforeMinor) }}</strong></div>
         <div><small>拟发布规则净分润</small><strong>{{ formatMoney(result.afterMinor) }}</strong></div>
         <div><small>净差额</small><strong>{{ delta(result.deltaMinor) }}</strong></div>
@@ -101,10 +109,10 @@ onBeforeUnmount(() => {
         </table>
       </details>
       <p v-else class="workbench-scope-note">待核项 {{ result.beforeIssueCount }} → {{ result.afterIssueCount }} 条</p>
-      <a-input v-if="result.items.length" v-model:value="keyword" aria-label="搜索差额明细"
+      <a-input v-if="result.items.length" v-model:value="keyword" :aria-label="matchedOrders ? '搜索计提订单' : '搜索差额明细'"
         placeholder="搜索订单号、收款对象、负责人或安排" allow-clear/>
-      <a-table :columns="columns" :data-source="rows" size="small" row-key="key"
-        :scroll="{x:640}" :pagination="{pageSize:10,hideOnSinglePage:true,showSizeChanger:false}">
+      <a-table :columns="visibleColumns" :data-source="rows" size="small" row-key="key"
+        :scroll="{x:matchedOrders ? 494 : 640}" :pagination="{pageSize:10,hideOnSinglePage:true,showSizeChanger:false}">
         <template #bodyCell="{column,record,text}">
           <template v-if="column.key==='order'">
             {{ record.orderNo || record.orderId }}
@@ -124,7 +132,8 @@ onBeforeUnmount(() => {
           <span v-else-if="column.key==='beforeMinor' || column.key==='afterMinor'" class="numeric">{{ formatMoney(text) }}</span>
         </template>
         <template #emptyText>
-          {{ keyword ? '未找到符合条件的差额' : result.matchedPaymentCount===0 ? '本期暂无适用付款' :
+          {{ matchedOrders ? (keyword ? '未找到匹配的计提订单' : '本期暂无可计提订单') :
+            keyword ? '未找到符合条件的差额' : result.matchedPaymentCount===0 ? '本期暂无适用付款' :
             result.afterIssueCount ? '暂未算出金额差额，请查看待核项。' : '本期金额无变化' }}
         </template>
       </a-table>

@@ -231,11 +231,31 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				continue
 			}
 			if split != nil {
+				serviceMatches := [2]bool{true, true}
+				hasServiceAmount := split.ServiceMinor > 0 || split.ServiceRate != nil && split.ServiceRate.Value > 0
+				if hasServiceAmount && len(split.ServiceSalesPeople)+len(split.ServiceSalesUnits) != 0 {
+					scope := practicePeriodBenefit{SalesPeople: split.ServiceSalesPeople, SalesUnits: split.ServiceSalesUnits}
+					for i, payment := range payments {
+						serviceMatches[i], issue = scope.eligiblePayment(payment, part.SourceRole, nil, identities, runtime.salesOrganizations)
+						if issue != "" {
+							break
+						}
+					}
+					if issue != "" {
+						key := practicePeriodComponentKey(component{Type: "retrain_service"}, index)
+						draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, key))
+						continue
+					}
+				}
 				commission := part.Value
 				if part.Mode == "rate" {
 					commission = calculatePaymentAmount(purchase.base, part)
 				}
-				amounts, valid := split.amounts(commission, purchase.base)
+				activeSplit := *split
+				if !slices.Contains(serviceMatches[:len(payments)], true) {
+					activeSplit.ServiceRate, activeSplit.ServiceMinor = nil, 0
+				}
+				amounts, valid := activeSplit.amounts(commission, purchase.base)
 				if !valid {
 					draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_RETRAIN_SPLIT_EXCEEDS_COMMISSION", member, rule, part.Type))
 					continue
@@ -245,7 +265,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 					draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_POOL_MISSING", member, rule, part.Type))
 					continue
 				}
-				if err := appendPracticeRetrainSplit(&draft, purchase, rule, index, amounts, assignments, *split, unit, part.Mode == "rate"); err != nil {
+				if err := appendPracticeRetrainSplit(&draft, purchase, rule, index, amounts, assignments, *split, unit, part.Mode == "rate", serviceMatches); err != nil {
 					return paymentDraft{}, err
 				}
 				continue
@@ -287,6 +307,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 					IdentityID: payee.ID, Component: part.Type, Base: net, Amount: share - previousShare,
 					practiceProportionalRefund: !isTiered && part.Mode == "rate",
 					practiceTierRefund:         isTiered,
+					practiceArrangementLabel:   part.SalesLabel,
 				})
 				previousShare = share
 			}

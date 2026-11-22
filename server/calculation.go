@@ -45,6 +45,7 @@ type draftLine struct {
 	reportUnit                           pgtype.UUID
 	practiceProportionalRefund           bool
 	practiceTierRefund                   bool
+	practiceArrangementLabel             string
 	PracticeTierReference                bool `json:",omitempty"`
 	Base, Amount                         int64
 	Catalog                              *catalogDraftBenefit `json:",omitempty"`
