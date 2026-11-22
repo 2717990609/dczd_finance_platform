@@ -3,7 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import { exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practicePeriodScopeText, practiceRetrainPoolRemainder,
-  practiceRetrainShareText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
+  practiceRetrainShareText, practiceSalesScopeText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
   rule: Object, canCopy: Boolean, canEditService: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
@@ -37,7 +37,8 @@ const companyName = key => label('practiceSalesCompany', key)
 const registrationCompanyName = key => props.registrationCompanies?.find(company=>company.value===key)?.label || companyName(key)
 const practiceScopeNames = computed(() => {
   const units = new Map((directory.value?.units || []).map(unit=>[unit.id,unit.scopeName || unit.name]))
-  return {unit:id=>units.get(id) || '组织名称待核',person:personName,company:companyName,registrationCompany:registrationCompanyName}
+  return {unit:id=>units.get(id) || '组织名称待核',person:personName,company:companyName,
+    category:id=>label('practiceSalesCategory',id),registrationCompany:registrationCompanyName}
 })
 function scheduleLabel(schedule) {
   if (schedule.personId) return '个人特例 · '+personName(schedule.personId)
@@ -108,8 +109,7 @@ function recipient(part) {
     if (payee?.kind==='pool') return poolName(payee.pool)
     return '销售所属公司'
   }
-  const source = roleName(part.sourceRole)
-  return part.retrainSplits?.length ? [source, '拆分指定的服务人员及团队池'].filter(Boolean).join('、') : source || '—'
+  return (part.salesPersonId ? personName(part.salesPersonId) : roleName(part.sourceRole)) || '—'
 }
 function formula(part) {
   if (part.mode==='period_rate') {
@@ -119,13 +119,15 @@ function formula(part) {
   }
   if (part.companySales) return '每份报名匹配一条标准'
   if (part.tiers) return '按累计人数或本班业绩匹配档位'
+  if (part.retrainSplits?.length) return (part.mode==='rate' ? '复训总提成 '+standard(part) : '复训总提成 '+standard(part)+fixedUnit.value)+'，按公司分账'
   if (part.mode==='rate') return (props.classProduct ? '报名净实收' : '付款实收')+' × '+standard(part)
   return standard(part)+fixedUnit.value
 }
+const salesScope = (part, limit) => props.classProduct ? practiceSalesScopeText(part,practiceScopeNames.value,limit) : undefined
 onMounted(async () => {
   if (props.embedded || props.recipients || !props.classProduct ||
     !props.rule.components.some(part=>part.periodBenefit || part.retrainSplits?.length ||
-    part.tiers?.personCountStarts?.length || part.tiers?.personSchedules?.length || part.companySales?.recommendationRecipients?.length ||
+    part.salesPersonId || part.tiers?.personCountStarts?.length || part.tiers?.personSchedules?.length || part.companySales?.recommendationRecipients?.length ||
     ['person','company','pool'].includes(part.companySales?.payee?.kind))) return
   try {
     loadedRecipients.value = await props.api('/practice-rule-recipients?ruleId='+props.rule.id)
@@ -171,16 +173,18 @@ onMounted(async () => {
           <span v-if="part.periodBenefit" class="rule-block-recipient" :title="practicePeriodScopeText(part.periodBenefit,practiceScopeNames,Infinity)">
             提成范围 · {{ practicePeriodScopeText(part.periodBenefit,practiceScopeNames) }}
           </span>
+          <span v-else-if="salesScope(part)" class="rule-block-recipient" :title="salesScope(part,Infinity)">
+            提成范围 · {{ salesScope(part) }}
+          </span>
           <span v-if="part.periodBenefit?.tiers?.length && part.periodBenefit.tierOnWholeClass" class="rule-block-badge">全班净实收选档</span>
-          <small>{{ recipient(part) }}</small>
+          <small>{{ salesScope(part) ? '收款 · ' : '' }}{{ recipient(part) }}</small>
         </button>
         <div v-if="activePart===index" :id="'rule-preview-'+index" class="rule-block-body rule-preview-part">
         <a-descriptions size="small" :column="{xs:1,sm:2}">
           <a-descriptions-item label="发给谁">{{ recipient(part) }}</a-descriptions-item>
           <a-descriptions-item label="提成怎么算">{{ formula(part) }}</a-descriptions-item>
-          <a-descriptions-item v-if="part.salesCompanies?.length" label="适用销售公司">
-            {{ part.salesCompanies.map(companyName).join('、') }}
-          </a-descriptions-item>
+          <a-descriptions-item v-if="part.salesPersonId" label="业绩归属">{{ roleName(part.sourceRole) }}</a-descriptions-item>
+          <a-descriptions-item v-if="salesScope(part)" label="提成范围">{{ salesScope(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.periodBenefit?.tiers?.length" label="阶梯选档范围">
             {{ part.periodBenefit.tierOnWholeClass ? '全班净实收（新报及复训）' : '适用报名净实收' }}
           </a-descriptions-item>

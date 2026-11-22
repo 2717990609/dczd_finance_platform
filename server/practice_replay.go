@@ -35,9 +35,9 @@ const practiceReplayConfiguredBenefitRole = 4
 const practiceRefundReplaySQL = `(d.practice_replay_inputs IS NOT NULL
  AND d.practice_replay_inputs->'independentRefunds' IS DISTINCT FROM 'true'::jsonb)`
 
-func hasPracticeCorporatePayees(rule paymentRule) bool {
+func hasPracticeConfiguredPayees(rule paymentRule) bool {
 	for _, part := range rule.Components {
-		if part.CompanySales != nil {
+		if part.CompanySales != nil || part.SalesPersonID != 0 {
 			return true
 		}
 	}

@@ -11,7 +11,61 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func TestPracticeSalesForSelectedCompaniesPaysSpecifiedPerson(t *testing.T) {
+	var parts []component
+	if err := json.Unmarshal([]byte(`[{"type":"sales","mode":"tiered","classMember":"new","sourceRole":"DIRECT_REFERRER",
+	 "salesLabel":"公司专属提成","salesPersonId":99,"salesCompanies":["selected"],
+	 "tiers":{"performance":[{"from":0,"mode":"rate","value":1000}]}}]`), &parts); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateComponents(parts); err != nil {
+		t.Fatalf("the tier arrangement should accept an explicit company scope and payee: %v", err)
+	}
+	shared := parts[0]
+	sharedTiers := *shared.Tiers
+	sharedTiers.IncludeRetrain, shared.Tiers = true, &sharedTiers
+	companyRetrain := component{ClassMember: "retrain", CompanySales: &practiceCompanySales{
+		Categories: []practiceCompanyCategory{{Companies: []string{"selected"}}},
+	}}
+	if err := checkPracticeCompanyScopes([]component{shared, companyRetrain}); err == nil {
+		t.Fatal("a shared tier and a retrain company standard must not claim the same company")
+	}
+	amount := int64(10000)
+	at := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	members := []practiceEnrollment{
+		{ID: 1, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"101"}, SignedAt: at.Add(time.Hour)},
+		{ID: 2, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"102"}, SignedAt: at.Add(time.Hour)},
+	}
+	fact := func(id int64, company string) paymentInput {
+		order := fmt.Sprint(100 + id)
+		return paymentInput{ID: id, Fact: sourceFact{Source: "DCZD", OrderID: order, PaymentID: order,
+			AmountMinor: &amount, ReferrerID: "seller", OccurredAt: at, SalesCompanyID: company}}
+	}
+	orders := map[string][]paymentInput{"101": {fact(1, "selected")}, "102": {fact(2, "outside")}}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{PersonID: 7}}}
+	draft, err := calculatePracticeDraft(members, paymentRule{ID: 10, Components: parts}, orders,
+		identities, nil, practiceTierHistory{}, nil, practiceDraftRuntime{})
+	if err != nil || draft.Total != 1000 || len(draft.Lines) != 1 || len(draft.Issues) != 0 ||
+		draft.Lines[0].PersonID != 99 || draft.Lines[0].FactID != 1 {
+		t.Fatalf("only the selected company should produce a payment to the configured recipient: %+v %v", draft, err)
+	}
+	if len(draft.Performance) != 2 || draft.Performance[0].PersonID != 7 || draft.Performance[1].PersonID != 7 {
+		t.Fatalf("sales performance remains on the attributed seller: %+v", draft.Performance)
+	}
+	parts[0].Tiers = &practiceSalesTiers{CountFromOrdinal: 1, Count: []practiceTier{{Mode: "rate", Value: 1000}}}
+	draft, err = calculatePracticeDraft(members, paymentRule{ID: 10, Components: parts}, orders,
+		identities, nil, practiceTierHistory{}, nil, practiceDraftRuntime{})
+	if err != nil || len(draft.Lines) != 0 || len(draft.Issues) != 1 || draft.Issues[0].Code != "PRACTICE_TIER_HISTORY_MISSING" {
+		t.Fatalf("tier issues belong to the seller even when payment goes to a named recipient: %+v %v", draft, err)
+	}
+}
+
 func TestPracticePersonalTierOverridesCompanyForThatSellerOnly(t *testing.T) {
+	t.Run("订单角色收款", func(t *testing.T) { verifyPracticePersonalTiers(t, false) })
+	t.Run("指定个人收款并限定销售公司", func(t *testing.T) { verifyPracticePersonalTiers(t, true) })
+}
+
+func verifyPracticePersonalTiers(t *testing.T, specifyRecipient bool) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
 	id := func(result any, err error) int64 {
@@ -43,6 +97,12 @@ func TestPracticePersonalTierOverridesCompanyForThatSellerOnly(t *testing.T) {
 	if err := json.Unmarshal([]byte(reply), &rule.Components); err != nil {
 		t.Fatal(err)
 	}
+	var recipient int64
+	if specifyRecipient {
+		recipient = id(s.createPerson(ctx, createPersonInput{Name: "指定收款人"}))
+		rule.Components[0].SalesPersonID = recipient
+		rule.Components[0].SalesCompanies = &[]string{"30"}
+	}
 	if _, err := s.publishRule(ctx, rule); err != nil {
 		t.Fatal(err)
 	}
@@ -58,6 +118,15 @@ func TestPracticePersonalTierOverridesCompanyForThatSellerOnly(t *testing.T) {
 		facts = append(facts, sourceFact{Source: "DCZD", Kind: "ORDER_PAID", Domain: "PRACTICE", SourceKey: "person-tier",
 			OrderID: order, PaymentID: order, RecordKey: "paid:" + order, Version: "1", AmountMinor: &amount,
 			ReferrerID: account, SalesCompanyID: "30", OccurredAt: paid, UpdatedAt: paid})
+	}
+	if specifyRecipient {
+		outside := facts[0]
+		outside.OrderID, outside.PaymentID, outside.RecordKey, outside.SalesCompanyID = "103", "103", "paid:103", "31"
+		facts = append(facts, outside)
+		enrollment := roster.Enrollments[0]
+		enrollment.SourceEnrollmentID, enrollment.ParticipantID, enrollment.ContentHash = "103", "103", fmt.Sprintf("%064x", 4)
+		enrollment.PaidOrderIDs = []string{"103"}
+		roster.Enrollments = append(roster.Enrollments, enrollment)
 	}
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		if _, err := storePracticeRoster(ctx, tx, roster); err != nil {
@@ -78,6 +147,15 @@ func TestPracticePersonalTierOverridesCompanyForThatSellerOnly(t *testing.T) {
 		len(actual) != 3 || actual[0] != 500 || actual[1] != 2000 || actual[2] != 4000 {
 		t.Fatalf("incorrect winner for the three payments: %v %v", actual, err)
 	}
+	if specifyRecipient {
+		var recipients, sellers int
+		if err := s.db.QueryRow(ctx, `SELECT
+		 (SELECT count(*) FROM calculation_draft_lines WHERE period_id=$1 AND person_id=$2 AND identity_id IS NULL),
+		 (SELECT count(*) FROM calculation_draft_performance WHERE period_id=$1 AND person_id IN ($3,$4))`,
+			period, recipient, ordinary, special).Scan(&recipients, &sellers); err != nil || recipients != 3 || sellers != 4 {
+			t.Fatalf("three payments to the named recipient and four seller postings: %d %d %v", recipients, sellers, err)
+		}
+	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, draft.Version); err != nil {
 		t.Fatal(err)
 	}
@@ -94,6 +172,15 @@ func TestPracticePersonalTierOverridesCompanyForThatSellerOnly(t *testing.T) {
 	refund, err := s.calculateCurrentDraft(ctx, refundPeriod, 0)
 	if err != nil || refund.RefundTotal != -4000 || refund.IssueCount != 0 {
 		t.Fatalf("the original personal award and that seller's later tier difference should both be reversed: %+v %v", refund, err)
+	}
+	if specifyRecipient {
+		var debits int
+		if err := s.db.QueryRow(ctx, `SELECT count(*) FROM calculation_draft_refunds refund
+		 JOIN calculation_draft_lines original ON original.id=refund.original_line_id
+		 WHERE refund.period_id=$1 AND original.person_id=$2`,
+			refundPeriod, recipient).Scan(&debits); err != nil || debits != 2 {
+			t.Fatalf("both refund adjustments should belong to the original recipient: %d %v", debits, err)
+		}
 	}
 }
 

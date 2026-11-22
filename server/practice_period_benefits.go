@@ -83,6 +83,9 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 		people = append(people, target.OwnerID)
 	}
 	for _, part := range version.Components {
+		if part.SalesPersonID != 0 {
+			people = append(people, part.SalesPersonID)
+		}
 		if benefit := part.PeriodBenefit; benefit != nil {
 			people = append(people, benefit.PersonID)
 			people = append(people, benefit.SalesPeople...)

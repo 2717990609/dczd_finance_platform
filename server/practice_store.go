@@ -205,6 +205,9 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 		for _, part := range components {
 			if part.Type == "sales" && (part.ClassMember == "" || part.ClassMember == "new") {
 				period.personalRole = part.SourceRole
+				if part.Tiers != nil {
+					period.scopedTierCompanies = part.salesCompanies()
+				}
 				break
 			}
 		}
@@ -373,7 +376,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 		result.PracticeEnrollments = append(result.PracticeEnrollments, member.ID)
 	}
 	linkedRefunds := hasPracticeReplayDependencies(rule, members)
-	if result.blockingIssues() == 0 && (linkedRefunds || hasPracticeCorporatePayees(rule)) {
+	if result.blockingIssues() == 0 && (linkedRefunds || hasPracticeConfiguredPayees(rule)) {
 		result.practiceReplay = capturePracticeReplayInputs(rule, result, facts, identities, runtime)
 		result.practiceReplay.IndependentRefunds = !linkedRefunds
 	}

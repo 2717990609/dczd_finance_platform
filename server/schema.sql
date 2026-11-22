@@ -1147,14 +1147,15 @@ ALTER TABLE calculation_draft_lines
 DO $$
 BEGIN
  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass
-   AND conname='draft_line_rule_and_recipient_check' AND strpos(pg_get_constraintdef(oid),'practice_pool_id')>0) THEN
+   AND conname='draft_line_rule_and_recipient_check' AND strpos(pg_get_constraintdef(oid),'component_type = ''sales''')>0) THEN
   ALTER TABLE calculation_draft_lines DROP CONSTRAINT IF EXISTS draft_line_rule_and_recipient_check;
   ALTER TABLE calculation_draft_lines ADD CONSTRAINT draft_line_rule_and_recipient_check CHECK (
    (catalog_rule_id IS NULL AND rule_id IS NOT NULL AND identity_id IS NOT NULL AND person_id IS NOT NULL
      AND beneficiary_unit_id IS NULL AND allocation_owner_id IS NULL AND practice_pool_id IS NULL)
    OR
    (catalog_rule_id IS NULL AND rule_id IS NOT NULL AND identity_id IS NULL AND practice_enrollment_id IS NOT NULL
-     AND starts_with(component_type,'period:') AND ((person_id IS NOT NULL) <> (beneficiary_unit_id IS NOT NULL))
+     AND (starts_with(component_type,'period:') OR (component_type='sales' AND person_id IS NOT NULL))
+     AND ((person_id IS NOT NULL) <> (beneficiary_unit_id IS NOT NULL))
      AND ((practice_pool_id IS NULL AND allocation_owner_id IS NULL)
       OR (practice_pool_id IS NOT NULL AND allocation_owner_id IS NOT NULL AND beneficiary_unit_id IS NOT NULL)))
    OR

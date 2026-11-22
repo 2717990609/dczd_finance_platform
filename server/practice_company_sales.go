@@ -236,8 +236,8 @@ func checkPracticeCompanyScopes(items []component) error {
 		for _, company := range part.salesCompanies() {
 			_, newSales := companyBlocks[scope{"new", company}]
 			_, retrainSales := companyBlocks[scope{"retrain", company}]
-			if (part.ClassMember == "" || part.ClassMember == "new") && newSales ||
-				(part.ClassMember == "" || part.ClassMember == "retrain") && retrainSales {
+			if part.matchesPracticeMember("new") && newSales ||
+				part.matchesPracticeMember("retrain") && retrainSales {
 				return invalid
 			}
 		}

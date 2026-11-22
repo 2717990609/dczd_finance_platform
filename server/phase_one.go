@@ -32,6 +32,8 @@ type component struct {
 	SourceRole     string                  `json:"sourceRole,omitempty"`
 	RefundPolicy   string                  `json:"refundPolicy,omitempty"`
 	ClassMember    string                  `json:"classMember,omitempty"`
+	SalesLabel     string                  `json:"salesLabel,omitempty"`
+	SalesPersonID  int64                   `json:"salesPersonId,omitempty"`
 	SalesCompanies *[]string               `json:"salesCompanies,omitempty"`
 	Tiers          *practiceSalesTiers     `json:"tiers,omitempty"`
 	PeriodBenefit  *practicePeriodBenefit  `json:"periodBenefit,omitempty"`
@@ -83,8 +85,13 @@ func validateComponents(items []component) error {
 		if c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) || !validPracticeRetrainSplits(c) {
 			return invalid
 		}
+		if c.SalesLabel != "" || c.SalesPersonID != 0 {
+			if c.Type != "sales" || c.SourceRole == "" || c.SalesLabel != "" && !textOK(c.SalesLabel, 80) || c.SalesPersonID < 0 {
+				return invalid
+			}
+		}
 		if companies := c.salesCompanies(); len(companies) != 0 {
-			if c.Type != "sales" || c.Mode != "fixed" && c.Mode != "rate" || c.SourceRole == "" {
+			if c.Type != "sales" || c.SourceRole == "" {
 				return invalid
 			}
 			for i, company := range companies {
@@ -698,10 +705,14 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			if mode == "class" && (c.Type == "sales" || c.Type == "referral") && c.SourceRole == "" {
 				return errRuleOrderRole
 			}
-			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil || len(c.salesCompanies()) != 0) {
+			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil || len(c.salesCompanies()) != 0 ||
+				c.SalesLabel != "" || c.SalesPersonID != 0) {
 				return invalid
 			}
 			companyIDs = append(companyIDs, c.salesCompanies()...)
+			if c.SalesPersonID != 0 {
+				personIDs = append(personIDs, c.SalesPersonID)
+			}
 			if c.CompanySales != nil {
 				companyIDs = append(companyIDs, c.CompanySales.InternalCompanies...)
 				receivingCompanies = append(receivingCompanies, c.CompanySales.RecommendationRecipients...)

@@ -319,32 +319,60 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 	for _, member := range replay.members {
 		newMembers[member.ID] = classMember(member.MembershipType) == "new"
 	}
-	changed := make(map[int64]bool)
+	changed := make(map[int64]sourceFact)
 	for _, revision := range b.revisions {
-		changed[revision.OriginalID] = true
+		changed[revision.OriginalID] = revision.Fact
 	}
 	var salesRole string
+	var namedSalesRecipient bool
+	var scopedTierCompanies []string
 	for _, part := range replay.rule.Components {
 		if part.Type == "sales" && (part.ClassMember == "" || part.ClassMember == "new") {
 			salesRole = part.SourceRole
+			namedSalesRecipient = part.SalesPersonID != 0
+			if part.Tiers != nil {
+				scopedTierCompanies = part.salesCompanies()
+			}
 			break
 		}
 	}
 	people := make(map[int64]bool)
 	for i, line := range original {
 		next := target[i].PersonID
-		if line.component != "sales" || !changed[line.payment] || !newMembers[line.enrollment] || next == 0 {
+		revised, hasChange := changed[line.payment]
+		if line.component != "sales" || !hasChange || !newMembers[line.enrollment] {
+			continue
+		}
+		leftTierScope := len(scopedTierCompanies) != 0 && revised.SalesCompanyID != "" &&
+			!slices.Contains(scopedTierCompanies, revised.SalesCompanyID)
+		if next == 0 && !leftTierScope {
+			continue
+		}
+		if booked, ok := b.booked[line.payment]; ok && leftTierScope &&
+			!slices.Contains(scopedTierCompanies, booked.Fact.SalesCompanyID) {
 			continue
 		}
 		prior := line.person
+		if namedSalesRecipient {
+			prior = replay.posted[line.payment].personID
+			assigned, issue := paymentBeneficiary(revised, salesRole, replay.identities)
+			if issue != "" {
+				continue
+			}
+			next = assigned.PersonID
+		}
 		if change, ok := b.booked[line.payment]; ok {
 			if assigned, issue := paymentBeneficiary(change.Fact, salesRole, replay.identities); issue == "" {
 				prior = assigned.PersonID
 			}
 		}
-		if next != prior {
-			people[prior] = true
-			people[next] = true
+		if leftTierScope || next != prior {
+			if prior != 0 {
+				people[prior] = true
+			}
+			if !leftTierScope && next != 0 {
+				people[next] = true
+			}
 		}
 	}
 	if len(people) == 0 {
@@ -358,13 +386,16 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 	 JOIN calculation_drafts d ON d.period_id=later.id
 	 JOIN rule_versions rule ON rule.id=d.rule_id
 	 WHERE original.id=$1
-	 AND EXISTS(SELECT 1 FROM calculation_draft_lines l WHERE l.period_id=later.id AND l.component_type='sales'
-	  AND l.person_id=ANY($2::bigint[]) AND (
+	 AND EXISTS(SELECT 1 FROM calculation_draft_lines l
+	  LEFT JOIN calculation_draft_performance performance ON performance.period_id=l.period_id
+	   AND performance.source_version_id=l.source_version_id
+	  WHERE l.period_id=later.id AND l.component_type='sales'
+	  AND coalesce(performance.person_id,l.person_id)=ANY($2::bigint[]) AND (
 	   jsonb_path_exists(rule.components,'$[*].tiers.count[*]')
 	   OR jsonb_path_exists(rule.components,'$[*].tiers.companySchedules[*].count[*]')
 	   OR jsonb_path_exists(rule.components,'$[*].tiers.categorySchedules[*].count[*]')
 	   OR jsonb_path_exists(rule.components,'$[*].tiers.personSchedules[*] ? (@.personId == $person).count[*]',
-	    jsonb_build_object('person',l.person_id))))
+	    jsonb_build_object('person',coalesce(performance.person_id,l.person_id)))))
 	)`, classID, slices.Sorted(maps.Keys(people))).Scan(&affected)
 	if err == nil && affected {
 		draft.Issues = append(draft.Issues, draftIssue{FactID: trigger, Code: "PRACTICE_CORRECTION_LATER_TIERS", Advisory: true,

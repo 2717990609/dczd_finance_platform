@@ -3,15 +3,16 @@ package main
 import "time"
 
 type practiceHistoryPeriod struct {
-	rosterID      int64
-	ordinal       int
-	startsAt      *time.Time
-	endsOn        time.Time
-	companyOffers *practiceCompanyOffers
-	categories    map[string]string
-	settled       bool
-	personalRole  string
-	ruleKnown     bool
+	rosterID            int64
+	ordinal             int
+	startsAt            *time.Time
+	endsOn              time.Time
+	companyOffers       *practiceCompanyOffers
+	categories          map[string]string
+	settled             bool
+	personalRole        string
+	scopedTierCompanies []string
+	ruleKnown           bool
 }
 
 type practiceTierHistory struct {
@@ -86,6 +87,13 @@ func indexPracticePrior(history practiceTierHistory, role string, orders map[str
 		}
 		purchase.classifyCompany(period.companyOffers, categories)
 		if purchase.companyAward != nil {
+			continue
+		}
+		inScope, scopeIssue := purchase.matchesSalesCompanies(period.scopedTierCompanies)
+		if scopeIssue != "" {
+			index.incomplete[roster] = true
+		}
+		if !inScope {
 			continue
 		}
 		periodRole := period.personalRole

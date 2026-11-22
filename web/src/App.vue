@@ -23,7 +23,7 @@ import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
-  practicePeriodScopeText, practiceRetrainShareText, practiceRetrainSplitBody, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
+  practicePeriodScopeText, practiceRetrainShareText, practiceRetrainSplitBody, practiceSalesScopeText, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -247,6 +247,7 @@ const practiceScopeNames = computed(() => {
     unit:id=>names.get(id) || '组织名称待核',
     person:id=>personNames.get(id) || '人员 '+id,
     company,
+    category:id=>optionLabel('practiceSalesCategory',id) || id,
     registrationCompany:id=>registrationCompanies.value?.find(option=>option.value===id)?.label || company(id),
   }
 })
@@ -468,18 +469,17 @@ function ruleRecipientSummary(row) {
     if (payee?.kind==='person') who = classPeopleOptions.value.find(option=>option.value===payee.personId)?.label || '指定个人'
     if (payee?.kind==='company') who = companyRecipientOptions.value.find(option=>option.value===payee.companyId)?.label || '指定公司'
     if (payee?.kind==='pool') who = practicePoolOptions.value.find(option=>option.value===payee.pool?.poolId)?.label || '团队池'
-    const standards = row.companySales.categories
-    const byCategory = standards.some(standard=>standard.scope==='category')
-    const byCompany = row.companySales.defaultRate != null ||
-      standards.some(standard=>standard.scope==='companies' || standard.overrides.length)
-    const scope = byCategory && byCompany ? '按销售类别和公司' :
-      byCategory || !byCompany && row.companySales.standardScope==='category' ? '按销售类别' : '按公司'
-    return who+' · '+scope
+    return who
   }
-  const who = row.sourceRole ? optionLabel('orderAttributionRole',row.sourceRole) : '选择订单上的收款人'
+  const who = row.salesRecipientKind==='person' ? (row.salesPersonId ? practiceScopeNames.value.person(row.salesPersonId) : '待选择收款人')
+    : row.sourceRole ? optionLabel('orderAttributionRole',row.sourceRole) : '选择订单上的收款人'
+  if (row===practiceRetrainSales.value && row.retrainSplits?.length) return who+' · 按公司分账'
   if (row.mode==='tiered') return who+' · 按阶梯'
   if (row.amount == null) return who
   return who+' · '+(row.mode==='fixed' ? formatMoney(Math.round(row.amount*100)) : row.amount+'%')
+}
+function ruleSalesScope(row, limit) {
+  return classRule.value ? practiceSalesScopeText(row,practiceScopeNames.value,limit) : undefined
 }
 const syncStreams = computed(() => data.value.sources
   .filter(entry => entry.configured && (!sourceFilter.value || sourceFilter.value===entry.source))
@@ -1183,6 +1183,11 @@ function ruleComponentBody(row) {
   const component = {type:must(row.type),mode:must(row.mode,'请选择计提方式'),value:0,
     ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy && !['period_rate','company_sales'].includes(row.mode) ? {refundPolicy:row.refundPolicy} : {}),
     ...(row.classMember ? {classMember:row.classMember} : {})}
+  if (classRule.value && row.type==='sales') {
+    if (row.salesLabel?.trim()) component.salesLabel = row.salesLabel.trim()
+    if (row.salesRecipientKind==='person') component.salesPersonId = must(row.salesPersonId,'请选择销售提成收款人')
+    if (row.salesCompanies?.length) component.salesCompanies = row.salesCompanies
+  }
   if (row.mode==='company_sales') {
     must(sourceRole,'请选择业绩使用的订单销售角色')
     const sales = row.companySales
@@ -1273,9 +1278,6 @@ function ruleComponentBody(row) {
   }
   if (row.mode !== 'tiered') {
     component.value = minor(must(row.amount,'请填写每个组件的比例或金额'))
-    if (classRule.value && row.type==='sales' && row.salesCompanies?.length) {
-      component.salesCompanies = row.salesCompanies
-    }
     if (classRule.value && row.type==='sales' && ['fixed','rate'].includes(row.mode) && row.classMember==='retrain' && row.retrainSplits?.length) {
       must(sourceRole,'请选择销售来源角色')
       component.retrainSplits = row.retrainSplits.map(split=>practiceRetrainSplitBody(split,row.mode==='fixed' ? component.value : undefined))
@@ -1855,19 +1857,37 @@ async function save() {
             <span v-if="c.periodBenefit" class="rule-block-recipient" :title="practicePeriodScopeText(c.periodBenefit,practiceScopeNames,Infinity)">
               提成范围 · {{ practicePeriodScopeText(c.periodBenefit,practiceScopeNames) }}
             </span>
+            <span v-else-if="ruleSalesScope(c)" class="rule-block-recipient" :title="ruleSalesScope(c,Infinity)">
+              提成范围 · {{ ruleSalesScope(c) }}
+            </span>
             <span v-if="c.periodBenefit?.method==='tiers' && c.periodBenefit.tierOnWholeClass" class="rule-block-badge">全班净实收选档</span>
-            <small>{{ ruleRecipientSummary(c) }}</small>
+            <small>{{ ruleSalesScope(c) ? '收款 · ' : '' }}{{ ruleRecipientSummary(c) }}</small>
           </button>
           <div v-if="i===activeRuleComponent" :id="'practice-rule-part-'+i" class="rule-block-body component-editor">
           <div v-if="!['company_sales','period_rate'].includes(c.mode)" class="rule-item-heading">
             <a-form-item v-if="classRule" :html-for="'rule-member-'+i" label="适用报名">
               <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="classMemberChoices(c)" @change="resetAmountMode(c)"/>
             </a-form-item>
-            <a-form-item v-if="['sales','referral'].includes(c.type)" :html-for="'rule-source-role-'+i" label="从订单取收款人" required>
+            <template v-if="classRule && c.type==='sales'">
+              <a-form-item :html-for="'rule-sales-label-'+i" label="收款安排名称">
+                <a-input :id="'rule-sales-label-'+i" v-model:value="c.salesLabel" :maxlength="80" placeholder="销售提成"/>
+              </a-form-item>
+              <a-form-item :html-for="'rule-payee-kind-'+i" label="收款对象">
+                <a-select :id="'rule-payee-kind-'+i" :value="c.salesRecipientKind || 'order_person'"
+                  :options="[{value:'order_person',label:'订单上的人员'},{value:'person',label:'指定个人'}]"
+                  @update:value="c.salesRecipientKind=$event"/>
+              </a-form-item>
+              <a-form-item v-if="c.salesRecipientKind==='person'" :html-for="'rule-sales-person-'+i" label="收款人" required>
+                <a-select :id="'rule-sales-person-'+i" v-model:value="c.salesPersonId" :options="classPeopleOptions"
+                  show-search option-filter-prop="label" placeholder="选择收款人"/>
+              </a-form-item>
+            </template>
+            <a-form-item v-if="['sales','referral'].includes(c.type)" :html-for="'rule-source-role-'+i"
+              :label="c.salesRecipientKind==='person' ? '业绩归给订单里的谁' : '从订单取收款人'" required>
               <a-select :id="'rule-source-role-'+i" v-model:value="c.sourceRole" :options="componentSourceRoles(c.sourceRole)"
                 placeholder="选择订单角色" show-search option-filter-prop="label"/>
             </a-form-item>
-            <a-form-item v-if="classRule && c.type==='sales' && ['rate','fixed'].includes(c.mode)"
+            <a-form-item v-if="classRule && c.type==='sales'"
               :html-for="'rule-sales-companies-'+i" label="适用销售公司">
               <a-select :id="'rule-sales-companies-'+i" v-model:value="c.salesCompanies" :options="options('practiceSalesCompany')"
                 mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label" placeholder="不限公司"/>

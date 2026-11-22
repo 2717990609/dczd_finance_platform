@@ -91,6 +91,7 @@ export function catalogPayeeComplete(payee) {
 }
 
 export function ruleComponentLabel(component, optionLabel) {
+  if (component.salesLabel?.trim()) return component.salesLabel.trim()
   if (component.companySales?.label != null) return component.companySales.label.trim() || '未命名收款安排'
   if (component.periodBenefit) {
     const label = component.periodBenefit.label?.trim()
@@ -192,6 +193,38 @@ function companyValue(row) {
 export const standardCategoryIDs = row => row.salesCategoryIds || (row.salesCategoryId ? [row.salesCategoryId] : [])
 export const exceptionCompanyIDs = row => row.companyIds || (row.companyId ? [row.companyId] : [])
 
+export function practiceSalesScopeText(part, names, limit = 2) {
+  const entries = []
+  const list = (label, ids, name) => {
+    const values = [...new Set(ids)]
+    if (values.length) entries.push(label+' '+values.slice(0,limit).map(name).join('、')+
+      (values.length>limit ? ' 等 '+values.length+' 个' : ''))
+  }
+  if (part.companySales) {
+    const rows = part.companySales.categories || []
+    list('销售类别',rows.flatMap(standardCategoryIDs),names.category)
+    list('销售公司',rows.flatMap(row=>[...(row.companies || []),...(row.overrides || []).flatMap(exceptionCompanyIDs)]),names.company)
+    if (part.companySales.defaultRate != null) entries.push('其他外部公司')
+    return entries.join(' · ') || '待配置类别或公司'
+  }
+  if (part.type!=='sales') return
+  if (part.salesCompanies?.length) {
+    list('销售公司',part.salesCompanies,names.company)
+    return entries.join(' · ')
+  }
+  const tiers = part.mode==='tiered' && (part.tierConfig || part.tiers)
+  if (tiers && (part.tierConfig?.onlyOverrides || !part.tierConfig && !tiers.count?.length && !tiers.performance?.length)) {
+    list('销售类别',(tiers.categories || tiers.categorySchedules || []).flatMap(standardCategoryIDs),names.category)
+    list('销售公司',(tiers.companies || tiers.companySchedules || []).flatMap(exceptionCompanyIDs),names.company)
+    list('销售人员',(tiers.people || tiers.personSchedules || []).map(row=>row.personId).filter(Boolean),names.person)
+    return entries.join(' · ') || '待配置销售档位'
+  }
+  if (part.classMember==='retrain' && ['fixed','rate'].includes(part.mode) && part.retrainSplits?.length) {
+    list('已配置公司分账',part.retrainSplits.map(split=>split.companyId).filter(Boolean),names.company)
+  }
+  return ['本班符合条件的个人销售报名',...entries].join(' · ')
+}
+
 export function practiceRetrainSplitForm(split) {
   return {
     companyId:split.companyId,pool:{...split.pool},
@@ -272,6 +305,7 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
   const components = JSON.parse(JSON.stringify(savedComponents))
   return components.map(component => {
     const {tiers, periodBenefit, companySales, retrainSplits, value, ...form} = component
+    if (form.salesPersonId) form.salesRecipientKind = 'person'
     form.classMember ??= ''
     form.amount = value / (form.mode === 'period_rate' ? 10000 : 100)
     if (tiers) form.tierConfig = tierForm(tiers)

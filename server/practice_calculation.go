@@ -203,15 +203,12 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			if part.Type == "sales" && (purchase.companyAward != nil || purchase.companyRoutingIssue != "") {
 				continue
 			}
-			if len(part.salesCompanies()) != 0 {
-				company, issue := practicePurchaseCompany(payments)
-				if issue != "" {
-					draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
-					continue
-				}
-				if !slices.Contains(part.salesCompanies(), company) {
-					continue
-				}
+			inScope, issue := purchase.matchesSalesCompanies(part.salesCompanies())
+			if issue != "" {
+				draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
+			}
+			if !inScope {
+				continue
 			}
 			if (part.Type != "sales" && part.Type != "referral") || part.SourceRole == "" {
 				draft.Issues = append(draft.Issues, practiceIssue("UNCONFIGURED_COMPONENT", member, rule, part.Type))
@@ -221,6 +218,12 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			if issue != "" {
 				draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
 				continue
+			}
+			salesOwner := assignments[0].PersonID
+			if part.SalesPersonID != 0 {
+				for i := range assignments {
+					assignments[i] = identityAssignment{PersonID: part.SalesPersonID}
+				}
 			}
 			split, issue := purchase.retrainSplit(part.retrainSplits())
 			if issue != "" {
@@ -249,7 +252,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 			isTiered := part.Mode == "tiered"
 			if isTiered {
-				if issue := tierIssues.forPurchase(assignments[0].PersonID, member.ID); issue != "" {
+				if issue := tierIssues.forPurchase(salesOwner, member.ID); issue != "" {
 					draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
 					continue
 				}
@@ -329,6 +332,17 @@ func practicePurchaseCompany(payments []paymentInput) (string, string) {
 	return company, ""
 }
 
+func (p practicePurchase) matchesSalesCompanies(companies []string) (bool, string) {
+	if len(companies) == 0 {
+		return true, ""
+	}
+	if len(p.payments) == 0 {
+		return false, "PRACTICE_TIER_COMPANY_MISSING"
+	}
+	company, issue := practicePurchaseCompany(p.payments)
+	return issue == "" && slices.Contains(companies, company), issue
+}
+
 func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map[string][]paymentInput,
 	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory,
 	refunds map[int64][]practiceRefundMatch, runtime practiceDraftRuntime) (map[int64]practiceTier, practiceTierIssues, error) {
@@ -356,6 +370,12 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		}
 		if purchase.companyRoutingIssue != "" {
 			issues.people[practicePurchaseOwner(purchase, part.SourceRole, identities)] = "PRACTICE_TIER_GROUP_INCOMPLETE"
+			continue
+		}
+		if inScope, scopeIssue := purchase.matchesSalesCompanies(part.salesCompanies()); !inScope {
+			if scopeIssue != "" && !retrain {
+				issues.people[practicePurchaseOwner(purchase, part.SourceRole, identities)] = "PRACTICE_TIER_GROUP_INCOMPLETE"
+			}
 			continue
 		}
 		person := practicePurchaseOwner(purchase, part.SourceRole, identities)
