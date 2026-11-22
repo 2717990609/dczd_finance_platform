@@ -6,11 +6,11 @@ import { exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practicePeriodSc
   practiceRetrainShareText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
-  rule: Object, canCopy: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
+  rule: Object, canCopy: Boolean, canEditService: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
   formatTime: Function, formatMoney: Function, people: Array, openingLabel: Function, title: String, recipients: Object,
   embedded: Boolean, component: String, registrationCompanies: Array,
 })
-const emit = defineEmits(['close','copy'])
+const emit = defineEmits(['close','copy','edit-service'])
 const loadedRecipients = ref()
 const match = /^period:([^:]+):(\d+)$/.exec(props.component || '')
 const selectedPart = match ? Number(match[2]) : undefined
@@ -274,6 +274,7 @@ onMounted(async () => {
           <span>{{ personName(split.servicePersonId) }} · {{ practiceRetrainShareText(split.serviceMinor,split.serviceRate,formatMoney) }}</span>
           <small>从复训总提成划出</small>
         </div>
+        <a-button v-if="canEditService" type="link" size="small" @click="emit('edit-service',split.companyId)">编辑服务提成</a-button>
       </section>
       </div>
       <div v-if="!embedded" class="workspace-edit-footer">

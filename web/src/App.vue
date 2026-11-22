@@ -10,6 +10,7 @@ import PeriodTasks from './PeriodTasks.vue'
 import CatalogRuleRates from './CatalogRuleRates.vue'
 import PracticePeriodBenefitEditor from './PracticePeriodBenefitEditor.vue'
 import PracticeRetrainSplitEditor from './PracticeRetrainSplitEditor.vue'
+import PracticeRetrainServiceEditor from './PracticeRetrainServiceEditor.vue'
 import PracticeCompanySalesEditor from './PracticeCompanySalesEditor.vue'
 import FinanceLogin from './FinanceLogin.vue'
 import OrganizationDirectory from './OrganizationDirectory.vue'
@@ -288,7 +289,24 @@ watch(() => data.value.periods.find(period => period.id === requestedPeriod.valu
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
 const practiceRetrainSales = computed(() => classRule.value
   ? draft.value.components?.find(part=>part.type==='sales' && ['fixed','rate'].includes(part.mode) && part.classMember==='retrain') : undefined)
-const recordedServiceShares = computed(() => (practiceRetrainSales.value?.retrainSplits || []).filter(split=>split.servicePersonId))
+const retrainSplits = computed(() => practiceRetrainSales.value?.retrainSplits || [])
+const recordedServiceShares = computed(() => retrainSplits.value.filter(split=>split.serviceEnabled))
+const companiesWithoutService = computed(() => retrainSplits.value.filter(split=>split.companyId && !split.serviceEnabled))
+const serviceCardKey = companyId => 'retrain-service-'+companyId
+function addRetrainService(companyId) {
+  const split = companiesWithoutService.value.find(split=>split.companyId===companyId)
+  if (!split) return
+  split.serviceEnabled = true
+  split.serviceBasis = 'fixed'
+  split.service = undefined
+  activeRuleComponent.value = serviceCardKey(companyId)
+}
+function removeRetrainService(split) {
+  split.serviceEnabled = false
+  split.servicePersonId = undefined
+  split.service = undefined
+  activeRuleComponent.value = undefined
+}
 const practiceCountConfig = computed(() => {
   if (!classRule.value) return
   const config = draft.value.components?.find(part=>part.mode==='tiered')?.tierConfig
@@ -1096,6 +1114,12 @@ function copyRuleDetails() {
   ruleDetails.value = undefined
   open('rule', rule)
 }
+function editRetrainServiceDetails(companyId) {
+  const rule = ruleDetails.value
+  ruleDetails.value = undefined
+  open('rule',rule,true)
+  activeRuleComponent.value = serviceCardKey(companyId)
+}
 async function showAppliedRule(selection) {
   appliedRule.value = {loading:true}
   const request = appliedRule.value
@@ -1852,7 +1876,9 @@ async function save() {
               <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
             </a-form-item>
             <a-form-item v-if="c.mode==='fixed' || c.mode==='rate'" :html-for="'rule-amount-'+i"
-              :label="c.mode==='rate' ? '计提比例（%）' : classRule ? '每份报名（元）' : '每笔付款（元）'">
+              :label="c===practiceRetrainSales && c.retrainSplits?.length ?
+                (c.mode==='rate' ? '复训总提成比例（%）' : '每份复训总提成（元）') :
+                c.mode==='rate' ? '计提比例（%）' : classRule ? '每份报名（元）' : '每笔付款（元）'">
               <a-input-number :id="'rule-amount-'+i" v-model:value="c.amount"
                 :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
             </a-form-item>
@@ -1891,18 +1917,38 @@ async function save() {
           </a-collapse>
           </div>
           </section>
-          <section v-for="split in recordedServiceShares" :key="'recorded-service-'+split.companyId" class="rule-block saved-service-share">
-            <div>
+          <section v-for="(split,i) in recordedServiceShares" :key="split.companyId" class="rule-block retrain-service-arrangement">
+            <button type="button" class="rule-block-header" :aria-expanded="activeRuleComponent===serviceCardKey(split.companyId)"
+              :aria-controls="'retrain-service-form-'+i"
+              @click="activeRuleComponent=activeRuleComponent===serviceCardKey(split.companyId) ? undefined : serviceCardKey(split.companyId)">
+              <DownOutlined aria-hidden="true"/>
               <strong>服务提成</strong>
               <span class="rule-block-badge">复训</span>
-              <span>提成范围 · {{ practiceScopeNames.company(split.companyId) }}</span>
-              <span>{{ practiceScopeNames.person(split.servicePersonId) }} ·
-                {{ practiceRetrainShareText(Math.round(split.service*100),
-                  split.serviceBasis==='fixed' ? undefined : {basis:split.serviceBasis,value:Math.round(split.service*10000)},formatMoney) }}</span>
-              <small>从复训总提成划出</small>
+              <span class="rule-block-recipient">提成范围 · {{ practiceScopeNames.company(split.companyId) }}</span>
+              <small v-if="split.servicePersonId">{{ practiceScopeNames.person(split.servicePersonId) }}
+                <template v-if="split.service!=null"> · {{ practiceRetrainShareText(Math.round(split.service*100),
+                  split.serviceBasis==='fixed' ? undefined : {basis:split.serviceBasis,value:Math.round(split.service*10000)},formatMoney) }}
+                </template>
+              </small>
+            </button>
+            <div v-if="activeRuleComponent===serviceCardKey(split.companyId)" :id="'retrain-service-form-'+i" class="rule-block-body">
+              <PracticeRetrainServiceEditor :split="split" :index="i" :people="classPeopleOptions"
+                :total="practiceRetrainSales.mode==='fixed' ? practiceRetrainSales.amount : undefined"
+                :format-money="formatMoney" @remove="removeRetrainService(split)"/>
             </div>
-            <a-button type="link" danger @click="split.servicePersonId=undefined; split.service=undefined">移除此服务提成</a-button>
           </section>
+          <div v-if="companiesWithoutService.length">
+            <a-dropdown :trigger="['click']">
+              <a-button size="small">添加复训服务提成</a-button>
+              <template #overlay>
+                <a-menu @click="({key})=>addRetrainService(key)">
+                  <a-menu-item v-for="split in companiesWithoutService" :key="split.companyId">
+                    {{ practiceScopeNames.company(split.companyId) }}
+                  </a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
+          </div>
         </div>
       </template>
       <a-form-item v-if="drawer==='person'" label="人员名称" required><a-input v-model:value="draft.name" aria-label="人员名称"/></a-form-item>
@@ -1985,11 +2031,14 @@ async function save() {
     @close="catalogScenarioCreation=undefined" @published="catalogScenarioPublished"/>
   <RuleVersionDetails v-if="viewedRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="viewedRule" :can-copy="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId))"
+    :can-edit-service="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId) &&
+      !viewedRule.retiredFrom && ruleEditVersionIDs.has(viewedRule.id))"
     :title="appliedRule?.rule ? (appliedRule.fromIssue ? '试算使用的规则' : '计提使用的规则') : undefined"
     :component="appliedRule?.rule ? appliedRule.component : undefined"
     :recipients="appliedRule?.directory" :registration-companies="registrationCompanies"
     :class-product="data.products.find(product => product.id===viewedRule.productId)?.periodMode==='class'"
     :api="api" :people="data.people" :option-label="optionLabel" :opening-label="savedOpeningLabel"
-    :format-time="formatTime" :format-money="formatMoney" @close="ruleDetails=undefined; appliedRule=undefined" @copy="copyRuleDetails"/>
+    :format-time="formatTime" :format-money="formatMoney" @close="ruleDetails=undefined; appliedRule=undefined" @copy="copyRuleDetails"
+    @edit-service="editRetrainServiceDetails"/>
 </a-config-provider>
 </template>

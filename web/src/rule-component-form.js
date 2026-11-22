@@ -197,6 +197,7 @@ export function practiceRetrainSplitForm(split) {
     companyId:split.companyId,pool:{...split.pool},
     salesBasis:split.salesRate?.basis || 'fixed',
     personal:split.salesRate ? split.salesRate.value/10000 : split.personalMinor/100,
+    serviceEnabled:Boolean(split.servicePersonId),
     servicePersonId:split.servicePersonId,serviceBasis:split.serviceRate?.basis || 'fixed',
     service:split.serviceRate ? split.serviceRate.value/10000 : (split.serviceMinor || 0)/100,
   }
@@ -225,6 +226,7 @@ export function practiceRetrainSplitAmounts(split) {
     return {rate:{basis,value:Math.round(Number(input)*10000)}}
   }
   const sales = share(split.salesBasis,split.personal,'销售份额')
+  if (split.serviceEnabled && !split.servicePersonId) throw new Error('请选择服务收款人')
   const service = split.servicePersonId ? share(split.serviceBasis,split.service,'服务份额') : {}
   return {
     personalMinor:sales.fixed ?? 0,...(sales.rate ? {salesRate:sales.rate} : {}),
@@ -232,15 +234,19 @@ export function practiceRetrainSplitAmounts(split) {
   }
 }
 
-export function practiceRetrainPoolRemainder(split, totalMinor) {
+export function practiceRetrainSplitEstimate(split, totalMinor) {
   if (totalMinor==null || split.salesRate?.basis==='net_receipts' || split.serviceRate?.basis==='net_receipts') return
   const scale = 1000000
   const amount = rate => Math.floor(totalMinor/scale)*rate+
     Math.floor(((totalMinor%scale)*rate+scale/2)/scale)
-  const allotted = split.salesRate && split.serviceRate ? amount(split.salesRate.value+split.serviceRate.value) :
-    (split.salesRate ? amount(split.salesRate.value) : split.personalMinor || 0) +
-    (split.serviceRate ? amount(split.serviceRate.value) : split.serviceMinor || 0)
-  return totalMinor-allotted
+  const sales = split.salesRate ? amount(split.salesRate.value) : split.personalMinor || 0
+  const service = split.salesRate && split.serviceRate ? amount(split.salesRate.value+split.serviceRate.value)-sales :
+    split.serviceRate ? amount(split.serviceRate.value) : split.serviceMinor || 0
+  return {sales,service,pool:totalMinor-sales-service}
+}
+
+export function practiceRetrainPoolRemainder(split, totalMinor) {
+  return practiceRetrainSplitEstimate(split,totalMinor)?.pool
 }
 
 export function practiceRetrainSplitBody(split, totalMinor) {
