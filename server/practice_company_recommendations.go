@@ -30,7 +30,8 @@ func loadPracticeCompanyRecommendations(ctx context.Context, tx pgx.Tx, offers *
 	for _, matches := range orders {
 		for _, payment := range matches {
 			f := payment.Fact
-			if offers.newCompanyAward(f.SalesCompanyID, categories[f.PaymentID]).recommendationRate <= 0 {
+			award, _ := offers.match("new", f.SalesCompanyID, categories[f.PaymentID])
+			if award.recommendationRate <= 0 {
 				continue
 			}
 			for _, assignment := range recipients[f.SalesCompanyID] {

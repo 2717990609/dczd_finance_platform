@@ -5,18 +5,20 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-var errPracticeCompanyScopeOverlap = errors.New("同一报名类型的收款安排有重复的销售类别或公司特例，请调整适用范围")
+var errPracticeCompanyScopeOverlap = errors.New("同一报名类型有重复的销售类别、指定公司或外部公司默认比例，请调整配置")
 
 type practiceCompanySales struct {
 	Label                    string                    `json:"label,omitempty"`
 	Payee                    *practiceCompanyPayee     `json:"payee,omitempty"`
 	Categories               []practiceCompanyCategory `json:"categories"`
+	DefaultRate              *int64                    `json:"defaultRate,omitempty"`
 	InternalCompanies        []string                  `json:"internalCompanies,omitempty"`
 	RecommendationRecipients []string                  `json:"recommendationRecipients,omitempty"`
 }
@@ -114,8 +116,13 @@ func validCompanyRecommendation(member string, rate *int64) bool {
 
 func validPracticeCompanySales(c component) bool {
 	if c.Type != "company_sales" || c.Mode != "company_sales" || c.ClassMember == "" ||
-		c.CompanySales == nil || len(c.CompanySales.Categories) == 0 || c.Value != 0 ||
+		c.CompanySales == nil || c.Value != 0 ||
 		c.Tiers != nil || c.PeriodBenefit != nil || c.RefundPolicy != "" || !validSourceRole(c.SourceRole) {
+		return false
+	}
+	defaultRate := c.CompanySales.DefaultRate
+	if defaultRate == nil && len(c.CompanySales.Categories) == 0 ||
+		defaultRate != nil && (*defaultRate < 0 || *defaultRate > periodRateScale) {
 		return false
 	}
 	seen := make(map[string]bool)
@@ -177,6 +184,7 @@ func validPracticeCompanySales(c component) bool {
 func checkPracticeCompanyScopes(items []component) error {
 	type scope struct{ member, id string }
 	categoryBlocks, companyBlocks := make(map[scope]int), make(map[scope]int)
+	defaults := make(map[string]bool)
 	allNamedCompanies := make(map[string]bool)
 	var internal []string
 	register := func(blocks map[scope]int, member string, ids []string, index int) bool {
@@ -196,6 +204,12 @@ func checkPracticeCompanyScopes(items []component) error {
 		arrangement := part.CompanySales
 		if arrangement == nil {
 			continue
+		}
+		if arrangement.DefaultRate != nil {
+			if defaults[part.ClassMember] {
+				return errPracticeCompanyScopeOverlap
+			}
+			defaults[part.ClassMember] = true
 		}
 		internal = append(internal, arrangement.InternalCompanies...)
 		for _, category := range arrangement.Categories {
@@ -244,6 +258,7 @@ type practiceCompanyAward struct {
 type practiceCompanyOffers struct {
 	companies  map[string]map[string]practiceCompanyAward
 	categories map[string]map[string]practiceCompanyAward
+	defaults   map[string]practiceCompanyAward
 	personal   map[string]bool
 }
 
@@ -257,6 +272,7 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 			offers = &practiceCompanyOffers{
 				companies:  map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
 				categories: map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
+				defaults:   make(map[string]practiceCompanyAward),
 				personal:   make(map[string]bool),
 			}
 		}
@@ -267,9 +283,16 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 		}
 		standards := offers.companies[part.ClassMember]
 		key := practicePeriodComponentKey(part, i)
+		awardBase := practiceCompanyAward{role: part.SourceRole, key: key, componentIndex: i,
+			payee: part.CompanySales.Payee, recommendationRecipients: part.CompanySales.RecommendationRecipients}
+		if rate := part.CompanySales.DefaultRate; rate != nil {
+			award := awardBase
+			award.practiceCompanyValue = practiceCompanyValue{Mode: "rate", Value: *rate}
+			offers.defaults[part.ClassMember] = award
+		}
 		for _, category := range part.CompanySales.Categories {
-			award := practiceCompanyAward{practiceCompanyValue: category.practiceCompanyValue, role: part.SourceRole, key: key,
-				componentIndex: i, payee: part.CompanySales.Payee, recommendationRecipients: part.CompanySales.RecommendationRecipients}
+			award := awardBase
+			award.practiceCompanyValue = category.practiceCompanyValue
 			if category.RecommendationRate != nil {
 				award.recommendationRate = *category.RecommendationRate
 			}
@@ -328,16 +351,22 @@ func (p *practicePurchase) classifyCompany(offers *practiceCompanyOffers, catego
 		return
 	}
 	terms, exists := standards[company]
-	if !exists && (len(offers.categories[member]) != 0 || offers.usesCategories() && offers.personal[member]) {
-		category, issue := practicePurchaseSalesCategory(p.payments, categories, nil)
-		if issue != "" {
-			p.companyRoutingIssue = "PRACTICE_COMPANY_SCOPE_MISSING"
-			return
+	if fallback, hasDefault := offers.defaults[member]; !exists &&
+		(len(offers.categories[member]) != 0 || hasDefault || offers.needsClassifications() && offers.personal[member]) {
+		category, issue := practicePurchaseCompanyClassification(p.payments, categories, nil)
+		if issue == "" {
+			if category == practiceInternalCompany && offers.personal[member] {
+				return
+			}
+			terms, exists = offers.categories[member][category]
 		}
-		if category == practiceInternalCompany && offers.personal[member] {
-			return
+		if !exists && hasDefault && len(p.payments) != 0 && !slices.ContainsFunc(p.payments, func(payment paymentInput) bool {
+			classification := categories[payment.Fact.PaymentID]
+			_, hasCategory := offers.categories[member][classification]
+			return !externalCompanyDefaultEligible(classification) || hasCategory
+		}) {
+			terms, exists = fallback, true
 		}
-		terms, exists = offers.categories[member][category]
 	}
 	if !exists {
 		p.companyRoutingIssue = "PRACTICE_COMPANY_SCOPE_MISSING"
@@ -346,10 +375,10 @@ func (p *practicePurchase) classifyCompany(offers *practiceCompanyOffers, catego
 	}
 }
 
-func practicePurchaseSalesCategory(payments []paymentInput, categories, internalCategories map[string]string) (string, string) {
+func practicePurchaseCompanyClassification(payments []paymentInput, categories, internalCategories map[string]string) (string, string) {
 	var category string
 	for _, payment := range payments {
-		id := categories[payment.Fact.PaymentID]
+		id := strings.TrimPrefix(categories[payment.Fact.PaymentID], practiceUnverifiedExternalPrefix)
 		if internal := internalCategories[payment.Fact.PaymentID]; id == practiceInternalCompany && internal != "" {
 			id = internal
 		}
@@ -364,11 +393,25 @@ func practicePurchaseSalesCategory(payments []paymentInput, categories, internal
 	return category, ""
 }
 
-const practiceInternalCompany = "INTERNAL"
+const (
+	practiceInternalCompany      = "INTERNAL"
+	practiceUncategorizedCompany = "EXTERNAL_NO_CATEGORY"
+	// Retain the category standard when imported company-type changes lack a dated record.
+	practiceUnverifiedExternalPrefix = "UNVERIFIED_EXTERNAL:"
+)
+
+func externalCompanyDefaultEligible(classification string) bool {
+	return classification != "" && classification != practiceInternalCompany &&
+		!strings.HasPrefix(classification, practiceUnverifiedExternalPrefix)
+}
 
 const practiceCompanyClassificationsSQL = `WITH matched AS (
  SELECT p.payment,c.company_id,
   CASE WHEN coalesce(change.previous_type,u.sales_company_type)='INTERNAL' THEN '` + practiceInternalCompany + `'
+  WHEN $5 AND coalesce(change.previous_type,u.sales_company_type)='EXTERNAL' THEN
+   CASE WHEN coalesce(change.version-1,u.sales_company_type_version)=1 OR recorded.version IS NOT NULL
+      OR snapshot.captured_at<=p.paid_at THEN coalesce(h.category_id::text,'` + practiceUncategorizedCompany + `')
+    ELSE coalesce('` + practiceUnverifiedExternalPrefix + `'||h.category_id::text,'') END
   ELSE coalesce(h.category_id::text,'') END AS scope,
   CASE WHEN coalesce(change.previous_type,u.sales_company_type)='INTERNAL' THEN h.category_id::text END AS internal_category
  FROM unnest($1::text[],$2::text[],$3::timestamptz[]) p(payment,company,paid_at)
@@ -376,9 +419,12 @@ const practiceCompanyClassificationsSQL = `WITH matched AS (
   AND c.valid_from<=p.paid_at AND (c.valid_to IS NULL OR c.valid_to>p.paid_at)
  JOIN organization_units u ON u.id=c.company_id
  LEFT JOIN LATERAL (
-  SELECT previous_type FROM organization_sales_company_type_changes t
+  SELECT previous_type,version FROM organization_sales_company_type_changes t
   WHERE t.unit_id=u.id AND t.changed_at>p.paid_at ORDER BY t.version LIMIT 1
  ) change ON u.sales_company_type_version>1
+ LEFT JOIN organization_sales_company_type_changes recorded ON $5 AND recorded.unit_id=u.id
+  AND recorded.version=coalesce(change.version-1,u.sales_company_type_version) AND recorded.changed_at<=p.paid_at
+ LEFT JOIN organization_import_state snapshot ON $5 AND snapshot.singleton AND change.version IS NULL
  LEFT JOIN organization_sales_category_history h ON h.unit_id=c.company_id
   AND (coalesce(change.previous_type,u.sales_company_type)='EXTERNAL'
     OR ($4 AND coalesce(change.previous_type,u.sales_company_type)='INTERNAL'))
@@ -387,7 +433,8 @@ const practiceCompanyClassificationsSQL = `WITH matched AS (
  SELECT payment,min(scope),coalesce(min(internal_category),'') FROM matched GROUP BY payment
  HAVING count(DISTINCT (company_id,scope,internal_category))=1`
 
-func loadPracticeCompanyClassifications(ctx context.Context, tx pgx.Tx, facts []paymentInput, includeInternalCategories bool) (map[string]string, map[string]string, error) {
+func loadPracticeCompanyClassifications(ctx context.Context, tx pgx.Tx, facts []paymentInput,
+	includeInternalCategories, includeExternalDefaults bool) (map[string]string, map[string]string, error) {
 	var payments, companies []string
 	var paidAt []time.Time
 	for _, p := range facts {
@@ -401,7 +448,7 @@ func loadPracticeCompanyClassifications(ctx context.Context, tx pgx.Tx, facts []
 	if len(payments) == 0 {
 		return nil, nil, nil
 	}
-	rows, err := tx.Query(ctx, practiceCompanyClassificationsSQL, payments, companies, paidAt, includeInternalCategories)
+	rows, err := tx.Query(ctx, practiceCompanyClassificationsSQL, payments, companies, paidAt, includeInternalCategories, includeExternalDefaults)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -420,15 +467,26 @@ func loadPracticeCompanyClassifications(ctx context.Context, tx pgx.Tx, facts []
 	return result, internalCategories, err
 }
 
-func (offers *practiceCompanyOffers) usesCategories() bool {
-	return offers != nil && len(offers.categories["new"])+len(offers.categories["retrain"]) != 0
+func (offers *practiceCompanyOffers) hasDefault() bool {
+	return offers != nil && len(offers.defaults) != 0
 }
 
-func (offers *practiceCompanyOffers) newCompanyAward(company, category string) practiceCompanyAward {
-	if award, configured := offers.companies["new"][company]; configured {
-		return award
+func (offers *practiceCompanyOffers) needsClassifications() bool {
+	return offers != nil && (offers.hasDefault() || len(offers.categories["new"])+len(offers.categories["retrain"]) != 0)
+}
+
+func (offers *practiceCompanyOffers) match(member, company, category string) (practiceCompanyAward, bool) {
+	if award, configured := offers.companies[member][company]; configured {
+		return award, true
 	}
-	return offers.categories["new"][category]
+	if award, configured := offers.categories[member][strings.TrimPrefix(category, practiceUnverifiedExternalPrefix)]; configured {
+		return award, true
+	}
+	if externalCompanyDefaultEligible(category) {
+		award, configured := offers.defaults[member]
+		return award, configured
+	}
+	return practiceCompanyAward{}, false
 }
 
 func loadPracticeCompanyRecipients(ctx context.Context, tx pgx.Tx, offers *practiceCompanyOffers,
@@ -445,13 +503,13 @@ func loadPracticeCompanyRecipients(ctx context.Context, tx pgx.Tx, offers *pract
 			}
 		}
 	}
-	if offers.usesCategories() {
+	if offers.needsClassifications() {
 		for _, matches := range orders {
 			for _, payment := range matches {
 				f := payment.Fact
 				for _, member := range []string{"new", "retrain"} {
-					_, byCategory := offers.categories[member][categories[f.PaymentID]]
-					if _, named := offers.companies[member][f.SalesCompanyID]; byCategory && !named {
+					award, configured := offers.match(member, f.SalesCompanyID, categories[f.PaymentID])
+					if configured && !award.internal {
 						selected[f.SalesCompanyID] = true
 					}
 				}

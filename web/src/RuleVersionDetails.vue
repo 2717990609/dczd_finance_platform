@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { catalogRatePriorityLabel, exceptionCompanyIDs, practicePeriodScopeText, practiceRetrainPoolRemainder,
+import { exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practicePeriodScopeText, practiceRetrainPoolRemainder,
   practiceRetrainShareText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
@@ -56,8 +56,9 @@ const recordedServiceShares = computed(() => props.rule.components.flatMap(part=
   (part.retrainSplits || []).filter(split=>split.servicePersonId)))
 const fixedUnit = computed(() => props.classProduct ? ' / 报名' : ' / 付款')
 const companyStandards = computed(() => {
-  const defaults = [], exceptions = []
-  for (const group of props.rule.components[activePart.value]?.companySales?.categories || []) {
+  const arrangement = props.rule.components[activePart.value]?.companySales
+  const defaults = [], companies = []
+  for (const group of arrangement?.categories || []) {
     const categories = standardCategoryIDs(group)
     const overrides = group.overrides || []
     if (categories.length) {
@@ -65,15 +66,18 @@ const companyStandards = computed(() => {
     } else {
       const overridden = new Set(overrides.flatMap(exceptionCompanyIDs))
       const names = group.companies.filter(id=>!overridden.has(id)).map(companyName)
-      if (names.length) exceptions.push({row:group,names})
+      if (names.length) companies.push({row:group,names})
     }
     for (const row of overrides) {
-      exceptions.push({row, names:exceptionCompanyIDs(row).map(companyName), inheritedRate:group.recommendationRate})
+      companies.push({row, names:exceptionCompanyIDs(row).map(companyName), inheritedRate:group.recommendationRate})
     }
+  }
+  if (arrangement?.defaultRate != null) {
+    companies.push({row:{mode:'rate',value:arrangement.defaultRate}, names:['其他外部公司（默认）']})
   }
   return [
     {scope:'category',label:'销售类别默认',column:'销售类别',rows:defaults},
-    {scope:'company',label:'公司特例',column:'适用公司',rows:exceptions},
+    {scope:'company',label:'公司比例',column:'适用公司',rows:companies},
   ].filter(group=>group.rows.length)
 })
 const activeStandard = computed(() => companyStandards.value.find(group=>group.scope===standardScope.value) || companyStandards.value[0])
@@ -191,7 +195,7 @@ onMounted(async () => {
               </a-radio-button>
             </a-radio-group>
             <strong v-else>{{ activeStandard.label }}</strong>
-            <small v-if="companyStandards.length>1" class="finance-rate-priority">匹配顺序 {{ catalogRatePriorityLabel }}</small>
+            <small class="finance-rate-priority">匹配顺序 {{ practiceCompanyRatePriorityLabel }}</small>
           </div>
           <table class="rule-company-standards" aria-label="计提标准">
             <thead>

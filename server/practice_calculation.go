@@ -365,7 +365,10 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 			company, companyIssue = practicePurchaseCompany(purchase.payments)
 		}
 		if _, exception := schedules.companies[company]; company != "" && !exception && len(schedules.categories) != 0 {
-			category, companyIssue = practicePurchaseSalesCategory(purchase.payments, runtime.companyClassifications, runtime.internalSalesCategories)
+			category, companyIssue = practicePurchaseCompanyClassification(purchase.payments, runtime.companyClassifications, runtime.internalSalesCategories)
+			if category == practiceUncategorizedCompany {
+				companyIssue = "PRACTICE_TIER_SALES_CATEGORY_MISSING"
+			}
 		}
 		schedule, configured := schedules.forSale(person, company, category)
 		if company != "" && companyIssue == "" && !configured {

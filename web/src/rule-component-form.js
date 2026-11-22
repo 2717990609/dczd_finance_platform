@@ -22,6 +22,7 @@ export function moneyAsMinor(value) {
 }
 
 export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
+export const practiceCompanyRatePriorityLabel = '指定公司 → 销售类别默认 → 外部公司默认'
 
 export function checkPracticeCompanyArrangementScopes(components) {
   const arrangements = new Map()
@@ -37,11 +38,14 @@ export function checkPracticeCompanyArrangementScopes(components) {
   }
   for (const {classMember,companySales:arrangement} of components) {
     if (!arrangement) continue
+    if (arrangement.defaultRate != null) {
+      register(classMember,'外部公司默认比例',['default'],arrangement)
+    }
     for (const standard of arrangement.categories) {
       register(classMember,'销售类别',standard.salesCategoryIds || [],arrangement)
-      register(classMember,'公司特例',standard.companies,arrangement)
+      register(classMember,'指定公司',standard.companies,arrangement)
       for (const override of standard.overrides || []) {
-        register(classMember,'公司特例',override.companyIds,arrangement)
+        register(classMember,'指定公司',override.companyIds,arrangement)
       }
     }
   }
@@ -280,8 +284,9 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
     if (companySales) {
       form.companySales = {...companySales, label:ruleComponentLabel(component,optionLabel),
         internalCompanies:companySales.internalCompanies || [],
+        defaultRate:companySales.defaultRate == null ? undefined : companySales.defaultRate / 10000,
         payee:{kind:'sales_company',...companySales.payee,pool:companySales.payee?.pool || {}},
-        categories:companySales.categories.map(category => ({...companyValue(category),
+        categories:(companySales.categories || []).map(category => ({...companyValue(category),
           salesCategoryIds:standardCategoryIDs(category),
           scope:standardCategoryIDs(category).length ? 'category' : 'companies', companies:category.companies || [],
           overrides:(category.overrides || []).map(row=>({...companyValue(row),companyIds:exceptionCompanyIDs(row)})),

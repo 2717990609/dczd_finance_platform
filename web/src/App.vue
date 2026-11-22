@@ -376,24 +376,28 @@ const recipientChoices = computed(() => {
     {type:'sales',label:'订单上的成交销售'},
     {type:'referral',label:'订单上的推荐人'},
     ...(classRule.value ? [
-      {type:'company_sales',label:'按公司或类别计提'},
+      {key:'company_sales_by_category',type:'company_sales',standardScope:'category',label:'按销售类别计提',
+        unavailable:!options('practiceSalesCategory').length},
+      {key:'company_sales_by_company',type:'company_sales',standardScope:'companies',label:'按公司计提'},
       {type:'service',label:'服务提成'},
       {type:'delivery',label:'交付提成'},
       {type:'manager',label:'独立收款安排'},
     ] : []),
   ]
-  return choices.filter(choice=>componentTypes.value.some(type=>type.value===choice.type)).map(choice=>({
-    ...choice,disabled:classRule.value ? classMemberChoices({},choice.type).every(member=>member.disabled) :
+  return choices.filter(choice=>!choice.unavailable && componentTypes.value.some(type=>type.value===choice.type)).map(choice=>({
+    ...choice,key:choice.key || choice.type,disabled:classRule.value ? classMemberChoices({},choice.type).every(member=>member.disabled) :
       draft.value.components.some(row=>row.type===choice.type),
   }))
 })
-function addRuleComponent(type) {
+function addRuleComponent(key) {
+  const {type,standardScope} = recipientChoices.value.find(choice=>choice.key===key)
   const members = classRule.value ? classMemberChoices({},type).filter(member=>!member.disabled) : []
   const member = type==='company_sales' ? members.find(option=>!draft.value.components.some(
     part=>part.type===type && part.classMember===option.value)) || members[0] : members[0]
   const row = {type,classMember:member?.value,
     mode:baseModes.value[0]?.value}
   resetAmountMode(row)
+  if (row.companySales) row.companySales.standardScope = standardScope
   if (row.periodBenefit && ['service','delivery'].includes(type)) row.periodBenefit.label=optionLabel('component',type)
   draft.value.components.push(row)
   activeRuleComponent.value = draft.value.components.length-1
@@ -446,7 +450,13 @@ function ruleRecipientSummary(row) {
     if (payee?.kind==='person') who = classPeopleOptions.value.find(option=>option.value===payee.personId)?.label || '指定个人'
     if (payee?.kind==='company') who = companyRecipientOptions.value.find(option=>option.value===payee.companyId)?.label || '指定公司'
     if (payee?.kind==='pool') who = practicePoolOptions.value.find(option=>option.value===payee.pool?.poolId)?.label || '团队池'
-    return who+' · 按销售类别或公司'
+    const standards = row.companySales.categories
+    const byCategory = standards.some(standard=>standard.scope==='category')
+    const byCompany = row.companySales.defaultRate != null ||
+      standards.some(standard=>standard.scope==='companies' || standard.overrides.length)
+    const scope = byCategory && byCompany ? '按销售类别和公司' :
+      byCategory || !byCompany && row.companySales.standardScope==='category' ? '按销售类别' : '按公司'
+    return who+' · '+scope
   }
   const who = row.sourceRole ? optionLabel('orderAttributionRole',row.sourceRole) : '选择订单上的收款人'
   if (row.mode==='tiered') return who+' · 按阶梯'
@@ -1153,7 +1163,9 @@ function ruleComponentBody(row) {
     must(sourceRole,'请选择业绩使用的订单销售角色')
     const sales = row.companySales
     must(sales.label?.trim(),'请填写收款安排名称')
-    if (!sales.categories.length) throw new Error('请给「'+sales.label.trim()+'」添加销售类别标准或公司特例。')
+    if (!sales.categories.length && sales.defaultRate == null) {
+      throw new Error('请给「'+sales.label.trim()+'」配置销售类别或公司比例。')
+    }
     const payee = {kind:must(sales.payee?.kind,'请选择收款对象')}
     if (payee.kind==='order_person') payee.role=must(sales.payee.role,'请选择从订单读取的收款人')
     if (payee.kind==='person') payee.personId=must(sales.payee.personId,'请选择收款人员')
@@ -1165,11 +1177,12 @@ function ruleComponentBody(row) {
         ...(row.classMember==='new' && item.recommendationRate != null ? {recommendationRate:periodRate(item.recommendationRate)} : {})}
     }
     component.companySales = {label:sales.label.trim(),payee,
+      ...(sales.defaultRate == null ? {} : {defaultRate:periodRate(sales.defaultRate)}),
       internalCompanies:sales.internalCompanies,categories:sales.categories.map(category=>{
       const byCategory = category.scope==='category'
       const companies = byCategory ? [] : category.companies
       if (byCategory ? !category.salesCategoryIds.length : !companies.length) {
-        throw new Error(byCategory ? '请选择销售类别' : '请选择特例公司')
+        throw new Error(byCategory ? '请选择销售类别' : '请选择指定公司')
       }
       return {
         companies,
@@ -1795,7 +1808,7 @@ async function save() {
               <a-button size="small">添加收款安排 <DownOutlined aria-hidden="true"/></a-button>
               <template #overlay>
                 <a-menu @click="({key})=>addRuleComponent(key)">
-                  <a-menu-item v-for="choice in recipientChoices" :key="choice.type" :disabled="choice.disabled">
+                  <a-menu-item v-for="choice in recipientChoices" :key="choice.key" :disabled="choice.disabled">
                     {{ choice.label }}<small v-if="choice.disabled">（已配置）</small>
                   </a-menu-item>
                 </a-menu>

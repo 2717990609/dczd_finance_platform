@@ -1,23 +1,27 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
-import { catalogRatePriorityLabel } from './rule-component-form'
+import { practiceCompanyRatePriorityLabel } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
   sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array})
 const emit = defineEmits(['member-change'])
 const categories = computed(() => props.component.companySales.categories)
-const standardScope = ref('category')
+const companyOnly = categories.value.every(standard=>standard.scope==='companies') &&
+  (categories.value.length > 0 || props.component.companySales.defaultRate != null)
+const standardScope = ref(props.component.companySales.standardScope || (companyOnly ? 'companies' : 'category'))
 const overrides = computed(() => categories.value.flatMap((category,index)=>
   category.overrides.map((override,position)=>({category,index,override,position}))))
 const standardGroups = computed(() => [
   {scope:'category',label:'销售类别默认',action:'添加类别标准'},
-  {scope:'companies',label:'公司特例',action:'添加公司特例'},
+  {scope:'companies',label:'公司比例',action:'添加指定公司'},
 ].map(section=>({...section,rows:categories.value.map((standard,index)=>({standard,index}))
   .filter(({standard})=>standard.scope===section.scope)}))
   .filter(section=>section.scope==='companies' || props.salesCategories.length || section.rows.length))
 const activeGroup = computed(() => standardGroups.value.find(group=>group.scope===standardScope.value) || standardGroups.value[0])
-const standardCount = group => group.rows.length + (group.scope==='companies' ? overrides.value.length : 0)
+const standardRows = group => group.rows.length + (group.scope==='companies' ? overrides.value.length : 0)
+const standardCount = group => standardRows(group) +
+  (group.scope==='companies' && props.component.companySales.defaultRate != null ? 1 : 0)
 const payee = computed(() => props.component.companySales.payee)
 const payeeKinds = [
   {value:'sales_company',label:'销售所属公司'},
@@ -105,13 +109,18 @@ watch(amounts, choices => {
       </a-radio-button>
     </a-radio-group>
     <strong v-else>{{ activeGroup.label }}</strong>
-    <small v-if="standardGroups.length>1" class="finance-rate-priority">匹配顺序 {{ catalogRatePriorityLabel }}</small>
+    <small class="finance-rate-priority">匹配顺序 {{ practiceCompanyRatePriorityLabel }}</small>
     <a-button v-if="activeGroup.scope==='companies' || salesCategories.length" class="finance-rate-add" size="small"
       @click="addStandard(activeGroup.scope)">{{ activeGroup.action }}</a-button>
   </div>
+  <a-form-item v-if="activeGroup.scope==='companies'" class="company-default-rate"
+    label="外部公司默认比例（%）" :html-for="field('default-rate')">
+    <a-input-number :id="field('default-rate')" v-model:value="component.companySales.defaultRate"
+      size="small" :min="0" :max="100" :precision="4" placeholder="未配置"/>
+  </a-form-item>
   <section :key="activeGroup.scope" :aria-label="activeGroup.label"
     class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':component.classMember==='new'}">
-    <p v-if="!standardCount(activeGroup)" class="finance-rate-empty">{{ activeGroup.scope==='category' ? '暂无类别标准' : '暂无公司特例' }}</p>
+    <p v-if="!standardRows(activeGroup)" class="finance-rate-empty">{{ activeGroup.scope==='category' ? '暂无类别标准' : '暂无指定公司' }}</p>
     <div v-else class="company-standard-fields company-standard-column-labels" aria-hidden="true">
       <span>{{ activeGroup.scope==='category' ? '销售类别' : '适用公司' }}</span>
       <span v-if="amounts.length>1">计算方式</span>
@@ -138,7 +147,8 @@ watch(amounts, choices => {
       <a-form-item v-if="component.classMember==='new'" label="推荐比例（%）" :html-for="field('recommendation-'+i)">
         <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" size="small" :min="0" :max="100" :precision="4"/>
       </a-form-item>
-      <a-button v-if="categories.length>1" size="small" type="link" danger class="company-standard-remove" @click="categories.splice(i,1)">移除</a-button>
+      <a-button v-if="categories.length>1 || component.companySales.defaultRate != null"
+        size="small" type="link" danger class="company-standard-remove" @click="categories.splice(i,1)">移除</a-button>
       <a-button v-if="category.scope==='category' && category.salesCategoryIds.length && overrideOptions(category).length"
         class="company-category-override" type="link" size="small" @click="addCategoryOverride(category)">为此类别添加公司特例</a-button>
     </div>
@@ -188,6 +198,10 @@ watch(amounts, choices => {
 
 <style scoped>
 .company-standard-toolbar {border-top:1px solid var(--line);padding-top:6px}
+.company-default-rate {margin:4px 0 8px}
+.company-default-rate :deep(.ant-form-item-row) {flex-direction:row;align-items:center;gap:8px}
+.company-default-rate :deep(.ant-form-item-label) {padding:0}
+.company-default-rate :deep(.ant-input-number) {width:110px}
 .company-standard-table {container-type:inline-size}
 .company-standard-table.has-method {--company-method-column:minmax(0,1.25fr)}
 .company-standard-table.has-recommendation {--company-recommendation-column:minmax(0,1fr)}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -425,12 +426,18 @@ func TestPracticeCorporateAndIndividualClaimsCannotPayTheSamePayment(t *testing.
 }
 
 func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *testing.T) {
-	t.Run("公司比例", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false, false) })
-	t.Run("公司比例和整班阶梯", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, false, false, false) })
-	t.Run("仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false, false) })
-	t.Run("历史结算保留尾款补计", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, true, false) })
-	t.Run("公司新报固定金额", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false, true) })
-	t.Run("公司新报固定金额仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false, true) })
+	t.Run("公司比例", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false, false, false) })
+	t.Run("公司比例和整班阶梯", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, false, false, false, false) })
+	t.Run("仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false, false, false) })
+	t.Run("历史结算保留尾款补计", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, true, false, false) })
+	t.Run("公司新报固定金额", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false, true, false) })
+	t.Run("公司新报固定金额仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false, true, false) })
+	t.Run("未分类外部公司按默认比例结算和退款", func(t *testing.T) {
+		verifyPracticeCategoryRefund(t, false, false, false, false, true)
+	})
+	t.Run("未分类外部公司按默认比例回放整班阶梯", func(t *testing.T) {
+		verifyPracticeCategoryRefund(t, true, true, false, false, true)
+	})
 }
 
 func TestPracticeNewFixedCompanyAwardProratesRefundBeforeConfirmation(t *testing.T) {
@@ -458,7 +465,7 @@ func TestPracticeNewFixedCompanyAwardProratesRefundBeforeConfirmation(t *testing
 	}
 }
 
-func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacyShares, fixedNew bool) {
+func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacyShares, fixedNew, externalDefault bool) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
 	id := func(value any, err error) int64 {
@@ -495,6 +502,12 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 	if fixedNew {
 		rule.Components[1].CompanySales.Categories[0].practiceCompanyValue = practiceCompanyValue{"fixed", 4000}
 	}
+	if externalDefault {
+		sales := rule.Components[1].CompanySales
+		rate := sales.Categories[0].Value
+		sales.Categories = sales.Categories[1:]
+		sales.DefaultRate = &rate
+	}
 	if withTier {
 		delivery := id(s.createPerson(ctx, createPersonInput{Name: "整班交付"}))
 		through := int64(29499)
@@ -520,8 +533,12 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 	mustExec(`INSERT INTO organization_units(id,name,kind,status,sales_company_type) VALUES($1,'新内部公司','COMPANY','ACTIVE','INTERNAL')`, internal)
 	mustExec(`INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
 	 VALUES('DCZD','new-company',$1,'2026-08-01'),('DCZD','new-internal',$2,'2026-08-01')`, company, internal)
-	mustExec(`INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from,valid_to)
-	 VALUES($1,$2,'2026-08-01','2026-08-07'),($1,$3,'2026-08-07',NULL)`, company, first, second)
+	if !externalDefault {
+		mustExec(`INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from,valid_to)
+		 VALUES($1,$2,'2026-08-01','2026-08-07')`, company, first)
+	}
+	mustExec(`INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from)
+	 VALUES($1,$2,'2026-08-07')`, company, second)
 	pay := func(order, company string, day int) sourceFact {
 		at := time.Date(2026, 8, day, 12, 0, 0, 0, time.UTC)
 		amount := int64(10000)
@@ -583,6 +600,13 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 		settlementLines, firstLines = 8, 5
 	}
 	settled := checkDraft(class, settlementAmount, settlementLines)
+	if externalDefault {
+		var classification string
+		if err := s.db.QueryRow(ctx, `SELECT practice_replay_inputs->'companyClassifications'->>'31'
+		 FROM calculation_drafts WHERE period_id=$1`, class).Scan(&classification); err != nil || classification != practiceUncategorizedCompany {
+			t.Fatalf("the original external classification must be available to refunds: %q %v", classification, err)
+		}
+	}
 	var earnings int64
 	if err := s.db.QueryRow(ctx, `SELECT amount_minor FROM calculation_draft_lines WHERE period_id=$1 AND person_id=$2`,
 		class, seller).Scan(&earnings); err != nil || earnings != 1000 {
@@ -596,6 +620,12 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 	}
 	mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES ($1,$2,'fixture')`, class, settled.Version)
 	rule.Components[1].CompanySales.Payee = &practiceCompanyPayee{Kind: "person", PersonID: seller}
+	if externalDefault {
+		rate := int64(0)
+		rule.Components[1].CompanySales.DefaultRate = &rate
+		mustExec(`INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from,valid_to)
+		 VALUES($1,$2,'2026-08-01','2026-08-07')`, company, first)
+	}
 	if _, err := s.publishRule(ctx, rule); err != nil {
 		t.Fatal(err)
 	}
@@ -729,6 +759,136 @@ func TestPracticeCompanyMultiSelectAndExceptionsUseOneStandard(t *testing.T) {
 		if purchase.companyRoutingIssue != "" || purchase.companyAward == nil || purchase.companyAward.Value != tc.want {
 			t.Fatalf("%s should use exactly %d, got %+v %q", tc.company, tc.want, purchase.companyAward, purchase.companyRoutingIssue)
 		}
+	}
+}
+
+func TestPracticeExternalCompanyDefaultRate(t *testing.T) {
+	const categoryID = "41000000-0000-4000-8000-000000000001"
+	var parts []component
+	if err := json.Unmarshal([]byte(`[
+	  {"type":"company_sales","mode":"company_sales","classMember":"new","sourceRole":"DIRECT_REFERRER",
+	   "companySales":{"payee":{"kind":"sales_company"},"categories":[],"defaultRate":120000}},
+	  {"type":"company_sales","mode":"company_sales","classMember":"new","sourceRole":"DIRECT_REFERRER",
+	   "companySales":{"payee":{"kind":"sales_company"},"categories":[
+	    {"salesCategoryIds":["`+categoryID+`"],"companies":[],"mode":"rate","value":200000},
+	    {"companies":["special"],"mode":"rate","value":0}]}},
+	  {"type":"sales","mode":"rate","classMember":"new","sourceRole":"DIRECT_REFERRER","value":1000}
+	]`), &parts); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateComponents(parts); err != nil {
+		t.Fatalf("a separately configured external default rate should publish: %v", err)
+	}
+	if err := validateComponents(append(slices.Clone(parts), parts[0])); err != errPracticeCompanyScopeOverlap {
+		t.Fatalf("duplicate defaults for the same signup type must be rejected: %v", err)
+	}
+	rule := paymentRule{Components: parts}
+	offers := practiceCompanyStandards(rule)
+	for _, tc := range []struct {
+		company, category, issue string
+		component                int
+		value                    int64
+	}{
+		{"special", categoryID, "", 1, 0},
+		{"ordinary", categoryID, "", 1, 200000},
+		{"other-category", "41000000-0000-4000-8000-000000000002", "", 0, 120000},
+		{"new-external", "EXTERNAL_NO_CATEGORY", "", 0, 120000},
+		{"internal", practiceInternalCompany, "", -1, 0},
+		{"unknown", "", "PRACTICE_COMPANY_SCOPE_MISSING", -1, 0},
+	} {
+		p := practicePurchase{member: practiceEnrollment{MembershipType: 3}, payments: []paymentInput{
+			{Fact: sourceFact{PaymentID: "payment", SalesCompanyID: tc.company}},
+		}}
+		p.classifyCompany(offers, map[string]string{"payment": tc.category})
+		if p.companyRoutingIssue != tc.issue {
+			t.Fatalf("%s routing: got %q, want %q", tc.company, p.companyRoutingIssue, tc.issue)
+		}
+		if tc.component == -1 {
+			if p.companyAward != nil {
+				t.Fatalf("%s must not use a company award: %+v", tc.company, p.companyAward)
+			}
+		} else if p.companyAward == nil || p.companyAward.componentIndex != tc.component || p.companyAward.Value != tc.value {
+			t.Fatalf("%s matched the wrong standard: %+v", tc.company, p.companyAward)
+		}
+	}
+	for _, tc := range []struct {
+		balanceCategory string
+		wantDefault     bool
+	}{
+		{"41000000-0000-4000-8000-000000000002", true},
+		{categoryID, false},
+		{practiceInternalCompany, false},
+		{"", false},
+	} {
+		p := practicePurchase{member: practiceEnrollment{MembershipType: 3}, payments: []paymentInput{
+			{Fact: sourceFact{PaymentID: "deposit", SalesCompanyID: "new-external"}},
+			{Fact: sourceFact{PaymentID: "balance", SalesCompanyID: "new-external"}},
+		}}
+		p.classifyCompany(offers, map[string]string{"deposit": "EXTERNAL_NO_CATEGORY", "balance": tc.balanceCategory})
+		if tc.wantDefault {
+			if p.companyRoutingIssue != "" || p.companyAward == nil || p.companyAward.Value != 120000 {
+				t.Fatalf("both payments use the same default when no category matches: %q %+v", p.companyRoutingIssue, p.companyAward)
+			}
+		} else if p.companyRoutingIssue == "" || p.companyAward != nil {
+			t.Fatalf("different or unknown standards must stay pending: %q %+v", p.companyRoutingIssue, p.companyAward)
+		}
+	}
+	refund := practiceMonthlyRefundPolicy(parts,
+		refundObligation{ComponentType: "period:company_sales:0", Base: 10000, Accrued: 1200},
+		1, 3, "new-external", "EXTERNAL_NO_CATEGORY")
+	if delta, err := refundDelta(refund, 10000, 1200, 5000, 0); err != nil || delta != -600 {
+		t.Fatalf("expected proportional refund of original company default: %d %v", delta, err)
+	}
+}
+
+func TestPracticeExternalCompanyDefaultRequiresATypeAtPayment(t *testing.T) {
+	ctx := context.Background()
+	db := integrationDB(t)
+	const unit = "41000000-0000-4000-8000-000000000001"
+	const category = "41000000-0000-4000-8000-000000000002"
+	importCompany := func(day, kind string) {
+		t.Helper()
+		raw := json.RawMessage(`{"capturedAt":"` + day + `T00:00:00Z","people":[],"assignments":[],
+		 "units":[{"id":"` + unit + `","name":"来源公司","kind":"COMPANY","status":"ACTIVE","salesCompanyType":"` + kind + `"}]}`)
+		if err := storeOrganizationSnapshot(ctx, db, raw); err != nil {
+			t.Fatal(err)
+		}
+	}
+	importCompany("2026-01-01", "INTERNAL")
+	importCompany("2026-03-01", "EXTERNAL")
+	rate := int64(120000)
+	offers := practiceCompanyStandards(paymentRule{Components: []component{
+		{Type: "company_sales", ClassMember: "new", CompanySales: &practiceCompanySales{DefaultRate: &rate}},
+	}})
+	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
+		 VALUES('DCZD','source-company','`+unit+`','2026-01-01');
+		 INSERT INTO organization_sales_categories(id,name,active) VALUES('`+category+`','销售分类',true);
+		 INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from)
+		 VALUES('`+unit+`','`+category+`','2026-01-01')`); err != nil {
+			return err
+		}
+		input := func(id string, month time.Month) paymentInput {
+			return paymentInput{Fact: sourceFact{PaymentID: id, SalesCompanyID: "source-company",
+				OccurredAt: time.Date(2026, month, 1, 0, 0, 0, 0, time.UTC)}}
+		}
+		facts := []paymentInput{input("old", time.February), input("new", time.March)}
+		classifications, _, err := loadPracticeCompanyClassifications(ctx, tx, facts, false, true)
+		if err != nil {
+			return err
+		}
+		if award, ok := offers.match("new", "source-company", classifications["old"]); ok {
+			t.Fatalf("the current company type must not fill a gap before the source snapshot: %+v", award)
+		}
+		if award, ok := offers.match("new", "source-company", classifications["new"]); !ok || award.Value != rate {
+			t.Fatalf("the known current external company may use the fallback: %+v", award)
+		}
+		if id := strings.TrimPrefix(classifications["old"], practiceUnverifiedExternalPrefix); id != category {
+			t.Fatalf("the existing historical category remains available: %q", id)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

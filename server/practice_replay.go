@@ -83,7 +83,7 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 			}
 		}
 	}
-	if practiceTierUsesCategories(rule) || runtime.companyOffers.usesCategories() {
+	if practiceTierUsesCategories(rule) || runtime.companyOffers.needsClassifications() {
 		inputs.CompanyClassifications = make(map[string]string)
 	}
 	if len(runtime.internalSalesCategories) != 0 {

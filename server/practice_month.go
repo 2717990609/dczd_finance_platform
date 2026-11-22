@@ -130,11 +130,8 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 		return replay
 	}
 	offers := practiceCompanyStandards(paymentRule{Components: parts})
-	c, named := offers.companies[member][company]
-	if !named {
-		c = offers.categories[member][category]
-	}
-	if c.internal || c.componentIndex != index || c.key == "" {
+	c, matched := offers.match(member, company, category)
+	if !matched || c.internal || c.componentIndex != index || c.key == "" {
 		return replay
 	}
 	rate := c.Value
