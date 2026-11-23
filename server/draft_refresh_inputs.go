@@ -92,7 +92,7 @@ var draftRefreshFacts = `WITH keys AS (
  SELECT order_id FROM practice_events
  UNION SELECT a->>'orderId' FROM practice_events v JOIN LATERAL jsonb_array_elements(v.fact->'refundsPayment') a ON true
 ), classes AS (
- SELECT DISTINCT p.id,p.product_id,p.ordinal,split_part(p.source_period_key,':',3) AS series
+ SELECT DISTINCT p.id
  FROM practice_order o JOIN practice_enrollments e ON e.paid_order_ids @> ARRAY[o.order_id]
  JOIN periods p ON p.source_period_key=e.period_key
  JOIN LATERAL (SELECT id FROM practice_rosters r WHERE r.period_key=e.period_key ORDER BY source_version DESC LIMIT 1) latest ON true
@@ -186,9 +186,7 @@ UNION SELECT p.id FROM practice_changed_classes c JOIN periods p USING(product_i
 UNION SELECT a.period_id FROM practice_changed_classes c JOIN calculation_draft_practice_changes a ON a.class_period_id=c.id
 UNION SELECT i.period_id FROM practice_changed_classes c JOIN calculation_draft_lines l ON l.period_id=c.id
  JOIN calculation_draft_issues i ON i.correction_line_id=l.id
-UNION SELECT p.id FROM classes c JOIN periods p ON p.product_id=c.product_id AND p.ordinal>c.ordinal
-  AND split_part(p.source_period_key,':',3)=c.series
- WHERE EXISTS(SELECT 1 FROM rule_versions rv WHERE ` + matchingRuleScope + ` AND rv.components @>'[{"mode":"tiered"}]')`
+UNION SELECT d.period_id FROM classes c CROSS JOIN LATERAL practice_tier_dependents(c.id) d`
 
 func enqueueDraftFactChanges(ctx context.Context, tx pgx.Tx, inserted, metadata []int64) error {
 	if len(inserted) == 0 && len(metadata) == 0 {
@@ -253,7 +251,7 @@ UNION SELECT c.period_id FROM closing later
  WHERE later.period_mode='class' AND later.source_period_key IS NOT NULL`
 
 const draftRefreshRoster = `WITH base AS (
- SELECT p.id,p.product_id,p.ordinal,p.source_period_key,split_part(p.source_period_key,':',3) AS series FROM periods p
+ SELECT p.id,p.product_id,split_part(p.source_period_key,':',3) AS series FROM periods p
  WHERE p.source_period_key=$1 AND ($2::bigint IS NULL OR NOT EXISTS(
   SELECT 1 FROM practice_rosters r WHERE r.period_key=$1 AND r.source_version>$2) OR NOT EXISTS(
   SELECT 1 FROM practice_rosters r WHERE r.period_key=$1 AND r.source_version<$2))
@@ -262,12 +260,10 @@ const draftRefreshRoster = `WITH base AS (
   ON sibling.paid_order_ids&&e.paid_order_ids AND split_part(sibling.period_key,':',3)=split_part(e.period_key,':',3)
  WHERE e.period_key=$1 AND sibling.period_key<>$1 AND e.commission_eligible AND sibling.commission_eligible
 ), affected AS (
- SELECT id,product_id,ordinal,series FROM base
- UNION SELECT p.id,p.product_id,p.ordinal,b.series FROM base b
+ SELECT id FROM base
+ UNION SELECT p.id FROM base b
  JOIN periods p ON p.product_id=b.product_id AND split_part(p.source_period_key,':',3)=b.series
  JOIN relatives r ON r.period_key=p.source_period_key
 )
 SELECT id FROM affected
-UNION SELECT p.id FROM affected a JOIN periods p ON p.product_id=a.product_id AND p.ordinal>a.ordinal
-  AND split_part(p.source_period_key,':',3)=a.series
- WHERE EXISTS(SELECT 1 FROM rule_versions rv WHERE ` + matchingRuleScope + ` AND rv.components @>'[{"mode":"tiered"}]')`
+UNION SELECT d.period_id FROM affected a CROSS JOIN LATERAL practice_tier_dependents(a.id) d`

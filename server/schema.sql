@@ -922,6 +922,29 @@ BEGIN
 END
 $$;
 
+-- A time-based tier can use a higher ordinal when the class actually opened
+-- earlier. Include earlier roster versions so a delay also removes its old contribution.
+CREATE OR REPLACE FUNCTION practice_tier_dependents(scope_id bigint)
+RETURNS TABLE(period_id bigint) LANGUAGE sql STABLE AS $$
+ SELECT p.id FROM periods prior JOIN periods p ON p.product_id=prior.product_id
+  AND p.id<>prior.id AND p.calendar_month IS NULL
+  AND split_part(p.source_period_key,':',3)=split_part(prior.source_period_key,':',3)
+ WHERE prior.id=scope_id AND EXISTS(
+  SELECT 1 FROM rule_versions rv WHERE rv.product_id=p.product_id
+  AND (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal)))
+  AND (rv.activity_type=0 OR rv.activity_type::text=split_part(p.source_period_key,':',2))
+  AND rv.components @>'[{"mode":"tiered"}]'
+  AND (p.ordinal>prior.ordinal OR (
+   rv.components @? '$[*].tiers ? (exists(@.countFromAt) || exists(@.openingId) || exists(@.personCountStarts[*].countFromAt))'
+   AND EXISTS(SELECT 1 FROM calculation_drafts d JOIN practice_rosters current ON current.id=d.practice_roster_id
+    WHERE d.period_id=p.id AND d.rule_id=rv.id AND (
+     prior.starts_on<=(current.starts_at AT TIME ZONE 'Asia/Shanghai')::date
+     OR EXISTS(SELECT 1 FROM practice_rosters history
+      WHERE history.period_key=prior.source_period_key AND history.starts_at<current.starts_at)))
+  ))
+ )
+$$;
+
 -- Closing or reopening a class changes which rosters may claim its payments.
 CREATE OR REPLACE FUNCTION practice_payment_dependents(scope_id bigint)
 RETURNS TABLE(period_id bigint) LANGUAGE sql STABLE AS $$
@@ -949,11 +972,8 @@ RETURNS TABLE(period_id bigint) LANGUAGE sql STABLE AS $$
  )
  SELECT id FROM affected WHERE id<>scope_id
  UNION
- SELECT p.id FROM affected a JOIN periods p ON p.product_id=a.product_id AND p.ordinal>a.ordinal
-  AND split_part(p.source_period_key,':',3)=split_part(a.source_period_key,':',3)
- WHERE p.id<>scope_id AND EXISTS(SELECT 1 FROM rule_versions rv WHERE rv.product_id=p.product_id
-  AND (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal)))
-  AND rv.components @>'[{"mode":"tiered"}]')
+ SELECT d.period_id FROM affected a CROSS JOIN LATERAL practice_tier_dependents(a.id) d
+ WHERE d.period_id<>scope_id
 $$;
 
 -- A monthly refund changes future deductions for its payment. A whole-class

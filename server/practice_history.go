@@ -12,6 +12,7 @@ type practiceHistoryPeriod struct {
 	ordinal             int
 	startsAt            *time.Time
 	endsOn              time.Time
+	notEarlierInTime    bool
 	companyOffers       *practiceCompanyOffers
 	categories          map[string]string
 	settled             bool
@@ -50,13 +51,20 @@ func (h practiceTierHistory) defaultStart(config practiceSalesTiers) practiceCou
 	return config.defaultCountStart()
 }
 
+func (h practiceTierHistory) includesPrior(start practiceCountStart, period practiceHistoryPeriod) bool {
+	if start.FromAt == nil {
+		return period.ordinal < h.current.ordinal && start.includes(period)
+	}
+	return !period.notEarlierInTime && start.includes(period)
+}
+
 func (h practiceTierHistory) window(start practiceCountStart) (map[int64]bool, bool) {
 	if !start.includes(h.current) {
 		return nil, false
 	}
 	rosters := make(map[int64]bool)
 	for _, period := range h.periods {
-		if !start.includes(period) {
+		if !h.includesPrior(start, period) {
 			continue
 		}
 		if period.rosterID == 0 {

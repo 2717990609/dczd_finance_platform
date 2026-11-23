@@ -175,23 +175,26 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	}
 
 	rows, err := tx.Query(ctx, `SELECT p.ordinal,p.ends_on,roster.starts_at,
-	 CASE WHEN roster.starts_at<$4
-	  AND split_part(p.source_period_key,':',3)=split_part(current.source_period_key,':',3)
-	  THEN roster.id ELSE 0 END, selected.components, settlement.period_id IS NOT NULL,
-	  closed.practice_replay_inputs->'companyClassifications'
-	 FROM periods current JOIN periods p ON p.product_id=current.product_id AND p.ordinal<current.ordinal AND p.calendar_month IS NULL
+	 CASE WHEN roster.starts_at<$4 THEN roster.id ELSE 0 END, selected.components, settlement.period_id IS NOT NULL,
+	  closed.practice_replay_inputs->'companyClassifications',NOT timing.earlier
+	 FROM periods current JOIN periods p ON p.product_id=current.product_id AND p.id<>current.id AND p.calendar_month IS NULL
+	  AND (p.source_period_key IS NULL OR split_part(p.source_period_key,':',3)=split_part(current.source_period_key,':',3))
 	 LEFT JOIN settlements settlement ON settlement.period_id=p.id
 	 LEFT JOIN calculation_drafts closed ON closed.period_id=settlement.period_id
 	 LEFT JOIN LATERAL (SELECT r.id,r.starts_at FROM practice_rosters r
 	  WHERE r.period_key=p.source_period_key AND (closed.practice_roster_id IS NULL OR r.id=closed.practice_roster_id)
 	  ORDER BY r.source_version DESC LIMIT 1) roster ON true
+	 CROSS JOIN LATERAL (SELECT ($4::timestamptz AT TIME ZONE 'Asia/Shanghai')::date AS day) opening
+	 CROSS JOIN LATERAL (SELECT coalesce(roster.starts_at<$4,
+	  p.starts_on<opening.day OR p.starts_on=opening.day AND p.ordinal<current.ordinal) AS earlier) timing
 	 LEFT JOIN LATERAL (SELECT rv.components FROM rule_versions rv CROSS JOIN LATERAL (SELECT `+componentRuleRetiredAtSQL+` AS at) stopped
 	  WHERE CASE WHEN closed.rule_id IS NOT NULL THEN rv.id=closed.rule_id
 	   ELSE `+matchingRuleScope+` AND roster.starts_at IS NOT NULL AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
 	     AND (stopped.at IS NULL OR roster.starts_at<stopped.at) END
 	  ORDER BY `+matchingRuleOrder+` LIMIT 1) selected ON true
-	 WHERE current.id=$1 AND (($2>0 AND p.ordinal>=$2)
-	  OR ($3::timestamptz IS NOT NULL AND (roster.starts_at>=$3 OR p.ends_on>=($3 AT TIME ZONE 'Asia/Shanghai')::date)))
+	 WHERE current.id=$1 AND (($2>0 AND p.ordinal>=$2 AND p.ordinal<current.ordinal)
+	  OR ($3::timestamptz IS NOT NULL AND timing.earlier AND
+	   coalesce(roster.starts_at>=$3,p.ends_on>=($3 AT TIME ZONE 'Asia/Shanghai')::date)))
 	 ORDER BY p.ordinal`, summary.PeriodID, firstOrdinal, firstTime, summary.PracticeStartsAt)
 	if err != nil {
 		return history, err
@@ -199,7 +202,8 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	history.periods, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (practiceHistoryPeriod, error) {
 		var period practiceHistoryPeriod
 		var components []component
-		err := row.Scan(&period.ordinal, &period.endsOn, &period.startsAt, &period.rosterID, &components, &period.settled, &period.categories)
+		err := row.Scan(&period.ordinal, &period.endsOn, &period.startsAt, &period.rosterID, &components, &period.settled, &period.categories,
+			&period.notEarlierInTime)
 		period.ruleKnown = len(components) != 0
 		period.companyOffers = practiceCompanyStandards(paymentRule{Components: components})
 		for _, part := range components {
@@ -222,7 +226,7 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	if err == nil {
 		history.periods = slices.DeleteFunc(history.periods, func(period practiceHistoryPeriod) bool {
 			for _, start := range starts {
-				if start.includes(history.current) && start.includes(period) {
+				if start.includes(history.current) && history.includesPrior(start, period) {
 					return false
 				}
 			}

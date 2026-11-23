@@ -1146,6 +1146,86 @@ func TestPracticeTierChangesWithPastRosterAndTimeBoundAccount(t *testing.T) {
 	}
 }
 
+func TestPracticeTimeStartUsesActualClassOrderAndRefreshesAfterDelay(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_DATE", Name: "按开班时间累计", PeriodMode: "class"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "dated"}))
+	seller := id(s.createPerson(ctx, createPersonInput{Name: "销售"}))
+	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: seller, Source: "DCZD", ExternalID: "seller", ValidFrom: "2026-06-01T00:00:00+08:00"}))
+	start := time.Date(2026, 8, 8, 8, 0, 0, 0, shanghai)
+	periodKey := func(ordinal int) string { return fmt.Sprintf("PRACTICE:1:1:%d", ordinal) }
+	otherSeller := id(s.createPerson(ctx, createPersonInput{Name: "按期数累计的销售"}))
+	tomorrow := start.AddDate(0, 0, 1).Format(time.DateOnly)
+	id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "延期后尚无名单", Ordinal: 3,
+		StartsOn: tomorrow, EndsOn: tomorrow, SourcePeriodKey: periodKey(3)}))
+	writeRoster := func(ordinal, version int, at time.Time) {
+		t.Helper()
+		number := fmt.Sprint(ordinal)
+		member := practiceEnrollment{SourceEnrollmentID: number, ParticipantID: number, MembershipType: 3, CommissionEligible: true,
+			PaidOrderIDs: []string{number}, SignedAt: at.Add(time.Minute), ContentHash: fmt.Sprintf("%02x%02x", ordinal, version)}
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: periodKey(ordinal), Hash: member.ContentHash,
+				SourceVersion: int64(version), StartsAt: at, ConfirmedAt: at.Add(time.Hour), Enrollments: []practiceEnrollment{member}})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var current int64
+	for _, entry := range []struct{ ordinal, hours int }{{4, 3}, {5, 2}, {6, 1}} {
+		day := start.Format(time.DateOnly)
+		period := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: periodKey(entry.ordinal), Ordinal: entry.ordinal,
+			StartsOn: day, EndsOn: day, SourcePeriodKey: periodKey(entry.ordinal)}))
+		if entry.ordinal == 5 {
+			current = period
+		}
+		order, amount := fmt.Sprint(entry.ordinal), int64(10000)
+		paid := start.Add(-time.Hour)
+		fact := sourceFact{Source: "DCZD", Kind: "ORDER_PAID", Domain: "PRACTICE", SourceKey: "dated", Version: "1",
+			OrderID: order, PaymentID: order, RecordKey: "paid:" + order, ReferrerID: "seller", AmountMinor: &amount, OccurredAt: paid, UpdatedAt: paid}
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFacts(ctx, tx, []sourceFact{fact})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		writeRoster(entry.ordinal, 1, start.Add(time.Duration(entry.hours)*time.Hour))
+	}
+	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, Label: "按时间累计", Components: []component{{
+		Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
+		Tiers: &practiceSalesTiers{CountFromAt: &start, Count: []practiceTier{{From: 0, Mode: "rate", Value: 100}, {From: 1, Mode: "rate", Value: 200}},
+			PersonCountStarts: []practicePersonCountStart{{PersonID: otherSeller, practiceCountStart: practiceCountStart{FromOrdinal: 3}}}},
+	}}}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: current})
+	if err != nil || result.(draftSummary).Total != 200 || result.(draftSummary).IssueCount != 0 {
+		t.Fatalf("only the earlier opening (class 6 at 09:00) should enter the 10:00 draft: %+v %v", result, err)
+	}
+	before := result.(draftSummary)
+	writeRoster(6, 2, start.Add(4*time.Hour))
+	var queued bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1 AND retry_on_scan)`, current).Scan(&queued); err != nil || !queued {
+		t.Fatalf("a later ordinal moved out of the history must queue the open draft: %v %v", queued, err)
+	}
+	if err := s.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var version, total, issues int64
+	if err := s.db.QueryRow(ctx, `SELECT version,total_minor,issue_count FROM calculation_drafts WHERE period_id=$1`, current).
+		Scan(&version, &total, &issues); err != nil || version <= before.Version || total != 100 || issues != 0 {
+		t.Fatalf("after the delay the later class should be excluded from the refreshed tier: %d %d %d %v", version, total, issues, err)
+	}
+}
+
 func TestPracticeTierRangesCanHaveGapsAndRejectOverlap(t *testing.T) {
 	through := int64(1)
 	config := practiceSalesTiers{CountFromOrdinal: 1, Count: []practiceTier{

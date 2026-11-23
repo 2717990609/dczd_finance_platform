@@ -53,10 +53,7 @@ const draftRefreshRule = `SELECT id FROM periods WHERE product_id=$1
 const draftRefreshClassRule = `WITH changed AS (` + draftRefreshRule + `
  AND ($5::integer=0 OR $5::integer::text=split_part(source_period_key,':',2)))
  SELECT p.id FROM changed JOIN periods p USING(id) WHERE p.calendar_month IS NULL
- UNION SELECT p.id FROM changed c JOIN periods prior ON prior.id=c.id
- JOIN periods p ON p.product_id=prior.product_id AND p.ordinal>prior.ordinal
-  AND split_part(p.source_period_key,':',3)=split_part(prior.source_period_key,':',3)
- WHERE EXISTS(SELECT 1 FROM rule_versions rv WHERE ` + matchingRuleScope + ` AND rv.components @>'[{"mode":"tiered"}]')`
+ UNION SELECT d.period_id FROM changed c CROSS JOIN LATERAL practice_tier_dependents(c.id) d`
 
 func (s workspace) refreshPendingDrafts(ctx context.Context) error {
 	rows, err := s.db.Query(ctx, `SELECT period_id,generation FROM draft_refresh_queue WHERE retry_on_scan ORDER BY requested_at,period_id`)
