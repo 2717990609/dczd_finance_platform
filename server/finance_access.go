@@ -12,6 +12,8 @@ import (
 	"github.com/zeromicro/go-zero/rest"
 )
 
+const localFinanceActor = "本地财务"
+
 func developmentAccess(addr, database string) (bool, error) {
 	switch mode := strings.TrimSpace(os.Getenv("FINANCE_ACCESS_MODE")); mode {
 	case "", "managed":
@@ -46,6 +48,8 @@ func (s workspace) financeRoute(route rest.Route) rest.Route {
 	case "/api/v1/products", "/api/v1/periods":
 		rulesAccess = route.Method == http.MethodGet
 	}
+	localSettlementWrite := route.Method == http.MethodPost &&
+		(route.Path == "/api/v1/settlements" || route.Path == "/api/v1/correction-recovery")
 	handler := route.Handler
 	route.Handler = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
@@ -64,6 +68,16 @@ func (s workspace) financeRoute(route rest.Route) rest.Route {
 				return
 			}
 			if !principal.Workspace && (!rulesAccess || len(principal.Rules) == 0) {
+				respond(w, nil, errFinanceForbidden)
+				return
+			}
+		}
+		if s.development && principal == nil && localSettlementWrite {
+			if _, err := r.Cookie(financeAccountCookie); err == nil {
+				respond(w, nil, errFinanceLogin)
+				return
+			}
+			if !catalogCookieWriteAllowed(r) {
 				respond(w, nil, errFinanceForbidden)
 				return
 			}

@@ -33,8 +33,12 @@ const draftRefreshCorrectionRecovery = `SELECT $1::bigint
 
 func (s workspace) reviewCorrectionRecovery(ctx context.Context, input reviewCorrectionRecoveryInput) (any, error) {
 	operator := financeUser(ctx)
-	if operator == nil {
+	if operator == nil && !s.development {
 		return nil, errFinanceLogin
+	}
+	actor := localFinanceActor
+	if operator != nil {
+		actor = operator.ID
 	}
 	if input.PeriodID < 1 || input.Version < 1 || input.IssueID < 1 ||
 		input.Outcome != "recover" && input.Outcome != "departed_unreachable" {
@@ -45,8 +49,10 @@ func (s workspace) reviewCorrectionRecovery(ctx context.Context, input reviewCor
 		if err != nil {
 			return err
 		}
-		if err := lockSettlementOperator(ctx, tx, operator, scope.product); err != nil {
-			return err
+		if operator != nil {
+			if err := lockSettlementOperator(ctx, tx, operator, scope.product); err != nil {
+				return err
+			}
 		}
 		if _, err := readSettlement(ctx, tx, input.PeriodID); err == nil {
 			return errSettlementClosed
@@ -92,7 +98,7 @@ func (s workspace) reviewCorrectionRecovery(ctx context.Context, input reviewCor
 		}) {
 			return errSettlementStale
 		}
-		if _, err := tx.Exec(ctx, storeCorrectionRecoverySQL, lineID, pending.PersonID, input.Outcome, operator.ID); err != nil {
+		if _, err := tx.Exec(ctx, storeCorrectionRecoverySQL, lineID, pending.PersonID, input.Outcome, actor); err != nil {
 			return err
 		}
 		return enqueueDraftPeriods(ctx, tx, draftRefreshCorrectionRecovery, input.PeriodID, lineID)

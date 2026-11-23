@@ -127,10 +127,16 @@ func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t 
 	if repeat := draftAt(july, 120, 1, 1); repeat.Version != needsCheck.Version {
 		t.Fatalf("display-only update changed a pending draft: %d -> %d", needsCheck.Version, repeat.Version)
 	}
-	api := http.NewServeMux()
-	for _, route := range service.routes() {
-		api.HandleFunc(route.Method+" "+route.Path, route.Handler)
+	mux := func(server workspace) *http.ServeMux {
+		api := http.NewServeMux()
+		for _, route := range server.routes() {
+			api.HandleFunc(route.Method+" "+route.Path, route.Handler)
+		}
+		return api
 	}
+	managed := service
+	managed.development = false
+	api := mux(managed)
 	operator := mustID(service.createPerson(ctx, createPersonInput{Name: "Finance operator"}))
 	if err := service.saveFinanceAccount(ctx, financeAccountConfig{PersonID: operator, Login: "recovery.operator", Enabled: true,
 		Workspace: true, Settlements: []int64{product}}, "isolated-recovery-password"); err != nil {
@@ -185,7 +191,16 @@ func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t 
 	if _, err := service.db.Exec(ctx, `DELETE FROM correction_recovery_decisions WHERE original_line_id=$1 AND person_id=$2`, originalLine, a); err != nil {
 		t.Fatal(err)
 	}
-	callDecision(key, needsCheck.Version, issueID, "recover", http.StatusOK)
+	local := service
+	local.development = true
+	api = mux(local)
+	callDecision("", needsCheck.Version, issueID, "recover", http.StatusOK)
+	api = mux(managed)
+	var reviewer string
+	if err := service.db.QueryRow(ctx, `SELECT reviewed_by FROM correction_recovery_decisions
+	 WHERE original_line_id=$1 AND person_id=$2`, originalLine, a).Scan(&reviewer); err != nil || reviewer != "本地财务" {
+		t.Fatalf("local recovery should record its origin: %q %v", reviewer, err)
+	}
 	var queued bool
 	if err := service.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, july).Scan(&queued); err != nil || !queued {
 		t.Fatalf("saving a decision must queue the open draft: %v %v", queued, err)

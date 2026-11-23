@@ -10,7 +10,7 @@ import { salesRoles } from './catalog-labels'
 import { draftIssueLabels } from './draft-issue-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
-  recoveryOptions: Array, settlementProducts: Array, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
+  recoveryOptions: Array, settlementProducts: Array, localSettlement: Boolean, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
   requestedPeriod:Number, requestedView:String, ruleSetupLink:String, issueRuleLink:String, relatedOrderLink:Function, relatedPeriodLink:Function,
   periodsLoading:Boolean, month:String, rosterEditReady:Boolean })
 const emit = defineEmits(['show-order', 'show-issue-order', 'show-applied-rule', 'show-roster'])
@@ -46,7 +46,8 @@ const linkedPeriod = computed(() => props.periods.find(period => period.id === p
 const canPullRoster = computed(() => selectedPeriod.value?.periodMode === 'class' && selectedPeriod.value.sourcePeriodKey && !draft.value?.settlement)
 const needsRosterEdit = computed(() => selectedPeriod.value?.practiceRosterEditable &&
   (!selectedPeriod.value.sourcePeriodKey || selectedPeriod.value.classStartOutsidePeriod))
-const canReviewRecovery = computed(() => !draft.value?.settlement && props.recoveryOptions?.length && props.settlementProducts?.includes(selectedPeriod.value?.productId))
+const canReviewRecovery = computed(() => !draft.value?.settlement && props.recoveryOptions?.length &&
+  (props.localSettlement || props.settlementProducts?.includes(selectedPeriod.value?.productId)))
 const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable && !draft.value?.settlement)
 const hasSettlementReview = computed(() => draft.value?.settlementReviewAvailable ?? (draft.value?.catalog && draft.value?.refundsReady))
 const matchingOnly = computed(() => hasMatching.value && !selectedPeriod.value?.catalogDraftAvailable)

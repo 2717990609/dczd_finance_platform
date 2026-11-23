@@ -12,15 +12,20 @@ import (
 
 func verifySettlementHTTP(t *testing.T, ctx context.Context, s workspace, personID, productID int64, draft draftSummary, token string) settlement {
 	t.Helper()
-	router := http.NewServeMux()
-	for _, route := range s.routes() {
-		router.HandleFunc(route.Method+" "+route.Path, route.Handler)
+	mux := func(server workspace) *http.ServeMux {
+		router := http.NewServeMux()
+		for _, route := range server.routes() {
+			router.HandleFunc(route.Method+" "+route.Path, route.Handler)
+		}
+		return router
 	}
+	router := mux(s)
+	origin := "http://127.0.0.1"
 	call := func(method, path, body, session string) *httptest.ResponseRecorder {
 		t.Helper()
 		w := httptest.NewRecorder()
 		r := httptest.NewRequest(method, "http://127.0.0.1"+path, strings.NewReader(body))
-		r.Header.Set("Origin", "http://127.0.0.1")
+		r.Header.Set("Origin", origin)
 		r.Header.Set("Content-Type", "application/json")
 		if session != "" {
 			r.AddCookie(&http.Cookie{Name: financeAccountCookie, Value: session})
@@ -108,9 +113,30 @@ func verifySettlementHTTP(t *testing.T, ctx context.Context, s workspace, person
 	if !reopened.CanConfirm || reopened.Token == approved.Token {
 		t.Fatalf("expected a fresh review after technical removal: %+v", reopened)
 	}
-	w = submit(operator, reopened.Token)
+	local := s
+	local.development = true
+	router = mux(local)
+	localReview := view("")
+	if !localReview.MayConfirm || !localReview.CanConfirm || localReview.Token != reopened.Token {
+		t.Fatalf("local workspace should offer confirmation after the same review: %+v", localReview)
+	}
+	origin = "http://unrelated.example"
+	if w := submit("", localReview.Token); w.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin local confirmation should be rejected: %d %s", w.Code, w.Body)
+	}
+	origin = "http://127.0.0.1"
+	if w := submit("", ""); w.Code != http.StatusConflict {
+		t.Fatalf("local confirmation must require a review: %d %s", w.Code, w.Body)
+	}
+	if w := submit("", approved.Token); w.Code != http.StatusConflict {
+		t.Fatalf("local confirmation must also reject an obsolete review: %d %s", w.Code, w.Body)
+	}
+	w = submit("", localReview.Token)
 	if err := json.Unmarshal(w.Body.Bytes(), &repeated); err != nil || w.Code != 200 || repeated.ID == result.ID {
 		t.Fatalf("confirmation after fresh review: %d %s %v", w.Code, w.Body, err)
+	}
+	if repeated.ConfirmedBy != "本地财务" {
+		t.Fatalf("local development confirmation should record its origin: %+v", repeated)
 	}
 	return repeated
 }
