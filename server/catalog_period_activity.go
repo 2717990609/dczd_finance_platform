@@ -76,7 +76,7 @@ const catalogActivityLatest = `NOT EXISTS (
  AND (newer.updated_at,newer.id)>(v.updated_at,v.id)
 )`
 
-const catalogActivityEventColumns = `v.id,v.source,v.kind,v.occurred_at,v.fact,
+const catalogActivityEventColumns = `v.id,v.source,v.kind,v.occurred_at,v.fact,v.order_id,v.line_id,v.record_key,
   CASE WHEN v.kind='ORDER_PAID' THEN v.fact->>'paymentId' ELSE v.fact->>'refundId' END AS event_id,
   CASE WHEN jsonb_typeof(v.fact->'amountMinor')='number' THEN (v.fact->>'amountMinor')::bigint END AS amount`
 
@@ -208,9 +208,9 @@ recognition_rules AS MATERIALIZED (
   ON v.source='DCAI' AND v.kind='REFUND_SUCCEEDED' AND v.fact#>>'{refundsPayment,0,orderId}'=original.order_id
  WHERE v.occurred_at<$3 AND NOT EXISTS(SELECT 1 FROM current_events incoming WHERE incoming.id=v.id) AND ` + catalogActivityLatest + `
 ), linked AS MATERIALIZED (
- SELECT e.*,e.fact->'refundsPayment'->0 AS reference,
-  count(*) OVER (PARTITION BY e.kind,e.fact->>'domain',e.event_id) AS copies
- FROM events e
+ SELECT v.*,v.fact->'refundsPayment'->0 AS reference,
+  count(*) OVER (PARTITION BY v.kind,v.fact->>'domain',v.event_id)>1 OR (` + duplicateRefundSQL + `) AS duplicate
+ FROM events v
 ), origins AS MATERIALIZED (
  SELECT e.*,CASE WHEN e.kind='ORDER_PAID' THEN e.id WHEN p.matches=1 THEN p.id END AS payment_id
  FROM linked e
@@ -283,7 +283,7 @@ recognition_rules AS MATERIALIZED (
   CASE
    WHEN e.kind='REFUND_ADJUSTED' OR e.booked_changed THEN 'REFUND_ADJUSTMENT'
    WHEN coalesce(e.event_id,'')='' OR e.amount IS NULL OR e.amount<0 THEN 'INVALID_EVENT'
-   WHEN e.copies>1 THEN 'DUPLICATE_EVENT'
+   WHEN e.duplicate THEN 'DUPLICATE_EVENT'
    WHEN p.id IS NULL THEN 'REFUND_ORIGIN_MISSING'
    WHEN p.amount_changed THEN 'AGGREGATE_ORIGINAL_AMOUNT_CHANGED'
    WHEN p.classified IS NULL AND p.payment_version_id IS NULL THEN 'UNCLASSIFIED'

@@ -112,6 +112,36 @@ func TestHistoricalRefundRoutesToAugustThenCurrentAndReusesFrozenRule(t *testing
 	if err := service.db.QueryRow(ctx, `SELECT refund_minor,issue_count FROM calculation_drafts WHERE period_id=$1`, august).Scan(&deduction, &issues); err != nil || deduction != -11 || issues != 0 {
 		t.Fatalf("closed payment did not refresh the open refund period: deduction=%d issues=%d error=%v", deduction, issues, err)
 	}
+
+	// The source sent the same refund number in a different record and month.
+	currentWindow, err := calendarWindow(currentMonth.Format("2006-01"), day)
+	if err != nil {
+		t.Fatal(err)
+	}
+	duplicate := makeRefund("first", "1", 34, currentWindow.Start, now)
+	duplicate.RecordKey = "refunds:duplicate"
+	saveFact(duplicate)
+	if err := service.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for _, period := range []int64{august, november} {
+		if err := service.db.QueryRow(ctx, `SELECT refund_minor,issue_count FROM calculation_drafts WHERE period_id=$1`, period).Scan(&deduction, &issues); err != nil || deduction != 0 || issues != 1 {
+			t.Fatalf("both refund months must refresh without a debit: deduction=%d issues=%d error=%v", deduction, issues, err)
+		}
+		var code string
+		if err := service.db.QueryRow(ctx, `SELECT code FROM calculation_draft_issues WHERE period_id=$1`, period).Scan(&code); err != nil || code != "REFUND_DUPLICATE_ID" {
+			t.Fatalf("both affected months must report the same duplicate refund: %q %v", code, err)
+		}
+	}
+	duplicate.Version, duplicate.RefundID, duplicate.SourceKey = "2", "distinct", "other-product"
+	duplicate.UpdatedAt = now.Add(time.Second)
+	saveFact(duplicate)
+	if err := service.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.db.QueryRow(ctx, `SELECT refund_minor,issue_count FROM calculation_drafts WHERE period_id=$1`, august).Scan(&deduction, &issues); err != nil || deduction != -11 || issues != 0 {
+		t.Fatalf("source correction did not refresh the other refund month: deduction=%d issues=%d error=%v", deduction, issues, err)
+	}
 	confirm(draftAt(august, -11, -11, 1, 0))
 	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, Label: "New rate",
 		Components: []component{{Type: "sales", Mode: "rate", SourceRole: "PID_USER", Value: 5000, RefundPolicy: "non_refundable"}},

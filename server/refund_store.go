@@ -52,7 +52,23 @@ type refundHistory struct {
 	byID      map[string]int64
 }
 
-const refundInputSelectionSQL = `SELECT v.id, origin.id, v.fact, coalesce(history.changed,false),false FROM periods target`
+// A second current record may fall in a different month or point to another order.
+// Versions of the same source record are not distinct refunds.
+const duplicateRefundSQL = `v.kind='REFUND_SUCCEEDED' AND EXISTS(
+ SELECT 1 FROM source_order_versions other
+ WHERE other.source=v.source AND other.kind='REFUND_SUCCEEDED' AND other.fact->>'domain'=v.fact->>'domain'
+  AND other.fact->>'refundId'=v.fact->>'refundId' AND other.occurred_at<=CURRENT_TIMESTAMP
+  AND (other.order_id,other.line_id,other.record_key)<>(v.order_id,v.line_id,v.record_key)
+  AND NOT EXISTS (
+   SELECT 1 FROM source_order_versions newer
+   WHERE (newer.source,newer.order_id,newer.line_id,newer.record_key,newer.kind)
+      =(other.source,other.order_id,other.line_id,other.record_key,other.kind)
+     AND (newer.updated_at,newer.id)>(other.updated_at,other.id)
+  )
+)`
+
+const refundInputSelectionSQL = `SELECT v.id,origin.id,v.fact,coalesce(history.changed,false),` +
+	duplicateRefundSQL + ` FROM periods target`
 
 const refundInputsSQL = refundInputSelectionSQL + `
  JOIN source_mappings m ON m.product_id=target.product_id

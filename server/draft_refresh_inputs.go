@@ -32,12 +32,23 @@ const draftRefreshFacts = `WITH keys AS (
  SELECT v.id,v.source,v.fact,v.order_id,v.kind,v.record_key,v.occurred_at FROM changed c
  JOIN source_order_versions v ON v.id=c.current_id OR v.id=c.previous_id
  WHERE v.kind IN ('ORDER_PAID','REFUND_SUCCEEDED') OR v.source='DCAI' AND v.kind='REFUND_ADJUSTED'
+), refund_versions AS MATERIALIZED (
+ SELECT v.id FROM events changed JOIN source_order_versions v
+  ON v.source=changed.source AND v.kind='REFUND_SUCCEEDED' AND v.fact->>'domain'=changed.fact->>'domain'
+  AND v.fact->>'refundId'=changed.fact->>'refundId'
+ WHERE changed.kind='REFUND_SUCCEEDED' AND coalesce(changed.fact->>'refundId','')<>''
+ UNION SELECT v.id FROM events changed JOIN source_order_versions v
+  ON v.source='DCZD' AND v.kind='REFUND_SUCCEEDED' AND v.record_key=changed.record_key
+ WHERE changed.source='DCZD' AND changed.kind='REFUND_SUCCEEDED'
+), affected_events AS (
+ SELECT id FROM events UNION SELECT id FROM refund_versions
 ), mapped AS (
- SELECT v.id,m.product_id,v.occurred_at,v.kind FROM events v JOIN source_mappings m
+ SELECT v.id,m.product_id,v.occurred_at,v.kind FROM affected_events a JOIN source_order_versions v USING(id) JOIN source_mappings m
   ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'
  WHERE NOT ` + catalogSourceReservedSQL + `
  UNION
- SELECT v.id,c.product_id,v.occurred_at,v.kind FROM events v JOIN catalog_business_routes m ON ` + catalogRouteFactSQL + `
+ SELECT v.id,c.product_id,v.occurred_at,v.kind FROM affected_events a JOIN source_order_versions v USING(id)
+ JOIN catalog_business_routes m ON ` + catalogRouteFactSQL + `
  JOIN product_catalog_settings c ON c.product_id=m.product_id AND c.captured_at=m.observed_at
 ), calendar AS (
  SELECT p.id,p.product_id,p.starts_on,p.ends_on FROM periods p JOIN products pro ON pro.id=p.product_id
@@ -46,14 +57,6 @@ const draftRefreshFacts = `WITH keys AS (
  SELECT p.id,p.product_id,v.id AS event_id,v.kind FROM mapped v JOIN calendar p USING(product_id)
  WHERE v.occurred_at>=p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
  AND v.occurred_at<(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
-), refund_versions AS (
- SELECT v.id FROM events changed JOIN source_order_versions v
-  ON v.source=changed.source AND v.kind='REFUND_SUCCEEDED' AND v.fact->>'domain'=changed.fact->>'domain'
-  AND v.fact->>'refundId'=changed.fact->>'refundId'
- WHERE changed.kind='REFUND_SUCCEEDED' AND coalesce(changed.fact->>'refundId','')<>''
- UNION SELECT v.id FROM events changed JOIN source_order_versions v
-  ON v.source='DCZD' AND v.kind='REFUND_SUCCEEDED' AND v.record_key=changed.record_key
- WHERE changed.source='DCZD' AND changed.kind='REFUND_SUCCEEDED'
 ), practice_events AS (
  SELECT order_id,fact FROM events WHERE source='DCZD' AND fact->>'domain'='PRACTICE' AND kind='ORDER_PAID'
  UNION ALL SELECT v.order_id,v.fact FROM source_order_versions v JOIN refund_versions changed USING(id)
@@ -105,13 +108,15 @@ const draftRefreshFacts = `WITH keys AS (
  UNION SELECT product_id FROM corrected_originals
 ), health_changes AS (
  SELECT DISTINCT v.id AS payment_version_id,NULL::bigint AS previous_id,b.completion_version_id AS current_id
- FROM events v JOIN dcai_order_blockers b ON b.stream='HEALTH_IDENTITY_ORDERS' AND b.order_id=v.order_id
+ FROM affected_events a JOIN source_order_versions v USING(id)
+ JOIN dcai_order_blockers b ON b.stream='HEALTH_IDENTITY_ORDERS' AND b.order_id=v.order_id
   AND b.source_row_id=split_part(v.record_key,':',2) AND b.completion_version_id IS NOT NULL
  WHERE v.source='DCAI' AND v.kind='ORDER_PAID' AND v.fact->>'domain'='HEALTH_IDENTITY'
   AND split_part(v.record_key,':',1)='ai_health_ambassador_order'
  UNION
  SELECT payment.id,NULL::bigint,b.completion_version_id
- FROM events v JOIN dcai_order_blockers b ON b.stream='HEALTH_IDENTITY_ORDERS' AND b.order_id=v.order_id
+ FROM affected_events a JOIN source_order_versions v USING(id)
+ JOIN dcai_order_blockers b ON b.stream='HEALTH_IDENTITY_ORDERS' AND b.order_id=v.order_id
   AND b.source_row_id=split_part(v.record_key,':',2)
  JOIN LATERAL (
   SELECT original.id FROM source_order_versions original WHERE original.source=v.source AND original.order_id=v.order_id
@@ -134,6 +139,7 @@ UNION ` + healthCompletionAffectedPeriodsSQL + `
 UNION SELECT p.id FROM late l JOIN calendar p USING(product_id)
  WHERE (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
 UNION SELECT refund.period_id FROM refund_versions v JOIN calculation_draft_refunds refund ON refund.refund_source_version_id=v.id
+UNION SELECT a.period_id FROM refund_versions v JOIN catalog_aggregate_draft_events a ON a.source_version_id=v.id
 UNION SELECT posted.period_id FROM refund_versions v JOIN calculation_draft_performance posted ON posted.source_version_id=v.id
  WHERE posted.payment_version_id IS NOT NULL
 UNION SELECT posted.period_id FROM corrected_originals o JOIN calculation_draft_corrections posted ON posted.original_line_id=o.id

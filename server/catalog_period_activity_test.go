@@ -354,6 +354,23 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 		groups[1].RuleID != scheduledID || groups[1].quote().Total != 300 {
 		t.Fatalf("trial must leave the already scheduled version active at its later cutoff: %+v", overlap)
 	}
+	duplicateOutsideWindow := refund("unrelated-order", "a", old, 3000)
+	duplicateOutsideWindow.OccurredAt = window.Start.AddDate(0, -3, 0)
+	duplicateOutsideWindow.UpdatedAt = duplicateOutsideWindow.OccurredAt
+	duplicateOutsideWindow.RefundsPayment[0].OrderID = "unrelated-order"
+	insert(duplicateOutsideWindow, "")
+	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		report, err := readCatalogPeriodActivity(ctx, tx, in)
+		if err != nil {
+			return err
+		}
+		if report.Issues["DUPLICATE_EVENT"] != 5 || report.Refunds != 0 {
+			t.Fatalf("a duplicate in another accounting window must block this refund: %+v", report)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestCatalogPeriodActivityUsesCreatorCompletionForNewRules(t *testing.T) {
