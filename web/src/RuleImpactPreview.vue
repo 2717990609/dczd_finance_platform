@@ -10,14 +10,44 @@ const result = ref()
 const error = ref('')
 const keyword = ref('')
 const matchedOrders = ref(false)
+const arrangementId = ref()
+const page = ref(1)
 const options = computed(() => props.periods.map(period=>({
   value:period.id,
   label:period.name+' · '+(period.classStartsAt && props.formatTime ? props.formatTime(period.classStartsAt) : period.startsOn+' 至 '+period.endsOn),
 })))
+const items = computed(() => result.value?.items || [])
+const memberLabels = {new:'新报',retrain:'复训'}
+const arrangements = computed(() => {
+  if (!matchedOrders.value) return []
+  const groups = new Map()
+  for (const row of items.value) {
+    if (!row.arrangementId) continue
+    if (!groups.has(row.arrangementId)) {
+      groups.set(row.arrangementId,{value:row.arrangementId,name:row.arrangement,
+        member:memberLabels[row.arrangementClassMember],role:salesRoles[row.arrangementRole],recipients:new Set()})
+    }
+    groups.get(row.arrangementId).recipients.add(row.recipient)
+  }
+  const choices = Array.from(groups.values(),({value,name,member,role,recipients})=>({
+    value,label:[name,member,role,recipients.size===1 ? recipients.values().next().value : recipients.size+' 个收款对象']
+      .filter(Boolean).join(' · '),
+  })).sort((a,b)=>a.label.localeCompare(b.label,'zh-CN') || a.value-b.value)
+  const counts = new Map()
+  for (const choice of choices) counts.set(choice.label,(counts.get(choice.label) || 0)+1)
+  const indices = new Map()
+  return choices.map(choice=>{
+    if (counts.get(choice.label)===1) return choice
+    const position = (indices.get(choice.label) || 0)+1
+    indices.set(choice.label,position)
+    return {...choice,label:choice.label+' · 同名安排 '+position}
+  })
+})
 const rows = computed(() => {
   const term = keyword.value.trim().toLowerCase()
-  return (result.value?.items || []).filter(row=>!term ||
-    [row.orderId,row.orderNo,row.recipient,row.allocationOwner,row.arrangement,salesRoles[row.arrangementRole]].some(value=>value?.toLowerCase().includes(term)))
+  return items.value.filter(row=>(arrangementId.value==null || row.arrangementId===arrangementId.value) &&
+    (!term || [row.orderId,row.orderNo,row.recipient,row.allocationOwner,row.arrangement,salesRoles[row.arrangementRole]]
+      .some(value=>value?.toLowerCase().includes(term))))
 })
 const columns = [
   {title:'原订单',key:'order',width:145},
@@ -46,14 +76,18 @@ watch(selected, () => {
   result.value = undefined
   error.value = ''
   keyword.value = ''
+  arrangementId.value = undefined
   loading.value = false
 })
+watch([result,keyword,arrangementId], () => { page.value=1 })
 async function calculate(showOrders = false) {
   if (!selected.value || loading.value) return
   const request = ++sequence
   pending = new AbortController()
   loading.value = true
+  if (matchedOrders.value!==showOrders) keyword.value = ''
   matchedOrders.value = showOrders
+  arrangementId.value = undefined
   error.value = ''
   result.value = undefined
   try {
@@ -109,10 +143,16 @@ onBeforeUnmount(() => {
         </table>
       </details>
       <p v-else class="workbench-scope-note">待核项 {{ result.beforeIssueCount }} → {{ result.afterIssueCount }} 条</p>
-      <a-input v-if="result.items.length" v-model:value="keyword" :aria-label="matchedOrders ? '搜索计提订单' : '搜索差额明细'"
-        placeholder="搜索订单号、收款对象、负责人或安排" allow-clear/>
+      <div v-if="items.length" class="rule-impact-filters">
+        <a-select v-if="arrangements.length>1" v-model:value="arrangementId" :options="arrangements"
+          aria-label="筛选收款安排" placeholder="全部收款安排" allow-clear show-search option-filter-prop="label"/>
+        <a-input v-model:value="keyword" :aria-label="matchedOrders ? '搜索计提订单' : '搜索差额明细'"
+          placeholder="搜索订单号、收款对象、负责人或安排" allow-clear/>
+      </div>
+      <p v-if="arrangementId!=null" class="workbench-scope-note">{{ rows.length }} 条计提明细</p>
       <a-table :columns="visibleColumns" :data-source="rows" size="small" row-key="key"
-        :scroll="{x:matchedOrders ? 494 : 640}" :pagination="{pageSize:10,hideOnSinglePage:true,showSizeChanger:false}">
+        :scroll="{x:matchedOrders ? 494 : 640}"
+        :pagination="{current:page,pageSize:10,hideOnSinglePage:true,showSizeChanger:false,onChange:value=>page=value}">
         <template #bodyCell="{column,record,text}">
           <template v-if="column.key==='order'">
             {{ record.orderNo || record.orderId }}
@@ -132,7 +172,7 @@ onBeforeUnmount(() => {
           <span v-else-if="column.key==='beforeMinor' || column.key==='afterMinor'" class="numeric">{{ formatMoney(text) }}</span>
         </template>
         <template #emptyText>
-          {{ matchedOrders ? (keyword ? '未找到匹配的计提订单' : '本期暂无可计提订单') :
+          {{ matchedOrders ? (keyword || arrangementId!=null ? '未找到匹配的计提订单' : '本期暂无可计提订单') :
             keyword ? '未找到符合条件的差额' : result.matchedPaymentCount===0 ? '本期暂无适用付款' :
             result.afterIssueCount ? '暂未算出金额差额，请查看待核项。' : '本期金额无变化' }}
         </template>
@@ -140,3 +180,11 @@ onBeforeUnmount(() => {
     </template>
   </section>
 </template>
+
+<style scoped>
+.rule-impact-filters {
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,225px),1fr));
+  gap:8px;
+}
+</style>

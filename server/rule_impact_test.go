@@ -81,8 +81,10 @@ func TestComponentRuleImpactUsesSamePeriodRefundsAndLeavesDraftUntouched(t *test
 		t.Fatalf("impact: %+v", report)
 	}
 	matched, err := s.postComponentRuleImpact(ctx, componentRuleImpactInput{PeriodID: period, Rule: rule, MatchedOrders: true})
-	if err != nil || !reflect.DeepEqual(matched.(ruleImpactReport).Items, want[:2]) {
-		t.Fatalf("order preview must include proposed accruals only: %+v %v", matched, err)
+	wantMatched := append([]ruleImpactItem(nil), want[:2]...)
+	wantMatched[0].ArrangementID, wantMatched[1].ArrangementID = 1, 2
+	if err != nil || !reflect.DeepEqual(matched.(ruleImpactReport).Items, wantMatched) {
+		t.Fatalf("one order and recipient can belong to separate arrangements: %+v %v", matched, err)
 	}
 	var version int64
 	var rules, pending int

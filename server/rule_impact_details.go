@@ -31,17 +31,19 @@ type ruleImpactIssueReason struct {
 }
 
 type ruleImpactItem struct {
-	Key             int    `json:"key"`
-	OrderID         string `json:"orderId"`
-	OrderNo         string `json:"orderNo"`
-	Recipient       string `json:"recipient"`
-	AllocationOwner string `json:"allocationOwner,omitempty"`
-	Arrangement     string `json:"arrangement"`
-	ArrangementRole string `json:"arrangementRole,omitempty"`
-	EntryKind       string `json:"entryKind"`
-	BeforeMinor     int64  `json:"beforeMinor"`
-	AfterMinor      int64  `json:"afterMinor"`
-	DeltaMinor      int64  `json:"deltaMinor"`
+	Key                    int    `json:"key"`
+	OrderID                string `json:"orderId"`
+	OrderNo                string `json:"orderNo"`
+	Recipient              string `json:"recipient"`
+	AllocationOwner        string `json:"allocationOwner,omitempty"`
+	Arrangement            string `json:"arrangement"`
+	ArrangementRole        string `json:"arrangementRole,omitempty"`
+	ArrangementID          int    `json:"arrangementId,omitempty"`
+	ArrangementClassMember string `json:"arrangementClassMember,omitempty"`
+	EntryKind              string `json:"entryKind"`
+	BeforeMinor            int64  `json:"beforeMinor"`
+	AfterMinor             int64  `json:"afterMinor"`
+	DeltaMinor             int64  `json:"deltaMinor"`
 }
 
 type ruleImpactRecipient struct {
@@ -66,7 +68,7 @@ type impactComponentRef struct {
 }
 
 type impactArrangement struct {
-	key, name, role string
+	key, name, role, member string
 }
 
 func impactRecipient(line draftLine) ruleImpactRecipient {
@@ -198,6 +200,8 @@ func impactArrangements(ctx context.Context, tx pgx.Tx, all ...[]ruleImpactPosti
 	 )
 	 SELECT p.rule_id,p.catalog_id,p.code,p.kind,coalesce(p.part->>'classMember',''),
 	  coalesce(title.name,''),coalesce(duplicate.ord,0)::int,
+	  coalesce(CASE WHEN p.part ? 'periodBenefit' AND p.part#>'{periodBenefit,labelIsCustom}' IS DISTINCT FROM 'true'::jsonb
+	    THEN coalesce(legacy_role.label,CASE WHEN title.name='SERVICE' THEN '服务' END) END,title.name,''),
 	  coalesce(CASE WHEN action.item IS NOT NULL AND p.code=action.item||':DCAI_SERVICE'
 	    THEN nullif(p.definition->'internal_sales_direct_split'->>'service_label','') END,
 	   nullif(action.label,''),opt.label,
@@ -215,6 +219,7 @@ func impactArrangements(ctx context.Context, tx pgx.Tx, all ...[]ruleImpactPosti
 	   AND coalesce(c.part->'companySales'->>'label',c.part->'periodBenefit'->>'label')=title.name
 	 ) duplicate ON title.name<>''
 	 LEFT JOIN configuration_options opt ON opt.group_key='component' AND opt.option_key=p.kind
+	 LEFT JOIN configuration_options legacy_role ON legacy_role.group_key='catalogAppointmentRole' AND legacy_role.option_key=title.name
 	 LEFT JOIN LATERAL (
 	  SELECT a->>'label' AS label,a->>'item_key' AS item FROM jsonb_array_elements(p.definition->'benefit_actions') a
 	  WHERE a->>'item_key'=p.code OR
@@ -225,14 +230,14 @@ func impactArrangements(ctx context.Context, tx pgx.Tx, all ...[]ruleImpactPosti
 		return nil, err
 	}
 	var ref impactComponentRef
-	var kind, member, explicit, fallback, role string
+	var kind, member, explicit, display, fallback, role string
 	var ordinal int
-	_, err = pgx.ForEachRow(rows, []any{&ref.rule, &ref.catalog, &ref.code, &kind, &member, &explicit, &ordinal, &fallback, &role}, func() error {
-		arrangement := impactArrangement{key: ref.code, name: fallback, role: role}
+	_, err = pgx.ForEachRow(rows, []any{&ref.rule, &ref.catalog, &ref.code, &kind, &member, &explicit, &ordinal, &display, &fallback, &role}, func() error {
+		arrangement := impactArrangement{key: ref.code, name: fallback, role: role, member: member}
 		if explicit != "" {
 			// A practice benefit's position may change when other benefits are removed.
 			arrangement.key = kind + "\x00" + member + "\x00" + explicit + "\x00" + strconv.Itoa(ordinal)
-			arrangement.name = explicit
+			arrangement.name = display
 			if kind == "company_referral" {
 				arrangement.name = fallback + " · " + explicit
 			}
@@ -411,6 +416,9 @@ func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentD
 			if item.Recipient == "" || step == 1 {
 				item.Recipient = posting.recipient.name(names)
 				item.Arrangement, item.ArrangementRole = arrangement.name, arrangement.role
+				if matchedOrders {
+					item.ArrangementClassMember = arrangement.member
+				}
 				if posting.label != "" {
 					item.Arrangement = posting.label
 				}
@@ -438,9 +446,18 @@ func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentD
 			cmp.Compare(a.kind, b.kind), cmp.Compare(a.recipient, b.recipient), cmp.Compare(a.owner, b.owner),
 			cmp.Compare(a.arrangement, b.arrangement))
 	})
+	arrangementIDs := make(map[string]int)
 	for index, key := range changed {
 		item := items[key]
 		item.Key = index + 1
+		if matchedOrders {
+			id, ok := arrangementIDs[key.arrangement]
+			if !ok {
+				id = len(arrangementIDs) + 1
+				arrangementIDs[key.arrangement] = id
+			}
+			item.ArrangementID = id
+		}
 		if key.owner > 0 {
 			item.AllocationOwner = names["person:"+strconv.FormatInt(key.owner, 10)]
 			if item.AllocationOwner == "" {
