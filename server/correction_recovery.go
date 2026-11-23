@@ -8,6 +8,14 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+var errCorrectionRecoveryStillAppointed = errors.New("原收款人当前仍有有效任职，请登记扣回")
+
+func correctionRecipientHasActiveAssignmentSQL(personID string) string {
+	return `EXISTS(SELECT 1 FROM organization_assignments a JOIN organization_units u ON u.id=a.unit_id
+ WHERE a.person_id=` + personID + ` AND u.status='ACTIVE'
+  AND a.valid_from<=CURRENT_TIMESTAMP AND (a.valid_to IS NULL OR CURRENT_TIMESTAMP<a.valid_to))`
+}
+
 type reviewCorrectionRecoveryInput struct {
 	PeriodID int64  `json:"periodId"`
 	Version  int64  `json:"version"`
@@ -97,6 +105,16 @@ func (s workspace) reviewCorrectionRecovery(ctx context.Context, input reviewCor
 			return issue.CorrectionLineID == lineID && issue.Recovery != nil && *issue.Recovery == pending
 		}) {
 			return errSettlementStale
+		}
+		if input.Outcome == "departed_unreachable" {
+			var appointed bool
+			if err := tx.QueryRow(ctx, `SELECT `+correctionRecipientHasActiveAssignmentSQL("$1"), pending.PersonID).
+				Scan(&appointed); err != nil {
+				return err
+			}
+			if appointed {
+				return errCorrectionRecoveryStillAppointed
+			}
 		}
 		if _, err := tx.Exec(ctx, storeCorrectionRecoverySQL, lineID, pending.PersonID, input.Outcome, actor); err != nil {
 			return err

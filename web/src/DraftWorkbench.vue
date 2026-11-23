@@ -48,6 +48,8 @@ const needsRosterEdit = computed(() => selectedPeriod.value?.practiceRosterEdita
   (!selectedPeriod.value.sourcePeriodKey || selectedPeriod.value.classStartOutsidePeriod))
 const canReviewRecovery = computed(() => !draft.value?.settlement && props.recoveryOptions?.length &&
   (props.localSettlement || props.settlementProducts?.includes(selectedPeriod.value?.productId)))
+const recoveryChoices = person => (props.recoveryOptions || []).filter(option =>
+  option.value!=='departed_unreachable' || person?.mayWaive===true)
 const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable && !draft.value?.settlement)
 const hasSettlementReview = computed(() => {
   if (!draft.value) return false
@@ -511,7 +513,7 @@ async function loadMore(section, cursorName) {
             <small v-else-if="issueRuleLink && ruleIssues.has(record.code)" class="order-version"><a :href="issueRuleLink">查看产品规则</a></small>
             <template v-if="record.recovery">
               <small class="order-version">{{ record.recovery.personName }}（人员 {{ record.recovery.personId }}） · {{ formatMoney(-record.recovery.amountMinor) }}</small>
-              <a-button v-if="canReviewRecovery" type="link" size="small" :disabled="refreshStatus?.pending || calculating || savingRecovery" @click="openRecovery(record)">登记扣回处理</a-button>
+              <a-button v-if="canReviewRecovery && recoveryChoices(record.recovery).length" type="link" size="small" :disabled="refreshStatus?.pending || calculating || savingRecovery" @click="openRecovery(record)">登记扣回处理</a-button>
             </template>
           </template>
         </template>
@@ -536,9 +538,10 @@ async function loadMore(section, cursorName) {
     <template v-if="recovery">
       <p>{{ recovery.personName }}（人员 {{ recovery.personId }}） · 待扣回 {{ formatMoney(-recovery.amountMinor) }}</p>
       <p>原结算期 {{ recovery.originalPeriod }} · 结算时规则 v{{ recovery.ruleVersion }}</p>
+      <p v-if="recovery.mayWaive===false">此人当前仍有有效任职，需登记扣回。</p>
       <a-form layout="vertical">
         <a-form-item label="处理方式" html-for="correction-recovery-outcome">
-          <a-select id="correction-recovery-outcome" v-model:value="recoveryOutcome" :options="recoveryOptions" :disabled="savingRecovery" placeholder="请选择处理方式"/>
+          <a-select id="correction-recovery-outcome" v-model:value="recoveryOutcome" :options="recoveryChoices(recovery)" :disabled="savingRecovery" placeholder="请选择处理方式"/>
         </a-form-item>
       </a-form>
       <a-alert v-if="recoveryError" :message="recoveryError" type="error" show-icon/>

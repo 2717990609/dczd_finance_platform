@@ -357,7 +357,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errCatalogPeriodRecipient), errors.Is(err, errCatalogPeriodComponents), errors.Is(err, errCatalogPeriodScenarios), errors.Is(err, errCatalogPeriodMembershipScope),
 		errors.Is(err, errCatalogScenarioTarget), errors.Is(err, errCatalogScenarioOccupied), errors.Is(err, errCatalogPeriodName),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
-		errors.Is(err, errSettlementUnsupported),
+		errors.Is(err, errSettlementUnsupported), errors.Is(err, errCorrectionRecoveryStillAppointed),
 		errors.Is(err, errDraftChanged), errors.Is(err, errCatalogTrialEventsChanged),
 		errors.Is(err, errSettlementPools), errors.Is(err, errSettlementPoolHistory),
 		errors.Is(err, errSettlementSourceCoverage), errors.Is(err, errSettlementSourceRefund), errors.Is(err, errSettlementSourceStale),

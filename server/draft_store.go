@@ -733,6 +733,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
    CASE WHEN starts_with(i.component_type,'period:') THEN r.version END AS "ruleVersion",
    CASE WHEN i.recovery_person_id IS NOT NULL THEN jsonb_build_object(
      'personName',recipient.name,'personId',recipient.id,'amountMinor',i.recovery_minor,'originalPeriod',original_period.name,
+     'mayWaive',NOT ` + correctionRecipientHasActiveAssignmentSQL("i.recovery_person_id") + `,
      'ruleVersion',coalesce(original_rule.version,original_catalog_rule.version_no))
    END AS recovery
   FROM calculation_draft_issues i LEFT JOIN source_order_versions o ON o.id=i.source_version_id LEFT JOIN practice_enrollments e ON e.id=i.practice_enrollment_id

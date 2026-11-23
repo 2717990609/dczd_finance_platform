@@ -185,6 +185,36 @@ func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t 
 	if _, err := service.db.Exec(ctx, `UPDATE configuration_options SET enabled=true WHERE group_key='correctionRecovery' AND option_key='recover'`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := service.db.Exec(ctx, `WITH former AS (INSERT INTO organization_units(id,kind,name,status)
+	 VALUES('10000000-0000-0000-0000-000000000002','DEPARTMENT','Former department','ACTIVE') RETURNING id)
+	 INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from,valid_to)
+	 SELECT gen_random_uuid(),$1::bigint,id,'PRIMARY',now()-interval '2 months',now()-interval '1 month' FROM former
+	 UNION ALL SELECT gen_random_uuid(),$1::bigint,$2::uuid,'PRIMARY',now()-interval '1 month',NULL`, a, dept); err != nil {
+		t.Fatal(err)
+	}
+	waiverAvailable := func(want bool) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		service.getDraft(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/drafts?periodId=%d", july), nil))
+		var body struct {
+			Issues []struct {
+				ID       int64
+				Recovery *struct{ MayWaive *bool }
+			}
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != http.StatusOK || len(body.Issues) != 1 ||
+			body.Issues[0].ID != issueID || body.Issues[0].Recovery == nil ||
+			body.Issues[0].Recovery.MayWaive == nil || *body.Issues[0].Recovery.MayWaive != want {
+			t.Fatalf("draft waiver availability must be %v: %d %s %v", want, w.Code, w.Body, err)
+		}
+	}
+	callDecision(key, needsCheck.Version, issueID, "departed_unreachable", http.StatusConflict)
+	waiverAvailable(false)
+	if _, err := service.db.Exec(ctx, `UPDATE organization_assignments SET valid_to=now()
+	 WHERE person_id=$1 AND valid_to IS NULL`, a); err != nil {
+		t.Fatal(err)
+	}
+	waiverAvailable(true)
 	// The stored issue must not authorize a write when its deduction no longer exists.
 	review(a, "departed_unreachable")
 	callDecision(key, needsCheck.Version, issueID, "recover", http.StatusConflict)
