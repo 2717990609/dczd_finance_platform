@@ -30,6 +30,50 @@ func TestVIPMembershipOrderScopeIsIndependentByArrangement(t *testing.T) {
 	}
 }
 
+func TestVIPCategoryConflictOnlyBlocksArrangementsThatNeedCategory(t *testing.T) {
+	const company = "10000000-0000-4000-8000-000000000901"
+	const category = "10000000-0000-4000-8000-000000000902"
+	const otherCategory = "10000000-0000-4000-8000-000000000903"
+	definition := json.RawMessage(`{"amount_basis":"ACTUAL_RECEIVED","stacking_policy":"SUM","sales_attribution":"ORDER_SELLER",
+	 "rounding_policy":{"mode":"HALF_UP","scale":2},"benefit_actions":[
+	 {"item_key":"sales","label":"销售提成","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY","rate_table":[
+	   {"sales_organization_party_id":"` + company + `","sales_relationship":"ANY","rate_bps":1200},
+	   {"sales_organization_party_id":"ANY","sales_relationship":"ANY","sales_category_id":"` + category + `","rate_bps":1000}]},
+	 {"item_key":"company","label":"指定公司比例","type":"RATE_TABLE","beneficiary_mode":"PARTY","designated_party_id":"lead","rate_table":[
+	   {"sales_organization_party_id":"` + company + `","sales_relationship":"ANY","rate_bps":200},
+	   {"sales_organization_party_id":"ANY","sales_relationship":"ANY","sales_category_id":"` + category + `","rate_bps":500}]},
+	 {"item_key":"category","label":"按销售类别取比例","type":"RATE_TABLE","beneficiary_mode":"PARTY","designated_party_id":"lead","rate_table":[
+	   {"sales_organization_party_id":"ANY","sales_relationship":"ANY","sales_category_id":"` + category + `","rate_bps":300},
+	   {"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":100}]},
+	 {"item_key":"scope","label":"按销售类别限定范围","type":"RATE","beneficiary_mode":"PARTY","designated_party_id":"lead",
+	   "sales_scope_category_ids":["` + category + `"],"rate_bps":300}]}`)
+	data := vipRuntimeData{Project: "AI", BenefitReady: true,
+		Claims:              map[int64][]vipClaim{1: {{Role: "PID_USER", User: "new-seller", Company: "source-company", Relationship: "DIRECT"}}},
+		Definitions:         map[string]json.RawMessage{"rule": definition},
+		DirectoryUsers:      []vipLink{{Key: "new-seller", Value: "seller"}},
+		DirectoryCompanies:  []vipLink{{Key: "source-company", Value: company, Unit: company}},
+		DirectoryCategories: []vipLink{{Key: company, Value: category}, {Key: company, Value: otherCategory}},
+		vipSalesData: vipSalesData{People: map[string]string{"seller": "销售", "lead": "负责人"},
+			Roles: []vipRole{{Person: "seller", Role: "SALES", Scope: "PROJECT", Key: "AI"}}},
+	}
+	amount := int64(10000)
+	rows := []catalogPaymentMatch{{Status: "MATCHED", SourceVersionID: 1, OrderID: "1", RuleID: "rule", PaidMinor: &amount,
+		PaidAt: time.Date(2026, 10, 7, 9, 0, 0, 0, shanghai)}}
+	applyVIPQuotes(rows, data)
+	row := rows[0]
+	if row.SalesStatus != "CALCULATED" || len(row.SalesParts) != 1 || row.SalesParts[0].Amount != 1200 {
+		t.Errorf("a company exception supersedes the disputed sales category: %s, %+v", row.SalesStatus, row.SalesParts)
+	}
+	got := make(map[string]vipBenefitPart)
+	for _, item := range row.BenefitParts {
+		got[item.Item] = item
+	}
+	if got["company"].Status != "CALCULATED" || got["company"].Amount != 200 ||
+		got["category"].Status != "SALES_CATEGORY_CONFLICT" || got["scope"].Status != "SALES_CATEGORY_CONFLICT" {
+		t.Fatalf("only category-dependent arrangements should be held: %+v", got)
+	}
+}
+
 func TestVIPNamedLeaderUsesTheirOrganizationAppointmentSeparatelyFromSalesScope(t *testing.T) {
 	appointment := "10000000-0000-4000-8000-000000000701"
 	teamA := "10000000-0000-4000-8000-000000000702"

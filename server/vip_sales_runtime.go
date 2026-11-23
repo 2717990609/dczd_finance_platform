@@ -346,9 +346,8 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 		)
 		req.commissionSalesOrg = &org
 	}
-	category, issue := d.salesCategoryAt(company, companyFromDirectory, sale.PaidAt)
-	req.Category = category
-	return req, issue
+	req.Category, req.categoryIssue = d.salesCategoryAt(company, companyFromDirectory, sale.PaidAt)
+	return req, ""
 }
 
 type vipOrderReferrer struct{ Party, Issue string }

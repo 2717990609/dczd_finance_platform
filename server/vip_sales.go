@@ -68,6 +68,17 @@ func (r vipRateRow) validExternalDefault() bool {
 		!r.SnapshotDefault && r.Relationship == "ANY" && r.Payee == vipPayeeSalesCompany
 }
 
+func (r vipRateRow) specificity() int {
+	score := 0
+	if r.Relationship != "ANY" {
+		score++
+	}
+	if r.Company != "ANY" {
+		score++
+	}
+	return score
+}
+
 type vipInternalTeam struct {
 	Company      string   `json:"sales_company_party_id"`
 	TeamUnit     string   `json:"team_unit_id"`
@@ -263,11 +274,16 @@ func selectVIPRate(rows []vipRateRow, company, relationship string, category *st
 }
 
 func selectVIPRateForCompany(rows []vipRateRow, company, relationship string, category *string, companyType string) (vipRateRow, string) {
-	categorized := slices.ContainsFunc(rows, vipRateRow.hasCategory)
-	return resolveVIPRateRows(rows, company, relationship, category, categorized, companyType)
+	req := vipSalesRequest{Company: company, Relationship: relationship, Category: category}
+	return req.rateRow(rows, companyType)
 }
 
-func resolveVIPRateRows(rows []vipRateRow, company, relationship string, category *string, categorized bool, companyType string) (vipRateRow, string) {
+func (req vipSalesRequest) rateRow(rows []vipRateRow, companyType string) (vipRateRow, string) {
+	categorized := slices.ContainsFunc(rows, vipRateRow.hasCategory)
+	return resolveVIPRateRows(rows, req.Company, req.Relationship, req.Category, categorized, companyType, req.categoryIssue)
+}
+
+func resolveVIPRateRows(rows []vipRateRow, company, relationship string, category *string, categorized bool, companyType, categoryIssue string) (vipRateRow, string) {
 	if company == "" {
 		return vipRateRow{}, "SALES_COMPANY_MISSING"
 	}
@@ -276,9 +292,9 @@ func resolveVIPRateRows(rows []vipRateRow, company, relationship string, categor
 	}
 	const externalDefaultTier = 3
 	var groups [5][]vipRateRow
+	pendingTier, pendingScore := len(groups), -1
 	for _, row := range rows {
-		if row.Company != "ANY" && !row.namesCompany(company) || row.Relationship != "ANY" && relationship != "" && row.Relationship != relationship ||
-			row.hasCategory() && (category == nil || row.Category != *category && !slices.Contains(row.CategoryIDs, *category)) {
+		if row.Company != "ANY" && !row.namesCompany(company) || row.Relationship != "ANY" && relationship != "" && row.Relationship != relationship {
 			continue
 		}
 		tier := 4
@@ -295,13 +311,25 @@ func resolveVIPRateRows(rows []vipRateRow, company, relationship string, categor
 		case row.Company != "ANY":
 			tier = 2
 		}
+		if row.hasCategory() && (category == nil || row.Category != *category && !slices.Contains(row.CategoryIDs, *category)) {
+			if categoryIssue != "" {
+				score := row.specificity()
+				if tier < pendingTier || tier == pendingTier && score > pendingScore {
+					pendingTier, pendingScore = tier, score
+				}
+			}
+			continue
+		}
 		groups[tier] = append(groups[tier], row)
 	}
-	if categorized && category == nil && len(groups[0])+len(groups[2])+len(groups[externalDefaultTier]) == 0 {
+	if categorized && category == nil && categoryIssue == "" && len(groups[0])+len(groups[2])+len(groups[externalDefaultTier]) == 0 {
 		return vipRateRow{}, "SALES_CATEGORY_MISSING"
 	}
 	for tier, choices := range groups {
 		if len(choices) == 0 {
+			if tier == pendingTier {
+				return vipRateRow{}, categoryIssue
+			}
 			continue
 		}
 		if tier == externalDefaultTier && companyType != "EXTERNAL" {
@@ -314,19 +342,16 @@ func resolveVIPRateRows(rows []vipRateRow, company, relationship string, categor
 			if relationship == "" && row.Relationship != "ANY" {
 				return vipRateRow{}, "SALES_RELATIONSHIP_MISSING"
 			}
-			score := 0
-			if row.Relationship != "ANY" {
-				score++
-			}
-			if row.Company != "ANY" {
-				score++
-			}
+			score := row.specificity()
 			switch {
 			case score > best:
 				best, winner, tie = score, row, false
 			case score == best:
 				tie = true
 			}
+		}
+		if tier == pendingTier && pendingScore >= best {
+			return vipRateRow{}, categoryIssue
 		}
 		if tie || winner.Rate < 0 || winner.Rate > 10000 {
 			return vipRateRow{}, "SALES_RATE_CONFLICT"
@@ -365,6 +390,7 @@ type vipSalesRequest struct {
 	Order, Product, Project, Seller, Company, Relationship string
 	CompanyUnit, CompanyName, CompanyType                  string
 	Category                                               *string // Empty when explicitly unclassified, nil without a history record.
+	categoryIssue                                          string
 	Paid, OriginalPaid                                     int64
 	At                                                     time.Time
 	Referrer                                               vipOrderReferrer
@@ -469,7 +495,7 @@ func calculateVIPSalesWithMembership(policy vipSalesPolicy, req vipSalesRequest,
 			return nil, "SALES_COMPANY_REVIEW"
 		}
 	}
-	standard, issue := selectVIPRateForCompany(policy.Sales, req.Company, req.Relationship, req.Category, req.CompanyType)
+	standard, issue := req.rateRow(policy.Sales, req.CompanyType)
 	rate := standard.Rate
 	sellerName := d.People[req.Seller]
 	if issue == "" && rate == 0 {

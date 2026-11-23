@@ -70,6 +70,19 @@ func TestVIPExternalCompanyFallbackIsAnIndependentStandard(t *testing.T) {
 	}
 }
 
+func TestVIPCompanyStandardRemainsCertainWhenCategoryCannotBeatIt(t *testing.T) {
+	req := vipSalesRequest{Company: "company", CompanyType: "EXTERNAL", Relationship: "DIRECT", categoryIssue: "SALES_CATEGORY_CONFLICT"}
+	known := vipRateRow{Company: "company", Relationship: "DIRECT", Rate: 0}
+	conditional := vipRateRow{Company: "company", Relationship: "ANY", Category: "category", Rate: 900}
+	if row, issue := req.rateRow([]vipRateRow{known, conditional}, req.CompanyType); issue != "" || row.Rate != 0 {
+		t.Fatalf("the more specific zero rate should take priority: %+v %s", row, issue)
+	}
+	conditional.Relationship = "DIRECT"
+	if _, issue := req.rateRow([]vipRateRow{known, conditional}, req.CompanyType); issue != req.categoryIssue {
+		t.Fatalf("a conditional rule with the same priority can change the result: %s", issue)
+	}
+}
+
 func TestVIPInternalAllocationUsesHistoricalHoldersAndConservesCents(t *testing.T) {
 	at := time.Date(2026, 8, 1, 0, 0, 0, 0, shanghai)
 	prior := at.AddDate(0, -1, 0)

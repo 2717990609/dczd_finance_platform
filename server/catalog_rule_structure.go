@@ -726,11 +726,11 @@ func validateCatalogNewRateConditions(existing, updated []json.RawMessage) error
 				continue
 			}
 			for _, relationship := range []string{"DIRECT", "INDIRECT", "NONE"} {
-				if _, issue := resolveVIPRateRows(newRows, company, relationship, category, next.categorized, "INTERNAL"); issue != "SALES_RATE_CONFLICT" {
+				if _, issue := resolveVIPRateRows(newRows, company, relationship, category, next.categorized, "INTERNAL", ""); issue != "SALES_RATE_CONFLICT" {
 					continue
 				}
 				oldRows := previous.candidates(company, category)
-				if _, issue := resolveVIPRateRows(oldRows, company, relationship, category, previous.categorized, "INTERNAL"); issue != "SALES_RATE_CONFLICT" {
+				if _, issue := resolveVIPRateRows(oldRows, company, relationship, category, previous.categorized, "INTERNAL", ""); issue != "SALES_RATE_CONFLICT" {
 					return errCatalogRateConditions
 				}
 			}

@@ -149,7 +149,7 @@ func quoteVIPLeader(a vipBenefitAction, req vipSalesRequest, sourceIssue string,
 		line.Status = "SALES_COMPANY_MISSING"
 		return line
 	}
-	standard, issue := selectVIPRateForCompany(policy.leaderSales, req.Company, req.Relationship, req.Category, "INTERNAL")
+	standard, issue := req.rateRow(policy.leaderSales, "INTERNAL")
 	if issue != "" {
 		line.Status = issue
 		return line
@@ -193,7 +193,7 @@ func quoteVIPLeader(a vipBenefitAction, req vipSalesRequest, sourceIssue string,
 			unit = group
 		}
 	}
-	if eligible, categoryIssue := catalogSalesCategoryMatches(a.Leader.CategoryIDs, req.Category, sourceIssue); !eligible {
+	if eligible, categoryIssue := catalogSalesCategoryMatches(a.Leader.CategoryIDs, req.Category, req.categoryIssue); !eligible {
 		if categoryIssue != "" {
 			line.Status = categoryIssue
 		}

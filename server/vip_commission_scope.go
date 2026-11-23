@@ -35,6 +35,9 @@ func vipScopedSale(units, categories []string, req vipSalesRequest, sourceIssue 
 	if eligible, issue := vipCommissionScope(units, req, sourceIssue, data); !eligible {
 		return false, issue
 	}
+	if sourceIssue == "" {
+		sourceIssue = req.categoryIssue
+	}
 	return catalogSalesCategoryMatches(categories, req.Category, sourceIssue)
 }
 

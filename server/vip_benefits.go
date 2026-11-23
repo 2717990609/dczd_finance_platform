@@ -272,7 +272,9 @@ func (a vipBenefitAction) quote(req vipSalesRequest, sourceIssue string) (rate, 
 	} else if sourceIssue != "" {
 		return 0, 0, sourceIssue
 	} else {
-		rate, issue = resolveVIPRate(a.rates, req.Company, req.Relationship, req.Category)
+		var row vipRateRow
+		row, issue = req.rateRow(a.rates, "")
+		rate = row.Rate
 	}
 	return rate, calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: rate}), issue
 }
