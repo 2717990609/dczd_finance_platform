@@ -143,6 +143,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		return draft, err
 	}
 	draft.practicePriorCounts = tierIssues.priorCounts
+	draft.practiceTierAmounts = tierIssues.amounts
 	for _, purchase := range purchases {
 		member, payments, base := purchase.member, purchase.payments, purchase.base
 		if purchase.issue != "" {
@@ -326,6 +327,7 @@ type practiceTierIssues struct {
 	people      map[int64]string
 	enrollments map[int64]string
 	priorCounts map[int64]int64
+	amounts     map[int64]int64
 }
 
 func (i practiceTierIssues) forPurchase(personID, enrollmentID int64) string {
@@ -372,9 +374,13 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		return nil, practiceTierIssues{}, nil
 	}
 	config := part.Tiers
+	cumulative := config.CumulativeMetric != ""
+	if cumulative {
+		history.cumulative = config.CumulativeMetric
+	}
 	issues := practiceTierIssues{people: make(map[int64]string), enrollments: make(map[int64]string)}
 	schedules := config.schedules()
-	needsCount := make(map[int64]bool)
+	needsHistory := make(map[int64]bool)
 	seenPayments := make(map[string]bool)
 	rows := make([]practiceTierPurchase, 0, len(current))
 	purchases := make(map[int64]practicePurchase)
@@ -382,8 +388,10 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		member := purchase.member
 		kind := classMember(member.MembershipType)
 		retrain := kind == "retrain"
-		if !part.matchesPracticeMember(kind) || purchase.noReferrer || purchase.issue == practicePaymentAlreadySettled ||
-			retrain && (purchase.issue != "" || purchase.companyRoutingIssue != "") {
+		pays := part.matchesPracticeMember(kind)
+		measures := config.CumulativeMetric.includes(kind)
+		if !pays && !measures || purchase.noReferrer || purchase.issue == practicePaymentAlreadySettled ||
+			retrain && !measures && (purchase.issue != "" || purchase.companyRoutingIssue != "") {
 			continue
 		}
 		if purchase.companyAward != nil {
@@ -394,7 +402,7 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 			continue
 		}
 		if inScope, scopeIssue := purchase.matchesSalesCompanies(part.salesCompanies()); !inScope {
-			if scopeIssue != "" && !retrain {
+			if scopeIssue != "" && (!retrain || measures) {
 				issues.people[practicePurchaseOwner(purchase, part.SourceRole, identities)] = "PRACTICE_TIER_GROUP_INCOMPLETE"
 			}
 			continue
@@ -417,7 +425,7 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 			continue
 		}
 		if person == 0 || repeatedPracticePayment(purchase.payments, seenPayments) {
-			if retrain {
+			if retrain && !measures {
 				issues.enrollments[member.ID] = "PRACTICE_TIER_GROUP_INCOMPLETE"
 				continue
 			}
@@ -426,13 +434,13 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		}
 		if companyIssue != "" {
 			issues.enrollments[member.ID] = companyIssue
-			if !retrain {
+			if !retrain || measures {
 				issues.people[person] = "PRACTICE_TIER_GROUP_INCOMPLETE"
 			}
 			continue
 		}
-		if len(schedule.Count) != 0 {
-			needsCount[person] = true
+		if len(schedule.Count) != 0 || cumulative && pays && len(schedule.Performance) != 0 {
+			needsHistory[person] = true
 		}
 		row := practiceTierPurchase{EnrollmentID: member.ID, PersonID: person, CompanyID: company, SalesCategoryID: category, Base: purchase.base,
 			SequenceKey: purchase.payments[0].Fact.OrderID, PaidAt: purchase.payments[0].Fact.OccurredAt, Retrain: retrain}
@@ -446,16 +454,23 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		purchases[member.ID] = purchase
 	}
 	if history.replaying {
-		for person := range needsCount {
-			if _, found := history.frozenPrior[person]; !found {
+		frozen := history.frozenPrior
+		if cumulative {
+			frozen = history.frozenAmounts
+		}
+		for person := range needsHistory {
+			if _, found := frozen[person]; !found {
 				return nil, issues, errPracticeRefundReplay
 			}
+		}
+		if cumulative {
+			return choosePracticeCumulativeAmountTiers(*config, rows, frozen), issues, nil
 		}
 		awards, err := choosePracticeSalesTiers(*config, rows, history.frozenPrior)
 		return awards, issues, err
 	}
 	var index practicePriorIndex
-	if len(needsCount) != 0 {
+	if len(needsHistory) != 0 {
 		var err error
 		index, err = indexPracticePrior(history, part.SourceRole, orders, identities, blocked, refunds, runtime.companyOffers != nil)
 		if err != nil {
@@ -475,7 +490,7 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 	for _, row := range rows {
 		person := row.PersonID
 		_, checked := windows[person]
-		if checked || !needsCount[person] || issues.people[person] != "" {
+		if checked || !needsHistory[person] || issues.people[person] != "" {
 			continue
 		}
 		window, ready := defaultWindow, defaultReady
@@ -484,7 +499,10 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 			window, ready = history.window(start)
 		}
 		windows[person] = window
-		count, valid := index.personCount(person, window)
+		historicalTotal, valid, err := index.personTotal(person, window)
+		if err != nil {
+			return nil, issues, err
+		}
 		if !ready {
 			issues.people[person] = "PRACTICE_TIER_HISTORY_MISSING"
 		} else if !valid {
@@ -496,12 +514,12 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 				continue
 			}
 			var err error
-			prior[person], err = addMinor(openingCount, count)
+			prior[person], err = addMinor(openingCount, historicalTotal)
 			if err != nil {
 				return nil, issues, err
 			}
 		} else {
-			prior[person] = count
+			prior[person] = historicalTotal
 		}
 	}
 	for _, row := range rows {
@@ -514,6 +532,14 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		if issues.people[row.PersonID] == "" {
 			ready = append(ready, row)
 		}
+	}
+	if cumulative {
+		totals, err := practiceCumulativeAmountTotals(*config, ready, prior)
+		if err != nil {
+			return nil, issues, err
+		}
+		issues.amounts = totals
+		return choosePracticeCumulativeAmountTiers(*config, ready, totals), issues, nil
 	}
 	awards, err := choosePracticeSalesTiers(*config, ready, prior)
 	issues.priorCounts = prior

@@ -202,6 +202,7 @@ WHERE (original.period_mode='class' AND p.calendar_month IS NOT NULL OR original
  OR original.period_mode='class' AND EXISTS(SELECT 1 FROM calculation_draft_performance refund
   JOIN payments paid ON paid.source_version_id=refund.payment_version_id WHERE refund.period_id=p.id))
 UNION SELECT period_id FROM practice_payment_dependents($1)
+UNION SELECT p.id FROM practice_refund_dependents($1) dep JOIN periods p ON p.id=dep.period_id WHERE p.calendar_month IS NULL
 UNION SELECT p.id FROM closing original JOIN periods p ON p.aggregate_package_id=original.aggregate_package_id
  AND p.starts_on=original.ends_on+1
 UNION SELECT c.period_id FROM closed_adjustments a JOIN calculation_draft_corrections c USING(original_line_id)

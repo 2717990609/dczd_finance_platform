@@ -1,6 +1,11 @@
 package main
 
-import "time"
+import (
+	"context"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
 
 type practiceHistoryPeriod struct {
 	rosterID            int64
@@ -11,7 +16,9 @@ type practiceHistoryPeriod struct {
 	categories          map[string]string
 	settled             bool
 	personalRole        string
+	retrainRole         string
 	scopedTierCompanies []string
+	retrainCompanies    []string
 	ruleKnown           bool
 }
 
@@ -22,7 +29,10 @@ type practiceTierHistory struct {
 	opening        *practiceCountOpening
 	replaying      bool
 	frozenPrior    map[int64]int64
+	frozenAmounts  map[int64]int64
 	liveCategories map[string]string
+	cumulative     practiceAmountMetric
+	bookedRefunds  map[int64]int64
 }
 
 func (h practiceTierHistory) defaultStart(config practiceSalesTiers) practiceCountStart {
@@ -53,7 +63,7 @@ func (h practiceTierHistory) window(start practiceCountStart) (map[int64]bool, b
 }
 
 type practicePriorIndex struct {
-	counts         map[int64]map[int64]int64
+	totals         map[int64]map[int64]int64
 	incomplete     map[int64]bool
 	enrollmentFrom map[string]int64
 	paymentFrom    map[string]int64
@@ -63,7 +73,7 @@ func indexPracticePrior(history practiceTierHistory, role string, orders map[str
 	identities map[identityKey][]identityAssignment, blocked map[int64]string, refunds map[int64][]practiceRefundMatch,
 	strictCompanyScope bool) (practicePriorIndex, error) {
 	index := practicePriorIndex{
-		counts: make(map[int64]map[int64]int64), incomplete: make(map[int64]bool),
+		totals: make(map[int64]map[int64]int64), incomplete: make(map[int64]bool),
 		enrollmentFrom: make(map[string]int64), paymentFrom: make(map[string]int64),
 	}
 	past, err := preparePracticePurchases(history.members, orders, blocked, refunds, false)
@@ -76,7 +86,10 @@ func indexPracticePrior(history practiceTierHistory, role string, orders map[str
 	}
 	for _, purchase := range past {
 		member := purchase.member
-		if classMember(member.MembershipType) != "new" || purchase.issue == practicePaymentAlreadySettled {
+		kind := classMember(member.MembershipType)
+		if purchase.issue == practicePaymentAlreadySettled ||
+			history.cumulative == "" && kind != "new" ||
+			history.cumulative != "" && !history.cumulative.includes(kind) {
 			continue
 		}
 		roster := member.RosterID
@@ -89,14 +102,17 @@ func indexPracticePrior(history practiceTierHistory, role string, orders map[str
 		if purchase.companyAward != nil {
 			continue
 		}
-		inScope, scopeIssue := purchase.matchesSalesCompanies(period.scopedTierCompanies)
+		companies, periodRole := period.scopedTierCompanies, period.personalRole
+		if kind == "retrain" {
+			companies, periodRole = period.retrainCompanies, period.retrainRole
+		}
+		inScope, scopeIssue := purchase.matchesSalesCompanies(companies)
 		if scopeIssue != "" {
 			index.incomplete[roster] = true
 		}
 		if !inScope {
 			continue
 		}
-		periodRole := period.personalRole
 		if periodRole == "" {
 			if strictCompanyScope && (!period.ruleKnown || period.companyOffers != nil) {
 				index.incomplete[roster] = true
@@ -113,10 +129,25 @@ func indexPracticePrior(history practiceTierHistory, role string, orders map[str
 		for _, payment := range purchase.payments {
 			index.addReference(index.paymentFrom, payment.Fact.PaymentID, roster)
 		}
-		if index.counts[roster] == nil {
-			index.counts[roster] = make(map[int64]int64)
+		if index.totals[roster] == nil {
+			index.totals[roster] = make(map[int64]int64)
 		}
-		index.counts[roster][person]++
+		value := int64(1)
+		if history.cumulative != "" {
+			value = purchase.base
+			for _, payment := range purchase.payments {
+				refund := history.bookedRefunds[payment.ID]
+				if refund > purchase.netAmount(payment) {
+					index.incomplete[roster] = true
+					break
+				}
+				value -= refund
+			}
+		}
+		index.totals[roster][person], err = addMinor(index.totals[roster][person], value)
+		if err != nil {
+			return index, err
+		}
 	}
 	return index, nil
 }
@@ -129,15 +160,48 @@ func (index practicePriorIndex) addReference(refs map[string]int64, key string, 
 	refs[key] = roster
 }
 
-func (index practicePriorIndex) personCount(person int64, window map[int64]bool) (int64, bool) {
-	var count int64
+func (index practicePriorIndex) personTotal(person int64, window map[int64]bool) (int64, bool, error) {
+	var total int64
 	for roster := range window {
 		if index.incomplete[roster] {
-			return 0, false
+			return 0, false, nil
 		}
-		count += index.counts[roster][person]
+		var err error
+		total, err = addMinor(total, index.totals[roster][person])
+		if err != nil {
+			return 0, false, err
+		}
 	}
-	return count, true
+	return total, true, nil
+}
+
+// The settlement's refund-period performance row supplies the principal and
+// actual booking month. Match by the payment's stable source key so an
+// attribution-only revision can use the same booked refund.
+func readPracticeCumulativeRefunds(ctx context.Context, tx pgx.Tx, periodID int64, paymentIDs []int64) (map[int64]int64, error) {
+	if len(paymentIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT input.id,sum((refund.fact->>'amountMinor')::bigint)::bigint
+	 FROM periods p JOIN source_order_versions input ON input.id=ANY($2::bigint[])
+	 JOIN source_order_versions paid ON (paid.source,paid.order_id,paid.line_id,paid.record_key,paid.kind)=
+	  (input.source,input.order_id,input.line_id,input.record_key,input.kind)
+	 JOIN calculation_draft_performance booked ON booked.payment_version_id=paid.id
+	 JOIN settlements closed ON closed.period_id=booked.period_id
+	 JOIN periods booking ON booking.id=closed.period_id AND booking.product_id=p.product_id
+	  AND booking.calendar_month IS NOT NULL AND booking.calendar_month<=`+periodReportMonthSQL+`
+	 JOIN source_order_versions refund ON refund.id=booked.source_version_id AND refund.kind='REFUND_SUCCEEDED'
+	 WHERE p.id=$1 GROUP BY input.id`, periodID, paymentIDs)
+	if err != nil {
+		return nil, err
+	}
+	totals := make(map[int64]int64)
+	var payment, amount int64
+	_, err = pgx.ForEachRow(rows, []any{&payment, &amount}, func() error {
+		totals[payment] = amount
+		return nil
+	})
+	return totals, err
 }
 
 func (index practicePriorIndex) repeats(purchase practicePurchase, window map[int64]bool) bool {

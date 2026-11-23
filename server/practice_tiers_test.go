@@ -11,6 +11,144 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func TestPracticeCumulativeAmountUsesSelectedEnrollmentTypes(t *testing.T) {
+	for _, tc := range []struct {
+		metric string
+		limit  int64
+	}{
+		{"cumulative_new", 1000},
+		{"cumulative_retrain", 1200},
+		{"cumulative_combined", 1800},
+	} {
+		t.Run(tc.metric, func(t *testing.T) {
+			var tiers practiceSalesTiers
+			raw := fmt.Sprintf(`{"cumulativeMetric":%q,"countFromOrdinal":1,
+			  "performance":[{"from":0,"through":%d,"mode":"rate","value":100},
+			   {"from":%d,"mode":"rate","value":200}]}`, tc.metric, tc.limit-1, tc.limit)
+			if err := json.Unmarshal([]byte(raw), &tiers); err != nil {
+				t.Fatal(err)
+			}
+			part := component{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER", Tiers: &tiers}
+			if err := validateComponents([]component{part}); err != nil {
+				t.Fatal(err)
+			}
+			rows := []practiceTierPurchase{
+				{EnrollmentID: 1, PersonID: 9, Base: 600},
+				{EnrollmentID: 2, PersonID: 9, Base: 800, Retrain: true},
+			}
+			totals, err := practiceCumulativeAmountTotals(tiers, rows, map[int64]int64{9: 400})
+			if err != nil {
+				t.Fatal(err)
+			}
+			awards := choosePracticeCumulativeAmountTiers(tiers, rows, totals)
+			if awards[1].Value != 200 || len(awards) != 1 {
+				t.Fatalf("selected cumulative amount should qualify only the new-registration payout: %+v %v", awards, err)
+			}
+			totals, err = practiceCumulativeAmountTotals(tiers, rows, map[int64]int64{9: 399})
+			if err != nil {
+				t.Fatal(err)
+			}
+			awards = choosePracticeCumulativeAmountTiers(tiers, rows, totals)
+			if awards[1].Value != 100 {
+				t.Fatalf("one minor unit less from a booked refund should lower the tier: %+v", awards)
+			}
+		})
+	}
+}
+
+func TestPracticeCumulativeAmountUsesRefundBookingMonth(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := s.db.Exec(ctx, query, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_CUMULATIVE", Name: "累计金额", PeriodMode: "class"}))
+	early := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Ordinal: 2, Name: "退款入账前", StartsOn: "2026-08-08", EndsOn: "2026-08-09"}))
+	late := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Ordinal: 3, Name: "实际退款账期", StartsOn: "2026-11-08", EndsOn: "2026-11-09"}))
+	accounting := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "十一月退款", SettlementMonth: "2026-11"}))
+	var paid, latest, refund int64
+	writeSource := func(dest *int64, kind, key, version, when string, amount int64) {
+		t.Helper()
+		if err := s.db.QueryRow(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
+		 VALUES('DCZD','31','',$1,$2,$3,$4::timestamptz,jsonb_build_object('amountMinor',$5::bigint),$4::timestamptz) RETURNING id`,
+			key, version, kind, when, amount).Scan(dest); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSource(&paid, "ORDER_PAID", "paid:31", "1", "2026-07-01", 50000)
+	writeSource(&latest, "ORDER_PAID", "paid:31", "2", "2026-07-01", 50000)
+	writeSource(&refund, "REFUND_SUCCEEDED", "refund:31", "1", "2026-08-05", 10000)
+	exec(`INSERT INTO calculation_drafts(period_id,version,input_digest,total_minor,line_count,issue_count,calculated_at)
+	 VALUES($1,1,decode('','hex'),0,0,0,now())`, accounting)
+	exec(`INSERT INTO calculation_draft_performance(period_id,source_version_id,payment_version_id)
+	 VALUES($1,$2,$3)`, accounting, refund, paid)
+	assertBooked := func(period, amount int64) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			totals, err := readPracticeCumulativeRefunds(ctx, tx, period, []int64{latest})
+			if err == nil && totals[latest] != amount {
+				return fmt.Errorf("want %d of original payment's posted refund, got %v", amount, totals)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertBooked(late, 0)
+	exec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,1,'fixture')`, accounting)
+	assertBooked(early, 0)
+	assertBooked(late, 10000)
+}
+
+func TestPracticeBookedRefundChangesOnlyOpenCumulativeTier(t *testing.T) {
+	at := time.Date(2026, 11, 5, 4, 0, 0, 0, time.UTC)
+	earlier := at.AddDate(0, -1, 0)
+	amount, limit := int64(10000), int64(19999)
+	pay := func(id int64, order string, when time.Time) paymentInput {
+		return paymentInput{ID: id, Fact: sourceFact{Source: "DCZD", OrderID: order, PaymentID: order, ReferrerID: "seller",
+			AmountMinor: &amount, OccurredAt: when}}
+	}
+	member := func(id, roster int64, order string, when time.Time) practiceEnrollment {
+		return practiceEnrollment{ID: id, RosterID: roster, SourceEnrollmentID: order, MembershipType: 3,
+			CommissionEligible: true, ConfirmedAt: when.Add(time.Hour), PaidOrderIDs: []string{order}}
+	}
+	orders := map[string][]paymentInput{"1": {pay(1, "1", earlier)}, "2": {pay(2, "2", at)}}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{PersonID: 7}}}
+	history := practiceTierHistory{current: practiceHistoryPeriod{rosterID: 22, ordinal: 2, startsAt: &at},
+		periods: []practiceHistoryPeriod{{rosterID: 11, ordinal: 1, startsAt: &earlier}},
+		members: []practiceEnrollment{member(1, 11, "1", earlier)}}
+	roster := []practiceEnrollment{member(2, 22, "2", at)}
+	rule := paymentRule{ID: 1, Components: []component{{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
+		Tiers: &practiceSalesTiers{CumulativeMetric: "cumulative_new", CountFromOrdinal: 1,
+			Performance: []practiceTier{{From: 0, Through: &limit, Mode: "rate", Value: 100}, {From: 20000, Mode: "rate", Value: 200}}}}}}
+	calculate := func(state practiceTierHistory, want int64) paymentDraft {
+		t.Helper()
+		draft, err := calculatePracticeDraft(roster, rule, orders, identities, nil, state, nil, practiceDraftRuntime{})
+		if err != nil || len(draft.Issues) != 0 || draft.Total != want {
+			t.Fatalf("want %d in tier award, got %d with issues %+v, error %v", want, draft.Total, draft.Issues, err)
+		}
+		return draft
+	}
+	before := calculate(history, 200)
+	if before.practiceTierAmounts[7] != 20000 {
+		t.Fatalf("the settlement must retain the selected basis: %v", before.practiceTierAmounts)
+	}
+	history.bookedRefunds = map[int64]int64{1: 2500}
+	calculate(history, 100)
+	history.replaying, history.frozenAmounts = true, before.practiceTierAmounts
+	calculate(history, 200)
+}
+
 func TestPracticeSalesForSelectedCompaniesPaysSpecifiedPerson(t *testing.T) {
 	var parts []component
 	if err := json.Unmarshal([]byte(`[{"type":"sales","mode":"tiered","classMember":"new","sourceRole":"DIRECT_REFERRER",

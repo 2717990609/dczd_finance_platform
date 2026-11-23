@@ -70,6 +70,7 @@ type paymentDraft struct {
 	PracticeStartsAt     time.Time
 	PracticeEnrollments  []int64
 	practicePriorCounts  map[int64]int64
+	practiceTierAmounts  map[int64]int64
 	practiceReplay       *practiceReplayInputs
 	practiceChanges      []practiceCorrectionRevision
 	aggregateGroups      []catalogAggregateGroupInput

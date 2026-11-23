@@ -15,6 +15,7 @@ type practiceReplayInputs struct {
 	Version                 int                                  `json:"version"`
 	IndependentRefunds      bool                                 `json:"independentRefunds,omitempty"`
 	PriorCounts             map[int64]int64                      `json:"priorCounts,omitempty"`
+	TierAmounts             map[int64]int64                      `json:"tierAmounts,omitempty"`
 	Identities              map[string][]identityAssignment      `json:"identities,omitempty"`
 	RegistrationVersions    map[int64]int64                      `json:"registrationVersions,omitempty"`
 	Appointments            map[int][]practiceAppointment        `json:"appointments,omitempty"`
@@ -68,7 +69,8 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) *practiceReplayInputs {
 	inputs := &practiceReplayInputs{
 		Version: practiceReplayNetRateShares, PriorCounts: draft.practicePriorCounts,
-		Identities: make(map[string][]identityAssignment), Appointments: make(map[int][]practiceAppointment),
+		TierAmounts: draft.practiceTierAmounts,
+		Identities:  make(map[string][]identityAssignment), Appointments: make(map[int][]practiceAppointment),
 		PaymentCompanies: make(map[string]practiceReplayCompany), Recommendations: make(map[string]pgtype.UUID),
 		Companies: runtime.companyRecipients, ReferrerCompanies: runtime.recommendations.explicit, PoolUnits: runtime.poolUnits,
 	}
@@ -237,7 +239,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 			return replay, err
 		}
 	}
-	replay.history = practiceTierHistory{replaying: true, frozenPrior: values.PriorCounts}
+	replay.history = practiceTierHistory{replaying: true, frozenPrior: values.PriorCounts, frozenAmounts: values.TierAmounts}
 	replay.runtime = practiceDraftRuntime{
 		appointments: make(map[practiceAppointmentKey][]practiceAppointment), companyOffers: practiceCompanyStandards(replay.rule),
 		salesOrganizations:     values.SalesOrganizations,

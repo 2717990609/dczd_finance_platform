@@ -24,7 +24,7 @@ import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
   practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
-  practiceSalesScopeText, ruleComponentLabel, tierFormHasCount } from './rule-component-form'
+  practiceSalesScopeText, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -317,7 +317,7 @@ function removeRetrainService(split) {
 const practiceCountConfig = computed(() => {
   if (!classRule.value) return
   const config = draft.value.components?.find(part=>part.mode==='tiered')?.tierConfig
-  return config && tierFormHasCount(config) ? config : undefined
+  return config && tierFormUsesHistory(config) ? config : undefined
 })
 const classRefundMonth = computed(() => classRule.value && draft.value.practicePeriodKind === 'refund_month')
 const calendarPeriod = computed(() => classRefundMonth.value || !classRule.value && !!selectedProduct.value?.cycleStartDay)
@@ -358,7 +358,8 @@ function updateAmountMode(row, mode) {
   }
   if (mode === 'tiered' && !row.tierConfig) {
     row.tierConfig = {
-      metric:firstOption('tierMetric'),
+      metric:'count',
+      forceCount:true,
       startMode:firstOption('tierStartMode'),
       count:[{mode:baseModes.value[0]?.value}],
       performance:[{from:0,mode:baseModes.value[0]?.value}],
@@ -1312,6 +1313,8 @@ function ruleComponentBody(row) {
     }} : {}),
   })).sort((a,b) => a.from-b.from)
   const scheduleBody = (schedule, metric) => {
+    if (form.cumulativeMetric) metric = 'performance'
+    else if (form.forceCount) metric = 'count'
     if (metric!=='performance' && !schedule.count.length) throw new Error('请添加至少一档累计人数标准。')
     if (metric!=='count' && !schedule.performance.length) throw new Error('请添加至少一档本期实付标准。')
     return {
@@ -1321,8 +1324,10 @@ function ruleComponentBody(row) {
   }
   component.tiers = form.onlyOverrides ? {} : scheduleBody(form,form.metric)
   if (form.includeRetrain) component.tiers.includeRetrain = true
-  if (tierFormHasCount(form)) {
-    if (form.startMode === 'opening') component.tiers.openingId = must(form.openingId,'请选择冻结期初')
+  if (form.cumulativeMetric) component.tiers.cumulativeMetric = form.cumulativeMetric
+  if (tierFormUsesHistory(form)) {
+    if (form.startMode === 'opening' && !form.cumulativeMetric) component.tiers.openingId = must(form.openingId,'请选择冻结期初')
+    else if (form.startMode === 'opening') throw new Error('请为累计金额选择起始期数或开班时间。')
     else Object.assign(component.tiers,countStartBody(form))
     if (form.personCountStarts.length) component.tiers.personCountStarts = form.personCountStarts.map(item => ({
       personId:must(item.personId,'请选择设置累计起点的人员'),
@@ -1833,7 +1838,8 @@ async function save() {
         </a-form-item>
         </div>
         <PracticeCountStartEditor v-if="practiceCountConfig" :config="practiceCountConfig"
-          :start-modes="options('tierStartMode')" :people="classPeopleOptions" :openings="practiceOpeningOptions"/>
+          :start-modes="options('tierStartMode').filter(mode=>!practiceCountConfig.cumulativeMetric || mode.value!=='opening')"
+          :people="classPeopleOptions" :openings="practiceOpeningOptions"/>
         <div v-if="selectedProduct" class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>

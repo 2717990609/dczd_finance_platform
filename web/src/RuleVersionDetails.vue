@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practicePeriodScopeText, practiceRetrainPoolRemainder,
+import { exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
   practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
@@ -88,6 +88,7 @@ const showsRecommendation = computed(() => activeStandard.value?.rows
 const countStart = rule => rule.openingId ? props.openingLabel(rule.openingId)
   : rule.countFromOrdinal ? '第 '+rule.countFromOrdinal+' 期' : rule.countFromAt && props.formatTime(rule.countFromAt)
 const countConfig = computed(() => props.rule.components.find(part=>part.tiers && countStart(part.tiers))?.tiers)
+const cumulativeMetricLabel = tiers => practiceCumulativeAmountMetrics.find(metric=>metric.value===tiers?.cumulativeMetric)?.label
 const scope = computed(() => [
   props.rule.periodName || (props.rule.fromOrdinal ? '从第 '+props.rule.fromOrdinal+' 期起' : '产品默认'),
   props.rule.activityType ? label('practiceActivityType', String(props.rule.activityType)) : '',
@@ -120,7 +121,7 @@ function formula(part) {
     return '本班适用报名净实收 × '+(part.periodBenefit?.tiers?.length ? '档位比例' : rate(part.value,10000))
   }
   if (part.companySales) return '每份报名匹配一条标准'
-  if (part.tiers) return '按累计人数或本班业绩匹配档位'
+  if (part.tiers) return cumulativeMetricLabel(part.tiers) || '按累计人数或本班业绩匹配档位'
   if (part.retrainSplits?.length) return (part.mode==='rate' ? '复训总提成 '+standard(part) : '复训总提成 '+standard(part)+fixedUnit.value)+'，按公司分账'
   if (part.mode==='rate') return (props.classProduct ? '报名净实收' : '付款实收')+' × '+standard(part)
   return standard(part)+fixedUnit.value
@@ -238,7 +239,7 @@ onMounted(async () => {
                   累计 {{ range(row,true,schedule.count[index+1]) }} · {{ standard(row) }}<template v-if="row.retrain">（新报） · 复训 {{ standard(row.retrain) }}</template>
                 </li>
                 <li v-for="(row,index) in schedule.performance" :key="'paid-'+row.from">
-                  本期新报净实收 {{ range(row,false,schedule.performance[index+1]) }} · {{ standard(row) }}<template v-if="row.retrain">（新报） · 复训 {{ standard(row.retrain) }}</template>
+                  {{ cumulativeMetricLabel(part.tiers) || '本期新报净实收' }} {{ range(row,false,schedule.performance[index+1]) }} · {{ standard(row) }}<template v-if="row.retrain">（新报） · 复训 {{ standard(row.retrain) }}</template>
                 </li>
               </ul>
             </template>

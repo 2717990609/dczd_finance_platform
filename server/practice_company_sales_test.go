@@ -206,7 +206,7 @@ func TestPracticePriorCompanyAndPersonalRolesFollowTheirOwnRuleVersion(t *testin
 		{"DCZD", "recommended"}: {{ID: 2, PersonID: 2}},
 	}
 	prior, err := indexPracticePrior(history, "DIRECT_REFERRER", orders, identities, nil, nil, true)
-	if err != nil || prior.counts[1][1] != 1 || prior.counts[1][2] != 0 || len(prior.counts[2]) != 0 || !prior.incomplete[3] {
+	if err != nil || prior.totals[1][1] != 1 || prior.totals[1][2] != 0 || len(prior.totals[2]) != 0 || !prior.incomplete[3] {
 		t.Fatalf("historical company scope and sales roles changed: %+v %v", prior, err)
 	}
 }

@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import PracticeTierRanges from './PracticeTierRanges.vue'
+import { practiceCumulativeAmountMetrics } from './rule-component-form'
 
 const props = defineProps({
   config: { type: Object, required: true },
@@ -11,7 +12,20 @@ const props = defineProps({
   salesCategories: { type: Array, required: true },
   retrainUnavailable: Boolean,
 })
+const metricOptions = computed(() => [
+  {value:'count',label:'累计新报人数'},
+  ...practiceCumulativeAmountMetrics,
+  ...(props.config.hasLegacyMetrics ? [{value:'legacy',label:'现有档位指标'}] : []),
+])
+const amountLabel = computed(() => practiceCumulativeAmountMetrics.find(metric=>metric.value===props.config.cumulativeMetric)?.label)
+const metricMode = computed(() => props.config.cumulativeMetric || (props.config.forceCount ? 'count' : 'legacy'))
+function setMetric(metric) {
+  props.config.cumulativeMetric = practiceCumulativeAmountMetrics.some(option=>option.value===metric) ? metric : undefined
+  props.config.forceCount = metric==='count'
+}
 function sectionsFor(metric) {
+  if (amountLabel.value) return [{key:'performance',title:amountLabel.value,unit:'元',decimals:2}]
+  if (props.config.forceCount) metric = 'count'
   const result = []
   if (metric !== 'performance') result.push({ key: 'count', title: '累计人数档', unit: '人', decimals: 0 })
   if (metric !== 'count') result.push({ key: 'performance', title: '本期实付档', unit: '元', decimals: 2 })
@@ -54,6 +68,9 @@ function removeSchedule(schedules, index) {
 <template>
   <div class="tier-editor">
     <div class="tier-settings">
+      <a-form-item label="阶梯指标" html-for="tier-amount-metric">
+        <a-select id="tier-amount-metric" :value="metricMode" :options="metricOptions" @change="setMetric"/>
+      </a-form-item>
       <a-checkbox :checked="config.includeRetrain" :disabled="retrainUnavailable && !config.includeRetrain"
         @change="setIncludeRetrain($event.target.checked)">复训共用此阶梯</a-checkbox>
     </div>
@@ -67,7 +84,7 @@ function removeSchedule(schedules, index) {
             <a-select :id="'tier-category-'+index" v-model:value="category.salesCategoryIds" :options="eligibleCategories(category)"
               mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label"/>
           </a-form-item>
-          <a-form-item :html-for="'tier-category-metric-'+index" label="阶梯指标">
+          <a-form-item v-if="metricMode==='legacy'" :html-for="'tier-category-metric-'+index" label="阶梯指标">
             <a-select :id="'tier-category-metric-'+index" v-model:value="category.metric" :options="metrics"/>
           </a-form-item>
         </div>
@@ -86,7 +103,7 @@ function removeSchedule(schedules, index) {
             <a-select :id="'tier-company-'+index" v-model:value="company.companyIds" :options="eligibleCompanies(company)"
               mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label"/>
           </a-form-item>
-          <a-form-item :html-for="'tier-company-metric-'+index" label="公司阶梯指标">
+          <a-form-item v-if="metricMode==='legacy'" :html-for="'tier-company-metric-'+index" label="公司阶梯指标">
             <a-select :id="'tier-company-metric-'+index" v-model:value="company.metric" :options="metrics"/>
           </a-form-item>
         </div>
@@ -105,7 +122,7 @@ function removeSchedule(schedules, index) {
             <a-select :id="'tier-seller-'+index" v-model:value="person.personId"
               :options="eligiblePeople(config.people,person)" show-search option-filter-prop="label"/>
           </a-form-item>
-          <a-form-item :html-for="'tier-seller-metric-'+index" label="个人阶梯指标">
+          <a-form-item v-if="metricMode==='legacy'" :html-for="'tier-seller-metric-'+index" label="个人阶梯指标">
             <a-select :id="'tier-seller-metric-'+index" v-model:value="person.metric" :options="metrics"/>
           </a-form-item>
         </div>
@@ -120,7 +137,7 @@ function removeSchedule(schedules, index) {
     <details class="tier-person-starts" :open="!config.onlyOverrides">
       <summary>通用档位</summary>
       <a-checkbox :checked="!config.onlyOverrides" @change="config.onlyOverrides = !$event.target.checked">未命中特例或类别时使用</a-checkbox>
-      <a-form-item v-if="!config.onlyOverrides" html-for="tier-metric" label="通用阶梯指标">
+      <a-form-item v-if="!config.onlyOverrides && metricMode==='legacy'" html-for="tier-metric" label="通用阶梯指标">
         <a-select id="tier-metric" v-model:value="config.metric" :options="metrics"/>
       </a-form-item>
       <PracticeTierRanges v-if="!config.onlyOverrides" :config="config" :sections="sections" :amounts="amounts" :include-retrain="config.includeRetrain"/>

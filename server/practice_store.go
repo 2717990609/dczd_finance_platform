@@ -203,12 +203,18 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 		period.ruleKnown = len(components) != 0
 		period.companyOffers = practiceCompanyStandards(paymentRule{Components: components})
 		for _, part := range components {
-			if part.Type == "sales" && (part.ClassMember == "" || part.ClassMember == "new") {
+			if part.Type != "sales" {
+				continue
+			}
+			if period.personalRole == "" && part.matchesPracticeMember("new") {
 				period.personalRole = part.SourceRole
 				if part.Tiers != nil {
 					period.scopedTierCompanies = part.salesCompanies()
 				}
-				break
+			}
+			if period.retrainRole == "" && part.matchesPracticeMember("retrain") {
+				period.retrainRole = part.SourceRole
+				period.retrainCompanies = part.salesCompanies()
 			}
 		}
 		return period, err
@@ -234,7 +240,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	}
 	var history practiceTierHistory
 	part := practiceTierComponent(rule)
-	if part != nil && part.Tiers.hasCountTiers() {
+	if part != nil && part.Tiers.usesPriorTiers() {
 		history, err = readPracticeTierHistory(ctx, tx, summary, *part.Tiers)
 		if err != nil {
 			return paymentDraft{}, nil, err
@@ -272,6 +278,16 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	}
 	if len(facts) > maxDraftPayments {
 		return paymentDraft{}, nil, errDraftLimit
+	}
+	if part != nil && part.Tiers.CumulativeMetric != "" && len(history.members) != 0 {
+		paymentIDs := make([]int64, len(facts))
+		for index, payment := range facts {
+			paymentIDs[index] = payment.ID
+		}
+		history.bookedRefunds, err = readPracticeCumulativeRefunds(ctx, tx, summary.PeriodID, paymentIDs)
+		if err != nil {
+			return paymentDraft{}, nil, err
+		}
 	}
 
 	orders := make(map[string][]paymentInput, len(facts))

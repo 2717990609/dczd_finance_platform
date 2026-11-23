@@ -8,6 +8,7 @@ import (
 
 type practiceSalesTiers struct {
 	IncludeRetrain    bool                       `json:"includeRetrain,omitempty"`
+	CumulativeMetric  practiceAmountMetric       `json:"cumulativeMetric,omitempty"`
 	CategorySchedules []practiceCategorySchedule `json:"categorySchedules,omitempty"`
 	CompanySchedules  []practiceCompanySchedule  `json:"companySchedules,omitempty"`
 	PersonSchedules   []practicePersonSchedule   `json:"personSchedules,omitempty"`
@@ -17,6 +18,17 @@ type practiceSalesTiers struct {
 	Count             []practiceTier             `json:"count,omitempty"`
 	Performance       []practiceTier             `json:"performance,omitempty"`
 	PersonCountStarts []practicePersonCountStart `json:"personCountStarts,omitempty"`
+}
+
+type practiceAmountMetric string
+
+func (m practiceAmountMetric) includes(member string) bool {
+	return member == "new" && (m == "cumulative_new" || m == "cumulative_combined") ||
+		member == "retrain" && (m == "cumulative_retrain" || m == "cumulative_combined")
+}
+
+func (t practiceSalesTiers) usesPriorTiers() bool {
+	return t.CumulativeMetric != "" || t.hasCountTiers()
 }
 
 type practiceCountStart struct {
@@ -199,7 +211,12 @@ func validPracticeSalesTiers(part component) bool {
 	switch {
 	case tiers.OpeningID < 0:
 		return false
-	case !tiers.hasCountTiers():
+	case tiers.CumulativeMetric != "":
+		if !tiers.CumulativeMetric.includes("new") && !tiers.CumulativeMetric.includes("retrain") ||
+			tiers.hasCountTiers() || tiers.OpeningID != 0 || !tiers.defaultCountStart().valid() {
+			return false
+		}
+	case !tiers.usesPriorTiers():
 		if tiers.CountFromOrdinal != 0 || tiers.CountFromAt != nil || len(tiers.PersonCountStarts) != 0 || tiers.OpeningID != 0 {
 			return false
 		}
@@ -385,4 +402,45 @@ func choosePracticeSalesTiers(config practiceSalesTiers, purchases []practiceTie
 		}
 	}
 	return awards, nil
+}
+
+func practiceCumulativeAmountTotals(config practiceSalesTiers, purchases []practiceTierPurchase, prior map[int64]int64) (map[int64]int64, error) {
+	schedules := config.schedules()
+	totals := make(map[int64]int64, len(prior))
+	for _, purchase := range purchases {
+		if _, configured := schedules.forSale(purchase.PersonID, purchase.CompanyID, purchase.SalesCategoryID); !configured {
+			continue
+		}
+		person := purchase.PersonID
+		if _, seen := totals[person]; !seen {
+			totals[person] = prior[person]
+		}
+		member := "new"
+		if purchase.Retrain {
+			member = "retrain"
+		}
+		if config.CumulativeMetric.includes(member) {
+			next, err := addMinor(totals[person], purchase.Base)
+			if err != nil {
+				return nil, err
+			}
+			totals[person] = next
+		}
+	}
+	return totals, nil
+}
+
+func choosePracticeCumulativeAmountTiers(config practiceSalesTiers, purchases []practiceTierPurchase, totals map[int64]int64) map[int64]practiceTier {
+	schedules := config.schedules()
+	awards := make(map[int64]practiceTier)
+	for _, purchase := range purchases {
+		if purchase.Retrain && !config.IncludeRetrain {
+			continue
+		}
+		schedule, configured := schedules.forSale(purchase.PersonID, purchase.CompanyID, purchase.SalesCategoryID)
+		if tier, matched := matchingPracticeTier(schedule.Performance, totals[purchase.PersonID]); configured && matched {
+			awards[purchase.EnrollmentID] = tier.payout(purchase.Retrain)
+		}
+	}
+	return awards
 }

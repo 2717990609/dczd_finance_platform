@@ -89,7 +89,7 @@ export const draftIssueLabels = {
   PRACTICE_TIER_OPENING_MISSING: '所选冻结期初中缺少该人员的期初人数',
   PRACTICE_TIER_HISTORY_MISSING: '累计起点或历史期次缺少已确认名单',
   PRACTICE_TIER_HISTORY_INCOMPLETE: '历史新报的付款或人员归属待核',
-  PRACTICE_TIER_GROUP_INCOMPLETE: '本期新报的付款或人员归属待核，暂无法选档',
+  PRACTICE_TIER_GROUP_INCOMPLETE: '参与选档的报名付款或人员归属待核',
   PRACTICE_TIER_NOT_MATCHED: '本笔没有匹配的累计人数档或实付档',
   PRACTICE_TIER_EXCEEDS_PAYMENT: '命中的档位计提超过实付金额',
   PRACTICE_PERIOD_APPOINTMENT_MISSING: '找不到分项指定的组织任职记录',

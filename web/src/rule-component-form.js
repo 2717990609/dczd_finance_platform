@@ -156,8 +156,14 @@ function tierMetric(schedule) {
   return schedule.count?.length ? (schedule.performance?.length ? 'fallback' : 'count') : 'performance'
 }
 
-export function tierFormHasCount(form) {
-  return !form.onlyOverrides && form.metric!=='performance' ||
+export const practiceCumulativeAmountMetrics = [
+  {value:'cumulative_new',label:'累计新报金额'},
+  {value:'cumulative_retrain',label:'累计复训金额'},
+  {value:'cumulative_combined',label:'累计新报＋复训金额'},
+]
+
+export function tierFormUsesHistory(form) {
+  return !!form.cumulativeMetric || form.forceCount || !form.onlyOverrides && form.metric!=='performance' ||
     form.companies.some(row=>row.metric!=='performance') ||
     form.categories.some(row=>row.metric!=='performance') ||
     form.people.some(row=>row.metric!=='performance')
@@ -165,9 +171,14 @@ export function tierFormHasCount(form) {
 
 function tierForm(tiers) {
   const schedules = tiers.companySchedules || []
+  const hasLegacyMetrics = !tiers.cumulativeMetric && [tiers,...schedules,...(tiers.categorySchedules || []),...(tiers.personSchedules || [])]
+    .some(schedule=>schedule.performance?.length)
   return {
     ...practiceCountStartForm(tiers),
     includeRetrain:Boolean(tiers.includeRetrain),
+    cumulativeMetric:tiers.cumulativeMetric,
+    hasLegacyMetrics,
+    forceCount:!tiers.cumulativeMetric && !hasLegacyMetrics,
     metric:tierMetric(tiers),
     onlyOverrides:!tiers.count?.length && !tiers.performance?.length,
     count:tierRows(tiers.count,1), performance:tierRows(tiers.performance,100),

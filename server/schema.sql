@@ -966,6 +966,16 @@ RETURNS TABLE(period_id bigint) LANGUAGE sql STABLE AS $$
  JOIN periods candidate_period ON candidate_period.id=candidate.period_id AND candidate_period.product_id=removed.product_id
  WHERE removed.id=scope_id AND product.period_mode='class' AND removed.calendar_month IS NOT NULL
   AND candidate.period_id<>removed.id AND candidate_period.calendar_month IS NOT NULL
+ UNION
+ SELECT p.id FROM periods removed JOIN products product ON product.id=removed.product_id
+ JOIN periods p ON p.product_id=removed.product_id AND p.calendar_month IS NULL
+ JOIN calculation_drafts draft ON draft.period_id=p.id
+ JOIN rule_versions rule ON rule.id=draft.rule_id
+ WHERE removed.id=scope_id AND product.period_mode='class' AND removed.calendar_month IS NOT NULL
+  AND coalesce(p.report_month,date_trunc('month',p.ends_on::timestamp)::date)>=removed.calendar_month
+  AND NOT EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=p.id)
+  AND jsonb_path_exists(rule.components,'$[*].tiers.cumulativeMetric')
+  AND EXISTS(SELECT 1 FROM calculation_draft_performance refund WHERE refund.period_id=removed.id AND refund.payment_version_id IS NOT NULL)
 $$;
 
 INSERT INTO configuration_options(group_key,option_key,label,display_order) VALUES

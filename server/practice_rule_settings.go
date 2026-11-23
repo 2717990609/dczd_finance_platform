@@ -61,7 +61,7 @@ func readPracticeRuleSettings(ctx context.Context, db *pgxpool.Pool, productID i
 		}
 		for _, part := range parts {
 			switch {
-			case part.Mode == "tiered" && part.Tiers != nil && part.Tiers.hasCountTiers():
+			case part.Mode == "tiered" && part.Tiers != nil && part.Tiers.usesPriorTiers():
 				setting.HasCount, setting.PersonCountStarts = true, part.Tiers.PersonCountStarts
 			case isPracticeRetrainWithSplits(part):
 				setting.HasRetrain = true
@@ -190,7 +190,7 @@ func replacePracticeRuleSetting[T any](rows []T, next *T, matches func(T) bool, 
 func editPracticeRuleSettings(pub *publishRuleInput, input savePracticeRuleSettingsInput, countChange bool) error {
 	if countChange {
 		part := practiceTierComponent(paymentRule{Components: pub.Components})
-		if part == nil || part.Tiers == nil || !part.Tiers.hasCountTiers() {
+		if part == nil || part.Tiers == nil || !part.Tiers.usesPriorTiers() {
 			return invalid
 		}
 		person := input.ExistingPersonID
