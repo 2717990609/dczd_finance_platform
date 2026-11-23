@@ -924,6 +924,66 @@ func TestPracticeFixedClassBenefitDoesNotRedistributeFullRefund(t *testing.T) {
 			t.Fatalf("sales-scoped award should still check the two payments' attribution: %+v %v", draft, err)
 		}
 	})
+	for _, tc := range []struct {
+		name          string
+		refundIssue   bool
+		scope         []string
+		missing       bool
+		tiered        bool
+		wholeClass    bool
+		want          int64
+		wantComponent string
+	}{
+		{name: "both payments outside the company scope", scope: []string{"company-3"}, want: 10001},
+		{name: "refund issue outside the company scope", scope: []string{"company-3"}, refundIssue: true, want: 10001},
+		{name: "one payment enters the company scope", scope: []string{"company-1", "company-3"}, wantComponent: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"},
+		{name: "unknown company may enter the scope", scope: []string{"company-3"}, missing: true, wantComponent: "PRACTICE_TIER_COMPANY_MISSING"},
+		{name: "refund issue inside the company scope", scope: []string{"company-1", "company-3"}, refundIssue: true, wantComponent: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"},
+		{name: "scope tier ignores refunds outside its base", scope: []string{"company-3"}, tiered: true, refundIssue: true, want: 3000},
+		{name: "whole-class tier waits for refunds anywhere in its base", scope: []string{"company-3"}, tiered: true, wholeClass: true, refundIssue: true, wantComponent: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			benefit := *part.PeriodBenefit
+			benefit.SalesCompanies = tc.scope
+			if tc.tiered {
+				benefit.FixedMinor, benefit.FixedPerClass = nil, false
+				benefit.Tiers = []practicePeriodRate{{Value: 100000}}
+				benefit.TierOnWholeClass = tc.wholeClass
+			}
+			scoped := part
+			scoped.PeriodBenefit = &benefit
+			payments := make(map[string][]paymentInput, len(orders))
+			for key, order := range orders {
+				payments[key] = slices.Clone(order)
+			}
+			if tc.missing {
+				payments["2"][0].Fact.SalesCompanyID = ""
+			}
+			var refunds map[int64][]practiceRefundMatch
+			if tc.refundIssue {
+				refunds = map[int64][]practiceRefundMatch{1: {{issue: "REFUND_AMOUNT_EXCEEDS_PAYMENT", event: paymentInput{ID: 4}}}}
+			}
+			draft, err := calculatePracticeDraft(members, paymentRule{ID: 1, Components: []component{scoped}},
+				payments, nil, nil, practiceTierHistory{}, refunds, practiceDraftRuntime{})
+			if err != nil || draft.Total != tc.want {
+				t.Fatalf("scoped total %d, want %d, issues %+v, error %v", draft.Total, tc.want, draft.Issues, err)
+			}
+			if tc.want != 0 && (len(draft.Lines) != 1 || draft.Lines[0].FactID != 3) {
+				t.Fatalf("only the in-scope payment should receive the award: %+v", draft.Lines)
+			}
+			var componentIssue string
+			var hasRefundIssue bool
+			for _, issue := range draft.Issues {
+				if issue.Component == "period:delivery:0" {
+					componentIssue = issue.Code
+				}
+				hasRefundIssue = hasRefundIssue || issue.Code == "REFUND_AMOUNT_EXCEEDS_PAYMENT"
+			}
+			if componentIssue != tc.wantComponent || hasRefundIssue != tc.refundIssue {
+				t.Fatalf("unexpected issues %+v, wanted component issue %q, refund issue %t", draft.Issues, tc.wantComponent, tc.refundIssue)
+			}
+		})
+	}
 }
 
 func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *testing.T) {

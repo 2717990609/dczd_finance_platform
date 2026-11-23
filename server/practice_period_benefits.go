@@ -537,6 +537,24 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 	return matches, ""
 }
 
+func (b practicePeriodBenefit) purchaseOutsideScope(p practicePurchase, role string, assignments []practiceAppointment,
+	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) bool {
+	payments := p.payments
+	if len(p.originalPayments) != 0 {
+		payments = p.originalPayments
+	}
+	if len(payments) == 0 || len(payments) != len(p.member.PaidOrderIDs) {
+		return false
+	}
+	for _, payment := range payments {
+		eligible, issue := b.eligiblePayment(payment, role, assignments, identities, runtime)
+		if eligible || issue != "" {
+			return false
+		}
+	}
+	return true
+}
+
 func collectPracticeBenefitShares(part component, purchases []practicePurchase, assignments []practiceAppointment,
 	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int, runtime practiceDraftRuntime) ([]practiceBenefitShare, int64, []draftIssue, error) {
 	b := part.PeriodBenefit
@@ -562,7 +580,8 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		})
 		requireComplete := requiresCompleteScope || p.replaying
 		if p.issue != "" || repeatedPayment {
-			if requireComplete && (memberMatches || b.TierOnWholeClass) {
+			if requireComplete && (b.TierOnWholeClass || memberMatches &&
+				!b.purchaseOutsideScope(p, part.SourceRole, assignments, identities, runtime)) {
 				issue := draftIssue{Code: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE", FactID: p.issueFactID, EnrollmentID: p.member.ID}
 				return nil, 0, append(issues, issue), nil
 			}
@@ -620,21 +639,6 @@ func scopePracticeBenefitPurchase(part component, p practicePurchase, assignment
 	if b.FixedMinor != nil && len(p.originalPayments) != 0 {
 		payments = p.originalPayments
 	}
-	checkSalesAgreement := len(b.StandardRates) == 0 && b.OrderAppointmentLevel == "" &&
-		b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
-	checkConfiguredRole := b.usesSalesPerson() && !runtime.legacyBenefitAttribution
-	if len(payments) == 2 && checkSalesAgreement {
-		left, right := payments[0].Fact, payments[1].Fact
-		if left.SalesCompanyID != right.SalesCompanyID ||
-			(!checkConfiguredRole && left.ReferrerID != "" && right.ReferrerID != "" && left.ReferrerID != right.ReferrerID) {
-			return blocked("PRACTICE_PERIOD_BENEFIT_INCOMPLETE", 0)
-		}
-		if checkConfiguredRole {
-			if _, issue := practiceBeneficiaries(payments, part.SourceRole, identities); issue != "" {
-				return blocked(issue, 0)
-			}
-		}
-	}
 	share := practiceBenefitShare{purchase: p}
 	for _, payment := range payments {
 		yes, issue := b.eligiblePayment(payment, part.SourceRole, assignments, identities, runtime)
@@ -673,6 +677,21 @@ func scopePracticeBenefitPurchase(part component, p practicePurchase, assignment
 	}
 	if len(share.payments) == 0 {
 		return practiceBenefitShare{}, issues, false
+	}
+	checkSalesAgreement := len(b.StandardRates) == 0 && b.OrderAppointmentLevel == "" &&
+		b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
+	checkConfiguredRole := b.usesSalesPerson() && !runtime.legacyBenefitAttribution
+	if len(payments) == 2 && checkSalesAgreement {
+		left, right := payments[0].Fact, payments[1].Fact
+		if left.SalesCompanyID != right.SalesCompanyID ||
+			(!checkConfiguredRole && left.ReferrerID != "" && right.ReferrerID != "" && left.ReferrerID != right.ReferrerID) {
+			return blocked("PRACTICE_PERIOD_BENEFIT_INCOMPLETE", 0)
+		}
+		if checkConfiguredRole {
+			if _, issue := practiceBeneficiaries(payments, part.SourceRole, identities); issue != "" {
+				return blocked(issue, 0)
+			}
+		}
 	}
 	var recipientIssue string
 	if b.OrderRecipientRole != "" {
