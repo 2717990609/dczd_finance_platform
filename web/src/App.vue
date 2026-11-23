@@ -4,35 +4,35 @@ import {
   BankOutlined, CloudSyncOutlined, DownOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined,
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
-import DraftWorkbench from './DraftWorkbench.vue'
-import MonthlyReport from './MonthlyReport.vue'
 import PeriodTasks from './PeriodTasks.vue'
-import CatalogRuleRates from './CatalogRuleRates.vue'
-import PracticePeriodBenefitEditor from './PracticePeriodBenefitEditor.vue'
-import PracticeRetrainSplitEditor from './PracticeRetrainSplitEditor.vue'
-import PracticeRetrainServiceEditor from './PracticeRetrainServiceEditor.vue'
-import PracticeCompanySalesEditor from './PracticeCompanySalesEditor.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import PracticePersonalScopeFields from './PracticePersonalScopeFields.vue'
 import FinanceLogin from './FinanceLogin.vue'
-import OrganizationDirectory from './OrganizationDirectory.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
-import OrderDetails from './OrderDetails.vue'
-import OrderSyncPanel from './OrderSyncPanel.vue'
-import PracticeTierEditor from './PracticeTierEditor.vue'
-import PracticeCountStartEditor from './PracticeCountStartEditor.vue'
-import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { catalogAppointmentLevels, checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
   practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
   practiceRecipientIsPerson, practiceSalesScopeText, practiceStandardRateSummary, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
 
+const DraftWorkbench = defineAsyncComponent(() => import('./DraftWorkbench.vue'))
+const MonthlyReport = defineAsyncComponent(() => import('./MonthlyReport.vue'))
+const OrganizationDirectory = defineAsyncComponent(() => import('./OrganizationDirectory.vue'))
+const OrderDetails = defineAsyncComponent(() => import('./OrderDetails.vue'))
+const OrderSyncPanel = defineAsyncComponent(() => import('./OrderSyncPanel.vue'))
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
+const CatalogRuleRates = defineAsyncComponent(() => import('./CatalogRuleRates.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
 const CatalogScenarioCreate = defineAsyncComponent(() => import('./CatalogScenarioCreate.vue'))
 const PracticeRegistrationImport = defineAsyncComponent(() => import('./PracticeRegistrationImport.vue'))
 const PracticeRuleSettings = defineAsyncComponent(() => import('./PracticeRuleSettings.vue'))
+const PracticePeriodBenefitEditor = defineAsyncComponent(() => import('./PracticePeriodBenefitEditor.vue'))
+const PracticeRetrainSplitEditor = defineAsyncComponent(() => import('./PracticeRetrainSplitEditor.vue'))
+const PracticeRetrainServiceEditor = defineAsyncComponent(() => import('./PracticeRetrainServiceEditor.vue'))
+const PracticeCompanySalesEditor = defineAsyncComponent(() => import('./PracticeCompanySalesEditor.vue'))
+const PracticeTierEditor = defineAsyncComponent(() => import('./PracticeTierEditor.vue'))
+const PracticeCountStartEditor = defineAsyncComponent(() => import('./PracticeCountStartEditor.vue'))
+const PracticeRosterSelect = defineAsyncComponent(() => import('./PracticeRosterSelect.vue'))
 const DepartmentRetention = defineAsyncComponent(() => import('./DepartmentRetention.vue'))
 const navigation = [
   {key:'tasks', area:'work', title:'待办'},

@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import { practiceCompanyRatePriority, practiceCompanyScopes, practiceRecipientIsPerson, practiceSalesScopeText } from './rule-component-form'
@@ -20,6 +20,20 @@ const standardRowsByScope = computed(() => ({
   companies:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='companies'),
   category:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='category'),
 }))
+const companyPageSize = 8
+const companyPage = ref(1)
+const companyRows = computed(() => [...standardRowsByScope.value.companies,...overrides.value])
+const companyPageCount = computed(() => Math.max(1,Math.ceil(companyRows.value.length/companyPageSize)))
+const visibleCompanyRows = computed(() => {
+  const start = (companyPage.value-1)*companyPageSize
+  return companyRows.value.slice(start,start+companyPageSize)
+})
+const visibleStandards = computed(() => ({
+  category:standardRowsByScope.value.category,
+  companies:visibleCompanyRows.value.filter(row=>row.standard),
+}))
+const visibleOverrides = computed(() => visibleCompanyRows.value.filter(row=>row.override))
+watch(companyPageCount, count=>{ companyPage.value=Math.min(companyPage.value,count) })
 const scopes = computed(() => practiceCompanyScopes(sales.value))
 const scopeText = computed(() => practiceSalesScopeText(props.component,undefined,0))
 const priority = computed(() => practiceCompanyRatePriority(scopes.value))
@@ -40,17 +54,28 @@ const hasRecommendations = computed(() => props.component.classMember==='new' &&
   category.recommendationRate>0 || category.overrides.some(override=>override.recommendationRate>0)))
 const legacyRecommendations = computed(() => props.component.classMember==='new' &&
   (hasRecommendations.value || props.component.companySales.recommendationRecipients?.length))
-const internalOptions = computed(() => props.companies.filter(option=>!categories.value.some(c=>
-  (c.scope==='companies' && c.companies.includes(option.value)) || c.overrides.some(row=>row.companyIds?.includes(option.value)))))
+const companyAssignments = computed(() => {
+  const assignments = new Map()
+  for (const row of categories.value) {
+    const ids = (row.scope==='companies' ? row.companies : []).concat(row.overrides.flatMap(override=>override.companyIds || []))
+    for (const id of ids) {
+      if (!assignments.has(id)) assignments.set(id,new Set())
+      assignments.get(id).add(row)
+    }
+  }
+  return assignments
+})
+const internalCompanies = computed(() => new Set(sales.value.internalCompanies))
+const internalOptions = computed(() => props.companies.filter(option=>!companyAssignments.value.has(option.value)))
 const amounts = computed(() => props.amounts)
 const field = name => 'practice-company-'+props.index+'-'+name
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 
 function availableCompanies(category) {
-  return props.companies.filter(option =>
-    !props.component.companySales.internalCompanies.includes(option.value) &&
-    !categories.value.some(row=>row!==category &&
-      ((row.scope==='companies' && row.companies.includes(option.value)) || row.overrides.some(override=>override.companyIds?.includes(option.value)))))
+  return props.companies.filter(option => {
+    const owners = companyAssignments.value.get(option.value)
+    return !internalCompanies.value.has(option.value) && (!owners || owners.size===1 && owners.has(category))
+  })
 }
 function selectCompanies(category, companies) {
   category.companies = companies
@@ -68,11 +93,16 @@ function salesCategoryOptions(category) {
 async function addStandard(scope) {
   const index = categories.value.length
   categories.value.push({scope,mode:amounts.value[0]?.value,companies:[],salesCategoryIds:[],overrides:[]})
+  if (scope==='companies') {
+    companyPage.value = Math.ceil(standardRowsByScope.value.companies.length/companyPageSize)
+  }
   await nextTick()
   document.getElementById(field((scope==='category' ? 'sales-category-' : 'companies-')+index))?.focus()
 }
 async function addCategoryOverride(category,i) {
   category.overrides.push({companyIds:[],mode:category.mode})
+  const rowIndex = companyRows.value.findIndex(row=>row.override===category.overrides.at(-1))
+  companyPage.value = Math.floor(rowIndex/companyPageSize)+1
   await nextTick()
   document.getElementById(field('override-'+i+'-'+(category.overrides.length-1)))?.focus()
 }
@@ -120,6 +150,11 @@ watch(amounts, choices => {
           <small v-if="group.scope==='category' && scopes.categories.length">{{ scopes.categories.length }} 类</small>
           <small v-else-if="group.scope==='companies' && scopes.companies.length">{{ scopes.companies.length }} 家</small>
           <small v-else>未配置</small>
+          <div v-if="group.scope==='companies' && companyPageCount>1" class="company-standard-pages" role="group" aria-label="指定公司标准分页">
+            <a-button size="small" type="text" :disabled="companyPage===1" @click="companyPage--">上一页</a-button>
+            <small role="status">{{ companyPage }} / {{ companyPageCount }}</small>
+            <a-button size="small" type="text" :disabled="companyPage===companyPageCount" @click="companyPage++">下一页</a-button>
+          </div>
           <a-button :disabled="group.scope==='category' && !salesCategories.length" size="small"
             @click="addStandard(group.scope)">{{ group.action }}</a-button>
         </template>
@@ -136,7 +171,7 @@ watch(amounts, choices => {
           <span>{{ amounts.length>1 ? '计提标准' : '比例（%）' }}</span>
           <span v-if="legacyRecommendations">推荐比例（%）</span>
         </div>
-        <div v-for="({standard:category,index:i}) in standardRowsByScope[group.scope]" :key="i" class="company-category company-standard-fields">
+        <div v-for="({standard:category,index:i}) in visibleStandards[group.scope]" :key="i" class="company-category company-standard-fields">
           <a-form-item v-if="category.scope==='category'" class="company-scope-field" label="销售类别" :html-for="field('sales-category-'+i)" required>
             <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryIds" :options="salesCategoryOptions(category)" size="small"
               mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择销售类别"/>
@@ -162,7 +197,7 @@ watch(amounts, choices => {
             class="company-category-override" type="link" size="small" @click="addCategoryOverride(category,i)">为此类别添加公司特例</a-button>
         </div>
         <template v-if="group.scope==='companies'">
-          <div class="company-category company-standard-fields" v-for="({category,index:i,override,position:j}) in overrides" :key="i+'-'+j">
+          <div class="company-category company-standard-fields" v-for="({category,index:i,override,position:j}) in visibleOverrides" :key="i+'-'+j">
             <a-form-item class="company-scope-field" label="特例公司" :html-for="field('override-'+i+'-'+j)" required>
               <a-select :id="field('override-'+i+'-'+j)" v-model:value="override.companyIds"
                 :options="overrideOptions(category,override)" size="small" mode="multiple" :max-tag-count="3" :filter-option="byName"/>
@@ -209,6 +244,7 @@ watch(amounts, choices => {
 
 <style scoped>
 .practice-company-criterion .company-default-rate {margin:0 0 0 auto;width:125px}
+.company-standard-pages {display:flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums}
 .company-standard-table {container-type:inline-size}
 .company-standard-table.has-method {--company-method-column:minmax(0,1.25fr)}
 .company-standard-table.has-recommendation {--company-recommendation-column:minmax(0,1fr)}
