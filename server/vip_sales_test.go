@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"slices"
 	"strings"
@@ -176,6 +177,43 @@ func TestVIPInternalAllocationUsesHistoricalHoldersAndConservesCents(t *testing.
 	check(legacyService, "RENEWAL", map[string]string{
 		"SALES": vipCommissionOutsideScope, "DCAI_GROUP_LEAD": vipCommissionOutsideScope, "DCAI_TEAM_HEAD": vipCommissionOutsideScope,
 	})
+	revisedTeamRate := int64(350)
+	registeredBody, err := editCatalogLeaderArrangements(context.Background(), nil, base, []catalogLeaderChange{{
+		ItemKey: vipTeamLeaderItem, Label: "团队负责人", Target: "inherit", Scope: vipLeaderScope{Orders: "all"},
+		catalogBenefitCalculation: catalogBenefitCalculation{Rate: &revisedTeamRate},
+	}})
+	if err != nil {
+		t.Fatalf("edit the amount while keeping the registered team payee: %v", err)
+	}
+	registeredPolicy, ok := readVIPBenefits(registeredBody)
+	if !ok || catalogLeaderComponents(registeredPolicy)[1].TargetKind != "registered" {
+		t.Fatal("the saved rule must still use the registered team payee")
+	}
+	if got := quoteVIPBenefits(req, "", registeredPolicy, vipRuntimeData{BenefitReady: true, vipSalesData: data}); len(got) != 1 ||
+		got[0].Party != "head" || got[0].Rate != revisedTeamRate {
+		t.Fatalf("the registered leader's new rate should apply: %+v", got)
+	}
+	registeredPolicy.split.Teams[0].HeadParty = "old"
+	if got := quoteVIPBenefits(req, "", registeredPolicy, vipRuntimeData{BenefitReady: true, vipSalesData: data}); len(got) != 1 ||
+		got[0].Status != "SALES_TEAM_PENDING" || got[0].Party != "" || got[0].Amount != 0 {
+		t.Fatalf("the current holder must match the registered leader before paying: %+v", got)
+	}
+	explicitlyChangedPayee, err := editCatalogLeaderArrangements(context.Background(), nil, registeredBody, []catalogLeaderChange{{
+		ItemKey: vipTeamLeaderItem, Label: "团队负责人", Target: "appointment", Scope: vipLeaderScope{Orders: "all"},
+		catalogBenefitCalculation: catalogBenefitCalculation{Rate: &revisedTeamRate},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	appointmentPolicy, ok := readVIPBenefits(explicitlyChangedPayee)
+	if !ok || catalogLeaderComponents(appointmentPolicy)[1].TargetKind != "appointment" {
+		t.Fatal("choosing the appointment payee should persist that choice")
+	}
+	appointmentPolicy.split.Teams[0].HeadParty = "old"
+	if got := quoteVIPBenefits(req, "", appointmentPolicy, vipRuntimeData{BenefitReady: true, vipSalesData: data}); len(got) != 1 ||
+		got[0].Status != "CALCULATED" || got[0].Party != "head" || got[0].Rate != revisedTeamRate {
+		t.Fatalf("the explicitly selected appointment should use just the incumbent: %+v", got)
+	}
 	removed := rule
 	removed.Split.Teams = slices.Clone(rule.Split.Teams)
 	removed.Split.DisabledShares = []string{vipGroupLeaderItem, vipInternalServiceItem, vipTeamLeaderItem}

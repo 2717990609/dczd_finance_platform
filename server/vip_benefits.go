@@ -157,7 +157,8 @@ func (a vipBenefitAction) validTarget() bool {
 	}
 	if role := vipLeaderRole(a.Item); role != "" || a.Leader != nil {
 		return role != "" && a.Leader != nil && a.Role == role && !poolFields && a.Company == "" &&
-			(a.Mode == vipOrganizationAppointmentMode && a.Designated == "" || a.Mode == "PARTY" && a.Designated != "")
+			(a.Designated == "" && (a.Mode == vipOrganizationAppointmentMode || a.Mode == vipRegisteredTeamLeaderMode && a.Item == vipTeamLeaderItem) ||
+				a.Mode == "PARTY" && a.Designated != "")
 	}
 	switch a.Mode {
 	case "PARTY":

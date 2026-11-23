@@ -4,6 +4,7 @@ import "slices"
 
 const (
 	vipOrganizationAppointmentMode = "ORDER_ORGANIZATION_APPOINTMENT"
+	vipRegisteredTeamLeaderMode    = "RULE_REGISTERED_TEAM_LEADER"
 	vipGroupLeaderItem             = "internal-group-leader"
 	vipTeamLeaderItem              = "internal-team-leader"
 	vipInternalServiceItem         = "internal-service"
@@ -203,7 +204,7 @@ func quoteVIPLeader(a vipBenefitAction, req vipSalesRequest, sourceIssue string,
 		line.Status = "INACTIVE"
 		return line
 	}
-	if conflict || holder == "" || data.People[holder] == "" {
+	if conflict || holder == "" || data.People[holder] == "" || a.Mode == vipRegisteredTeamLeaderMode && holder != team.HeadParty {
 		line.Status = "SALES_TEAM_PENDING"
 		if a.Role == "GROUP_LEAD" {
 			line.Status = "SALES_GROUP_PENDING"

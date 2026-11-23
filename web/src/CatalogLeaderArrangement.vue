@@ -4,15 +4,16 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import { catalogFlatMethods, catalogMembershipTypes, catalogScopeOptions } from './rule-component-form'
 
-const props = defineProps({itemKey:String,teams:Array,api:Function,peopleFilters:Object,disabled:Boolean,inherited:Object,orderTypeText:String,
+const props = defineProps({itemKey:String,teams:Array,api:Function,peopleFilters:Object,disabled:Boolean,inherited:Boolean,orderTypeText:String,
   salesCategories:Array,categoryNames:Object,membershipEditable:Boolean,orderType:String,duties:Array,recipientDuty:String})
 const emit = defineEmits(['update:orderType','update:recipientDuty'])
 const form = defineModel({type:Object,required:true})
 const field = name => props.itemKey+'-'+name
 const isGroup = computed(() => props.itemKey==='internal-group-leader')
 const targets = computed(() => [
-  ...(props.inherited ? [{value:'inherit',label:isGroup.value ? '沿用小组在任负责人' : '规则登记的团队负责人'}] : []),
-  {value:'appointment',label:'各组织付款时的在任负责人'},
+  ...(props.inherited ? [{value:'inherit',label:isGroup.value ? '付款时的小组在任负责人' : '规则登记的团队负责人'}] : []),
+  ...(!props.inherited && !isGroup.value ? [{value:'registered',label:'规则登记的团队负责人'}] : []),
+  ...(!isGroup.value || !props.inherited ? [{value:'appointment',label:isGroup.value ? '付款时的小组在任负责人' : '付款时的团队在任负责人'}] : []),
   {value:'person',label:'指定个人'},
 ])
 const orderScopes = [
@@ -29,17 +30,9 @@ const groupOptions = computed(() => groupsFor(form.value.scope.companies))
 const categoryOptions = computed(() => catalogScopeOptions(props.salesCategories || [],form.value.scope.categoryIds,
   props.categoryNames,'已选类别名称待核'))
 function update(fields) {
-  const changingTerms = 'amount' in fields && (fields.amount==null || Number(fields.amount)!==Number(form.value.amount)) ||
-    'method' in fields && fields.method!==form.value.method ||
-    'scope' in fields && JSON.stringify(fields.scope)!==JSON.stringify(form.value.scope)
-  const target = form.value.target==='inherit' && changingTerms ? 'appointment' : form.value.target
-  form.value = {...form.value,target,...fields}
+  form.value = {...form.value,...fields}
 }
 function selectTarget(target) {
-  if (target==='inherit') {
-    form.value = {...props.inherited,label:form.value.label}
-    return
-  }
   update({target,personId:undefined,personName:undefined})
 }
 function updateScope(fields) {

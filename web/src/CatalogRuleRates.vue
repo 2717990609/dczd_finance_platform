@@ -426,7 +426,7 @@ function setLeader(item, form) {
 function leaderSummary(item) {
   const form = leaderForm(item)
   const payee = form.target==='person' ? form.personName : item.itemKey==='internal-group-leader' ? '各小组的在任负责人' :
-    form.target==='inherit' ? '规则登记的团队负责人' : '各团队的在任负责人'
+    ['inherit','registered'].includes(form.target) ? '规则登记的团队负责人' : '各团队的在任负责人'
   return [payee,splitDutyLabel(item),form.amount==null || form.amount==='' ? '' : form.amount+(form.method==='fixed' ? ' 元/笔' : '%')].filter(Boolean).join(' · ')
 }
 const commissionUnitNames = computed(() => ({...sheet.value?.scopeUnitNames,
@@ -902,9 +902,9 @@ async function publish() {
                 @update:order-type="selectMemberType(leader,$event)"
                 :sales-categories="sheet.structureOptions?.categories" :category-names="sheet.scopeCategoryNames"
                 :duties="splitDutyOptions(leader)" :recipient-duty="splitDutyValue(leader)" @update:recipient-duty="setSplitDuty(leader,$event)"
-                :inherited="leader.targetKind==='inherit' && !leader.disabled ? originalLeader(leader) : undefined"
+                :inherited="leader.targetKind==='inherit' && !leader.disabled"
                 @update:model-value="setLeader(leader,$event)">
-                <div v-if="leader.itemKey==='internal-team-leader' && leaderForm(leader).target==='inherit' && team" class="catalog-rule-fields">
+                <div v-if="leader.itemKey==='internal-team-leader' && ['inherit','registered'].includes(leaderForm(leader).target) && team" class="catalog-rule-fields">
                   <a-form-item label="查看登记人所属团队" html-for="catalog-head-company">
                     <a-select id="catalog-head-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
                   </a-form-item>

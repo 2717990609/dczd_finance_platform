@@ -45,7 +45,9 @@ func catalogLeaderComponents(policy vipBenefitPolicy) []catalogRateComponent {
 		row.Label, row.Rate, row.Fixed, row.LeaderScope = a.Label, a.Rate, a.Fixed, a.Leader
 		row.MembershipNewOnly = a.MembershipNewOnly
 		row.TargetKind = "appointment"
-		if a.Designated != "" {
+		if a.Mode == vipRegisteredTeamLeaderMode {
+			row.TargetKind = "registered"
+		} else if a.Designated != "" {
 			row.TargetKind = "person"
 		}
 	}
@@ -138,36 +140,28 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 		if !textOK(label, 80) || len(change.Rows) > 0 {
 			return nil, invalid
 		}
-		if change.Target == "inherit" {
-			if slices.Contains(disabled, change.ItemKey) {
+		target := change.Target
+		if target == "inherit" {
+			if !policy.Split.hasShare(change.ItemKey) || change.PersonID != 0 {
 				return nil, invalid
 			}
-			var amount int64
-			var orders string
-			switch change.ItemKey {
-			case vipGroupLeaderItem:
-				if policy.Split.independentGroup {
-					return nil, invalid
-				}
-				amount, orders = policy.Split.Group, "members"
-			case vipTeamLeaderItem:
-				if policy.Split.independentTeam {
-					return nil, invalid
-				}
+			amount, orders := policy.Split.Group, "members"
+			target = "appointment"
+			if change.ItemKey == vipTeamLeaderItem {
 				amount, orders = policy.Split.TeamHead, "all"
+				target = "registered"
 			}
-			if change.PersonID != 0 || change.Fixed != nil || change.Rate == nil || *change.Rate != amount ||
-				change.Scope.Orders != orders || len(change.Scope.Companies)+len(change.Scope.Groups)+len(change.Scope.CategoryIDs) != 0 {
-				return nil, invalid
-			}
-			if inheritedLabels == nil {
-				inheritedLabels = policy.Split.LeaderLabels
+			if change.Fixed == nil && change.Rate != nil && *change.Rate == amount && change.Scope.Orders == orders &&
+				len(change.Scope.Companies)+len(change.Scope.Groups)+len(change.Scope.CategoryIDs) == 0 {
 				if inheritedLabels == nil {
-					inheritedLabels = make(map[string]string)
+					inheritedLabels = policy.Split.LeaderLabels
+					if inheritedLabels == nil {
+						inheritedLabels = make(map[string]string)
+					}
 				}
+				inheritedLabels[change.ItemKey] = label
+				continue
 			}
-			inheritedLabels[change.ItemKey] = label
-			continue
 		}
 		action := vipBenefitAction{
 			Item: change.ItemKey, Label: label, Role: vipLeaderRole(change.ItemKey), Leader: &change.Scope,
@@ -186,12 +180,15 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 				movedMembership = true
 			}
 		}
-		switch change.Target {
-		case "appointment":
+		switch target {
+		case "appointment", "registered":
 			if change.PersonID != 0 {
 				return nil, invalid
 			}
 			action.Mode = vipOrganizationAppointmentMode
+			if target == "registered" {
+				action.Mode = vipRegisteredTeamLeaderMode
+			}
 		case "person":
 			action.Mode, action.Designated = "PARTY", people[change.PersonID]
 		}
