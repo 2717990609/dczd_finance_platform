@@ -36,16 +36,17 @@ const poolName = target => {
   return name+' · 分配负责人 '+personName(target.ownerId)
 }
 const companyName = key => label('practiceSalesCompany', key)
+const categoryName = id => directory.value?.categories?.[id] || label('practiceSalesCategory',id)
 const registrationCompanyName = key => props.registrationCompanies?.find(company=>company.value===key)?.label || companyName(key)
 const practiceScopeNames = computed(() => {
   const units = new Map((directory.value?.units || []).map(unit=>[unit.id,unit.scopeName || unit.name]))
   return {unit:id=>units.get(id) || '组织名称待核',person:personName,company:companyName,
-    category:id=>directory.value?.categories?.[id] || label('practiceSalesCategory',id),registrationCompany:registrationCompanyName}
+    category:categoryName,registrationCompany:registrationCompanyName}
 })
 function scheduleLabel(schedule) {
   if (schedule.personId) return '个人特例 · '+personName(schedule.personId)
   const categories = standardCategoryIDs(schedule)
-  if (categories.length) return '销售类别默认 · '+categories.map(id=>label('practiceSalesCategory',id)).join('、')
+  if (categories.length) return '销售类别默认 · '+categories.map(categoryName).join('、')
   const companies = exceptionCompanyIDs(schedule)
   return companies.length ? '公司档位 · '+companies.map(companyName).join('、') : '通用阶梯'
 }
@@ -66,7 +67,7 @@ const companyStandards = computed(() => {
     const categories = standardCategoryIDs(group)
     const overrides = group.overrides || []
     if (categories.length) {
-      defaults.push({row:group, names:categories.map(id=>label('practiceSalesCategory',id))})
+      defaults.push({row:group, names:categories.map(categoryName)})
     } else {
       const overridden = new Set(overrides.flatMap(exceptionCompanyIDs))
       const names = group.companies.filter(id=>!overridden.has(id)).map(companyName)
@@ -150,9 +151,11 @@ function standardSummary(part) {
 const salesScope = (part, limit) => props.classProduct ? practiceSalesScopeText(part,practiceScopeNames.value,limit) : undefined
 const companyMatchIndicators = sales => practiceCompanyStandardIndicators(sales,value=>rate(value,10000),props.formatMoney)
 onMounted(async () => {
+  const hasUnknownCategory = row => standardCategoryIDs(row).some(id=>categoryName(id)===id)
   if (props.embedded || props.recipients || !props.classProduct ||
     !props.rule.components.some(part=>part.periodBenefit || part.saleScope || part.retrainSplits?.length ||
     part.salesPersonId || part.tiers?.personCountStarts?.length || part.tiers?.personSchedules?.length || part.companySales?.recommendationRecipients?.length ||
+    part.tiers?.categorySchedules?.some(hasUnknownCategory) || part.companySales?.categories?.some(hasUnknownCategory) ||
     ['person','company','pool'].includes(part.companySales?.payee?.kind))) return
   try {
     loadedRecipients.value = await props.api('/practice-rule-recipients?ruleId='+props.rule.id)

@@ -104,6 +104,9 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 			}
 		}
 		if part.Tiers != nil {
+			for _, schedule := range part.Tiers.CategorySchedules {
+				categories = append(categories, schedule.SalesCategoryIDs...)
+			}
 			for _, start := range part.Tiers.PersonCountStarts {
 				people = append(people, start.PersonID)
 			}
@@ -112,6 +115,9 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 			}
 		}
 		if part.CompanySales != nil {
+			for _, row := range part.CompanySales.Categories {
+				categories = append(categories, row.categoryIDs()...)
+			}
 			units = append(units, part.CompanySales.RecommendationRecipients...)
 			if payee := part.CompanySales.Payee; payee != nil {
 				people = append(people, payee.PersonID)

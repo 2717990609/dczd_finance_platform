@@ -16,6 +16,34 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+func TestPracticeHistoricalRuleResolvesRetiredCategories(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	const companyCategory = "40000000-0000-4000-8000-000000000021"
+	const tierCategory = "40000000-0000-4000-8000-000000000022"
+	const unrelatedCategory = "40000000-0000-4000-8000-000000000023"
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_sales_categories(id,name,active)
+	 VALUES($1,'历史合作类别',false),($2,'历史阶梯类别',false),($3,'无关类别',false)`, companyCategory, tierCategory, unrelatedCategory); err != nil {
+		t.Fatal(err)
+	}
+	rule, err := json.Marshal(publishRuleInput{Components: []component{
+		{CompanySales: &practiceCompanySales{Categories: []practiceCompanyCategory{{SalesCategoryID: companyCategory}}}},
+		{Tiers: &practiceSalesTiers{CategorySchedules: []practiceCategorySchedule{{SalesCategoryIDs: []string{tierCategory}}}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := s.appliedRuleRecipients(ctx, rule)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct{ Categories map[string]string }
+	if err := json.Unmarshal(data, &result); err != nil || len(result.Categories) != 2 ||
+		result.Categories[companyCategory] != "历史合作类别" || result.Categories[tierCategory] != "历史阶梯类别" {
+		t.Fatalf("wanted only historical categories referenced by the rule: %s %v", data, err)
+	}
+}
+
 func TestPracticeIndependentBenefitCanUseCompanyAndCategoryRates(t *testing.T) {
 	at := time.Date(2026, 10, 8, 8, 0, 0, 0, time.UTC)
 	const category = "40000000-0000-4000-8000-000000000001"

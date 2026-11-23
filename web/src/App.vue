@@ -873,7 +873,7 @@ function changeRoute() {
   if (reviewRootPeriod.value || previousReviewRoot || configurationReturn.value || orderReturn.value) {
     nextTick(() => window.scrollTo(0,0))
   }
-  refresh()
+  refresh(current.value==='rules' && previous!=='rules')
 }
 function clearWorkspace() {
   ++requestVersion
