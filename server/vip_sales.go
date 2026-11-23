@@ -88,6 +88,7 @@ type vipInternalSplit struct {
 	TeamHead                          int64             `json:"team_head_rate_bps"`
 	Teams                             []vipInternalTeam `json:"teams"`
 	LeaderLabels                      map[string]string `json:"leader_labels,omitempty"`
+	RecipientDuties                   map[string]string `json:"recipient_duties,omitempty"`
 	DisabledShares                    []string          `json:"disabled_shares,omitempty"`
 	MembershipScopes                  map[string]bool   `json:"vip_membership_scopes,omitempty"`
 	independentGroup, independentTeam bool

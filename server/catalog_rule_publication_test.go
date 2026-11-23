@@ -69,6 +69,54 @@ func TestChangingSalesRatesPreservesInternalTeamSplit(t *testing.T) {
 	}
 }
 
+func TestCatalogSplitRecipientDutiesRoundTripWithoutChangingCalculation(t *testing.T) {
+	definition := json.RawMessage(strings.NewReplacer(
+		`"sales_item_key":"sales"`, `"sales_item_key":"sales","service_rate_bps":150,"teams":[{"sales_company_party_id":"internal"}]`,
+		`"item_key":"sales","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY"`,
+		`"item_key":"sales","label":"销售","role":"SALES","type":"RATE_TABLE","beneficiary_mode":"PARTY",
+		  "rate_table":[{"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":1000}]`,
+	).Replace(testVIPBenefits))
+	options := []catalogStructureOption{{Value: "TEAM_DUTY"}, {Value: "SERVICE_DUTY"}}
+	edits := map[string]string{
+		vipGroupLeaderItem: "TEAM_DUTY", vipTeamLeaderItem: "TEAM_DUTY", vipInternalServiceItem: "SERVICE_DUTY",
+	}
+	saved, changed, err := editCatalogSplitRecipientDuties(definition, edits, options)
+	if err != nil || !changed {
+		t.Fatalf("save duties changed=%t err=%v", changed, err)
+	}
+	policy, ok := readVIPBenefits(saved)
+	arrangements := catalogLeaderComponents(policy)
+	if !ok || len(arrangements) != 2 || arrangements[0].RecipientDuty != "TEAM_DUTY" ||
+		arrangements[1].RecipientDuty != "TEAM_DUTY" || arrangements[1].TargetKind != "inherit" {
+		t.Fatalf("unexpected leader arrangements: %+v", arrangements)
+	}
+	components, err := catalogRateComponents(saved, nil, nil, nil, nil)
+	if err != nil || len(components) == 0 || components[0].ItemKey != "sales" || components[0].ServiceRecipientDuty != "SERVICE_DUTY" {
+		t.Fatalf("service duty missing from the published rates: %v", err)
+	}
+	if _, changed, err := editCatalogSplitRecipientDuties(saved, edits, options); err != nil || changed {
+		t.Fatalf("same duties changed=%t err=%v", changed, err)
+	}
+	for _, invalidEdit := range []map[string]string{
+		{vipGroupLeaderItem: "UNREGISTERED_DUTY"},
+		{"sales": "TEAM_DUTY"},
+	} {
+		if _, _, err := editCatalogSplitRecipientDuties(saved, invalidEdit, options); !errors.Is(err, invalid) {
+			t.Fatalf("invalid edit accepted: %v", err)
+		}
+	}
+	cleared, changed, err := editCatalogSplitRecipientDuties(saved, map[string]string{
+		vipGroupLeaderItem: "", vipTeamLeaderItem: "", vipInternalServiceItem: "",
+	}, options)
+	if err != nil || !changed {
+		t.Fatalf("clear duties changed=%t err=%v", changed, err)
+	}
+	var original, restored map[string]any
+	if json.Unmarshal(definition, &original) != nil || json.Unmarshal(cleared, &restored) != nil || !reflect.DeepEqual(original, restored) {
+		t.Fatal("adding and clearing recipient duties must leave the original award terms and recipients intact")
+	}
+}
+
 func TestEditCatalogTeamSplitRatesKeepsLinkedRateAndFrozenDefinition(t *testing.T) {
 	definition := json.RawMessage(strings.NewReplacer(
 		`"sales_item_key":"sales"`,

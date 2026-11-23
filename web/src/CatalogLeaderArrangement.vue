@@ -5,8 +5,8 @@ import RuleArrangementFields from './RuleArrangementFields.vue'
 import { catalogFlatMethods, catalogMembershipTypes, catalogScopeOptions } from './rule-component-form'
 
 const props = defineProps({itemKey:String,teams:Array,api:Function,peopleFilters:Object,disabled:Boolean,inherited:Object,orderTypeText:String,
-  salesCategories:Array,categoryNames:Object,membershipEditable:Boolean,orderType:String})
-const emit = defineEmits(['update:orderType'])
+  salesCategories:Array,categoryNames:Object,membershipEditable:Boolean,orderType:String,duties:Array,recipientDuty:String})
+const emit = defineEmits(['update:orderType','update:recipientDuty'])
 const form = defineModel({type:Object,required:true})
 const field = name => props.itemKey+'-'+name
 const isGroup = computed(() => props.itemKey==='internal-group-leader')
@@ -53,6 +53,7 @@ function selectCompanies(companies) {
 
 <template>
   <RuleArrangementFields :name="form.label" :name-id="field('label')" :order-type-text="orderTypeText"
+    :duty-id="field('duty')" :duties="duties" :duty="recipientDuty" @update:duty="emit('update:recipientDuty',$event)"
     :order-type-id="membershipEditable ? field('member-type') : undefined" :order-type="orderType" :order-types="catalogMembershipTypes"
     @update:order-type="emit('update:orderType',$event)"
     :disabled="disabled" @update:name="update({label:$event})">

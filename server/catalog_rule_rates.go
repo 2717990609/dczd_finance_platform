@@ -34,6 +34,7 @@ type catalogRateComponent struct {
 	Disabled                 bool               `json:"disabled,omitempty"`
 	ServiceDisabled          bool               `json:"serviceDisabled,omitempty"`
 	ServiceLabel             string             `json:"serviceLabel,omitempty"`
+	ServiceRecipientDuty     string             `json:"serviceRecipientDuty,omitempty"`
 	ServiceMembershipNewOnly *bool              `json:"serviceMembershipNewOnly,omitempty"`
 	MembershipNewOnly        *bool              `json:"membershipNewOnly,omitempty"`
 }
@@ -128,6 +129,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 			if split := sales.Split; split.Item != "" {
 				item.ServiceDisabled = slices.Contains(split.DisabledShares, vipInternalServiceItem)
 				item.ServiceLabel = split.ServiceLabel
+				item.ServiceRecipientDuty = split.RecipientDuties[vipInternalServiceItem]
 				item.ServiceMembershipNewOnly = split.membershipOverride(vipInternalServiceItem)
 				item.TeamSplit = &catalogSplitRates{
 					Total: split.Total, Sales: split.Assistant, HeadSales: split.HeadSeller,

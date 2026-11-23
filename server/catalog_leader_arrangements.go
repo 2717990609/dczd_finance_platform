@@ -32,6 +32,7 @@ func catalogLeaderComponents(policy vipBenefitPolicy) []catalogRateComponent {
 	for i := range arrangements {
 		row := &arrangements[i]
 		row.Disabled = slices.Contains(policy.split.DisabledShares, row.ItemKey)
+		row.RecipientDuty = policy.split.RecipientDuties[row.ItemKey]
 		index := slices.IndexFunc(policy.actions, func(a vipBenefitAction) bool { return a.Item == row.ItemKey })
 		if index < 0 {
 			row.MembershipNewOnly = policy.split.membershipOverride(row.ItemKey)
@@ -49,6 +50,49 @@ func catalogLeaderComponents(policy vipBenefitPolicy) []catalogRateComponent {
 		}
 	}
 	return arrangements
+}
+
+const catalogSplitRecipientDutiesKey = "recipient_duties"
+
+func editCatalogSplitRecipientDuties(raw json.RawMessage, edits map[string]string, options []catalogStructureOption) (json.RawMessage, bool, error) {
+	policy, ok := readVIPSalesPolicy(raw)
+	if !ok || len(policy.Split.Teams) == 0 {
+		return nil, false, invalid
+	}
+	duties := policy.Split.RecipientDuties
+	if duties == nil {
+		duties = make(map[string]string, len(edits))
+	}
+	changed := false
+	for item, duty := range edits {
+		active := policy.Split.hasShare(item) ||
+			item == vipGroupLeaderItem && policy.Split.independentGroup ||
+			item == vipTeamLeaderItem && policy.Split.independentTeam
+		if !active || duty != "" && catalogStructureOptionFor(options, duty).Value == "" {
+			return nil, false, invalid
+		}
+		changed = changed || duties[item] != duty
+		if duty == "" {
+			delete(duties, item)
+		} else {
+			duties[item] = duty
+		}
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	var root, split map[string]json.RawMessage
+	if json.Unmarshal(raw, &root) != nil || json.Unmarshal(root["internal_sales_direct_split"], &split) != nil || split == nil {
+		return nil, false, invalid
+	}
+	if len(duties) == 0 {
+		delete(split, catalogSplitRecipientDutiesKey)
+	} else {
+		split[catalogSplitRecipientDutiesKey], _ = json.Marshal(duties)
+	}
+	root["internal_sales_direct_split"], _ = json.Marshal(split)
+	body, err := json.Marshal(root)
+	return body, true, err
 }
 
 func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawMessage, changes []catalogLeaderChange) (json.RawMessage, error) {

@@ -18,6 +18,7 @@ const selected = ref()
 const filter = ref('')
 const effectiveFrom = ref('')
 const membershipEdits = ref(new Map())
+const splitDutyEdits = ref(new Map())
 const edits = ref({})
 const labelEdits = ref(new Map())
 const targetEdits = ref(new Map())
@@ -100,7 +101,21 @@ const serviceVisible = computed(() => !splitRemoved.value && splitItem.value?.te
 const serviceReplacement = computed(() => structure.value.items.some(item=>item.replacesItemKey===serviceItemKey))
 const serviceRemoved = computed(() => !serviceVisible.value || removedItems.value.has(serviceItemKey) || serviceReplacement.value)
 const serviceArrangement = computed(() => ({itemKey:serviceItemKey,label:splitItem.value?.serviceLabel || '内部团队服务提成',
-  membershipNewOnly:splitItem.value?.serviceMembershipNewOnly}))
+  membershipNewOnly:splitItem.value?.serviceMembershipNewOnly,recipientDuty:splitItem.value?.serviceRecipientDuty}))
+const splitDutyValue = item => (splitDutyEdits.value.get(item.itemKey) ?? item.recipientDuty) || undefined
+const splitDutyLabel = item => {
+  const duty = splitDutyValue(item)
+  return duty && (props.optionLabel('organizationDuty',duty) || duty)
+}
+function splitDutyOptions(item) {
+  const options = sheet.value?.structureOptions?.duties || []
+  const value = splitDutyValue(item)
+  return value && !options.some(option=>option.value===value) ? [...options,{value,label:splitDutyLabel(item)}] : options
+}
+function setSplitDuty(item, value) {
+  if ((value || '')===(item.recipientDuty || '')) splitDutyEdits.value.delete(item.itemKey)
+  else splitDutyEdits.value.set(item.itemKey,value || '')
+}
 const leaderArrangements = computed(() => splitRemoved.value ? [] : sheet.value?.leaderArrangements || [])
 const availableLeaders = computed(() => leaderArrangements.value.filter(leader=>leader.disabled && !leaderEdits.value.has(leader.itemKey)))
 const visibleLeaders = computed(() => leaderArrangements.value.filter(leader=>!leader.disabled || leaderEdits.value.has(leader.itemKey)))
@@ -108,7 +123,7 @@ const editable = computed(() => sheet.value?.mayPublish && !props.applied && !sa
 const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKind==='seller'))
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
-const hasEdits = computed(() => copy.value || membershipEdits.value.size || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
+const hasEdits = computed(() => copy.value || membershipEdits.value.size || splitDutyEdits.value.size || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
   Object.keys(splitEdits.value).length > 0 || labelEdits.value.size || leaderEdits.value.size || scopeEdits.value.size ||
   structure.value.items.length || structure.value.sales || structure.value.rateRows.length || structure.value.calculations.length ||
   removedItems.value.size || removedRateRows.value.size)
@@ -221,6 +236,7 @@ async function makeServiceIndependent() {
     }
     const item = recipients.get(person.id) ?? {label,target:'person',personId:person.id,personName:person.name,rateBps,
       salesScopeUnitIds:[],membershipNewOnly:sheet.value.membershipSku ? memberValue(serviceArrangement.value)==='new' : undefined,
+      recipientDuty:splitDutyValue(serviceArrangement.value),
       replacesItemKey:serviceItemKey}
     if (!item.salesScopeUnitIds.includes(unitId)) item.salesScopeUnitIds.push(unitId)
     recipients.set(person.id,item)
@@ -411,7 +427,7 @@ function leaderSummary(item) {
   const form = leaderForm(item)
   const payee = form.target==='person' ? form.personName : item.itemKey==='internal-group-leader' ? '各小组的在任负责人' :
     form.target==='inherit' ? '规则登记的团队负责人' : '各团队的在任负责人'
-  return [payee,form.amount==null || form.amount==='' ? '' : form.amount+(form.method==='fixed' ? ' 元/笔' : '%')].filter(Boolean).join(' · ')
+  return [payee,splitDutyLabel(item),form.amount==null || form.amount==='' ? '' : form.amount+(form.method==='fixed' ? ' 元/笔' : '%')].filter(Boolean).join(' · ')
 }
 const commissionUnitNames = computed(() => ({...sheet.value?.scopeUnitNames,
   ...Object.fromEntries((sheet.value?.structureOptions?.salesUnits || []).map(unit=>[unit.value,unit.label]))}))
@@ -471,6 +487,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   leaderEdits.value.clear()
   scopeEdits.value.clear()
   membershipEdits.value.clear()
+  splitDutyEdits.value.clear()
   splitEdits.value = {}
   selectedTeam.value = undefined
   filter.value = ''
@@ -590,6 +607,7 @@ function publicationInput() {
     })).filter(change=>change.headPersonId || change.servicePersonId),
     teamSplitRates,
     leaderChanges,
+    splitRecipientDuties:splitRemoved.value ? undefined : Object.fromEntries([...splitDutyEdits.value].filter(([key])=>!removed.has(key))),
     scopeChanges,
     newItems:structure.value.items.map(({personName,ownerName,replacesItemKey,...item})=>item),
     newSalesRates:structure.value.sales?.rows,
@@ -826,10 +844,12 @@ async function publish() {
               <span v-if="serviceReplacement" class="rule-block-badge">待替换</span>
               <span v-else-if="serviceRemoved" class="rule-block-badge">待删除</span>
               <span v-if="!serviceReplacement" class="rule-block-recipient">提成范围 · {{ formatScope(teamOptions.map(option=>option.label)) }}</span>
-              <small v-if="!serviceReplacement">{{ [sheet.membershipSku && memberLabel(serviceArrangement),splitValue('service')+'%'].filter(Boolean).join(' · ') }}</small>
+              <small v-if="!serviceReplacement">{{ [sheet.membershipSku && memberLabel(serviceArrangement),splitDutyLabel(serviceArrangement),splitValue('service')+'%'].filter(Boolean).join(' · ') }}</small>
             </button>
             <div v-if="selected===serviceItemKey" id="catalog-internal-service" class="rule-block-body">
               <RuleArrangementFields v-if="!serviceRemoved" name-id="catalog-service-label" :name="labelEdits.get(serviceItemKey) ?? serviceArrangement.label"
+                duty-id="catalog-service-duty" :duties="splitDutyOptions(serviceArrangement)" :duty="splitDutyValue(serviceArrangement)"
+                @update:duty="setSplitDuty(serviceArrangement,$event)"
                 :disabled="!editable || structureEditing" calculation-text="比例"
                 :order-type-text="orderTypeText" :order-type-id="sheet.membershipSku ? 'catalog-service-member-type' : undefined"
                 :order-types="catalogMembershipTypes" :order-type="memberValue(serviceArrangement)"
@@ -881,6 +901,7 @@ async function publish() {
                 :membership-editable="sheet.membershipSku" :order-type="memberValue(leader)"
                 @update:order-type="selectMemberType(leader,$event)"
                 :sales-categories="sheet.structureOptions?.categories" :category-names="sheet.scopeCategoryNames"
+                :duties="splitDutyOptions(leader)" :recipient-duty="splitDutyValue(leader)" @update:recipient-duty="setSplitDuty(leader,$event)"
                 :inherited="leader.targetKind==='inherit' && !leader.disabled ? originalLeader(leader) : undefined"
                 @update:model-value="setLeader(leader,$event)">
                 <div v-if="leader.itemKey==='internal-team-leader' && leaderForm(leader).target==='inherit' && team" class="catalog-rule-fields">
