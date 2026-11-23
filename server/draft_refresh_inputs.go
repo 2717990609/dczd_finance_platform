@@ -244,10 +244,14 @@ UNION SELECT c.period_id FROM affected_classes a JOIN calculation_draft_practice
 UNION SELECT i.period_id FROM affected_classes a JOIN calculation_draft_lines l ON l.period_id=a.period_id
  JOIN calculation_draft_issues i ON i.correction_line_id=l.id
 UNION SELECT c.period_id FROM closing later
- JOIN periods earlier ON earlier.product_id=later.product_id AND earlier.ordinal<later.ordinal
+ JOIN calculation_drafts later_draft ON later_draft.period_id=later.id
+ JOIN practice_rosters later_roster ON later_roster.id=later_draft.practice_roster_id
+ JOIN periods earlier ON earlier.product_id=later.product_id
   AND earlier.aggregate_package_id IS NOT DISTINCT FROM later.aggregate_package_id
   AND split_part(earlier.source_period_key,':',3)=split_part(later.source_period_key,':',3)
  JOIN calculation_draft_practice_changes c ON c.class_period_id=earlier.id
+ JOIN calculation_drafts earlier_draft ON earlier_draft.period_id=earlier.id
+ JOIN practice_rosters earlier_roster ON earlier_roster.id=earlier_draft.practice_roster_id AND earlier_roster.starts_at<later_roster.starts_at
  WHERE later.period_mode='class' AND later.source_period_key IS NOT NULL`
 
 const draftRefreshRoster = `WITH base AS (

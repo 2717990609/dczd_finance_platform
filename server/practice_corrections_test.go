@@ -15,26 +15,32 @@ import (
 
 func TestPracticeCorrectionReplaysBothLegsAndTheWholeSalesTier(t *testing.T) {
 	t.Run("shared cumulative tier", func(t *testing.T) {
-		testPracticeCorrectionAcrossClasses(t, false, "", "new")
+		testPracticeCorrectionAcrossClasses(t, false, "", "new", "")
 	})
 	t.Run("personal cumulative tier", func(t *testing.T) {
-		testPracticeCorrectionAcrossClasses(t, true, "", "new")
+		testPracticeCorrectionAcrossClasses(t, true, "", "new", "")
 	})
 	t.Run("cumulative new amount", func(t *testing.T) {
-		testPracticeCorrectionAcrossClasses(t, false, "cumulative_new", "new")
+		testPracticeCorrectionAcrossClasses(t, false, "cumulative_new", "new", "")
 	})
 	t.Run("cumulative retrain amount", func(t *testing.T) {
-		testPracticeCorrectionAcrossClasses(t, true, "cumulative_retrain", "retrain")
+		testPracticeCorrectionAcrossClasses(t, true, "cumulative_retrain", "retrain", "")
 	})
 	t.Run("cumulative combined amount", func(t *testing.T) {
-		testPracticeCorrectionAcrossClasses(t, false, "cumulative_combined", "retrain")
+		testPracticeCorrectionAcrossClasses(t, false, "cumulative_combined", "retrain", "")
 	})
 	t.Run("retrain is outside the new amount metric", func(t *testing.T) {
-		testPracticeCorrectionAcrossClasses(t, false, "cumulative_new", "retrain")
+		testPracticeCorrectionAcrossClasses(t, false, "cumulative_new", "retrain", "")
+	})
+	t.Run("later opening has a lower class number", func(t *testing.T) {
+		testPracticeCorrectionAcrossClasses(t, false, "cumulative_new", "new", "time")
+	})
+	t.Run("personal start excludes the original class", func(t *testing.T) {
+		testPracticeCorrectionAcrossClasses(t, false, "cumulative_new", "new", "reset")
 	})
 }
 
-func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool, metric practiceAmountMetric, member string) {
+func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool, metric practiceAmountMetric, member, openingWindow string) {
 	t.Helper()
 	ctx := context.Background()
 	service := workspace{db: integrationDB(t), sources: map[string]sourceConfig{
@@ -137,8 +143,12 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool, metric
 		t.Fatalf("unexpected frozen class: %+v", frozen)
 	}
 	freeze(frozen)
-	const laterKey = "PRACTICE:1:1:57"
-	later := id(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "七月班", Ordinal: 57,
+	laterOrdinal := 57
+	if openingWindow == "time" {
+		laterOrdinal = 55
+	}
+	laterKey := fmt.Sprintf("PRACTICE:1:1:%d", laterOrdinal)
+	later := id(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "七月班", Ordinal: laterOrdinal,
 		StartsOn: "2026-07-10", EndsOn: "2026-07-10", SourcePeriodKey: laterKey}))
 	laterStart := time.Date(2026, 7, 10, 8, 0, 0, 0, shanghai)
 	laterTiers := &practiceSalesTiers{CountFromOrdinal: 56,
@@ -147,6 +157,12 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool, metric
 		laterTiers.CumulativeMetric = metric
 		laterTiers.Performance = []practiceTier{{Mode: "rate", Value: 1000}, {From: 20000, Mode: "rate", Value: 2000}}
 		laterTiers.Count = nil
+	}
+	if openingWindow != "" {
+		laterTiers.CountFromOrdinal, laterTiers.CountFromAt = 0, &start
+	}
+	if openingWindow == "reset" {
+		laterTiers.PersonCountStarts = []practicePersonCountStart{{PersonID: people["销售甲"], practiceCountStart: practiceCountStart{FromAt: &laterStart}}}
 	}
 	if personalTier {
 		laterTiers.PersonSchedules = []practicePersonSchedule{{
@@ -171,7 +187,7 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool, metric
 	}); err != nil {
 		t.Fatal(err)
 	}
-	wantAdvisory := metric == "" || metric.includes(member)
+	wantAdvisory := (metric == "" || metric.includes(member)) && openingWindow != "reset"
 	laterTotal, advisoryCount := int64(2000), 1
 	if !wantAdvisory {
 		laterTotal, advisoryCount = 1000, 0
@@ -193,11 +209,15 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool, metric
 	if openMetric != "" {
 		openSchedule = practiceTierSchedule{Performance: []practiceTier{{Mode: "rate", Value: 1000}, {From: 35000, Mode: "rate", Value: 2000}}}
 	}
+	openTiers := &practiceSalesTiers{CountFromOrdinal: 56, CumulativeMetric: openMetric, PersonSchedules: []practicePersonSchedule{
+		{PersonID: people["销售甲"], practiceTierSchedule: openSchedule},
+	}}
+	if openingWindow != "" {
+		openTiers.CountFromOrdinal, openTiers.CountFromAt = 0, &start
+	}
 	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &openClass, Label: "开放班次个人累计",
 		Components: []component{{Type: "sales", Mode: "tiered", ClassMember: member, SourceRole: "DIRECT_REFERRER",
-			Tiers: &practiceSalesTiers{CountFromOrdinal: 56, CumulativeMetric: openMetric, PersonSchedules: []practicePersonSchedule{
-				{PersonID: people["销售甲"], practiceTierSchedule: openSchedule},
-			}}}}}); err != nil {
+			Tiers: openTiers}}}); err != nil {
 		t.Fatal(err)
 	}
 	store(paidAt, payment("fifth", "1", "销售甲", 10000, paidAt))
@@ -241,6 +261,12 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool, metric
 	if err := service.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM calculation_draft_issues
 	 WHERE period_id=$1 AND code='PRACTICE_CORRECTION_LATER_TIERS' AND advisory)`, august).Scan(&advisory); err != nil || advisory != wantAdvisory {
 		t.Fatalf("expected later class advisory %t, got %t %v", wantAdvisory, advisory, err)
+	}
+	if openingWindow == "time" {
+		if err := service.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM (`+draftRefreshAfterClose+`) refresh(period_id) WHERE period_id=$2)`,
+			later, august).Scan(&queued); err != nil || !queued {
+			t.Fatalf("closing the actually later class must refresh the open correction review: %t %v", queued, err)
+		}
 	}
 	displayRevision := revisedAt.AddDate(0, 2, 0)
 	store(displayRevision, payment("deposit", "renamed", replacement, 4000, displayRevision))

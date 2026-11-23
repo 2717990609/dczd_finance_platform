@@ -410,10 +410,13 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 	}
 	var affected bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS(
-	 SELECT 1 FROM periods original JOIN periods later ON later.product_id=original.product_id
-	  AND later.ordinal>original.ordinal AND split_part(later.source_period_key,':',3)=split_part(original.source_period_key,':',3)
+	 SELECT 1 FROM periods original JOIN calculation_drafts original_draft ON original_draft.period_id=original.id
+	 JOIN practice_rosters original_roster ON original_roster.id=original_draft.practice_roster_id
+	 JOIN periods later ON later.product_id=original.product_id
+	  AND split_part(later.source_period_key,':',3)=split_part(original.source_period_key,':',3)
 	 JOIN settlements s ON s.period_id=later.id
 	 JOIN calculation_drafts d ON d.period_id=later.id
+	 JOIN practice_rosters later_roster ON later_roster.id=d.practice_roster_id AND later_roster.starts_at>original_roster.starts_at
 	 JOIN rule_versions rule ON rule.id=d.rule_id
 	 WHERE original.id=$1
 	 AND EXISTS(SELECT 1 FROM calculation_draft_lines l
@@ -423,8 +426,18 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 	  CROSS JOIN LATERAL (SELECT coalesce(performance.person_id,l.person_id) AS person_id) owner
 	  CROSS JOIN LATERAL jsonb_array_elements(rule.components) component
 	  CROSS JOIN LATERAL (SELECT component->'tiers' AS config) tier
+	  LEFT JOIN LATERAL (
+	   SELECT item FROM jsonb_array_elements(coalesce(tier.config->'personCountStarts','[]')) start(item)
+	   WHERE (item->>'personId')::bigint=owner.person_id AND (
+	    (item->>'countFromOrdinal')::int<=later.ordinal OR (item->>'countFromAt')::timestamptz<=later_roster.starts_at)
+	  ) personal ON true
+	  LEFT JOIN practice_count_openings opening ON personal.item IS NULL AND opening.id=(tier.config->>'openingId')::bigint
+	  CROSS JOIN LATERAL (SELECT coalesce(personal.item,tier.config) AS config) start_window
 	  WHERE l.period_id=later.id AND l.component_type='sales'
 	  AND component->>'type'='sales' AND component->>'mode'='tiered'
+	  AND CASE WHEN start_window.config ? 'countFromAt' THEN original_roster.starts_at>=(start_window.config->>'countFromAt')::timestamptz
+	   WHEN opening.id IS NOT NULL THEN original_roster.starts_at>opening.through_at
+	   ELSE original.ordinal<later.ordinal AND original.ordinal>=(start_window.config->>'countFromOrdinal')::int END
 	  AND (coalesce(component->>'classMember','') IN ('',CASE enrollment.membership_type WHEN 3 THEN 'new' WHEN 2 THEN 'retrain' END)
 	   OR enrollment.membership_type=2 AND tier.config->>'includeRetrain'='true')
 	  AND (owner.person_id=ANY($2::bigint[]) AND (
