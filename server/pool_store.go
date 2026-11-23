@@ -154,8 +154,8 @@ const poolEntriesSQL = `WITH scope AS (
  LEFT JOIN product_rule_versions r ON r.source_id=l.catalog_rule_id
  LEFT JOIN practice_pools pool ON pool.id=l.practice_pool_id
  LEFT JOIN LATERAL (
-  SELECT e.payment_version_id FROM catalog_aggregate_draft_events e
-  WHERE (e.period_id,e.group_key)=(l.period_id,l.aggregate_group_key)
+  SELECT e.payment_version_id FROM catalog_aggregate_event_groups membership JOIN catalog_aggregate_draft_events e USING(period_id,source_version_id)
+  WHERE (membership.period_id,membership.group_key)=(l.period_id,l.aggregate_group_key)
   ORDER BY e.payment_version_id LIMIT 1
  ) first_payment ON l.source_version_id IS NULL
  LEFT JOIN source_order_versions v ON v.id=coalesce(l.source_version_id,first_payment.payment_version_id)

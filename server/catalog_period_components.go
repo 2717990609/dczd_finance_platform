@@ -13,16 +13,20 @@ var errCatalogPeriodRecipient = errors.New("请核对分项的公司、团队池
 var errCatalogPeriodComponents = errors.New("整期规则须保留至少一个分润分项")
 
 type catalogPeriodComponentEdit struct {
-	ItemKey         string              `json:"itemKey,omitempty"`
-	Label           string              `json:"label"`
-	TargetKind      string              `json:"targetKind"`
-	OrganizationKey string              `json:"organizationKey"`
-	PersonID        int64               `json:"personId,omitempty"`
-	PoolName        string              `json:"poolName,omitempty"`
-	OwnerRole       string              `json:"ownerRole,omitempty"`
-	MemberRole      string              `json:"memberRole,omitempty"`
-	Tiers           []catalogPeriodTier `json:"tiers"`
-	FixedMinor      *int64              `json:"fixedMinor,omitempty"`
+	ItemKey         string                  `json:"itemKey,omitempty"`
+	Label           string                  `json:"label"`
+	TargetKind      string                  `json:"targetKind"`
+	OrganizationKey string                  `json:"organizationKey"`
+	PersonID        int64                   `json:"personId,omitempty"`
+	PoolName        string                  `json:"poolName,omitempty"`
+	OwnerRole       string                  `json:"ownerRole,omitempty"`
+	MemberRole      string                  `json:"memberRole,omitempty"`
+	Tiers           []catalogPeriodTier     `json:"tiers"`
+	FixedMinor      *int64                  `json:"fixedMinor,omitempty"`
+	CommissionUnits []string                `json:"salesScopeUnitIds,omitempty"`
+	OwnSales        bool                    `json:"ownSales,omitempty"`
+	RecipientDuty   string                  `json:"recipientDuty,omitempty"`
+	Appointment     *catalogPerformanceDuty `json:"appointment,omitempty"`
 }
 
 func editCatalogPeriodComponents(raw json.RawMessage, edits []catalogPeriodComponentEdit, options catalogStructureOptions) (json.RawMessage, error) {
@@ -48,7 +52,9 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 		positions[item.ItemKey] = i
 	}
 	next := make([]map[string]json.RawMessage, 0, len(edits))
-	changed := len(edits) != len(actions)
+	_, hadSharedScope := root["performance_scope"]
+	delete(root, "performance_scope")
+	changed := len(edits) != len(actions) || hadSharedScope
 	var err error
 	for i, edit := range edits {
 		edit.Label = strings.TrimSpace(edit.Label)
@@ -84,6 +90,42 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 		}
 		if before.Label != edit.Label {
 			fields["label"], _ = json.Marshal(edit.Label)
+			changed = true
+		}
+		if edit.TargetKind != "person" && (edit.OwnSales || edit.RecipientDuty != "") ||
+			edit.OwnSales && len(edit.CommissionUnits) != 0 ||
+			!catalogCommissionUnitsValid(edit.CommissionUnits, options.SalesUnits) ||
+			edit.RecipientDuty != "" && catalogStructureOptionFor(options.Duties, edit.RecipientDuty).Value == "" {
+			return nil, errCatalogCommissionScope
+		}
+		if edit.Appointment != nil && (edit.TargetKind != "person" || edit.PersonID != edit.Appointment.PersonID ||
+			!(&catalogPerformanceScope{Appointment: edit.Appointment}).valid()) {
+			return nil, errCatalogPerformanceScope
+		}
+		if before.Appointment != nil || edit.Appointment != nil {
+			switch {
+			case edit.Appointment == nil:
+				delete(fields, "recipient_appointment")
+				changed = true
+			case before.Appointment == nil || *edit.Appointment != *before.Appointment:
+				fields["recipient_appointment"], _ = json.Marshal(edit.Appointment)
+				changed = true
+			}
+		}
+		if !slices.Equal(before.CommissionUnits, edit.CommissionUnits) || before.OwnSales != edit.OwnSales ||
+			before.RecipientDuty != edit.RecipientDuty {
+			for _, field := range []string{"sales_scope_unit_ids", "own_sales", "recipient_duty"} {
+				delete(fields, field)
+			}
+			if len(edit.CommissionUnits) != 0 {
+				fields["sales_scope_unit_ids"], _ = json.Marshal(edit.CommissionUnits)
+			}
+			if edit.OwnSales {
+				fields["own_sales"] = json.RawMessage("true")
+			}
+			if edit.RecipientDuty != "" {
+				fields["recipient_duty"], _ = json.Marshal(edit.RecipientDuty)
+			}
 			changed = true
 		}
 		if edit.FixedMinor != nil {

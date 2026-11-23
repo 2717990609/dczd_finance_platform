@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -161,17 +162,25 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 	seen := make(map[int64]bool)
 	wanted := make(map[catalogPerformanceDuty]bool)
 	for _, event := range events {
-		if event.frozen.PeriodID != 0 || event.originClosed || seen[event.PaymentID] || event.selection == nil || event.selection.rule == nil {
+		if event.frozenPeriod != 0 || event.originClosed || seen[event.PaymentID] || event.selection == nil || event.selection.rule == nil {
 			continue
 		}
 		seen[event.PaymentID] = true
-		scope := event.selection.rule.Definition.Performance
+		definition := event.selection.rule.Definition
+		scope := definition.Performance
+		if scope.active() && len(scope.UnitIDs) != 0 || slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool {
+			return item.OwnSales || len(item.CommissionUnits) != 0
+		}) {
+			payments = append(payments, event.PaymentID)
+		}
 		if scope.active() {
-			if len(scope.UnitIDs) > 0 {
-				payments = append(payments, event.PaymentID)
-			}
 			if duty := scope.Appointment; duty != nil {
 				wanted[*duty] = true
+			}
+		}
+		for _, item := range definition.Items {
+			if item.Appointment != nil {
+				wanted[*item.Appointment] = true
 			}
 		}
 	}
@@ -264,7 +273,7 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 }
 
 func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPerformanceDecision {
-	if event.frozen.PeriodID != 0 || event.selection == nil || event.selection.rule == nil {
+	if event.frozenPeriod != 0 || event.selection == nil || event.selection.rule == nil {
 		return catalogPerformanceDecision{}
 	}
 	scope := event.selection.rule.Definition.Performance
@@ -274,16 +283,36 @@ func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPe
 	if event.originClosed {
 		return catalogPerformanceDecision{excluded: true}
 	}
-	if duty := scope.Appointment; duty != nil {
-		intervals := d.duties[*duty]
-		if len(intervals) == 0 {
-			return catalogPerformanceDecision{issue: "AGGREGATE_PERFORMANCE_APPOINTMENT_MISSING"}
-		}
-		if !slices.ContainsFunc(intervals, func(v vipInterval) bool { return v.contains(event.PaidAt) }) {
-			return catalogPerformanceDecision{excluded: true}
-		}
+	if decision := d.matchAppointment(scope.Appointment, event.PaidAt); decision.excluded || decision.issue != "" {
+		return decision
 	}
-	if len(scope.UnitIDs) == 0 {
+	return d.matchSales(event, scope.UnitIDs, 0)
+}
+
+func (d catalogPerformanceDirectory) matchItem(event catalogActivityEvent, item catalogPeriodItem) catalogPerformanceDecision {
+	if decision := d.matchAppointment(item.Appointment, event.PaidAt); decision.excluded || decision.issue != "" {
+		return decision
+	}
+	var seller int64
+	if item.OwnSales {
+		seller = item.PersonID
+	}
+	return d.matchSales(event, item.CommissionUnits, seller)
+}
+
+func (d catalogPerformanceDirectory) matchAppointment(duty *catalogPerformanceDuty, at time.Time) catalogPerformanceDecision {
+	if duty == nil {
+		return catalogPerformanceDecision{}
+	}
+	intervals := d.duties[*duty]
+	if len(intervals) == 0 {
+		return catalogPerformanceDecision{issue: "AGGREGATE_PERFORMANCE_APPOINTMENT_MISSING"}
+	}
+	return catalogPerformanceDecision{excluded: !slices.ContainsFunc(intervals, func(interval vipInterval) bool { return interval.contains(at) })}
+}
+
+func (d catalogPerformanceDirectory) matchSales(event catalogActivityEvent, units []string, seller int64) catalogPerformanceDecision {
+	if len(units) == 0 && seller == 0 {
 		return catalogPerformanceDecision{}
 	}
 	if issue := d.claimIssues[event.PaymentID]; issue != "" {
@@ -298,7 +327,7 @@ func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPe
 	}
 	claim := d.claims[event.PaymentID]
 	var company pgtype.UUID
-	if claim.Company != "" {
+	if len(units) != 0 && claim.Company != "" {
 		key, conflict := resolve(d.companies, claim.Company)
 		if conflict {
 			return catalogPerformanceDecision{issue: "SALES_COMPANY_CONFLICT"}
@@ -306,7 +335,10 @@ func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPe
 		if company.Scan(key) != nil || !company.Valid {
 			return catalogPerformanceDecision{issue: "AGGREGATE_SALES_ORGANIZATION_MISSING"}
 		}
-		if !slices.ContainsFunc(scope.UnitIDs, func(id string) bool {
+		if slices.Contains(units, company.String()) {
+			return catalogPerformanceDecision{}
+		}
+		if !slices.ContainsFunc(units, func(id string) bool {
 			var unit pgtype.UUID
 			return unit.Scan(id) == nil && d.organization.ancestors(unit).Company == company
 		}) {
@@ -321,11 +353,17 @@ func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPe
 	if err != nil || person <= 0 {
 		return catalogPerformanceDecision{issue: "SALES_PERSON_MISSING"}
 	}
+	if seller != 0 {
+		return catalogPerformanceDecision{excluded: person != seller}
+	}
 	org := d.organization.resolveAssignments(person, event.PaidAt, company, !company.Valid)
+	if org.Company.Valid && slices.Contains(units, org.Company.String()) {
+		return catalogPerformanceDecision{}
+	}
 	if !org.Department.Valid && org.Group == nil && len(org.scopeAlternatives) == 0 {
 		return catalogPerformanceDecision{issue: "AGGREGATE_SALES_ORGANIZATION_MISSING"}
 	}
-	matches, conflict := matchOrganizationScope(scope.UnitIDs, org.Department.String(), org.groupID().String(), org.scopeAlternatives)
+	matches, conflict := matchOrganizationScope(units, org.Department.String(), org.groupID().String(), org.scopeAlternatives)
 	if conflict {
 		return catalogPerformanceDecision{issue: "SALES_ORGANIZATION_SCOPE_CONFLICT"}
 	}

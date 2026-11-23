@@ -19,17 +19,21 @@ type catalogPeriodTierEdit struct {
 }
 
 type catalogPeriodItem struct {
-	ItemKey         string              `json:"itemKey"`
-	Label           string              `json:"label"`
-	TargetKind      string              `json:"targetKind"`
-	TargetName      string              `json:"targetName,omitempty"`
-	OrganizationKey string              `json:"organizationKey"`
-	PersonID        int64               `json:"personId,omitempty"`
-	PoolName        string              `json:"poolName,omitempty"`
-	OwnerRole       string              `json:"ownerRole,omitempty"`
-	MemberRole      string              `json:"memberRole,omitempty"`
-	Tiers           []catalogPeriodTier `json:"tiers,omitempty"`
-	FixedMinor      *int64              `json:"fixedMinor,omitempty"`
+	ItemKey         string                  `json:"itemKey"`
+	Label           string                  `json:"label"`
+	TargetKind      string                  `json:"targetKind"`
+	TargetName      string                  `json:"targetName,omitempty"`
+	OrganizationKey string                  `json:"organizationKey"`
+	PersonID        int64                   `json:"personId,omitempty"`
+	PoolName        string                  `json:"poolName,omitempty"`
+	OwnerRole       string                  `json:"ownerRole,omitempty"`
+	MemberRole      string                  `json:"memberRole,omitempty"`
+	Tiers           []catalogPeriodTier     `json:"tiers,omitempty"`
+	FixedMinor      *int64                  `json:"fixedMinor,omitempty"`
+	CommissionUnits []string                `json:"salesScopeUnitIds,omitempty"`
+	OwnSales        bool                    `json:"ownSales,omitempty"`
+	RecipientDuty   string                  `json:"recipientDuty,omitempty"`
+	Appointment     *catalogPerformanceDuty `json:"appointment,omitempty"`
 	unit            string
 }
 
@@ -78,10 +82,11 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		} `json:"settlement_policy"`
 		Actions []struct {
 			vipBenefitAction
-			Metric          string              `json:"metric_code"`
-			Unit            string              `json:"metric_unit"`
-			Tiers           []catalogPeriodTier `json:"tier_table"`
-			EligibilityRole string              `json:"eligibility_role"`
+			Metric          string                  `json:"metric_code"`
+			Unit            string                  `json:"metric_unit"`
+			Tiers           []catalogPeriodTier     `json:"tier_table"`
+			EligibilityRole string                  `json:"eligibility_role"`
+			Appointment     *catalogPerformanceDuty `json:"recipient_appointment"`
 		} `json:"benefit_actions"`
 	}
 	var result catalogPeriodDefinition
@@ -118,7 +123,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			}
 		}
 		if action.Item == "" || items[action.Item] || action.Label == "" ||
-			(action.Mode != "PARTY" && action.Mode != "TEAM_POOL") || action.Leader != nil || len(action.CommissionUnits) != 0 ||
+			(action.Mode != "PARTY" && action.Mode != "TEAM_POOL") || action.Leader != nil || !validVIPCommissionUnits(action.CommissionUnits) ||
 			!action.validTarget() {
 			return result, errCatalogRateUnavailable
 		}
@@ -145,12 +150,17 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			}
 			personID = id
 		}
+		if duty := action.Appointment; duty != nil && (personID == 0 || duty.PersonID != personID ||
+			!(&catalogPerformanceScope{Appointment: duty}).valid()) {
+			return result, errCatalogRateUnavailable
+		}
 		if action.Mode == "TEAM_POOL" {
 			memberRole = catalogAggregateMemberRole(action.Role, action.EligibilityRole)
 		}
 		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: action.targetKind(),
 			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
-			MemberRole: memberRole, FixedMinor: action.Fixed, unit: unit})
+			MemberRole: memberRole, FixedMinor: action.Fixed, unit: unit, OwnSales: action.OwnSales,
+			CommissionUnits: action.CommissionUnits, RecipientDuty: action.RecipientDuty, Appointment: action.Appointment})
 	}
 	return result, nil
 }

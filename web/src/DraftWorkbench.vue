@@ -361,7 +361,7 @@ async function loadMore(section, cursorName) {
         <template #bodyCell="{column,record}">
           <template v-if="column.key==='ruleVersion'">v{{ record.ruleVersion }}<small v-if="record.fixedOnly" class="order-version">整期固定</small></template>
           <button v-else-if="column.key==='events'" type="button" class="order-link" @click="aggregateGroup=record.key">查看收退款</button>
-          <span v-else class="numeric">{{ record.fixedOnly ? '—' : formatMoney(Math.abs(record[column.key])) }}</span>
+          <span v-else class="numeric">{{ formatMoney(Math.abs(record[column.key])) }}</span>
         </template>
       </a-table>
     </div>

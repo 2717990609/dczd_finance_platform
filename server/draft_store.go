@@ -412,6 +412,11 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 			return nil, err
 		}
 	}
+	if len(result.aggregateEvents) != 0 {
+		if err := encode.Encode(result.aggregateEvents); err != nil {
+			return nil, err
+		}
+	}
 	if result.aggregatePredecessor != 0 {
 		if err := encode.Encode(result.aggregatePredecessor); err != nil {
 			return nil, err
@@ -470,7 +475,7 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 		return err
 	}
 	if summary.AggregatePackage != nil {
-		if err := storeCatalogAggregateDraft(ctx, tx, summary.PeriodID, result.aggregateGroups); err != nil {
+		if err := storeCatalogAggregateDraft(ctx, tx, summary.PeriodID, result.aggregateGroups, result.aggregateEvents); err != nil {
 			return err
 		}
 	}
@@ -740,10 +745,9 @@ var draftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "NULL")
 var scopedDraftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "$7")
 
 const draftAggregateOrderMatch = `(l.aggregate_group_key IS NOT NULL AND EXISTS(
- SELECT 1 FROM catalog_aggregate_draft_events e
+ SELECT 1 FROM catalog_aggregate_event_groups membership JOIN catalog_aggregate_draft_events e USING(period_id,source_version_id)
  JOIN source_order_versions paid ON paid.id=e.payment_version_id
- WHERE e.period_id=l.period_id AND (e.group_key=l.aggregate_group_key OR EXISTS(
-  SELECT 1 FROM catalog_aggregate_draft_groups g WHERE (g.period_id,g.group_key)=(l.period_id,l.aggregate_group_key) AND g.fixed_only))
+ WHERE membership.period_id=l.period_id AND membership.group_key=l.aggregate_group_key
   AND (strpos(lower(paid.order_id),lower($8))>0 OR strpos(lower(paid.fact->>'orderNo'),lower($8))>0)))`
 
 var filteredDraftDetailSQL = organizationScopeQuery(strings.NewReplacer(

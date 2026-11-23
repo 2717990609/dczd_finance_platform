@@ -41,7 +41,7 @@ func TestCatalogPeriodGroupsKeepOriginalRuleAndSplitOnPoolMembership(t *testing.
 		{PaymentID: 14, PaidAt: change, Scenario: "SECOND", Amount: 2000, Refund: true},
 		{PaymentID: 16, PaidAt: month.AddDate(0, -2, 0), Scenario: "FIRST", Amount: 1000, Refund: true},
 	}
-	report, err := groupCatalogPeriodEvents(events, versions, owners, nil)
+	report, err := groupCatalogPeriodEvents(events, versions, owners, nil, catalogPerformanceDirectory{}, time.Time{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -62,14 +62,14 @@ func TestCatalogPeriodGroupsKeepOriginalRuleAndSplitOnPoolMembership(t *testing.
 		{PaymentID: 30, PaidAt: month, Scenario: "SECOND", Amount: 30000},
 		{PaymentID: 31, PaidAt: month.Add(-time.Second), Scenario: "SECOND", Amount: 6000, Refund: true},
 	}
-	report, err = groupCatalogPeriodEvents(onlyFirst, versions, owners, nil)
+	report, err = groupCatalogPeriodEvents(onlyFirst, versions, owners, nil, catalogPerformanceDirectory{}, time.Time{})
 	if err != nil || len(report.Groups) != 1 || len(report.Issues) != 0 || report.Groups[0].Version != 1 || report.Groups[0].Refunds != 6000 {
 		t.Fatalf("a removed scenario still contributes its refunds on old eligible orders: %+v %v", report, err)
 	}
 	owners.Organizations = nil
 	owners.InactiveUnits = map[string]bool{"unit": true}
 	onlyFirst[1].EventID = 3101
-	report, err = groupCatalogPeriodEvents(onlyFirst, versions, owners, nil)
+	report, err = groupCatalogPeriodEvents(onlyFirst, versions, owners, nil, catalogPerformanceDirectory{}, time.Time{})
 	if err != nil || len(report.Groups) != 0 || report.Issues["BENEFIT_ORG_INACTIVE"] != 1 {
 		t.Fatalf("a missing mapping for a known inactive unit needs the specific warning: %+v %v", report, err)
 	}
@@ -93,7 +93,7 @@ func TestCatalogPeriodGroupsKeepOriginalRuleAndSplitOnPoolMembership(t *testing.
 func TestCatalogPeriodTargetIssueIdentifiesProposedArrangement(t *testing.T) {
 	window := time.Date(2026, 10, 1, 0, 0, 0, 0, shanghai)
 	definition := catalogPeriodDefinition{Scenarios: []string{"FIRST"}, Items: []catalogPeriodItem{
-		{ItemKey: "existing-person", Label: "运营计提", TargetKind: "person", PersonID: 1},
+		{ItemKey: "existing-person", Label: "运营计提", TargetKind: "person", PersonID: 1, Tiers: []catalogPeriodTier{{Rate: 1000}}},
 		{ItemKey: "generated-pool-key", Label: "运营计提", TargetKind: "pool", OrganizationKey: "team", OwnerRole: "OWNER"},
 	}}
 	directory := catalogAggregateDirectory{
@@ -106,7 +106,7 @@ func TestCatalogPeriodTargetIssueIdentifiesProposedArrangement(t *testing.T) {
 		isProposal bool
 	}{{"", true}, {"published-version", false}} {
 		rule := catalogAggregateRule{ID: tc.ruleID, From: window, Definition: definition}
-		report, err := groupCatalogPeriodEvents([]catalogActivityEvent{event}, []catalogAggregateRule{rule}, directory, nil)
+		report, err := groupCatalogPeriodEvents([]catalogActivityEvent{event}, []catalogAggregateRule{rule}, directory, nil, catalogPerformanceDirectory{}, time.Time{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -162,40 +162,77 @@ func TestCatalogPeriodFixedAwardUsesWholeNetAndClosingPoolOwner(t *testing.T) {
 	first := catalogActivityEvent{EventID: 1, PaymentID: 1, PaidAt: start, Scenario: "IN", Amount: 20000}
 	last := catalogActivityEvent{EventID: 2, PaymentID: 2, PaidAt: handoff, Scenario: "IN", Amount: 10000}
 	outside := catalogActivityEvent{EventID: 3, PaymentID: 3, PaidAt: start, Scenario: "OUT", Amount: 90000}
-	report, err := groupCatalogPeriodEvents([]catalogActivityEvent{first, last, outside}, rules, directory, nil)
+	report, err := groupCatalogPeriodEvents([]catalogActivityEvent{first, last, outside}, rules, directory, nil, catalogPerformanceDirectory{}, end.Add(-time.Microsecond))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Groups) != 2 {
-		t.Fatalf("the proportional part still uses the two payment-date groups: %+v", report)
+	if len(report.Groups) != 3 {
+		t.Fatalf("the proportional part still uses the two payment-date groups alongside the fixed award: %+v", report)
 	}
 	for _, group := range report.Groups {
-		if group.quote().Total != group.Receipts/10 || len(group.Targets) != 1 {
+		if group.FixedOnly {
+			if group.Receipts != 30000 || group.quote().Total != amount || group.posting.Targets[0].Owner != 2 || group.Targets[0].OwnerName != "新负责人" {
+				t.Fatalf("one complete fixed payout should go to the person in office at the close: %+v", group)
+			}
+		} else if group.quote().Total != group.Receipts/10 || len(group.Targets) != 1 {
 			t.Fatalf("the fixed amount must not be duplicated in proportional groups: %+v", group)
 		}
 	}
-	if err := appendCatalogPeriodFixedGroup(&report, rules, directory, end.Add(-time.Microsecond)); err != nil {
-		t.Fatal(err)
+}
+
+func TestCatalogPeriodScopesSeparatePersonalAndTeamAwards(t *testing.T) {
+	month := time.Date(2026, 10, 1, 0, 0, 0, 0, shanghai)
+	const company = "40000000-0000-4000-8000-000000000123"
+	const otherCompany = "40000000-0000-4000-8000-000000000124"
+	lead := catalogPerformanceDuty{PersonID: 19, UnitID: company, Role: "LEAD"}
+	appointmentStart := month.Add(time.Hour)
+	rule := catalogAggregateRule{ID: "current", Version: 1, From: month, Definition: catalogPeriodDefinition{
+		Scenarios: []string{"SKU"}, Items: []catalogPeriodItem{
+			{ItemKey: "sales", Label: "本人销售", TargetKind: "person", PersonID: 19, OwnSales: true, Tiers: []catalogPeriodTier{{Rate: 1000}}},
+			{ItemKey: "lead", Label: "团队负责人", TargetKind: "person", PersonID: 19, CommissionUnits: []string{company},
+				Appointment: &lead, Tiers: []catalogPeriodTier{{Rate: 200}}},
+		},
+	}}
+	payees := catalogAggregateDirectory{People: map[int64]string{19: "负责人兼销售"}}
+	performance := catalogPerformanceDirectory{
+		claims: map[int64]vipClaim{1: {User: "own", Company: "team"}, 2: {User: "peer", Company: "team"}, 3: {User: "peer", Company: "other"},
+			4: {User: "peer", Company: "team"}},
+		users:     [2]map[string][]vipLink{{"own": {{Key: "own", Value: "19"}}, "peer": {{Key: "peer", Value: "20"}}}},
+		companies: [2]map[string][]vipLink{{"team": {{Key: "team", Value: company}}, "other": {{Key: "other", Value: otherCompany}}}},
+		duties:    map[catalogPerformanceDuty][]vipInterval{lead: {{From: appointmentStart}}},
 	}
-	fixed := report.Groups[len(report.Groups)-1]
-	if len(report.Groups) != 3 || !fixed.FixedOnly || fixed.Receipts != 30000 ||
-		fixed.quote().Total != amount || fixed.posting.Targets[0].Owner != 2 || fixed.Targets[0].OwnerName != "新负责人" {
-		t.Fatalf("one complete fixed payout should go to the person in office at the close: %+v", fixed)
+	orders := []catalogActivityEvent{
+		{EventID: 1, PaymentID: 1, PaidAt: appointmentStart, Scenario: "SKU", Amount: 10000},
+		{EventID: 2, PaymentID: 2, PaidAt: appointmentStart, Scenario: "SKU", Amount: 20000},
+		{EventID: 3, PaymentID: 3, PaidAt: month, Scenario: "SKU", Amount: 30000},
+		{EventID: 4, PaymentID: 4, PaidAt: month, Scenario: "SKU", Amount: 40000},
 	}
-	for _, tc := range []struct {
-		label  string
-		groups []catalogPeriodGroup
-	}{
-		{"empty period", nil},
-		{"full refund", []catalogPeriodGroup{{Receipts: 15000, Refunds: 15000}}},
-		{"prior refund offsets this month", []catalogPeriodGroup{{Receipts: 15000, CarryIn: -16000}}},
-	} {
-		t.Run(tc.label, func(t *testing.T) {
-			report := catalogPeriodGroupReport{Groups: tc.groups, Issues: map[string]int{}}
-			if err := appendCatalogPeriodFixedGroup(&report, rules, catalogAggregateDirectory{}, end.Add(-time.Microsecond)); err != nil ||
-				len(report.Groups) != len(tc.groups) || len(report.Issues) != 0 {
-				t.Fatalf("no payable fixed amount or payee lookup is needed: %+v %v", report, err)
-			}
-		})
+	report, err := groupCatalogPeriodEvents(orders, []catalogAggregateRule{rule}, payees, nil, performance, month.AddDate(0, 1, 0))
+	if err != nil || len(report.events) != 4 || len(report.Groups) != 2 || len(report.Issues) != 0 {
+		t.Fatalf("four source events and two arrangement groups: %+v %v", report, err)
+	}
+	frozen := map[catalogFrozenGroupReference]catalogPeriodGroup{}
+	refs := []catalogFrozenGroupReference{}
+	for _, group := range report.Groups {
+		item := group.Targets[0].ItemKey
+		if item == "sales" && (group.Receipts != 10000 || group.quote().Total != 1000) ||
+			item == "lead" && (group.Receipts != 30000 || group.quote().Total != 600) {
+			t.Fatalf("incorrect group: %+v", group)
+		}
+		ref := catalogFrozenGroupReference{PeriodID: 1, Key: group.ID}
+		group.Receipts, group.Refunds, group.Payments = 0, 0, 0
+		group.posting.Events = nil
+		frozen[ref] = group
+		refs = append(refs, ref)
+	}
+	refund := catalogActivityEvent{EventID: 5, PaymentID: 1, PaidAt: appointmentStart, Scenario: "SKU", Amount: 5000, Refund: true, frozenPeriod: 1, frozenGroups: refs}
+	report, err = groupCatalogPeriodEvents([]catalogActivityEvent{refund}, nil, payees, frozen, catalogPerformanceDirectory{}, month.AddDate(0, 2, 0))
+	if err != nil || len(report.events) != 1 || len(report.Groups) != 2 {
+		t.Fatalf("the original order's refund should use only its two booked groups: %+v %v", report, err)
+	}
+	for _, group := range report.Groups {
+		if group.Refunds != 5000 || group.quote().CarryForward != -5000 {
+			t.Fatalf("original arrangement refund should carry forward separately: %+v", group)
+		}
 	}
 }

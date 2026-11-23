@@ -35,7 +35,7 @@ type catalogFrozenGroupReference struct {
 type catalogAggregateGroupInput struct {
 	Key, RuleID       string
 	Targets           []catalogGroupTargetKey
-	Events            []catalogAggregateEventReference
+	Events            []int64
 	Receipts, Refunds int64
 	CarryIn, CarryOut int64
 	CarryFromPeriod   int64
@@ -51,14 +51,45 @@ func catalogAggregateWindow(month string, cycle string) (periodWindow, error) {
 }
 
 func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []catalogActivityEvent, display bool) (map[catalogFrozenGroupReference]catalogPeriodGroup, error) {
+	type paymentReference struct{ period, payment int64 }
+	eventIndexes := make(map[paymentReference][]int)
+	var periods, payments []int64
+	for i, event := range events {
+		if event.frozenPeriod == 0 {
+			continue
+		}
+		key := paymentReference{event.frozenPeriod, event.PaymentID}
+		if len(eventIndexes[key]) == 0 {
+			periods, payments = append(periods, key.period), append(payments, key.payment)
+		}
+		eventIndexes[key] = append(eventIndexes[key], i)
+	}
+	if len(periods) == 0 {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT membership.period_id,membership.source_version_id,membership.group_key
+	 FROM unnest($1::bigint[],$2::bigint[]) AS payment(period_id,source_version_id)
+	 JOIN catalog_aggregate_event_groups membership USING(period_id,source_version_id)
+	 ORDER BY membership.period_id,membership.source_version_id,membership.group_key`, periods, payments)
+	if err != nil {
+		return nil, err
+	}
 	var refs []catalogFrozenGroupReference
 	seen := make(map[catalogFrozenGroupReference]bool)
-	for _, event := range events {
-		ref := event.frozen
-		if ref.PeriodID != 0 && !seen[ref] {
+	var payment int64
+	var ref catalogFrozenGroupReference
+	_, err = pgx.ForEachRow(rows, []any{&ref.PeriodID, &payment, &ref.Key}, func() error {
+		for _, i := range eventIndexes[paymentReference{ref.PeriodID, payment}] {
+			events[i].frozenGroups = append(events[i].frozenGroups, ref)
+		}
+		if !seen[ref] {
 			refs = append(refs, ref)
 			seen[ref] = true
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 	return readCatalogAggregateGroupsByReference(ctx, tx, refs, display)
 }
@@ -103,11 +134,14 @@ func readCatalogAggregateGroupsByReference(ctx context.Context, tx pgx.Tx, refs 
 		}
 		group.ID = ref.Key
 		group.items = nil
-		for _, item := range definition.Items {
-			if item.FixedMinor == nil {
-				group.items = append(group.items, item)
+		for _, target := range group.posting.Targets {
+			index := slices.IndexFunc(definition.Items, func(item catalogPeriodItem) bool { return item.ItemKey == target.Item })
+			if index < 0 {
+				return errProductConfigConflict
 			}
+			group.items = append(group.items, definition.Items[index])
 		}
+		group.FixedOnly = len(group.items) == 1 && group.items[0].FixedMinor != nil
 		for i, target := range group.Targets {
 			for _, item := range group.items {
 				if target.ItemKey == item.ItemKey && item.PoolName != "" {
@@ -252,6 +286,8 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 		}
 	}
 	result.aggregatePredecessor = activity.Grouping.carryFromPeriod
+	result.aggregateEvents = activity.Grouping.events
+	slices.SortFunc(result.aggregateEvents, func(a, b catalogAggregateEventReference) int { return cmp.Compare(a.EventID, b.EventID) })
 	if activity.Grouping.PriorUnsettled {
 		result.Issues = append(result.Issues, draftIssue{Code: "AGGREGATE_PRIOR_UNSETTLED"})
 	}
@@ -267,11 +303,9 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 		quote := group.quote()
 		posting.Key, posting.RuleID = group.ID, group.RuleID
 		posting.FixedOnly = group.FixedOnly
-		if !group.FixedOnly {
-			posting.Receipts, posting.Refunds = group.Receipts, group.Refunds
-			posting.CarryIn, posting.CarryOut = group.CarryIn, quote.CarryForward
-		}
-		slices.SortFunc(posting.Events, func(a, b catalogAggregateEventReference) int { return cmp.Compare(a.EventID, b.EventID) })
+		posting.Receipts, posting.Refunds = group.Receipts, group.Refunds
+		posting.CarryIn, posting.CarryOut = group.CarryIn, quote.CarryForward
+		slices.Sort(posting.Events)
 		result.aggregateGroups = append(result.aggregateGroups, posting)
 		var applied pgtype.UUID
 		if err := applied.Scan(group.RuleID); err != nil {
@@ -434,49 +468,55 @@ func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior, confirmed
 	return groups, nil
 }
 
-func storeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, periodID int64, groups []catalogAggregateGroupInput) error {
+func storeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, periodID int64, groups []catalogAggregateGroupInput, events []catalogAggregateEventReference) error {
+	if _, err := tx.Exec(ctx, `DELETE FROM catalog_aggregate_draft_events WHERE period_id=$1`, periodID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(ctx, `DELETE FROM catalog_aggregate_draft_groups WHERE period_id=$1`, periodID); err != nil {
 		return err
 	}
-	if len(groups) == 0 {
-		return nil
+	_, err := tx.CopyFrom(ctx, pgx.Identifier{"catalog_aggregate_draft_events"},
+		[]string{"period_id", "source_version_id", "payment_version_id", "sku_code", "completion_version_id"},
+		pgx.CopyFromSlice(len(events), func(i int) ([]any, error) {
+			event := events[i]
+			return []any{periodID, event.EventID, event.PaymentID, event.Scenario, optionalDraftID(event.CompletionVersionID)}, nil
+		}))
+	if err != nil || len(groups) == 0 {
+		return err
 	}
-	type eventRow struct {
-		key string
-		catalogAggregateEventReference
+	type groupEvent struct {
+		group string
+		event int64
 	}
-	var events []eventRow
-	_, err := tx.CopyFrom(ctx, pgx.Identifier{"catalog_aggregate_draft_groups"},
+	var memberships []groupEvent
+	_, err = tx.CopyFrom(ctx, pgx.Identifier{"catalog_aggregate_draft_groups"},
 		[]string{"period_id", "group_key", "rule_id", "targets", "receipts_minor", "refunds_minor",
 			"carry_in_minor", "carry_out_minor", "carry_from_period_id", "fixed_only"},
 		pgx.CopyFromSlice(len(groups), func(i int) ([]any, error) {
-			g := groups[i]
-			for _, event := range g.Events {
-				events = append(events, eventRow{g.Key, event})
+			group := groups[i]
+			for _, eventID := range group.Events {
+				memberships = append(memberships, groupEvent{group.Key, eventID})
 			}
-			return []any{periodID, g.Key, g.RuleID, g.Targets, g.Receipts, g.Refunds,
-				g.CarryIn, g.CarryOut, optionalDraftID(g.CarryFromPeriod), g.FixedOnly}, nil
+			return []any{periodID, group.Key, group.RuleID, group.Targets, group.Receipts, group.Refunds,
+				group.CarryIn, group.CarryOut, optionalDraftID(group.CarryFromPeriod), group.FixedOnly}, nil
 		}))
-	if err != nil || len(events) == 0 {
+	if err != nil || len(memberships) == 0 {
 		return err
 	}
-	_, err = tx.CopyFrom(ctx, pgx.Identifier{"catalog_aggregate_draft_events"},
-		[]string{"period_id", "group_key", "source_version_id", "payment_version_id", "sku_code", "completion_version_id"},
-		pgx.CopyFromSlice(len(events), func(i int) ([]any, error) {
-			e := events[i]
-			return []any{periodID, e.key, e.EventID, e.PaymentID, e.Scenario,
-				pgtype.Int8{Int64: e.CompletionVersionID, Valid: e.CompletionVersionID != 0}}, nil
+	_, err = tx.CopyFrom(ctx, pgx.Identifier{"catalog_aggregate_event_groups"},
+		[]string{"period_id", "group_key", "source_version_id"}, pgx.CopyFromSlice(len(memberships), func(i int) ([]any, error) {
+			return []any{periodID, memberships[i].group, memberships[i].event}, nil
 		}))
 	return err
 }
 
 const catalogAggregateDraftEventsSQL = `WITH scope AS (
- SELECT d.period_id,g.group_key,g.fixed_only FROM calculation_drafts d
+ SELECT d.period_id,g.group_key FROM calculation_drafts d
  JOIN catalog_aggregate_draft_groups g USING(period_id)
  WHERE d.period_id=$1 AND d.version=$2 AND g.group_key=$3
 ), related AS NOT MATERIALIZED (
- SELECT a.* FROM scope JOIN catalog_aggregate_draft_events a ON a.period_id=scope.period_id
-  AND (a.group_key=scope.group_key OR scope.fixed_only)
+ SELECT a.* FROM scope JOIN catalog_aggregate_event_groups membership USING(period_id,group_key)
+ JOIN catalog_aggregate_draft_events a USING(period_id,source_version_id)
 ), page AS (
  SELECT o.id AS "sourceVersionId",o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",
   o.kind,o.occurred_at AS "occurredAt",coalesce((o.fact->>'amountMinor')::bigint,0) AS "amountMinor",

@@ -1343,24 +1343,40 @@ ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS aggregate_predecessor_id
 CREATE INDEX IF NOT EXISTS catalog_aggregate_draft_predecessor ON calculation_drafts(aggregate_predecessor_id)
  WHERE aggregate_predecessor_id IS NOT NULL;
 CREATE TABLE IF NOT EXISTS catalog_aggregate_draft_events (
- period_id bigint NOT NULL,
- group_key text NOT NULL,
+ period_id bigint NOT NULL REFERENCES calculation_drafts(period_id) ON DELETE CASCADE,
  source_version_id bigint NOT NULL REFERENCES source_order_versions(id),
  payment_version_id bigint NOT NULL REFERENCES source_order_versions(id),
  sku_code text NOT NULL,
- PRIMARY KEY(period_id,source_version_id),
- FOREIGN KEY (period_id,group_key) REFERENCES catalog_aggregate_draft_groups(period_id,group_key) ON DELETE CASCADE
+ PRIMARY KEY(period_id,source_version_id)
 );
 ALTER TABLE catalog_aggregate_draft_events ADD COLUMN IF NOT EXISTS completion_version_id bigint REFERENCES source_order_versions(id);
+CREATE TABLE IF NOT EXISTS catalog_aggregate_event_groups (
+ period_id bigint NOT NULL,
+ group_key text NOT NULL,
+ source_version_id bigint NOT NULL,
+ PRIMARY KEY(period_id,group_key,source_version_id),
+ FOREIGN KEY(period_id,group_key) REFERENCES catalog_aggregate_draft_groups(period_id,group_key) ON DELETE CASCADE,
+ FOREIGN KEY(period_id,source_version_id) REFERENCES catalog_aggregate_draft_events(period_id,source_version_id) ON DELETE CASCADE
+);
+DO $$ BEGIN
+ IF EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='catalog_aggregate_draft_events'::regclass AND attname='group_key' AND NOT attisdropped) THEN
+  INSERT INTO catalog_aggregate_event_groups(period_id,group_key,source_version_id)
+   SELECT period_id,group_key,source_version_id FROM catalog_aggregate_draft_events ON CONFLICT DO NOTHING;
+  ALTER TABLE catalog_aggregate_draft_events DROP COLUMN group_key;
+  ALTER TABLE catalog_aggregate_draft_events ADD FOREIGN KEY(period_id) REFERENCES calculation_drafts(period_id) ON DELETE CASCADE;
+ END IF;
+END $$;
 CREATE INDEX IF NOT EXISTS catalog_aggregate_events_source ON catalog_aggregate_draft_events(source_version_id,period_id);
 CREATE INDEX IF NOT EXISTS catalog_aggregate_events_payment ON catalog_aggregate_draft_events(payment_version_id,period_id);
 CREATE INDEX IF NOT EXISTS catalog_aggregate_events_completion ON catalog_aggregate_draft_events(completion_version_id)
  WHERE completion_version_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS catalog_aggregate_events_group ON catalog_aggregate_draft_events(period_id,group_key);
+CREATE INDEX IF NOT EXISTS catalog_aggregate_event_groups_event ON catalog_aggregate_event_groups(period_id,source_version_id);
 CREATE INDEX IF NOT EXISTS catalog_aggregate_groups_rule ON catalog_aggregate_draft_groups(rule_id,period_id);
 CREATE OR REPLACE TRIGGER protect_confirmed_aggregate_groups BEFORE INSERT OR UPDATE OR DELETE ON catalog_aggregate_draft_groups
  FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
 CREATE OR REPLACE TRIGGER protect_confirmed_aggregate_events BEFORE INSERT OR UPDATE OR DELETE ON catalog_aggregate_draft_events
+ FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
+CREATE OR REPLACE TRIGGER protect_confirmed_aggregate_event_groups BEFORE INSERT OR UPDATE OR DELETE ON catalog_aggregate_event_groups
  FOR EACH ROW EXECUTE FUNCTION protect_final_calculation();
 ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS aggregate_group_key text;
 ALTER TABLE calculation_draft_lines ALTER COLUMN source_version_id DROP NOT NULL;

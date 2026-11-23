@@ -71,6 +71,7 @@ type catalogPeriodQuoteInput struct {
 	Receipts      int64                        `json:"receiptsMinor"`
 	Refunds       int64                        `json:"refundsMinor"`
 	CarryIn       int64                        `json:"carryInMinor"`
+	ItemIndex     *int                         `json:"itemIndex,omitempty"`
 }
 
 type catalogPeriodReader interface {
@@ -80,6 +81,8 @@ type catalogPeriodReader interface {
 type catalogPeriodOptions struct {
 	Organizations []catalogStructureOption `json:"organizations"`
 	Roles         []catalogStructureOption `json:"roles"`
+	SalesUnits    []catalogStructureOption `json:"salesUnits"`
+	Duties        []catalogStructureOption `json:"duties"`
 	Scenarios     []catalogPeriodSKU       `json:"scenarios"`
 }
 
@@ -128,7 +131,18 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 	rule.MayPublish = rule.MayPublish && actor.permits(rule.ProductID, true)
 	rule.Cycle, rule.Items = period.Cycle, period.Items
 	rule.Performance = period.Performance
-	rule.ScopeLabels, err = nameCatalogPerformanceScope(ctx, s.db, period.Performance)
+	scope := catalogPerformanceScope{}
+	if period.Performance != nil {
+		scope = *period.Performance
+		scope.UnitIDs = slices.Clone(scope.UnitIDs)
+	}
+	for _, item := range period.Items {
+		scope.UnitIDs = append(scope.UnitIDs, item.CommissionUnits...)
+		if item.Appointment != nil {
+			scope.UnitIDs = append(scope.UnitIDs, item.Appointment.UnitID)
+		}
+	}
+	rule.ScopeLabels, err = nameCatalogPerformanceScope(ctx, s.db, &scope)
 	if err != nil {
 		respond(w, nil, err)
 		return
@@ -221,6 +235,13 @@ func quoteCatalogPeriodDefinition(raw json.RawMessage, input catalogPeriodQuoteI
 	period, err := parseCatalogPeriodRule(raw)
 	if err != nil {
 		return catalogPeriodQuote{}, err
+	}
+	if input.ItemIndex != nil {
+		index := *input.ItemIndex
+		if index < 0 || index >= len(period.Items) {
+			return catalogPeriodQuote{}, invalid
+		}
+		period.Items = period.Items[index : index+1]
 	}
 	return quoteCatalogPeriod(period.Items, input.Receipts, input.Refunds, input.CarryIn)
 }
@@ -368,9 +389,27 @@ func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, raw 
 
 func readCatalogPeriodComponentOptions(ctx context.Context, db catalogPeriodReader, components []catalogPeriodComponentEdit) (catalogStructureOptions, error) {
 	var personIDs []int64
+	var appointments []catalogPerformanceDuty
 	for _, item := range components {
 		if item.PersonID > 0 {
 			personIDs = append(personIDs, item.PersonID)
+		}
+		if item.Appointment != nil {
+			appointments = append(appointments, *item.Appointment)
+		}
+	}
+	if len(appointments) != 0 {
+		var missing bool
+		if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1
+		 FROM jsonb_to_recordset($1::jsonb) AS wanted("personId" bigint,"unitId" text,role text)
+		 WHERE NOT EXISTS(SELECT 1 FROM catalog_current_sales_appointments a
+		  JOIN organization_units u ON u.id::text=a.scope_key AND u.status='ACTIVE'
+		  WHERE a.source='DCAI' AND a.scope='ORGANIZATION_UNIT'
+		   AND (a.person_id,a.scope_key,a.role)=(wanted."personId",wanted."unitId",wanted.role)))`, appointments).Scan(&missing); err != nil {
+			return catalogStructureOptions{}, err
+		}
+		if missing {
+			return catalogStructureOptions{}, errCatalogPerformanceScope
 		}
 	}
 	if len(personIDs) > 0 {
@@ -395,7 +434,8 @@ func readCatalogPeriodEditorOptions(ctx context.Context, db catalogPeriodReader)
 		_, direct := catalogPeriodUnit(org.Value)
 		return !direct
 	})
-	return &catalogPeriodOptions{Organizations: organizations, Roles: options.Roles, Scenarios: []catalogPeriodSKU{}}, nil
+	return &catalogPeriodOptions{Organizations: organizations, Roles: options.Roles, SalesUnits: options.SalesUnits,
+		Duties: options.Duties, Scenarios: []catalogPeriodSKU{}}, nil
 }
 
 func readCatalogPeriodStructureOptions(ctx context.Context, db catalogPeriodReader) (catalogStructureOptions, error) {

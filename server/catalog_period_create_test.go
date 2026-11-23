@@ -110,8 +110,8 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	actual := submit(0, "/api/v1/catalog-period-activity", s.postCatalogPeriodActivity, input)
 	var actualReport catalogPeriodActivity
 	if err := json.Unmarshal(actual.Body.Bytes(), &actualReport); err != nil || actual.Code != 200 ||
-		actualReport.Receipts != 40000 || actualReport.Grouping == nil || len(actualReport.Grouping.Groups) != 1 ||
-		actualReport.Grouping.Groups[0].quote().Total != 8000 {
+		actualReport.Receipts != 40000 || actualReport.Grouping == nil || len(actualReport.Grouping.Groups) != 2 ||
+		actualReport.Grouping.Groups[0].quote().Total+actualReport.Grouping.Groups[1].quote().Total != 8000 {
 		t.Fatalf("new definition should group both real inputs without publishing: %d %s %v", actual.Code, actual.Body.String(), err)
 	}
 	var writes int
@@ -147,6 +147,38 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 	if duplicate := submit(980, path, s.postCatalogPeriodRule, input); duplicate.Code != 409 {
 		t.Fatalf("duplicate aggregate package: %d %s", duplicate.Code, duplicate.Body.String())
 	}
+	t.Run("independent scopes keep one source event", func(t *testing.T) {
+		const proposal = `{"create":{"productId":980,"label":"独立收款范围","cycle":"MONTHLY_25_TO_24"},
+		 "effectiveFrom":"2026-09-25T00:00:00+08:00","scenarioCodes":["SECOND"],"components":[
+		 {"label":"销售提成","targetKind":"person","personId":9802,"ownSales":true,"tiers":[{"rate_bps":500}]},
+		 {"label":"团队负责人提成","targetKind":"person","personId":9802,"salesScopeUnitIds":["10000000-0000-4000-8000-000000000983"],"tiers":[{"rate_bps":200}]}]}`
+		trial := submit(980, "/api/v1/catalog-period-activity", s.postCatalogPeriodActivity, proposal)
+		var activity catalogPeriodActivity
+		if err := json.Unmarshal(trial.Body.Bytes(), &activity); err != nil || trial.Code != 200 ||
+			activity.Receipts != 30000 || activity.Grouping == nil || len(activity.Grouping.Groups) != 2 {
+			t.Fatalf("one 30000 receipt and two scopes: %d %s %v", trial.Code, trial.Body, err)
+		}
+		reply := submit(980, path, s.postCatalogPeriodRule, proposal)
+		var rule catalogPublication
+		if err := json.Unmarshal(reply.Body.Bytes(), &rule); err != nil || reply.Code != 200 {
+			t.Fatalf("publish scoped rule: %d %s %v", reply.Code, reply.Body, err)
+		}
+		result, err := s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: rule.ID, Month: "2026-10"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		draft := result.(draftSummary)
+		if draft.Total != 2100 || draft.LineCount != 2 || draft.IssueCount != 0 {
+			t.Fatalf("scoped draft: %+v", draft)
+		}
+		var events, memberships int
+		err = db.QueryRow(ctx, `SELECT
+		 (SELECT count(*) FROM catalog_aggregate_draft_events WHERE period_id=$1),
+		 (SELECT count(*) FROM catalog_aggregate_event_groups WHERE period_id=$1)`, draft.PeriodID).Scan(&events, &memberships)
+		if err != nil || events != 1 || memberships != 2 {
+			t.Fatalf("events=%d memberships=%d: %v", events, memberships, err)
+		}
+	})
 
 	if _, err := db.Exec(ctx, `WITH payment AS (INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
 	 VALUES('DCAI','103','','ai_vip_order:103','1','ORDER_PAID','2026-10-01T00:00Z','2026-10-01T00:00Z',
@@ -298,7 +330,8 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		"/api/v1/catalog-period-activity?ruleId="+later.ID+"&month=2026-11", nil))
 	var activity catalogPeriodActivity
 	if err := json.Unmarshal(w.Body.Bytes(), &activity); err != nil || w.Code != 200 ||
-		activity.Refunds != 5000 || activity.Grouping == nil || len(activity.Grouping.Groups) != 1 || activity.Grouping.Groups[0].Version != 1 {
+		activity.Refunds != 5000 || activity.Grouping == nil || len(activity.Grouping.Groups) != 2 ||
+		activity.Grouping.Groups[0].Version != 1 || activity.Grouping.Groups[1].Version != 1 {
 		t.Fatalf("activity before opening the next draft must use the original scoped refund: %d %s %v", w.Code, w.Body.String(), err)
 	}
 	if activity.OutsideScope == nil || *activity.OutsideScope != (catalogPeriodScopeExclusions{Refunds: 1, RefundsMinor: 4000}) {
@@ -392,8 +425,8 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		"&month="+at.In(shanghai).AddDate(0, 1, 0).Format("2006-01"), nil))
 	activity = catalogPeriodActivity{}
 	if err := json.Unmarshal(w.Body.Bytes(), &activity); err != nil || w.Code != 200 ||
-		activity.Grouping == nil || activity.Grouping.PriorUnsettled || len(activity.Grouping.Groups) != 1 ||
-		activity.Grouping.Groups[0].quote().CarryForward != -5000 {
+		activity.Grouping == nil || activity.Grouping.PriorUnsettled || len(activity.Grouping.Groups) != 2 ||
+		activity.Grouping.Groups[0].quote().CarryForward != -5000 || activity.Grouping.Groups[1].quote().CarryForward != -5000 {
 		t.Fatalf("the resumed period should recover the latest frozen carry even across paused months: %d %s %v", w.Code, w.Body.String(), err)
 	}
 	t.Run("fixed pool uses the closing owner", func(t *testing.T) {
@@ -494,13 +527,14 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		if err != nil || laterDraft.(draftSummary).Total != 0 || laterDraft.(draftSummary).IssueCount != 0 {
 			t.Fatalf("the later refund only reduces that cycle's net receipts: %+v %v", laterDraft, err)
 		}
-		var refunds, carry, closedAward int64
+		var refunds, carry, closedAward, sourceRefunds int64
 		if err := db.QueryRow(ctx, `SELECT coalesce(sum(refunds_minor),0)::bigint,coalesce(sum(carry_out_minor),0)::bigint,
-		  (SELECT amount_minor FROM calculation_draft_lines WHERE period_id=$2 AND allocation_owner_id=$3)
+		  (SELECT amount_minor FROM calculation_draft_lines WHERE period_id=$2 AND allocation_owner_id=$3),
+		  (SELECT count(*) FROM catalog_aggregate_draft_events WHERE period_id=$1 AND source_version_id<>payment_version_id)
 		 FROM catalog_aggregate_draft_groups WHERE period_id=$1`,
-			laterDraft.(draftSummary).PeriodID, draft.PeriodID, owner).Scan(&refunds, &carry, &closedAward); err != nil ||
-			refunds != 30000 || carry != -30000 || closedAward != 5000 {
-			t.Fatalf("refund must be carried once and preserve the original settled fixed award: %d %d %d %v", refunds, carry, closedAward, err)
+			laterDraft.(draftSummary).PeriodID, draft.PeriodID, owner).Scan(&refunds, &carry, &closedAward, &sourceRefunds); err != nil ||
+			refunds != 60000 || carry != -60000 || closedAward != 5000 || sourceRefunds != 2 {
+			t.Fatalf("each refund is recorded once and applied to both arrangements while the original award stays booked: %d %d %d %d %v", refunds, carry, closedAward, sourceRefunds, err)
 		}
 	})
 

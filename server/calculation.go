@@ -74,6 +74,7 @@ type paymentDraft struct {
 	practiceReplay       *practiceReplayInputs
 	practiceChanges      []practiceCorrectionRevision
 	aggregateGroups      []catalogAggregateGroupInput
+	aggregateEvents      []catalogAggregateEventReference
 	aggregatePredecessor int64
 	Lines                []draftLine
 	Performance          []draftPerformance

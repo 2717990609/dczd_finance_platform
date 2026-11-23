@@ -134,13 +134,14 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 			t.Fatalf("search by order %q should find its group awards: %+v %v", order, detail, err)
 		}
 	}
-	var facts, performance, ordinaryPeriods int
+	var facts, memberships, performance, ordinaryPeriods int
 	if err := db.QueryRow(ctx, `SELECT
 	 (SELECT count(*) FROM catalog_aggregate_draft_events WHERE period_id=$1 AND source_version_id=$2),
+	 (SELECT count(*) FROM catalog_aggregate_event_groups WHERE period_id=$1 AND source_version_id=$2),
 	 (SELECT count(*) FROM calculation_draft_performance WHERE period_id=$1),
 	 (SELECT count(*) FROM periods WHERE product_id=$3 AND aggregate_package_id IS NULL)`, periodID, sourceID, productID).
-		Scan(&facts, &performance, &ordinaryPeriods); err != nil || facts != 1 || performance != 0 || ordinaryPeriods != 1 {
-		t.Fatalf("source references %d, duplicate performance %d, ordinary periods %d: %v", facts, performance, ordinaryPeriods, err)
+		Scan(&facts, &memberships, &performance, &ordinaryPeriods); err != nil || facts != 1 || memberships != 2 || performance != 0 || ordinaryPeriods != 1 {
+		t.Fatalf("source references %d, memberships %d, duplicate performance %d, ordinary periods %d: %v", facts, memberships, performance, ordinaryPeriods, err)
 	}
 	if next, err := s.calculateCurrentDraft(ctx, periodID, 0); err != nil || next.Version != draft.Version {
 		t.Fatalf("unchanged source must retain latest draft: %+v %v", next, err)
@@ -225,11 +226,14 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 		t.Fatal("a preceding settlement referenced by a subsequent settlement cannot be removed")
 	}
 	input.Month = "2026-10"
-	if report := activity(input.Month); report.PriorUnsettled || len(report.Groups) != 1 ||
-		report.Groups[0].Version != 1 || len(report.Groups[0].Targets) != 2 ||
-		report.Groups[0].Targets[0].Name != "收款公司" || report.Groups[0].CarryIn != -5000 ||
-		report.Groups[0].AfterCarry == nil || report.Groups[0].AfterCarry.CarryForward != -5000 {
-		t.Fatalf("preview must show the original payees and carry in an empty month: %+v", report)
+	report := activity(input.Month)
+	if report.PriorUnsettled || len(report.Groups) != 2 {
+		t.Fatalf("preview must show both independent payees in an empty month: %+v", report)
+	}
+	for _, group := range report.Groups {
+		if group.Version != 1 || len(group.Targets) != 1 || group.Targets[0].Name == "" || group.CarryIn != -5000 || group.quote().CarryForward != -5000 {
+			t.Fatalf("unexpected frozen recipient or carry: %+v", group)
+		}
 	}
 	if err := db.QueryRow(ctx, `SELECT count(*) FROM periods
 	 WHERE aggregate_package_id='10000000-0000-4000-8000-000000000820' AND report_month='2026-10-01'`).Scan(&ordinaryPeriods); err != nil || ordinaryPeriods != 0 {
@@ -275,23 +279,36 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 	if _, err := db.Exec(ctx, `INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES(5802,'另一位收款人')`); err != nil {
 		t.Fatal(err)
 	}
-	for _, different := range []string{
+	for index, different := range []string{
 		changes + `,"scenarioCodes":["SECOND"]`,
 		`"components":[` + company + "," + strings.Replace(person, "5801", "5802", 1) + "]",
 	} {
 		reply := revision(trialWorkspace.postCatalogPeriodActivity, different)
 		var trial catalogPeriodActivity
-		if err := json.Unmarshal(reply.Body.Bytes(), &trial); err != nil || trial.Grouping == nil || len(trial.Grouping.Groups) != 2 ||
-			trial.Grouping.Groups[0].Receipts != 10000 || trial.Grouping.Groups[0].CarryIn != 0 ||
-			trial.Grouping.Groups[1].quote().CarryForward != -5000 {
-			t.Fatalf("a different scope or payee must keep the original carry separate: %s %v", reply.Body.String(), err)
+		if err := json.Unmarshal(reply.Body.Bytes(), &trial); err != nil || trial.Grouping == nil || len(trial.Grouping.Groups) != 4-index {
+			t.Fatalf("a different scope or payee must keep only the affected carry separate: %s %v", reply.Body, err)
+		}
+		for _, group := range trial.Grouping.Groups {
+			if group.Receipts == 0 && group.quote().CarryForward != -5000 || group.Receipts == 10000 &&
+				(index == 0 && group.CarryIn != 0 || index == 1 && group.Targets[0].ItemKey == "ops" && group.CarryIn != -5000) {
+				t.Fatalf("unexpected carry decomposition: %+v", group)
+			}
 		}
 	}
 	reply := revision(trialWorkspace.postCatalogPeriodActivity, changes+`,"scenarioCodes":["SECOND","FIRST"]`)
 	var trial catalogPeriodActivity
-	if err := json.Unmarshal(reply.Body.Bytes(), &trial); err != nil || trial.Grouping == nil || len(trial.Grouping.Groups) != 1 ||
-		trial.Grouping.Groups[0].CarryIn != -5000 || trial.Grouping.Groups[0].quote().Total != 1250 {
-		t.Fatalf("a rename and rate change should carry into the trial while a reordered SKU list keeps the same scope: %s %v", reply.Body.String(), err)
+	if err := json.Unmarshal(reply.Body.Bytes(), &trial); err != nil || trial.Grouping == nil || len(trial.Grouping.Groups) != 2 {
+		t.Fatalf("a rename and rate change should retain each arrangement group: %s %v", reply.Body, err)
+	}
+	var trialTotal int64
+	for _, group := range trial.Grouping.Groups {
+		if group.CarryIn != -5000 {
+			t.Fatalf("original scope must retain its carry: %+v", group)
+		}
+		trialTotal += group.quote().Total
+	}
+	if trialTotal != 1250 {
+		t.Fatalf("unexpected revision total: %d", trialTotal)
 	}
 	revision(trialWorkspace.postCatalogPeriodRule, changes)
 	setOctoberReceipt := func(amount int64) {
@@ -312,10 +329,18 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 	}
 	setOctoberReceipt(10000)
 	preview := activity(input.Month)
-	if preview.PriorUnsettled || len(preview.Groups) != 1 || preview.Groups[0].CarryIn != -5000 ||
-		preview.Groups[0].Version != 2 || preview.Groups[0].BeforeCarry.Total != 2500 || preview.Groups[0].AfterCarry == nil ||
-		preview.Groups[0].AfterCarry.Total != 1250 || preview.Groups[0].AfterCarry.Basis != 5000 {
-		t.Fatalf("preview must offset the prior refund before applying the new rate: %+v", preview)
+	if preview.PriorUnsettled || len(preview.Groups) != 2 {
+		t.Fatalf("preview must retain both arrangements: %+v", preview)
+	}
+	var accrual int64
+	for _, group := range preview.Groups {
+		if group.CarryIn != -5000 || group.Version != 2 || group.quote().Basis != 5000 {
+			t.Fatalf("preview should offset the earlier refund on each arrangement: %+v", group)
+		}
+		accrual += group.quote().Total
+	}
+	if accrual != 1250 {
+		t.Fatalf("preview payout: %d", accrual)
 	}
 	if result, err := s.calculateCurrentDraft(ctx, october, 0); err != nil || result.Total != 1250 || result.IssueCount != 0 || result.Version <= carry.Version {
 		t.Fatalf("same group offsets the earlier refund before its rate is applied: %+v %v", result, err)
@@ -333,9 +358,19 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 			t.Fatal(err)
 		}
 		freeze(october, result.Version)
-		if report := activity("2026-10"); len(report.Groups) != 1 || report.Groups[0].Version != 2 ||
-			report.Groups[0].CarryIn != -5000 || report.Groups[0].quote().Total != result.Total {
-			t.Fatalf("a confirmed period must display its booked carry and award: %+v", report)
+		report := activity("2026-10")
+		if len(report.Groups) != 2 {
+			t.Fatalf("booked groups: %+v", report)
+		}
+		var confirmedTotal int64
+		for _, group := range report.Groups {
+			if group.Version != 2 || group.CarryIn != -5000 {
+				t.Fatalf("booked carry: %+v", group)
+			}
+			confirmedTotal += group.quote().Total
+		}
+		if confirmedTotal != result.Total {
+			t.Fatalf("booked total %d want %d", confirmedTotal, result.Total)
 		}
 		if err := migrate(ctx, db); err != nil {
 			t.Fatal(err)
@@ -371,7 +406,7 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 		t.Fatal(err)
 	}
 	input.Month = time.Now().In(shanghai).Format("2006-01")
-	if preview := activity(input.Month); len(preview.Groups) != 1 || preview.Groups[0].Refunds != 1000 {
+	if preview := activity(input.Month); len(preview.Groups) != 2 || preview.Groups[0].Refunds != 1000 || preview.Groups[1].Refunds != 1000 {
 		t.Fatalf("activity must show the late refund assigned to the current open month before drafting: %+v", preview)
 	}
 	current := open()
@@ -387,8 +422,8 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 		Scan(&carried, &remaining); err != nil || carried != 1000 || remaining != -1000 {
 		t.Fatalf("late refund %d, carry %d: %v", carried, remaining, err)
 	}
-	if preview := activity(input.Month); len(preview.Groups) != 1 || preview.Groups[0].Refunds != carried ||
-		preview.Groups[0].quote().CarryForward != remaining {
+	if preview := activity(input.Month); len(preview.Groups) != 2 || preview.Groups[0].Refunds != carried || preview.Groups[1].Refunds != carried ||
+		preview.Groups[0].quote().CarryForward != remaining || preview.Groups[1].quote().CarryForward != remaining {
 		t.Fatalf("activity after saving the draft must show the same late refund and carry: %+v", preview)
 	}
 	if _, err := db.Exec(ctx, `UPDATE catalog_business_routes SET effective_to='2026-11-01 00:00+08' WHERE product_id=$1`, productID); err != nil {

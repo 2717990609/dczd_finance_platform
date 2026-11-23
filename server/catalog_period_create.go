@@ -75,15 +75,15 @@ func buildCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, create 
 	if err != nil {
 		return nil, err
 	}
-	initial, err = editCatalogPerformanceScope(ctx, db, initial, nil, performance)
-	if err != nil {
-		return nil, err
-	}
 	options, err := readCatalogPeriodComponentOptions(ctx, db, components)
 	if err != nil {
 		return nil, err
 	}
-	return writeCatalogPeriodComponents(initial, nil, components, options)
+	body, err := writeCatalogPeriodComponents(initial, nil, components, options)
+	if err != nil {
+		return nil, err
+	}
+	return editCatalogPerformanceScope(ctx, db, body, nil, performance)
 }
 
 func createCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodPublishInput, actor financeRuleActor) (catalogPublication, error) {

@@ -2,6 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
+import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 
 const props = defineProps({rule:Object, applied:Object, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
 const emit = defineEmits(['close','published','open-draft','copy','open-version','resumed'])
@@ -16,15 +17,13 @@ const activeComponent = ref()
 const editingComponent = ref()
 const scenarioCodes = ref([])
 const editingScenarios = ref(false)
-const performanceScope = ref({unitIds:[]})
-const appointmentName = ref('')
-const editingPerformance = ref(false)
 let newComponentID = 0
 const effectiveDate = ref('')
 const resumeDate = ref('')
 const resumeError = ref('')
 const resuming = ref(false)
 const amounts = ref({receipts:0,refunds:0,carry:0})
+const quoteItem = ref()
 const loading = ref(false)
 const saving = ref(false)
 const previewing = ref(false)
@@ -101,10 +100,8 @@ const scenariosChanged = computed(() => {
   const published = sheet.value?.scenarios || []
   return scenarioCodes.value.length !== published.length || !published.every(sku=>scenarioCodes.value.includes(sku.code))
 })
-const scopeKey = scope => JSON.stringify({unitIds:[...scope.unitIds].sort(),appointment:scope.appointment})
-const performanceChanged = computed(() => scopeKey(performanceScope.value)!==scopeKey(performanceForm(sheet.value?.performanceScope)))
 const changed = computed(() => creating.value ? Boolean(ruleName.value.trim() && scenarioCodes.value.length && rows.value.length)
-  : componentsChanged.value || scenariosChanged.value || performanceChanged.value)
+  : componentsChanged.value || scenariosChanged.value)
 const scenarioOptions = computed(() => {
   const label = sku => sku.label+(sku.requiresCompletion ? ' · 完成后计提' : '')
   const available = new Map((sheet.value?.options?.scenarios || []).map(sku=>[sku.code,{value:sku.code,label:label(sku)}]))
@@ -123,6 +120,8 @@ function editableRows(items) {
     return {uid:item.itemKey,itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,
       organizationKey:item.organizationKey,personId:item.personId,personName:item.personId ? item.targetName : undefined,
       poolName:item.poolName || '',ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
+      salesScope:item.ownSales ? 'own' : item.salesScopeUnitIds || null,recipientDuty:item.recipientDuty,
+      appointment:item.appointment ? {...item.appointment} : undefined,
       method:item.fixedMinor!=null ? 'fixed' : tiers.length===1 ? 'rate' : 'tiers',
       fixedAmount:item.fixedMinor==null ? undefined : item.fixedMinor/100,
       uniformRate:tiers.length===1 ? tiers[0].rate_bps/100 : undefined,
@@ -131,9 +130,22 @@ function editableRows(items) {
 }
 function configuredRow(item) {
   const target = {itemKey:item.itemKey,label:item.label.trim(),targetKind:item.targetKind,organizationKey:item.organizationKey,
-    personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole}
+    personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole,...orderScopeBody(item)}
   if (item.method==='fixed') return {...target,fixedAmount:item.fixedAmount}
   return {...target,tiers:item.method==='rate' ? [{from:0,rate:item.uniformRate}] : item.tiers}
+}
+const periodScopeUnits = computed(() => sheet.value?.options?.salesUnits || [])
+const salesUnitNames = computed(() => new Map([...Object.entries(sheet.value?.scopeLabels?.units || {}),
+  ...periodScopeUnits.value.map(unit=>[unit.value,unit.label])]))
+function orderScopeText(item) {
+  const scope = item.salesScope==='own' ? '本人销售' : item.salesScope==null ? '整个适用账期'
+    : item.salesScope.length ? '指定团队 · '+item.salesScope.map(id=>salesUnitNames.value.get(id) || '组织待核').join('、') : '请选择销售组织'
+  return item.appointment ? scope+' · 任职期间' : scope
+}
+function orderScopeBody(item) {
+  return {ownSales:item.salesScope==='own' || undefined,
+    salesScopeUnitIds:Array.isArray(item.salesScope) ? item.salesScope : undefined,recipientDuty:item.recipientDuty,
+    appointment:item.appointment ? {...item.appointment,personId:item.personId} : undefined}
 }
 const methodLabels = {rate:'统一比例',tiers:'按净额阶梯',fixed:'整期固定金额'}
 function setMethod(item, method) {
@@ -149,30 +161,11 @@ function methodSummary(item) {
 const targetTypes = [{value:'person',label:'指定个人'},{value:'company',label:'指定公司'},{value:'pool',label:'团队池'}]
 const targetLabels = {person:'个人',company:'公司',pool:'团队池'}
 const peopleFilters = computed(() => creating.value ? {productId:productId.value,scope:'period'} : {ruleId:props.rule?.id,scope:'period'})
-function performanceForm(scope) {
-  const duty = scope?.appointment
-  return {unitIds:[...(scope?.unitIds || [])],appointment:duty ? {personId:duty.personId,unitId:duty.unitId,role:duty.role} : undefined}
-}
-const unitOptions = computed(() => {
-  const choices = new Map((sheet.value?.options?.organizations || []).map(unit=>[unit.unitId,{value:unit.unitId,label:unit.label,kind:unit.kind}]))
-  for (const [id,label] of Object.entries(copiedFrom.value?.scopeLabels?.units || sheet.value?.scopeLabels?.units || {})) {
-    if (!choices.has(id)) choices.set(id,{value:id,label})
-  }
-  return Array.from(choices.values())
-})
-const sourceUnitOptions = computed(() => unitOptions.value.filter(unit=>
-  ['DEPARTMENT','TEAM'].includes(unit.kind) || performanceScope.value.unitIds.includes(unit.value)))
-const unitLabel = id => unitOptions.value.find(unit=>unit.value===id)?.label || '组织待核'
-function performanceChanges() {
-  if (!performanceChanged.value) return {}
-  const {unitIds,appointment} = performanceScope.value
-  if (appointment && (!appointment.personId || !appointment.unitId || !appointment.role)) {
-    throw new Error('请选择人员、任职组织和岗位。')
-  }
-  return {performanceScope:{unitIds,appointment}}
-}
+const unitOptions = computed(() => (sheet.value?.options?.organizations || [])
+  .map(unit=>({value:unit.unitId,label:unit.label,kind:unit.kind})))
 function targetLabel(item) {
-  if (item.targetKind==='person') return item.personName || '待选择收款人'
+  if (item.targetKind==='person') return [item.personName || '待选择收款人',
+    item.recipientDuty && props.optionLabel('organizationDuty',item.recipientDuty)].filter(Boolean).join(' · ')
   const name = availableOrganizations(item).find(org=>org.value===item.organizationKey)?.label ||
     sheet.value.items.find(old=>old.itemKey===item.itemKey)?.targetName
   return [item.poolName,name].filter(Boolean).join(' · ') || '待选择收款对象'
@@ -198,10 +191,13 @@ function setTarget(row, target) {
   row.ownerRole = ''
   row.memberRole = ''
   row.poolName = ''
+  row.recipientDuty = undefined
+  row.appointment = undefined
+  if (target!=='person' && row.salesScope==='own') row.salesScope = null
 }
 function addComponent() {
   const uid = 'new-' + (++newComponentID)
-  rows.value.push({uid,label:'',targetKind:'company',method:'rate',tiers:[]})
+  rows.value.push({uid,label:'',targetKind:'company',method:'rate',tiers:[],salesScope:null})
   activeComponent.value = uid
   editingComponent.value = uid
 }
@@ -211,8 +207,6 @@ function initializeCreation(data, product) {
   effectiveDate.value = nextStart(new Date().toISOString(),creationCycle.value)
   if (copy) {
     scenarioCodes.value = copy.scenarios.map(sku=>sku.code)
-    performanceScope.value = performanceForm(copy.performanceScope)
-    appointmentName.value = copy.scopeLabels?.person || ''
     rows.value = editableRows(copy.items).map(({itemKey,...row}, index)=>({
       ...row,uid:'new-'+(++newComponentID),organizationName:copy.items[index].targetName,
     }))
@@ -260,8 +254,10 @@ function componentChanges() {
     if (item.targetKind==='pool' && (!item.poolName?.trim() || !item.ownerRole || !item.memberRole)) {
       throw new Error('请填写团队池名称、负责人职责和成员职责。')
     }
+    if (Array.isArray(item.salesScope) && !item.salesScope.length) throw new Error('请为「'+item.label+'」选择适用销售组织。')
+    if (item.appointment && (!item.appointment.unitId || !item.appointment.role)) throw new Error('请为「'+item.label+'」选择任职组织和岗位。')
     const target = {itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,organizationKey:item.organizationKey,
-      personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole}
+      personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole,...orderScopeBody(item)}
     if (item.method==='fixed') return {...target,fixedMinor:minor(item.fixedAmount,'请输入整期固定金额。')}
     const {tiers} = configuredRow(item)
     const starts = tiers.map(row=>minor(row.from,'请输入每档净额起点。'))
@@ -292,9 +288,6 @@ watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,pro
     rows.value = editableRows(data.items)
     scenarioCodes.value = data.scenarios.map(sku=>sku.code)
     editingScenarios.value = false
-    performanceScope.value = performanceForm(data.performanceScope)
-    appointmentName.value = data.scopeLabels?.person || ''
-    editingPerformance.value = false
     activeComponent.value = rows.value.length===1 ? rows.value[0].uid : undefined
     editingComponent.value = undefined
     if (creating.value) initializeCreation(data,product)
@@ -309,7 +302,7 @@ watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,pro
 watch(creationCycle, cycle=>{
   if (creating.value && cycle) effectiveDate.value = nextStart(new Date().toISOString(),cycle)
 })
-watch([rows,amounts,scenarioCodes,creationCycle,effectiveDate,ruleName,performanceScope], ()=>{
+watch([rows,amounts,scenarioCodes,creationCycle,effectiveDate,ruleName,quoteItem], ()=>{
   ++quoteRequest
   previewing.value = false
   quote.value = undefined
@@ -322,7 +315,7 @@ function clearActivity() {
   reviewingActivity.value = false
 }
 watch([activityMonth,()=>props.rule?.id], clearActivity)
-watch([rows,scenarioCodes,creationCycle,effectiveDate,ruleName,performanceScope], ()=>{
+watch([rows,scenarioCodes,creationCycle,effectiveDate,ruleName], ()=>{
   if (activityMode.value==='edits') clearActivity()
 },{deep:true})
 
@@ -369,8 +362,11 @@ async function preview() {
   error.value = ''
   previewing.value = true
   try {
+    const index = rows.value.findIndex(item=>item.uid===quoteItem.value)
+    if (scopedQuote.value && index<0) throw new Error('请选择要演算的收款安排。')
     const result = await props.api('/catalog-period-rules/preview',{method:'POST',body:JSON.stringify({
-      ...(creating.value ? creationInput() : {baseId:props.rule.id,...componentChanges(),...performanceChanges()}),
+      ...(creating.value ? creationInput() : {baseId:props.rule.id,...componentChanges()}),
+      ...(scopedQuote.value ? {itemIndex:index} : {}),
       receiptsMinor:minor(amounts.value.receipts,'请输入本期实收。'),
       refundsMinor:minor(amounts.value.refunds,'请输入本期退款。'),
       carryInMinor:-minor(amounts.value.carry,'请输入上期未抵扣退款。'),
@@ -382,20 +378,21 @@ async function preview() {
     if (request === quoteRequest) previewing.value = false
   }
 }
+const scopedQuote = computed(() => rows.value.some(item=>item.salesScope!=null || item.appointment))
 function creationInput() {
   if (!changed.value || !effectiveDate.value) throw new Error('请填写规则名称、生效日期，并选择参与场景。')
   const selectable = new Set(sheet.value.options.scenarios.map(sku=>sku.code))
   if (scenarioCodes.value.some(code=>!selectable.has(code))) throw new Error('请移除当前不可选的 SKU，并核对参与场景。')
   return {create:{productId:productId.value,label:ruleName.value.trim(),cycle:creationCycle.value},
     effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),scenarioCodes:scenarioCodes.value,
-    ...componentChanges(),...performanceChanges()}
+    ...componentChanges()}
 }
 function versionInput() {
   if (creating.value) return creationInput()
   if (!scenarioCodes.value.length) throw new Error('请至少选择一个参与场景。')
   if (!effectiveDate.value) throw new Error('请选择新版本的生效日期。')
   return {baseId:props.rule.id,effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),
-    ...componentChanges(),...performanceChanges(),
+    ...componentChanges(),
     ...(scenariosChanged.value ? {scenarioCodes:scenarioCodes.value} : {})}
 }
 async function publish() {
@@ -485,45 +482,6 @@ async function resumeRule() {
               <a-button v-if="canSave" type="link" :disabled="saving" @click="editingScenarios=true">编辑参与场景</a-button>
             </template>
           </a-descriptions-item>
-          <a-descriptions-item label="各收款安排共用的业绩范围" :span="2">
-            <template v-if="editingPerformance">
-              <a-form layout="vertical" class="rule-basics">
-                <a-form-item label="部门、小组" html-for="period-scope-units">
-                  <a-select id="period-scope-units" v-model:value="performanceScope.unitIds" :options="sourceUnitOptions"
-                    mode="multiple" show-search option-filter-prop="label" aria-label="部门、小组" placeholder="不限部门和小组" :disabled="saving"/>
-                </a-form-item>
-                <a-form-item>
-                  <a-checkbox :checked="!!performanceScope.appointment" :disabled="saving"
-                    @update:checked="performanceScope.appointment=$event ? {} : undefined">只纳入任职期间的订单</a-checkbox>
-                </a-form-item>
-                <template v-if="performanceScope.appointment">
-                  <a-form-item label="任职人员" html-for="period-scope-person">
-                    <AppointmentPersonSelect id="period-scope-person" v-model:value="performanceScope.appointment.personId"
-                      :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters"
-                      :current="performanceScope.appointment.personId ? {id:performanceScope.appointment.personId,name:appointmentName} : undefined"
-                      :disabled="saving" @change="(_,option)=>appointmentName=option.name"/>
-                  </a-form-item>
-                  <a-form-item label="任职组织" html-for="period-scope-appointment-unit">
-                    <a-select id="period-scope-appointment-unit" v-model:value="performanceScope.appointment.unitId" :options="unitOptions"
-                      show-search option-filter-prop="label" :disabled="saving"/>
-                  </a-form-item>
-                  <a-form-item label="任职岗位" html-for="period-scope-appointment-role">
-                    <a-select id="period-scope-appointment-role" v-model:value="performanceScope.appointment.role"
-                      :options="availableRoles(performanceScope.appointment.role)" :disabled="saving"/>
-                  </a-form-item>
-                </template>
-              </a-form>
-              <a-button type="link" @click="editingPerformance=false">完成选择</a-button>
-            </template>
-            <template v-else>
-              <a-tag v-for="id in performanceScope.unitIds" :key="id">{{ unitLabel(id) }}</a-tag>
-              <span v-if="!performanceScope.unitIds.length">全部部门和小组</span>
-              <a-tag v-if="performanceScope.appointment" class="period-appointment-caption">{{ appointmentName || '人员待核' }} ·
-                {{ unitLabel(performanceScope.appointment.unitId) }} ·
-                {{ optionLabel('catalogAppointmentRole',performanceScope.appointment.role) || '岗位待选' }}任职期间</a-tag>
-              <a-button v-if="canSave" type="link" :disabled="saving" @click="editingPerformance=true">编辑业绩范围</a-button>
-            </template>
-          </a-descriptions-item>
         </a-descriptions>
         <div class="rule-blocks period-component-layout" aria-label="收款安排">
           <div class="rule-blocks-heading">
@@ -536,6 +494,7 @@ async function resumeRule() {
             <DownOutlined aria-hidden="true"/>
             <strong>{{ item.label || '新收款安排' }}</strong>
             <span class="rule-block-badge">{{ targetLabels[item.targetKind] }}</span>
+            <span class="rule-block-recipient" :title="orderScopeText(item)">{{ orderScopeText(item) }}</span>
             <small>{{ targetLabel(item) }} · {{ methodSummary(item) }}</small>
           </button>
           <div v-if="activeComponent===item.uid" :id="'period-rule-part-'+item.uid" class="rule-block-body">
@@ -564,6 +523,10 @@ async function resumeRule() {
               <a-select id="period-benefit-org" v-model:value="item.organizationKey" :options="availableOrganizations(item)"
                 :disabled="saving" show-search option-filter-prop="label"/>
             </a-form-item>
+            <a-form-item v-if="item.targetKind==='person'" label="收款人职责" html-for="period-benefit-duty">
+              <a-select id="period-benefit-duty" v-model:value="item.recipientDuty" :options="sheet.options?.duties"
+                show-search option-filter-prop="label" allow-clear placeholder="选填" :disabled="saving"/>
+            </a-form-item>
             <template v-if="item.targetKind==='pool'">
               <a-form-item label="团队池名称" html-for="period-benefit-pool">
                 <a-input id="period-benefit-pool" v-model:value="item.poolName" :maxlength="80" :disabled="saving"/>
@@ -580,6 +543,24 @@ async function resumeRule() {
             <p class="rule-formula">{{ targetLabel(item) }}</p>
             <p v-if="item.ownerRole" class="rule-formula">负责人 {{ optionLabel('catalogAppointmentRole',item.ownerRole) || item.ownerRole }} · 成员 {{ optionLabel('catalogAppointmentRole',item.memberRole) || item.memberRole || '未配置' }}</p>
           </template>
+          <CatalogCommissionScopeFields v-if="canSave" :prefix="'period-scope-'+item.uid" v-model="item.salesScope"
+            :options="periodScopeUnits" :can-own="item.targetKind==='person'" :disabled="saving"/>
+          <a-form v-if="canSave && item.targetKind==='person'" layout="vertical" size="small" class="rule-basics">
+            <a-form-item>
+              <a-checkbox :checked="!!item.appointment" :disabled="saving"
+                @update:checked="item.appointment=$event ? {} : undefined">仅计提任职期间的订单</a-checkbox>
+            </a-form-item>
+            <template v-if="item.appointment">
+              <a-form-item label="任职组织" html-for="period-benefit-appointment-unit">
+                <a-select id="period-benefit-appointment-unit" v-model:value="item.appointment.unitId" :options="unitOptions"
+                  :disabled="saving" show-search option-filter-prop="label"/>
+              </a-form-item>
+              <a-form-item label="任职岗位" html-for="period-benefit-appointment-role">
+                <a-select id="period-benefit-appointment-role" v-model:value="item.appointment.role" :options="availableRoles(item.appointment.role)"
+                  :disabled="saving" show-search option-filter-prop="label"/>
+              </a-form-item>
+            </template>
+          </a-form>
           <h4 class="rule-item-section">提成怎么算</h4>
           <div class="period-method">
             <a-radio-group v-if="canSave" :value="item.method" aria-label="计提方式" role="radiogroup" size="small" button-style="solid"
@@ -603,8 +584,8 @@ async function resumeRule() {
             <span v-else-if="item.method==='fixed'">{{ methodSummary(item) }}</span>
             <span v-if="item.method==='fixed'" class="period-method-formula">符合范围的净实收大于零时，整期计提一次。<template v-if="item.targetKind==='pool'"> 由账期末有效负责人承接。</template></span>
           </div>
-          <p v-if="item.method!=='fixed' && rows.length>1 && rows.some(row=>row.targetKind==='pool' && row.method!=='fixed')" class="rule-formula">
-            团队池负责人或可分配成员变动时分组，同组各收款安排共用本组净额。
+          <p v-if="item.method!=='fixed' && item.targetKind==='pool'" class="rule-formula">
+            团队池按付款时的负责人和可分配成员归组。
           </p>
           <template v-if="item.method==='tiers'">
           <p class="rule-formula">按本组净额选档，净额乘该档比例。</p>
@@ -695,7 +676,7 @@ async function resumeRule() {
                 <p v-if="activity.grouping.priorUnsettled" class="rule-formula" role="status">上一账期尚未确认，暂显示结转前试算。</p>
                 <div v-if="activity.grouping.groups.length" class="period-activity-table">
                   <table>
-                    <thead><tr><th>规则版本</th><th>收款对象</th><th>本期收款</th><th>本期退款</th><th>本期净额</th>
+                    <thead><tr><th>规则版本</th><th>收款对象</th><th>安排实收</th><th>安排退款</th><th>计提净额</th>
                       <th v-if="showsPriorCarry">上期结转退款</th>
                       <th>{{ activity.grouping.priorUnsettled ? '结转前试算' : '分润试算' }}</th></tr></thead>
                     <tbody>
@@ -708,10 +689,10 @@ async function resumeRule() {
                             <small v-if="target.ownerName" class="order-version">{{ target.ownerName }}负责 · {{ target.memberCount }} 人可分配</small>
                           </div>
                         </td>
-                        <td>{{ group.fixedOnly ? '—' : formatMoney(group.receiptsMinor) }}</td>
-                        <td>{{ group.fixedOnly ? '—' : formatMoney(group.refundsMinor) }}</td>
-                        <td>{{ group.fixedOnly ? '—' : formatMoney(group.netMinor) }}</td>
-                        <td v-if="showsPriorCarry">{{ group.fixedOnly ? '—' : formatMoney(-(group.carryInMinor || 0)) }}</td>
+                        <td>{{ formatMoney(group.receiptsMinor) }}</td>
+                        <td>{{ formatMoney(group.refundsMinor) }}</td>
+                        <td>{{ formatMoney(group.netMinor) }}</td>
+                        <td v-if="showsPriorCarry">{{ formatMoney(-(group.carryInMinor || 0)) }}</td>
                         <td>
                           <small v-if="group.fixedOnly" class="order-version">
                             可计提净额 {{ formatMoney((group.afterCarry || group.beforeCarry).basisMinor) }}
@@ -743,9 +724,13 @@ async function resumeRule() {
         </template>
         <template v-if="!applied">
         <h3 class="form-subhead">金额演算</h3>
-        <p class="rule-formula">填写汇总金额，演算各收款安排的计提金额。</p>
+        <p v-if="!scopedQuote" class="rule-formula">填写汇总金额，演算各收款安排的计提金额。</p>
         <a-form layout="vertical">
           <div class="period-quote-inputs">
+            <a-form-item v-if="scopedQuote" label="演算收款安排" html-for="period-quote-item">
+              <a-select id="period-quote-item" v-model:value="quoteItem" placeholder="选择后填写该安排的收退款"
+                :options="rows.map(item=>({value:item.uid,label:item.label || '未命名收款安排'}))"/>
+            </a-form-item>
             <a-form-item label="本期实收（元）" html-for="period-quote-received">
               <a-input-number id="period-quote-received" v-model:value="amounts.receipts" :min="0" :precision="2"/>
             </a-form-item>

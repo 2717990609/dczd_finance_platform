@@ -21,15 +21,43 @@ const twoTierPeriodRule = `{
  "tier_table":[{"id":"original-1","rate_bps":0,"max_exclusive":10001},{"id":"original-2","rate_bps":100,"min_inclusive":10001}]}]
 }`
 
-func TestCatalogPeriodRuleRejectsIgnoredPerArrangementScopes(t *testing.T) {
+func TestCatalogPeriodRuleRejectsInvalidPerArrangementScopes(t *testing.T) {
 	for _, field := range []string{
-		`"sales_scope_unit_ids":["41000000-0000-4000-8000-000000000111"]`,
+		`"sales_scope_unit_ids":["invalid"]`,
+		`"own_sales":true`,
 		`"leader_scope":{"orders":"all"}`,
 	} {
 		raw := strings.Replace(twoTierPeriodRule, `"tier_table":`, field+`,"tier_table":`, 1)
 		if _, err := parseCatalogPeriodRule(json.RawMessage(raw)); !errors.Is(err, errCatalogRateUnavailable) {
 			t.Fatalf("must not accept an unexecuted scope %s: %v", field, err)
 		}
+	}
+}
+
+func TestCatalogPeriodItemsSaveIndependentScopes(t *testing.T) {
+	const team = "41000000-0000-4000-8000-000000000112"
+	options := catalogStructureOptions{SalesUnits: []catalogStructureOption{{Value: team}}}
+	edits := []catalogPeriodComponentEdit{
+		{Label: "本人销售", TargetKind: "person", PersonID: 64, Tiers: []catalogPeriodTier{{Rate: 1000}}},
+		{Label: "团队负责人", TargetKind: "person", PersonID: 64, Tiers: []catalogPeriodTier{{Rate: 200}}},
+	}
+	if err := json.Unmarshal([]byte(`{"ownSales":true}`), &edits[0]); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(`{"salesScopeUnitIds":["`+team+`"]}`), &edits[1]); err != nil {
+		t.Fatal(err)
+	}
+	body, err := editCatalogPeriodComponents(json.RawMessage(twoTierPeriodRule), edits, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	period, err := parseCatalogPeriodRule(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	readback, err := json.Marshal(period.Items)
+	if err != nil || !strings.Contains(string(readback), `"ownSales":true`) || !strings.Contains(string(readback), `"salesScopeUnitIds":["`+team+`"]`) {
+		t.Fatalf("independent scope fields missing: %s (%v)", readback, err)
 	}
 }
 
