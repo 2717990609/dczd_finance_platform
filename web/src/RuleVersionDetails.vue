@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyMatchLabels, practiceCompanyRatePriority, practiceCompanyScopes, practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
+import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyMatchLabels, practiceCompanyRatePriority, practiceCompanyRefundMode,
+  practiceCompanyRefundOptions, practiceCompanyScopes, practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
   practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, practiceStandardRateGroups, practiceStandardRateSummary,
   ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
@@ -92,9 +93,11 @@ const companyStandards = computed(() => {
     {scope:'category',column:'适用销售类别',rows:defaults},
     {scope:'companies',column:'适用销售公司',rows:companies},
     {scope:'default',rate:arrangement?.defaultRate},
-  ].map(group=>({...group,label:practiceCompanyMatchLabels[group.scope],hasRecommendation:group.rows?.some(({row,inheritedRate})=>
-    row.recommendationRate!=null || inheritedRate!=null)}))
+  ].map(group=>({...group,label:practiceCompanyMatchLabels[group.scope],
+    hasFixed:group.rows?.some(({row})=>row.mode==='fixed'),
+    hasRecommendation:group.rows?.some(({row,inheritedRate})=>row.recommendationRate!=null || inheritedRate!=null)}))
 })
+const companyRefundLabel = (row, member) => practiceCompanyRefundOptions.find(option=>option.value===practiceCompanyRefundMode(row,member)).label
 const companyPriority = computed(() =>
   practiceCompanyRatePriority(practiceCompanyScopes(props.rule.components[activePart.value]?.companySales)))
 const countStart = rule => rule.openingId ? props.openingLabel(rule.openingId)
@@ -268,6 +271,7 @@ onMounted(async () => {
                 <tr>
                   <th scope="col">{{ group.column }}</th>
                   <th scope="col">计提标准</th>
+                  <th v-if="group.hasFixed" scope="col">退款扣回方式</th>
                   <th v-if="group.hasRecommendation" scope="col">推荐比例</th>
                 </tr>
               </thead>
@@ -275,6 +279,7 @@ onMounted(async () => {
                 <tr v-for="({row,names,inheritedRate},rowIndex) in group.rows" :key="rowIndex">
                   <th scope="row">{{ names.join('、') }}</th>
                   <td>{{ standard(row,10000) }}{{ row.mode==='fixed' ? fixedUnit : '' }}</td>
+                  <td v-if="group.hasFixed" class="company-refund-policy">{{ row.mode==='fixed' ? companyRefundLabel(row,part.classMember) : '—' }}</td>
                   <td v-if="group.hasRecommendation">
                     {{ row.recommendationRate!=null ? rate(row.recommendationRate,10000) :
                       inheritedRate!=null ? '沿用 '+rate(inheritedRate,10000) : '—' }}
@@ -365,4 +370,5 @@ onMounted(async () => {
 .rule-company-standards th { font-weight:500; overflow-wrap:anywhere; }
 .rule-company-standards thead { background:#f6f8fb; }
 .rule-company-standards td { white-space:nowrap; font-variant-numeric:tabular-nums; }
+.rule-company-standards td.company-refund-policy { white-space:normal; }
 </style>

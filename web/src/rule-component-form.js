@@ -49,6 +49,14 @@ export const practiceCompanyMatchLabels = {
   default:'其他外部公司默认比例',
 }
 
+export const practiceCompanyRefundOptions = [
+  {value:'proportional',label:'按退款比例扣回'},
+  {value:'retain_fixed',label:'部分退款保留固定提成'},
+]
+export function practiceCompanyRefundMode(row, member) {
+  return row.refundPolicy === 'proportional' || member === 'new' ? 'proportional' : 'retain_fixed'
+}
+
 export function catalogRateConditionScope(row) {
   if (row.scope) return row.scope
   if (row.externalCompanyDefault) return 'external'
