@@ -12,9 +12,9 @@ const categories = computed(() => sales.value.categories)
 const overrides = computed(() => categories.value.flatMap((category,index)=>
   category.overrides.map((override,position)=>({category,index,override,position}))))
 const standardGroups = [
-  {scope:'companies',label:'按指定公司计提',action:'添加指定公司'},
   {scope:'category',label:'按销售类别计提',action:'添加销售类别'},
   {scope:'default',label:'外部公司默认比例'},
+  {scope:'companies',label:'按指定公司计提',action:'添加指定公司'},
 ]
 const standardRowsByScope = computed(() => ({
   companies:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='companies'),
@@ -38,10 +38,10 @@ const scopes = computed(() => practiceCompanyScopes(sales.value))
 const scopeText = computed(() => {
   const {companies,categories,hasDefault} = scopes.value
   return [
-    companies.length ? '指定公司 '+companies.length+' 家' : '指定公司未配置',
-    categories.length ? '销售类别 '+categories.length+' 类' : '销售类别未配置',
-    hasDefault && '含外部公司默认',
-  ].filter(Boolean).join(' · ')
+    companies.length && '按指定公司 '+companies.length+' 家',
+    categories.length && '按销售类别 '+categories.length+' 类',
+    hasDefault && '其他外部公司按默认比例',
+  ].filter(Boolean).join(' · ') || '待配置计提标准'
 })
 const priority = computed(() => practiceCompanyRatePriority(scopes.value))
 const calculationText = computed(() => {
