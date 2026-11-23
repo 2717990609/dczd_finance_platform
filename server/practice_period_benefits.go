@@ -98,6 +98,10 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 			units = append(units, benefit.UnitID, benefit.AppointmentUnitID)
 			units = append(units, benefit.SalesUnits...)
 			units = append(units, benefit.ReferralCompanyIDs...)
+			categories = append(categories, benefit.SalesCategoryIDs...)
+			for _, standard := range benefit.StandardRates {
+				categories = append(categories, standard.SalesCategoryIDs...)
+			}
 		}
 		if part.Tiers != nil {
 			for _, start := range part.Tiers.PersonCountStarts {
@@ -166,6 +170,8 @@ type practicePeriodBenefit struct {
 	TierOnWholeClass         bool                       `json:"tierOnWholeClass,omitempty"`
 	Tiers                    []practicePeriodRate       `json:"tiers,omitempty"`
 	Pool                     *practicePoolTarget        `json:"pool,omitempty"`
+
+	StandardRates []practicePeriodStandardRate `json:"standardRates,omitempty"`
 }
 
 type practicePeriodRate struct {
@@ -180,7 +186,8 @@ func (b practicePeriodBenefit) hasSalesScope() bool {
 
 func practiceScopesUseCategories(rule paymentRule) bool {
 	return slices.ContainsFunc(rule.Components, func(part component) bool {
-		return part.PeriodBenefit != nil && len(part.PeriodBenefit.SalesCategoryIDs) != 0 ||
+		return part.PeriodBenefit != nil && (len(part.PeriodBenefit.SalesCategoryIDs) != 0 ||
+			slices.ContainsFunc(part.PeriodBenefit.StandardRates, func(rate practicePeriodStandardRate) bool { return len(rate.SalesCategoryIDs) != 0 })) ||
 			part.SaleScope != nil && len(part.SaleScope.SalesCategoryIDs) != 0
 	})
 }
@@ -278,6 +285,10 @@ func validPracticePeriodBenefit(c component) bool {
 		if person <= 0 {
 			return false
 		}
+	}
+	if len(b.StandardRates) != 0 {
+		_, valid := indexPracticeStandardRates(b.StandardRates)
+		return valid && c.Value == 0 && b.FixedMinor == nil && !b.FixedPerClass && len(b.Tiers) == 0 && !b.TierOnWholeClass
 	}
 	if b.FixedMinor != nil {
 		return c.Value == 0 && *b.FixedMinor >= 0 && *b.FixedMinor <= 100000000000 && len(b.Tiers) == 0 && !b.TierOnWholeClass
@@ -448,12 +459,26 @@ type practiceBenefitShare struct {
 	payments      []paymentInput
 	people        []identityAssignment
 	organizations []pgtype.UUID
+	rates         []int64
 	company       pgtype.UUID
 	fixed         [2]int64
 	key           string
 	net           int64
 	amount        int64
 	rem           int64
+}
+
+func (s practiceBenefitShare) paymentShare(index int) practiceBenefitShare {
+	payment := s.payments[index]
+	part := practiceBenefitShare{purchase: s.purchase, payments: s.payments[index : index+1], company: s.company,
+		key: payment.Fact.OrderID, net: s.purchase.netAmount(payment)}
+	if len(s.people) != 0 {
+		part.people = s.people[index : index+1]
+	}
+	if len(s.organizations) != 0 {
+		part.organizations = s.organizations[index : index+1]
+	}
+	return part
 }
 
 func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string, assignments []practiceAppointment,
@@ -509,12 +534,22 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 }
 
 func collectPracticeBenefitShares(part component, purchases []practicePurchase, assignments []practiceAppointment,
-	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int, runtime practiceDraftRuntime) ([]practiceBenefitShare, int64, draftIssue, error) {
+	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int, runtime practiceDraftRuntime) ([]practiceBenefitShare, int64, []draftIssue, error) {
 	b := part.PeriodBenefit
-	checkSalesAgreement := b.OrderAppointmentLevel == "" && b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
+	checkSalesAgreement := len(b.StandardRates) == 0 && b.OrderAppointmentLevel == "" &&
+		b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
 	checkConfiguredRole := b.usesSalesPerson() && !runtime.legacyBenefitAttribution
 	var eligible []practiceBenefitShare
 	var tierBase int64
+	var issues []draftIssue
+	var standards practicePeriodStandardRates
+	if len(b.StandardRates) != 0 {
+		var valid bool
+		standards, valid = indexPracticeStandardRates(b.StandardRates)
+		if !valid {
+			return nil, 0, append(issues, draftIssue{Code: "UNCONFIGURED_COMPONENT"}), nil
+		}
+	}
 	for _, p := range purchases {
 		if p.issue == practicePaymentAlreadySettled {
 			continue
@@ -525,7 +560,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		})
 		if p.issue != "" || repeatedPayment {
 			if memberMatches || b.TierOnWholeClass {
-				return nil, 0, draftIssue{Code: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"}, nil
+				return nil, 0, append(issues, draftIssue{Code: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"}), nil
 			}
 			continue
 		}
@@ -533,7 +568,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 			var err error
 			tierBase, err = addMinor(tierBase, p.base)
 			if err != nil {
-				return nil, 0, draftIssue{}, err
+				return nil, 0, nil, err
 			}
 		}
 		if !memberMatches {
@@ -557,11 +592,11 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 			left, right := payments[0].Fact, payments[1].Fact
 			if left.SalesCompanyID != right.SalesCompanyID ||
 				(!checkConfiguredRole && left.ReferrerID != "" && right.ReferrerID != "" && left.ReferrerID != right.ReferrerID) {
-				return nil, 0, draftIssue{Code: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"}, nil
+				return nil, 0, append(issues, draftIssue{Code: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"}), nil
 			}
 			if checkConfiguredRole {
 				if _, issue := practiceBeneficiaries(payments, part.SourceRole, identities); issue != "" {
-					return nil, 0, draftIssue{Code: issue}, nil
+					return nil, 0, append(issues, draftIssue{Code: issue}), nil
 				}
 			}
 		}
@@ -569,19 +604,33 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		for _, payment := range payments {
 			yes, issue := b.eligiblePayment(payment, part.SourceRole, assignments, identities, runtime)
 			if issue != "" {
-				return nil, 0, draftIssue{Code: issue}, nil
+				return nil, 0, append(issues, draftIssue{Code: issue}), nil
 			}
 			if yes {
+				var rate int64
+				if len(b.StandardRates) != 0 {
+					rate, issue = standards.match(payment, p.noReferrer, runtime)
+					if issue != "" {
+						issues = append(issues, draftIssue{Code: issue, FactID: payment.ID, EnrollmentID: p.member.ID})
+						continue
+					}
+					if rate == 0 {
+						continue
+					}
+				}
 				if b.OrderAppointmentLevel != "" {
 					person, unit, issue := practiceOrderAppointmentRecipient(payment, b, part.SourceRole, identities, runtime)
 					if issue != "" {
-						return nil, 0, draftIssue{Code: issue, FactID: payment.ID, EnrollmentID: p.member.ID}, nil
+						return nil, 0, append(issues, draftIssue{Code: issue, FactID: payment.ID, EnrollmentID: p.member.ID}), nil
 					}
 					if person == 0 {
 						continue
 					}
 					share.people = append(share.people, identityAssignment{PersonID: person})
 					share.organizations = append(share.organizations, unit)
+				}
+				if len(b.StandardRates) != 0 {
+					share.rates = append(share.rates, rate)
 				}
 				share.payments = append(share.payments, payment)
 				share.net += p.netAmount(payment)
@@ -609,7 +658,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 			}
 		}
 		if recipientIssue != "" {
-			return nil, 0, draftIssue{Code: recipientIssue, EnrollmentID: p.member.ID}, nil
+			return nil, 0, append(issues, draftIssue{Code: recipientIssue, EnrollmentID: p.member.ID}), nil
 		}
 		share.key = share.payments[0].Fact.OrderID
 		if len(payments) == 2 {
@@ -619,12 +668,12 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 			var err error
 			tierBase, err = addMinor(tierBase, share.net)
 			if err != nil {
-				return nil, 0, draftIssue{}, err
+				return nil, 0, nil, err
 			}
 		}
 		eligible = append(eligible, share)
 	}
-	return eligible, tierBase, draftIssue{}, nil
+	return eligible, tierBase, issues, nil
 }
 
 func (b practicePeriodBenefit) rate(configured, basis int64) (int64, bool) {
@@ -708,10 +757,7 @@ func allocatePracticeOrganizationFixedBenefit(shares []practiceBenefitShare, awa
 	byUnit := make(map[pgtype.UUID][]practiceBenefitShare)
 	for _, share := range shares {
 		for index, unit := range share.organizations {
-			payment := share.payments[index]
-			byUnit[unit] = append(byUnit[unit], practiceBenefitShare{purchase: share.purchase, payments: share.payments[index : index+1],
-				people: share.people[index : index+1], organizations: share.organizations[index : index+1], key: payment.Fact.OrderID,
-				net: share.purchase.netAmount(payment)})
+			byUnit[unit] = append(byUnit[unit], share.paymentShare(index))
 		}
 	}
 	var result []practiceBenefitShare
@@ -806,20 +852,21 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 			(b.FixedPerClass || len(b.Tiers) != 0) {
 			continue
 		}
-		shares, basis, issue, err := collectPracticeBenefitShares(part, participants, validAppointments, identities, paymentCounts, runtime)
+		shares, basis, issues, err := collectPracticeBenefitShares(part, participants, validAppointments, identities, paymentCounts, runtime)
 		if err != nil {
 			return err
 		}
-		if issue.Code != "" {
+		for _, issue := range issues {
 			issue.RuleID, issue.Component = rule.ID, key
 			draft.Issues = append(draft.Issues, issue)
-			continue
 		}
 		if len(shares) == 0 {
 			continue
 		}
 		var total int64
-		if b.FixedPerClass && b.OrderAppointmentLevel != "" {
+		if len(b.StandardRates) != 0 {
+			shares, total, err = allocatePracticeStandardRates(shares)
+		} else if b.FixedPerClass && b.OrderAppointmentLevel != "" {
 			shares, total, err = allocatePracticeOrganizationFixedBenefit(shares, *b.FixedMinor)
 		} else if b.FixedMinor != nil {
 			total, err = allocatePracticeFixedBenefit(shares, *b.FixedMinor, b.FixedPerClass)

@@ -26,7 +26,7 @@ import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { catalogAppointmentLevels, checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
   practiceCompanyStandardSummary, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
-  practiceSalesScopeText, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
+  practiceSalesScopeText, practiceStandardRateSummary, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -467,7 +467,7 @@ function ruleRecipientSummary(row) {
         optionLabel('appointmentKind',benefit.orderAppointmentKind)].filter(Boolean).join(' · ') || '待选择任职'
       : optionLabel('practicePeriodRecipient',benefit.recipient) || '选择收款对象'
     const amount = benefit.method==='tiers' ? '阶梯' : benefit.method==='rate'
-      ? (row.amount == null ? '' : row.amount+'%')
+      ? (benefit.standardRates ? practiceStandardRateSummary(benefit.standardRates,value=>value+'%') : row.amount == null ? '' : row.amount+'%')
       : (benefit.fixedAmount == null ? '' : formatMoney(minor(benefit.fixedAmount))+
         (benefit.recipient==='order_appointment' && benefit.method==='class_fixed' ? ' / 组织 / 班' : ''))
     return [payee,['person','order_person'].includes(benefit.recipient) ? optionLabel('organizationDuty',benefit.recipientDuty) : '',amount].filter(Boolean).join(' · ')
@@ -1263,7 +1263,9 @@ function ruleComponentBody(row) {
     if (!registration && b.restrictPayments && !hasPracticePaymentScope(b)) {
       throw new Error('请为「'+label+'」选择销售类别、团队、小组、销售公司或销售人员。')
     }
-    component.value = b.method==='rate' ? periodRate(row.amount) : 0
+    const hasStandardRates = b.method==='rate' && Array.isArray(b.standardRates)
+    if (hasStandardRates && !b.standardRates.length) throw new Error('请为「'+label+'」添加比例标准。')
+    component.value = b.method==='rate' && !hasStandardRates ? periodRate(row.amount) : 0
     component.periodBenefit = {
       label,
       ...(b.labelIsCustom && practiceLegacyArrangementLabel(label,optionLabel)!==label ? {labelIsCustom:true} : {}),
@@ -1289,11 +1291,31 @@ function ruleComponentBody(row) {
       } : {}),
       ...(b.method==='fixed' || b.method==='class_fixed' ? {fixedMinor:minor(must(b.fixedAmount,'请填写固定金额'))} : {}),
       ...(b.method==='class_fixed' ? {fixedPerClass:true} : {}),
+      ...(hasStandardRates ? {standardRates:b.standardRates.map(standard=>{
+        const value = periodRate(standard.value)
+        if (standard.scope==='company') {
+          if (!standard.salesCompanies?.length) throw new Error('请选择使用特例比例的公司。')
+          return {salesCompanies:standard.salesCompanies,value}
+        }
+        if (standard.scope==='category') {
+          if (!standard.salesCategoryIds?.length) throw new Error('请选择使用默认比例的销售类别。')
+          return {salesCategoryIds:standard.salesCategoryIds,value}
+        }
+        return {value}
+      })} : {}),
       ...(b.method==='tiers' ? {tierOnWholeClass:b.tierOnWholeClass || false,tiers:b.tiers.map(t=>({
         from:minor(must(t.from,'请填写净实收档位下限')),
         ...(t.through != null ? {through:minor(t.through)} : {}),
         value:periodRate(t.value),
       })).sort((a,b)=>a.from-b.from)} : {}),
+    }
+    if (hasStandardRates) {
+      const standards = component.periodBenefit.standardRates
+      const companies = standards.flatMap(standard=>standard.salesCompanies || [])
+      const categories = standards.flatMap(standard=>standard.salesCategoryIds || [])
+      if (companies.length!==new Set(companies).size || categories.length!==new Set(categories).size) {
+        throw new Error('「'+label+'」的同一公司或销售类别只需设置一条比例。')
+      }
     }
     if (registration) {
       const sellerId = registration.sellerId?.trim()

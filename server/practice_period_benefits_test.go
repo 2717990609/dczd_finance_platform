@@ -15,6 +15,77 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+func TestPracticeIndependentBenefitCanUseCompanyAndCategoryRates(t *testing.T) {
+	at := time.Date(2026, 10, 8, 8, 0, 0, 0, time.UTC)
+	const category = "40000000-0000-4000-8000-000000000001"
+	const other = "40000000-0000-4000-8000-000000000002"
+	var part component
+	if err := json.Unmarshal([]byte(`{"type":"service","mode":"period_rate","classMember":"new","value":0,"periodBenefit":{
+	  "label":"按类别的服务提成","personId":7,"salesCompanies":["31","33","34","35"],"standardRates":[
+	   {"salesCategoryIds":["40000000-0000-4000-8000-000000000001"],"value":50000},
+	   {"salesCompanies":["31","32"],"value":100000},{"salesCompanies":["33"],"value":0},{"value":30000}]}}`), &part); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateComponents([]component{part}); err != nil {
+		t.Fatal(err)
+	}
+	payment := func(id int64, company string, amount int64) paymentInput {
+		key := strconv.FormatInt(id, 10)
+		return paymentInput{ID: id, Fact: sourceFact{Source: "DCZD", OrderID: key, PaymentID: key, SalesCompanyID: company,
+			AmountMinor: &amount, OccurredAt: at}}
+	}
+	member := func(id int64, payments ...string) practiceEnrollment {
+		return practiceEnrollment{ID: id, SourceEnrollmentID: strconv.FormatInt(id, 10), MembershipType: 3,
+			CommissionEligible: true, PaidOrderIDs: payments, ConfirmedAt: at.Add(time.Hour)}
+	}
+	orders := map[string][]paymentInput{"1": {payment(1, "31", 4000)}, "2": {payment(2, "34", 6000)},
+		"3": {payment(3, "35", 5000)}, "4": {payment(4, "33", 15000)}}
+	members := []practiceEnrollment{member(1, "1", "2"), member(2, "3"), member(3, "4")}
+	runtime := practiceDraftRuntime{companyClassifications: map[string]string{"2": category, "3": other}}
+	rule := paymentRule{ID: 1, Components: []component{part}}
+	draft, err := calculatePracticeDraft(members, rule, orders, nil, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || draft.Total != 850 || len(draft.Issues) != 0 || len(draft.Lines) != 3 {
+		t.Fatalf("expected company override, category rate, and fallback, with a zero company override: %+v %v", draft, err)
+	}
+	for _, line := range draft.Lines {
+		want := map[int64]int64{1: 400, 2: 300, 3: 150}[line.FactID]
+		if line.PersonID != 7 || line.Amount != want || !line.practiceProportionalRefund {
+			t.Fatalf("each original payment gets its own rate and proportional refund: %+v", line)
+		}
+	}
+	var payments []paymentInput
+	for _, batch := range orders {
+		payments = append(payments, batch...)
+	}
+	snapshot := capturePracticeReplayInputs(rule, draft, payments, nil, runtime)
+	if snapshot.CompanyClassifications["2"] != category {
+		t.Fatalf("the posted rule must retain the payment-time category for refunds: %+v", snapshot.CompanyClassifications)
+	}
+	testRefund := int64(3000)
+	replayed, err := calculatePracticeDraft(members, rule, orders, nil, nil, practiceTierHistory{replaying: true},
+		map[int64][]practiceRefundMatch{2: {{event: paymentInput{Fact: sourceFact{AmountMinor: &testRefund, OccurredAt: at.AddDate(0, 1, 0)}}}}},
+		practiceDraftRuntime{companyClassifications: snapshot.CompanyClassifications})
+	if err != nil || len(replayed.Issues) != 0 || replayed.Total != 700 {
+		t.Fatalf("refund must affect only the matching payment's original entitlement: %d %+v %v", replayed.Total, replayed.Issues, err)
+	}
+	delete(runtime.companyClassifications, "2")
+	draft, err = calculatePracticeDraft(members, rule, orders, nil, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || draft.Total != 550 || len(draft.Lines) != 2 || len(draft.Issues) != 1 || draft.Issues[0].Code != "PRACTICE_TIER_SALES_CATEGORY_MISSING" || draft.Issues[0].FactID != 2 {
+		t.Fatalf("unknown category must not silently use the general rate: %+v %v", draft, err)
+	}
+	orders["3"] = []paymentInput{payment(3, "35", 1)}
+	standard := []practicePeriodStandardRate{{Value: 500000}}
+	rule.Components = []component{
+		{Type: "service", Mode: "period_rate", PeriodBenefit: &practicePeriodBenefit{Label: "服务", PersonID: 7, StandardRates: standard}},
+		{Type: "delivery", Mode: "period_rate", PeriodBenefit: &practicePeriodBenefit{Label: "交付", PersonID: 8, StandardRates: standard}},
+	}
+	draft, err = calculatePracticeDraft(members[1:2], rule, orders, nil, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || draft.Total != 2 || len(draft.Lines) != 2 || draft.Lines[0].Amount != 1 || draft.Lines[1].Amount != 1 ||
+		draft.Lines[0].Component == draft.Lines[1].Component {
+		t.Fatalf("two arrangements at the same rate must round independently: %+v %v", draft, err)
+	}
+}
+
 func TestPracticeRefundCreditsOriginallyZeroPoolTier(t *testing.T) {
 	t.Run("保留原归属", func(t *testing.T) { verifyPracticeZeroPoolTier(t, true) })
 	t.Run("历史原结算缺少归属明细", func(t *testing.T) { verifyPracticeZeroPoolTier(t, false) })
@@ -306,19 +377,19 @@ func TestPracticePeriodBenefitChecksTheConfiguredPaymentRole(t *testing.T) {
 		t.Fatalf("configured payment roles must be preserved in the new replay version: %+v", snapshot)
 	}
 	purchases := []practicePurchase{{payments: payments, base: amount * 2}}
-	shares, base, issue, err := collectPracticeBenefitShares(part, purchases, nil, identities, nil, practiceDraftRuntime{})
-	if err != nil || issue.Code != "" || len(shares) != 1 || base != amount*2 {
-		t.Fatalf("the selected locked seller matches both legs regardless of their referrer: %+v %d %+v %v", shares, base, issue, err)
+	shares, base, issues, err := collectPracticeBenefitShares(part, purchases, nil, identities, nil, practiceDraftRuntime{})
+	if err != nil || len(issues) != 0 || len(shares) != 1 || base != amount*2 {
+		t.Fatalf("the selected locked seller matches both legs regardless of their referrer: %+v %d %+v %v", shares, base, issues, err)
 	}
 	payments[1].Fact.ReferrerID = "first"
 	payments[1].Fact.Participants[0].UserID = "different"
-	_, _, issue, err = collectPracticeBenefitShares(part, purchases, nil, identities, nil, practiceDraftRuntime{})
-	if err != nil || issue.Code != "PRACTICE_ATTRIBUTION_CONFLICT" {
-		t.Fatalf("different people in the selected role must be flagged: %+v %v", issue, err)
+	_, _, issues, err = collectPracticeBenefitShares(part, purchases, nil, identities, nil, practiceDraftRuntime{})
+	if err != nil || len(issues) != 1 || issues[0].Code != "PRACTICE_ATTRIBUTION_CONFLICT" {
+		t.Fatalf("different people in the selected role must be flagged: %+v %v", issues, err)
 	}
-	shares, base, issue, err = collectPracticeBenefitShares(part, purchases, nil, identities, nil, practiceDraftRuntime{legacyBenefitAttribution: true})
-	if err != nil || issue.Code != "" || len(shares) != 1 || base != amount {
-		t.Fatalf("a legacy replay must preserve the original attribution and scope for refunds: %+v %d %+v %v", shares, base, issue, err)
+	shares, base, issues, err = collectPracticeBenefitShares(part, purchases, nil, identities, nil, practiceDraftRuntime{legacyBenefitAttribution: true})
+	if err != nil || len(issues) != 0 || len(shares) != 1 || base != amount {
+		t.Fatalf("a legacy replay must preserve the original attribution and scope for refunds: %+v %d %+v %v", shares, base, issues, err)
 	}
 }
 

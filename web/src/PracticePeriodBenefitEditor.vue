@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
+import PracticePeriodRateStandards from './PracticePeriodRateStandards.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
 import RuleOrderScope from './RuleOrderScope.vue'
@@ -13,6 +14,15 @@ const props = defineProps({
   memberChoices:Array, duties:Array,
 })
 const config = computed(() => props.component.periodBenefit)
+const usesStandardRates = computed(() => config.value.method==='rate' && Array.isArray(config.value.standardRates))
+function toggleStandardRates() {
+  if (usesStandardRates.value) {
+    props.component.amount = config.value.standardRates.find(row=>row.scope==='general')?.value
+    config.value.standardRates = undefined
+  } else {
+    config.value.standardRates = props.component.amount == null ? [] : [{scope:'general',value:props.component.amount}]
+  }
+}
 const personalRecipient = computed(() => ['person','order_person'].includes(config.value.recipient))
 const registration = computed(() => config.value.registrationScope)
 const registrationOption = [{value:'registration',label:'签到报名归属'}]
@@ -82,7 +92,7 @@ const calculationMethods = computed(() => [
       <a-form-item label="计提方式" :html-for="field('method')">
         <a-select :id="field('method')" v-model:value="config.method" :options="calculationMethods"/>
       </a-form-item>
-      <a-form-item v-if="config.method==='rate'" label="比例（%）" :html-for="field('rate')" required>
+      <a-form-item v-if="config.method==='rate' && !usesStandardRates" label="比例（%）" :html-for="field('rate')" required>
         <a-input-number :id="field('rate')" v-model:value="component.amount" :min="0" :max="100" :precision="4"/>
       </a-form-item>
       <a-form-item v-else-if="config.method==='fixed' || config.method==='class_fixed'"
@@ -90,6 +100,9 @@ const calculationMethods = computed(() => [
         :html-for="field('fixed')" required>
         <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
       </a-form-item>
+      <a-button v-if="config.method==='rate'" class="practice-toggle-rate-table" size="small" @click="toggleStandardRates">
+        {{ usesStandardRates ? '改用统一比例' : '按类别或公司设比例' }}
+      </a-button>
     </template>
     <template #scope>
       <RuleOrderScope :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
@@ -138,6 +151,8 @@ const calculationMethods = computed(() => [
   <a-form-item v-if="registration">
     <a-checkbox v-model:checked="registration.exclusive">与其他已标记互斥的报名安排不重复匹配</a-checkbox>
   </a-form-item>
+  <PracticePeriodRateStandards v-if="usesStandardRates" v-model="config.standardRates" :prefix="field('standards')"
+    :companies="companies" :categories="salesCategories"/>
   <template v-if="config.method==='tiers'">
     <a-form-item>
       <a-checkbox v-model:checked="config.tierOnWholeClass">用全班净实收选档（含新报和复训）</a-checkbox>
@@ -173,6 +188,7 @@ const calculationMethods = computed(() => [
 
 <style scoped>
 .period-arrangement :deep(.pool-create) {grid-column:1 / -1}
+.practice-toggle-rate-table {align-self:end;justify-self:start;margin-bottom:4px}
 .period-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:0 10px;align-items:start}
 .period-tier {grid-template-columns:repeat(3,minmax(0,1fr));align-items:end}
 .period-fields :deep(.ant-input-number) {width:100%}

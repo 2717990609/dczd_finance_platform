@@ -151,6 +151,17 @@ export function practiceLegacyArrangementLabel(label, optionLabel) {
 export const hasPracticePaymentScope = benefit =>
   !!(benefit.salesCategoryIds?.length || benefit.salesCompanies?.length || benefit.salesPeople?.length || benefit.salesUnits?.length)
 
+export function practiceStandardRateScope(row) {
+  return row.scope || (row.salesCompanies?.length ? 'company' : row.salesCategoryIds?.length ? 'category' : 'general')
+}
+
+export function practiceStandardRateSummary(rows, format) {
+  const values = rows.map(row=>row.value).filter(Number.isFinite)
+  if (!values.length) return '待填写比例'
+  const min = Math.min(...values), max = Math.max(...values)
+  return (min===max ? format(min) : format(min)+'–'+format(max))+' · 按类别或公司'
+}
+
 export function practicePeriodScopeText(benefit, names, limit = 2) {
   const entries = []
   const list = (label, ids, name) => {
@@ -174,8 +185,14 @@ export function practicePeriodScopeText(benefit, names, limit = 2) {
     list('销售类别',benefit.salesCategoryIds,names.category)
     list('销售公司',benefit.salesCompanies,names.company)
     list('销售人员',benefit.salesPeople,names.person)
-    if (!entries.length) entries.push(benefit.restrictPayments ? '待选择销售范围' : '全班')
+    if (!entries.length && benefit.restrictPayments) entries.push('待选择销售范围')
   }
+  const standards = benefit.method==null || benefit.method==='rate' ? benefit.standardRates : undefined
+  if (standards?.length && !standards.some(row=>practiceStandardRateScope(row)==='general')) {
+    list('比例适用公司',standards.flatMap(row=>row.salesCompanies || []),names.company)
+    list('比例适用类别',standards.flatMap(row=>row.salesCategoryIds || []),names.category)
+  }
+  if (!entries.length) entries.push('全班')
   if (benefit.appointmentUnitId && (benefit.recipient == null || benefit.recipient==='person')) {
     entries.push(names.unit(benefit.appointmentUnitId)+'任职期间')
   }
@@ -422,6 +439,7 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
     if (tiers) form.tierConfig = tierForm(tiers)
     if (periodBenefit) {
       form.periodBenefit = {...periodBenefit,
+        standardRates:periodBenefit.standardRates?.map(row=>({...row,scope:practiceStandardRateScope(row),value:row.value/10000})),
         restrictPayments:hasPracticePaymentScope(periodBenefit),
         recipient:periodBenefit.pool ? 'pool' : periodBenefit.unitId ? 'unit' : periodBenefit.orderAppointmentLevel ? 'order_appointment'
           : periodBenefit.orderRecipientRole ? 'order_person'

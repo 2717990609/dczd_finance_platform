@@ -3,7 +3,8 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practiceCompanyStandardSummary, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
-  practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
+  practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, practiceStandardRateScope, practiceStandardRateSummary,
+  ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
   rule: Object, canCopy: Boolean, canEditService: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
@@ -123,6 +124,7 @@ function recipient(part) {
 }
 function formula(part) {
   if (part.mode==='period_rate') {
+    if (part.periodBenefit?.standardRates?.length) return '按指定公司、销售类别默认、通用比例的顺序取值'
     if (part.periodBenefit?.fixedMinor != null) {
       const benefit = part.periodBenefit
       const unit = benefit.fixedPerClass ? (benefit.orderAppointmentLevel ? '组织 / 班' : '班次') : '报名'
@@ -143,6 +145,7 @@ function standardSummary(part) {
     return metric ? metric+'阶梯' : '按阶梯'
   }
   if (part.periodBenefit?.tiers?.length) return '按阶梯'
+  if (part.periodBenefit?.standardRates?.length) return practiceStandardRateSummary(part.periodBenefit.standardRates,value=>rate(value,10000))
   if (part.periodBenefit?.fixedMinor != null || part.retrainSplits?.length) return formula(part)
   if (part.periodBenefit) return rate(part.value,10000)
   return part.mode==='rate' ? standard(part) : formula(part)
@@ -215,6 +218,19 @@ onMounted(async () => {
           </a-descriptions-item>
           <a-descriptions-item v-if="part.refundPolicy" label="退款处理">{{ label('refundPolicy',part.refundPolicy) }}</a-descriptions-item>
         </a-descriptions>
+        <table v-if="part.periodBenefit?.standardRates?.length" class="rule-company-standards" aria-label="比例标准">
+          <thead><tr><th scope="col">匹配条件</th><th scope="col">比例</th></tr></thead>
+          <tbody>
+            <tr v-for="(standard,index) in part.periodBenefit.standardRates" :key="index">
+              <th scope="row">
+                <template v-if="practiceStandardRateScope(standard)==='company'">指定公司 · {{ standard.salesCompanies.map(companyName).join('、') }}</template>
+                <template v-else-if="practiceStandardRateScope(standard)==='category'">类别默认 · {{ standard.salesCategoryIds.map(practiceScopeNames.category).join('、') }}</template>
+                <template v-else>通用比例</template>
+              </th>
+              <td>{{ rate(standard.value,10000) }}</td>
+            </tr>
+          </tbody>
+        </table>
         <template v-if="part.companySales && activeStandard">
           <div class="finance-rate-toolbar">
             <a-radio-group v-if="companyStandards.length>1" v-model:value="standardScope" button-style="solid" size="small"
