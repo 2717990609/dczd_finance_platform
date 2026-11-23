@@ -304,6 +304,12 @@ func TestPracticeRefundUsesFrozenSinglePaymentTerms(t *testing.T) {
 	if err != nil || got != -400 {
 		t.Fatalf("a single payment partially refunded before class settlement must use its booked amount: %d %v", got, err)
 	}
+	sale.ClassMember, sale.RefundPolicy = "retrain", ""
+	policy = practiceMonthlyRefundPolicy([]component{sale}, line, 1, 2, "", "")
+	got, err = refundDelta(policy, line.Base, line.Accrued, 2000, 0)
+	if err != nil || got != -400 {
+		t.Fatalf("a fixed retrain sale without a refund setting must also use its booked amount: %d %v", got, err)
+	}
 	rate := int64(400000)
 	company := component{Type: "company_sales", Mode: "company_sales", ClassMember: "new",
 		CompanySales: &practiceCompanySales{Categories: []practiceCompanyCategory{

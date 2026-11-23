@@ -171,7 +171,7 @@ func (p practicePurchase) netAmount(payment paymentInput) int64 {
 
 func (part component) usesFixedPersonalPaymentShares() bool {
 	return (part.Type == "sales" || part.Type == "referral") && part.Mode == "fixed" &&
-		part.RefundPolicy == "proportional" && len(part.retrainSplits()) == 0
+		(part.RefundPolicy == "" || part.RefundPolicy == "proportional") && len(part.retrainSplits()) == 0
 }
 
 func (p practicePurchase) fixedPaymentShares(sale practicePurchase, part component,

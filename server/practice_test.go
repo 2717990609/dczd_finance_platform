@@ -149,7 +149,7 @@ func TestPracticeEnrollmentAmountsTreatDepositAndBalanceAsOneEntitlement(t *test
 	identities := map[identityKey][]identityAssignment{{Source: "DCZD", ExternalID: "sales"}: {{ID: 17, PersonID: 24, ValidFrom: at.Add(-time.Hour)}}}
 	result, err := calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil, practiceDraftRuntime{})
 	if err != nil || result.Total != 600 || len(result.Issues) != 0 || len(result.Lines) != 3 ||
-		result.Lines[0].Amount != 200 || result.Lines[1].Amount != 301 || result.Lines[2].Amount != 99 || result.Lines[1].EnrollmentID != 11 {
+		result.Lines[0].Amount != 201 || result.Lines[1].Amount != 300 || result.Lines[2].Amount != 99 || result.Lines[1].EnrollmentID != 11 {
 		t.Fatalf("draft=%+v error=%v", result, err)
 	}
 }
@@ -324,7 +324,7 @@ func TestPracticeDraftFollowsLatestRosterForDeferredEnrollment(t *testing.T) {
 
 	var first, second int64
 	err := service.db.QueryRow(ctx, `SELECT min(amount_minor),max(amount_minor) FROM calculation_draft_lines WHERE period_id=$1`, target).Scan(&first, &second)
-	if err != nil || first != 200 || second != 301 {
+	if err != nil || first != 201 || second != 300 {
 		t.Fatalf("deposit=%d balance=%d error=%v", first, second, err)
 	}
 	var uniqueGifts int
@@ -583,8 +583,8 @@ func TestPracticeDraftUsesLatestPartialRefundForConfirmedEnrollment(t *testing.T
 		}
 		return out.(draftSummary)
 	}
-	if got := run(); got.IssueCount != 0 || got.Total != 120 || got.LineCount != 4 {
-		t.Fatalf("open draft should use net receipts 800 and retain fixed referral 40: %+v", got)
+	if got := run(); got.IssueCount != 0 || got.Total != 112 || got.LineCount != 4 {
+		t.Fatalf("open draft should use net receipts 800 and reduce fixed referral from 40 to 32: %+v", got)
 	}
 	var principal, link, depositSales int64
 	err = s.db.QueryRow(ctx, `SELECT sum(CASE WHEN a.payment_version_id IS NULL THEN 1 ELSE -1 END * (v.fact->>'amountMinor')::bigint),
@@ -625,7 +625,7 @@ func TestPracticeDraftUsesLatestPartialRefundForConfirmedEnrollment(t *testing.T
 	duplicate.Version, duplicate.RefundID = "2", "5"
 	duplicate.UpdatedAt = duplicate.UpdatedAt.Add(time.Minute)
 	storeRefund(duplicate)
-	if got := run(); got.IssueCount != 0 || got.Total != 120 {
+	if got := run(); got.IssueCount != 0 || got.Total != 112 {
 		t.Fatalf("corrected duplicate identity must restore the calculation: %+v", got)
 	}
 
@@ -638,7 +638,7 @@ func TestPracticeDraftUsesLatestPartialRefundForConfirmedEnrollment(t *testing.T
 	badLink.OrderID, badLink.Version = "99", "2"
 	badLink.UpdatedAt = badLink.UpdatedAt.Add(time.Minute)
 	storeRefund(badLink)
-	if got := run(); got.IssueCount != 0 || got.Total != 120 {
+	if got := run(); got.IssueCount != 0 || got.Total != 112 {
 		t.Fatalf("latest refund record after order correction must supersede the old relationship: %+v", got)
 	}
 
@@ -650,7 +650,7 @@ func TestPracticeDraftUsesLatestPartialRefundForConfirmedEnrollment(t *testing.T
 	}
 	originalVersion := run().Version
 	storeRefund(refund("3", "PRACTICE", "1", confirmed.AddDate(0, 1, 0), &late))
-	if got := run(); got.IssueCount != 0 || got.Total != 120 || got.Version != originalVersion {
+	if got := run(); got.IssueCount != 0 || got.Total != 112 || got.Version != originalVersion {
 		t.Fatalf("valid late refund should not prevent the class from settling: %+v", got)
 	}
 	var unchangedLines bool
@@ -665,7 +665,7 @@ func TestPracticeDraftUsesLatestPartialRefundForConfirmedEnrollment(t *testing.T
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := run(); got.IssueCount != 0 || got.Total != 120 {
+	if got := run(); got.IssueCount != 0 || got.Total != 112 {
 		t.Fatalf("a roster revision must not bring a later refund back into the original class: %+v", got)
 	}
 	var issue string
@@ -794,8 +794,8 @@ func TestPracticePersonalSalesCanBeLimitedToSelectedCompanies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := map[int64]int64{1: 91200, 2: 110200, 4: 8500, 5: 8500}
-	if len(result.Issues) != 0 || len(result.Lines) != len(want) || result.Total != 218400 {
+	want := map[int64]int64{1: 91200, 2: 110200, 4: 6375, 5: 8500}
+	if len(result.Issues) != 0 || len(result.Lines) != len(want) || result.Total != 216275 {
 		t.Fatalf("expected scoped rate and fixed sales, got total %d, lines %+v, issues %+v", result.Total, result.Lines, result.Issues)
 	}
 	for _, line := range result.Lines {

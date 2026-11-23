@@ -112,13 +112,11 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 				}
 			case "fixed":
 				if part.usesFixedPersonalPaymentShares() {
+					part.RefundPolicy = "proportional"
 					return part
 				}
-				if part.Value == original.Accrued {
-					if part.RefundPolicy != "" {
-						return part
-					}
-					return component{Mode: "practice_fixed"}
+				if part.Value == original.Accrued && part.RefundPolicy != "" {
+					return part
 				}
 			}
 			return replay

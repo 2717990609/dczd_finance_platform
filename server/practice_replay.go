@@ -38,6 +38,7 @@ const practiceReplayConfiguredBenefitRole = 4
 const practiceReplayIndependentTierMeasurement = 5
 const practiceReplayFixedTierPaymentShares = 6
 const practiceReplayFixedPersonalPaymentShares = 7
+const practiceReplayDefaultFixedPaymentShares = 8
 
 const practiceRefundReplaySQL = `(d.practice_replay_inputs IS NOT NULL
  AND d.practice_replay_inputs->'independentRefunds' IS DISTINCT FROM 'true'::jsonb)`
@@ -142,7 +143,11 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 			inputs.Version = max(inputs.Version, practiceReplayFixedTierPaymentShares)
 		}
 		if part.usesFixedPersonalPaymentShares() {
-			inputs.Version = practiceReplayFixedPersonalPaymentShares
+			version := practiceReplayFixedPersonalPaymentShares
+			if part.RefundPolicy == "" {
+				version = practiceReplayDefaultFixedPaymentShares
+			}
+			inputs.Version = max(inputs.Version, version)
 		}
 		if benefit := part.PeriodBenefit; benefit != nil {
 			if benefit.RegistrationScope == nil && !benefit.hasSalesScope() {
@@ -191,7 +196,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 	if err != nil {
 		return replay, err
 	}
-	if saved != nil && (saved.Version < 1 || saved.Version > practiceReplayFixedPersonalPaymentShares) {
+	if saved != nil && (saved.Version < 1 || saved.Version > practiceReplayDefaultFixedPaymentShares) {
 		return replay, errPracticeRefundReplay
 	}
 	replay.members, err = readPracticeMembers(ctx, tx, []int64{rosterID}, false)
@@ -280,6 +285,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 		legacyBenefitAttribution:    values.Version < practiceReplayConfiguredBenefitRole,
 		legacyFixedTierRefund:       values.Version < practiceReplayFixedTierPaymentShares,
 		legacyFixedPersonalRefund:   values.Version < practiceReplayFixedPersonalPaymentShares,
+		legacyImplicitFixedRefund:   values.Version < practiceReplayDefaultFixedPaymentShares,
 	}
 	if usesPracticeRegistrations(replay.rule) {
 		replay.runtime.registrations, err = readPracticeRegistrationInputs(ctx, tx, rosterID, false, values.RegistrationVersions)

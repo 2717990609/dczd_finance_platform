@@ -2024,8 +2024,9 @@ async function save() {
             :member-choices="classMemberChoices(c)" :duties="options('organizationDuty')" @member-change="resetAmountMode(c)"/>
           <a-collapse v-if="selectedProduct && (!classRule || c.mode==='fixed' || c.mode==='tiered' && c.refundPolicy)" ghost>
             <a-collapse-panel key="refund" header="退款处理">
-              <a-form-item label="扣回方式" :extra="classRule ? '适用于确认签到名单前的固定金额。' : '按原计提规则扣回。'">
-                <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear placeholder="选择扣回方式"/>
+              <a-form-item label="扣回方式">
+                <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear
+                  :placeholder="classRule && c.mode==='fixed' && !c.retrainSplits?.length ? '默认按实际退款比例扣回' : '选择扣回方式'"/>
               </a-form-item>
             </a-collapse-panel>
           </a-collapse>

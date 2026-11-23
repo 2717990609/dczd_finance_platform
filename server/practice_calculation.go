@@ -64,6 +64,7 @@ type practiceDraftRuntime struct {
 	legacyBenefitAttribution    bool
 	legacyFixedTierRefund       bool
 	legacyFixedPersonalRefund   bool
+	legacyImplicitFixedRefund   bool
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -353,7 +354,11 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		proportionalFixed := !isTiered && part.usesFixedPersonalPaymentShares()
 		fixedTierByPayment := isTiered && part.Mode == "fixed" && !runtime.legacyFixedTierRefund &&
 			(part.RefundPolicy == "" || part.RefundPolicy == "proportional")
-		fixedByPayment := proportionalFixed && !runtime.legacyFixedPersonalRefund || fixedTierByPayment
+		// Older settlements still replay the original allocation. Late
+		// refunds can then use the amounts actually booked on each payment.
+		fixedPersonalByPayment := proportionalFixed && !runtime.legacyFixedPersonalRefund &&
+			(part.RefundPolicy != "" || !runtime.legacyImplicitFixedRefund)
+		fixedByPayment := fixedPersonalByPayment || fixedTierByPayment
 		if fixedByPayment {
 			fixedShares, issue = purchase.fixedPaymentShares(sale, part, identities, runtime)
 			amount = fixedShares[0] + fixedShares[1]
