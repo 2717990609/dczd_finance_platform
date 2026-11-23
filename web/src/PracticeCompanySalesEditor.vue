@@ -12,9 +12,9 @@ const categories = computed(() => sales.value.categories)
 const overrides = computed(() => categories.value.flatMap((category,index)=>
   category.overrides.map((override,position)=>({category,index,override,position}))))
 const standardGroups = [
-  {scope:'category',label:'按销售类别',action:'添加销售类别'},
-  {scope:'default',label:'外部公司默认'},
-  {scope:'companies',label:'按公司',action:'添加指定公司'},
+  {scope:'category',label:'销售类别默认计提',action:'添加销售类别'},
+  {scope:'default',label:'外部公司默认比例'},
+  {scope:'companies',label:'指定公司计提',action:'添加指定公司'},
 ]
 const standardRowsByScope = computed(() => ({
   companies:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='companies'),
@@ -169,7 +169,7 @@ watch(amounts, choices => {
               <a-select :id="field('override-'+i+'-'+j)" v-model:value="override.companyIds"
                 :options="overrideOptions(category,override)" size="small" mode="multiple" :max-tag-count="3" :filter-option="byName"/>
               <small v-if="category.salesCategoryIds.length" class="order-version">
-                {{ category.salesCategoryIds.map(id=>salesCategories.find(option=>option.value===id)?.label || id).join('、') }}
+                来源类别 · {{ category.salesCategoryIds.map(id=>salesCategories.find(option=>option.value===id)?.label || id).join('、') }}
               </small>
             </a-form-item>
             <a-form-item v-if="amounts.length>1" label="计提方式" :html-for="field('override-method-'+i+'-'+j)">

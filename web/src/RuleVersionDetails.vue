@@ -77,9 +77,9 @@ const companyStandards = computed(() => {
     }
   }
   return [
-    {scope:'category',label:'按销售类别',column:'销售类别',rows:defaults},
-    {scope:'default',label:'外部公司默认',rate:arrangement?.defaultRate},
-    {scope:'company',label:'按公司',column:'适用公司',rows:companies},
+    {scope:'category',label:'销售类别默认计提',column:'销售类别',rows:defaults},
+    {scope:'default',label:'外部公司默认比例',rate:arrangement?.defaultRate},
+    {scope:'company',label:'指定公司计提',column:'适用公司',rows:companies},
   ].map(group=>({...group,hasRecommendation:group.rows?.some(({row,inheritedRate})=>
     row.recommendationRate!=null || inheritedRate!=null)}))
 })
@@ -236,7 +236,7 @@ onMounted(async () => {
               <span v-if="group.rate!=null">{{ rate(group.rate,10000) }}</span>
               <small v-else-if="!group.rows?.length">未配置</small>
             </header>
-            <table v-if="group.rows?.length" class="rule-company-standards" :aria-label="group.label+'计提标准'">
+            <table v-if="group.rows?.length" class="rule-company-standards" :aria-label="group.label+'标准'">
               <thead>
                 <tr>
                   <th scope="col">{{ group.column }}</th>

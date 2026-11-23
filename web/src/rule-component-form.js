@@ -31,7 +31,7 @@ export function moneyAsMinor(value) {
 }
 
 export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
-export const practiceCompanyRatePriorityLabel = '指定公司 → 销售类别 → 外部公司默认'
+export const practiceCompanyRatePriorityLabel = '指定公司 → 销售类别默认 → 外部公司默认'
 export const catalogRecipientIsPerson = target => ['person','order_seller','referrer','appointment'].includes(target)
 export const practiceRecipientIsPerson = target => ['person','order_person','order_appointment'].includes(target)
 
@@ -291,7 +291,7 @@ export function practiceCompanyStandardSummary(sales, formatRate, formatAmount) 
   }).filter(Boolean).join(' / ')
   const category = summary(categories), company = summary(companies)
   return [
-    company && '按公司 '+company,
+    company && '按指定公司 '+company,
     category && '按销售类别 '+category,
     sales.defaultRate!=null && '外部公司默认 '+formatRate(sales.defaultRate),
   ].filter(Boolean).join(' · ')
@@ -316,10 +316,10 @@ export function practiceSalesScopeText(part, names, limit = 2) {
   if (part.companySales) {
     const {companies,categories,hasDefault} = practiceCompanyScopes(part.companySales)
     if (limit) {
-      list('指定公司',companies,names.company)
-      list('销售类别',categories,names.category)
+      list('按指定公司',companies,names.company)
+      list('按销售类别',categories,names.category)
     } else {
-      if (companies.length) entries.push('按公司 '+companies.length+' 家')
+      if (companies.length) entries.push('按指定公司 '+companies.length+' 家')
       if (categories.length) entries.push('按销售类别 '+categories.length+' 类')
     }
     if (hasDefault) entries.push('外部公司默认')
