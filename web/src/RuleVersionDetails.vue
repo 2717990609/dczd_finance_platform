@@ -75,12 +75,12 @@ const companyStandards = computed(() => {
       companies.push({row, names:exceptionCompanyIDs(row).map(companyName), inheritedRate:group.recommendationRate})
     }
   }
-  if (arrangement?.defaultRate != null) {
-    companies.push({row:{mode:'rate',value:arrangement.defaultRate}, names:['其他外部公司（默认）']})
-  }
+  const fallback = arrangement?.defaultRate == null ? [] :
+    [{row:{mode:'rate',value:arrangement.defaultRate}, names:['未命中公司或销售类别的外部公司']}]
   return [
-    {scope:'category',label:'销售类别默认',column:'销售类别',rows:defaults},
-    {scope:'company',label:'指定公司',column:'适用公司',rows:companies},
+    {scope:'company',label:'按公司',column:'适用公司',rows:companies},
+    {scope:'category',label:'按销售类别',column:'销售类别',rows:defaults},
+    {scope:'default',label:'外部公司默认',column:'适用公司',rows:fallback},
   ].filter(group=>group.rows.length)
 })
 const activeStandard = computed(() => companyStandards.value.find(group=>group.scope===standardScope.value) || companyStandards.value[0])
@@ -236,7 +236,8 @@ onMounted(async () => {
             <a-radio-group v-if="companyStandards.length>1" v-model:value="standardScope" button-style="solid" size="small"
               role="radiogroup" aria-label="查看计提标准">
               <a-radio-button v-for="group in companyStandards" :key="group.scope" :value="group.scope">
-                <span>{{ group.label }}</span><small class="finance-rate-count">{{ group.rows.length }}</small>
+                <span>{{ group.label }}</span>
+                <small class="finance-rate-count">{{ group.scope==='default' ? rate(group.rows[0].row.value,10000) : group.rows.length }}</small>
               </a-radio-button>
             </a-radio-group>
             <strong v-else>{{ activeStandard.label }}</strong>

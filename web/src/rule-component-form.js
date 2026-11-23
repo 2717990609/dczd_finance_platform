@@ -31,7 +31,7 @@ export function moneyAsMinor(value) {
 }
 
 export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
-export const practiceCompanyRatePriorityLabel = '指定公司 → 销售类别默认 → 外部公司默认'
+export const practiceCompanyRatePriorityLabel = '按公司 → 按销售类别 → 外部公司默认'
 
 export function catalogOrderScope(item) {
   if (item.ownSales) return 'own'
@@ -289,9 +289,9 @@ export function practiceCompanyStandardSummary(sales, formatRate, formatAmount) 
   }).filter(Boolean).join(' / ')
   const category = summary(categories), company = summary(companies)
   return [
-    category && '类别默认 '+category,
-    company && '指定公司 '+company,
-    sales.defaultRate!=null && '其他外部公司 '+formatRate(sales.defaultRate),
+    company && '按公司 '+company,
+    category && '按销售类别 '+category,
+    sales.defaultRate!=null && '外部公司默认 '+formatRate(sales.defaultRate),
   ].filter(Boolean).join(' · ')
 }
 

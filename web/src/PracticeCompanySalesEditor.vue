@@ -7,22 +7,36 @@ import { practiceCompanyRatePriorityLabel } from './rule-component-form'
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
   sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array,duties:Array})
 const emit = defineEmits(['member-change'])
-const categories = computed(() => props.component.companySales.categories)
-const companyOnly = categories.value.every(standard=>standard.scope==='companies') &&
-  (categories.value.length > 0 || props.component.companySales.defaultRate != null)
-const standardScope = ref(companyOnly ? 'companies' : 'category')
+const sales = computed(() => props.component.companySales)
+const categories = computed(() => sales.value.categories)
 const overrides = computed(() => categories.value.flatMap((category,index)=>
   category.overrides.map((override,position)=>({category,index,override,position}))))
-const standardGroups = computed(() => [
-  {scope:'category',label:'销售类别默认',action:'添加类别标准'},
-  {scope:'companies',label:'指定公司',action:'添加指定公司'},
-].map(section=>({...section,rows:categories.value.map((standard,index)=>({standard,index}))
-  .filter(({standard})=>standard.scope===section.scope)}))
-  .filter(section=>section.scope==='companies' || props.salesCategories.length || section.rows.length))
-const activeGroup = computed(() => standardGroups.value.find(group=>group.scope===standardScope.value) || standardGroups.value[0])
-const standardRows = group => group.rows.length + (group.scope==='companies' ? overrides.value.length : 0)
-const standardCount = group => standardRows(group) +
-  (group.scope==='companies' && props.component.companySales.defaultRate != null ? 1 : 0)
+const standardGroups = [
+  {scope:'companies',label:'按公司',action:'添加公司标准'},
+  {scope:'category',label:'按销售类别',action:'添加类别标准'},
+  {scope:'default',label:'外部公司默认'},
+]
+const standardRowsByScope = computed(() => ({
+  companies:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='companies'),
+  category:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='category'),
+}))
+const hasDefault = computed(() => Number.isFinite(sales.value.defaultRate))
+const standardScope = ref(categories.value.some(standard=>standard.scope==='category') ? 'category'
+  : categories.value.length ? 'companies' : hasDefault.value ? 'default' : props.salesCategories.length ? 'category' : 'companies')
+const activeGroup = computed(() => standardGroups.find(group=>group.scope===standardScope.value))
+const rows = computed(() => standardRowsByScope.value[standardScope.value] || [])
+const standardRows = scope => standardRowsByScope.value[scope].length + (scope==='companies' ? overrides.value.length : 0)
+const scopeText = computed(() => standardGroups.filter(group=>{
+  if (group.scope==='default') return hasDefault.value
+  if (group.scope==='category') return standardRowsByScope.value.category.some(({standard})=>standard.salesCategoryIds.length)
+  return standardRowsByScope.value.companies.some(({standard})=>standard.companies.length) ||
+    overrides.value.some(({override})=>override.companyIds?.length)
+}).map(group=>group.label).join(' · ') || '请选择公司或销售类别')
+const calculationText = computed(() => {
+  const modes = new Set([...categories.value,...overrides.value.map(({override})=>override)].map(row=>row.mode))
+  if (hasDefault.value) modes.add('rate')
+  return [modes.has('rate') && '比例',modes.has('fixed') && '固定金额'].filter(Boolean).join(' / ') || '在计提标准中设置'
+})
 const payee = computed(() => props.component.companySales.payee)
 const payeeKinds = [
   {value:'sales_company',label:'销售所属公司'},
@@ -82,7 +96,7 @@ watch(amounts, choices => {
 
 <template>
   <RuleArrangementFields :name-id="field('label')" v-model:name="component.companySales.label"
-    calculation-text="按下表标准" scope-text="按销售类别或公司匹配"
+    :calculation-text="calculationText" :scope-text="scopeText"
     :duty-id="payee.kind==='person' ? field('duty') : undefined" :duties="duties" v-model:duty="component.recipientDuty"
     :order-type-id="'rule-member-'+index" :order-types="memberChoices" :order-type="component.classMember"
     @update:order-type="component.classMember=$event; emit('member-change')">
@@ -102,32 +116,33 @@ watch(amounts, choices => {
   <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <div class="finance-rate-toolbar company-standard-toolbar">
-    <a-radio-group v-if="standardGroups.length>1" :value="activeGroup.scope" role="radiogroup" aria-label="查看计提标准"
-      button-style="solid" size="small" @update:value="standardScope=$event">
+    <a-radio-group v-model:value="standardScope" role="radiogroup" aria-label="查看计提标准" button-style="solid" size="small">
       <a-radio-button v-for="group in standardGroups" :key="group.scope" :value="group.scope">
-        <span>{{ group.label }}</span><small class="finance-rate-count">{{ standardCount(group) }}</small>
+        <span>{{ group.label }}</span>
+        <small class="finance-rate-count">{{ group.scope==='default' ? (hasDefault ? sales.defaultRate+'%' : '未配置') : standardRows(group.scope) }}</small>
       </a-radio-button>
     </a-radio-group>
-    <strong v-else>{{ activeGroup.label }}</strong>
     <small class="finance-rate-priority">匹配顺序 {{ practiceCompanyRatePriorityLabel }}</small>
-    <a-button v-if="activeGroup.scope==='companies' || salesCategories.length" class="finance-rate-add" size="small"
+    <a-button v-if="activeGroup.action" :disabled="activeGroup.scope==='category' && !salesCategories.length" class="finance-rate-add" size="small"
       @click="addStandard(activeGroup.scope)">{{ activeGroup.action }}</a-button>
   </div>
-  <a-form-item v-if="activeGroup.scope==='companies'" class="company-default-rate"
+  <a-form-item v-if="activeGroup.scope==='default'" class="company-default-rate"
     label="外部公司默认比例（%）" :html-for="field('default-rate')">
     <a-input-number :id="field('default-rate')" v-model:value="component.companySales.defaultRate"
       size="small" :min="0" :max="100" :precision="4" placeholder="未配置"/>
   </a-form-item>
-  <section :key="activeGroup.scope" :aria-label="activeGroup.label"
+  <section v-else :key="activeGroup.scope" :aria-label="activeGroup.label"
     class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations}">
-    <p v-if="!standardRows(activeGroup)" class="finance-rate-empty">{{ activeGroup.scope==='category' ? '暂无类别标准' : '暂无指定公司' }}</p>
+    <p v-if="!standardRows(activeGroup.scope)" class="finance-rate-empty">
+      {{ activeGroup.scope==='companies' ? '暂无公司标准' : salesCategories.length ? '暂无销售类别标准' : '暂无可选销售类别' }}
+    </p>
     <div v-else class="company-standard-fields company-standard-column-labels" aria-hidden="true">
       <span>{{ activeGroup.scope==='category' ? '销售类别' : '适用公司' }}</span>
       <span v-if="amounts.length>1">计提方式</span>
       <span>{{ amounts.length>1 ? '计提标准' : '比例（%）' }}</span>
       <span v-if="legacyRecommendations">推荐比例（%）</span>
     </div>
-    <div v-for="({standard:category,index:i}) in activeGroup.rows" :key="i" class="company-category company-standard-fields">
+    <div v-for="({standard:category,index:i}) in rows" :key="i" class="company-category company-standard-fields">
       <a-form-item v-if="category.scope==='category'" class="company-scope-field" label="销售类别" :html-for="field('sales-category-'+i)" required>
         <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryIds" :options="salesCategoryOptions(category)" size="small"
           mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择销售类别"/>
