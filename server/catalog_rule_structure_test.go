@@ -81,6 +81,59 @@ func TestCatalogIndependentOrderSalesTargetsResolveExplicitPayees(t *testing.T) 
 	}
 }
 
+func TestCatalogIndependentCompanyArrangementCanUseExternalDefault(t *testing.T) {
+	const exception = "40000000-0000-4000-8000-000000000001"
+	const category = "40000000-0000-4000-8000-000000000002"
+	const other = "40000000-0000-4000-8000-000000000003"
+	zero, categoryRate, externalRate := int64(0), int64(500), int64(300)
+	rows := []catalogConditionInput{
+		{Company: exception, Relationship: "ANY", Rate: &zero},
+		{Company: "ANY", Relationship: "ANY", Category: category, Rate: &categoryRate},
+		{Company: "ANY", Relationship: "ANY", Rate: &externalRate, ExternalDefault: true},
+	}
+	option := catalogStructureOptions{Companies: []catalogStructureOption{{Value: "ANY"}, {Value: exception}},
+		Relationships: []catalogStructureOption{{Value: "ANY"}}, Categories: []catalogStructureOption{{Value: category}}}
+	fields, err := newCatalogBenefitAction("company", catalogNewBenefitItem{Label: "销售所属公司提成",
+		catalogBenefitTarget:      catalogBenefitTarget{Target: "order_sales_company"},
+		catalogBenefitCalculation: catalogBenefitCalculation{Rows: rows}}, option, nil)
+	if err != nil {
+		t.Fatalf("an independent company payee should accept an external default rate: %v", err)
+	}
+	definition, err := json.Marshal(map[string]any{
+		"amount_basis": "ACTUAL_RECEIVED", "stacking_policy": "SUM", "sales_attribution": "ORDER_SELLER",
+		"rounding_policy": map[string]any{"mode": "HALF_UP", "scale": 2},
+		"benefit_actions": []map[string]json.RawMessage{fields},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cards, err := catalogRateComponents(definition, nil, nil, nil, nil)
+	if err != nil || len(cards) != 1 || len(cards[0].Rows) != 3 || cards[0].Rows[2].Scope != "external" || cards[0].Rows[2].Payee != "" {
+		t.Fatalf("expected an external order condition with the arrangement-level recipient: %+v %v", cards, err)
+	}
+	policy, ok := readVIPBenefits(definition)
+	if !ok {
+		t.Fatal("published external company fallback must be supported at runtime")
+	}
+	for _, tc := range []struct {
+		company, category, kind, status string
+		amount                          int64
+	}{
+		{exception, category, "EXTERNAL", "ZERO", 0},
+		{other, category, "EXTERNAL", "CALCULATED", 500},
+		{other, "unlisted", "EXTERNAL", "CALCULATED", 300},
+		{other, "unlisted", "INTERNAL", vipCommissionOutsideScope, 0},
+		{other, "unlisted", "", "SALES_COMPANY_TYPE_MISSING", 0},
+	} {
+		req := vipSalesRequest{Paid: 10000, Company: tc.company, CompanyUnit: tc.company, CompanyName: "销售公司",
+			CompanyType: tc.kind, Category: &tc.category}
+		got := quoteVIPBenefits(req, "", policy, vipRuntimeData{})[0]
+		if got.Status != tc.status || got.Amount != tc.amount || tc.amount > 0 && (got.Unit != tc.company || got.Kind != "company") {
+			t.Errorf("unexpected company payout for %+v: %+v", tc, got)
+		}
+	}
+}
+
 func TestCatalogPoolCanAssignNamedOwner(t *testing.T) {
 	options := catalogStructureOptions{
 		Organizations: []catalogStructureOption{{Value: "pool-party", UnitID: "team-unit", Kind: "DEPARTMENT"}},

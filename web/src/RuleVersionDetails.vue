@@ -79,8 +79,8 @@ const companyStandards = computed(() => {
   }
   return [
     {scope:'category',column:'销售类别',rows:defaults},
-    {scope:'default',rate:arrangement?.defaultRate},
     {scope:'companies',column:'指定公司',rows:companies},
+    {scope:'default',rate:arrangement?.defaultRate},
   ].map(group=>({...group,label:practiceCompanyMatchLabels[group.scope],hasRecommendation:group.rows?.some(({row,inheritedRate})=>
     row.recommendationRate!=null || inheritedRate!=null)}))
 })

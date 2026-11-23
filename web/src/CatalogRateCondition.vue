@@ -7,9 +7,9 @@ const value = defineModel({type:Object,required:true})
 const companies = computed(() => props.options.companies.filter(option=>option.value!=='ANY'))
 const scope = computed(() => props.scope ?? value.value.scope)
 const scopes = computed(() => [
-  ...(props.options.categories.length || value.value.categoryIds?.length ? [{value:'category',label:'按销售类别'}] : []),
-  {value:'company',label:'公司特例'},
-  ...(props.salesPayee ? [{value:'external',label:'外部公司默认比例'}] : []),
+  ...(props.options.categories.length || value.value.categoryIds?.length ? [{value:'category',label:'销售类别默认'}] : []),
+  {value:'company',label:'指定公司'},
+  {value:'external',label:'外部公司默认比例'},
   {value:'general',label:'不限公司和类别'},
 ])
 
@@ -24,7 +24,7 @@ function changeScope(next) {
 <template>
   <div class="field-grid catalog-rate-fields">
     <div v-if="value.scope && !props.scope">
-      <label :for="'catalog-add-scope'+suffix">适用范围</label>
+      <label :for="'catalog-add-scope'+suffix">比例匹配方式</label>
       <a-select :id="'catalog-add-scope'+suffix" :value="scope" :options="scopes" size="small" @update:value="changeScope"/>
     </div>
     <div v-if="scope==='company'" class="catalog-rate-selector">

@@ -82,10 +82,6 @@ function changePayee(payee) {
   if (payee.target!=='person' && form.value.orderScope==='own') form.value.orderScope = null
   if (payee.target==='seller' && previous!=='seller') {
     form.value.format = 'table'
-  } else if (previous==='seller' && payee.target!=='seller') {
-    form.value.rows = form.value.rows.filter(row=>row.scope!=='external')
-    form.value.rows.forEach(row=>{ delete row.payee })
-    if (!form.value.rows.length) form.value.rows.push(blankCondition())
   }
 }
 async function editRecipient(index) {
@@ -135,7 +131,7 @@ function calculationBody(staged) {
     if (fixedMinor===undefined) throw new Error('请填写有效金额，最多保留两位小数。')
     return {fixedMinor}
   }
-  return {rows:staged.rows.map(row=>catalogRateConditionBody(row))}
+  return {rows:staged.rows.map(row=>catalogRateConditionBody(row,row.scope,staged.target==='seller'))}
 }
 function stage() {
   error.value = ''
@@ -143,7 +139,8 @@ function stage() {
   try {
     if (staged.kind==='row') {
       const scope = staged.scope ?? staged.row.scope
-      const change = {itemKey:staged.itemKey,row:staged.rowNumber,...catalogRateConditionBody(staged.row,scope)}
+      const change = {itemKey:staged.itemKey,row:staged.rowNumber,
+        ...catalogRateConditionBody(staged.row,scope,props.component?.targetKind==='seller')}
       if (!change.row) change.draftKey = staged.draftKey || 'draft-'+(++nextDraftKey)
       const existing = draft.value.rateRows.findIndex(row=>row.itemKey===change.itemKey &&
         (change.row ? row.row===change.row : row.draftKey===change.draftKey))

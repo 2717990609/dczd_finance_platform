@@ -13,8 +13,8 @@ const overrides = computed(() => categories.value.flatMap((category,index)=>
   category.overrides.map((override,position)=>({category,index,override,position}))))
 const standardGroups = [
   {scope:'category',action:'添加销售类别'},
-  {scope:'default'},
   {scope:'companies',action:'添加指定公司'},
+  {scope:'default'},
 ]
 const standardRowsByScope = computed(() => ({
   companies:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='companies'),
@@ -151,7 +151,7 @@ watch(amounts, choices => {
         <template v-if="group.scope!=='default'">
           <small v-if="group.scope==='category' && scopes.categories.length">{{ scopes.categories.length }} 类</small>
           <small v-else-if="group.scope==='companies' && scopes.companies.length">{{ scopes.companies.length }} 家</small>
-          <small v-else>未配置</small>
+          <small v-else>{{ group.scope==='category' ? '未配置类别' : '未配置公司' }}</small>
           <div v-if="group.scope==='companies' && companyPageCount>1" class="company-standard-pages" role="group" aria-label="指定公司标准分页">
             <a-button size="small" type="text" :disabled="companyPage===1" @click="companyPage--">上一页</a-button>
             <small role="status">{{ companyPage }} / {{ companyPageCount }}</small>

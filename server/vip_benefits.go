@@ -274,7 +274,10 @@ func (a vipBenefitAction) quote(req vipSalesRequest, sourceIssue string) (rate, 
 		return 0, 0, sourceIssue
 	} else {
 		var row vipRateRow
-		row, issue = req.rateRow(a.rates, "")
+		row, issue = req.rateRow(a.rates, req.CompanyType)
+		if issue == "SALES_RATE_MISSING" {
+			issue = vipCommissionOutsideScope
+		}
 		rate = row.Rate
 	}
 	return rate, calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: rate}), issue

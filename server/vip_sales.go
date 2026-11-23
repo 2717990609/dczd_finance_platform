@@ -65,7 +65,7 @@ func (r vipRateRow) validScope() bool {
 
 func (r vipRateRow) validExternalDefault() bool {
 	return !r.ExternalDefault || r.Company == "ANY" && len(r.CompanyIDs) == 0 && !r.hasCategory() &&
-		!r.SnapshotDefault && r.Relationship == "ANY" && r.Payee == vipPayeeSalesCompany
+		!r.SnapshotDefault && r.Relationship == "ANY" && (r.Payee == "" || r.Payee == vipPayeeSalesCompany)
 }
 
 func (r vipRateRow) specificity() int {
@@ -184,7 +184,7 @@ func readVIPSalesPolicy(raw json.RawMessage) (vipSalesPolicy, bool) {
 		policy.Item, policy.CommissionUnits = action.Item, action.CommissionUnits
 		policy.ScopeCategories = action.ScopeCategories
 		policy.MembershipNewOnly = action.MembershipNewOnly
-		policy.Sales, ok = parseVIPRateTable(action.RateTable)
+		policy.Sales, ok = parseVIPSellerRateTable(action.RateTable)
 		if !ok {
 			return vipSalesPolicy{}, false
 		}
@@ -227,7 +227,7 @@ func (d vipCommissionDefinition) directSalesPolicy() (vipSalesPolicy, bool) {
 			!validUniqueScopeIDs(action.CommissionUnits) || !validUniqueScopeIDs(action.ScopeCategories) {
 			return vipSalesPolicy{}, false
 		}
-		rates, ok := parseVIPRateTable(action.RateTable)
+		rates, ok := parseVIPSellerRateTable(action.RateTable)
 		if !ok {
 			return vipSalesPolicy{}, false
 		}
@@ -235,6 +235,17 @@ func (d vipCommissionDefinition) directSalesPolicy() (vipSalesPolicy, bool) {
 			ScopeCategories: action.ScopeCategories, MembershipNewOnly: action.MembershipNewOnly}
 	}
 	return policy, policy.Item != "" || d.Attribution == "ORDER_SELLER" && len(d.Actions) != 0
+}
+
+func parseVIPSellerRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
+	rows, ok := parseVIPRateTable(rawRows)
+	// The combined sales arrangement chooses the payee per row.
+	if !ok || slices.ContainsFunc(rows, func(row vipRateRow) bool {
+		return row.ExternalDefault && row.Payee != vipPayeeSalesCompany
+	}) {
+		return nil, false
+	}
+	return rows, true
 }
 
 func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {

@@ -170,8 +170,8 @@ const rateGroups = computed(() => {
     {key:'category',add:mayAdd && sheet.value.structureOptions.categories.length && '添加类别默认比例'},
     {key:'company',add:mayAdd && '添加公司特例'},
     {key:'inherited'},
-    ...(targetKind.value==='seller' ? [{key:'external',
-      add:mayAdd && !rateRows.value.some(row=>row.scope==='external' && !removedRateRows.value.has(cellKey(selected.value,row.row))) && '设置默认比例'}] : []),
+    {key:'external',
+      add:mayAdd && !rateRows.value.some(row=>row.scope==='external' && !removedRateRows.value.has(cellKey(selected.value,row.row))) && '设置默认比例'},
     {key:'general',add:mayAdd && '添加通用比例'},
   ]
     .map(group=>{

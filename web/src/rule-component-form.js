@@ -44,9 +44,9 @@ export function catalogRatePriority(scopes) {
 export const catalogPercent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
 
 export const practiceCompanyMatchLabels = {
-  category:'按销售类别计提',
+  category:'销售类别默认',
   default:'其他外部公司默认比例',
-  companies:'按指定公司计提',
+  companies:'指定公司标准',
 }
 
 export function catalogRateConditionScope(row) {
@@ -139,17 +139,17 @@ export function newCatalogRateCondition(options, scope = options.categories.leng
     relationship:options.relationships.find(option=>option.value==='ANY')?.value || options.relationships[0]?.value}
 }
 
-export function catalogRateConditionBody(row, scope = row.scope) {
+export function catalogRateConditionBody(row, scope = row.scope, salesPayee = false) {
   const rateBps = rateAsBasisPoints(row.rate)
   if (rateBps===undefined) throw new Error('请填写有效比例。')
   if (scope==='external') {
-    return {company:'ANY',relationship:'ANY',rateBps,payee:'sales_company',externalCompanyDefault:true}
+    return {company:'ANY',relationship:'ANY',rateBps,externalCompanyDefault:true,...(salesPayee ? {payee:'sales_company'} : {})}
   }
   if (!row.relationship) throw new Error('请选择销售关系。')
   if (scope==='category' && !row.categoryIds.length) throw new Error('请选择销售类别。')
   if (scope==='company' && !row.companyIds.length) throw new Error('请选择特例公司。')
   return {relationship:row.relationship,rateBps,
-    ...(row.payee ? {payee:row.payee} : {}),
+    ...(salesPayee && row.payee ? {payee:row.payee} : {}),
     ...(scope!=='category' && scope!=='general' && row.companyIds?.length ? {companyIds:row.companyIds} : {company:'ANY'}),
     ...(scope!=='general' && row.categoryIds?.length ? {categoryIds:row.categoryIds} : {})}
 }
