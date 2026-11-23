@@ -1,6 +1,7 @@
 <script setup>
 import { computed } from 'vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
+import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 
 const props = defineProps({options:Object,api:Function,peopleFilters:Object,prefix:String,disabled:Boolean,salesAvailable:Boolean})
 const payee = defineModel({type:Object,required:true})
@@ -22,11 +23,13 @@ const memberRoles = computed(() => {
   return [...available,original || {value:payee.value.memberRole,label:payee.value.memberRole}]
 })
 const field = key => props.prefix+'-'+key
+const poolOwner = computed(() => ({role:payee.value.role,personId:payee.value.ownerPersonId,personName:payee.value.ownerName}))
 function update(fields) {
   payee.value = {...payee.value,...fields}
 }
 function changeTarget(target) {
-  update({target,role:undefined,memberRole:undefined,personId:undefined,personName:undefined,organization:undefined,recipientDuty:undefined})
+  update({target,role:undefined,memberRole:undefined,personId:undefined,personName:undefined,
+    ownerPersonId:undefined,ownerName:undefined,organization:undefined,recipientDuty:undefined})
 }
 </script>
 
@@ -50,12 +53,15 @@ function changeTarget(target) {
       show-search option-filter-prop="label" :disabled="disabled" allow-clear placeholder="选填"
       @update:value="update({recipientDuty:$event})"/>
   </a-form-item>
-  <a-form-item v-if="payee.target==='person' || payee.target==='pool'" :label="payee.target==='pool'?'谁负责分配':'任职条件'"
-    :html-for="field('role')" :required="payee.target==='pool'">
+  <a-form-item v-if="payee.target==='person'" label="任职条件" :html-for="field('role')">
     <a-select :id="field('role')" :value="payee.role" :options="roles" show-search option-filter-prop="label" :disabled="disabled"
-      :allow-clear="payee.target==='person'" :placeholder="payee.target==='person' ? '选填' : undefined"
+      allow-clear placeholder="选填"
       @update:value="update({role:$event})"/>
   </a-form-item>
+  <CatalogPoolOwnerFields v-if="payee.target==='pool'" :prefix="field('owner')" :roles="roles"
+    :api="api" :people-filters="peopleFilters" :disabled="disabled"
+    :model-value="poolOwner"
+    @update:model-value="({role,personId,personName})=>update({role,ownerPersonId:personId,ownerName:personName})"/>
   <a-form-item v-if="payee.target==='pool'" label="可参与分配的成员岗位" :html-for="field('member-role')" required>
     <a-select :id="field('member-role')" :value="payee.memberRole" :options="memberRoles" show-search option-filter-prop="label"
       :disabled="disabled" @update:value="update({memberRole:$event})"/>

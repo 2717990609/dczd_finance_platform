@@ -87,7 +87,7 @@ export function catalogPayeeComplete(payee) {
     case 'referrer': return true
     case 'person': return !!payee.personId
     case 'company': return !!payee.organization
-    case 'pool': return !!(payee.organization && payee.role && payee.memberRole)
+    case 'pool': return !!(payee.organization && (payee.role || payee.ownerPersonId) && payee.memberRole)
     default: return false
   }
 }

@@ -138,6 +138,8 @@ const vipRuntimeSQL = `WITH scope AS (
  SELECT key#>>'{}' AS key FROM definitions
  CROSS JOIN LATERAL jsonb_path_query(definition,'$.benefit_actions[*].designated_party_id') key
  UNION SELECT key#>>'{}' FROM definitions
+ CROSS JOIN LATERAL jsonb_path_query(definition,'$.benefit_actions[*].allocation_owner_party_id') key
+ UNION SELECT key#>>'{}' FROM definitions
  CROSS JOIN LATERAL jsonb_path_query(definition,'$.internal_sales_direct_split.teams[*].head_party_id') key
  UNION SELECT key#>>'{}' FROM definitions
  CROSS JOIN LATERAL jsonb_path_query(definition,'$.internal_sales_direct_split.teams[*].service_party_id') key

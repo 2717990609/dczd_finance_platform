@@ -464,6 +464,15 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 			fixedReport.Grouping.Groups[1].Targets[0].OwnerName != "另一组销售" {
 			t.Fatalf("order trial should use the incoming owner even though the payment preceded the handoff: %d %s %v", proposed.Code, proposed.Body, err)
 		}
+		explicitInput := strings.Replace(fixedInput, `"ownerRole":"PROJECT_OWNER"`, `"ownerPersonId":9801`, 1)
+		explicit := submit(980, "/api/v1/catalog-period-activity", s.postCatalogPeriodActivity, explicitInput)
+		var namedReport catalogPeriodActivity
+		if err := json.Unmarshal(explicit.Body.Bytes(), &namedReport); err != nil || explicit.Code != 200 ||
+			namedReport.Grouping == nil || len(namedReport.Grouping.Groups) != 2 ||
+			len(namedReport.Grouping.Groups[1].Targets) != 1 || namedReport.Grouping.Groups[1].Targets[0].OwnerName != "整期个人收款" ||
+			namedReport.Grouping.Groups[1].quote().Total != 5000 {
+			t.Fatalf("a designated pool owner should receive the whole fixed award after the role changes: %d %s %v", explicit.Code, explicit.Body, err)
+		}
 		created := submit(980, path, s.postCatalogPeriodRule, fixedInput)
 		var publishedFixed catalogPublication
 		if err := json.Unmarshal(created.Body.Bytes(), &publishedFixed); err != nil || created.Code != 200 {

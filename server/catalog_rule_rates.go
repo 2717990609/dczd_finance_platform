@@ -16,6 +16,7 @@ type catalogRateComponent struct {
 	Fixed           *int64             `json:"fixedMinor,omitempty"`
 	Rows            []catalogRateRow   `json:"rows,omitempty"`
 	Recipient       *catalogRulePerson `json:"recipient,omitempty"`
+	PoolOwner       *catalogRulePerson `json:"poolOwner,omitempty"`
 	TargetKind      string             `json:"targetKind"`
 	TargetLabel     string             `json:"targetLabel,omitempty"`
 	TargetOrg       string             `json:"targetOrganization,omitempty"`

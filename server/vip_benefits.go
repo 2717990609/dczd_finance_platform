@@ -20,6 +20,7 @@ type vipBenefitAction struct {
 	PoolCode        string            `json:"pool_code"`
 	PoolName        string            `json:"pool_name"`
 	OwnerRole       string            `json:"allocation_owner_role"`
+	OwnerParty      string            `json:"allocation_owner_party_id,omitempty"`
 	Rate            *int64            `json:"rate_bps"`
 	Fixed           *int64            `json:"amount_minor,omitempty"`
 	RateTable       []json.RawMessage `json:"rate_table"`
@@ -137,7 +138,7 @@ func (a vipBenefitAction) validTarget() bool {
 		a.RecipientDuty != "" && (a.Designated == "" || !validSourceRole(a.RecipientDuty)) {
 		return false
 	}
-	poolFields := a.PoolParty != "" || a.PoolUnit != "" || a.PoolCode != "" || a.PoolName != "" || a.OwnerRole != ""
+	poolFields := a.PoolParty != "" || a.PoolUnit != "" || a.PoolCode != "" || a.PoolName != "" || a.OwnerRole != "" || a.OwnerParty != ""
 	if role := vipLeaderRole(a.Item); role != "" || a.Leader != nil {
 		return role != "" && a.Leader != nil && a.Role == role && !poolFields && a.Company == "" &&
 			(a.Mode == vipOrganizationAppointmentMode && a.Designated == "" || a.Mode == "PARTY" && a.Designated != "")
@@ -149,7 +150,7 @@ func (a vipBenefitAction) validTarget() bool {
 		return !poolFields && a.Designated == "" && a.Company == ""
 	case "TEAM_POOL":
 		return a.Designated == "" && a.Company == "" && a.PoolParty != "" && a.PoolUnit != "" &&
-			a.PoolCode != "" && a.PoolName != "" && a.OwnerRole != ""
+			a.PoolCode != "" && a.PoolName != "" && (a.OwnerRole != "") != (a.OwnerParty != "")
 	default:
 		return false
 	}
@@ -309,6 +310,9 @@ func bindVIPBenefit(line *vipBenefitPart, a vipBenefitAction, req vipSalesReques
 }
 
 func vipPoolOwner(a vipBenefitAction, req vipSalesRequest, roles []vipRole) (string, bool) {
+	if a.OwnerParty != "" {
+		return a.OwnerParty, false
+	}
 	for _, scope := range []struct{ Type, Key string }{
 		{"ORGANIZATION_UNIT", a.PoolUnit}, {"PRODUCT", req.Product}, {"PROJECT", req.Project},
 	} {

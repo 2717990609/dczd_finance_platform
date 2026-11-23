@@ -280,18 +280,23 @@ function setRate(value, base, row) {
 function targetName(item) {
   const edit = targetEdits.value.get(item.itemKey)
   const withDuty = (name,duty) => [name,duty && (props.optionLabel('organizationDuty',duty) || duty)].filter(Boolean).join(' · ')
-  if (!edit) return withDuty(item.recipient?.name || item.targetLabel,item.recipientDuty)
+  if (!edit) {
+    const name = withDuty(item.recipient?.name || item.targetLabel,item.recipientDuty)
+    return item.targetKind==='pool' ? [name,item.poolOwner?.name || roleLabel(item.targetRole)].filter(Boolean).join(' · ') : name
+  }
   if (edit.target==='person') return withDuty(edit.personName,edit.recipientDuty)
-  return sheet.value.structureOptions.organizations.find(org=>org.value===edit.organization)?.label
+  const organization = sheet.value.structureOptions.organizations.find(org=>org.value===edit.organization)?.label
+  return edit.target==='pool' ? [organization,edit.ownerName || roleLabel(edit.role)].filter(Boolean).join(' · ') : organization
 }
 const roleLabel = role => props.optionLabel('catalogAppointmentRole',role) || role
 function originalTarget(item) {
   return {target:item.targetKind,role:item.targetRole,memberRole:item.memberRole,organization:item.targetOrganization,
-    personId:item.recipient?.id,personName:item.recipient?.name,recipientDuty:item.recipientDuty}
+    personId:item.recipient?.id,personName:item.recipient?.name,recipientDuty:item.recipientDuty,
+    ownerPersonId:item.poolOwner?.id,ownerName:item.poolOwner?.name}
 }
 function setTarget(item, payee) {
   const original = originalTarget(item)
-  if (['target','role','memberRole','organization','personId','recipientDuty'].every(field=>payee[field]===original[field])) {
+  if (['target','role','memberRole','organization','personId','recipientDuty','ownerPersonId'].every(field=>payee[field]===original[field])) {
     targetEdits.value.delete(item.itemKey)
   } else {
     targetEdits.value.set(item.itemKey,payee)
@@ -494,7 +499,7 @@ function publicationInput() {
     copy:copy.value,
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
     changes,
-    targetChanges:Array.from(targetEdits.value,([itemKey, {personName,...payee}])=>({itemKey,...payee}))
+    targetChanges:Array.from(targetEdits.value,([itemKey, {personName,ownerName,...payee}])=>({itemKey,...payee}))
       .filter(({itemKey})=>!removedItems.value.has(itemKey)),
     teamChanges:splitRemoved.value ? [] : Array.from(teamEdits.value,([teamKey,changes])=>({
       teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
@@ -502,7 +507,7 @@ function publicationInput() {
     teamSplitRates,
     leaderChanges,
     scopeChanges,
-    newItems:structure.value.items.map(({personName,...item})=>item),
+    newItems:structure.value.items.map(({personName,ownerName,...item})=>item),
     newSalesRates:structure.value.sales?.rows,
     newSalesLabel:structure.value.sales?.label,
     newSalesScope:structure.value.sales?.salesScopeUnitIds,
@@ -623,6 +628,7 @@ async function publish() {
               <a-descriptions-item v-if="item.targetRole" :label="targetKind==='pool' ? '负责人岗位' : '收款人任职岗位'">
                 {{ roleLabel(item.targetRole) }}
               </a-descriptions-item>
+              <a-descriptions-item v-if="item.poolOwner" label="分配负责人">{{ item.poolOwner.name }}</a-descriptions-item>
               <a-descriptions-item v-if="item.memberRole" label="可参与分配的成员岗位">
                 {{ roleLabel(item.memberRole) }}
               </a-descriptions-item>
@@ -775,9 +781,7 @@ async function publish() {
               <a-button type="link" :disabled="saving" @click="copy=undefined">取消复制</a-button>
             </div>
             <a-form-item v-if="hasEdits" class="catalog-rate-effective" label="生效时间（北京时间）" html-for="catalog-rate-effective-date"
-              :extra="recipientsChanged
-                ? '指定收款人需在订单付款时符合任职条件。已结算结果保留原规则。'
-                : '订单按付款时间匹配规则。已结算结果保留原规则。'">
+              extra="订单按付款时间匹配规则版本。">
               <a-input id="catalog-rate-effective-date" v-model:value="effectiveFrom" type="datetime-local"
                 :min="copy ? undefined : dateInput(sheet.effectiveFrom)" :max="copy ? undefined : dateInput(sheet.effectiveTo)" required/>
             </a-form-item>

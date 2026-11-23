@@ -27,6 +27,8 @@ type catalogPeriodItem struct {
 	PersonID        int64                   `json:"personId,omitempty"`
 	PoolName        string                  `json:"poolName,omitempty"`
 	OwnerRole       string                  `json:"ownerRole,omitempty"`
+	OwnerPersonID   int64                   `json:"ownerPersonId,omitempty"`
+	OwnerName       string                  `json:"ownerName,omitempty"`
 	MemberRole      string                  `json:"memberRole,omitempty"`
 	Tiers           []catalogPeriodTier     `json:"tiers,omitempty"`
 	FixedMinor      *int64                  `json:"fixedMinor,omitempty"`
@@ -141,6 +143,15 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		}
 		items[action.Item] = true
 		memberRole := ""
+		var ownerID int64
+		if action.OwnerParty != "" {
+			key, local := strings.CutPrefix(action.OwnerParty, "person:")
+			id, err := strconv.ParseInt(key, 10, 64)
+			if !local || err != nil || id <= 0 {
+				return result, errCatalogRateUnavailable
+			}
+			ownerID = id
+		}
 		var personID int64
 		if action.Designated != "" {
 			key, local := strings.CutPrefix(action.Designated, "person:")
@@ -158,7 +169,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			memberRole = catalogAggregateMemberRole(action.Role, action.EligibilityRole)
 		}
 		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: action.targetKind(),
-			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
+			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OwnerPersonID: ownerID, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
 			MemberRole: memberRole, FixedMinor: action.Fixed, unit: unit, OwnSales: action.OwnSales,
 			CommissionUnits: action.CommissionUnits, RecipientDuty: action.RecipientDuty, Appointment: action.Appointment})
 	}

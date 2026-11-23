@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
+import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 
 const props = defineProps({rule:Object, applied:Object, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
@@ -122,6 +123,7 @@ function editableRows(items) {
     return {uid:item.itemKey,itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,
       organizationKey:item.organizationKey,personId:item.personId,personName:item.personId ? item.targetName : undefined,
       poolName:item.poolName || '',ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
+      ownerPersonId:item.ownerPersonId,ownerName:item.ownerName,
       salesScope:item.ownSales ? 'own' : item.salesScopeUnitIds || null,recipientDuty:item.recipientDuty,
       appointment:item.appointment ? {...item.appointment} : undefined,
       method:item.fixedMinor!=null ? 'fixed' : tiers.length===1 ? 'rate' : 'tiers',
@@ -132,7 +134,8 @@ function editableRows(items) {
 }
 function configuredRow(item) {
   const target = {itemKey:item.itemKey,label:item.label.trim(),targetKind:item.targetKind,organizationKey:item.organizationKey,
-    personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole,...orderScopeBody(item)}
+    personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,ownerPersonId:item.ownerPersonId,
+    memberRole:item.memberRole,...orderScopeBody(item)}
   if (item.method==='fixed') return {...target,fixedAmount:item.fixedAmount}
   return {...target,tiers:item.method==='rate' ? [{from:0,rate:item.uniformRate}] : item.tiers}
 }
@@ -171,7 +174,8 @@ function targetLabel(item) {
     item.recipientDuty && props.optionLabel('organizationDuty',item.recipientDuty)].filter(Boolean).join(' · ')
   const name = availableOrganizations(item).find(org=>org.value===item.organizationKey)?.label ||
     sheet.value.items.find(old=>old.itemKey===item.itemKey)?.targetName
-  return [item.poolName,name].filter(Boolean).join(' · ') || '待选择收款对象'
+  const owner = item.targetKind==='pool' && (item.ownerName || (item.ownerRole && props.optionLabel('catalogAppointmentRole',item.ownerRole)))
+  return [item.poolName,name,owner].filter(Boolean).join(' · ') || '待选择收款对象'
 }
 function availableOrganizations(row) {
   const options = (sheet.value?.options?.organizations || []).filter(item=>row.targetKind==='pool' || item.kind==='COMPANY')
@@ -192,6 +196,8 @@ function setTarget(row, target) {
   row.personId = undefined
   row.personName = undefined
   row.ownerRole = ''
+  row.ownerPersonId = undefined
+  row.ownerName = undefined
   row.memberRole = ''
   row.poolName = ''
   row.recipientDuty = undefined
@@ -250,13 +256,14 @@ function componentChanges() {
     if (!item.label.trim() || (item.targetKind==='person' ? !item.personId : !item.organizationKey)) {
       throw new Error('请填写收款安排名称并选择收款对象。')
     }
-    if (item.targetKind==='pool' && (!item.poolName?.trim() || !item.ownerRole || !item.memberRole)) {
-      throw new Error('请填写团队池名称、负责人职责和成员职责。')
+    if (item.targetKind==='pool' && (!item.poolName?.trim() || !(item.ownerRole || item.ownerPersonId) || !item.memberRole)) {
+      throw new Error('请填写团队池名称、分配负责人和成员职责。')
     }
     if (Array.isArray(item.salesScope) && !item.salesScope.length) throw new Error('请为「'+item.label+'」选择适用销售组织。')
     if (item.appointment && (!item.appointment.unitId || !item.appointment.role)) throw new Error('请为「'+item.label+'」选择任职组织和岗位。')
     const target = {itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,organizationKey:item.organizationKey,
-      personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,memberRole:item.memberRole,...orderScopeBody(item)}
+      personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,ownerPersonId:item.ownerPersonId,
+      memberRole:item.memberRole,...orderScopeBody(item)}
     if (item.method==='fixed') return {...target,fixedMinor:minor(item.fixedAmount,'请输入整期固定金额。')}
     const {tiers} = configuredRow(item)
     const starts = tiers.map(row=>minor(row.from,'请输入每档净额起点。'))
@@ -517,9 +524,10 @@ async function resumeRule() {
                 <a-form-item label="团队池名称" html-for="period-benefit-pool">
                   <a-input id="period-benefit-pool" v-model:value="item.poolName" :maxlength="80" :disabled="saving"/>
                 </a-form-item>
-                <a-form-item label="负责人职责" html-for="period-benefit-owner" required>
-                  <a-select id="period-benefit-owner" v-model:value="item.ownerRole" :options="availableRoles(item.ownerRole)" :disabled="saving"/>
-                </a-form-item>
+                <CatalogPoolOwnerFields prefix="period-benefit-owner" :roles="availableRoles(item.ownerRole)" :api="api"
+                  :people-filters="peopleFilters" :disabled="saving"
+                  :model-value="{role:item.ownerRole,personId:item.ownerPersonId,personName:item.ownerName}"
+                  @update:model-value="({role,personId,personName})=>Object.assign(item,{ownerRole:role,ownerPersonId:personId,ownerName:personName})"/>
                 <a-form-item label="成员职责" html-for="period-benefit-member" required>
                   <a-select id="period-benefit-member" v-model:value="item.memberRole" :options="availableRoles(item.memberRole)" :disabled="saving"/>
                 </a-form-item>

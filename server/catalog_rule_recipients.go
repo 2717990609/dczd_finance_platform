@@ -70,10 +70,15 @@ func (s workspace) getCatalogRulePeople(w http.ResponseWriter, r *http.Request) 
 func (s workspace) catalogRuleRecipients(ctx context.Context, policy vipBenefitPolicy, components []catalogRateComponent, companies, groups map[string]string) ([]catalogRuleTeam, error) {
 	keys := make([]string, 0, len(policy.actions)+2*len(policy.split.Teams))
 	targets := make(map[string]string)
+	owners := make(map[string]string)
 	for _, action := range policy.actions {
 		if action.Designated != "" {
 			targets[action.Item] = action.Designated
 			keys = append(keys, action.Designated)
+		}
+		if action.OwnerParty != "" {
+			owners[action.Item] = action.OwnerParty
+			keys = append(keys, action.OwnerParty)
 		}
 	}
 	for _, team := range policy.split.Teams {
@@ -108,6 +113,10 @@ func (s workspace) catalogRuleRecipients(ctx context.Context, policy vipBenefitP
 		if key := targets[components[i].ItemKey]; key != "" {
 			person := display(key)
 			components[i].Recipient = &person
+		}
+		if key := owners[components[i].ItemKey]; key != "" {
+			person := display(key)
+			components[i].PoolOwner = &person
 		}
 	}
 	teams := make([]catalogRuleTeam, 0, len(policy.split.Teams))
@@ -282,7 +291,8 @@ func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, produc
 			(action.Designated != original.Designated || action.Role != original.Role) {
 			requirements = append(requirements, requiredAppointment{Label: action.Label, Key: action.Designated, Role: action.Role})
 		}
-		if action.Mode == "TEAM_POOL" && (action.PoolUnit != original.PoolUnit || action.OwnerRole != original.OwnerRole) {
+		if action.Mode == "TEAM_POOL" && action.OwnerRole != "" &&
+			(action.PoolUnit != original.PoolUnit || action.OwnerRole != original.OwnerRole) {
 			if err := validateCatalogPoolAppointment(ctx, tx, product, at, action.PoolUnit, action.OwnerRole); err != nil {
 				return fmt.Errorf("%w，请核对「%s」", err, action.Label)
 			}

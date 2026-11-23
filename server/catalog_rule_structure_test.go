@@ -27,6 +27,26 @@ func TestCatalogPoolOwnerAndMembersUseIndependentRoles(t *testing.T) {
 	}
 }
 
+func TestCatalogPoolCanAssignNamedOwner(t *testing.T) {
+	options := catalogStructureOptions{
+		Organizations: []catalogStructureOption{{Value: "pool-party", UnitID: "team-unit", Kind: "DEPARTMENT"}},
+		Roles:         []catalogStructureOption{{Value: "POOL_MEMBERS", Organization: true}},
+	}
+	target := catalogBenefitTarget{Target: "pool", Organization: "pool-party", OwnerPersonID: 7, MemberRole: "POOL_MEMBERS"}
+	action := vipBenefitAction{Item: "delivery", Label: "交付"}
+	if err := configureCatalogBenefitTarget(&action, target, options, map[int64]string{7: "person:7"}); err != nil {
+		t.Fatal(err)
+	}
+	var line vipBenefitPart
+	bindVIPBenefit(&line, action, vipSalesRequest{}, vipRuntimeData{
+		Organizations: []vipBenefitOrganization{{Party: "pool-party", Unit: "team-unit", Name: "交付部"}},
+		vipSalesData:  vipSalesData{People: map[string]string{"person:7": "分配负责人"}}, BenefitReady: true,
+	})
+	if !action.validTarget() || line.Pool != "delivery" || line.Owner != "person:7" || line.OwnerName != "分配负责人" {
+		t.Fatalf("selected owner must be resolved for the same pool: %+v %+v", action, line)
+	}
+}
+
 func TestCatalogGroupedRateConditionsKeepOneRowAndCompanyPriority(t *testing.T) {
 	base := json.RawMessage(`{"sales_organization_party_id":"ANY","sales_category_ids":["partner","regional"],"sales_relationship":"ANY","rate_bps":1200}`)
 	special := json.RawMessage(`{"sales_organization_party_ids":["alpha","beta"],"sales_relationship":"ANY","rate_bps":2000}`)

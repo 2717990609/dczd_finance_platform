@@ -198,19 +198,26 @@ func (d catalogAggregateDirectory) groupTarget(item catalogPeriodItem, at time.T
 		return target, key, ""
 	}
 	target.Name = item.PoolName
-	owners := d.members(key.Unit, item.OwnerRole, at)
-	switch len(owners) {
-	case 0:
-		return target, key, "BENEFIT_POOL_OWNER_MISSING"
-	case 1:
-		key.Owner = owners[0]
-	default:
-		return target, key, "BENEFIT_POOL_OWNER_CONFLICT"
-	}
-	for _, duty := range d.Duties[catalogAggregateDutyKey{key.Unit, item.OwnerRole}] {
-		if duty.ID == key.Owner && duty.contains(at) {
-			target.OwnerName = duty.Name
-			break
+	if item.OwnerPersonID != 0 {
+		key.Owner, target.OwnerName = item.OwnerPersonID, d.People[item.OwnerPersonID]
+		if target.OwnerName == "" {
+			return target, key, "BENEFIT_POOL_OWNER_MISSING"
+		}
+	} else {
+		owners := d.members(key.Unit, item.OwnerRole, at)
+		switch len(owners) {
+		case 0:
+			return target, key, "BENEFIT_POOL_OWNER_MISSING"
+		case 1:
+			key.Owner = owners[0]
+		default:
+			return target, key, "BENEFIT_POOL_OWNER_CONFLICT"
+		}
+		for _, duty := range d.Duties[catalogAggregateDutyKey{key.Unit, item.OwnerRole}] {
+			if duty.ID == key.Owner && duty.contains(at) {
+				target.OwnerName = duty.Name
+				break
+			}
 		}
 	}
 	key.Members = d.members(key.Unit, item.MemberRole, at)
@@ -451,6 +458,9 @@ func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catal
 			if item.TargetKind == "pool" {
 				units = append(units, item.unit)
 				roles = append(roles, item.OwnerRole, item.MemberRole)
+				if item.OwnerPersonID != 0 {
+					people = append(people, item.OwnerPersonID)
+				}
 			}
 		}
 	}

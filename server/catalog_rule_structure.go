@@ -54,6 +54,7 @@ type catalogBenefitTarget struct {
 	Role          string `json:"role,omitempty"`
 	MemberRole    string `json:"memberRole,omitempty"`
 	PersonID      int64  `json:"personId,omitempty"`
+	OwnerPersonID int64  `json:"ownerPersonId,omitempty"`
 	Organization  string `json:"organization,omitempty"`
 	RecipientDuty string `json:"recipientDuty,omitempty"`
 }
@@ -255,10 +256,16 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage, i
 		if item.Target == "person" {
 			people = append(people, catalogRuleRecipientChange{PersonID: item.PersonID})
 		}
+		if item.OwnerPersonID != 0 {
+			people = append(people, catalogRuleRecipientChange{PersonID: item.OwnerPersonID})
+		}
 	}
 	for _, target := range input.TargetChanges {
 		if target.Target == "person" {
 			people = append(people, catalogRuleRecipientChange{PersonID: target.PersonID})
+		}
+		if target.OwnerPersonID != 0 {
+			people = append(people, catalogRuleRecipientChange{PersonID: target.OwnerPersonID})
 		}
 	}
 	keys, err := catalogNewRecipientKeys(ctx, tx, people, nil)
@@ -437,8 +444,8 @@ func changeCatalogBenefitTargets(actions []map[string]json.RawMessage, salesKey 
 			"role": action.Role, "beneficiary_mode": action.Mode, "designated_party_id": action.Designated,
 			"company_beneficiary_party_id": action.Company, "pool_party_id": action.PoolParty,
 			"pool_organization_unit_id": action.PoolUnit, "pool_code": action.PoolCode, "pool_name": action.PoolName,
-			"allocation_owner_role": action.OwnerRole,
-			"recipient_duty":        action.RecipientDuty,
+			"allocation_owner_role": action.OwnerRole, "allocation_owner_party_id": action.OwnerParty,
+			"recipient_duty": action.RecipientDuty,
 		} {
 			if value == "" {
 				delete(fields, key)
@@ -506,7 +513,7 @@ func configureCatalogBenefitCalculation(action *vipBenefitAction, calculation ca
 
 func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenefitTarget,
 	options catalogStructureOptions, people map[int64]string) error {
-	if target.Target != "pool" && target.MemberRole != "" {
+	if target.Target != "pool" && (target.MemberRole != "" || target.OwnerPersonID != 0) {
 		return invalid
 	}
 	if target.RecipientDuty != "" && (target.Target != "person" ||
@@ -518,6 +525,7 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 	action.RecipientDuty = target.RecipientDuty
 	action.Designated, action.Company = "", ""
 	action.PoolParty, action.PoolUnit, action.PoolCode, action.PoolName, action.OwnerRole = "", "", "", "", ""
+	action.OwnerParty = ""
 	org := catalogStructureOptionFor(options.Organizations, target.Organization)
 	role := catalogStructureOptionFor(options.Roles, target.Role)
 	switch target.Target {
@@ -540,11 +548,13 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 			action.Role = before.Role
 		}
 	case "pool":
-		if target.PersonID != 0 || org.Value == "" || role.Value == "" {
+		if target.PersonID != 0 || org.Value == "" || (target.Role != "") == (target.OwnerPersonID != 0) ||
+			target.Role != "" && role.Value == "" || target.OwnerPersonID != 0 && people[target.OwnerPersonID] == "" {
 			return invalid
 		}
 		action.Mode, action.PoolParty, action.PoolUnit = "TEAM_POOL", org.Value, org.UnitID
 		action.Role, action.OwnerRole = role.Value, role.Value
+		action.OwnerParty = people[target.OwnerPersonID]
 		action.PoolCode, action.PoolName = action.Item, action.Label
 		if before.Mode == "TEAM_POOL" {
 			action.Role, action.PoolCode, action.PoolName = before.Role, before.PoolCode, before.PoolName
@@ -557,6 +567,9 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 			action.Role = member.Value
 		} else if before.Mode != "TEAM_POOL" && target.MemberRole != "" &&
 			!role.Organization && role.Value != "SALES" {
+			return invalid
+		}
+		if action.Role == "" {
 			return invalid
 		}
 	default:

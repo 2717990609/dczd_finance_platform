@@ -20,6 +20,7 @@ type catalogPeriodComponentEdit struct {
 	PersonID        int64                   `json:"personId,omitempty"`
 	PoolName        string                  `json:"poolName,omitempty"`
 	OwnerRole       string                  `json:"ownerRole,omitempty"`
+	OwnerPersonID   int64                   `json:"ownerPersonId,omitempty"`
 	MemberRole      string                  `json:"memberRole,omitempty"`
 	Tiers           []catalogPeriodTier     `json:"tiers"`
 	FixedMinor      *int64                  `json:"fixedMinor,omitempty"`
@@ -82,7 +83,8 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 			edit.ItemKey = "period-benefit-" + strings.ToLower(rand.Text())
 		}
 		if before.TargetKind != edit.TargetKind || before.OrganizationKey != edit.OrganizationKey || before.PersonID != edit.PersonID ||
-			before.OwnerRole != edit.OwnerRole || before.MemberRole != edit.MemberRole || before.PoolName != edit.PoolName {
+			before.OwnerRole != edit.OwnerRole || before.OwnerPersonID != edit.OwnerPersonID ||
+			before.MemberRole != edit.MemberRole || before.PoolName != edit.PoolName {
 			if err := setCatalogPeriodTarget(fields, before, edit, options); err != nil {
 				return nil, err
 			}
@@ -169,6 +171,9 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPeriodItem,
 	edit catalogPeriodComponentEdit, options catalogStructureOptions) error {
 	org := catalogStructureOptionFor(options.Organizations, edit.OrganizationKey)
+	if edit.TargetKind != "pool" && edit.OwnerPersonID != 0 {
+		return errCatalogPeriodRecipient
+	}
 	if edit.TargetKind != "person" && (org.Value == "" || edit.PersonID != 0) {
 		return errCatalogPeriodRecipient
 	}
@@ -187,12 +192,16 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 		roleAllowed := func(role, previous string) bool {
 			return role != "" && (role == previous || catalogStructureOptionFor(options.Roles, role).Organization)
 		}
-		if org.UnitID == "" || !roleAllowed(edit.OwnerRole, before.OwnerRole) ||
+		if org.UnitID == "" || edit.OwnerPersonID < 0 || (edit.OwnerPersonID > 0) == (edit.OwnerRole != "") ||
+			edit.OwnerRole != "" && !roleAllowed(edit.OwnerRole, before.OwnerRole) ||
 			!roleAllowed(edit.MemberRole, before.MemberRole) || !textOK(edit.PoolName, 80) {
 			return errCatalogPeriodRecipient
 		}
 		action.Mode, action.Company = "TEAM_POOL", ""
 		action.Role, action.OwnerRole = edit.MemberRole, edit.OwnerRole
+		if edit.OwnerPersonID != 0 {
+			action.OwnerParty = "person:" + strconv.FormatInt(edit.OwnerPersonID, 10)
+		}
 		action.PoolUnit, action.PoolParty, action.PoolName = org.UnitID, org.Value, edit.PoolName
 		if _, direct := catalogPeriodUnit(org.Value); direct {
 			action.PoolUnit = ""
@@ -204,13 +213,14 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 		return errCatalogPeriodRecipient
 	}
 	for _, key := range []string{"designated_party_id", "company_beneficiary_party_id", "pool_party_id", "pool_organization_unit_id",
-		"pool_code", "pool_name", "allocation_owner_role", "eligibility_role"} {
+		"pool_code", "pool_name", "allocation_owner_role", "allocation_owner_party_id", "eligibility_role"} {
 		delete(fields, key)
 	}
 	values := map[string]string{"item_key": action.Item, "role": action.Role, "beneficiary_mode": action.Mode,
 		"designated_party_id":          action.Designated,
 		"company_beneficiary_party_id": action.Company, "pool_party_id": action.PoolParty, "pool_organization_unit_id": action.PoolUnit,
-		"pool_code": action.PoolCode, "pool_name": action.PoolName, "allocation_owner_role": action.OwnerRole}
+		"pool_code": action.PoolCode, "pool_name": action.PoolName,
+		"allocation_owner_role": action.OwnerRole, "allocation_owner_party_id": action.OwnerParty}
 	for key, value := range values {
 		if value != "" {
 			fields[key], _ = json.Marshal(value)

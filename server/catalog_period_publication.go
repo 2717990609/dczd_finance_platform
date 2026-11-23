@@ -394,6 +394,9 @@ func readCatalogPeriodComponentOptions(ctx context.Context, db catalogPeriodRead
 		if item.PersonID > 0 {
 			personIDs = append(personIDs, item.PersonID)
 		}
+		if item.OwnerPersonID > 0 {
+			personIDs = append(personIDs, item.OwnerPersonID)
+		}
 		if item.Appointment != nil {
 			appointments = append(appointments, *item.Appointment)
 		}
@@ -456,6 +459,9 @@ func nameCatalogPeriodTargets(ctx context.Context, db catalogPeriodReader, items
 	var organizations, units []string
 	var people []int64
 	for _, item := range items {
+		if item.OwnerPersonID > 0 {
+			people = append(people, item.OwnerPersonID)
+		}
 		if item.PersonID > 0 {
 			people = append(people, item.PersonID)
 		} else if item.unit != "" {
@@ -484,6 +490,9 @@ func nameCatalogPeriodTargets(ctx context.Context, db catalogPeriodReader, items
 			key = catalogPeriodUnitPrefix + items[i].unit
 		}
 		items[i].TargetName = names[key]
+		if items[i].OwnerPersonID > 0 {
+			items[i].OwnerName = names[strconv.FormatInt(items[i].OwnerPersonID, 10)]
+		}
 	}
 	return nil
 }

@@ -60,7 +60,7 @@ function publicationInput() {
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
     create:{productId:productId.value,sku:sku.value,label:name.value.trim(),salesRates:sales?.rows,salesLabel:sales?.label,
       salesScopeUnitIds:sales?.salesScopeUnitIds},
-    newItems:items.map(({personName,...item})=>item),
+    newItems:items.map(({personName,ownerName,...item})=>item),
   }
 }
 function preview() {

@@ -15,6 +15,11 @@ import (
 )
 
 func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.T) {
+	t.Run("role owner", func(t *testing.T) { verifyHealthScenarioRecognition(t, false) })
+	t.Run("named owner", func(t *testing.T) { verifyHealthScenarioRecognition(t, true) })
+}
+
+func verifyHealthScenarioRecognition(t *testing.T, namedOwner bool) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t), development: true}
 	effective := time.Date(2026, 7, 25, 0, 0, 0, 0, shanghai)
@@ -173,16 +178,30 @@ func TestCreateHealthScenarioUsesItsOwnRecognitionAndRefreshesDrafts(t *testing.
 		t.Fatalf("expected the referral-only version before publishing organization benefits: %+v %v", sheet, err)
 	}
 	fixed, poolRate := int64(20000), int64(200)
+	poolTarget := catalogBenefitTarget{Target: "pool", Organization: pool, Role: "TEAM_LEAD"}
+	if namedOwner {
+		poolTarget.Role, poolTarget.MemberRole = "", "DELIVERY_TEAM"
+		if err := s.db.QueryRow(ctx, "SELECT id FROM people WHERE name='原团队池负责人'").Scan(&poolTarget.OwnerPersonID); err != nil {
+			t.Fatal(err)
+		}
+	}
 	organizationRule, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{
 		BaseID: independent.ID, EffectiveFrom: cut.Add(72 * time.Hour), RemovedItems: []string{sheet.Components[0].ItemKey},
 		NewItems: []catalogNewBenefitItem{
 			{Label: "公司固定金额", catalogBenefitTarget: catalogBenefitTarget{Target: "company", Organization: company},
 				catalogBenefitCalculation: catalogBenefitCalculation{Fixed: &fixed}},
-			{Label: "交付池", catalogBenefitTarget: catalogBenefitTarget{Target: "pool", Organization: pool, Role: "TEAM_LEAD"},
+			{Label: "交付池", catalogBenefitTarget: poolTarget,
 				catalogBenefitCalculation: catalogBenefitCalculation{Rate: &poolRate}},
 		}}, "fixture")
 	if err != nil || organizationRule.Version != 3 {
 		t.Fatalf("could not publish a company and pool rule without sales: %+v %v", organizationRule, err)
+	}
+	if namedOwner {
+		saved, err := s.catalogRuleRateSheet(ctx, organizationRule.ID)
+		if err != nil || len(saved.Components) != 2 || saved.Components[1].PoolOwner == nil ||
+			saved.Components[1].PoolOwner.ID != poolTarget.OwnerPersonID || saved.Components[1].TargetRole != "" {
+			t.Fatalf("stored pool owner should reopen as the selected person: %+v %v", saved, err)
+		}
 	}
 	store("HEALTH_CREATOR", "45", cut.Add(84*time.Hour), observed, false)
 	store("HEALTH_CREATOR", "46", cut.Add(96*time.Hour), observed, false)
