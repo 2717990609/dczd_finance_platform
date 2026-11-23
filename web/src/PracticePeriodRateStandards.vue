@@ -1,44 +1,57 @@
 <script setup>
 import { computed } from 'vue'
+import { practiceStandardRateGroups } from './rule-component-form'
 
 defineProps({prefix:String,companies:Array,categories:Array})
 const rows = defineModel({type:Array,required:true})
-const hasFallback = computed(() => rows.value.some(row=>row.scope==='general'))
+const groups = computed(() => practiceStandardRateGroups(rows.value))
+const newStandard = {
+  company:{label:'添加公司特例',field:'salesCompanies'},
+  category:{label:'添加类别默认比例',field:'salesCategoryIds'},
+  general:{label:'添加通用比例'},
+}
+function add(scope) {
+  const field = newStandard[scope].field
+  rows.value.push(field ? {scope,[field]:[]} : {scope})
+}
 </script>
 
 <template>
-  <div class="practice-standard-rates" aria-label="比例标准">
-    <div class="practice-standard-toolbar">
-      <small>匹配顺序　指定公司 → 销售类别默认 → 通用比例</small>
-      <a-space wrap :size="4">
-        <a-button size="small" @click="rows.push({scope:'category',salesCategoryIds:[]})">添加类别默认比例</a-button>
-        <a-button size="small" @click="rows.push({scope:'company',salesCompanies:[]})">添加公司特例</a-button>
-        <a-button v-if="!hasFallback" size="small" @click="rows.push({scope:'general'})">添加通用比例</a-button>
-      </a-space>
-    </div>
-    <div v-for="(row,i) in rows" :key="i" class="practice-standard-row">
-      <a-form-item v-if="row.scope==='category'" label="销售类别" :html-for="prefix+'-category-'+i" required>
-        <a-select :id="prefix+'-category-'+i" v-model:value="row.salesCategoryIds" :options="categories" mode="multiple"
-          :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="选择适用类别"/>
-      </a-form-item>
-      <a-form-item v-else-if="row.scope==='company'" label="指定公司" :html-for="prefix+'-company-'+i" required>
-        <a-select :id="prefix+'-company-'+i" v-model:value="row.salesCompanies" :options="companies" mode="multiple"
-          :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="选择有例外的公司"/>
-      </a-form-item>
-      <span v-else>通用比例</span>
-      <a-form-item label="比例（%）" :html-for="prefix+'-rate-'+i" required>
-        <a-input-number :id="prefix+'-rate-'+i" v-model:value="row.value" :min="0" :max="100" :precision="4"/>
-      </a-form-item>
-      <a-button type="link" danger size="small" @click="rows.splice(i,1)">移除</a-button>
-    </div>
-  </div>
+  <section class="practice-company-criteria" :aria-labelledby="prefix+'-heading'">
+    <header class="practice-company-scope-heading">
+      <h4 :id="prefix+'-heading'">比例标准</h4>
+      <small class="finance-rate-priority">匹配顺序 {{ groups.map(group=>group.label).join(' → ') }}</small>
+    </header>
+    <section v-for="{scope,label,items} in groups" :key="scope" :aria-label="label" class="practice-company-criterion"
+      :class="{'general-standard':scope==='general' && items.length}">
+      <header>
+        <strong>{{ label }}</strong>
+        <small v-if="!items.length">未配置</small>
+        <a-button v-if="scope!=='general' || !items.length" size="small" @click="add(scope)">{{ newStandard[scope].label }}</a-button>
+      </header>
+      <div v-for="({row,index:i}) in items" :key="i" class="practice-standard-row" :class="{'general-rate':scope==='general'}">
+        <a-form-item v-if="scope==='category'" label="销售类别" :html-for="prefix+'-category-'+i" required>
+          <a-select :id="prefix+'-category-'+i" v-model:value="row.salesCategoryIds" :options="categories" mode="multiple"
+            :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="选择适用类别"/>
+        </a-form-item>
+        <a-form-item v-else-if="scope==='company'" label="适用公司" :html-for="prefix+'-company-'+i" required>
+          <a-select :id="prefix+'-company-'+i" v-model:value="row.salesCompanies" :options="companies" mode="multiple"
+            :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="选择有例外的公司"/>
+        </a-form-item>
+        <a-form-item :label="scope==='general' ? undefined : '比例（%）'" :html-for="prefix+'-rate-'+i" required>
+          <a-input-number :id="prefix+'-rate-'+i" v-model:value="row.value" :min="0" :max="100" :precision="4"
+            :aria-label="scope==='general' ? '比例（%）' : undefined" :addon-after="scope==='general' ? '%' : undefined"/>
+        </a-form-item>
+        <a-button type="link" danger size="small" @click="rows.splice(i,1)">移除</a-button>
+      </div>
+    </section>
+  </section>
 </template>
 
 <style scoped>
-.practice-standard-rates {margin:8px 0 4px;padding:8px 12px;border:1px solid var(--line);border-radius:6px}
-.practice-standard-toolbar {display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:6px}
-.practice-standard-toolbar small {color:var(--muted)}
-.practice-standard-row {display:grid;grid-template-columns:minmax(0,1fr) minmax(95px,128px) auto;align-items:end;gap:8px;margin-top:6px}
-.practice-standard-row :deep(.ant-form-item) {margin:0}
-.practice-standard-row > span {align-self:center}
+.practice-standard-row {display:grid;grid-template-columns:minmax(0,1fr) minmax(85px,128px) auto;align-items:end;gap:8px;margin:4px 0}
+.general-standard {display:flex;flex-wrap:wrap;justify-content:space-between;align-items:center;gap:0 8px}
+.practice-standard-row.general-rate {grid-template-columns:minmax(85px,128px) auto;margin-inline-start:auto}
+.practice-standard-row :deep(.ant-form-item) {margin:0;min-width:0}
+.practice-standard-row :deep(.ant-input-number) {width:100%}
 </style>

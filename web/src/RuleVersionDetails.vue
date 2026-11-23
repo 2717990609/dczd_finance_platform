@@ -3,7 +3,7 @@ import { computed, onMounted, ref } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyMatchLabels, practiceCompanyRatePriority, practiceCompanyScopes, practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
-  practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, practiceStandardRateScope, practiceStandardRateSummary,
+  practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, practiceStandardRateGroups, practiceStandardRateSummary,
   ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
@@ -226,14 +226,16 @@ onMounted(async () => {
         <table v-if="part.periodBenefit?.standardRates?.length" class="rule-company-standards" aria-label="比例标准">
           <thead><tr><th scope="col">匹配条件</th><th scope="col">比例</th></tr></thead>
           <tbody>
-            <tr v-for="(standard,index) in part.periodBenefit.standardRates" :key="index">
-              <th scope="row">
-                <template v-if="practiceStandardRateScope(standard)==='company'">指定公司 · {{ standard.salesCompanies.map(companyName).join('、') }}</template>
-                <template v-else-if="practiceStandardRateScope(standard)==='category'">类别默认 · {{ standard.salesCategoryIds.map(practiceScopeNames.category).join('、') }}</template>
-                <template v-else>通用比例</template>
-              </th>
-              <td>{{ rate(standard.value,10000) }}</td>
-            </tr>
+            <template v-for="{scope,label,items} in practiceStandardRateGroups(part.periodBenefit.standardRates)" :key="scope">
+              <tr v-for="({row:standard,index}) in items" :key="index">
+                <th scope="row">
+                  {{ label }}
+                  <template v-if="scope==='company'"> · {{ standard.salesCompanies.map(companyName).join('、') }}</template>
+                  <template v-else-if="scope==='category'"> · {{ standard.salesCategoryIds.map(practiceScopeNames.category).join('、') }}</template>
+                </th>
+                <td>{{ rate(standard.value,10000) }}</td>
+              </tr>
+            </template>
           </tbody>
         </table>
         <section v-if="part.companySales" class="practice-company-criteria" aria-label="计提标准">

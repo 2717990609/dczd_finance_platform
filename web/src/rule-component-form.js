@@ -205,11 +205,20 @@ export function practiceStandardRateScope(row) {
   return row.scope || (row.salesCompanies?.length ? 'company' : row.salesCategoryIds?.length ? 'category' : 'general')
 }
 
+export function practiceStandardRateGroups(rows = []) {
+  const indexed = rows.map((row,index)=>({row,index}))
+  return Object.entries({company:'指定公司',category:'销售类别默认',general:'通用比例'}).map(([scope,label])=>({
+    scope,label,items:indexed.filter(({row})=>practiceStandardRateScope(row)===scope),
+  }))
+}
+
 export function practiceStandardRateSummary(rows, format) {
-  const values = rows.map(row=>row.value).filter(Number.isFinite)
-  if (!values.length) return '待填写比例'
-  const min = Math.min(...values), max = Math.max(...values)
-  return (min===max ? format(min) : format(min)+'–'+format(max))+' · 按类别或公司'
+  return practiceStandardRateGroups(rows).filter(group=>group.items.length).map(({label,items})=>{
+    const values = items.map(({row})=>row.value).filter(Number.isFinite)
+    if (!values.length) return label+' 待填写'
+    const min = Math.min(...values), max = Math.max(...values)
+    return label+' '+(min===max ? format(min) : format(min)+'–'+format(max))
+  }).join(' · ') || '待填写比例'
 }
 
 export function practicePeriodScopeText(benefit, names, limit = 2) {
