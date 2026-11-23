@@ -114,6 +114,8 @@ CREATE TABLE IF NOT EXISTS source_order_versions (
 
 CREATE INDEX IF NOT EXISTS source_order_versions_lookup
  ON source_order_versions(source, order_id, line_id, record_key, kind, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS source_order_versions_source_page
+ ON source_order_versions(source, id DESC);
 
 ALTER TABLE products ADD COLUMN IF NOT EXISTS cycle_start_day smallint;
 DO $$

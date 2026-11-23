@@ -562,15 +562,38 @@ func storeSourcePaymentCompany(ctx context.Context, tx pgx.Tx, version int64, f 
 	return false, nil
 }
 
-var ordersTemplateSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
+const sourceOrderPageFields = `id,source,order_id,line_id,kind,record_key,occurred_at,fact`
+const sourceOrderPageFilters = `($1='' OR source=$1) AND ($2='' OR order_id=$2)`
+const sourceOrderPageLimit = `50`
+const sourceOrderCandidateLimit = `640`
+
+// Limit the per-record checks for sparse pages. If the first scan cannot
+// finish a page, fill it from earlier records after grouping their versions.
+var ordersTemplateSQL = `order_page_candidates AS MATERIALIZED (
+ SELECT ` + sourceOrderPageFields + ` FROM source_order_versions
+ WHERE ` + sourceOrderPageFilters + ` AND ($3::bigint=0 OR id<$3)
+ ORDER BY id DESC LIMIT ` + sourceOrderCandidateLimit + `
+), recent_order_page AS MATERIALIZED (
+ SELECT latest.* FROM order_page_candidates latest
+ WHERE latest.id=(SELECT v.id FROM source_order_versions v
+  WHERE (v.source,v.order_id,v.line_id,v.record_key,v.kind)=(latest.source,latest.order_id,latest.line_id,latest.record_key,latest.kind)
+  ORDER BY ` + sourceOrderVersionSort("v") + ` LIMIT 1)
+ /* org scope */ ORDER BY latest.id DESC LIMIT ` + sourceOrderPageLimit + `
+)
+SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
  SELECT v.id,v.fact || jsonb_build_object('id',v.id,'productName',p.name,'mapped',p.id IS NOT NULL) AS data
  FROM (
+  SELECT * FROM recent_order_page
+  UNION ALL
   SELECT * FROM (
-   SELECT DISTINCT ON(source,order_id,line_id,record_key,kind) id,source,order_id,line_id,kind,record_key,occurred_at,fact FROM source_order_versions v
-   WHERE ($1='' OR source=$1) AND ($2='' OR order_id=$2)
-   ORDER BY source,order_id,line_id,record_key,kind,` + sourceOrderVersionSort("v") + `
-  ) latest
-  WHERE ($3::bigint=0 OR latest.id<$3) /* org scope */ ORDER BY latest.id DESC LIMIT 50
+   SELECT * FROM (
+    SELECT DISTINCT ON(source,order_id,line_id,record_key,kind) ` + sourceOrderPageFields + ` FROM source_order_versions v
+    WHERE ` + sourceOrderPageFilters + `
+    ORDER BY source,order_id,line_id,record_key,kind,` + sourceOrderVersionSort("v") + `
+   ) latest
+   WHERE latest.id<(SELECT min(id) FROM order_page_candidates) /* org scope */
+   ORDER BY latest.id DESC LIMIT (SELECT ` + sourceOrderPageLimit + `-count(*) FROM recent_order_page)
+  ) grouped_page WHERE (SELECT count(*) FROM order_page_candidates)=` + sourceOrderCandidateLimit + `
  ) v
  LEFT JOIN source_mappings m ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'
  LEFT JOIN source_order_classifications classification ON classification.source_version_id=v.id
@@ -585,8 +608,9 @@ var ordersTemplateSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[
  LEFT JOIN products p ON p.id=CASE WHEN ` + catalogSourceReservedSQL + ` THEN route.product_id ELSE m.product_id END
  ) q`
 
-var scopedOrdersSQL = organizationScopeQuery("WITH RECURSIVE "+organizationScopeCTE+" "+
-	strings.Replace(ordersTemplateSQL, "/* org scope */", "AND "+orderInOrganization, 1), "$4")
+var ordersSQL = "WITH " + ordersTemplateSQL
+var scopedOrdersSQL = organizationScopeQuery("WITH RECURSIVE "+organizationScopeCTE+", "+
+	strings.ReplaceAll(ordersTemplateSQL, "/* org scope */", "AND "+orderInOrganization), "$4")
 
 func (s workspace) orders(w http.ResponseWriter, r *http.Request) {
 	params := r.URL.Query()
@@ -609,7 +633,7 @@ func (s workspace) orders(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
-	query := ordersTemplateSQL
+	query := ordersSQL
 	args := []any{source, order, boundary}
 	if unit.Valid {
 		query = scopedOrdersSQL

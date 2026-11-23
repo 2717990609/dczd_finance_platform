@@ -166,17 +166,6 @@ func TestPracticeNoReferrerKeepsIndependentBenefitsAndOriginalRefund(t *testing.
 	revised := strings.Replace(practiceNoReferrerPayment, `"paid_minor":"40000"`, `"paid_minor":"45000"`, 1)
 	latest := normalize(fmt.Sprintf(revised, revision+3))
 	store(latest)
-	t.Run("来源订单显示有效的最新版本", func(t *testing.T) {
-		response := httptest.NewRecorder()
-		s.orders(response, httptest.NewRequest(http.MethodGet, "/api/v1/orders?source=DCZD&orderId=1100", nil))
-		var rows []sourceFact
-		if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil || response.Code != http.StatusOK || len(rows) != 1 {
-			t.Fatalf("expected one current payment from the source order view: %d %s %v", response.Code, response.Body, err)
-		}
-		if rows[0].Version != latest.Version || rows[0].AmountMinor == nil || *rows[0].AmountMinor != 45000 {
-			t.Fatalf("the source order view must use the effective payment revision, got %s %v", rows[0].Version, rows[0].AmountMinor)
-		}
-	})
 	if err := s.refreshPendingDrafts(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -190,6 +179,26 @@ func TestPracticeNoReferrerKeepsIndependentBenefitsAndOriginalRefund(t *testing.
 		Scan(&queued); err != nil || queued {
 		t.Fatalf("a later arrival of an obsolete revision must not queue the draft: %t %v", queued, err)
 	}
+	t.Run("来源订单分页保留最新修订", func(t *testing.T) {
+		const path = "/api/v1/orders?source=DCZD&orderId=1100"
+		response := httptest.NewRecorder()
+		s.orders(response, httptest.NewRequest(http.MethodGet, path, nil))
+		var rows []struct {
+			sourceFact
+			ID int64
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil || response.Code != http.StatusOK || len(rows) != 1 {
+			t.Fatalf("expected one current payment from the source order view: %d %s %v", response.Code, response.Body, err)
+		}
+		if rows[0].Version != latest.Version || rows[0].AmountMinor == nil || *rows[0].AmountMinor != 45000 {
+			t.Fatalf("the source order view must use the effective payment revision, got %s %v", rows[0].Version, rows[0].AmountMinor)
+		}
+		response = httptest.NewRecorder()
+		s.orders(response, httptest.NewRequest(http.MethodGet, fmt.Sprintf("%s&beforeId=%d", path, rows[0].ID), nil))
+		if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil || response.Code != http.StatusOK || len(rows) != 0 {
+			t.Fatalf("the next page must not surface previous payment revisions: %d %s %v", response.Code, response.Body, err)
+		}
+	})
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, checked.Version); err != nil {
 		t.Fatal(err)
 	}
