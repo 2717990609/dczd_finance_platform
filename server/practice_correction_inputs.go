@@ -15,6 +15,10 @@ type practiceCorrectionRevision struct {
 	Company                        *practiceReplayCompany
 }
 
+func practiceAttributionFields(fact string) string {
+	return fact + `->'referrerId',` + fact + `->'participants',` + fact + `->'practiceNoReferrer'`
+}
+
 // A change belongs to the period in which the financial attribution was
 // first observed for the entire enrollment. If its legs arrive in different
 // months, they are handled together when the last changed leg is available.
@@ -32,7 +36,7 @@ JOIN source_order_versions original ON original.id=a.source_version_id AND origi
 LEFT JOIN source_payment_companies base_company ON base_company.source_version_id=original.id
 JOIN LATERAL (
  SELECT v.id,v.fact,` + practicePaymentVersionOrder("v") + ` AS version_order,
-  jsonb_build_array(v.fact->'referrerId',v.fact->'participants',v.fact->'practiceNoReferrer',
+  jsonb_build_array(` + practiceAttributionFields("v.fact") + `,
   coalesce(pc.company_id,''),coalesce(pc.recommendation_company_id,''),coalesce(pc.recommendation_conflict,false)) AS attribution
  FROM source_order_versions v LEFT JOIN source_payment_companies pc ON pc.source_version_id=v.id
  WHERE ` + correctionOrderIdentity + `
@@ -50,7 +54,7 @@ LEFT JOIN LATERAL (
  FROM source_order_versions v LEFT JOIN source_payment_companies pc ON pc.source_version_id=v.id
  WHERE ` + correctionOrderIdentity + `
  AND ` + practicePaymentVersionOrder("v") + `<latest.version_order
- AND jsonb_build_array(v.fact->'referrerId',v.fact->'participants',v.fact->'practiceNoReferrer',coalesce(pc.company_id,''),
+ AND jsonb_build_array(` + practiceAttributionFields("v.fact") + `,coalesce(pc.company_id,''),
   coalesce(pc.recommendation_company_id,''),coalesce(pc.recommendation_conflict,false)) IS DISTINCT FROM latest.attribution
  ORDER BY version_order DESC LIMIT 1
 ) previous ON true
@@ -59,8 +63,7 @@ JOIN LATERAL (
  AND (previous.id IS NULL OR ` + practicePaymentVersionOrder("v") + `>previous.version_order)
 ) receipt ON true
 WHERE latest.attribution IS DISTINCT FROM jsonb_build_array(
- coalesce(accepted.fact,original.fact)->'referrerId',coalesce(accepted.fact,original.fact)->'participants',
- coalesce(accepted.fact,original.fact)->'practiceNoReferrer',
+ ` + practiceAttributionFields("coalesce(accepted.fact,original.fact)") + `,
  CASE WHEN accepted.company_binding IS NULL THEN coalesce(base_company.company_id,'') ELSE coalesce(accepted.company_binding->>'sales','') END,
  CASE WHEN accepted.company_binding IS NULL THEN coalesce(base_company.recommendation_company_id,'') ELSE coalesce(accepted.company_binding->>'referrer','') END,
  CASE WHEN accepted.company_binding IS NULL THEN coalesce(base_company.recommendation_conflict,false) ELSE coalesce((accepted.company_binding->>'conflict')::boolean,false) END)
@@ -81,7 +84,7 @@ LEFT JOIN LATERAL (
  JOIN source_order_versions used ON used.id=c.source_version_id
  LEFT JOIN source_payment_companies pc ON pc.source_version_id=used.id
  WHERE c.class_period_id=r.class_id AND c.original_version_id=r.original_id
- AND r.attribution=jsonb_build_array(used.fact->'referrerId',used.fact->'participants',used.fact->'practiceNoReferrer',
+ AND r.attribution=jsonb_build_array(` + practiceAttributionFields("used.fact") + `,
   CASE WHEN c.company_binding IS NULL THEN coalesce(pc.company_id,'') ELSE coalesce(c.company_binding->>'sales','') END,
   CASE WHEN c.company_binding IS NULL THEN coalesce(pc.recommendation_company_id,'') ELSE coalesce(c.company_binding->>'referrer','') END,
   CASE WHEN c.company_binding IS NULL THEN coalesce(pc.recommendation_conflict,false) ELSE coalesce((c.company_binding->>'conflict')::boolean,false) END)

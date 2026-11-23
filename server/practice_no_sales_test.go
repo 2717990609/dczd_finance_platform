@@ -163,8 +163,8 @@ func TestPracticeNoReferrerKeepsIndependentBenefitsAndOriginalRefund(t *testing.
 		t.Fatalf("expected a 400 yuan payment without personal sales performance, got %d %d %v", paid, attributed, err)
 	}
 	// The latest materialized revision can change the finances without advancing the business timestamp.
-	revised := fmt.Sprintf(strings.Replace(practiceNoReferrerPayment, `"paid_minor":"40000"`, `"paid_minor":"45000"`, 1), revision+3)
-	latest := normalize(revised)
+	revised := strings.Replace(practiceNoReferrerPayment, `"paid_minor":"40000"`, `"paid_minor":"45000"`, 1)
+	latest := normalize(fmt.Sprintf(revised, revision+3))
 	store(latest)
 	t.Run("来源订单显示有效的最新版本", func(t *testing.T) {
 		response := httptest.NewRecorder()
@@ -200,5 +200,49 @@ func TestPracticeNoReferrerKeepsIndependentBenefitsAndOriginalRefund(t *testing.
 	result, err := s.calculateCurrentDraft(ctx, refundPeriod, 0)
 	if err != nil || result.IssueCount != 0 || result.RefundTotal != -225 {
 		t.Fatalf("later refunds should recover only the independent amount: %+v %v", result, err)
+	}
+
+	now := time.Now().In(shanghai)
+	month := now.Format("2006-01")
+	if now.Day() >= 25 {
+		month = now.AddDate(0, 0, 7).Format("2006-01")
+	}
+	current := id(s.createPeriod(ctx, createPeriodInput{ProductID: p, Name: "当前办理期", SettlementMonth: month}))
+	if _, err := s.calculateCurrentDraft(ctx, current, 0); err != nil {
+		t.Fatal(err)
+	}
+	// The source may withdraw its confirmed exception without yet providing an attribution.
+	withdrawn := normalize(fmt.Sprintf(strings.Replace(revised, `,"retrain_no_sales_reason":"NO_REFERRER"`, "", 1), revision+4))
+	store(withdrawn)
+	replayPending := func(version string) bool {
+		t.Helper()
+		if err := s.refreshPendingDrafts(ctx); err != nil {
+			t.Fatal(err)
+		}
+		var pending bool
+		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM calculation_draft_issues i
+		 JOIN source_order_versions v ON v.id=i.source_version_id
+		 WHERE i.period_id=$1 AND i.code='PRACTICE_CORRECTION_REPLAY_REQUIRED' AND v.order_id='1100' AND v.version=$2 AND NOT i.advisory)`,
+			current, version).Scan(&pending); err != nil {
+			t.Fatal(err)
+		}
+		return pending
+	}
+	if !replayPending(withdrawn.Version) {
+		t.Fatal("a withdrawn source exception must flag the payment for review in the current draft")
+	}
+	store(normalize(fmt.Sprintf(revised, revision+5)))
+	if replayPending(withdrawn.Version) {
+		t.Fatal("a restored source exception must clear the review on the next recalculation")
+	}
+	var issues, corrections int
+	if err := s.db.QueryRow(ctx, `SELECT d.issue_count,(SELECT count(*) FROM calculation_draft_corrections c WHERE c.period_id=d.period_id)
+	 FROM calculation_drafts d WHERE d.period_id=$1`, current).Scan(&issues, &corrections); err != nil || issues != 0 || corrections != 0 {
+		t.Fatalf("restoring the settled attribution must leave the current draft clear: %d issues, %d corrections, %v", issues, corrections, err)
+	}
+	if err := s.db.QueryRow(ctx, `SELECT d.total_minor,d.version FROM calculation_drafts d
+	 JOIN settlements s USING(period_id) WHERE s.period_id=$1`, period).Scan(&result.Total, &result.Version); err != nil ||
+		result.Total != 450 || result.Version != checked.Version {
+		t.Fatalf("the source correction must leave the original settlement intact: %+v %v", result, err)
 	}
 }

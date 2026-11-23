@@ -109,9 +109,9 @@ var draftRefreshFacts = `WITH keys AS (
  JOIN settlements final ON final.period_id=booked.period_id
  JOIN periods class ON class.id=booked.period_id AND class.calendar_month IS NULL AND class.source_period_key IS NOT NULL
  WHERE latest.source='DCZD' AND latest.kind='ORDER_PAID' AND latest.fact->>'domain'='PRACTICE'
-  AND (latest.fact->'referrerId',latest.fact->'participants',next_company.company_id,
+  AND (` + practiceAttributionFields("latest.fact") + `,next_company.company_id,
    next_company.recommendation_company_id,next_company.recommendation_conflict)
-  IS DISTINCT FROM (previous.fact->'referrerId',previous.fact->'participants',prior_company.company_id,
+  IS DISTINCT FROM (` + practiceAttributionFields("previous.fact") + `,prior_company.company_id,
    prior_company.recommendation_company_id,prior_company.recommendation_conflict)
 ), corrected_originals AS (
  SELECT DISTINCT line.id,prior.product_id FROM events v JOIN source_order_versions paid
