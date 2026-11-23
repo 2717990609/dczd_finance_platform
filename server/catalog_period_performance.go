@@ -162,6 +162,10 @@ const catalogPerformanceLinksSQL = `WITH snapshot AS (SELECT captured_at FROM ca
  SELECT 'COMPANY',1,c.source_company_id,c.company_id::text,c.valid_from,c.valid_to
  FROM organization_company_sources c WHERE c.source='DCAI' AND c.source_company_id=ANY($2)`
 
+func (item catalogPeriodItem) needsSalesDirectory() bool {
+	return item.OwnSales || len(item.CommissionUnits) != 0 || item.AppointmentLevel != ""
+}
+
 func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []catalogActivityEvent) (catalogPerformanceDirectory, error) {
 	dir := catalogPerformanceDirectory{claims: map[int64]vipClaim{}, claimIssues: map[int64]string{},
 		duties: map[catalogPerformanceDuty][]vipInterval{}}
@@ -177,9 +181,7 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 		seen[event.PaymentID] = true
 		definition := event.selection.rule.Definition
 		scope := definition.Performance
-		needsSales := scope.active() && len(scope.UnitIDs) != 0 || slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool {
-			return item.OwnSales || len(item.CommissionUnits) != 0 || item.AppointmentLevel != ""
-		})
+		needsSales := scope.active() && len(scope.UnitIDs) != 0 || slices.ContainsFunc(definition.Items, catalogPeriodItem.needsSalesDirectory)
 		needsCategories := slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool { return len(item.ScopeCategories) != 0 })
 		if needsSales || needsCategories {
 			payments = append(payments, event.PaymentID)

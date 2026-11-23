@@ -214,6 +214,45 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		}
 	})
 
+	t.Run("unrestricted scope resolves the payment-time company appointment", func(t *testing.T) {
+		if _, err := db.Exec(ctx, `INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,valid_from,valid_to,observed_at)
+		 VALUES (gen_random_uuid(),'DCAI',9801,'TEAM_LEAD','ORGANIZATION_UNIT','10000000-0000-4000-8000-000000000981',
+		   '2026-09-25T00:00Z','2026-10-03T00:00Z','2026-11-01'),
+		 (gen_random_uuid(),'DCAI',9803,'TEAM_LEAD','ORGANIZATION_UNIT','10000000-0000-4000-8000-000000000981',
+		   '2026-10-03T00:00Z',NULL,'2026-11-01')`); err != nil {
+			t.Fatal(err)
+		}
+		const proposal = `{"create":{"productId":980,"label":"全账期公司在任负责人","cycle":"MONTHLY_25_TO_24"},
+		 "effectiveFrom":"2026-09-25T00:00:00+08:00","scenarioCodes":["FIRST","SECOND"],"components":[
+		 {"label":"分润","targetKind":"appointment","appointmentLevel":"COMPANY","appointmentRole":"TEAM_LEAD","tiers":[{"rate_bps":1000}]},
+		 {"label":"固定补贴","targetKind":"appointment","appointmentLevel":"COMPANY","appointmentRole":"TEAM_LEAD","fixedMinor":100000}]}`
+		trial := submit(980, "/api/v1/catalog-period-activity", s.postCatalogPeriodActivity, proposal)
+		var activity catalogPeriodActivity
+		if err := json.Unmarshal(trial.Body.Bytes(), &activity); err != nil || trial.Code != 200 ||
+			activity.Receipts != 40000 || activity.Grouping == nil || len(activity.Grouping.Groups) != 4 || len(activity.Grouping.Issues) != 0 {
+			t.Fatalf("expected four award groups using the pre- and post-transfer holders: %d %s %v", trial.Code, trial.Body, err)
+		}
+		reply := submit(980, path, s.postCatalogPeriodRule, proposal)
+		var rule catalogPublication
+		if err := json.Unmarshal(reply.Body.Bytes(), &rule); err != nil || reply.Code != 200 {
+			t.Fatalf("publish unrestricted rule: %d %s %v", reply.Code, reply.Body, err)
+		}
+		value, err := s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: rule.ID, Month: "2026-10"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		draft := value.(draftSummary)
+		if draft.LineCount != 4 || draft.Total != 204000 || draft.IssueCount != 0 {
+			t.Fatalf("unexpected draft: %+v", draft)
+		}
+		var amounts map[int64]int64
+		if err := db.QueryRow(ctx, `SELECT jsonb_object_agg(person_id,total) FROM
+		 (SELECT person_id,sum(amount_minor) AS total FROM calculation_draft_lines WHERE period_id=$1 GROUP BY person_id) awards`,
+			draft.PeriodID).Scan(&amounts); err != nil || len(amounts) != 2 || amounts[9801] != 101000 || amounts[9803] != 103000 {
+			t.Fatalf("each order must use the holder at the time of payment: %v %v", amounts, err)
+		}
+	})
+
 	if _, err := db.Exec(ctx, `WITH payment AS (INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
 	 VALUES('DCAI','103','','ai_vip_order:103','1','ORDER_PAID','2026-10-01T00:00Z','2026-10-01T00:00Z',
 	 '{"domain":"VIP","sourceKey":"new","paymentId":"103","amountMinor":70000}'),
