@@ -79,7 +79,7 @@ const companyStandards = computed(() => {
   }
   return [
     {scope:'category',label:'销售类别默认',column:'销售类别',rows:defaults},
-    {scope:'company',label:'公司比例',column:'适用公司',rows:companies},
+    {scope:'company',label:'指定公司',column:'适用公司',rows:companies},
   ].filter(group=>group.rows.length)
 })
 const activeStandard = computed(() => companyStandards.value.find(group=>group.scope===standardScope.value) || companyStandards.value[0])

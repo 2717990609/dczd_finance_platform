@@ -203,7 +203,7 @@ export function practiceSalesScopeText(part, names, limit = 2) {
   if (part.companySales) {
     const rows = part.companySales.categories || []
     list('销售类别',rows.flatMap(standardCategoryIDs),names.category)
-    list('销售公司',rows.flatMap(row=>[...(row.companies || []),...(row.overrides || []).flatMap(exceptionCompanyIDs)]),names.company)
+    list('指定公司',rows.flatMap(row=>[...(row.companies || []),...(row.overrides || []).flatMap(exceptionCompanyIDs)]),names.company)
     if (part.companySales.defaultRate != null) entries.push('其他外部公司')
     return entries.join(' · ') || '待配置类别或公司'
   }

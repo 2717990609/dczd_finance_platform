@@ -193,7 +193,7 @@ const scopeProductOptions = computed(() => scopedProducts.value.map(p=>({value:p
 const canPublishRule = productId => session.value?.user
   ? session.value.user.rules.some(rule => rule.productId===productId && rule.publish) : session.value?.development
 const practiceRuleTabs = [
-  {key:'',label:'分润规则'}, {key:'count-starts',label:'累计起点'}, {key:'retrain-splits',label:'复训提成拆分'},
+  {key:'',label:'分润规则'}, {key:'count-starts',label:'累计起点'},
 ]
 const practiceRulesProduct = computed(() => current.value==='rules' && !requestedRulePeriod.value && canReadRules(productScope.value)
   ? data.value.products.find(product=>product.id===productScope.value && product.periodMode==='class') : undefined)
@@ -1558,10 +1558,9 @@ async function save() {
         </template>
         <template v-else-if="practiceSettingsView">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
-          <PracticeRuleSettings :key="practiceRulesProduct.id+':'+practiceSettingsView" :kind="practiceSettingsView"
+          <PracticeRuleSettings :key="practiceRulesProduct.id"
             :product-id="practiceRulesProduct.id" :can-edit="canPublishRule(practiceRulesProduct.id)" :api="api"
-            :start-modes="options('tierStartMode')" :companies="options('practiceSalesCompany')"
-            :option-label="optionLabel" :format-time="formatTime" :format-money="formatMoney"/>
+            :start-modes="options('tierStartMode')" :option-label="optionLabel" :format-time="formatTime"/>
         </template>
         <template v-else>
         <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
@@ -1829,10 +1828,6 @@ async function save() {
         </div>
         <PracticeCountStartEditor v-if="practiceCountConfig" :config="practiceCountConfig"
           :start-modes="options('tierStartMode')" :people="classPeopleOptions" :openings="practiceOpeningOptions"/>
-        <PracticeRetrainSplitEditor v-if="practiceRetrainSales" :component="practiceRetrainSales"
-          :index="draft.components.indexOf(practiceRetrainSales)" :people="classPeopleOptions"
-          :units="unitOptions" :companies="options('practiceSalesCompany')" :pools="practicePoolOptions"
-          :create-pool="createPracticePool" :format-money="formatMoney"/>
         <div v-if="selectedProduct" class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
@@ -1911,6 +1906,9 @@ async function save() {
             <a-button v-if="draft.components.length>1" type="link" danger class="rule-remove"
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
           </div>
+          <PracticeRetrainSplitEditor v-if="c===practiceRetrainSales" :component="c" :index="i"
+            :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"
+            :pools="practicePoolOptions" :create-pool="createPracticePool" :format-money="formatMoney"/>
           <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')"
             :amounts="baseModes" :people="classPeopleOptions" :companies="options('practiceSalesCompany')"
             :sales-categories="options('practiceSalesCategory')"

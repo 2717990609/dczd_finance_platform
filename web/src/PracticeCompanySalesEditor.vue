@@ -14,7 +14,7 @@ const overrides = computed(() => categories.value.flatMap((category,index)=>
   category.overrides.map((override,position)=>({category,index,override,position}))))
 const standardGroups = computed(() => [
   {scope:'category',label:'销售类别默认',action:'添加类别标准'},
-  {scope:'companies',label:'公司比例',action:'添加指定公司'},
+  {scope:'companies',label:'指定公司',action:'添加指定公司'},
 ].map(section=>({...section,rows:categories.value.map((standard,index)=>({standard,index}))
   .filter(({standard})=>standard.scope===section.scope)}))
   .filter(section=>section.scope==='companies' || props.salesCategories.length || section.rows.length))
