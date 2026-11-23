@@ -336,13 +336,23 @@ func TestPracticeBookedRefundChangesOnlyOpenCumulativeTier(t *testing.T) {
 		return draft
 	}
 	before := calculate(history, 200)
-	if before.practiceTierAmounts[7] != 20000 {
-		t.Fatalf("the settlement must retain the selected basis: %v", before.practiceTierAmounts)
+	if before.practicePriorCounts[7] != 10000 || before.practiceTierAmounts[7] != 20000 {
+		t.Fatalf("the settlement must retain the prior and selected bases: %v, %v", before.practicePriorCounts, before.practiceTierAmounts)
 	}
 	history.bookedRefunds = map[int64]int64{1: 2500}
 	calculate(history, 100)
 	history.replaying, history.frozenAmounts = true, before.practiceTierAmounts
 	calculate(history, 200)
+	history.repriceAmounts = true
+	history.frozenPrior = map[int64]int64{7: 9000}
+	repriced := calculate(history, 100)
+	if repriced.practiceTierAmounts[7] != 19000 {
+		t.Fatalf("the correction must use the frozen prior, not live history or the previously selected tier: %v", repriced.practiceTierAmounts)
+	}
+	history.frozenPrior = nil
+	if _, err := calculatePracticeDraft(roster, rule, orders, identities, nil, history, nil, practiceDraftRuntime{}); !errors.Is(err, errPracticeRefundReplay) {
+		t.Fatalf("an unavailable prior basis must block the correction: %v", err)
+	}
 }
 
 func TestPracticeScopedCumulativeTierMeasuresOnlyEligiblePayments(t *testing.T) {

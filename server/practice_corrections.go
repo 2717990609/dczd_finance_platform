@@ -157,6 +157,14 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 		}
 		return err
 	}
+	if len(changes) != 0 {
+		if err := replay.repriceCorrectedCumulativeTiers(); err != nil {
+			if errors.Is(err, errPracticeRefundReplay) {
+				return issue("PRACTICE_CORRECTION_REPLAY_REQUIRED")
+			}
+			return err
+		}
+	}
 	for i := range b.revisions {
 		change := &b.revisions[i]
 		change.Company = &practiceReplayCompany{Sales: change.Fact.SalesCompanyID,
@@ -239,6 +247,29 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 	return nil
 }
 
+func (r *practiceReplay) repriceCorrectedCumulativeTiers() error {
+	if !slices.ContainsFunc(r.rule.Components, func(part component) bool {
+		return part.Tiers != nil && part.Tiers.CumulativeMetric != ""
+	}) {
+		return nil
+	}
+	// Select the corrected tiers before applying refunds booked after the class.
+	// Their effect on the cumulative basis starts in the refund posting period.
+	r.history.repriceAmounts = true
+	priced, err := r.calculate()
+	r.history.repriceAmounts = false
+	if err != nil {
+		return err
+	}
+	r.history.frozenAmounts = priced.practiceTierAmounts
+	for member, amounts := range priced.practiceFrozenTiers {
+		history := r.history.arrangements[member]
+		history.frozenAmounts = amounts.Amounts
+		r.history.arrangements[member] = history
+	}
+	return nil
+}
+
 func (r practiceReplay) calculateCorrectionLines(ctx context.Context, tx pgx.Tx, classID int64,
 	refunds []draftPerformance, facts map[int64]paymentInput) ([]draftLine, error) {
 	classRefunds := r.refunds
@@ -315,54 +346,54 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 	if len(b.revisions) == 0 {
 		return nil
 	}
-	newMembers := make(map[int64]bool)
+	membership := make(map[int64]string, len(replay.members))
 	for _, member := range replay.members {
-		newMembers[member.ID] = classMember(member.MembershipType) == "new"
+		membership[member.ID] = classMember(member.MembershipType)
 	}
 	changed := make(map[int64]sourceFact)
 	for _, revision := range b.revisions {
 		changed[revision.OriginalID] = revision.Fact
 	}
-	var salesRole string
-	var namedSalesRecipient bool
-	var scopedTierCompanies []string
-	for _, part := range replay.rule.Components {
-		if part.Type == "sales" && (part.ClassMember == "" || part.ClassMember == "new") {
-			salesRole = part.SourceRole
-			namedSalesRecipient = part.SalesPersonID != 0
-			if part.Tiers != nil {
-				scopedTierCompanies = part.salesCompanies()
+	affectedPeople := map[string]map[int64]bool{"new": {}, "retrain": {}}
+	saleRules := make(map[string]component, len(affectedPeople))
+	for kind := range affectedPeople {
+		for _, part := range replay.rule.Components {
+			if part.Type == "sales" && part.matchesPracticeMember(kind) {
+				saleRules[kind] = part
+				break
 			}
-			break
 		}
 	}
-	people := make(map[int64]bool)
 	for i, line := range original {
 		next := target[i].PersonID
 		revised, hasChange := changed[line.payment]
-		if line.component != "sales" || !hasChange || !newMembers[line.enrollment] {
+		kind := membership[line.enrollment]
+		people := affectedPeople[kind]
+		if line.component != "sales" || !hasChange || people == nil {
 			continue
 		}
-		leftTierScope := len(scopedTierCompanies) != 0 && revised.SalesCompanyID != "" &&
-			!slices.Contains(scopedTierCompanies, revised.SalesCompanyID)
+		sales := saleRules[kind]
+		companies := sales.salesCompanies()
+		leftTierScope := (kind == "retrain" || sales.Tiers != nil) && len(companies) != 0 &&
+			revised.SalesCompanyID != "" && !slices.Contains(companies, revised.SalesCompanyID)
 		if next == 0 && !leftTierScope {
 			continue
 		}
 		if booked, ok := b.booked[line.payment]; ok && leftTierScope &&
-			!slices.Contains(scopedTierCompanies, booked.Fact.SalesCompanyID) {
+			!slices.Contains(companies, booked.Fact.SalesCompanyID) {
 			continue
 		}
 		prior := line.person
-		if namedSalesRecipient {
+		if sales.SalesPersonID != 0 {
 			prior = replay.posted[line.payment].personID
-			assigned, issue := paymentBeneficiary(revised, salesRole, replay.identities)
+			assigned, issue := paymentBeneficiary(revised, sales.SourceRole, replay.identities)
 			if issue != "" {
 				continue
 			}
 			next = assigned.PersonID
 		}
 		if change, ok := b.booked[line.payment]; ok {
-			if assigned, issue := paymentBeneficiary(change.Fact, salesRole, replay.identities); issue == "" {
+			if assigned, issue := paymentBeneficiary(change.Fact, sales.SourceRole, replay.identities); issue == "" {
 				prior = assigned.PersonID
 			}
 		}
@@ -375,7 +406,8 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 			}
 		}
 	}
-	if len(people) == 0 {
+	newPeople, retrainPeople := affectedPeople["new"], affectedPeople["retrain"]
+	if len(newPeople)+len(retrainPeople) == 0 {
 		return nil
 	}
 	var affected bool
@@ -387,16 +419,25 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 	 JOIN rule_versions rule ON rule.id=d.rule_id
 	 WHERE original.id=$1
 	 AND EXISTS(SELECT 1 FROM calculation_draft_lines l
+	  JOIN practice_enrollments enrollment ON enrollment.id=l.practice_enrollment_id
 	  LEFT JOIN calculation_draft_performance performance ON performance.period_id=l.period_id
 	   AND performance.source_version_id=l.source_version_id
+	  CROSS JOIN LATERAL (SELECT coalesce(performance.person_id,l.person_id) AS person_id) owner
+	  CROSS JOIN LATERAL jsonb_array_elements(rule.components) component
+	  CROSS JOIN LATERAL (SELECT component->'tiers' AS config) tier
 	  WHERE l.period_id=later.id AND l.component_type='sales'
-	  AND coalesce(performance.person_id,l.person_id)=ANY($2::bigint[]) AND (
-	   jsonb_path_exists(rule.components,'$[*].tiers.count[*]')
-	   OR jsonb_path_exists(rule.components,'$[*].tiers.companySchedules[*].count[*]')
-	   OR jsonb_path_exists(rule.components,'$[*].tiers.categorySchedules[*].count[*]')
-	   OR jsonb_path_exists(rule.components,'$[*].tiers.personSchedules[*] ? (@.personId == $person).count[*]',
-	    jsonb_build_object('person',coalesce(performance.person_id,l.person_id)))))
-	)`, classID, slices.Sorted(maps.Keys(people))).Scan(&affected)
+	  AND component->>'type'='sales' AND component->>'mode'='tiered'
+	  AND (coalesce(component->>'classMember','') IN ('',CASE enrollment.membership_type WHEN 3 THEN 'new' WHEN 2 THEN 'retrain' END)
+	   OR enrollment.membership_type=2 AND tier.config->>'includeRetrain'='true')
+	  AND (owner.person_id=ANY($2::bigint[]) AND (
+	    tier.config->>'cumulativeMetric' IN ('cumulative_new','cumulative_combined')
+	    OR jsonb_path_exists(tier.config,'$.count[*]')
+	    OR jsonb_path_exists(tier.config,'$.companySchedules[*].count[*]')
+	    OR jsonb_path_exists(tier.config,'$.categorySchedules[*].count[*]')
+	    OR jsonb_path_exists(tier.config,'$.personSchedules[*] ? (@.personId == $person).count[*]',
+	     jsonb_build_object('person',owner.person_id)))
+	   OR owner.person_id=ANY($3::bigint[]) AND tier.config->>'cumulativeMetric' IN ('cumulative_retrain','cumulative_combined')))
+	)`, classID, slices.Sorted(maps.Keys(newPeople)), slices.Sorted(maps.Keys(retrainPeople))).Scan(&affected)
 	if err == nil && affected {
 		draft.Issues = append(draft.Issues, draftIssue{FactID: trigger, Code: "PRACTICE_CORRECTION_LATER_TIERS", Advisory: true,
 			stableKey: strconv.FormatInt(classID, 10)})

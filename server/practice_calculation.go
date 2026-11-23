@@ -166,6 +166,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			state = configured
 			state.replaying, state.bookedRefunds, state.liveCategories = history.replaying, history.bookedRefunds, history.liveCategories
 			state.legacyMeasures = history.legacyMeasures
+			state.repriceAmounts = history.repriceAmounts
 		}
 		awards, issues, err := practiceTierAwards(part, purchases, orders, identities, blocked, state, refunds, runtime)
 		if err != nil {
@@ -515,7 +516,7 @@ func practiceTierAwards(part component, current []practicePurchase, orders map[s
 	}
 	if history.replaying {
 		frozen := history.frozenPrior
-		if cumulative {
+		if cumulative && !history.repriceAmounts {
 			frozen = history.frozenAmounts
 		}
 		for person := range needsHistory {
@@ -524,6 +525,14 @@ func practiceTierAwards(part component, current []practicePurchase, orders map[s
 			}
 		}
 		if cumulative {
+			if history.repriceAmounts {
+				var err error
+				frozen, err = practiceCumulativeAmountTotals(*config, rows, frozen)
+				if err != nil {
+					return nil, issues, err
+				}
+				issues.amounts = frozen
+			}
 			return choosePracticeCumulativeAmountTiers(*config, rows, frozen), issues, nil
 		}
 		awards, err := choosePracticeSalesTiers(*config, rows, history.frozenPrior)
@@ -598,7 +607,7 @@ func practiceTierAwards(part component, current []practicePurchase, orders map[s
 		if err != nil {
 			return nil, issues, err
 		}
-		issues.amounts = totals
+		issues.priorCounts, issues.amounts = prior, totals
 		return choosePracticeCumulativeAmountTiers(*config, ready, totals), issues, nil
 	}
 	awards, err := choosePracticeSalesTiers(*config, ready, prior)

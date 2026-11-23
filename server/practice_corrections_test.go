@@ -15,14 +15,26 @@ import (
 
 func TestPracticeCorrectionReplaysBothLegsAndTheWholeSalesTier(t *testing.T) {
 	t.Run("shared cumulative tier", func(t *testing.T) {
-		testPracticeCorrectionAcrossClasses(t, false)
+		testPracticeCorrectionAcrossClasses(t, false, "", "new")
 	})
 	t.Run("personal cumulative tier", func(t *testing.T) {
-		testPracticeCorrectionAcrossClasses(t, true)
+		testPracticeCorrectionAcrossClasses(t, true, "", "new")
+	})
+	t.Run("cumulative new amount", func(t *testing.T) {
+		testPracticeCorrectionAcrossClasses(t, false, "cumulative_new", "new")
+	})
+	t.Run("cumulative retrain amount", func(t *testing.T) {
+		testPracticeCorrectionAcrossClasses(t, true, "cumulative_retrain", "retrain")
+	})
+	t.Run("cumulative combined amount", func(t *testing.T) {
+		testPracticeCorrectionAcrossClasses(t, false, "cumulative_combined", "retrain")
+	})
+	t.Run("retrain is outside the new amount metric", func(t *testing.T) {
+		testPracticeCorrectionAcrossClasses(t, false, "cumulative_new", "retrain")
 	})
 }
 
-func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool) {
+func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool, metric practiceAmountMetric, member string) {
 	t.Helper()
 	ctx := context.Background()
 	service := workspace{db: integrationDB(t), sources: map[string]sourceConfig{
@@ -55,9 +67,15 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool) {
 	}
 	const replacement = "销售乙新来源账号"
 	id(service.assignIdentity(ctx, assignIdentityInput{PersonID: people["销售乙"], Source: "DCZD", ExternalID: replacement, ValidFrom: paidAt.Add(-time.Hour).Format(time.RFC3339)}))
+	classTiers := &practiceSalesTiers{Performance: []practiceTier{{Mode: "rate", Value: 1000}, {From: 15000, Mode: "rate", Value: 2000}}}
+	membershipType := 3
+	if member == "retrain" {
+		membershipType = 2
+		classTiers.CumulativeMetric, classTiers.CountFromOrdinal = "cumulative_retrain", 56
+	}
 	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &class, Label: "六月实战班销售阶梯",
-		Components: []component{{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
-			Tiers: &practiceSalesTiers{Performance: []practiceTier{{Mode: "rate", Value: 1000}, {From: 15000, Mode: "rate", Value: 2000}}}}}}); err != nil {
+		Components: []component{{Type: "sales", Mode: "tiered", ClassMember: member, SourceRole: "DIRECT_REFERRER",
+			Tiers: classTiers}}}); err != nil {
 		t.Fatal(err)
 	}
 	payment := func(order, version, owner string, amount int64, observed time.Time) sourceFact {
@@ -86,11 +104,11 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool) {
 	if err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
 		_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: classKey, Hash: "class-correction-fixture", SourceVersion: 1,
 			StartsAt: start, ConfirmedAt: start.Add(time.Hour), Enrollments: []practiceEnrollment{
-				{SourceEnrollmentID: "1", ParticipantID: "1", MembershipType: 3, CommissionEligible: true,
+				{SourceEnrollmentID: "1", ParticipantID: "1", MembershipType: membershipType, CommissionEligible: true,
 					SignedAt: start, PaidOrderIDs: []string{"deposit", "balance"}, ContentHash: "aa"},
-				{SourceEnrollmentID: "2", ParticipantID: "2", MembershipType: 3, CommissionEligible: true,
+				{SourceEnrollmentID: "2", ParticipantID: "2", MembershipType: membershipType, CommissionEligible: true,
 					SignedAt: start, PaidOrderIDs: []string{"second"}, ContentHash: "bb"},
-				{SourceEnrollmentID: "3", ParticipantID: "3", MembershipType: 3, CommissionEligible: true,
+				{SourceEnrollmentID: "3", ParticipantID: "3", MembershipType: membershipType, CommissionEligible: true,
 					SignedAt: start, PaidOrderIDs: []string{"third"}, ContentHash: "cc"},
 			}})
 		return err
@@ -125,14 +143,20 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool) {
 	laterStart := time.Date(2026, 7, 10, 8, 0, 0, 0, shanghai)
 	laterTiers := &practiceSalesTiers{CountFromOrdinal: 56,
 		Count: []practiceTier{{From: 1, Mode: "rate", Value: 1000}, {From: 2, Mode: "rate", Value: 2000}}}
-	if personalTier {
-		laterTiers.PersonSchedules = []practicePersonSchedule{{
-			PersonID: people["销售甲"], practiceTierSchedule: practiceTierSchedule{Count: laterTiers.Count},
-		}}
+	if metric != "" {
+		laterTiers.CumulativeMetric = metric
+		laterTiers.Performance = []practiceTier{{Mode: "rate", Value: 1000}, {From: 20000, Mode: "rate", Value: 2000}}
 		laterTiers.Count = nil
 	}
+	if personalTier {
+		laterTiers.PersonSchedules = []practicePersonSchedule{{
+			PersonID:             people["销售甲"],
+			practiceTierSchedule: practiceTierSchedule{Count: laterTiers.Count, Performance: laterTiers.Performance},
+		}}
+		laterTiers.Count, laterTiers.Performance = nil, nil
+	}
 	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &later, Label: "累计新报",
-		Components: []component{{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
+		Components: []component{{Type: "sales", Mode: "tiered", ClassMember: member, SourceRole: "DIRECT_REFERRER",
 			Tiers: laterTiers}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -140,14 +164,19 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool) {
 	if err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
 		_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: laterKey, Hash: "later-tier", SourceVersion: 1,
 			StartsAt: laterStart, ConfirmedAt: laterStart.Add(time.Hour), Enrollments: []practiceEnrollment{
-				{SourceEnrollmentID: "4", ParticipantID: "4", MembershipType: 3, CommissionEligible: true,
+				{SourceEnrollmentID: "4", ParticipantID: "4", MembershipType: membershipType, CommissionEligible: true,
 					SignedAt: laterStart, PaidOrderIDs: []string{"fourth"}, ContentHash: "dd"},
 			}})
 		return err
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if next := draftAt(later); next.Total == 2000 && next.IssueCount == 0 {
+	wantAdvisory := metric == "" || metric.includes(member)
+	laterTotal, advisoryCount := int64(2000), 1
+	if !wantAdvisory {
+		laterTotal, advisoryCount = 1000, 0
+	}
+	if next := draftAt(later); next.Total == laterTotal && next.IssueCount == 0 {
 		freeze(next)
 	} else {
 		t.Fatalf("the later settled class must depend on the earlier sales count: %+v", next)
@@ -156,12 +185,18 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool) {
 	openClass := id(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "八月班", Ordinal: 58,
 		StartsOn: "2026-08-12", EndsOn: "2026-08-12", SourcePeriodKey: openKey}))
 	openStart := time.Date(2026, 8, 12, 8, 0, 0, 0, shanghai)
+	openSchedule := practiceTierSchedule{Count: []practiceTier{{Mode: "rate", Value: 1000}, {From: 3, Mode: "rate", Value: 2000}}}
+	openMetric := metric
+	if !wantAdvisory {
+		openMetric = classTiers.CumulativeMetric
+	}
+	if openMetric != "" {
+		openSchedule = practiceTierSchedule{Performance: []practiceTier{{Mode: "rate", Value: 1000}, {From: 35000, Mode: "rate", Value: 2000}}}
+	}
 	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &openClass, Label: "开放班次个人累计",
-		Components: []component{{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
-			Tiers: &practiceSalesTiers{CountFromOrdinal: 56, PersonSchedules: []practicePersonSchedule{
-				{PersonID: people["销售甲"], practiceTierSchedule: practiceTierSchedule{
-					Count: []practiceTier{{Mode: "rate", Value: 1000}, {From: 3, Mode: "rate", Value: 2000}},
-				}},
+		Components: []component{{Type: "sales", Mode: "tiered", ClassMember: member, SourceRole: "DIRECT_REFERRER",
+			Tiers: &practiceSalesTiers{CountFromOrdinal: 56, CumulativeMetric: openMetric, PersonSchedules: []practicePersonSchedule{
+				{PersonID: people["销售甲"], practiceTierSchedule: openSchedule},
 			}}}}}); err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +204,7 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool) {
 	if err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
 		_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: openKey, Hash: "later-open-tier", SourceVersion: 1,
 			StartsAt: openStart, ConfirmedAt: openStart.Add(time.Hour), Enrollments: []practiceEnrollment{
-				{SourceEnrollmentID: "5", ParticipantID: "5", MembershipType: 3, CommissionEligible: true,
+				{SourceEnrollmentID: "5", ParticipantID: "5", MembershipType: membershipType, CommissionEligible: true,
 					SignedAt: openStart, PaidOrderIDs: []string{"fifth"}, ContentHash: "ee"},
 			}})
 		return err
@@ -204,8 +239,8 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool) {
 	}
 	var advisory bool
 	if err := service.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM calculation_draft_issues
-	 WHERE period_id=$1 AND code='PRACTICE_CORRECTION_LATER_TIERS' AND advisory)`, august).Scan(&advisory); err != nil || !advisory {
-		t.Fatalf("later frozen cumulative tiers must be flagged for review: %t %v", advisory, err)
+	 WHERE period_id=$1 AND code='PRACTICE_CORRECTION_LATER_TIERS' AND advisory)`, august).Scan(&advisory); err != nil || advisory != wantAdvisory {
+		t.Fatalf("expected later class advisory %t, got %t %v", wantAdvisory, advisory, err)
 	}
 	displayRevision := revisedAt.AddDate(0, 2, 0)
 	store(displayRevision, payment("deposit", "renamed", replacement, 4000, displayRevision))
@@ -270,7 +305,7 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool) {
 	if err := json.Unmarshal(response.Body.Bytes(), &detail); err != nil || response.Code != http.StatusOK {
 		t.Fatalf("correction detail: %d %v %s", response.Code, err, response.Body)
 	}
-	if detail.AdvisoryCount != 1 {
+	if detail.AdvisoryCount != advisoryCount {
 		t.Fatalf("the finance workbench must receive the later-class advisory, got %d", detail.AdvisoryCount)
 	}
 	var linked bool
@@ -321,26 +356,30 @@ func testPracticeCorrectionAcrossClasses(t *testing.T, personalTier bool) {
 		RefundID: "deposit-partial-refund", AmountMinor: &refundAmount, OccurredAt: displayRevision, UpdatedAt: displayRevision,
 		RefundsPayment: []sourcePaymentReference{{OrderID: "deposit", RecordID: "deposit"}}})
 	refunded := draftAt(september)
-	if refunded.RefundTotal != -400 || refunded.CorrectionTotal != 400 || refunded.IssueCount != 3 {
+	wantPending, refundIssues := int64(-1800), 3
+	if classTiers.CumulativeMetric != "" {
+		wantPending, refundIssues = -400, 1
+	}
+	if refunded.RefundTotal != -400 || refunded.CorrectionTotal != 400 || refunded.IssueCount != refundIssues {
 		t.Fatalf("the later refund must account for the corrected tier and reverse the debit to the frozen recipient: %+v", refunded)
 	}
 	var totalPending int64
 	if err := service.db.QueryRow(ctx, `SELECT coalesce(sum(recovery_minor),0) FROM calculation_draft_issues
-	 WHERE period_id=$1 AND recovery_person_id=$2`, september, people["销售乙"]).Scan(&totalPending); err != nil || totalPending != -1800 {
+	 WHERE period_id=$1 AND recovery_person_id=$2`, september, people["销售乙"]).Scan(&totalPending); err != nil || totalPending != wantPending {
 		t.Fatalf("the booked recipient and their linked tier must survive a later identity change: %d %v", totalPending, err)
 	}
 	revertAt := displayRevision.Add(2 * time.Hour)
 	store(revertAt, payment("deposit", "reverted", "销售甲", 4000, revertAt), payment("balance", "reverted", "销售甲", 6000, revertAt))
 	draftAt(september)
 	if err := service.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM calculation_draft_issues
-	 WHERE period_id=$1 AND code='PRACTICE_CORRECTION_LATER_TIERS' AND advisory)`, september).Scan(&advisory); err != nil || !advisory {
-		t.Fatalf("moving back to the original recipient still invalidates the intermediate cumulative count: %t %v", advisory, err)
+	 WHERE period_id=$1 AND code='PRACTICE_CORRECTION_LATER_TIERS' AND advisory)`, september).Scan(&advisory); err != nil || advisory != wantAdvisory {
+		t.Fatalf("restoring the original recipient should affect the same cumulative metric: %t %v", advisory, err)
 	}
 	var frozenTotal int64
 	if err := service.db.QueryRow(ctx, `SELECT total_minor FROM calculation_drafts WHERE period_id=$1`, class).Scan(&frozenTotal); err != nil || frozenTotal != frozen.Total {
 		t.Fatalf("the original class was rewritten: %d %v", frozenTotal, err)
 	}
-	if err := service.db.QueryRow(ctx, `SELECT total_minor FROM calculation_drafts WHERE period_id=$1`, later).Scan(&frozenTotal); err != nil || frozenTotal != 2000 {
+	if err := service.db.QueryRow(ctx, `SELECT total_minor FROM calculation_drafts WHERE period_id=$1`, later).Scan(&frozenTotal); err != nil || frozenTotal != laterTotal {
 		t.Fatalf("the later settled class was rewritten: %d %v", frozenTotal, err)
 	}
 	if _, err := service.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", class); err == nil || !strings.Contains(err.Error(), "booked adjustments") {

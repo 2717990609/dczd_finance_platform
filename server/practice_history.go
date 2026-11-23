@@ -32,6 +32,7 @@ type practiceTierHistory struct {
 	legacyMeasures bool
 	frozenPrior    map[int64]int64
 	frozenAmounts  map[int64]int64
+	repriceAmounts bool
 	liveCategories map[string]string
 	cumulative     practiceAmountMetric
 	bookedRefunds  map[int64]int64
