@@ -168,7 +168,7 @@ func main() {
 		return
 	}
 	if len(os.Args) != 1 {
-		const importUsage = "usage: configure-finance-account|import-practice-roster|import-practice-count-opening|import-product-config|import-organization|import-order-facts|import-sales-context <file.json>"
+		const importUsage = "usage: configure-finance-account|import-practice-roster|import-practice-periods|import-practice-count-opening|import-product-config|import-organization|import-order-facts|import-sales-context <file.json>"
 		if len(os.Args) != 3 {
 			log.Fatal(importUsage)
 		}
@@ -177,6 +177,8 @@ func main() {
 			err = configureFinanceAccount(ctx, cfg, os.Args[2])
 		case "import-practice-roster":
 			err = importPracticeFile(ctx, cfg, os.Args[2])
+		case "import-practice-periods":
+			err = importPracticePeriods(ctx, cfg, os.Args[2])
 		case "import-practice-count-opening":
 			err = importPracticeCountOpening(ctx, cfg, os.Args[2])
 		case "import-sales-context":
