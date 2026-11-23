@@ -422,6 +422,7 @@ type vipSalesPart struct {
 const vipSalesAppointmentInactive = "SALES_APPOINTMENT_INACTIVE"
 
 const vipSalesPrimaryRole = "SALES"
+const vipInternalSalesPayee = "internal-sales-payee"
 
 // These are the registered arrangements backed by the same rounded allocation.
 var vipSplitRoles = [...]struct{ item, role string }{
@@ -450,6 +451,23 @@ func (p vipInternalSplit) hasShare(item string) bool {
 		return !p.independentTeam
 	}
 	return false
+}
+
+func (p vipInternalSplit) salesPayeeDisabled() bool {
+	return slices.Contains(p.DisabledShares, vipInternalSalesPayee)
+}
+
+func (p vipInternalSplit) hasPositiveShare(item string) bool {
+	return p.hasShare(item) && (item == vipGroupLeaderItem && p.Group > 0 ||
+		item == vipTeamLeaderItem && p.TeamHead > 0 || item == vipInternalServiceItem)
+}
+
+func (p vipInternalSplit) usesSalesTable(company string) bool {
+	if !p.salesPayeeDisabled() {
+		return true
+	}
+	return (company == "" || slices.ContainsFunc(p.Teams, func(team vipInternalTeam) bool { return team.Company == company })) &&
+		(p.hasPositiveShare(vipGroupLeaderItem) || p.hasPositiveShare(vipTeamLeaderItem) || p.hasPositiveShare(vipInternalServiceItem))
 }
 
 func (d vipSalesData) holder(role, unit string, at time.Time) string {
@@ -501,6 +519,9 @@ func calculateVIPSalesWithMembership(policy vipSalesPolicy, req vipSalesRequest,
 	if req.Order == "" || req.Paid < 0 {
 		return nil, "INVALID_PAYMENT"
 	}
+	if !policy.Split.usesSalesTable(req.Company) {
+		return nil, vipSalesNotConfigured
+	}
 	for _, review := range policy.Split.Reviews {
 		if req.Order == review.Order && (req.Company != review.Company || req.Seller != review.Seller) {
 			return nil, "SALES_COMPANY_REVIEW"
@@ -511,7 +532,7 @@ func calculateVIPSalesWithMembership(policy vipSalesPolicy, req vipSalesRequest,
 	sellerName := d.People[req.Seller]
 	if issue == "" && rate == 0 {
 		// A known zero rate has no payout to qualify or split.
-		if req.Seller == "" || sellerName == "" {
+		if policy.Split.salesPayeeDisabled() || req.Seller == "" || sellerName == "" {
 			return nil, ""
 		}
 		return []vipSalesPart{{Role: "SALES", Person: req.Seller, Name: sellerName}}, ""
@@ -545,7 +566,7 @@ func calculateVIPSalesWithMembership(policy vipSalesPolicy, req vipSalesRequest,
 	}
 	p, team := policy.Split, policy.Split.Teams[teamIdx]
 	replaceGroup := !p.hasShare(vipGroupLeaderItem)
-	replaceTeam := !p.hasShare(vipTeamLeaderItem)
+	replaceTeam := !p.hasShare(vipTeamLeaderItem) || p.salesPayeeDisabled() && p.TeamHead == 0
 	removeService := !p.hasShare(vipInternalServiceItem)
 	groupExcluded := membership["DCAI_GROUP_LEAD"] != ""
 	teamExcluded := membership["DCAI_TEAM_HEAD"] != ""
@@ -586,6 +607,9 @@ func calculateVIPSalesWithMembership(policy vipSalesPolicy, req vipSalesRequest,
 		part := &parts[i]
 		part.Name = d.People[part.Person]
 		part.Status = membership[part.Role]
+		if part.Role == vipSalesPrimaryRole && p.salesPayeeDisabled() {
+			part.Status = vipCommissionOutsideScope
+		}
 		if part.Name == "" && part.Status == "" && !replaced(*part) || part.Rate < 0 || part.Rate > rate {
 			return nil, "SALES_TEAM_PENDING"
 		}

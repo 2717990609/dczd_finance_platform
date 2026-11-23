@@ -486,7 +486,7 @@ func (p vipQuotePolicies) apply(row *catalogPaymentMatch, data vipRuntimeData, r
 		newOnly := newMembershipOnly(policy.MembershipNewOnly, fallback)
 		splitStatuses := row.splitMembershipStatuses(policy, req, newOnly)
 		membershipStatus := row.membershipScopeStatus(newOnly)
-		if policy.Item == "" {
+		if policy.Item == "" || !policy.Split.usesSalesTable(req.Company) {
 			row.SalesStatus = vipSalesNotConfigured
 		} else if splitStatuses == nil && membershipStatus == vipCommissionOutsideScope {
 			row.SalesStatus = vipCommissionOutsideScope

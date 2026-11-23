@@ -96,8 +96,8 @@ function selectMemberType(item, value) {
   else membershipEdits.value.set(item.itemKey,newOnly)
 }
 const splitItem = computed(() => sheet.value?.components.find(item=>item.teamSplit))
-const splitRemoved = computed(() => splitItem.value && removedItems.value.has(splitItem.value.itemKey))
-const serviceVisible = computed(() => !splitRemoved.value && splitItem.value?.teamSplit.service>0 && !splitItem.value?.serviceDisabled)
+const salesPayeeRemoved = computed(() => splitItem.value?.disabled || removedItems.value.has(splitItem.value?.itemKey))
+const serviceVisible = computed(() => splitItem.value?.teamSplit.service>0 && !splitItem.value?.serviceDisabled)
 const serviceReplacement = computed(() => structure.value.items.some(item=>item.replacesItemKey===serviceItemKey))
 const serviceRemoved = computed(() => !serviceVisible.value || removedItems.value.has(serviceItemKey) || serviceReplacement.value)
 const serviceArrangement = computed(() => ({itemKey:serviceItemKey,label:splitItem.value?.serviceLabel || '内部团队服务提成',
@@ -116,9 +116,13 @@ function setSplitDuty(item, value) {
   if ((value || '')===(item.recipientDuty || '')) splitDutyEdits.value.delete(item.itemKey)
   else splitDutyEdits.value.set(item.itemKey,value || '')
 }
-const leaderArrangements = computed(() => splitRemoved.value ? [] : sheet.value?.leaderArrangements || [])
+const leaderArrangements = computed(() => sheet.value?.leaderArrangements || [])
 const availableLeaders = computed(() => leaderArrangements.value.filter(leader=>leader.disabled && !leaderEdits.value.has(leader.itemKey)))
 const visibleLeaders = computed(() => leaderArrangements.value.filter(leader=>!leader.disabled || leaderEdits.value.has(leader.itemKey)))
+const splitRemoved = computed(() => salesPayeeRemoved.value && serviceRemoved.value &&
+  !visibleLeaders.value.some(leader=>!removedItems.value.has(leader.itemKey) &&
+    (leaderEdits.value.has(leader.itemKey) || leader.targetKind!=='inherit' || leader.rateBps>0)))
+const visibleComponents = computed(() => sheet.value?.components.filter(item=>!item.disabled) || [])
 const editable = computed(() => sheet.value?.mayPublish && !props.applied && !saving.value && !itemRemoved.value)
 const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKind==='seller'))
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
@@ -699,7 +703,7 @@ async function publish() {
               <a-button v-else size="small" :disabled="saving || structureEditing" @click="addRecipient">添加收款安排</a-button>
             </a-space>
           </div>
-          <section v-for="item in sheet.components" :key="item.itemKey" class="rule-block">
+          <section v-for="item in visibleComponents" :key="item.itemKey" class="rule-block">
           <button type="button" class="rule-block-header" :disabled="saving || structureEditing"
             :aria-expanded="selected===item.itemKey" :aria-controls="'catalog-rate-'+item.itemKey"
             @click="selected=selected===item.itemKey ? undefined : item.itemKey">
@@ -715,7 +719,8 @@ async function publish() {
             <small>{{ [targetName(item),sheet.membershipSku && memberLabel(item),!rateIndicators[item.itemKey]?.length && componentStandard(item)].filter(Boolean).join(' · ') }}</small>
           </button>
           <div v-if="selected===item.itemKey" :id="'catalog-rate-'+item.itemKey" class="rule-block-body">
-          <a-alert v-if="itemRemoved" type="warning" :message="teamSplit ? '成交销售及其内部团队拆分将从新版移除' : '此分项将从新版移除'" show-icon class="feedback"/>
+          <a-alert v-if="itemRemoved" type="warning" :message="teamSplit && !splitRemoved
+            ? '新版将移除销售收款，保留已配置的服务和负责人安排' : '此分项将从新版移除'" show-icon class="feedback"/>
           <template v-if="!applied && sheet.mayPublish && sheet.structureOptions && !itemRemoved">
             <RuleArrangementFields name-id="catalog-rate-label" :name="labelEdits.get(item.itemKey) ?? item.label"
               :order-type-text="orderTypeText" :order-type-id="sheet.membershipSku ? 'catalog-member-type' : undefined"
@@ -880,8 +885,9 @@ async function publish() {
                 </a-form-item>
                 <template #scope>
                   <a-form-item label="比例（%）" html-for="catalog-split-service">
-                    <a-input-number id="catalog-split-service" :value="splitValue('service')" :disabled="!editable || structureEditing"
+                    <a-input-number v-if="!salesPayeeRemoved" id="catalog-split-service" :value="splitValue('service')" :disabled="!editable || structureEditing"
                       :min="0" :max="100" :precision="2" string-mode @update:value="setSplitRate('service',$event)"/>
+                    <span v-else>{{ splitValue('service') }}%</span>
                   </a-form-item>
                 </template>
               </RuleArrangementFields>

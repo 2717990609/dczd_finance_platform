@@ -143,6 +143,27 @@ func TestVIPInternalAllocationUsesHistoricalHoldersAndConservesCents(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	withoutSeller, err := removeCatalogEntries(base, []string{"sales"}, nil)
+	if err != nil {
+		t.Fatalf("removing sales must keep the configured service and leadership arrangements: %v", err)
+	}
+	policies := readVIPQuotePolicies(map[string]json.RawMessage{"rule": withoutSeller})
+	row := catalogPaymentMatch{RuleID: "rule"}
+	policies.apply(&row, vipRuntimeData{vipSalesData: data}, req, "")
+	if row.SalesStatus != "CALCULATED" || len(row.SalesParts) != len(original) ||
+		row.SalesParts[0].Status != vipCommissionOutsideScope || row.SalesParts[0].Amount != 0 ||
+		!slices.Equal(row.SalesParts[1:], original[1:]) {
+		t.Fatalf("sales must stop and the remaining payouts must stay identical: %+v", row.SalesParts)
+	}
+	external := req
+	external.Company = "external"
+	policies.apply(&row, vipRuntimeData{vipSalesData: data}, external, "")
+	if row.SalesStatus != vipSalesNotConfigured || len(row.SalesParts) != 0 {
+		t.Fatalf("the removed external company arrangement must neither pay nor block: %s %+v", row.SalesStatus, row.SalesParts)
+	}
+	if _, err := removeCatalogEntries(withoutSeller, []string{vipInternalServiceItem, vipGroupLeaderItem, vipTeamLeaderItem}, nil); err != errCatalogRequiredEntry {
+		t.Fatalf("the retained source table alone is not a payment arrangement: %v", err)
+	}
 	selectedService, _, err := editCatalogMembershipArrangements(base, []catalogMembershipArrangementEdit{
 		{ItemKey: vipInternalServiceItem, NewOnly: true},
 	})
@@ -226,6 +247,16 @@ func TestVIPInternalAllocationUsesHistoricalHoldersAndConservesCents(t *testing.
 	if got := quoteVIPBenefits(req, "", appointmentPolicy, vipRuntimeData{BenefitReady: true, vipSalesData: data}); len(got) != 1 ||
 		got[0].Status != "CALCULATED" || got[0].Party != "head" || got[0].Rate != revisedTeamRate {
 		t.Fatalf("the explicitly selected appointment should use just the incumbent: %+v", got)
+	}
+	leaderOnly, err := removeCatalogEntries(explicitlyChangedPayee, []string{"sales", vipGroupLeaderItem, vipInternalServiceItem}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaderPolicies := readVIPQuotePolicies(map[string]json.RawMessage{"rule": leaderOnly})
+	leaderPolicies.apply(&row, vipRuntimeData{BenefitReady: true, vipSalesData: data}, req, "")
+	if row.SalesStatus != vipSalesNotConfigured || len(row.SalesParts) != 0 || len(row.BenefitParts) != 1 ||
+		row.BenefitParts[0].Status != "CALCULATED" || row.BenefitParts[0].Party != "head" || row.BenefitParts[0].Rate != revisedTeamRate {
+		t.Fatalf("an explicitly configured leader must still be payable without any split payouts: %+v", row)
 	}
 	removed := rule
 	removed.Split.Teams = slices.Clone(rule.Split.Teams)

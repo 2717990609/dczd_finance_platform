@@ -23,8 +23,16 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 		}
 		removeItems[key] = true
 	}
-	removeSplit := sales.Split.Item != "" && removeItems[sales.Split.Item]
-	disabled := slices.Clone(sales.Split.DisabledShares)
+	split := sales.Split
+	salesRemoval := split.Item != "" && removeItems[split.Item]
+	if salesRemoval && split.salesPayeeDisabled() {
+		return nil, invalid
+	}
+	keepSplit := !removeItems[vipInternalServiceItem] && split.hasPositiveShare(vipInternalServiceItem) ||
+		!removeItems[vipGroupLeaderItem] && (split.hasPositiveShare(vipGroupLeaderItem) || split.independentGroup) ||
+		!removeItems[vipTeamLeaderItem] && (split.hasPositiveShare(vipTeamLeaderItem) || split.independentTeam)
+	removeSplit := (salesRemoval || split.salesPayeeDisabled()) && !keepSplit
+	disabled := slices.Clone(split.DisabledShares)
 	var splitRemovals []string
 	if len(sales.Split.Teams) != 0 {
 		for _, key := range []string{vipGroupLeaderItem, vipTeamLeaderItem, vipInternalServiceItem} {
@@ -48,6 +56,13 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 		}
 		removeRows[row.ItemKey][row.Row] = true
 	}
+	if salesRemoval && keepSplit {
+		// Keep the original rate table and rounding weights for the surviving payees.
+		delete(removeItems, split.Item)
+		disabled = append(disabled, vipInternalSalesPayee)
+	} else if removeSplit && split.salesPayeeDisabled() {
+		removeItems[split.Item] = true
+	}
 
 	kept := make([]map[string]json.RawMessage, 0, len(actions))
 	for _, action := range actions {
@@ -60,9 +75,6 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 				root["sales_attribution"] = json.RawMessage(`"ORDER_SELLER"`)
 			}
 			delete(removeItems, key)
-			continue
-		}
-		if removeSplit && vipLeaderRole(key) != "" {
 			continue
 		}
 		if selected := removeRows[key]; len(selected) != 0 {
@@ -103,7 +115,7 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 	}
 	if removeSplit {
 		delete(root, "internal_sales_direct_split")
-	} else if len(splitRemovals) != 0 {
+	} else if salesRemoval || len(splitRemovals) != 0 {
 		if err := writeCatalogDisabledShares(root, disabled); err != nil {
 			return nil, err
 		}

@@ -127,6 +127,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		if item.ItemKey == sales.Item {
 			item.TargetKind = "seller"
 			if split := sales.Split; split.Item != "" {
+				item.Disabled = split.salesPayeeDisabled()
 				item.ServiceDisabled = slices.Contains(split.DisabledShares, vipInternalServiceItem)
 				item.ServiceLabel = split.ServiceLabel
 				item.ServiceRecipientDuty = split.RecipientDuties[vipInternalServiceItem]
