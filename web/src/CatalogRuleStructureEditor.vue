@@ -4,7 +4,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
-import { catalogFlatMethods, catalogMembershipTypes, catalogOrderScope, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderScope, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
   orderTypeText:String,productId:Number,membershipSku:Boolean,defaultMembershipNewOnly:Boolean,replacementItemKey:String})
@@ -27,6 +27,7 @@ function itemLabel(item) {
   const recipient = item.target==='referrer' ? '订单直接推荐人'
     : item.target==='person' ? item.personName
     : item.target==='pool' ? props.options.teamPools?.find(pool=>pool.id===item.poolId)?.name
+    : item.target==='appointment' ? [labelFor(catalogAppointmentLevels,item.appointmentLevel),labelFor(props.options.roles,item.role)].join(' · ')
     : labelFor(props.options.organizations,item.organization)
   const standard = item.rows?.length ? item.rows.length+' 条费率条件'
     : item.fixedMinor != null ? (item.fixedMinor/100).toFixed(2)+' 元/笔' : percent(item.rateBps)
@@ -153,7 +154,7 @@ function stage() {
         return
       }
       const item = {label,target:staged.target,role:staged.role,personId:staged.personId,recipientDuty:staged.recipientDuty,ownSales,membershipNewOnly,
-        replacesItemKey:staged.replacesItemKey,appointmentUnitId:staged.appointmentUnitId,
+        replacesItemKey:staged.replacesItemKey,appointmentUnitId:staged.appointmentUnitId,appointmentLevel:staged.appointmentLevel,
         personName:staged.personName,organization:staged.poolId ? undefined : staged.organization,memberRole:staged.memberRole,poolId:staged.poolId,
         ownerPersonId:staged.ownerPersonId,ownerName:staged.ownerName,...scope,...calculationBody(staged)}
       if (staged.itemIndex==null) draft.value.items.push(item)

@@ -82,7 +82,7 @@ type vipRuntimeData struct {
 	CompanyNames                          map[string]string
 	CompanyTypes                          map[string]vipCompanyTypeHistory
 	OrganizationSnapshotAt                *time.Time
-	HasCommissionScopes                   bool
+	NeedsCommissionDirectory              bool
 	CommissionDirectory                   *reportAttribution `json:"-"`
 	vipSalesData
 }
@@ -196,8 +196,9 @@ const vipRuntimeSQL = `WITH scope AS (
 )
 SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitReady',coalesce(s.benefit_ready,false),
  'configurationRevision',CASE WHEN $4 THEN coalesce((SELECT revision FROM source_write_state WHERE source='CONFIG'),0) END,
- 'hasCommissionScopes',EXISTS(SELECT 1 FROM definitions WHERE
-  jsonb_path_exists(definition,'$.benefit_actions[*].sales_scope_unit_ids[*]')),
+ 'needsCommissionDirectory',EXISTS(SELECT 1 FROM definitions WHERE
+  jsonb_path_exists(definition,'$.benefit_actions[*].sales_scope_unit_ids[*]')
+  OR jsonb_path_exists(definition,'$.benefit_actions[*].appointment_sales_org_level')),
  'directoryFingerprint',CASE WHEN $4 THEN (SELECT encode(sha256(convert_to(
   coalesce(jsonb_agg(jsonb_build_array(` + vipPersonKey + `,p.name) ORDER BY p.id)::text,'[]'),'UTF8')),'hex') FROM people p) END,
  'organizations',(SELECT jsonb_agg(to_jsonb(target) ORDER BY target.party,target.unit) FROM (
@@ -270,7 +271,7 @@ func loadVIPRuntimeData(ctx context.Context, tx pgx.Tx, periodID int64, matched 
 		return vipRuntimeData{}, err
 	}
 	var data vipRuntimeData
-	if err := json.Unmarshal(raw, &data); err != nil || !data.HasCommissionScopes {
+	if err := json.Unmarshal(raw, &data); err != nil || !data.NeedsCommissionDirectory {
 		return data, err
 	}
 	people := make([]int64, 0, len(data.Users)+len(data.DirectoryUsers))

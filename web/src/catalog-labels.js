@@ -32,6 +32,7 @@ export const benefitStatus = {
   REFERRER_PERSON_MISSING:'推荐人账号未关联到人员',
   BENEFIT_CONTEXT_MISSING:'核算所需的组织任职待补',
   BENEFIT_PERSON_MISSING:'受益人待核',
+  BENEFIT_APPOINTMENT_CONFLICT:'付款时存在多位在任人员',
   BENEFIT_ORG_MISSING:'受益组织待核',
   BENEFIT_ORG_CONFLICT:'受益组织有冲突',
   BENEFIT_POOL_OWNER_MISSING:'付款时的分配负责人待核',

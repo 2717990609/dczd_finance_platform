@@ -17,6 +17,12 @@ export const catalogMembershipTypes = [
   {value:'all',label:'全部会员订单'},
 ]
 
+export const catalogAppointmentLevels = [
+  {value:'COMPANY',label:'付款销售所属公司'},
+  {value:'DEPARTMENT',label:'付款销售所在部门'},
+  {value:'TEAM',label:'付款销售所在小组'},
+]
+
 export function moneyAsMinor(value) {
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value ?? ''))
   if (!match) return undefined
@@ -111,6 +117,8 @@ export function catalogPayeeComplete(payee, roles) {
       const role = roles.find(option=>option.value===payee.role)
       return !!(payee.personId && (!role?.organization || role.personal || payee.appointmentUnitId))
     }
+    case 'appointment': return roles.some(option=>option.value===payee.role && option.organization) &&
+      catalogAppointmentLevels.some(option=>option.value===payee.appointmentLevel)
     case 'company': return !!payee.organization
     case 'pool': return !!((payee.poolId || payee.organization) && (payee.role || payee.ownerPersonId) && payee.memberRole)
     default: return false

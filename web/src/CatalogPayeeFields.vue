@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
-import { catalogScopeOptions } from './rule-component-form'
+import { catalogAppointmentLevels, catalogScopeOptions } from './rule-component-form'
 
 const props = defineProps({options:Object,api:Function,peopleFilters:Object,prefix:String,disabled:Boolean,salesAvailable:Boolean,
   productId:Number,savedPoolLabel:String,existingPool:Boolean,unitNames:Object})
@@ -14,11 +14,13 @@ const targets = computed(() => [
   ...(!props.salesAvailable && payee.value.target==='seller' ? [] : [
     {value:'person',label:'个人'},{value:'company',label:'公司'},{value:'pool',label:'团队池'},
     {value:'referrer',label:'订单直接推荐人'},
+    {value:'appointment',label:'销售组织的在任人员'},
   ]),
 ])
 const organizations = computed(() => props.options.organizations.filter(option=>
   payee.value.target!=='company' || option.kind==='COMPANY'))
 const roles = computed(() => props.options.roles.filter(option=>payee.value.target==='pool' || option.personal || option.organization))
+const organizationRoles = computed(() => roles.value.filter(option=>option.organization))
 const appointmentRole = computed(() => roles.value.find(option=>option.value===payee.value.role))
 const appointmentUnits = computed(() => catalogScopeOptions(props.options.salesUnits || [],
   payee.value.appointmentUnitId ? [payee.value.appointmentUnitId] : [],props.unitNames,'已选组织'))
@@ -35,7 +37,8 @@ function update(fields) {
 }
 function changeTarget(target) {
   update({target,role:undefined,memberRole:undefined,personId:undefined,personName:undefined,
-    ownerPersonId:undefined,ownerName:undefined,organization:undefined,poolId:undefined,recipientDuty:undefined,appointmentUnitId:undefined})
+    ownerPersonId:undefined,ownerName:undefined,organization:undefined,poolId:undefined,recipientDuty:undefined,
+    appointmentUnitId:undefined,appointmentLevel:undefined})
 }
 function addPool(pool) {
   const pools=props.options.teamPools ??= []
@@ -79,6 +82,16 @@ function addPool(pool) {
       :placeholder="appointmentRole?.personal ? '留空按产品或项目任职' : '选择任职组织'"
       @update:value="update({appointmentUnitId:$event})"/>
   </a-form-item>
+  <template v-if="payee.target==='appointment'">
+    <a-form-item label="从哪个组织取收款人" :html-for="field('appointment-level')" required>
+      <a-select :id="field('appointment-level')" :value="payee.appointmentLevel" :options="catalogAppointmentLevels" :disabled="disabled"
+        placeholder="选择公司、部门或小组" @update:value="update({appointmentLevel:$event})"/>
+    </a-form-item>
+    <a-form-item label="收款岗位" :html-for="field('appointment-role')" required>
+      <a-select :id="field('appointment-role')" :value="payee.role" :options="organizationRoles" :disabled="disabled"
+        show-search option-filter-prop="label" placeholder="选择岗位" @update:value="update({role:$event})"/>
+    </a-form-item>
+  </template>
   <CatalogPoolOwnerFields v-if="payee.target==='pool'" :prefix="field('owner')" :roles="roles"
     :api="api" :people-filters="peopleFilters" :disabled="disabled"
     :model-value="poolOwner"

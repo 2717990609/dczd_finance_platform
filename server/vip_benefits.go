@@ -31,6 +31,7 @@ type vipBenefitAction struct {
 	OwnSales          bool            `json:"own_sales,omitempty"`
 	RecipientDuty     string          `json:"recipient_duty,omitempty"`
 	AppointmentUnit   string          `json:"appointment_organization_unit_id,omitempty"`
+	AppointmentLevel  string          `json:"appointment_sales_org_level,omitempty"`
 	MembershipNewOnly *bool           `json:"vip_membership_new_only,omitempty"`
 }
 
@@ -148,6 +149,10 @@ func (a vipBenefitAction) validTarget() bool {
 		}
 	}
 	poolFields := a.PoolParty != "" || a.PoolUnit != "" || a.PoolCode != "" || a.PoolName != "" || a.OwnerRole != "" || a.OwnerParty != ""
+	if a.AppointmentLevel != "" {
+		return a.Mode == vipOrganizationAppointmentMode && a.Leader == nil && vipLeaderRole(a.Item) == "" &&
+			a.Designated == "" && a.Company == "" && !poolFields && validSourceRole(a.Role) && validVIPSalesOrganizationLevel(a.AppointmentLevel)
+	}
 	if role := vipLeaderRole(a.Item); role != "" || a.Leader != nil {
 		return role != "" && a.Leader != nil && a.Role == role && !poolFields && a.Company == "" &&
 			(a.Mode == vipOrganizationAppointmentMode && a.Designated == "" || a.Mode == "PARTY" && a.Designated != "")
@@ -223,7 +228,11 @@ func (a vipBenefitAction) eligibleSale(req vipSalesRequest, sourceIssue string, 
 		}
 		return false, sourceIssue
 	}
-	return vipScopedSale(a.CommissionUnits, a.ScopeCategories, req, sourceIssue, data)
+	eligible, issue := vipScopedSale(a.CommissionUnits, a.ScopeCategories, req, sourceIssue, data)
+	if eligible && a.AppointmentLevel != "" && sourceIssue == "SALES_COMPANY_REVIEW" {
+		return false, sourceIssue
+	}
+	return eligible, issue
 }
 
 func (a vipBenefitAction) targetKind() string {
@@ -233,7 +242,7 @@ func (a vipBenefitAction) targetKind() string {
 	if a.Mode == "TEAM_POOL" {
 		return "pool"
 	}
-	if a.Designated != "" {
+	if a.Designated != "" || a.AppointmentLevel != "" {
 		return "person"
 	}
 	return "company"
@@ -259,6 +268,10 @@ func (a vipBenefitAction) quote(req vipSalesRequest, sourceIssue string) (rate, 
 
 func bindVIPBenefit(line *vipBenefitPart, a vipBenefitAction, req vipSalesRequest, data vipRuntimeData) {
 	line.Status = "CALCULATED"
+	if a.AppointmentLevel != "" {
+		bindVIPSalesOrganizationAppointment(line, a, req, data)
+		return
+	}
 	if a.Mode == vipOrderReferrerMode {
 		line.Kind = "person"
 		if req.Referrer.Issue != "" {

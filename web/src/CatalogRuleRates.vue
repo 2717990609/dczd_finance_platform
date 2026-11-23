@@ -8,7 +8,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogFlatMethods, catalogMembershipTypes, catalogOrderScope, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderScope, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule:Object, applied:Object, api:Function, formatTime:Function, formatMoney:Function,
   optionLabel:Function, periods:Array, skus:Array })
@@ -55,8 +55,8 @@ const hasRateTable = computed(() => !!(selectedCalculation.value || component.va
 const columns = computed(() => sheet.value?.mayPublish && !props.applied && !selectedCalculation.value
   ? [...rateColumns,{title:'操作',key:'operation',width:190}] : rateColumns)
 const targetKind = computed(() => targetEdits.value.get(selected.value)?.target || component.value?.targetKind)
-const targetKindLabels = {seller:'按下表结算',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人'}
-const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人'}
+const targetKindLabels = {seller:'按下表结算',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人',appointment:'销售组织的在任人员'}
+const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人',appointment:'在任人员'}
 const teamSplit = computed(() => component.value?.teamSplit)
 const serviceItemKey = 'internal-service'
 const splitFields = [
@@ -329,6 +329,9 @@ function setRate(value, base, row) {
 function targetName(item) {
   const edit = targetEdits.value.get(item.itemKey)
   const withDuty = (name,duty) => [name,duty && (props.optionLabel('organizationDuty',duty) || duty)].filter(Boolean).join(' · ')
+  if ((edit?.target || item.targetKind)==='appointment') {
+    return [appointmentLevelLabel(edit?.appointmentLevel || item.appointmentLevel),roleLabel(edit?.role || item.targetRole)].filter(Boolean).join(' · ')
+  }
   if (!edit) {
     const name = withDuty(item.recipient?.name || item.targetLabel,item.recipientDuty)
     return item.targetKind==='pool' ? [name,item.poolOwner?.name || roleLabel(item.targetRole)].filter(Boolean).join(' · ') : name
@@ -339,14 +342,15 @@ function targetName(item) {
   return edit.target==='pool' ? [organization,edit.ownerName || roleLabel(edit.role)].filter(Boolean).join(' · ') : organization
 }
 const roleLabel = role => props.optionLabel('catalogAppointmentRole',role) || role
+const appointmentLevelLabel = level => catalogAppointmentLevels.find(option=>option.value===level)?.label
 function originalTarget(item) {
   return {target:item.targetKind,role:item.targetRole,memberRole:item.memberRole,organization:item.targetOrganization,poolId:item.poolId,
     personId:item.recipient?.id,personName:item.recipient?.name,recipientDuty:item.recipientDuty,appointmentUnitId:item.appointmentUnitId,
-    ownerPersonId:item.poolOwner?.id,ownerName:item.poolOwner?.name}
+    ownerPersonId:item.poolOwner?.id,ownerName:item.poolOwner?.name,appointmentLevel:item.appointmentLevel}
 }
 function setTarget(item, payee) {
   const original = originalTarget(item)
-  if (['target','role','memberRole','organization','personId','recipientDuty','ownerPersonId','poolId','appointmentUnitId'].every(field=>payee[field]===original[field])) {
+  if (['target','role','memberRole','organization','personId','recipientDuty','ownerPersonId','poolId','appointmentUnitId','appointmentLevel'].every(field=>payee[field]===original[field])) {
     targetEdits.value.delete(item.itemKey)
   } else {
     targetEdits.value.set(item.itemKey,payee)

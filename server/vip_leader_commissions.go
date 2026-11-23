@@ -27,6 +27,65 @@ func vipLeaderRole(item string) string {
 	}
 }
 
+func validVIPSalesOrganizationLevel(level string) bool {
+	return level == "COMPANY" || level == "DEPARTMENT" || level == "TEAM"
+}
+
+func vipSalesAppointmentOrganization(req vipSalesRequest, level string) (string, string) {
+	const missing = "COMMISSION_SALES_ORGANIZATION_MISSING"
+	org := req.commissionSalesOrg
+	if level == "COMPANY" {
+		if req.CompanyUnit != "" {
+			return req.CompanyUnit, ""
+		}
+		if org != nil && org.Company.Valid {
+			return org.Company.String(), ""
+		}
+		return "", missing
+	}
+	if org == nil {
+		return "", missing
+	}
+	unit := org.Department.String()
+	if level == "TEAM" {
+		unit = org.groupID().String()
+	}
+	for index, candidate := range org.scopeAlternatives {
+		possible := candidate.Department
+		if level == "TEAM" {
+			possible = candidate.Group
+		}
+		if index == 0 && unit == "" {
+			unit = possible
+		} else if possible != unit {
+			return "", "SALES_ORGANIZATION_SCOPE_CONFLICT"
+		}
+	}
+	if unit == "" {
+		return "", missing
+	}
+	return unit, ""
+}
+
+func bindVIPSalesOrganizationAppointment(line *vipBenefitPart, a vipBenefitAction, req vipSalesRequest, data vipRuntimeData) {
+	unit, issue := vipSalesAppointmentOrganization(req, a.AppointmentLevel)
+	if issue != "" {
+		line.Status = issue
+		return
+	}
+	holder, ambiguous := vipRoleHolder(data.Roles, a.Role, "ORGANIZATION_UNIT", unit, req.At)
+	switch {
+	case ambiguous:
+		line.Status = "BENEFIT_APPOINTMENT_CONFLICT"
+	case holder == "":
+		line.Status = "INACTIVE"
+	case data.People[holder] == "":
+		line.Status = "BENEFIT_PERSON_MISSING"
+	default:
+		line.Party, line.Name = holder, data.People[holder]
+	}
+}
+
 func (scope vipLeaderScope) validFor(teams []vipInternalTeam) bool {
 	if len(teams) == 0 || scope.Orders != "all" && scope.Orders != "members" && scope.Orders != "head" {
 		return false

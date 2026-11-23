@@ -52,15 +52,16 @@ type catalogNewRateRow struct {
 }
 
 type catalogBenefitTarget struct {
-	Target          string `json:"target"`
-	Role            string `json:"role,omitempty"`
-	MemberRole      string `json:"memberRole,omitempty"`
-	PersonID        int64  `json:"personId,omitempty"`
-	OwnerPersonID   int64  `json:"ownerPersonId,omitempty"`
-	PoolID          int64  `json:"poolId,omitempty"`
-	Organization    string `json:"organization,omitempty"`
-	RecipientDuty   string `json:"recipientDuty,omitempty"`
-	AppointmentUnit string `json:"appointmentUnitId,omitempty"`
+	Target           string `json:"target"`
+	Role             string `json:"role,omitempty"`
+	MemberRole       string `json:"memberRole,omitempty"`
+	PersonID         int64  `json:"personId,omitempty"`
+	OwnerPersonID    int64  `json:"ownerPersonId,omitempty"`
+	PoolID           int64  `json:"poolId,omitempty"`
+	Organization     string `json:"organization,omitempty"`
+	RecipientDuty    string `json:"recipientDuty,omitempty"`
+	AppointmentUnit  string `json:"appointmentUnitId,omitempty"`
+	AppointmentLevel string `json:"appointmentLevel,omitempty"`
 }
 
 type catalogBenefitTargetChange struct {
@@ -462,6 +463,7 @@ func changeCatalogBenefitTargets(actions []map[string]json.RawMessage, salesKey 
 			"allocation_owner_role": action.OwnerRole, "allocation_owner_party_id": action.OwnerParty,
 			"recipient_duty":                   action.RecipientDuty,
 			"appointment_organization_unit_id": action.AppointmentUnit,
+			"appointment_sales_org_level":      action.AppointmentLevel,
 		} {
 			if value == "" {
 				delete(fields, key)
@@ -538,19 +540,25 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 		catalogStructureOptionFor(options.Duties, target.RecipientDuty).Value == "") {
 		return invalid
 	}
-	if target.AppointmentUnit != "" && target.Target != "person" {
+	if target.AppointmentUnit != "" && target.Target != "person" || target.AppointmentLevel != "" && target.Target != "appointment" {
 		return invalid
 	}
 	before := *action
 	action.Mode, action.Role = "PARTY", ""
 	action.RecipientDuty = target.RecipientDuty
 	action.AppointmentUnit = target.AppointmentUnit
+	action.AppointmentLevel = target.AppointmentLevel
 	action.Designated, action.Company = "", ""
 	action.PoolParty, action.PoolUnit, action.PoolCode, action.PoolName, action.OwnerRole = "", "", "", "", ""
 	action.OwnerParty = ""
 	org := catalogStructureOptionFor(options.Organizations, target.Organization)
 	role := catalogStructureOptionFor(options.Roles, target.Role)
 	switch target.Target {
+	case "appointment":
+		if target.PersonID != 0 || target.Organization != "" || !role.Organization || !validVIPSalesOrganizationLevel(target.AppointmentLevel) {
+			return invalid
+		}
+		action.Mode, action.Role = vipOrganizationAppointmentMode, role.Value
 	case "referrer":
 		if target.PersonID != 0 || target.Role != "" || target.Organization != "" {
 			return invalid

@@ -6,6 +6,7 @@ export const draftIssueLabels = {
   INVALID_PAYMENT: '付款金额或付款编号待核',
   UNCLASSIFIED: '订单场景分类待核',
   MEMBERSHIP_TYPE_PENDING: '缺少新购或续费标记，请在子系统补齐后重新拉取',
+  BENEFIT_APPOINTMENT_CONFLICT: '付款时存在多位在任人员，请核对任职',
   MAPPING_MISSING: '订单没有匹配的场景映射',
   MAPPING_CONFLICT: '订单同时命中多条场景映射',
   AGGREGATE_SCENARIO_UNMAPPED: '参与场景缺少本期订单映射',

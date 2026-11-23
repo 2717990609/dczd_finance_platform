@@ -23,6 +23,7 @@ type catalogRateComponent struct {
 	TargetOrg                string             `json:"targetOrganization,omitempty"`
 	TargetRole               string             `json:"targetRole,omitempty"`
 	AppointmentUnit          string             `json:"appointmentUnitId,omitempty"`
+	AppointmentLevel         string             `json:"appointmentLevel,omitempty"`
 	MemberRole               string             `json:"memberRole,omitempty"`
 	TeamSplit                *catalogSplitRates `json:"teamSplit,omitempty"`
 	LeaderScope              *vipLeaderScope    `json:"leaderScope,omitempty"`
@@ -155,6 +156,9 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		if item.TargetKind == "person" {
 			item.TargetRole = action.Role
 			item.AppointmentUnit = action.AppointmentUnit
+			if action.AppointmentLevel != "" {
+				item.TargetKind, item.AppointmentLevel = "appointment", action.AppointmentLevel
+			}
 		}
 		if len(action.RateTable) > 0 {
 			rows, valid := parseVIPRateTable(action.RateTable)

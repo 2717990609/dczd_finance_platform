@@ -70,6 +70,56 @@ func TestVIPNamedLeaderUsesTheirOrganizationAppointmentSeparatelyFromSalesScope(
 	}
 }
 
+func TestVIPPaysTheConfiguredRoleInThePaymentSalesOrganization(t *testing.T) {
+	definition := json.RawMessage(`{"amount_basis":"ACTUAL_RECEIVED","stacking_policy":"SUM","sales_attribution":"ORDER_SELLER",
+	 "rounding_policy":{"mode":"HALF_UP","scale":2},"benefit_actions":[
+	 {"item_key":"lead","label":"小组负责人","type":"RATE","beneficiary_mode":"ORDER_ORGANIZATION_APPOINTMENT",
+	  "role":"GROUP_LEAD","appointment_sales_org_level":"TEAM","rate_bps":1000}]}`)
+	policy, ok := readVIPBenefits(definition)
+	if !ok {
+		t.Fatal("the generic rule must accept a configured organization level and appointment role")
+	}
+	var group, newGroup pgtype.UUID
+	if group.Scan("10000000-0000-4000-8000-000000000801") != nil ||
+		newGroup.Scan("10000000-0000-4000-8000-000000000802") != nil {
+		t.Fatal("bad test organization keys")
+	}
+	at := time.Date(2026, 10, 7, 9, 30, 0, 0, shanghai)
+	start := at.AddDate(0, -1, 0)
+	data := vipRuntimeData{BenefitReady: true, vipSalesData: vipSalesData{
+		People: map[string]string{"previous": "上任", "current": "接任", "other": "新小组"},
+		Roles: []vipRole{
+			{Person: "previous", Scope: "ORGANIZATION_UNIT", Key: group.String(), Role: "GROUP_LEAD", vipInterval: vipInterval{From: start, To: &at}},
+			{Person: "current", Scope: "ORGANIZATION_UNIT", Key: group.String(), Role: "GROUP_LEAD", vipInterval: vipInterval{From: at}},
+			{Person: "other", Scope: "ORGANIZATION_UNIT", Key: newGroup.String(), Role: "GROUP_LEAD", vipInterval: vipInterval{From: at}},
+		},
+	}}
+	for _, tc := range []struct {
+		at            time.Time
+		org           *reportOrganization
+		payee, status string
+		amount        int64
+	}{
+		{start.Add(-time.Second), &reportOrganization{Group: &group}, "", "INACTIVE", 0},
+		{at.Add(-time.Second), &reportOrganization{Group: &group}, "previous", "CALCULATED", 1000},
+		{at, &reportOrganization{Group: &group}, "current", "CALCULATED", 1000},
+		{at, &reportOrganization{Group: &newGroup}, "other", "CALCULATED", 1000},
+		{at, &reportOrganization{scopeAlternatives: []organizationScopeCandidate{{Group: group.String()}, {Group: newGroup.String()}}},
+			"", "SALES_ORGANIZATION_SCOPE_CONFLICT", 0},
+		{at, &reportOrganization{}, "", "COMMISSION_SALES_ORGANIZATION_MISSING", 0},
+	} {
+		row := quoteVIPBenefits(vipSalesRequest{Order: "test", Paid: 10000, At: tc.at, commissionSalesOrg: tc.org}, "", policy, data)[0]
+		if row.Party != tc.payee || row.Status != tc.status || row.Amount != tc.amount {
+			t.Fatalf("for %+v got %+v", tc, row)
+		}
+	}
+	conflict := vipRole{Person: "other", Scope: "ORGANIZATION_UNIT", Key: group.String(), Role: "GROUP_LEAD", vipInterval: vipInterval{From: at}}
+	data.Roles = append(data.Roles, conflict)
+	if row := quoteVIPBenefits(vipSalesRequest{Paid: 10000, At: at, commissionSalesOrg: &reportOrganization{Group: &group}}, "", policy, data)[0]; row.Status != "BENEFIT_APPOINTMENT_CONFLICT" || row.Amount != 0 {
+		t.Fatalf("ambiguous appointment must wait: %+v", row)
+	}
+}
+
 func TestVIPCommissionScopeUsesPaymentSalesOrganization(t *testing.T) {
 	unit := func(value string) pgtype.UUID {
 		t.Helper()
