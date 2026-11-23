@@ -660,7 +660,7 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('amountMode','fixed','金额 ¥',20,'{}'),
  ('amountMode','tiered','阶梯',30,'{"periodModes":["class"],"componentTypes":["sales"],"classMembers":["new"]}'),
  ('amountMode','period_rate','班次比例 %',40,'{"periodModes":["class"],"componentTypes":["manager","delivery"]}'),
- ('amountMode','company_sales','按公司类别配置',50,'{"periodModes":["class"],"componentTypes":["company_sales"],"classMembers":["new","retrain"]}'),
+ ('amountMode','company_sales','按公司类别配置',50,'{"periodModes":["class"],"componentTypes":["company_sales"]}'),
  ('practicePeriodRecipient','person','人员',10,'{}'),
  ('practicePeriodRecipient','unit','组织',20,'{}'),
  ('practicePeriodRecipient','pool','资金池',30,'{}'),
@@ -691,6 +691,8 @@ UPDATE configuration_options
  SET applies_to=jsonb_set(applies_to,'{componentTypes}',(applies_to->'componentTypes') || '["service"]'::jsonb)
  WHERE group_key='amountMode' AND option_key='period_rate'
   AND jsonb_typeof(applies_to->'componentTypes')='array' AND NOT ((applies_to->'componentTypes') ? 'service');
+UPDATE configuration_options SET applies_to=applies_to-'classMembers'
+ WHERE group_key='amountMode' AND option_key='company_sales' AND applies_to ? 'classMembers';
 
 ALTER TABLE people ADD COLUMN IF NOT EXISTS legacy_party_id uuid;
 CREATE UNIQUE INDEX IF NOT EXISTS people_legacy_party_id ON people(legacy_party_id);

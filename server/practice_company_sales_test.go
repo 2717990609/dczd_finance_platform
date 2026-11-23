@@ -14,6 +14,47 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+func TestPracticeCompanyStandardCanCoverBothRegistrationTypes(t *testing.T) {
+	const category = "10000000-0000-4000-8000-000000000957"
+	defaultRate := int64(10000)
+	shared := component{Type: "company_sales", Mode: "company_sales", SourceRole: "DIRECT_REFERRER",
+		CompanySales: &practiceCompanySales{Label: "全班公司提成", DefaultRate: &defaultRate,
+			Categories: []practiceCompanyCategory{{SalesCategoryIDs: []string{category}, practiceCompanyValue: practiceCompanyValue{Mode: "rate", Value: 30000}}}}}
+	newOnly := component{Type: "company_sales", Mode: "company_sales", SourceRole: "DIRECT_REFERRER", ClassMember: "new",
+		CompanySales: &practiceCompanySales{Label: "新报公司特例",
+			Categories: []practiceCompanyCategory{{Companies: []string{"partner"}, practiceCompanyValue: practiceCompanyValue{Mode: "rate", Value: 50000}}}}}
+	parts := []component{shared, newOnly}
+	if err := validateComponents(parts); err != nil {
+		t.Fatalf("shared default and a registration-specific company exception must be publishable: %v", err)
+	}
+	offers := practiceCompanyStandards(paymentRule{Components: parts})
+	for _, example := range []struct {
+		member, company, category string
+		value                     int64
+		index                     int
+	}{
+		{"new", "partner", category, 50000, 1},
+		{"retrain", "partner", category, 30000, 0},
+		{"new", "other", "uncategorized", 10000, 0},
+		{"retrain", "other", "uncategorized", 10000, 0},
+	} {
+		award, ok := offers.match(example.member, example.company, example.category)
+		if !ok || award.Value != example.value || award.componentIndex != example.index {
+			t.Fatalf("unexpected award for %+v: %+v", example, award)
+		}
+		policy := practiceMonthlyRefundPolicy(parts, refundObligation{ComponentType: award.key, Base: 10000,
+			Accrued: practiceCompanyRate(10000, award.Value)}, 1, map[string]int{"new": 3, "retrain": 2}[example.member], example.company, example.category)
+		if policy.RefundPolicy != "proportional" {
+			t.Fatalf("refund must reuse the original matching rate for %+v: %+v", example, policy)
+		}
+	}
+	duplicate := shared
+	duplicate.ClassMember = "retrain"
+	if err := validateComponents(append(parts, duplicate)); err != errPracticeCompanyScopeOverlap {
+		t.Fatalf("a shared rate and an overlapping retrain rate of the same priority must be rejected: %v", err)
+	}
+}
+
 func TestPracticeCompanySalesSeparatesSellerPerformanceAndCompanyProceeds(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}

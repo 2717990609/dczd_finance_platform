@@ -115,7 +115,7 @@ func validCompanyRecommendation(member string, rate *int64) bool {
 }
 
 func validPracticeCompanySales(c component) bool {
-	if c.Type != "company_sales" || c.Mode != "company_sales" || c.ClassMember == "" ||
+	if c.Type != "company_sales" || c.Mode != "company_sales" ||
 		c.CompanySales == nil || c.Value != 0 ||
 		c.Tiers != nil || c.PeriodBenefit != nil || c.RefundPolicy != "" || !validSourceRole(c.SourceRole) {
 		return false
@@ -205,21 +205,26 @@ func checkPracticeCompanyScopes(items []component) error {
 		if arrangement == nil {
 			continue
 		}
-		if arrangement.DefaultRate != nil {
-			if defaults[part.ClassMember] {
-				return errPracticeCompanyScopeOverlap
-			}
-			defaults[part.ClassMember] = true
-		}
 		internal = append(internal, arrangement.InternalCompanies...)
-		for _, category := range arrangement.Categories {
-			if !register(categoryBlocks, part.ClassMember, category.categoryIDs(), index) ||
-				!register(companyBlocks, part.ClassMember, category.Companies, index) {
-				return errPracticeCompanyScopeOverlap
+		for _, member := range []string{"new", "retrain"} {
+			if !part.matchesPracticeMember(member) {
+				continue
 			}
-			for _, override := range category.Overrides {
-				if !register(companyBlocks, part.ClassMember, override.companyIDs(), index) {
+			if arrangement.DefaultRate != nil {
+				if defaults[member] {
 					return errPracticeCompanyScopeOverlap
+				}
+				defaults[member] = true
+			}
+			for _, category := range arrangement.Categories {
+				if !register(categoryBlocks, member, category.categoryIDs(), index) ||
+					!register(companyBlocks, member, category.Companies, index) {
+					return errPracticeCompanyScopeOverlap
+				}
+				for _, override := range category.Overrides {
+					if !register(companyBlocks, member, override.companyIDs(), index) {
+						return errPracticeCompanyScopeOverlap
+					}
 				}
 			}
 		}
@@ -281,35 +286,39 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 				standards[company] = practiceCompanyAward{internal: true}
 			}
 		}
-		standards := offers.companies[part.ClassMember]
 		key := practicePeriodComponentKey(part, i)
 		awardBase := practiceCompanyAward{role: part.SourceRole, key: key, componentIndex: i,
 			payee: part.CompanySales.Payee, recommendationRecipients: part.CompanySales.RecommendationRecipients}
-		if rate := part.CompanySales.DefaultRate; rate != nil {
-			award := awardBase
-			award.practiceCompanyValue = practiceCompanyValue{Mode: "rate", Value: *rate}
-			offers.defaults[part.ClassMember] = award
-		}
-		for _, category := range part.CompanySales.Categories {
-			award := awardBase
-			award.practiceCompanyValue = category.practiceCompanyValue
-			if category.RecommendationRate != nil {
-				award.recommendationRate = *category.RecommendationRate
+		for member, standards := range offers.companies {
+			if !part.matchesPracticeMember(member) {
+				continue
 			}
-			for _, id := range category.categoryIDs() {
-				offers.categories[part.ClassMember][id] = award
+			if rate := part.CompanySales.DefaultRate; rate != nil {
+				award := awardBase
+				award.practiceCompanyValue = practiceCompanyValue{Mode: "rate", Value: *rate}
+				offers.defaults[member] = award
 			}
-			for _, company := range category.Companies {
-				standards[company] = award
-			}
-			for _, override := range category.Overrides {
-				custom := award
-				custom.practiceCompanyValue = override.practiceCompanyValue
-				if override.RecommendationRate != nil {
-					custom.recommendationRate = *override.RecommendationRate
+			for _, category := range part.CompanySales.Categories {
+				award := awardBase
+				award.practiceCompanyValue = category.practiceCompanyValue
+				if category.RecommendationRate != nil {
+					award.recommendationRate = *category.RecommendationRate
 				}
-				for _, id := range override.companyIDs() {
-					standards[id] = custom
+				for _, id := range category.categoryIDs() {
+					offers.categories[member][id] = award
+				}
+				for _, company := range category.Companies {
+					standards[company] = award
+				}
+				for _, override := range category.Overrides {
+					custom := award
+					custom.practiceCompanyValue = override.practiceCompanyValue
+					if override.RecommendationRate != nil {
+						custom.recommendationRate = *override.RecommendationRate
+					}
+					for _, id := range override.companyIDs() {
+						standards[id] = custom
+					}
 				}
 			}
 		}

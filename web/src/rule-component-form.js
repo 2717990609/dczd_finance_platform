@@ -38,14 +38,16 @@ export function checkPracticeCompanyArrangementScopes(components) {
   }
   for (const {classMember,companySales:arrangement} of components) {
     if (!arrangement) continue
-    if (arrangement.defaultRate != null) {
-      register(classMember,'外部公司默认比例',['default'],arrangement)
-    }
-    for (const standard of arrangement.categories) {
-      register(classMember,'销售类别',standard.salesCategoryIds || [],arrangement)
-      register(classMember,'指定公司',standard.companies,arrangement)
-      for (const override of standard.overrides || []) {
-        register(classMember,'指定公司',override.companyIds,arrangement)
+    for (const member of classMember ? [classMember] : ['new','retrain']) {
+      if (arrangement.defaultRate != null) {
+        register(member,'外部公司默认比例',['default'],arrangement)
+      }
+      for (const standard of arrangement.categories) {
+        register(member,'销售类别',standard.salesCategoryIds || [],arrangement)
+        register(member,'指定公司',standard.companies,arrangement)
+        for (const override of standard.overrides || []) {
+          register(member,'指定公司',override.companyIds,arrangement)
+        }
       }
     }
   }

@@ -374,10 +374,7 @@ const componentTypes = computed(() => options('component').filter(option=>
   (!isPeriodBenefit(option.value) || !!periodBenefitMode.value?.scope?.componentTypes?.includes(option.value)) &&
   (option.value!=='company_sales' || !!companySalesMode.value)))
 function classMemberChoices(row,type = row.type) {
-  if (isPeriodBenefit(type)) return classMembers.value
-  if (type==='company_sales') {
-    return classMembers.value.filter(member=>companySalesMode.value?.scope?.classMembers?.includes(member.value))
-  }
+  if (isPeriodBenefit(type) || type==='company_sales') return classMembers.value
   return classMembers.value.map(member=>{
     const occupied = draft.value.components.some(c=>c!==row && c.type===type &&
       (!member.value || matchesPracticeMember(c,member.value)))
