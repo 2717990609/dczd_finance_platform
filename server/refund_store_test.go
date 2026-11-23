@@ -12,6 +12,109 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func TestCalendarRefundWaitsForItsMissingAccountingMonth(t *testing.T) {
+	ctx := context.Background()
+	service := workspace{db: integrationDB(t)}
+	mustID := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	day := 25
+	now := time.Now().In(shanghai)
+	currentMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, shanghai)
+	if now.Day() >= day {
+		currentMonth = currentMonth.AddDate(0, 1, 0)
+	}
+	paidMonth, refundMonth := currentMonth.AddDate(0, -4, 0), currentMonth.AddDate(0, -2, 0)
+	product := mustID(service.createProduct(ctx, createProductInput{Code: "refund-missing-month", Name: "Refund month", PeriodMode: "calendar", CycleStartDay: &day}))
+	createMonth := func(date time.Time) int64 {
+		label := date.Format("2006-01")
+		return mustID(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: label, SettlementMonth: label}))
+	}
+	original, current := createMonth(paidMonth), createMonth(currentMonth)
+	mustID(service.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCAI", Domain: "VIP", SourceKey: "VIP"}))
+	person := mustID(service.createPerson(ctx, createPersonInput{Name: "Original recipient"}))
+	mustID(service.assignIdentity(ctx, assignIdentityInput{
+		PersonID: person, Source: "DCAI", ExternalID: "refund-person", ValidFrom: paidMonth.AddDate(-1, 0, 0).Format(time.RFC3339),
+	}))
+	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, Label: "Original", Components: []component{
+		{Type: "sales", Mode: "rate", SourceRole: "PID_USER", Value: 1000, RefundPolicy: "proportional"},
+		{Type: "referral", Mode: "rate", SourceRole: "DIRECT_REFERRER", Value: 100, RefundPolicy: "proportional"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.Exec(ctx, "UPDATE products SET settlement_enabled=true WHERE id=$1", product); err != nil {
+		t.Fatal(err)
+	}
+	save := func(facts ...sourceFact) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFacts(ctx, tx, facts)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refreshed := func() {
+		t.Helper()
+		if err := service.refreshPendingDrafts(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertDraft := func(period, refund int64, wantIssues ...string) {
+		t.Helper()
+		var actual int64
+		var codes []string
+		err := service.db.QueryRow(ctx, `SELECT refund_minor,ARRAY(SELECT code FROM calculation_draft_issues
+		 WHERE period_id=$1 ORDER BY id) FROM calculation_drafts WHERE period_id=$1`, period).Scan(&actual, &codes)
+		if err != nil || actual != refund || fmt.Sprint(codes) != fmt.Sprint(wantIssues) {
+			t.Fatalf("period %d: refund=%d issues=%v err=%v, want %d / %v", period, actual, codes, err, refund, wantIssues)
+		}
+	}
+	paidAt, refundedAt := paidMonth.AddDate(0, 0, 4), refundMonth.AddDate(0, 0, 4)
+	paid, refunded := int64(100000), int64(50000)
+	save(sourceFact{Source: "DCAI", Kind: "ORDER_PAID", OrderID: "order", PaymentID: "payment", RecordKey: "orders:paid",
+		Domain: "VIP", SourceKey: "VIP", Version: "1", OccurredAt: paidAt, UpdatedAt: paidAt, AmountMinor: &paid,
+		ReferrerID:   "refund-person",
+		Participants: []sourceParticipant{{Role: "PID_USER", UserID: "refund-person"}}})
+	value, err := service.recalculateDraft(ctx, calculateDraftInput{PeriodID: original})
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial := value.(draftSummary)
+	if initial.Total != 11000 {
+		t.Fatalf("original order must pay 100 and 10 yuan: %+v", initial)
+	}
+	if _, err := service.confirmSettlement(ctx, confirmSettlementInput{PeriodID: original, ExpectedVersion: initial.Version}, "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	refreshed()
+	refund := sourceFact{Source: "DCAI", Kind: "REFUND_SUCCEEDED", OrderID: "order", RecordKey: "refunds:refund",
+		Domain: "VIP", SourceKey: "VIP", Version: "1", RefundID: "refund", OccurredAt: refundedAt, UpdatedAt: now, AmountMinor: &refunded,
+		RefundsPayment: []sourcePaymentReference{{OrderID: "order", RecordID: "paid"}}}
+	unlinked := refund
+	unlinked.RecordKey, unlinked.RefundID = "refunds:unlinked", "unlinked"
+	unlinked.OccurredAt = refundedAt.AddDate(0, -1, 0)
+	unlinked.RefundsPayment = []sourcePaymentReference{{OrderID: "order", RecordID: "other-payment"}}
+	save(refund, unlinked)
+	refreshed()
+	assertDraft(current, 0, "REFUND_MONTH_MISSING")
+	posted := createMonth(refundMonth)
+	refreshed()
+	assertDraft(current, 0)
+	assertDraft(posted, -5500)
+	assertDraft(original, 0)
+	var deductions []int64
+	if err := service.db.QueryRow(ctx, `SELECT ARRAY(SELECT amount_minor FROM calculation_draft_refunds
+	 WHERE period_id=$1 AND refund_period_id=$1 ORDER BY amount_minor)`, posted).Scan(&deductions); err != nil ||
+		len(deductions) != 2 || deductions[0] != -5000 || deductions[1] != -500 {
+		t.Fatalf("refund must recover 50 and 5 yuan in the occurrence month: %v %v", deductions, err)
+	}
+}
+
 func TestHistoricalRefundRoutesToAugustThenCurrentAndReusesFrozenRule(t *testing.T) {
 	ctx := context.Background()
 	service := workspace{db: integrationDB(t)}

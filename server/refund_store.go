@@ -67,15 +67,15 @@ const duplicateRefundSQL = `v.kind='REFUND_SUCCEEDED' AND EXISTS(
   )
 )`
 
-const refundInputSelectionSQL = `SELECT v.id,origin.id,v.fact,coalesce(history.changed,false),` +
+const refundInputSelectionSQL = `SELECT v.id,coalesce(origin.id,0),v.fact,coalesce(history.changed,false),` +
 	duplicateRefundSQL + ` FROM periods target`
 
-const refundInputsSQL = refundInputSelectionSQL + `
+var refundInputsSQL = refundInputSelectionSQL + `
  JOIN source_mappings m ON m.product_id=target.product_id
  JOIN source_order_versions v ON v.source=m.source AND v.fact->>'domain'=m.domain AND v.fact->>'sourceKey'=m.source_key
 ` + refundPeriodSQL + ` AND NOT ` + catalogSourceReservedSQL + refundEligibilitySQL
 
-const catalogRefundInputsSQL = refundInputSelectionSQL + `
+var catalogRefundInputsSQL = refundInputSelectionSQL + `
  JOIN product_catalog_settings c ON c.product_id=target.product_id
  JOIN source_order_versions v ON v.source=c.source_system AND EXISTS(
   SELECT 1 FROM catalog_business_routes m
@@ -84,7 +84,7 @@ const catalogRefundInputsSQL = refundInputSelectionSQL + `
 ` + refundPeriodSQL + refundEligibilitySQL
 
 const refundPeriodSQL = `
- JOIN periods origin ON origin.product_id=target.product_id AND origin.aggregate_package_id IS NULL
+ LEFT JOIN periods origin ON origin.product_id=target.product_id AND origin.aggregate_package_id IS NULL
   AND v.occurred_at >= (origin.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')
   AND v.occurred_at < ((origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
 ` + refundPostingHistorySQL + `
@@ -112,13 +112,33 @@ const refundPostingHistorySQL = ` LEFT JOIN LATERAL (
     AND (rv.fact->>'domain')=(v.fact->>'domain') AND (rv.fact->>'refundId')=(v.fact->>'refundId')
  ) history ON true`
 
-const refundEligibilitySQL = `
+// Match the original recorded payment rather than an unrelated payment with the same order number.
+func refundHasSettledCalendarPaymentSQL(product string) string {
+	return `EXISTS (
+  SELECT 1 FROM source_order_versions paid
+  JOIN calculation_draft_performance perf ON perf.source_version_id=paid.id AND perf.payment_version_id IS NULL
+  JOIN settlements final ON final.period_id=perf.period_id
+  JOIN periods prior ON prior.id=perf.period_id AND prior.aggregate_package_id IS NULL
+  WHERE prior.product_id=` + product + `
+   AND paid.source=v.source AND paid.kind='ORDER_PAID' AND paid.fact->>'domain'=v.fact->>'domain'
+   AND paid.order_id=v.fact#>>'{refundsPayment,0,orderId}' AND paid.occurred_at<=v.occurred_at
+   AND (coalesce(v.fact#>>'{refundsPayment,0,lineId}','')='' OR paid.line_id=v.fact#>>'{refundsPayment,0,lineId}')
+   AND (coalesce(v.fact#>>'{refundsPayment,0,recordId}','')='' OR
+    strpos(paid.record_key,':')>0 AND substr(paid.record_key,strpos(paid.record_key,':')+1)=v.fact#>>'{refundsPayment,0,recordId}')
+ )`
+}
+
+var refundEligibilitySQL = `
  AND (NOT history.booked OR history.changed)
  AND (origin.id=target.id OR (
   EXISTS(SELECT 1 FROM settlements WHERE period_id=origin.id)
   AND (history.reserved_period=target.id OR (
    history.reserved_period IS NULL AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN target.starts_on AND target.ends_on
   ))
+ ) OR (
+  origin.id IS NULL AND v.occurred_at<target.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
+  AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN target.starts_on AND target.ends_on
+  AND ` + refundHasSettledCalendarPaymentSQL("target.product_id") + `
  ))
  AND NOT EXISTS (
    SELECT 1 FROM source_order_versions newer
@@ -356,10 +376,13 @@ func applyRefundEvents(ctx context.Context, tx pgx.Tx, periodID int64, window pe
 		f := event.Fact
 		code := ""
 		switch {
-		case event.RefundPeriodID == 0:
-			code = "PRACTICE_REFUND_MONTH_MISSING"
 		case event.BookedChanged:
 			code = "REFUND_BOOKED_CHANGED"
+		case event.RefundPeriodID == 0:
+			code = "REFUND_MONTH_MISSING"
+			if practiceMonth {
+				code = "PRACTICE_REFUND_MONTH_MISSING"
+			}
 		case f.RefundID == "" || f.AmountMinor == nil || *f.AmountMinor <= 0:
 			code = "REFUND_MISSING_AMOUNT_OR_ID"
 		case event.Duplicate || counts[refundKey{f.Source, f.Domain, f.RefundID}] > 1:

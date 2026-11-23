@@ -8,13 +8,20 @@ import (
 
 const draftDisplayFactFields = `ARRAY['version','updatedAt','orderNo']`
 
+const draftRefreshNewCalendarPeriod = `SELECT $1::bigint UNION SELECT period_id FROM health_completion_open_periods($1)
+ UNION SELECT issue.period_id FROM periods created JOIN periods open ON open.product_id=created.product_id
+ JOIN calculation_draft_issues issue ON issue.period_id=open.id AND issue.code='REFUND_MONTH_MISSING'
+ JOIN source_order_versions refund ON refund.id=issue.source_version_id
+ WHERE created.id=$1 AND refund.occurred_at>=created.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
+  AND refund.occurred_at<(created.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'`
+
 const draftFinancialFactChanged = `(current.fact-` + draftDisplayFactFields + `,current.occurred_at,
  cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,cv.company_id,cv.recommendation_company_id,cv.recommendation_conflict,
  current.practice_registration) IS DISTINCT FROM (previous.fact-` + draftDisplayFactFields + `,previous.occurred_at,
  pc.entity_type,pc.business_key,pc.classifier,pc.sales_claims,pv.company_id,pv.recommendation_company_id,pv.recommendation_conflict,
  previous.practice_registration)`
 
-const draftRefreshFacts = `WITH keys AS (
+var draftRefreshFacts = `WITH keys AS (
  SELECT DISTINCT source,order_id,line_id,record_key,kind FROM source_order_versions
  WHERE id=ANY($1::bigint[]) OR id=ANY($2::bigint[])
 ), changed AS MATERIALIZED (
@@ -108,6 +115,11 @@ const draftRefreshFacts = `WITH keys AS (
  JOIN settlements final ON final.period_id=line.period_id JOIN periods prior ON prior.id=line.period_id WHERE v.kind='ORDER_PAID'
 ), late AS (
  SELECT o.product_id FROM origin o JOIN settlements s ON s.period_id=o.id WHERE o.kind='REFUND_SUCCEEDED'
+ UNION
+ SELECT m.product_id FROM mapped m JOIN source_order_versions v ON v.id=m.id
+ WHERE m.kind='REFUND_SUCCEEDED' AND m.occurred_at<=CURRENT_TIMESTAMP
+  AND NOT EXISTS(SELECT 1 FROM origin o WHERE o.product_id=m.product_id AND o.event_id=m.id)
+  AND ` + refundHasSettledCalendarPaymentSQL("m.product_id") + `
  UNION SELECT product_id FROM corrected_originals
 ), health_changes AS (
  SELECT DISTINCT v.id AS payment_version_id,NULL::bigint AS previous_id,b.completion_version_id AS current_id
@@ -142,6 +154,8 @@ UNION ` + healthCompletionAffectedPeriodsSQL + `
 UNION SELECT p.id FROM late l JOIN calendar p USING(product_id)
  WHERE (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
 UNION SELECT refund.period_id FROM refund_versions v JOIN calculation_draft_refunds refund ON refund.refund_source_version_id=v.id
+UNION SELECT issue.period_id FROM refund_versions v JOIN calculation_draft_issues issue ON issue.source_version_id=v.id
+ WHERE issue.code='REFUND_MONTH_MISSING'
 UNION SELECT a.period_id FROM refund_versions v JOIN catalog_aggregate_draft_events a ON a.source_version_id=v.id
 UNION SELECT posted.period_id FROM refund_versions v JOIN calculation_draft_performance posted ON posted.source_version_id=v.id
  WHERE posted.payment_version_id IS NOT NULL

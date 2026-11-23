@@ -497,6 +497,9 @@ async function loadMore(section, cursorName) {
           <template v-else-if="column.key === 'reason'">
             <a-tag v-if="record.advisory" color="blue">提示</a-tag>{{ draftIssueLabels[record.code] || record.code }}
             <small v-if="record.code==='SALES_COMPANY_REVIEW'" class="order-version">请在大春 AI 核对成交人和销售公司，更正后重新拉取。</small>
+            <small v-if="record.code==='REFUND_MONTH_MISSING' && selectedPeriod" class="order-version">
+              <a :href="'#periods?productId='+selectedPeriod.productId">查看产品账期</a>
+            </small>
             <small v-if="record.componentLabel && record.ruleVersion" class="order-version">
               <button type="button" class="order-link" @click="showAppliedRule('issues',record)">查看试算规则 v{{ record.ruleVersion }}</button>
             </small>

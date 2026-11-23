@@ -43,6 +43,7 @@ export const draftIssueLabels = {
   REFUND_DUPLICATE_ID: '同一原退款编号有多条来源事实',
   REFUND_MISSING_PAYMENT_REFERENCE: '退款未明确关联原付款',
   REFUND_ORIGINAL_NOT_SETTLED: '找不到可对应的原付款提成',
+  REFUND_MONTH_MISSING: '退款发生日期所属的账期尚未建立',
   REFUND_PAYMENT_AMBIGUOUS: '退款匹配到多笔原付款',
   REFUND_AMOUNT_EXCEEDS_PAYMENT: '累计退款或扣回金额超过原付款或原计提',
   REFUND_POLICY_MISSING: '适用规则缺少退款处理口径',
