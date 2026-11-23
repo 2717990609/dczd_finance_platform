@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { practiceCompanyMatchLabels, practiceCompanyMatchText, practiceCompanyRatePriority, practiceCompanyRefundMode,
+import { practiceCompanyCalculationText, practiceCompanyMatchLabels, practiceCompanyMatchText, practiceCompanyRatePriority, practiceCompanyRefundMode,
   practiceCompanyRefundOptions, practiceCompanyScopes, practiceRecipientIsPerson } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
@@ -41,11 +41,6 @@ const visibleOverrides = computed(() => visibleCompanyRows.value.filter(row=>row
 watch(companyPageCount, count=>{ companyPage.value=Math.min(companyPage.value,count) })
 const scopes = computed(() => practiceCompanyScopes(sales.value))
 const priority = computed(() => practiceCompanyRatePriority(scopes.value))
-const calculationText = computed(() => {
-  const modes = new Set([...categories.value,...overrides.value.map(({override})=>override)].map(row=>row.mode))
-  if (scopes.value.hasDefault) modes.add('rate')
-  return [modes.has('rate') && '比例',modes.has('fixed') && '固定金额'].filter(Boolean).join(' / ') || '在计提标准中设置'
-})
 const payee = computed(() => props.component.companySales.payee)
 const payeeKinds = [
   {value:'sales_company',label:'销售所属公司'},
@@ -125,7 +120,7 @@ watch(amounts, choices => {
 
 <template>
   <RuleArrangementFields :name-id="field('label')" v-model:name="component.companySales.label"
-    :calculation-text="calculationText" :scope-text="practiceCompanyMatchText(scopes)"
+    :calculation-text="practiceCompanyCalculationText(sales)" :scope-text="practiceCompanyMatchText(scopes)"
     :duty-id="practiceRecipientIsPerson(payee.kind) ? field('duty') : undefined" :duties="duties" v-model:duty="component.recipientDuty"
     :order-type-id="'rule-member-'+index" :order-types="memberChoices" :order-type="component.classMember"
     @update:order-type="component.classMember=$event; emit('member-change')">

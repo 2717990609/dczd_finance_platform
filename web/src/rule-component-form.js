@@ -399,6 +399,12 @@ export function practiceCompanyScopes(sales = {}) {
   }
 }
 
+export function practiceCompanyCalculationText(sales) {
+  const modes = new Set((sales.categories || []).flatMap(row=>[row,...(row.overrides || [])]).map(row=>row.mode))
+  if (Number.isFinite(sales.defaultRate)) modes.add('rate')
+  return [modes.has('rate') && '比例',modes.has('fixed') && '固定金额'].filter(Boolean).join(' / ') || '在计提标准中设置'
+}
+
 export function practiceCompanyMatchText({companies,categories,hasDefault}) {
   const scopes = [
     companies.length && `按指定公司（${companies.length} 家）`,

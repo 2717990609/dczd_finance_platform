@@ -346,6 +346,10 @@ function componentStandard(item) {
   const value = flatValue(item)
   return value == null || value==='' ? '' : value+(flatMethod(item)==='fixed' ? ' 元/笔' : '%')
 }
+function readOnlyCalculation(item) {
+  if (hasRateTable.value) return '比例 · 按计提标准'
+  return [flatMethod(item)==='fixed' ? '固定金额' : '比例',componentStandard(item)].filter(Boolean).join(' · ')
+}
 function undoCalculation() {
   const index = structure.value.calculations.indexOf(selectedCalculation.value)
   if (index>=0) structure.value.calculations.splice(index,1)
@@ -766,9 +770,14 @@ async function publish() {
               </template>
             </RuleArrangementFields>
           </template>
-          <template v-else-if="targetKind!=='seller' && !itemRemoved">
-            <p class="rule-formula">{{ [...new Set([targetKindLabels[targetKind],targetName(item),componentStandard(item)].filter(Boolean))].join(' · ') }}</p>
-            <a-descriptions v-if="item.targetRole || item.memberRole" size="small" :column="{xs:1,sm:2}">
+          <template v-else-if="!itemRemoved">
+            <a-descriptions size="small" :column="{xs:1,sm:2}">
+              <a-descriptions-item label="收款对象">{{ targetKind==='seller' ? '按销售比例表确定收款方' : targetName(item) || targetKindLabels[targetKind] }}</a-descriptions-item>
+              <a-descriptions-item label="计提方式">{{ readOnlyCalculation(item) }}</a-descriptions-item>
+              <a-descriptions-item label="计提订单类型">{{ sheet.membershipSku ? memberLabel(item) : orderTypeText }}</a-descriptions-item>
+              <a-descriptions-item label="计提订单范围">
+                <span :title="commissionScopeNames(item).join('、')">{{ commissionScope(item)==null ? formatScope(commissionScopeNames(item)) : commissionScopeNames(item).join('、') }}</span>
+              </a-descriptions-item>
               <a-descriptions-item v-if="item.targetRole" :label="targetKind==='pool' ? '负责人岗位' : '收款人任职岗位'">
                 {{ roleLabel(item.targetRole) }}
               </a-descriptions-item>
@@ -776,7 +785,6 @@ async function publish() {
                 {{ sheet.scopeUnitNames?.[item.appointmentUnitId] || '已选组织' }}
               </a-descriptions-item>
               <a-descriptions-item v-if="item.poolOwner" label="分配负责人">{{ item.poolOwner.name }}</a-descriptions-item>
-              <a-descriptions-item label="计提订单类型">{{ sheet.membershipSku ? memberLabel(item) : orderTypeText }}</a-descriptions-item>
               <a-descriptions-item v-if="item.memberRole" label="可参与分配的成员岗位">
                 {{ roleLabel(item.memberRole) }}
               </a-descriptions-item>

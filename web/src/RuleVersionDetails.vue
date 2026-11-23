@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyMatchLabels, practiceCompanyRatePriority, practiceCompanyRefundMode,
+import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyCalculationText, practiceCompanyMatchLabels, practiceCompanyRatePriority, practiceCompanyRefundMode,
   practiceCompanyRefundOptions, practiceCompanyScopes, practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
   practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, practiceStandardRateGroups, practiceStandardRateSummary,
   ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
@@ -72,6 +72,7 @@ const retrainRemainder = (part, split) => {
 const recordedServiceShares = computed(() => props.rule.components.flatMap(part=>
   (part.retrainSplits || []).filter(split=>split.servicePersonId)))
 const fixedUnit = computed(() => props.classProduct ? ' / 报名' : ' / 付款')
+const orderType = part => part.tiers?.includeRetrain || !part.classMember ? '新报和复训' : label('classMember',part.classMember)
 const companyStandards = computed(() => {
   const arrangement = props.rule.components[activePart.value]?.companySales
   const defaults = [], companies = []
@@ -147,13 +148,14 @@ function formula(part) {
     }
     return '本班适用报名净实收 × '+(part.periodBenefit?.tiers?.length ? '档位比例' : rate(part.value,10000))
   }
-  if (part.companySales) return '每份报名匹配一条标准'
+  if (part.companySales) return practiceCompanyCalculationText(part.companySales)
   if (part.tiers) return cumulativeMetricLabel(part.tiers) || '按累计人数或本班业绩匹配档位'
   if (part.retrainSplits?.length) return (part.mode==='rate' ? '复训总提成 '+standard(part) : '复训总提成 '+standard(part)+fixedUnit.value)+'，按公司分账'
   if (part.mode==='rate') return (props.classProduct ? '报名净实收' : '付款实收')+' × '+standard(part)
   return standard(part)+fixedUnit.value
 }
 function standardSummary(part) {
+  if (part.companySales) return ''
   if (part.tiers) {
     const metric = cumulativeMetricLabel(part.tiers)
     return metric ? metric+'阶梯' : '按阶梯'
@@ -165,6 +167,22 @@ function standardSummary(part) {
   return part.mode==='rate' ? standard(part) : formula(part)
 }
 const salesScope = (part, limit) => props.classProduct ? practiceSalesScopeText(part,practiceScopeNames.value,limit) : undefined
+function fullOrderScope(part) {
+  return part.periodBenefit ? practicePeriodScopeText(part.periodBenefit,practiceScopeNames.value,Infinity)
+    : salesScope(part,part.companySales ? 0 : Infinity)
+}
+function calculationText(part) {
+  const value = formula(part)
+  if (part.companySales) return value
+  if (part.tiers || part.periodBenefit?.tiers?.length) return '阶梯 · '+value
+  return (part.mode==='fixed' || part.periodBenefit?.fixedMinor != null ? '固定金额' : '比例')+' · '+value
+}
+function refundPolicyLabel(part) {
+  if (part.refundPolicy) return label('refundPolicy',part.refundPolicy)
+  if (props.classProduct && part.mode==='fixed' && ['sales','referral'].includes(part.type) && !part.retrainSplits?.length) {
+    return label('refundPolicy','proportional')
+  }
+}
 const companyMatchIndicators = sales => practiceCompanyStandardIndicators(sales,value=>rate(value,10000),props.formatMoney)
 onMounted(async () => {
   const hasUnknownCategory = row => standardCategoryIDs(row).some(id=>categoryName(id)===id)
@@ -214,7 +232,7 @@ onMounted(async () => {
           @click="activePart=activePart===index ? undefined : index">
           <DownOutlined aria-hidden="true"/>
           <strong>{{ ruleComponentLabel(part,label) }}</strong>
-          <span v-if="classProduct" class="rule-block-badge">{{ part.tiers?.includeRetrain || !part.classMember ? '新报和复训' : label('classMember',part.classMember) }}</span>
+          <span v-if="classProduct" class="rule-block-badge">{{ orderType(part) }}</span>
           <span v-if="part.periodBenefit" class="rule-block-recipient" :title="practicePeriodScopeText(part.periodBenefit,practiceScopeNames,Infinity)">
             提成范围 · {{ practicePeriodScopeText(part.periodBenefit,practiceScopeNames) }}
           </span>
@@ -229,16 +247,15 @@ onMounted(async () => {
         </button>
         <div v-if="activePart===index" :id="'rule-preview-'+index" class="rule-block-body rule-preview-part">
         <a-descriptions size="small" :column="{xs:1,sm:2}">
-          <a-descriptions-item label="发给谁">{{ recipient(part) }}</a-descriptions-item>
-          <a-descriptions-item label="提成怎么算">{{ formula(part) }}</a-descriptions-item>
-          <a-descriptions-item v-if="part.companySales" label="计提订单范围">{{ salesScope(part,0) }}</a-descriptions-item>
-          <a-descriptions-item v-if="part.periodBenefit" label="计提订单范围">{{ practicePeriodScopeText(part.periodBenefit,practiceScopeNames,Infinity) }}</a-descriptions-item>
+          <a-descriptions-item label="收款对象">{{ recipient(part) }}</a-descriptions-item>
+          <a-descriptions-item label="计提方式">{{ calculationText(part) }}</a-descriptions-item>
+          <a-descriptions-item v-if="classProduct" label="计提订单类型">{{ orderType(part) }}</a-descriptions-item>
+          <a-descriptions-item v-if="fullOrderScope(part)" label="计提订单范围">{{ fullOrderScope(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.salesPersonId" label="业绩归属">{{ roleName(part.sourceRole) }}</a-descriptions-item>
-          <a-descriptions-item v-if="!part.companySales && salesScope(part)" label="提成范围">{{ salesScope(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.periodBenefit?.tiers?.length" label="阶梯选档范围">
             {{ part.periodBenefit.tierOnWholeClass ? '全班净实收（新报及复训）' : '适用报名净实收' }}
           </a-descriptions-item>
-          <a-descriptions-item v-if="part.refundPolicy" label="退款处理">{{ label('refundPolicy',part.refundPolicy) }}</a-descriptions-item>
+          <a-descriptions-item v-if="refundPolicyLabel(part)" label="退款处理">{{ refundPolicyLabel(part) }}</a-descriptions-item>
         </a-descriptions>
         <table v-if="part.periodBenefit?.standardRates?.length" class="rule-company-standards" aria-label="比例标准">
           <thead><tr><th scope="col">匹配条件</th><th scope="col">比例</th></tr></thead>

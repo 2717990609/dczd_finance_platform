@@ -663,7 +663,9 @@ async function resumeRule() {
               </template>
             </RuleArrangementFields>
           </a-form>
-          <RuleArrangementFields v-else :order-type-text="itemOrderTypes(item)" :calculation-text="methodSummary(item)" :scope-text="orderScopeText(item)"/>
+          <RuleArrangementFields v-else :order-type-text="itemOrderTypes(item)" :calculation-text="methodSummary(item)" :scope-text="orderScopeText(item)">
+            <a-form-item label="收款对象"><span class="rule-field-value">{{ targetLabel(item) }}</span></a-form-item>
+          </RuleArrangementFields>
           <a-form v-if="canSave && item.targetKind==='person'" layout="vertical" size="small" class="rule-basics">
             <a-form-item>
               <a-checkbox :checked="!!item.appointment" :disabled="saving"
