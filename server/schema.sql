@@ -1169,6 +1169,18 @@ CREATE TABLE IF NOT EXISTS practice_pools (
  UNIQUE(product_id,unit_id,name)
 );
 
+-- Restored pools can carry explicit IDs that are ahead of the identity sequence.
+LOCK TABLE practice_pools IN SHARE ROW EXCLUSIVE MODE;
+DO $$
+DECLARE
+ pool_sequence regclass := pg_get_serial_sequence('practice_pools','id')::regclass;
+ highest_pool_id bigint := (SELECT max(id) FROM practice_pools);
+BEGIN
+ IF highest_pool_id > coalesce(pg_sequence_last_value(pool_sequence),0) THEN
+  EXECUTE format('ALTER SEQUENCE %s RESTART WITH %s',pool_sequence,highest_pool_id+1);
+ END IF;
+END $$;
+
 -- Make named catalog pools selectable without changing the accounting keys
 -- of already published arrangements or their settlement lines.
 WITH latest AS (

@@ -47,3 +47,35 @@ func TestProductRuleCatalogUpgradePreservesRuleReferences(t *testing.T) {
 		t.Fatal("published rule could be modified after the upgrade")
 	}
 }
+
+func TestCatalogPoolUpgradeKeepsImportedPoolIDs(t *testing.T) {
+	ctx := context.Background()
+	db := integrationDB(t)
+	if _, err := db.Exec(ctx, `
+	 INSERT INTO products(id,code,name,period_mode) OVERRIDING SYSTEM VALUE VALUES(151,'pool-upgrade','资金池测试','calendar');
+	 INSERT INTO organization_units(id,kind,name,status)
+	 VALUES('41000000-0000-4000-8000-000000000151','COMPANY','归集公司','ACTIVE');
+	 INSERT INTO practice_pools(id,product_id,unit_id,name) OVERRIDING SYSTEM VALUE
+	 VALUES(1,151,'41000000-0000-4000-8000-000000000151','归档资金池');
+	 INSERT INTO product_catalog_settings(product_id,source_id,source_environment,project_code,source_system,source_key,captured_at,snapshot_digest)
+	 VALUES(151,'41000000-0000-4000-8000-000000000150','test','AI','DCAI','test.vip',now(),decode(repeat('01',32),'hex'));
+	 INSERT INTO product_rule_packages(source_id,product_id,code,name,project_code,policy_kind,scope_type,scope_id,paused)
+	 VALUES('41000000-0000-4000-8000-000000000152',151,'vip','会员分润','AI','COMPONENT_RULE','BUSINESS_SCENARIO','NEW',false);
+	 INSERT INTO product_rule_versions(source_id,package_id,version_no,source_status,effective_from,content_hash,definition,observed_at,published_at,published_by)
+	 VALUES('41000000-0000-4000-8000-000000000153','41000000-0000-4000-8000-000000000152',1,'PUBLISHED',now(),'hash',
+	  '{"benefit_actions":[{"beneficiary_mode":"TEAM_POOL","pool_name":"规则资金池","pool_organization_unit_id":"41000000-0000-4000-8000-000000000151"}]}',
+	  now(),now(),'finance')`); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := migrate(ctx, db); err != nil {
+			t.Fatalf("startup must register named rule pools without overwriting imported IDs: %v", err)
+		}
+	}
+	var imported, registered, count int64
+	err := db.QueryRow(ctx, `SELECT max(id) FILTER(WHERE name='归档资金池'),
+	 max(id) FILTER(WHERE name='规则资金池'), count(*) FROM practice_pools WHERE product_id=151`).Scan(&imported, &registered, &count)
+	if err != nil || imported != 1 || registered <= imported || count != 2 {
+		t.Fatalf("imported ID=%d, registered ID=%d, count=%d, error=%v", imported, registered, count, err)
+	}
+}
