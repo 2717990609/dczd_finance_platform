@@ -24,6 +24,8 @@ type catalogRateComponent struct {
 	TeamSplit       *catalogSplitRates `json:"teamSplit,omitempty"`
 	LeaderScope     *vipLeaderScope    `json:"leaderScope,omitempty"`
 	CommissionUnits []string           `json:"salesScopeUnitIds,omitempty"`
+	OwnSales        bool               `json:"ownSales,omitempty"`
+	RecipientDuty   string             `json:"recipientDuty,omitempty"`
 }
 
 type catalogSplitRates struct {
@@ -104,6 +106,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		}
 		item := catalogRateComponent{ItemKey: action.Item, Label: action.Label, Rate: action.Rate, Fixed: action.Fixed, TargetKind: action.targetKind()}
 		item.CommissionUnits = action.CommissionUnits
+		item.OwnSales, item.RecipientDuty = action.OwnSales, action.RecipientDuty
 		if item.ItemKey == sales.Item {
 			item.TargetKind = "seller"
 			if split := sales.Split; split.Item != "" {

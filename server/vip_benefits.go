@@ -26,6 +26,8 @@ type vipBenefitAction struct {
 	rates           []vipRateRow
 	Leader          *vipLeaderScope `json:"leader_scope,omitempty"`
 	CommissionUnits []string        `json:"sales_scope_unit_ids,omitempty"`
+	OwnSales        bool            `json:"own_sales,omitempty"`
+	RecipientDuty   string          `json:"recipient_duty,omitempty"`
 }
 
 type vipBenefitPolicy struct {
@@ -88,7 +90,7 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 		var action vipBenefitAction
 		dec := json.NewDecoder(bytes.NewReader(payload))
 		dec.DisallowUnknownFields()
-		if dec.Decode(&action) != nil || action.Label == "" || action.Role == "" || !action.validTarget() ||
+		if dec.Decode(&action) != nil || action.Label == "" || action.Role == "" && action.Designated == "" || !action.validTarget() ||
 			!validVIPCommissionUnits(action.CommissionUnits) {
 			return vipBenefitPolicy{}, false
 		}
@@ -131,6 +133,10 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 }
 
 func (a vipBenefitAction) validTarget() bool {
+	if a.OwnSales && (a.Mode != "PARTY" || a.Designated == "" || len(a.CommissionUnits) != 0 || a.Leader != nil) ||
+		a.RecipientDuty != "" && (a.Designated == "" || !validSourceRole(a.RecipientDuty)) {
+		return false
+	}
 	poolFields := a.PoolParty != "" || a.PoolUnit != "" || a.PoolCode != "" || a.PoolName != "" || a.OwnerRole != ""
 	if role := vipLeaderRole(a.Item); role != "" || a.Leader != nil {
 		return role != "" && a.Leader != nil && a.Role == role && !poolFields && a.Company == "" &&
@@ -165,7 +171,7 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 		line := vipBenefitPart{Item: a.Item, Label: a.Label, Role: a.Role, Kind: a.targetKind()}
 		if req.Paid > 0 && (a.Rate == nil || *a.Rate > 0) && (a.Fixed == nil || *a.Fixed > 0) &&
 			!(a.Mode == vipOrderReferrerMode && req.Referrer.Party == "" && req.Referrer.Issue == "") {
-			if eligible, issue := vipCommissionScope(a.CommissionUnits, req, sourceIssue, data); !eligible {
+			if eligible, issue := a.eligibleSale(req, sourceIssue, data); !eligible {
 				line.Status = vipCommissionOutsideScope
 				if issue != "" {
 					line.Status = issue
@@ -195,6 +201,19 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 		out = append(out, line)
 	}
 	return out
+}
+
+func (a vipBenefitAction) eligibleSale(req vipSalesRequest, sourceIssue string, data vipRuntimeData) (bool, string) {
+	if a.OwnSales {
+		if req.Seller != "" {
+			return req.Seller == a.Designated, ""
+		}
+		if sourceIssue == "" {
+			sourceIssue = "SALES_PERSON_MISSING"
+		}
+		return false, sourceIssue
+	}
+	return vipCommissionScope(a.CommissionUnits, req, sourceIssue, data)
 }
 
 func (a vipBenefitAction) targetKind() string {
@@ -244,7 +263,7 @@ func bindVIPBenefit(line *vipBenefitPart, a vipBenefitAction, req vipSalesReques
 		name := data.People[a.Designated]
 		if name == "" {
 			line.Status = "BENEFIT_PERSON_MISSING"
-		} else if !slices.ContainsFunc(data.Roles, func(r vipRole) bool {
+		} else if a.Role != "" && !slices.ContainsFunc(data.Roles, func(r vipRole) bool {
 			return r.Person == a.Designated && r.Role == a.Role && r.contains(req.At) &&
 				(r.Scope == "PRODUCT" && r.Key == req.Product || r.Scope == "PROJECT" && r.Key == req.Project)
 		}) {

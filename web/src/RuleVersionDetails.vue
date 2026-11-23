@@ -100,7 +100,8 @@ const range = (row, count, next) => {
 function recipient(part) {
   const benefit = part.periodBenefit
   if (benefit?.pool) return poolName(benefit.pool)
-  if (benefit?.personId) return personName(benefit.personId)
+  if (benefit?.personId) return [personName(benefit.personId),
+    benefit.recipientDuty && (label('organizationDuty',benefit.recipientDuty) || benefit.recipientDuty)].filter(Boolean).join(' · ')
   if (benefit?.unitId) return unitName(benefit.unitId)
   if (part.companySales) {
     const payee = part.companySales.payee
@@ -184,6 +185,7 @@ onMounted(async () => {
         <a-descriptions size="small" :column="{xs:1,sm:2}">
           <a-descriptions-item label="发给谁">{{ recipient(part) }}</a-descriptions-item>
           <a-descriptions-item label="提成怎么算">{{ formula(part) }}</a-descriptions-item>
+          <a-descriptions-item v-if="part.periodBenefit" label="计提订单范围">{{ practicePeriodScopeText(part.periodBenefit,practiceScopeNames,Infinity) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.salesPersonId" label="业绩归属">{{ roleName(part.sourceRole) }}</a-descriptions-item>
           <a-descriptions-item v-if="salesScope(part)" label="提成范围">{{ salesScope(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.periodBenefit?.tiers?.length" label="阶梯选档范围">

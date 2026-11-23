@@ -127,7 +127,7 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 			if benefit.RegistrationScope == nil && !benefit.hasSalesScope() {
 				inputs.Version = max(inputs.Version, practiceReplayIndependentBenefits)
 			}
-			if len(benefit.SalesPeople)+len(benefit.SalesUnits) != 0 {
+			if benefit.usesSalesPerson() {
 				inputs.Version = practiceReplayConfiguredBenefitRole
 			}
 			if assignments := runtime.appointments[benefit.appointmentKey()]; len(assignments) != 0 {

@@ -9,6 +9,7 @@ import (
 type practiceSalesOrganization struct {
 	PersonID          int64                        `json:"personId"`
 	SourceCompany     string                       `json:"sourceCompany,omitempty"`
+	Company           string                       `json:"company,omitempty"`
 	Department        string                       `json:"department,omitempty"`
 	Group             string                       `json:"group,omitempty"`
 	ScopeAlternatives []organizationScopeCandidate `json:"scopeAlternatives,omitempty"`
@@ -85,7 +86,7 @@ func loadPracticeSalesOrganizations(ctx context.Context, tx pgx.Tx, rule payment
 				delete(byRole, role)
 				continue
 			}
-			entry.Department, entry.Group = resolved.Department.String(), resolved.groupID().String()
+			entry.Company, entry.Department, entry.Group = resolved.Company.String(), resolved.Department.String(), resolved.groupID().String()
 			entry.ScopeAlternatives = resolved.scopeAlternatives
 			byRole[role] = entry
 		}

@@ -701,6 +701,7 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				return invalid
 			}
 		}
+		var recipientDuties []string
 		for _, c := range p.Components {
 			if mode == "class" && (c.Type == "sales" || c.Type == "referral") && c.SourceRole == "" {
 				return errRuleOrderRole
@@ -757,6 +758,9 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				salesUnitIDs = append(salesUnitIDs, benefit.SalesUnits...)
 				if benefit.PersonID != 0 {
 					personIDs = append(personIDs, benefit.PersonID)
+				}
+				if benefit.RecipientDuty != "" {
+					recipientDuties = append(recipientDuties, benefit.RecipientDuty)
 				}
 				if benefit.UnitID != "" {
 					unitIDs = append(unitIDs, benefit.UnitID)
@@ -850,11 +854,22 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			 OR EXISTS(SELECT 1 FROM unnest($2::text[]) AS wanted(kind)
 			 WHERE NOT EXISTS(SELECT 1 FROM configuration_options o WHERE o.group_key='appointmentKind' AND o.option_key=wanted.kind AND o.enabled))
 			 OR EXISTS(SELECT 1 FROM unnest($3::text[]) AS wanted(id)
-			 WHERE NOT EXISTS(SELECT 1 FROM organization_units u WHERE u.id=wanted.id::uuid AND u.kind IN ('DEPARTMENT','TEAM')))`,
+			 WHERE NOT EXISTS(SELECT 1 FROM organization_units u WHERE u.id=wanted.id::uuid AND u.kind IN ('COMPANY','DEPARTMENT','TEAM')))`,
 				unitIDs, appointmentKinds, salesUnitIDs).Scan(&missing); err != nil {
 				return err
 			}
 			if missing {
+				return invalid
+			}
+		}
+		if len(recipientDuties) != 0 {
+			var valid bool
+			if err := tx.QueryRow(ctx, `SELECT NOT EXISTS(SELECT 1 FROM unnest($1::text[]) AS wanted(role)
+			 WHERE NOT EXISTS(SELECT 1 FROM configuration_options o WHERE o.group_key='organizationDuty'
+			   AND o.option_key=wanted.role AND o.enabled))`, recipientDuties).Scan(&valid); err != nil {
+				return err
+			}
+			if !valid {
 				return invalid
 			}
 		}

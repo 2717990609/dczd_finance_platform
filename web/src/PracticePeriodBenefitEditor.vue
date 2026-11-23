@@ -2,55 +2,62 @@
 import { computed } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
+import RuleOrderScope from './RuleOrderScope.vue'
 import { hasPracticePaymentScope } from './rule-component-form'
 
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array,
   registrationCompanies:Array, registrationLoading:Boolean, registrationError:String,
   recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
-  memberChoices:Array,
+  memberChoices:Array, duties:Array,
 })
 const config = computed(() => props.component.periodBenefit)
 const registration = computed(() => config.value.registrationScope)
-const scopeModes = [
-  {value:'all',label:'本班全部适用报名'},
-  {value:'payment',label:'指定付款销售范围'},
-  {value:'registration',label:'签到报名归属'},
-]
-const scopeMode = computed(() => registration.value ? 'registration' :
-  config.value.restrictPayments || hasPracticePaymentScope(config.value) ? 'payment' : 'all')
+const registrationOption = [{value:'registration',label:'签到报名归属'}]
+const scopeMode = computed(() => registration.value ? 'registration' : config.value.ownSales ? 'own' :
+  config.value.restrictPayments || hasPracticePaymentScope(config.value) ? 'team' : 'all')
 function changeScope(mode) {
   const benefit = config.value
-  benefit.registrationScope = mode==='registration' ? {} : undefined
-  benefit.restrictPayments = mode==='payment'
-  if (mode==='all') {
+  benefit.registrationScope = mode==='registration' ? (benefit.registrationScope || {}) : undefined
+  benefit.ownSales = mode==='own'
+  benefit.restrictPayments = mode==='team'
+  if (mode!=='team') {
     benefit.salesCompanies = []
     benefit.salesPeople = []
     benefit.salesUnits = []
   }
+  if (mode==='own' || mode==='team') props.component.sourceRole ||= props.sourceRoles[0]?.value
+}
+function setRecipient(recipient) {
+  config.value.recipient = recipient
+  if (recipient!=='person' && config.value.ownSales) changeScope('all')
 }
 const registrationCompanies = computed(() => (props.registrationCompanies ?? props.companies).filter(option=>/^[1-9]\d*$/.test(option.value)))
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 const field = name => 'practice-benefit-'+props.index+'-'+name
-const calculationMethods = [
-  {value:'rate',label:'按净实收比例'},
-  {value:'fixed',label:'每份报名固定金额'},
-  {value:'class_fixed',label:'整班固定金额'},
-  {value:'tiers',label:'按净实收阶梯'},
-]
+const calculationMethods = computed(() => [
+  {value:'rate',label:'比例'},
+  {value:'class_fixed',label:'固定金额'},
+  {value:'tiers',label:'阶梯'},
+  ...(config.value.method==='fixed' ? [{value:'fixed',label:'按报名计提固定金额'}] : []),
+])
 </script>
 
 <template>
   <RuleArrangementFields class="period-arrangement" :name="config.label" :name-id="field('name')"
     @update:name="config.label=$event; config.labelIsCustom=true">
     <a-form-item label="收款对象" :html-for="field('recipient')" required>
-      <a-select :id="field('recipient')" v-model:value="config.recipient" :options="recipientTypes" placeholder="选择收款对象"/>
+      <a-select :id="field('recipient')" :value="config.recipient" :options="recipientTypes" placeholder="选择收款对象" @change="setRecipient"/>
     </a-form-item>
     <a-form-item v-if="config.recipient==='unit'" label="收款组织" :html-for="field('unit')" required>
       <a-select :id="field('unit')" v-model:value="config.unitId" :options="units" show-search :filter-option="byName"/>
     </a-form-item>
     <a-form-item v-if="config.recipient==='person'" label="收款人员" :html-for="field('person')" required>
       <a-select :id="field('person')" v-model:value="config.personId" :options="people" show-search :filter-option="byName"/>
+    </a-form-item>
+    <a-form-item v-if="config.recipient==='person'" label="收款人职责" :html-for="field('duty')">
+      <a-select :id="field('duty')" v-model:value="config.recipientDuty" :options="duties"
+        show-search :filter-option="byName" allow-clear placeholder="选填"/>
     </a-form-item>
     <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
       :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
@@ -69,26 +76,26 @@ const calculationMethods = [
     </a-form-item>
   </RuleArrangementFields>
   <div class="period-fields period-scope" :class="{'period-scope-all':scopeMode==='all'}">
-    <a-form-item label="提成范围" :html-for="field('sales-source')">
-      <a-select :id="field('sales-source')" :value="scopeMode" :options="scopeModes" @change="changeScope"/>
-    </a-form-item>
-    <template v-if="scopeMode==='payment'">
-      <a-form-item label="适用销售团队或小组" :html-for="field('sales-units')">
+    <RuleOrderScope :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
+      :additional="registrationOption" @update:model-value="changeScope"/>
+    <template v-if="scopeMode==='team'">
+      <a-form-item label="适用销售组织" :html-for="field('sales-units')">
         <a-select :id="field('sales-units')" v-model:value="config.salesUnits" :options="salesUnits"
-          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限团队和小组"/>
+          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司、部门或小组"/>
       </a-form-item>
-      <a-form-item label="销售公司" :html-for="field('companies')">
+      <a-form-item v-if="config.salesCompanies?.length" label="销售公司" :html-for="field('companies')">
         <a-select :id="field('companies')" v-model:value="config.salesCompanies" :options="companies"
           mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售公司"/>
       </a-form-item>
-      <a-form-item label="销售人员" :html-for="field('sales')">
+      <a-form-item v-if="config.salesPeople?.length" label="销售人员" :html-for="field('sales')">
         <a-select :id="field('sales')" v-model:value="config.salesPeople" :options="people"
           mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售人员"/>
       </a-form-item>
-      <a-form-item v-if="config.salesPeople?.length || config.salesUnits?.length" label="销售来源角色" :html-for="field('role')" required>
-        <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
-      </a-form-item>
     </template>
+    <a-form-item v-if="scopeMode==='own' || scopeMode==='team' && (config.salesPeople?.length || config.salesUnits?.length)"
+      label="订单上的销售角色" :html-for="field('role')" required>
+      <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
+    </a-form-item>
     <template v-if="registration">
       <a-form-item label="本人销售账号" :html-for="field('registration-seller')">
         <a-input :id="field('registration-seller')" v-model:value="registration.sellerId" inputmode="numeric"

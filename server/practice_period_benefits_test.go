@@ -190,6 +190,46 @@ func TestPracticeScopeUsesSavedGroupAlternatives(t *testing.T) {
 	}
 }
 
+func TestPracticeOwnSalesAndLeadershipPayTheSamePersonIndependently(t *testing.T) {
+	amount := int64(10000)
+	at := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	members := []practiceEnrollment{
+		{ID: 1, MembershipType: 3, CommissionEligible: true, ConfirmedAt: at, PaidOrderIDs: []string{"11"}},
+		{ID: 2, MembershipType: 3, CommissionEligible: true, ConfirmedAt: at, PaidOrderIDs: []string{"22"}},
+	}
+	orders := map[string][]paymentInput{}
+	identities := map[identityKey][]identityAssignment{}
+	for i, member := range members {
+		order := member.PaidOrderIDs[0]
+		identities[identityKey{"DCZD", order}] = []identityAssignment{{PersonID: int64(i + 4)}}
+		orders[order] = []paymentInput{{ID: member.ID, Fact: sourceFact{Source: "DCZD", OrderID: order, PaymentID: order,
+			ReferrerID: order, AmountMinor: &amount, OccurredAt: at.Add(-time.Hour)}}}
+	}
+	const config = `[
+		{"type":"manager","mode":"period_rate","sourceRole":"DIRECT_REFERRER","value":100000,
+		 "periodBenefit":{"label":"本人销售","personId":4,"ownSales":true}},
+		{"type":"manager","mode":"period_rate","value":20000,
+		 "periodBenefit":{"label":"负责人","personId":4}}
+	]`
+	rule := paymentRule{ID: 1}
+	if err := json.Unmarshal([]byte(config), &rule.Components); err != nil || validateComponents(rule.Components) != nil {
+		t.Fatalf("valid arrangements: %v, %+v", err, rule)
+	}
+	draft, err := calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil, practiceDraftRuntime{})
+	if err != nil || len(draft.Issues) != 0 || len(draft.Lines) != 3 || draft.Total != 1400 {
+		t.Fatalf("one personal and two leadership lines expected: %+v, %v", draft, err)
+	}
+	for _, line := range draft.Lines {
+		if line.PersonID != 4 || line.FactID == 2 && line.Amount != 200 {
+			t.Fatalf("unexpected order or payee: %+v", line)
+		}
+	}
+	rule.Components[0].SourceRole = ""
+	if validateComponents(rule.Components) == nil {
+		t.Fatal("own sales requires a source role")
+	}
+}
+
 func TestPracticePeriodBenefitChecksTheConfiguredPaymentRole(t *testing.T) {
 	amount := int64(5000)
 	const role = "LOCKED_SELLER"
@@ -745,12 +785,12 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 	scoped.Components = append(scoped.Components, component{Type: "delivery", Mode: "period_rate",
 		PeriodBenefit: &practicePeriodBenefit{Label: "整班固定交付", PersonID: manager, FixedMinor: &classFixed, FixedPerClass: true}})
 	scoped.EditBaseID = &ruleID
-	for _, invalidUnit := range []string{company, "40000000-0000-4000-8000-000000000008"} {
+	for _, invalidUnit := range []string{"40000000-0000-4000-8000-000000000008"} {
 		benefit := scoped.Components[1].PeriodBenefit
 		valid := benefit.SalesUnits
 		benefit.SalesUnits = []string{invalidUnit}
 		if _, err := s.publishRule(ctx, scoped); !errors.Is(err, invalid) {
-			t.Fatalf("source scope accepted a non-department/group %q: %v", invalidUnit, err)
+			t.Fatalf("source scope accepted an unknown organization %q: %v", invalidUnit, err)
 		}
 		benefit.SalesUnits = valid
 	}

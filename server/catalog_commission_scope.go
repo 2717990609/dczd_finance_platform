@@ -14,8 +14,9 @@ const catalogCommissionScopeKey = "sales_scope_unit_ids"
 var errCatalogCommissionScope = errors.New("请选择有效的销售公司、部门或小组")
 
 type catalogCommissionScopeChange struct {
-	ItemKey string   `json:"itemKey"`
-	UnitIDs []string `json:"unitIds"`
+	ItemKey  string   `json:"itemKey"`
+	UnitIDs  []string `json:"unitIds"`
+	OwnSales bool     `json:"ownSales,omitempty"`
 }
 
 func catalogCommissionUnitsValid(units []string, options []catalogStructureOption) bool {
@@ -42,6 +43,14 @@ func editCatalogCommissionScopes(ctx context.Context, tx pgx.Tx, raw json.RawMes
 		fields := byItem[change.ItemKey]
 		if fields == nil || vipLeaderRole(change.ItemKey) != "" || !validVIPCommissionUnits(change.UnitIDs) {
 			return nil, errCatalogCommissionScope
+		}
+		delete(fields, "own_sales")
+		if change.OwnSales {
+			var designated string
+			if len(change.UnitIDs) != 0 || json.Unmarshal(fields["designated_party_id"], &designated) != nil || designated == "" {
+				return nil, errCatalogCommissionScope
+			}
+			fields["own_sales"] = json.RawMessage("true")
 		}
 		delete(byItem, change.ItemKey)
 		var prior []string

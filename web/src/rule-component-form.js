@@ -83,7 +83,7 @@ export function catalogPayeeComplete(payee) {
   switch (payee.target) {
     case 'seller':
     case 'referrer': return true
-    case 'person': return !!(payee.personId && payee.role)
+    case 'person': return !!payee.personId
     case 'company': return !!payee.organization
     case 'pool': return !!(payee.organization && payee.role && payee.memberRole)
     default: return false
@@ -124,11 +124,13 @@ export function practicePeriodScopeText(benefit, names, limit = 2) {
     }
     list('下属公司',registration.companies,names.registrationCompany)
     if (entries.length===1) entries.push('待选择报名归属')
+  } else if (benefit.ownSales) {
+    entries.push('本人销售')
   } else {
-    list('团队或小组',benefit.salesUnits,names.unit)
+    list('指定团队',benefit.salesUnits,names.unit)
     list('销售公司',benefit.salesCompanies,names.company)
     list('销售人员',benefit.salesPeople,names.person)
-    if (!entries.length) entries.push(benefit.restrictPayments ? '待选择销售范围' : '本班全部适用报名')
+    if (!entries.length) entries.push(benefit.restrictPayments ? '待选择销售范围' : '整个适用账期')
   }
   if (benefit.appointmentUnitId && (benefit.recipient == null || benefit.recipient==='person')) {
     entries.push(names.unit(benefit.appointmentUnitId)+'任职期间')

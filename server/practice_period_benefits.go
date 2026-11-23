@@ -137,6 +137,8 @@ type practicePeriodBenefit struct {
 	Label             string                     `json:"label"`
 	LabelIsCustom     bool                       `json:"labelIsCustom,omitempty"`
 	PersonID          int64                      `json:"personId,omitempty"`
+	RecipientDuty     string                     `json:"recipientDuty,omitempty"`
+	OwnSales          bool                       `json:"ownSales,omitempty"`
 	UnitID            string                     `json:"unitId,omitempty"`
 	SalesCompanies    []string                   `json:"salesCompanies,omitempty"`
 	SalesPeople       []int64                    `json:"salesPeople,omitempty"`
@@ -158,7 +160,11 @@ type practicePeriodRate struct {
 }
 
 func (b practicePeriodBenefit) hasSalesScope() bool {
-	return len(b.SalesCompanies)+len(b.SalesPeople)+len(b.SalesUnits) != 0
+	return b.usesSalesPerson() || len(b.SalesCompanies) != 0
+}
+
+func (b practicePeriodBenefit) usesSalesPerson() bool {
+	return b.OwnSales || len(b.SalesPeople)+len(b.SalesUnits) != 0
 }
 
 func validPracticePeriodBenefit(c component) bool {
@@ -181,7 +187,9 @@ func validPracticePeriodBenefit(c component) bool {
 	}
 	if !textOK(b.Label, 80) || b.PersonID < 0 || recipients != 1 ||
 		(b.AppointmentUnitID == "") != (b.AppointmentKind == "") || b.AppointmentUnitID != "" && b.PersonID == 0 ||
-		len(b.SalesPeople)+len(b.SalesUnits) != 0 && !validSourceRole(c.SourceRole) {
+		b.usesSalesPerson() && !validSourceRole(c.SourceRole) ||
+		b.OwnSales && (b.PersonID == 0 || len(b.SalesCompanies)+len(b.SalesPeople)+len(b.SalesUnits) != 0) ||
+		b.RecipientDuty != "" && (b.PersonID == 0 || !validSourceRole(b.RecipientDuty)) {
 		return false
 	}
 	for _, unit := range []string{b.UnitID, b.AppointmentUnitID} {
@@ -301,12 +309,15 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 			return false, ""
 		}
 	}
-	if len(b.SalesPeople)+len(b.SalesUnits) == 0 {
+	if !b.usesSalesPerson() {
 		return true, ""
 	}
 	seller, issue := paymentBeneficiary(f, role, identities)
 	if issue != "" {
 		return false, issue
+	}
+	if b.OwnSales {
+		return seller.PersonID == b.PersonID, ""
 	}
 	if len(b.SalesPeople) != 0 && !slices.Contains(b.SalesPeople, seller.PersonID) {
 		return false, ""
@@ -317,6 +328,9 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 	organization, ok := organizations[payment.ID][role]
 	if !ok || organization.PersonID != seller.PersonID || organization.SourceCompany != f.SalesCompanyID {
 		return false, "PRACTICE_SALES_ORGANIZATION_MISSING"
+	}
+	if slices.Contains(b.SalesUnits, organization.Company) {
+		return true, ""
 	}
 	matches, conflict := matchOrganizationScope(b.SalesUnits, organization.Department, organization.Group, organization.ScopeAlternatives)
 	if conflict {
@@ -329,7 +343,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int, runtime practiceDraftRuntime) ([]practiceBenefitShare, int64, draftIssue, error) {
 	b := part.PeriodBenefit
 	checkSalesAgreement := b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
-	checkConfiguredRole := len(b.SalesPeople)+len(b.SalesUnits) != 0 && !runtime.legacyBenefitAttribution
+	checkConfiguredRole := b.usesSalesPerson() && !runtime.legacyBenefitAttribution
 	var eligible []practiceBenefitShare
 	var tierBase int64
 	for _, p := range purchases {

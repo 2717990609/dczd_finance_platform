@@ -30,6 +30,7 @@ type catalogStructureOptions struct {
 	Roles         []catalogStructureOption `json:"roles"`
 	Organizations []catalogStructureOption `json:"organizations"`
 	SalesUnits    []catalogStructureOption `json:"salesUnits"`
+	Duties        []catalogStructureOption `json:"duties"`
 }
 
 type catalogConditionInput struct {
@@ -49,11 +50,12 @@ type catalogNewRateRow struct {
 }
 
 type catalogBenefitTarget struct {
-	Target       string `json:"target"`
-	Role         string `json:"role,omitempty"`
-	MemberRole   string `json:"memberRole,omitempty"`
-	PersonID     int64  `json:"personId,omitempty"`
-	Organization string `json:"organization,omitempty"`
+	Target        string `json:"target"`
+	Role          string `json:"role,omitempty"`
+	MemberRole    string `json:"memberRole,omitempty"`
+	PersonID      int64  `json:"personId,omitempty"`
+	Organization  string `json:"organization,omitempty"`
+	RecipientDuty string `json:"recipientDuty,omitempty"`
 }
 
 type catalogBenefitTargetChange struct {
@@ -64,6 +66,7 @@ type catalogBenefitTargetChange struct {
 type catalogNewBenefitItem struct {
 	Label           string   `json:"label"`
 	CommissionUnits []string `json:"salesScopeUnitIds,omitempty"`
+	OwnSales        bool     `json:"ownSales,omitempty"`
 	catalogBenefitTarget
 	catalogBenefitCalculation
 }
@@ -109,7 +112,7 @@ const catalogStructureOptionsSQL = `WITH company_keys AS (` + catalogSalesCompan
   'organization',group_key='catalogAppointmentRole' AND (NOT applies_to ? 'scopes' OR applies_to->'scopes' ? 'ORGANIZATION_UNIT'))
    ORDER BY display_order,option_key) AS items
  FROM configuration_options
- WHERE enabled AND group_key IN ('catalogSalesRelationship','catalogAppointmentRole')
+ WHERE enabled AND group_key IN ('catalogSalesRelationship','catalogAppointmentRole','organizationDuty')
  GROUP BY group_key
 )
 SELECT jsonb_build_object(
@@ -120,7 +123,8 @@ SELECT jsonb_build_object(
  'categories',coalesce((SELECT jsonb_agg(jsonb_build_object('value',key,'label',label) ORDER BY label,key)
   FROM catalog_sales_category_options WHERE active),'[]'),
  'relationships',coalesce((SELECT items FROM configured WHERE group_key='catalogSalesRelationship'),'[]'),
- 'roles',coalesce((SELECT items FROM configured WHERE group_key='catalogAppointmentRole'),'[]'))`
+ 'roles',coalesce((SELECT items FROM configured WHERE group_key='catalogAppointmentRole'),'[]'),
+ 'duties',coalesce((SELECT items FROM configured WHERE group_key='organizationDuty'),'[]'))`
 
 func readCatalogStructureOptions(ctx context.Context, db interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
@@ -426,11 +430,15 @@ func changeCatalogBenefitTargets(actions []map[string]json.RawMessage, salesKey 
 		if err := configureCatalogBenefitTarget(&action, edit.catalogBenefitTarget, options, people); err != nil {
 			return err
 		}
+		if action.Designated == "" {
+			delete(fields, "own_sales")
+		}
 		for key, value := range map[string]string{
 			"role": action.Role, "beneficiary_mode": action.Mode, "designated_party_id": action.Designated,
 			"company_beneficiary_party_id": action.Company, "pool_party_id": action.PoolParty,
 			"pool_organization_unit_id": action.PoolUnit, "pool_code": action.PoolCode, "pool_name": action.PoolName,
 			"allocation_owner_role": action.OwnerRole,
+			"recipient_duty":        action.RecipientDuty,
 		} {
 			if value == "" {
 				delete(fields, key)
@@ -451,12 +459,15 @@ func newCatalogBenefitAction(key string,
 	if !catalogCommissionUnitsValid(item.CommissionUnits, options.SalesUnits) {
 		return nil, errCatalogCommissionScope
 	}
-	action := vipBenefitAction{Item: key, Label: label, CommissionUnits: item.CommissionUnits}
+	action := vipBenefitAction{Item: key, Label: label, CommissionUnits: item.CommissionUnits, OwnSales: item.OwnSales}
 	if err := configureCatalogBenefitCalculation(&action, item.catalogBenefitCalculation, options); err != nil {
 		return nil, err
 	}
 	if err := configureCatalogBenefitTarget(&action, item.catalogBenefitTarget, options, people); err != nil {
 		return nil, err
+	}
+	if !action.validTarget() {
+		return nil, errCatalogCommissionScope
 	}
 	body, err := json.Marshal(action)
 	if err != nil {
@@ -498,8 +509,13 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 	if target.Target != "pool" && target.MemberRole != "" {
 		return invalid
 	}
+	if target.RecipientDuty != "" && (target.Target != "person" ||
+		catalogStructureOptionFor(options.Duties, target.RecipientDuty).Value == "") {
+		return invalid
+	}
 	before := *action
 	action.Mode, action.Role = "PARTY", ""
+	action.RecipientDuty = target.RecipientDuty
 	action.Designated, action.Company = "", ""
 	action.PoolParty, action.PoolUnit, action.PoolCode, action.PoolName, action.OwnerRole = "", "", "", "", ""
 	org := catalogStructureOptionFor(options.Organizations, target.Organization)
@@ -511,7 +527,7 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 		}
 		action.Mode, action.Role = vipOrderReferrerMode, "REFERRAL"
 	case "person":
-		if target.Organization != "" || !role.Personal || people[target.PersonID] == "" {
+		if target.Organization != "" || target.Role != "" && !role.Personal || people[target.PersonID] == "" {
 			return invalid
 		}
 		action.Role, action.Designated = role.Value, people[target.PersonID]

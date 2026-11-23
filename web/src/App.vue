@@ -238,7 +238,7 @@ const registrationCompaniesLoading = ref(false)
 const registrationCompaniesError = ref('')
 const classPeopleOptions = computed(() => classRuleDirectory.value?.people.map(person=>({value:person.id,label:person.name})) || peopleOptions.value)
 const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({value:unit.id,label:unit.scopeName || unit.name})) || [])
-const salesUnitOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>['DEPARTMENT','TEAM'].includes(unit.kind))
+const salesUnitOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>['COMPANY','DEPARTMENT','TEAM'].includes(unit.kind))
   .map(unit=>({value:unit.id,label:(unit.scopeName || unit.name)+' · '+optionLabel('organizationKind',unit.kind)})) || [])
 const practiceScopeNames = computed(() => {
   const names = new Map((classRuleDirectory.value?.units || []).map(unit=>[unit.id,unit.scopeName || unit.name]))
@@ -463,10 +463,14 @@ function addPracticeRegistrationImport(preview) {
 function ruleRecipientSummary(row) {
   if (row.periodBenefit) {
     const benefit = row.periodBenefit
-    if (benefit.recipient==='pool') return practicePoolOptions.value.find(option=>option.value===benefit.pool?.poolId)?.label || '团队池'
-    if (benefit.recipient==='unit') return unitOptions.value.find(option=>option.value===benefit.unitId)?.label || '指定组织'
-    if (benefit.recipient==='person') return classPeopleOptions.value.find(option=>option.value===benefit.personId)?.label || '指定个人'
-    return '选择收款对象'
+    const payee = benefit.recipient==='pool' ? practicePoolOptions.value.find(option=>option.value===benefit.pool?.poolId)?.label || '团队池'
+      : benefit.recipient==='unit' ? unitOptions.value.find(option=>option.value===benefit.unitId)?.label || '指定组织'
+      : benefit.recipient==='person' ? classPeopleOptions.value.find(option=>option.value===benefit.personId)?.label || '指定个人'
+      : '选择收款对象'
+    const amount = benefit.method==='tiers' ? '阶梯' : benefit.method==='rate'
+      ? (row.amount == null ? '' : row.amount+'%')
+      : (benefit.fixedAmount == null ? '' : formatMoney(minor(benefit.fixedAmount)))
+    return [payee,benefit.recipient==='person' ? optionLabel('organizationDuty',benefit.recipientDuty) : '',amount].filter(Boolean).join(' · ')
   }
   if (row.mode==='company_sales') {
     const payee = row.companySales?.payee
@@ -1250,6 +1254,8 @@ function ruleComponentBody(row) {
       ...(b.labelIsCustom && practiceLegacyArrangementLabel(label,optionLabel)!==label ? {labelIsCustom:true} : {}),
       ...(b.recipient==='pool' ? {pool:practicePoolBody(b.pool)} : b.recipient==='unit'
         ? {unitId:must(b.unitId,'请选择收款组织')} : {personId:must(b.personId,'请选择收款人员')}),
+      ...(b.recipient==='person' && b.recipientDuty ? {recipientDuty:b.recipientDuty} : {}),
+      ...(b.ownSales && b.recipient==='person' ? {ownSales:true} : {}),
       ...(!registration && b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
       ...(!registration && b.salesPeople?.length ? {salesPeople:b.salesPeople} : {}),
       ...(!registration && b.salesUnits?.length ? {salesUnits:b.salesUnits} : {}),
@@ -1279,7 +1285,7 @@ function ruleComponentBody(row) {
         ...(registration.exclusive ? {exclusive:true} : {}),
       }
       delete component.sourceRole
-    } else if (b.salesPeople?.length || b.salesUnits?.length) must(sourceRole,'请选择销售人员的来源角色')
+    } else if (b.ownSales || b.salesPeople?.length || b.salesUnits?.length) must(sourceRole,'请选择订单上的销售角色')
     return component
   }
   if (row.mode !== 'tiered') {
@@ -1917,7 +1923,8 @@ async function save() {
             :registration-companies="registrationCompanies" :registration-loading="registrationCompaniesLoading" :registration-error="registrationCompaniesError"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
             :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')" :sales-units="salesUnitOptions"
-            :pools="practicePoolOptions" :create-pool="createPracticePool" :member-choices="classMemberChoices(c)"/>
+            :pools="practicePoolOptions" :create-pool="createPracticePool" :member-choices="classMemberChoices(c)"
+            :duties="options('organizationDuty')"/>
           <div v-if="c.mode==='period_rate' && draft.components.length>1" class="form-actions">
             <a-button type="link" size="small" danger class="rule-remove"
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>

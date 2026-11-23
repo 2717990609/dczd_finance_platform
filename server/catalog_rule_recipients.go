@@ -278,7 +278,8 @@ func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, produc
 	}
 	for _, action := range after.actions {
 		original := beforePayees[action.Item]
-		if action.Leader == nil && action.Designated != "" && (action.Designated != original.Designated || action.Role != original.Role) {
+		if action.Leader == nil && action.Designated != "" && action.Role != "" &&
+			(action.Designated != original.Designated || action.Role != original.Role) {
 			requirements = append(requirements, requiredAppointment{Label: action.Label, Key: action.Designated, Role: action.Role})
 		}
 		if action.Mode == "TEAM_POOL" && (action.PoolUnit != original.PoolUnit || action.OwnerRole != original.OwnerRole) {

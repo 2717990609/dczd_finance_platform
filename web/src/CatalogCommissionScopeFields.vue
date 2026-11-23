@@ -1,12 +1,11 @@
 <script setup>
 import { computed } from 'vue'
+import RuleOrderScope from './RuleOrderScope.vue'
 
-const props = defineProps({prefix:String,options:Array,unitNames:Object,disabled:Boolean,byRateTable:Boolean})
-const units = defineModel({type:Array,default:null})
-const modes = computed(() => [
-  {value:'all',label:props.byRateTable ? '按下方比例条件匹配' : '本规则全部订单'},
-  {value:'units',label:'指定销售组织'},
-])
+const props = defineProps({prefix:String,options:Array,unitNames:Object,disabled:Boolean,canOwn:Boolean})
+const scope = defineModel({type:[Array,String],default:null})
+const units = computed(() => Array.isArray(scope.value) ? scope.value : null)
+const mode = computed(() => scope.value==='own' ? 'own' : units.value ? 'team' : 'all')
 const availableUnits = computed(() => {
   const options = props.options || []
   const active = new Set(options.map(option=>option.value))
@@ -17,12 +16,10 @@ const availableUnits = computed(() => {
 
 <template>
   <div class="commission-scope-fields">
-    <a-form-item label="提成范围" :html-for="prefix+'-scope-type'">
-      <a-select :id="prefix+'-scope-type'" :value="units ? 'units' : 'all'" :options="modes" :disabled="disabled"
-        @change="units=$event==='all' ? null : []"/>
-    </a-form-item>
+    <RuleOrderScope :id="prefix+'-scope-type'" :model-value="mode" :disabled="disabled" :can-own="canOwn"
+      @update:model-value="scope=$event==='team' ? [] : $event==='own' ? 'own' : null"/>
     <a-form-item v-if="units" label="适用销售组织" :html-for="prefix+'-scope-units'" required>
-      <a-select :id="prefix+'-scope-units'" v-model:value="units" :options="availableUnits" :disabled="disabled"
+      <a-select :id="prefix+'-scope-units'" :value="units" @update:value="scope=$event" :options="availableUnits" :disabled="disabled"
         mode="multiple" allow-clear :max-tag-count="3" show-search option-filter-prop="label" placeholder="选择公司、部门或小组"/>
     </a-form-item>
   </div>

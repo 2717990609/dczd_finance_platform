@@ -26,7 +26,7 @@ function update(fields) {
   payee.value = {...payee.value,...fields}
 }
 function changeTarget(target) {
-  update({target,role:undefined,memberRole:undefined,personId:undefined,personName:undefined,organization:undefined})
+  update({target,role:undefined,memberRole:undefined,personId:undefined,personName:undefined,organization:undefined,recipientDuty:undefined})
 }
 </script>
 
@@ -45,9 +45,15 @@ function changeTarget(target) {
       show-search option-filter-prop="label" :disabled="disabled" placeholder="从组织目录选择"
       @update:value="update({organization:$event})"/>
   </a-form-item>
-  <a-form-item v-if="payee.target==='person' || payee.target==='pool'" :label="payee.target==='pool'?'谁负责分配':'收款人须担任的岗位'"
-    :html-for="field('role')" required>
+  <a-form-item v-if="payee.target==='person'" label="收款人职责" :html-for="field('duty')">
+    <a-select :id="field('duty')" :value="payee.recipientDuty" :options="options.duties"
+      show-search option-filter-prop="label" :disabled="disabled" allow-clear placeholder="选填"
+      @update:value="update({recipientDuty:$event})"/>
+  </a-form-item>
+  <a-form-item v-if="payee.target==='person' || payee.target==='pool'" :label="payee.target==='pool'?'谁负责分配':'任职条件'"
+    :html-for="field('role')" :required="payee.target==='pool'">
     <a-select :id="field('role')" :value="payee.role" :options="roles" show-search option-filter-prop="label" :disabled="disabled"
+      :allow-clear="payee.target==='person'" :placeholder="payee.target==='person' ? '选填' : undefined"
       @update:value="update({role:$event})"/>
   </a-form-item>
   <a-form-item v-if="payee.target==='pool'" label="可参与分配的成员岗位" :html-for="field('member-role')" required>

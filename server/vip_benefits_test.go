@@ -67,6 +67,35 @@ const testVIPBenefits = `{
  ]
 }`
 
+func TestVIPDesignatedOwnSalesUsesTheOrderSeller(t *testing.T) {
+	rate := int64(1000)
+	var own vipBenefitAction
+	if err := json.Unmarshal([]byte(`{"item_key":"my-sales","label":"本人销售","role":"SALES","type":"RATE","beneficiary_mode":"PARTY","designated_party_id":"lead","own_sales":true}`), &own); err != nil {
+		t.Fatal(err)
+	}
+	own.Rate = &rate
+	leadership := own
+	if err := json.Unmarshal([]byte(`{"item_key":"lead","label":"团队负责人","own_sales":false}`), &leadership); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 10, 25, 0, 0, 0, 0, time.UTC)
+	data := vipRuntimeData{BenefitReady: true, vipSalesData: vipSalesData{
+		People: map[string]string{"lead": "销售兼负责人"},
+		Roles:  []vipRole{{Person: "lead", Role: "SALES", Scope: "PRODUCT", Key: "vip"}},
+	}}
+	policy := vipBenefitPolicy{actions: []vipBenefitAction{own, leadership}}
+	request := vipSalesRequest{Seller: "peer", Paid: 10000, At: at, Product: "vip"}
+	rows := quoteVIPBenefits(request, "", policy, data)
+	if rows[0].Status != vipCommissionOutsideScope || rows[1].Amount != 1000 || rows[1].Party != "lead" {
+		t.Fatalf("peer's order should only count toward leadership: %+v", rows)
+	}
+	request.Seller = "lead"
+	rows = quoteVIPBenefits(request, "", policy, data)
+	if rows[0].Amount != 1000 || rows[1].Amount != 1000 || rows[0].Item == rows[1].Item {
+		t.Fatalf("personal order should produce two separate arrangements: %+v", rows)
+	}
+}
+
 func TestVIPBenefitsUseHistoricalRecipientsAndKeepPoolSeparate(t *testing.T) {
 	policy, ok := readVIPBenefits(json.RawMessage(testVIPBenefits))
 	if !ok {

@@ -43,13 +43,14 @@ async function editSales() {
   error.value = ''
   const {label,rows,format,salesScopeUnitIds} = draft.value.sales
   form.value = {kind:'item',target:'seller',editingSales:true,label,...calculationForm({rows},format),
-    format,salesScopeUnitIds,rate:format==='rate' ? String(rows[0].rateBps/100) : undefined,salesPayee:rows[0].payee}
+    format,orderScope:salesScopeUnitIds,rate:format==='rate' ? String(rows[0].rateBps/100) : undefined,salesPayee:rows[0].payee}
   await nextTick()
   itemName.value?.focus()
 }
 function changePayee(payee) {
   const previous = form.value.target
   form.value = payee
+  if (payee.target!=='person' && form.value.orderScope==='own') form.value.orderScope = null
   if (payee.target==='seller' && previous!=='seller') {
     form.value.format = 'table'
   } else if (previous==='seller' && payee.target!=='seller') {
@@ -60,7 +61,7 @@ async function editRecipient(index) {
   const {fixedMinor,rateBps,rows,...payee} = draft.value.items[index]
   error.value = ''
   form.value = {
-    ...payee,kind:'item',itemIndex:index,
+    ...payee,orderScope:payee.ownSales ? 'own' : payee.salesScopeUnitIds,kind:'item',itemIndex:index,
     ...calculationForm({fixedMinor,rateBps,rows}),
   }
   await nextTick()
@@ -128,7 +129,8 @@ function stage() {
       if (!label || !catalogPayeeComplete(staged)) {
         throw new Error('请填写收款安排名称，并补齐收款对象。')
       }
-      const salesScopeUnitIds = staged.salesScopeUnitIds
+      const ownSales = staged.orderScope==='own'
+      const salesScopeUnitIds = ownSales ? undefined : staged.orderScope
       if (salesScopeUnitIds?.length===0) throw new Error('请至少选择一个适用销售组织。')
       if (isSales.value) {
         const calculation = calculationBody(staged)
@@ -137,7 +139,7 @@ function stage() {
         cancel()
         return
       }
-      const item = {label,target:staged.target,role:staged.role,personId:staged.personId,
+      const item = {label,target:staged.target,role:staged.role,personId:staged.personId,recipientDuty:staged.recipientDuty,ownSales,
         personName:staged.personName,organization:staged.organization,memberRole:staged.memberRole,salesScopeUnitIds,...calculationBody(staged)}
       if (staged.itemIndex==null) draft.value.items.push(item)
       else draft.value.items.splice(staged.itemIndex,1,item)
@@ -177,8 +179,8 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
               :min="0" :precision="2" string-mode/>
           </a-form-item>
         </RuleArrangementFields>
-        <CatalogCommissionScopeFields v-if="form.kind==='item'" prefix="catalog-add" v-model="form.salesScopeUnitIds"
-          :options="options.salesUnits" :by-rate-table="form.format==='table'"/>
+        <CatalogCommissionScopeFields v-if="form.kind==='item'" prefix="catalog-add" v-model="form.orderScope"
+          :options="options.salesUnits" :can-own="form.target==='person'"/>
         <template v-if="form.format==='table'">
           <small v-if="options.categories.length" class="finance-rate-priority">
             匹配顺序 {{ catalogRatePriorityLabel }} → 通用比例
