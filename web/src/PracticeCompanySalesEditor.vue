@@ -2,7 +2,7 @@
 import { computed, nextTick, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { practiceCompanyRatePriorityLabel, practiceCompanyScopes, practiceRecipientIsPerson, practiceSalesScopeText } from './rule-component-form'
+import { practiceCompanyRatePriority, practiceCompanyScopes, practiceRecipientIsPerson, practiceSalesScopeText } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
   sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array,duties:Array})
@@ -22,9 +22,7 @@ const standardRowsByScope = computed(() => ({
 }))
 const scopes = computed(() => practiceCompanyScopes(sales.value))
 const scopeText = computed(() => practiceSalesScopeText(props.component,undefined,0))
-const showPriority = computed(() => [
-  scopes.value.categories.length, scopes.value.companies.length, scopes.value.hasDefault,
-].filter(Boolean).length>1)
+const priority = computed(() => practiceCompanyRatePriority(scopes.value))
 const calculationText = computed(() => {
   const modes = new Set([...categories.value,...overrides.value.map(({override})=>override)].map(row=>row.mode))
   if (scopes.value.hasDefault) modes.add('rate')
@@ -113,7 +111,7 @@ watch(amounts, choices => {
   <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <div class="practice-company-criteria">
-    <small v-if="showPriority" class="finance-rate-priority">匹配顺序 {{ practiceCompanyRatePriorityLabel }}</small>
+    <small v-if="priority" class="finance-rate-priority">匹配顺序 {{ priority }}</small>
     <section v-for="group in standardGroups" :key="group.scope" :aria-label="group.label"
       class="practice-company-criterion">
       <header>

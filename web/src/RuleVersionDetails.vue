@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practiceCompanyStandardSummary, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
+import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyRatePriority, practiceCompanyScopes, practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
   practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, practiceStandardRateScope, practiceStandardRateSummary,
   ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
@@ -83,7 +83,8 @@ const companyStandards = computed(() => {
   ].map(group=>({...group,hasRecommendation:group.rows?.some(({row,inheritedRate})=>
     row.recommendationRate!=null || inheritedRate!=null)}))
 })
-const showCompanyPriority = computed(() => companyStandards.value.filter(group=>group.rows?.length || group.rate!=null).length>1)
+const companyPriority = computed(() =>
+  practiceCompanyRatePriority(practiceCompanyScopes(props.rule.components[activePart.value]?.companySales)))
 const countStart = rule => rule.openingId ? props.openingLabel(rule.openingId)
   : rule.countFromOrdinal ? '第 '+rule.countFromOrdinal+' 期' : rule.countFromAt && props.formatTime(rule.countFromAt)
 const countArrangements = computed(() => props.rule.components.filter(part=>part.tiers && countStart(part.tiers)))
@@ -136,7 +137,6 @@ function formula(part) {
   return standard(part)+fixedUnit.value
 }
 function standardSummary(part) {
-  if (part.companySales) return practiceCompanyStandardSummary(part.companySales,value=>rate(value,10000),props.formatMoney)
   if (part.tiers) {
     const metric = cumulativeMetricLabel(part.tiers)
     return metric ? metric+'阶梯' : '按阶梯'
@@ -148,6 +148,7 @@ function standardSummary(part) {
   return part.mode==='rate' ? standard(part) : formula(part)
 }
 const salesScope = (part, limit) => props.classProduct ? practiceSalesScopeText(part,practiceScopeNames.value,limit) : undefined
+const companyMatchIndicators = sales => practiceCompanyStandardIndicators(sales,value=>rate(value,10000),props.formatMoney)
 onMounted(async () => {
   if (props.embedded || props.recipients || !props.classProduct ||
     !props.rule.components.some(part=>part.periodBenefit || part.saleScope || part.retrainSplits?.length ||
@@ -197,8 +198,11 @@ onMounted(async () => {
           <span v-if="part.periodBenefit" class="rule-block-recipient" :title="practicePeriodScopeText(part.periodBenefit,practiceScopeNames,Infinity)">
             提成范围 · {{ practicePeriodScopeText(part.periodBenefit,practiceScopeNames) }}
           </span>
+          <span v-else-if="part.companySales" class="practice-company-matches" :title="salesScope(part,Infinity)">
+            <span v-for="criterion in companyMatchIndicators(part.companySales)" :key="criterion" class="practice-company-match">{{ criterion }}</span>
+          </span>
           <span v-else-if="salesScope(part)" class="rule-block-recipient" :title="salesScope(part,Infinity)">
-            提成范围 · {{ salesScope(part,part.companySales ? 0 : undefined) }}
+            提成范围 · {{ salesScope(part) }}
           </span>
           <span v-if="part.periodBenefit?.tiers?.length && part.periodBenefit.tierOnWholeClass" class="rule-block-badge">全班净实收选档</span>
           <small>{{ [recipient(part),standardSummary(part)].filter(Boolean).join(' · ') }}</small>
@@ -229,7 +233,7 @@ onMounted(async () => {
           </tbody>
         </table>
         <div v-if="part.companySales" class="practice-company-criteria">
-          <small v-if="showCompanyPriority" class="finance-rate-priority">匹配顺序 {{ practiceCompanyRatePriorityLabel }}</small>
+          <small v-if="companyPriority" class="finance-rate-priority">匹配顺序 {{ companyPriority }}</small>
           <section v-for="group in companyStandards" :key="group.scope" :aria-label="group.label" class="practice-company-criterion">
             <header>
               <strong>{{ group.label }}</strong>

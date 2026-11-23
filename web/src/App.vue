@@ -25,7 +25,7 @@ import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { catalogAppointmentLevels, checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
-  practiceCompanyStandardSummary, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
+  practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
   practiceRecipientIsPerson, practiceSalesScopeText, practiceStandardRateSummary, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
@@ -487,8 +487,7 @@ function ruleRecipientSummary(row) {
     if (payee?.kind==='person') who = classPeopleOptions.value.find(option=>option.value===payee.personId)?.label || '指定个人'
     if (payee?.kind==='company') who = companyRecipientOptions.value.find(option=>option.value===payee.companyId)?.label || '指定公司'
     if (payee?.kind==='pool') who = practicePoolOptions.value.find(option=>option.value===payee.pool?.poolId)?.label || '团队池'
-    const standard = practiceCompanyStandardSummary(row.companySales,value=>value+'%',value=>formatMoney(minor(value)))
-    return [who,practiceRecipientIsPerson(payee?.kind) && optionLabel('organizationDuty',row.recipientDuty),standard].filter(Boolean).join(' · ')
+    return [who,practiceRecipientIsPerson(payee?.kind) && optionLabel('organizationDuty',row.recipientDuty)].filter(Boolean).join(' · ')
   }
   const person = row.salesRecipientKind==='person' ? (row.salesPersonId ? practiceScopeNames.value.person(row.salesPersonId) : '待选择收款人')
     : row.sourceRole ? optionLabel('orderAttributionRole',row.sourceRole) : '选择订单上的收款人'
@@ -503,6 +502,10 @@ function ruleRecipientSummary(row) {
 }
 function ruleSalesScope(row, limit) {
   return classRule.value ? practiceSalesScopeText(row,practiceScopeNames.value,limit) : undefined
+}
+function companyMatchIndicators(sales) {
+  const configured = practiceCompanyStandardIndicators(sales,value=>value+'%',value=>formatMoney(minor(value)))
+  return configured.length ? configured : ['待配置计提标准']
 }
 const syncStreams = computed(() => data.value.sources
   .filter(entry => entry.configured && (!sourceFilter.value || sourceFilter.value===entry.source))
@@ -1909,8 +1912,11 @@ async function save() {
             <span v-if="c.periodBenefit" class="rule-block-recipient" :title="practicePeriodScopeText(c.periodBenefit,practiceScopeNames,Infinity)">
               提成范围 · {{ practicePeriodScopeText(c.periodBenefit,practiceScopeNames) }}
             </span>
+            <span v-else-if="c.companySales" class="practice-company-matches" :title="ruleSalesScope(c,Infinity)">
+              <span v-for="criterion in companyMatchIndicators(c.companySales)" :key="criterion" class="practice-company-match">{{ criterion }}</span>
+            </span>
             <span v-else-if="ruleSalesScope(c)" class="rule-block-recipient" :title="ruleSalesScope(c,Infinity)">
-              提成范围 · {{ ruleSalesScope(c,c.companySales ? 0 : undefined) }}
+              提成范围 · {{ ruleSalesScope(c) }}
             </span>
             <span v-if="c.periodBenefit?.method==='tiers' && c.periodBenefit.tierOnWholeClass" class="rule-block-badge">全班净实收选档</span>
             <small>{{ ruleSalesScope(c) ? '收款 · ' : '' }}{{ ruleRecipientSummary(c) }}</small>

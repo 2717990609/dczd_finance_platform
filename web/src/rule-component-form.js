@@ -31,7 +31,14 @@ export function moneyAsMinor(value) {
 }
 
 export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
-export const practiceCompanyRatePriorityLabel = '指定公司 → 销售类别默认 → 外部公司默认'
+export function practiceCompanyRatePriority({companies,categories,hasDefault}) {
+  const configured = [
+    companies.length && '指定公司',
+    categories.length && '销售类别默认',
+    hasDefault && '外部公司默认',
+  ].filter(Boolean)
+  return configured.length>1 ? configured.join(' → ') : ''
+}
 export const catalogRecipientIsPerson = target => ['person','order_seller','referrer','appointment'].includes(target)
 export const practiceRecipientIsPerson = target => ['person','order_person','order_appointment'].includes(target)
 
@@ -270,7 +277,7 @@ function companyValue(row) {
 export const standardCategoryIDs = row => row.salesCategoryIds || (row.salesCategoryId ? [row.salesCategoryId] : [])
 export const exceptionCompanyIDs = row => row.companyIds || (row.companyId ? [row.companyId] : [])
 
-export function practiceCompanyStandardSummary(sales, formatRate, formatAmount) {
+export function practiceCompanyStandardIndicators(sales, formatRate, formatAmount) {
   const categories = [], companies = []
   for (const row of sales.categories || []) {
     const overrides = row.overrides || []
@@ -280,7 +287,7 @@ export function practiceCompanyStandardSummary(sales, formatRate, formatAmount) 
       const overridden = new Set(overrides.flatMap(exceptionCompanyIDs))
       if (row.companies?.some(id=>!overridden.has(id))) companies.push(row)
     }
-    companies.push(...overrides)
+    companies.push(...overrides.filter(row=>exceptionCompanyIDs(row).length))
   }
   const summary = rows => ['rate','fixed'].map(mode => {
     const values = rows.filter(row=>row.mode===mode && Number.isFinite(row.value)).map(row=>row.value)
@@ -289,15 +296,16 @@ export function practiceCompanyStandardSummary(sales, formatRate, formatAmount) 
     const minimum = Math.min(...values), maximum = Math.max(...values)
     return minimum===maximum ? format(minimum) : format(minimum)+'–'+format(maximum)
   }).filter(Boolean).join(' / ')
-  const category = summary(categories), company = summary(companies)
+  const scopes = practiceCompanyScopes(sales)
+  const withStandard = (scope, rows) => [scope,summary(rows)].filter(Boolean).join(' · ')
   return [
-    company && '按指定公司 '+company,
-    category && '按销售类别 '+category,
-    sales.defaultRate!=null && '外部公司默认 '+formatRate(sales.defaultRate),
-  ].filter(Boolean).join(' · ')
+    scopes.companies.length && withStandard('按指定公司 '+scopes.companies.length+' 家',companies),
+    scopes.categories.length && withStandard('按销售类别 '+scopes.categories.length+' 类',categories),
+    scopes.hasDefault && '外部公司默认 · '+formatRate(sales.defaultRate),
+  ].filter(Boolean)
 }
 
-export function practiceCompanyScopes(sales) {
+export function practiceCompanyScopes(sales = {}) {
   const rows = sales.categories || []
   return {
     companies:[...new Set(rows.flatMap(row=>[...(row.companies || []),...(row.overrides || []).flatMap(exceptionCompanyIDs)]))],
@@ -323,7 +331,7 @@ export function practiceSalesScopeText(part, names, limit = 2) {
       if (categories.length) entries.push('按销售类别 '+categories.length+' 类')
     }
     if (hasDefault) entries.push('外部公司默认')
-    return entries.join(' · ') || '待配置类别或公司'
+    return entries.join(' · ') || '待配置计提标准'
   }
   if (part.saleScope?.ownSales) {
     list('销售公司',part.salesCompanies || [],names.company)
