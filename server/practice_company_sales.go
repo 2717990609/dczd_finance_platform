@@ -261,10 +261,11 @@ type practiceCompanyAward struct {
 }
 
 type practiceCompanyOffers struct {
-	companies  map[string]map[string]practiceCompanyAward
-	categories map[string]map[string]practiceCompanyAward
-	defaults   map[string]practiceCompanyAward
-	personal   map[string]bool
+	companies      map[string]map[string]practiceCompanyAward
+	categories     map[string]map[string]practiceCompanyAward
+	defaults       map[string]practiceCompanyAward
+	companyMembers map[string]bool
+	personal       map[string]bool
 }
 
 func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
@@ -275,10 +276,11 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 		}
 		if offers == nil {
 			offers = &practiceCompanyOffers{
-				companies:  map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
-				categories: map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
-				defaults:   make(map[string]practiceCompanyAward),
-				personal:   make(map[string]bool),
+				companies:      map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
+				categories:     map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
+				defaults:       make(map[string]practiceCompanyAward),
+				companyMembers: make(map[string]bool),
+				personal:       make(map[string]bool),
 			}
 		}
 		for _, company := range part.CompanySales.InternalCompanies {
@@ -293,6 +295,7 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 			if !part.matchesPracticeMember(member) {
 				continue
 			}
+			offers.companyMembers[member] = true
 			if rate := part.CompanySales.DefaultRate; rate != nil {
 				award := awardBase
 				award.practiceCompanyValue = practiceCompanyValue{Mode: "rate", Value: *rate}
@@ -351,7 +354,7 @@ func (p *practicePurchase) classifyCompany(offers *practiceCompanyOffers, catego
 	}
 	member := classMember(p.member.MembershipType)
 	standards := offers.companies[member]
-	if standards == nil {
+	if !offers.companyMembers[member] && !offers.personal[member] {
 		return
 	}
 	var company string

@@ -34,7 +34,7 @@ func TestPracticeCumulativeAmountUsesSelectedEnrollmentTypes(t *testing.T) {
 			}
 			rows := []practiceTierPurchase{
 				{EnrollmentID: 1, PersonID: 9, Base: 600},
-				{EnrollmentID: 2, PersonID: 9, Base: 800, Retrain: true},
+				{EnrollmentID: 2, PersonID: 9, Base: 800, Retrain: true, MeasureOnly: true},
 			}
 			totals, err := practiceCumulativeAmountTotals(tiers, rows, map[int64]int64{9: 400})
 			if err != nil {
@@ -147,6 +147,156 @@ func TestPracticeBookedRefundChangesOnlyOpenCumulativeTier(t *testing.T) {
 	calculate(history, 100)
 	history.replaying, history.frozenAmounts = true, before.practiceTierAmounts
 	calculate(history, 200)
+}
+
+func TestPracticeSeparateAndSharedEnrollmentTiers(t *testing.T) {
+	at := time.Date(2026, 11, 5, 4, 0, 0, 0, time.UTC)
+	newAmount, retrainAmount := int64(10000), int64(30000)
+	orders := map[string][]paymentInput{
+		"1": {{ID: 1, Fact: sourceFact{Source: "DCZD", OrderID: "1", PaymentID: "1", ReferrerID: "seller", AmountMinor: &newAmount, OccurredAt: at}}},
+		"2": {{ID: 2, Fact: sourceFact{Source: "DCZD", OrderID: "2", PaymentID: "2", ReferrerID: "seller", AmountMinor: &retrainAmount, OccurredAt: at}}},
+	}
+	members := []practiceEnrollment{
+		{ID: 1, RosterID: 9, SourceEnrollmentID: "1", MembershipType: 3, CommissionEligible: true, ConfirmedAt: at.Add(time.Hour), PaidOrderIDs: []string{"1"}},
+		{ID: 2, RosterID: 9, SourceEnrollmentID: "2", MembershipType: 2, CommissionEligible: true, ConfirmedAt: at.Add(time.Hour), PaidOrderIDs: []string{"2"}},
+	}
+	history := practiceTierHistory{current: practiceHistoryPeriod{rosterID: 9, ordinal: 1, startsAt: &at}}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{PersonID: 7}}}
+	newTier := component{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
+		Tiers: &practiceSalesTiers{CountFromOrdinal: 1, Count: []practiceTier{{From: 0, Mode: "rate", Value: 200}}}}
+	retrainTier := component{Type: "sales", Mode: "tiered", ClassMember: "retrain", SourceRole: "DIRECT_REFERRER",
+		Tiers: &practiceSalesTiers{CountFromOrdinal: 1, CumulativeMetric: "cumulative_retrain",
+			Performance: []practiceTier{{From: 0, Mode: "rate", Value: 100}, {From: 30000, Mode: "rate", Value: 300}}}}
+	shared := newTier
+	shared.ClassMember = ""
+	retrainByCount := newTier
+	retrainByCount.ClassMember = "retrain"
+	retrainByCount.Tiers = &practiceSalesTiers{CountFromOrdinal: 1,
+		Count: []practiceTier{{From: 1, Mode: "rate", Value: 250}}}
+	for _, tc := range []struct {
+		name  string
+		parts []component
+		want  [2]int64
+	}{
+		{"separate", []component{newTier, retrainTier}, [2]int64{200, 900}},
+		{"shared", []component{shared}, [2]int64{200, 600}},
+		{"new enrollment only supplies the metric", []component{retrainByCount}, [2]int64{0, 750}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := validateComponents(tc.parts); err != nil {
+				t.Fatal(err)
+			}
+			draft, err := calculatePracticeDraft(members, paymentRule{ID: 1, Components: tc.parts}, orders, identities, nil, history, nil, practiceDraftRuntime{})
+			var actual [2]int64
+			for _, line := range draft.Lines {
+				actual[line.EnrollmentID-1] += line.Amount
+			}
+			if err != nil || len(draft.Issues) != 0 || actual != tc.want || len(draft.Performance) != 2 {
+				t.Fatalf("expected separate awards %v: %+v %v", tc.want, draft, err)
+			}
+		})
+	}
+}
+
+func TestPracticeSeparateTierStartsPersistAndReplay(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_TWO_TIERS", Name: "新报复训独立阶梯", PeriodMode: "class"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "two-tiers"}))
+	seller := id(s.createPerson(ctx, createPersonInput{Name: "同一销售"}))
+	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: seller, Source: "DCZD", ExternalID: "seller", ValidFrom: "2026-06-01T00:00:00+08:00"}))
+	writeClass := func(ordinal int, month time.Month) int64 {
+		t.Helper()
+		at := time.Date(2026, month, 8, 9, 0, 0, 0, shanghai)
+		key := fmt.Sprintf("PRACTICE:1:1:%d", ordinal)
+		day := at.Format(time.DateOnly)
+		period := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: key, Ordinal: ordinal, StartsOn: day, EndsOn: day, SourcePeriodKey: key}))
+		roster := practiceRoster{Key: key, Hash: key, SourceVersion: 1, StartsAt: at, ConfirmedAt: at.Add(2 * time.Hour)}
+		var facts []sourceFact
+		for position, amount := range []int64{10000, 30000} {
+			number := fmt.Sprintf("%d%d", ordinal, position+1)
+			roster.Enrollments = append(roster.Enrollments, practiceEnrollment{SourceEnrollmentID: number, ParticipantID: number,
+				MembershipType: 3 - position, CommissionEligible: true, ContentHash: number, PaidOrderIDs: []string{number}})
+			facts = append(facts, sourceFact{Source: "DCZD", Kind: "ORDER_PAID", Domain: "PRACTICE", SourceKey: "two-tiers", OrderID: number,
+				PaymentID: number, RecordKey: "paid:" + number, Version: "1", ReferrerID: "seller",
+				AmountMinor: &amount, OccurredAt: at.Add(-time.Hour), UpdatedAt: at.Add(-time.Hour)})
+		}
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			if _, err := storePracticeRoster(ctx, tx, roster); err != nil {
+				return err
+			}
+			_, err := storeSourceFacts(ctx, tx, facts)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		return period
+	}
+	writeClass(1, time.July)
+	current := writeClass(2, time.August)
+	month := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "九月退款", SettlementMonth: "2026-09"}))
+	_, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &current, Label: "两条阶梯", Components: []component{
+		{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER", ArrangementLabel: "新报销售",
+			Tiers: &practiceSalesTiers{CountFromOrdinal: 1, Count: []practiceTier{{Mode: "rate", Value: 100}, {From: 1, Mode: "rate", Value: 200}}}},
+		{Type: "sales", Mode: "tiered", ClassMember: "retrain", SourceRole: "DIRECT_REFERRER", ArrangementLabel: "复训销售",
+			Tiers: &practiceSalesTiers{CountFromOrdinal: 1, CumulativeMetric: "cumulative_retrain",
+				Performance: []practiceTier{{Mode: "rate", Value: 100}, {From: 30000, Mode: "rate", Value: 300}, {From: 60000, Mode: "rate", Value: 400}}}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	calculate := func(period, amount int64) draftSummary {
+		t.Helper()
+		draft, err := s.calculateCurrentDraft(ctx, period, 0)
+		if err != nil || draft.IssueCount != 0 || draft.Total != amount {
+			t.Fatalf("expected %d with no issue: %+v %v", amount, draft, err)
+		}
+		return draft
+	}
+	calculate(current, 1400)
+	read := func() practiceRuleSettings {
+		t.Helper()
+		items, err := readPracticeRuleSettings(ctx, s.db, product)
+		if err != nil || len(items) != 1 || len(items[0].CountArrangements) != 2 {
+			t.Fatalf("expected both settings for one rule: %+v %v", items, err)
+		}
+		return items[0]
+	}
+	retrain := "retrain"
+	_, err = s.savePracticeRuleSettings(ctx, savePracticeRuleSettingsInput{ProductID: product, RuleID: read().ID, CountMember: &retrain,
+		CountStart: &practicePersonCountStart{PersonID: seller, practiceCountStart: practiceCountStart{FromOrdinal: 2}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	arrangements := read().CountArrangements
+	if len(arrangements[0].Starts) != 0 || len(arrangements[1].Starts) != 1 || arrangements[1].Starts[0].FromOrdinal != 2 {
+		t.Fatalf("the retrain restart must not change the new-enrollment ladder: %+v", arrangements)
+	}
+	original := calculate(current, 1100)
+	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, current, original.Version); err != nil {
+		t.Fatal(err)
+	}
+	refundAmount := int64(15000)
+	refundAt := time.Date(2026, time.September, 8, 9, 0, 0, 0, shanghai)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCZD", Kind: "REFUND_SUCCEEDED", Domain: "PRACTICE", SourceKey: "two-tiers",
+			OrderID: "22", RefundID: "1", RecordKey: "refund:1", Version: "1", AmountMinor: &refundAmount, OccurredAt: refundAt, UpdatedAt: refundAt,
+			RefundsPayment: []sourcePaymentReference{{OrderID: "22", RecordID: "22"}}}})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	draft := calculate(month, -450)
+	if draft.RefundTotal != -450 {
+		t.Fatalf("refund must use the original retrain tier with its own booked amount: %+v", draft)
+	}
 }
 
 func TestPracticeSalesForSelectedCompaniesPaysSpecifiedPerson(t *testing.T) {

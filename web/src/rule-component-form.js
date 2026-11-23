@@ -180,6 +180,7 @@ function tierForm(tiers) {
   return {
     ...practiceCountStartForm(tiers),
     includeRetrain:Boolean(tiers.includeRetrain),
+    hasRetrainPayout:Boolean(tiers.includeRetrain),
     cumulativeMetric:tiers.cumulativeMetric,
     hasLegacyMetrics,
     forceCount:!tiers.cumulativeMetric && !hasLegacyMetrics,

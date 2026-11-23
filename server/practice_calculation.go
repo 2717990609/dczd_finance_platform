@@ -138,12 +138,43 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 		}
 	}
-	awards, tierIssues, err := practiceTierAwards(rule, purchases, orders, identities, blocked, history, refunds, runtime)
-	if err != nil {
-		return draft, err
+	type tierResult struct {
+		awards map[int64]practiceTier
+		issues practiceTierIssues
 	}
-	draft.practicePriorCounts = tierIssues.priorCounts
-	draft.practiceTierAmounts = tierIssues.amounts
+	var tierResults map[string]tierResult
+	tierCount := 0
+	for _, part := range rule.Components {
+		if part.Tiers != nil {
+			tierCount++
+		}
+	}
+	if tierCount != 0 {
+		tierResults = make(map[string]tierResult, tierCount)
+	}
+	if tierCount > 1 {
+		draft.practiceFrozenTiers = make(map[string]practiceFrozenTier, tierCount)
+	}
+	for _, part := range rule.Components {
+		if part.Tiers == nil {
+			continue
+		}
+		state := history
+		if configured, ok := history.arrangements[part.ClassMember]; ok {
+			state = configured
+			state.replaying, state.bookedRefunds, state.liveCategories = history.replaying, history.bookedRefunds, history.liveCategories
+		}
+		awards, issues, err := practiceTierAwards(part, purchases, orders, identities, blocked, state, refunds, runtime)
+		if err != nil {
+			return draft, err
+		}
+		tierResults[part.ClassMember] = tierResult{awards, issues}
+		if tierCount == 1 {
+			draft.practicePriorCounts, draft.practiceTierAmounts = issues.priorCounts, issues.amounts
+		} else {
+			draft.practiceFrozenTiers[part.ClassMember] = practiceFrozenTier{PriorCounts: issues.priorCounts, Amounts: issues.amounts}
+		}
+	}
 	for _, purchase := range purchases {
 		member, payments, base := purchase.member, purchase.payments, purchase.base
 		if purchase.issue != "" {
@@ -185,17 +216,11 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				return paymentDraft{}, err
 			}
 		}
-		matched := purchase.noReferrer
 		for index, part := range rule.Components {
 			if !part.matchesPracticeMember(classMember(member.MembershipType)) {
 				continue
 			}
-			if part.CompanySales != nil {
-				matched = matched || purchase.companyAward != nil || purchase.companyRoutingIssue != ""
-				continue
-			}
-			matched = true
-			if part.PeriodBenefit != nil {
+			if part.CompanySales != nil || part.PeriodBenefit != nil {
 				continue
 			}
 			if purchase.noReferrer && (part.Type == "sales" || part.Type == "referral") {
@@ -273,11 +298,12 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 			isTiered := part.Mode == "tiered"
 			if isTiered {
-				if issue := tierIssues.forPurchase(salesOwner, member.ID); issue != "" {
+				result := tierResults[part.ClassMember]
+				if issue := result.issues.forPurchase(salesOwner, member.ID); issue != "" {
 					draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
 					continue
 				}
-				tier, ok := awards[member.ID]
+				tier, ok := result.awards[member.ID]
 				if !ok {
 					draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_TIER_NOT_MATCHED", member, rule, part.Type))
 					continue
@@ -312,9 +338,6 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				})
 				previousShare = share
 			}
-		}
-		if !matched {
-			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_MEMBER_RULE_MISSING", member, rule, ""))
 		}
 	}
 	if err := appendPracticePeriodBenefits(&draft, rule, purchases, fullyRefunded, runtime, identities, performancePayments); err != nil {
@@ -366,13 +389,9 @@ func (p practicePurchase) matchesSalesCompanies(companies []string) (bool, strin
 	return issue == "" && slices.Contains(companies, company), issue
 }
 
-func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map[string][]paymentInput,
+func practiceTierAwards(part component, current []practicePurchase, orders map[string][]paymentInput,
 	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory,
 	refunds map[int64][]practiceRefundMatch, runtime practiceDraftRuntime) (map[int64]practiceTier, practiceTierIssues, error) {
-	part := practiceTierComponent(rule)
-	if part == nil {
-		return nil, practiceTierIssues{}, nil
-	}
 	config := part.Tiers
 	cumulative := config.CumulativeMetric != ""
 	if cumulative {
@@ -389,7 +408,7 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 		kind := classMember(member.MembershipType)
 		retrain := kind == "retrain"
 		pays := part.matchesPracticeMember(kind)
-		measures := config.CumulativeMetric.includes(kind)
+		measures := config.CumulativeMetric.includes(kind) || !cumulative && !pays && kind == "new"
 		if !pays && !measures || purchase.noReferrer || purchase.issue == practicePaymentAlreadySettled ||
 			retrain && !measures && (purchase.issue != "" || purchase.companyRoutingIssue != "") {
 			continue
@@ -439,11 +458,11 @@ func practiceTierAwards(rule paymentRule, current []practicePurchase, orders map
 			}
 			continue
 		}
-		if len(schedule.Count) != 0 || cumulative && pays && len(schedule.Performance) != 0 {
+		if pays && (len(schedule.Count) != 0 || cumulative && len(schedule.Performance) != 0) {
 			needsHistory[person] = true
 		}
 		row := practiceTierPurchase{EnrollmentID: member.ID, PersonID: person, CompanyID: company, SalesCategoryID: category, Base: purchase.base,
-			SequenceKey: purchase.payments[0].Fact.OrderID, PaidAt: purchase.payments[0].Fact.OccurredAt, Retrain: retrain}
+			SequenceKey: purchase.payments[0].Fact.OrderID, PaidAt: purchase.payments[0].Fact.OccurredAt, Retrain: retrain, MeasureOnly: !pays}
 		if len(purchase.payments) == 2 {
 			row.SequenceKey = member.SourceEnrollmentID
 			if second := purchase.payments[1].Fact.OccurredAt; second.Before(row.PaidAt) {

@@ -16,6 +16,7 @@ type practiceReplayInputs struct {
 	IndependentRefunds      bool                                 `json:"independentRefunds,omitempty"`
 	PriorCounts             map[int64]int64                      `json:"priorCounts,omitempty"`
 	TierAmounts             map[int64]int64                      `json:"tierAmounts,omitempty"`
+	TierArrangements        map[string]practiceFrozenTier        `json:"tierArrangements,omitempty"`
 	Identities              map[string][]identityAssignment      `json:"identities,omitempty"`
 	RegistrationVersions    map[int64]int64                      `json:"registrationVersions,omitempty"`
 	Appointments            map[int][]practiceAppointment        `json:"appointments,omitempty"`
@@ -69,8 +70,8 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) *practiceReplayInputs {
 	inputs := &practiceReplayInputs{
 		Version: practiceReplayNetRateShares, PriorCounts: draft.practicePriorCounts,
-		TierAmounts: draft.practiceTierAmounts,
-		Identities:  make(map[string][]identityAssignment), Appointments: make(map[int][]practiceAppointment),
+		TierAmounts: draft.practiceTierAmounts, TierArrangements: draft.practiceFrozenTiers,
+		Identities: make(map[string][]identityAssignment), Appointments: make(map[int][]practiceAppointment),
 		PaymentCompanies: make(map[string]practiceReplayCompany), Recommendations: make(map[string]pgtype.UUID),
 		Companies: runtime.companyRecipients, ReferrerCompanies: runtime.recommendations.explicit, PoolUnits: runtime.poolUnits,
 	}
@@ -240,6 +241,12 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 		}
 	}
 	replay.history = practiceTierHistory{replaying: true, frozenPrior: values.PriorCounts, frozenAmounts: values.TierAmounts}
+	if len(values.TierArrangements) != 0 {
+		replay.history.arrangements = make(map[string]practiceTierHistory, len(values.TierArrangements))
+		for member, tier := range values.TierArrangements {
+			replay.history.arrangements[member] = practiceTierHistory{frozenPrior: tier.PriorCounts, frozenAmounts: tier.Amounts}
+		}
+	}
 	replay.runtime = practiceDraftRuntime{
 		appointments: make(map[practiceAppointmentKey][]practiceAppointment), companyOffers: practiceCompanyStandards(replay.rule),
 		salesOrganizations:     values.SalesOrganizations,

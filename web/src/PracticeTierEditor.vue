@@ -10,6 +10,7 @@ const props = defineProps({
   people: { type: Array, required: true },
   companies: { type: Array, required: true },
   salesCategories: { type: Array, required: true },
+  showLegacyRetrain: Boolean,
   retrainUnavailable: Boolean,
 })
 const metricOptions = computed(() => [
@@ -22,6 +23,7 @@ const metricMode = computed(() => props.config.cumulativeMetric || (props.config
 function setMetric(metric) {
   props.config.cumulativeMetric = practiceCumulativeAmountMetrics.some(option=>option.value===metric) ? metric : undefined
   props.config.forceCount = metric==='count'
+  if (props.config.cumulativeMetric && props.config.startMode==='opening') props.config.startMode = undefined
 }
 function sectionsFor(metric) {
   if (amountLabel.value) return [{key:'performance',title:amountLabel.value,unit:'元',decimals:2}]
@@ -71,10 +73,9 @@ function removeSchedule(schedules, index) {
       <a-form-item label="阶梯指标" html-for="tier-amount-metric">
         <a-select id="tier-amount-metric" :value="metricMode" :options="metricOptions" @change="setMetric"/>
       </a-form-item>
-      <a-checkbox :checked="config.includeRetrain" :disabled="retrainUnavailable && !config.includeRetrain"
-        @change="setIncludeRetrain($event.target.checked)">复训共用此阶梯</a-checkbox>
+      <a-checkbox v-if="showLegacyRetrain" :checked="config.includeRetrain" :disabled="retrainUnavailable && !config.includeRetrain"
+        @change="setIncludeRetrain($event.target.checked)">使用原有复训档值</a-checkbox>
     </div>
-    <p v-if="retrainUnavailable" class="tier-note">移除单独的复训销售安排后可启用。</p>
     <p class="tier-note">匹配顺序　个人特例 → 公司特例 → 销售类别 → 通用档位</p>
     <details v-if="salesCategories.length || config.categories.length" class="tier-person-starts" open>
       <summary>销售类别默认档位</summary>

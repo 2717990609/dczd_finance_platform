@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
+import { Popconfirm } from 'ant-design-vue'
 import PracticePersonCountFields from './PracticePersonCountFields.vue'
 import { practiceCountStartForm } from './rule-component-form'
 
@@ -16,8 +17,10 @@ const search = ref('')
 const form = ref()
 const directory = ref()
 const query = computed(() => '?'+new URLSearchParams({productId:props.productId}))
-const rules = computed(() => result.value.rules.filter(row=>row.hasCount))
-const rulesByID = computed(() => new Map(rules.value.map(rule=>[rule.id,rule])))
+const arrangements = computed(() => result.value.rules.filter(rule=>rule.hasCount).flatMap(rule=>
+  rule.countArrangements.map(part=>({rule,part,id:rule.id+':'+part.member,
+    label:rule.countArrangements.length>1 ? part.label || props.optionLabel('classMember',part.member) : ''}))))
+const arrangementsByID = computed(() => new Map(arrangements.value.map(row=>[row.id,row])))
 const personNames = computed(() => new Map((result.value.directory?.people || []).map(person=>[person.id,person.name])))
 const personName = id => personNames.value.get(id) || '人员 '+id
 const scope = rule => [
@@ -25,20 +28,20 @@ const scope = rule => [
   rule.activityType ? props.optionLabel('practiceActivityType',String(rule.activityType)) : '',
   rule.effectiveFrom ? props.formatTime(rule.effectiveFrom)+' 起' : '',
 ].filter(Boolean).join(' · ')
-const ruleOptions = computed(() => rules.value.map(rule=>({
-  value:rule.id,label:rule.label+' · '+scope(rule)+' · v'+rule.version,
+const ruleOptions = computed(() => arrangements.value.map(({id,rule,label})=>({
+  value:id,label:[rule.label,label,scope(rule),'v'+rule.version].filter(Boolean).join(' · '),
 })))
-const currentRule = computed(() => rulesByID.value.get(form.value?.ruleId))
+const currentArrangement = computed(() => arrangementsByID.value.get(form.value?.arrangementId))
 const personalStartModes = computed(() => props.startModes.filter(option=>
   !option.scope?.countScopes || option.scope.countScopes.includes('person')))
 const people = computed(() => (directory.value?.people || []).map(person=>({value:person.id,label:person.name+' · '+person.id})))
 const eligiblePeople = computed(() => people.value.filter(person=>person.value===form.value?.existing?.personId ||
-  !currentRule.value?.personCountStarts?.some(start=>start.personId===person.value)))
+  !currentArrangement.value?.part.personCountStarts?.some(start=>start.personId===person.value)))
 const rows = computed(() => {
   const term = search.value.trim().toLocaleLowerCase()
-  return rules.value.flatMap(rule => (rule.personCountStarts || []).map(item=>{
+  return arrangements.value.flatMap(arrangement => (arrangement.part.personCountStarts || []).map(item=>{
     const key = item.personId
-    return {id:rule.id+':'+key,rule,item,name:personName(key),key}
+    return {id:arrangement.id+':'+key,rule:arrangement.rule,arrangement,item,name:personName(key),key}
   })).filter(row=>!term || (row.name+' '+row.key).toLocaleLowerCase().includes(term))
     .sort((a,b)=>a.name.localeCompare(b.name,'zh-CN') || b.rule.version-a.rule.version)
 })
@@ -72,7 +75,7 @@ async function open(row) {
   notice.value = ''
   const existing = row?.item
   const entry = existing ? {personId:existing.personId,...practiceCountStartForm(existing)} : newEntry()
-  const editing = form.value = {ruleId:row?.rule.id || (rules.value.length===1 ? rules.value[0].id : undefined),existing,entry}
+  const editing = form.value = {arrangementId:row?.arrangement.id || (arrangements.value.length===1 ? arrangements.value[0].id : undefined),existing,entry}
   if (directory.value) return
   try {
     directory.value = await props.api('/practice-rule-recipients'+query.value)
@@ -90,14 +93,16 @@ function countPayload(entry) {
   if (!Number.isFinite(at)) throw new Error('请填写起始开班时间')
   return {personId:entry.personId,countFromAt:new Date(at).toISOString()}
 }
-async function save() {
+async function save(remove = false) {
   if (saving.value) return
   editError.value = ''
-  const {entry,existing,ruleId} = form.value
+  const {entry,existing} = form.value
   saving.value = true
   try {
-    if (!currentRule.value) throw new Error('请选择适用规则')
-    const body = {productId:props.productId,ruleId,countStart:countPayload(entry),existingPersonId:existing?.personId}
+    const arrangement = currentArrangement.value
+    if (!arrangement) throw new Error('请选择适用规则')
+    const body = {productId:props.productId,ruleId:arrangement.rule.id,countMember:arrangement.part.member,
+      countStart:remove ? undefined : countPayload(entry),existingPersonId:existing?.personId}
     const {version} = await props.api('/practice-rule-settings',{method:'POST',body:JSON.stringify(body)})
     form.value = undefined
     notice.value = '已保存规则 v'+version
@@ -117,7 +122,7 @@ async function save() {
       <h2>人员累计起点</h2>
       <div class="practice-settings-actions">
         <a-input-search v-model:value="search" aria-label="按姓名搜索" placeholder="搜索姓名或人员 ID" allow-clear/>
-        <a-button v-if="canEdit" type="primary" :disabled="loading || !rules.length" @click="open()">新增人员起点</a-button>
+        <a-button v-if="canEdit" type="primary" :disabled="loading || !arrangements.length" @click="open()">新增人员起点</a-button>
       </div>
     </div>
     <a-alert v-if="notice" type="success" :message="notice" show-icon/>
@@ -135,33 +140,36 @@ async function save() {
             {{ record.item.countFromOrdinal ? '第 '+record.item.countFromOrdinal+' 期' : formatTime(record.item.countFromAt) }}
           </template>
           <template v-else-if="column.key==='scope'">
-            {{ record.rule.label }} · v{{ record.rule.version }}
+            {{ record.rule.label }}<template v-if="record.arrangement.label"> · {{ record.arrangement.label }}</template> · v{{ record.rule.version }}
             <small class="order-version">{{ scope(record.rule) }}</small>
           </template>
           <a-button v-else-if="column.key==='action'" type="link" @click="open(record)">编辑</a-button>
         </template>
         <template #emptyText>
           {{ loading ? '正在加载' : error ? '读取失败' : search ? '未找到匹配记录' :
-            !rules.length ? '暂无使用累计人数的规则' : '暂无人员起点' }}
+            !arrangements.length ? '暂无使用累计指标的规则' : '暂无人员起点' }}
         </template>
       </a-table>
     </div>
   </section>
   <a-modal v-if="form" :open="true" :title="(form.existing ? '编辑' : '新增')+'人员累计起点'"
     :width="520" ok-text="保存并生效" :confirm-loading="saving" :ok-button-props="{disabled:!directory}"
-    :mask-closable="!saving" :closable="!saving" :keyboard="!saving" @ok="save" @cancel="!saving && (form=undefined)">
+    :mask-closable="!saving" :closable="!saving" :keyboard="!saving" @ok="save()" @cancel="!saving && (form=undefined)">
     <a-alert v-if="editError" class="feedback" :message="editError" type="error" show-icon/>
     <a-form layout="vertical">
       <a-form-item label="适用规则" html-for="practice-settings-rule" required>
-        <a-select id="practice-settings-rule" v-model:value="form.ruleId" :options="ruleOptions" :disabled="!!form.existing"
+        <a-select id="practice-settings-rule" v-model:value="form.arrangementId" :options="ruleOptions" :disabled="!!form.existing"
           show-search option-filter-prop="label" @change="selectRule"/>
       </a-form-item>
-      <template v-if="currentRule && directory">
+      <template v-if="currentArrangement && directory">
         <a-form-item label="人员" html-for="practice-settings-person" required>
           <a-select id="practice-settings-person" v-model:value="form.entry.personId" :options="eligiblePeople"
             :disabled="!!form.existing" show-search option-filter-prop="label"/>
         </a-form-item>
         <PracticePersonCountFields :start="form.entry" prefix="practice-settings" :start-modes="personalStartModes"/>
+        <Popconfirm v-if="form.existing" title="恢复该人员的默认累计起点？" ok-text="恢复默认" @confirm="save(true)">
+          <a-button type="link" :disabled="saving">恢复默认起点</a-button>
+        </Popconfirm>
       </template>
     </a-form>
   </a-modal>

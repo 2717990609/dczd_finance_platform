@@ -172,7 +172,7 @@ const optionLabel = (group, value) => options(group).find(option => option.value
 const orderRoleLabel = role => role==='SALES_COMPANY' ? '销售公司' : optionLabel('orderAttributionRole',role)
 const scopeTree = computed(() => organizationTree(scopeUnits.value || [],kind=>optionLabel('organizationKind',kind)))
 const sources = computed(() => options('source'))
-const classMembers = computed(() => options('classMember').map(option=>option.value ? option : {...option,label:'通用报名（新报和复训）'}))
+const classMembers = computed(() => options('classMember').map(option=>option.value ? option : {...option,label:'新报和复训'}))
 const practiceActivityTypes = computed(() => options('practiceActivityType').map(option=>({...option,value:Number(option.value)})))
 function componentSourceRoles(saved) {
   const configured = options('orderAttributionRole')
@@ -305,11 +305,9 @@ function removeRetrainService(split) {
   split.serviceScopeMode = 'all'
   activeRuleComponent.value = undefined
 }
-const practiceCountConfig = computed(() => {
-  if (!classRule.value) return
-  const config = draft.value.components?.find(part=>part.mode==='tiered')?.tierConfig
-  return config && tierFormUsesHistory(config) ? config : undefined
-})
+const practiceCountArrangements = computed(() => classRule.value
+  ? (draft.value.components || []).filter(part=>part.mode==='tiered' && part.tierConfig && tierFormUsesHistory(part.tierConfig))
+  : [])
 const classRefundMonth = computed(() => classRule.value && draft.value.practicePeriodKind === 'refund_month')
 const calendarPeriod = computed(() => classRefundMonth.value || !classRule.value && !!selectedProduct.value?.cycleStartDay)
 const calendarDates = computed(() => {
@@ -366,6 +364,11 @@ function updateAmountMode(row, mode) {
 function resetAmountMode(row) {
   const modes = amountModes(row)
   if (!modes.some(option => option.value === row.mode)) updateAmountMode(row,modes[0]?.value)
+}
+function changeClassMember(row, member) {
+  row.classMember = member
+  if (row.tierConfig && member!=='new') row.tierConfig.includeRetrain = false
+  resetAmountMode(row)
 }
 function tierIncludesRetrain(row) {
   return row.mode==='tiered' && Boolean(row.tierConfig?.includeRetrain ?? row.tiers?.includeRetrain)
@@ -1843,9 +1846,11 @@ async function save() {
           <a-input v-else v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local" step="1"/>
         </a-form-item>
         </div>
-        <PracticeCountStartEditor v-if="practiceCountConfig" :config="practiceCountConfig"
-          :start-modes="options('tierStartMode').filter(mode=>!practiceCountConfig.cumulativeMetric || mode.value!=='opening')"
-          :people="classPeopleOptions" :openings="practiceOpeningOptions"/>
+        <PracticeCountStartEditor v-for="(part,i) in practiceCountArrangements" :key="part.classMember" :config="part.tierConfig"
+          :prefix="i===0 ? 'tier' : 'tier-'+i"
+          :label="practiceCountArrangements.length>1 ? ruleComponentLabel(part,optionLabel) : undefined"
+          :start-modes="options('tierStartMode').filter(mode=>!part.tierConfig.cumulativeMetric || mode.value!=='opening')"
+          :openings="practiceOpeningOptions"/>
         <div v-if="selectedProduct" class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
@@ -1888,7 +1893,7 @@ async function save() {
             :duty-id="classRule && c.salesRecipientKind==='person' ? 'rule-recipient-duty-'+i : undefined"
             :duties="options('organizationDuty')" v-model:duty="c.recipientDuty"
             :order-type-id="classRule ? 'rule-member-'+i : undefined" :order-types="classRule ? classMemberChoices(c) : undefined"
-            :order-type="c.classMember" @update:order-type="c.classMember=$event; resetAmountMode(c)">
+            :order-type="c.classMember" @update:order-type="changeClassMember(c,$event)">
             <template v-if="classRule && ['sales','referral'].includes(c.type)">
               <a-form-item :html-for="'rule-payee-kind-'+i" label="收款对象">
                 <a-select :id="'rule-payee-kind-'+i" :value="c.salesRecipientKind || 'order_person'"
@@ -1932,7 +1937,7 @@ async function save() {
             :pools="practicePoolOptions" :create-pool="createPracticePool" :format-money="formatMoney"/>
           <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')"
             :amounts="baseModes" :people="classPeopleOptions" :companies="options('practiceSalesCompany')"
-            :sales-categories="options('practiceSalesCategory')"
+            :sales-categories="options('practiceSalesCategory')" :show-legacy-retrain="c.classMember==='new' && c.tierConfig.hasRetrainPayout"
             :retrain-unavailable="draft.components.some(other=>other!==c && other.type==='sales' && matchesPracticeMember(other,'retrain'))"/>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
             :registration-companies="registrationCompanies" :registration-loading="registrationCompaniesLoading" :registration-error="registrationCompaniesError"

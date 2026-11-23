@@ -23,6 +23,7 @@ type practiceHistoryPeriod struct {
 }
 
 type practiceTierHistory struct {
+	arrangements   map[string]practiceTierHistory
 	current        practiceHistoryPeriod
 	periods        []practiceHistoryPeriod
 	members        []practiceEnrollment
@@ -33,6 +34,11 @@ type practiceTierHistory struct {
 	liveCategories map[string]string
 	cumulative     practiceAmountMetric
 	bookedRefunds  map[int64]int64
+}
+
+type practiceFrozenTier struct {
+	PriorCounts map[int64]int64 `json:"priorCounts,omitempty"`
+	Amounts     map[int64]int64 `json:"tierAmounts,omitempty"`
 }
 
 func (h practiceTierHistory) defaultStart(config practiceSalesTiers) practiceCountStart {

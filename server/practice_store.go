@@ -232,30 +232,60 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	return history, err
 }
 
-func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, rule paymentRule) (paymentDraft, []byte, error) {
+func readPracticeDraftTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummary, parts []component) (practiceTierHistory, []int64, error) {
 	rosterIDs := []int64{*summary.PracticeRosterID}
-	members, err := readPracticeMembers(ctx, tx, rosterIDs, false)
+	seenRosters := map[int64]bool{*summary.PracticeRosterID: true}
+	var history practiceTierHistory
+	for _, part := range parts {
+		if part.Tiers == nil || !part.Tiers.usesPriorTiers() {
+			continue
+		}
+		state, err := readPracticeTierHistory(ctx, tx, summary, *part.Tiers)
+		if err != nil {
+			return history, nil, err
+		}
+		if history.arrangements == nil {
+			history.arrangements = make(map[string]practiceTierHistory)
+		}
+		history.arrangements[part.ClassMember] = state
+		for _, period := range state.periods {
+			if period.rosterID != 0 && !seenRosters[period.rosterID] {
+				seenRosters[period.rosterID] = true
+				rosterIDs = append(rosterIDs, period.rosterID)
+				history.periods = append(history.periods, period)
+			}
+		}
+	}
+	if len(rosterIDs) > 1 {
+		members, err := readPracticeMembers(ctx, tx, rosterIDs[1:], true)
+		if err != nil {
+			return history, nil, err
+		}
+		history.members = members
+		for kind, state := range history.arrangements {
+			rosters := make(map[int64]bool, len(state.periods))
+			for _, period := range state.periods {
+				rosters[period.rosterID] = true
+			}
+			for _, member := range members {
+				if rosters[member.RosterID] {
+					state.members = append(state.members, member)
+				}
+			}
+			history.arrangements[kind] = state
+		}
+	}
+	return history, rosterIDs, nil
+}
+
+func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, rule paymentRule) (paymentDraft, []byte, error) {
+	members, err := readPracticeMembers(ctx, tx, []int64{*summary.PracticeRosterID}, false)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	var history practiceTierHistory
-	part := practiceTierComponent(rule)
-	if part != nil && part.Tiers.usesPriorTiers() {
-		history, err = readPracticeTierHistory(ctx, tx, summary, *part.Tiers)
-		if err != nil {
-			return paymentDraft{}, nil, err
-		}
-		for _, period := range history.periods {
-			if period.rosterID != 0 {
-				rosterIDs = append(rosterIDs, period.rosterID)
-			}
-		}
-		if len(rosterIDs) > 1 {
-			history.members, err = readPracticeMembers(ctx, tx, rosterIDs[1:], true)
-			if err != nil {
-				return paymentDraft{}, nil, err
-			}
-		}
+	history, rosterIDs, err := readPracticeDraftTierHistory(ctx, tx, summary, rule.Components)
+	if err != nil {
+		return paymentDraft{}, nil, err
 	}
 
 	orderIDs := make([]string, 0, len(members)+len(history.members))
@@ -279,7 +309,9 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if len(facts) > maxDraftPayments {
 		return paymentDraft{}, nil, errDraftLimit
 	}
-	if part != nil && part.Tiers.CumulativeMetric != "" && len(history.members) != 0 {
+	if len(history.members) != 0 && slices.ContainsFunc(rule.Components, func(part component) bool {
+		return part.Tiers != nil && part.Tiers.CumulativeMetric != ""
+	}) {
 		paymentIDs := make([]int64, len(facts))
 		for index, payment := range facts {
 			paymentIDs[index] = payment.ID

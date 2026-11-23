@@ -71,6 +71,7 @@ type paymentDraft struct {
 	PracticeEnrollments  []int64
 	practicePriorCounts  map[int64]int64
 	practiceTierAmounts  map[int64]int64
+	practiceFrozenTiers  map[string]practiceFrozenTier
 	practiceReplay       *practiceReplayInputs
 	practiceChanges      []practiceCorrectionRevision
 	aggregateGroups      []catalogAggregateGroupInput

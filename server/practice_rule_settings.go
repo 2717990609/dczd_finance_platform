@@ -24,11 +24,22 @@ type practiceRuleSettings struct {
 	ActivityType      int                        `json:"activityType,omitempty"`
 	HasCount          bool                       `json:"hasCount"`
 	PersonCountStarts []practicePersonCountStart `json:"personCountStarts,omitempty"`
+	CountArrangements []practiceCountArrangement `json:"countArrangements,omitempty"`
 	HasRetrain        bool                       `json:"hasRetrain"`
 	RetrainTotal      int64                      `json:"retrainTotalMinor"`
 	RetrainRate       *int64                     `json:"retrainRateBps,omitempty"`
 	RetrainSplits     []practiceRetrainSplit     `json:"retrainSplits,omitempty"`
 	SalesCompanies    []string                   `json:"salesCompanies,omitempty"`
+}
+
+type practiceCountArrangement struct {
+	Member string                     `json:"member"`
+	Label  string                     `json:"label,omitempty"`
+	Starts []practicePersonCountStart `json:"personCountStarts,omitempty"`
+}
+
+func hasPracticeCountSettings(part component) bool {
+	return part.Tiers != nil && part.Tiers.usesPriorTiers()
 }
 
 func isPracticeRetrainWithSplits(part component) bool {
@@ -61,8 +72,9 @@ func readPracticeRuleSettings(ctx context.Context, db *pgxpool.Pool, productID i
 		}
 		for _, part := range parts {
 			switch {
-			case part.Mode == "tiered" && part.Tiers != nil && part.Tiers.usesPriorTiers():
-				setting.HasCount, setting.PersonCountStarts = true, part.Tiers.PersonCountStarts
+			case hasPracticeCountSettings(part):
+				setting.CountArrangements = append(setting.CountArrangements,
+					practiceCountArrangement{Member: part.ClassMember, Label: part.arrangementLabel(), Starts: part.Tiers.PersonCountStarts})
 			case isPracticeRetrainWithSplits(part):
 				setting.HasRetrain = true
 				if part.Mode == "rate" {
@@ -72,6 +84,10 @@ func readPracticeRuleSettings(ctx context.Context, db *pgxpool.Pool, productID i
 				}
 				setting.RetrainSplits, setting.SalesCompanies = part.retrainSplits(), part.salesCompanies()
 			}
+		}
+		setting.HasCount = len(setting.CountArrangements) != 0
+		if len(setting.CountArrangements) == 1 {
+			setting.PersonCountStarts = setting.CountArrangements[0].Starts
 		}
 		if setting.HasCount || setting.HasRetrain {
 			items = append(items, setting)
@@ -98,8 +114,10 @@ func (s workspace) getPracticeRuleSettings(w http.ResponseWriter, r *http.Reques
 	}
 	var people, pools []int64
 	for _, rule := range rules {
-		for _, start := range rule.PersonCountStarts {
-			people = append(people, start.PersonID)
+		for _, arrangement := range rule.CountArrangements {
+			for _, start := range arrangement.Starts {
+				people = append(people, start.PersonID)
+			}
 		}
 		for _, split := range rule.RetrainSplits {
 			people = append(people, split.ServicePersonID, split.Pool.OwnerID)
@@ -117,6 +135,7 @@ type savePracticeRuleSettingsInput struct {
 	ProductID         int64
 	RuleID            int64
 	CountStart        *practicePersonCountStart
+	CountMember       *string
 	ExistingPersonID  int64
 	RetrainSplit      *practiceRetrainSplit
 	ExistingCompanyID string
@@ -189,8 +208,17 @@ func replacePracticeRuleSetting[T any](rows []T, next *T, matches func(T) bool, 
 
 func editPracticeRuleSettings(pub *publishRuleInput, input savePracticeRuleSettingsInput, countChange bool) error {
 	if countChange {
-		part := practiceTierComponent(paymentRule{Components: pub.Components})
-		if part == nil || part.Tiers == nil || !part.Tiers.usesPriorTiers() {
+		var tiers *practiceSalesTiers
+		for _, part := range pub.Components {
+			if !hasPracticeCountSettings(part) || input.CountMember != nil && part.ClassMember != *input.CountMember {
+				continue
+			}
+			if tiers != nil {
+				return errors.New("请选择要设置累计起点的收款安排")
+			}
+			tiers = part.Tiers
+		}
+		if tiers == nil {
 			return invalid
 		}
 		person := input.ExistingPersonID
@@ -201,9 +229,9 @@ func editPracticeRuleSettings(pub *publishRuleInput, input savePracticeRuleSetti
 			}
 			person = start.PersonID
 		}
-		rows, err := replacePracticeRuleSetting(part.Tiers.PersonCountStarts, input.CountStart,
+		rows, err := replacePracticeRuleSetting(tiers.PersonCountStarts, input.CountStart,
 			func(row practicePersonCountStart) bool { return row.PersonID == person }, editing)
-		part.Tiers.PersonCountStarts = rows
+		tiers.PersonCountStarts = rows
 		return err
 	}
 	i := slices.IndexFunc(pub.Components, isPracticeRetrainWithSplits)

@@ -80,7 +80,7 @@ type practiceTierPayout struct {
 }
 
 func (r practiceTier) payout(retrain bool) practiceTier {
-	if retrain {
+	if retrain && r.Retrain != nil {
 		r.Mode, r.Value = r.Retrain.Mode, r.Retrain.Value
 	}
 	return r
@@ -192,6 +192,7 @@ type practiceTierPurchase struct {
 	PersonID        int64
 	Base            int64
 	Retrain         bool
+	MeasureOnly     bool
 }
 
 func (part component) tierIncludesRetrain() bool {
@@ -204,8 +205,11 @@ func (part component) matchesPracticeMember(member string) bool {
 
 func validPracticeSalesTiers(part component) bool {
 	tiers := part.Tiers
-	if part.Type != "sales" || part.ClassMember != "new" || part.SourceRole == "" ||
+	if part.Type != "sales" || part.SourceRole == "" ||
 		part.Value != 0 || tiers == nil || len(tiers.Count)+len(tiers.Performance)+len(tiers.CategorySchedules)+len(tiers.CompanySchedules)+len(tiers.PersonSchedules) == 0 {
+		return false
+	}
+	if tiers.IncludeRetrain && part.ClassMember != "new" {
 		return false
 	}
 	switch {
@@ -298,18 +302,10 @@ func (p practiceTierPayout) valid() bool {
 	return p.Value >= 0 && (p.Mode == "rate" && p.Value <= 10000 || p.Mode == "fixed" && p.Value <= 100000000000)
 }
 
-func practiceTierComponent(rule paymentRule) *component {
-	for i := range rule.Components {
-		if rule.Components[i].Mode == "tiered" {
-			return &rule.Components[i]
-		}
-	}
-	return nil
-}
-
 func practiceTierUsesCategories(rule paymentRule) bool {
-	part := practiceTierComponent(rule)
-	return part != nil && part.Tiers != nil && len(part.Tiers.CategorySchedules) != 0
+	return slices.ContainsFunc(rule.Components, func(part component) bool {
+		return part.Tiers != nil && len(part.Tiers.CategorySchedules) != 0
+	})
 }
 
 func matchingPracticeTier(rows []practiceTier, metric int64) (practiceTier, bool) {
@@ -384,6 +380,9 @@ func choosePracticeSalesTiers(config practiceSalesTiers, purchases []practiceTie
 				}
 			}
 		}
+		if purchase.MeasureOnly {
+			continue
+		}
 		if tier, matched := matchingPracticeTier(schedule.Count, count); matched {
 			awards[purchase.EnrollmentID] = tier.payout(purchase.Retrain)
 		} else if len(schedule.Performance) != 0 {
@@ -434,7 +433,7 @@ func choosePracticeCumulativeAmountTiers(config practiceSalesTiers, purchases []
 	schedules := config.schedules()
 	awards := make(map[int64]practiceTier)
 	for _, purchase := range purchases {
-		if purchase.Retrain && !config.IncludeRetrain {
+		if purchase.MeasureOnly {
 			continue
 		}
 		schedule, configured := schedules.forSale(purchase.PersonID, purchase.CompanyID, purchase.SalesCategoryID)
