@@ -14,6 +14,12 @@ const props = defineProps({ rule:Object, applied:Object, api:Function, formatTim
   optionLabel:Function, periods:Array, skus:Array })
 const emit = defineEmits(['close', 'published'])
 const sheet = ref()
+const ruleSection = ref()
+function scrollToApplied(open) {
+  if (open && props.applied) {
+    ruleSection.value?.querySelector('.rule-block-header[aria-expanded="true"]')?.scrollIntoView({block:'start'})
+  }
+}
 const selected = ref()
 const filter = ref('')
 const effectiveFrom = ref('')
@@ -520,7 +526,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
       result.leaderArrangements?.find(item=>item.itemKey===leaderKey)?.itemKey ||
       result.components.find(item=>item.itemKey===applied.component || applied.component.startsWith(item.itemKey+':'))?.itemKey
       || result.components[0]?.itemKey
-    selectedTeam.value = result.teams?.[0]?.key
+    selectedTeam.value = result.teams?.find(team=>team.key===applied.teamKey)?.key
     loading.value = false
     return
   }
@@ -669,8 +675,8 @@ async function publish() {
 
 <template>
   <a-drawer :open="!!(rule || applied)" :width="'min(1260px, 100vw)'" :title="applied ? '计提使用的规则' : '产品分润配置'" root-class-name="finance-rule-editor"
-    :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="emit('close')">
-    <section :aria-label="applied ? '计提使用的规则' : '产品分润配置'">
+    :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @after-open-change="scrollToApplied" @close="emit('close')">
+    <section ref="ruleSection" :aria-label="applied ? '计提使用的规则' : '产品分润配置'">
     <a-alert v-if="error" type="error" :message="error" show-icon class="feedback"/>
     <a-spin :spinning="loading">
       <template v-if="sheet">
@@ -924,11 +930,11 @@ async function publish() {
                 :duties="splitDutyOptions(leader)" :recipient-duty="splitDutyValue(leader)" @update:recipient-duty="setSplitDuty(leader,$event)"
                 :inherited="leader.targetKind==='inherit' && !leader.disabled"
                 @update:model-value="setLeader(leader,$event)">
-                <div v-if="leader.itemKey==='internal-team-leader' && ['inherit','registered'].includes(leaderForm(leader).target) && team" class="catalog-rule-fields">
+                <div v-if="leader.itemKey==='internal-team-leader' && ['inherit','registered'].includes(leaderForm(leader).target) && teamOptions.length" class="catalog-rule-fields">
                   <a-form-item label="查看登记人所属团队" html-for="catalog-head-company">
                     <a-select id="catalog-head-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
                   </a-form-item>
-                  <a-form-item label="规则登记负责人" html-for="catalog-team-head">
+                  <a-form-item v-if="team" label="规则登记负责人" html-for="catalog-team-head">
                     <AppointmentPersonSelect v-if="!applied && sheet.mayPublish" id="catalog-team-head" :key="selectedTeam"
                       :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('head')" :value="teamPerson('head')?.id"
                       :disabled="!editable" @change="(id,option)=>setTeamPerson('head',id,option)"/>

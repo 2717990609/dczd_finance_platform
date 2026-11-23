@@ -2146,6 +2146,7 @@ async function save() {
       !viewedRule.retiredFrom && ruleEditVersionIDs.has(viewedRule.id))"
     :title="appliedRule?.rule ? (appliedRule.fromIssue ? '试算使用的规则' : '计提使用的规则') : undefined"
     :component="appliedRule?.rule ? appliedRule.component : undefined"
+    :membership-type="appliedRule?.rule ? appliedRule.membershipType : undefined"
     :recipients="appliedRule?.directory" :registration-companies="registrationCompanies"
     :class-product="data.products.find(product => product.id===viewedRule.productId)?.periodMode==='class'"
     :api="api" :people="data.people" :option-label="optionLabel" :opening-label="savedOpeningLabel"

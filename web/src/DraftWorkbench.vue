@@ -66,6 +66,7 @@ const componentLabel = code => {
   if (type==='retrain_pool') return '复训销售归集'
   return props.componentOptions.find(option=>option.value===type)?.label || salesRoles[type?.split(':').at(-1)] || type
 }
+const postingArrangement = row => salesRoles[row.componentRole] || row.componentLabel || componentLabel(row.component)
 const memberLabel = type => props.memberOptions.find(option=>option.value===(type===3 ? 'new' : 'retrain'))?.label
 function showAppliedRule(section, record) {
   emit('show-applied-rule', {periodId:selected.value, section, rowId:record.id})
@@ -82,6 +83,7 @@ watch(()=>[draft.value?.periodId,draft.value?.version],()=>{aggregateGroup.value
 const refundColumns = computed(() => [
   { title: '原订单', key: 'order', width: 190 },
   { title: '原受益对象', key: 'beneficiary', width: 140 },
+  { title: '原收款安排', key: 'component', width: 135 },
   { title: '原结算账期', dataIndex: 'originalPeriod', width: 135 },
   { title: '退款归属期', dataIndex: 'refundPeriod', width: 135 },
   { title: '实际归账期', dataIndex: 'postingPeriod', width: 135 },
@@ -419,7 +421,7 @@ async function loadMore(section, cursorName) {
             {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池 · 待分配</small>
             <small v-else-if="record.beneficiaryKind==='company'" class="order-version">{{ record.beneficiaryUnitKind==='DEPARTMENT' ? '部门分润' : '公司分润' }}</small>
           </template>
-          <template v-else-if="column.key === 'component'">{{ salesRoles[record.componentRole] || record.componentLabel || componentLabel(record.component) }}</template>
+          <template v-else-if="column.key === 'component'">{{ postingArrangement(record) }}</template>
           <template v-else-if="column.key === 'rule'">
             <button v-if="record.ruleVersion" type="button" class="order-link" :aria-label="'查看规则 v'+record.ruleVersion"
               @click="showAppliedRule('lines',record)">v{{ record.ruleVersion }}</button>
@@ -439,7 +441,7 @@ async function loadMore(section, cursorName) {
   <section v-if="draft.scopeRefundCount ?? draft.refundCount" class="records draft-issues">
     <div class="records-head"><h2>{{ draft.practiceRefundMonth ? '退款调整明细' : '退款扣减明细' }}</h2></div>
     <div class="table-container">
-      <a-table :columns="refundColumns" :data-source="draft.refunds" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: 840 }">
+      <a-table :columns="refundColumns" :data-source="draft.refunds" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: 985 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
             <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.originalOrderNo || record.originalOrderId }}</button>
@@ -456,6 +458,7 @@ async function loadMore(section, cursorName) {
             {{ record.personName }}<small v-if="record.beneficiaryKind==='pool'" class="order-version">团队池</small>
             <small v-else-if="record.beneficiaryKind==='company'" class="order-version">公司分润</small>
           </template>
+          <template v-else-if="column.key === 'component'">{{ postingArrangement(record) }}</template>
           <template v-else-if="column.key === 'amount'">
             <strong class="numeric">{{ formatMoney(record.amountMinor) }}</strong>
             <small v-if="record.tierCredit" class="order-version">阶梯复算补计</small>

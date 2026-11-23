@@ -592,6 +592,27 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 var draftLinePageScope = `l.period_id=d.period_id AND l.id>$2 AND NOT l.practice_tier_reference
  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `))`
 
+const draftPostingLabelSQL = `CASE WHEN rv.id IS NOT NULL AND starts_with(l.component_type,'period:')
+     THEN CASE split_part(l.component_type,':',2)
+       WHEN 'company_sales' THEN rv.components->(split_part(l.component_type,':',3)::int)->'companySales'->>'label'
+       WHEN 'retrain_service' THEN (
+        SELECT split->>'serviceLabel'
+        FROM jsonb_array_elements(rv.components->(split_part(l.component_type,':',3)::int)->'retrainSplits') split
+        WHERE split->>'companyId'=company.company_id)
+       ELSE (
+        SELECT coalesce(role.label,
+         CASE WHEN b.benefit->>'labelIsCustom' IS DISTINCT FROM 'true' AND b.benefit->>'label'='SERVICE' THEN '服务' END,
+         b.benefit->>'label')
+        FROM (SELECT rv.components->(split_part(l.component_type,':',3)::int)->'periodBenefit' AS benefit) b
+        LEFT JOIN configuration_options role ON role.group_key='catalogAppointmentRole'
+         AND role.option_key=b.benefit->>'label' AND b.benefit->>'labelIsCustom' IS DISTINCT FROM 'true') END
+     WHEN e.id IS NOT NULL AND rv.id IS NOT NULL AND l.component_type IN ('sales','referral') THEN (
+       SELECT coalesce(part->>'label',part->>'salesLabel') FROM jsonb_array_elements(rv.components) part
+       WHERE part->>'type'=l.component_type AND (
+         coalesce(part->>'classMember','')='' OR part->>'classMember'=CASE e.membership_type WHEN 3 THEN 'new' WHEN 2 THEN 'retrain' END
+         OR (e.membership_type=2 AND part#>>'{tiers,includeRetrain}'='true')) LIMIT 1)
+     ELSE action.definition->>'label' END`
+
 var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `{{lineDisplayCTE}}
  SELECT jsonb_build_object(
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
@@ -632,20 +653,7 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `{{lineD
   SELECT l.id,coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name) AS "personName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    l.component_type AS "component", beneficiary.kind AS "beneficiaryUnitKind",
-   CASE WHEN rv.id IS NOT NULL AND starts_with(l.component_type,'period:')
-     THEN CASE split_part(l.component_type,':',2)
-       WHEN 'company_sales' THEN rv.components->(split_part(l.component_type,':',3)::int)->'companySales'->>'label'
-       WHEN 'retrain_service' THEN (
-        SELECT split->>'serviceLabel'
-        FROM jsonb_array_elements(rv.components->(split_part(l.component_type,':',3)::int)->'retrainSplits') split
-        WHERE split->>'companyId'=company.company_id)
-       ELSE rv.components->(split_part(l.component_type,':',3)::int)->'periodBenefit'->>'label' END
-     WHEN e.id IS NOT NULL AND rv.id IS NOT NULL AND l.component_type IN ('sales','referral') THEN (
-       SELECT coalesce(part->>'label',part->>'salesLabel') FROM jsonb_array_elements(rv.components) part
-       WHERE part->>'type'=l.component_type AND (
-         coalesce(part->>'classMember','')='' OR part->>'classMember'=CASE e.membership_type WHEN 3 THEN 'new' WHEN 2 THEN 'retrain' END
-         OR (e.membership_type=2 AND part#>>'{tiers,includeRetrain}'='true')) LIMIT 1)
-     ELSE action.definition->>'label' END AS "componentLabel",nullif(split_part(l.component_type,':',2),'') AS "componentRole",
+   ` + draftPostingLabelSQL + ` AS "componentLabel",nullif(split_part(l.component_type,':',2),'') AS "componentRole",
    l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",l.aggregate_group_key AS "aggregateGroupKey",o.source,o.order_id AS "orderId",
    o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",o.id AS "sourceVersionId",coalesce(rv.version,cv.version_no) AS "ruleVersion",
    completed.occurred_at AS "completedAt",
@@ -674,28 +682,34 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `{{lineD
   {{lineSearch}} ORDER BY l.id LIMIT {{detailLimit}}
  ) l),'[]'),
  'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (
-  SELECT a.id,a.amount_minor AS "amountMinor",a.tier_credit AS "tierCredit",rv.fact->>'refundId' AS "refundId",rv.version AS "refundVersion",
-   rv.id AS "refundSourceVersionId",
-   coalesce(p.name,practice_pool.name,pool.name,beneficiary.name) AS "personName",
+  SELECT a.id,a.amount_minor AS "amountMinor",a.tier_credit AS "tierCredit",event.fact->>'refundId' AS "refundId",event.version AS "refundVersion",
+   event.id AS "refundSourceVersionId",
+   coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name) AS "personName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
-   o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",o.id AS "sourceVersionId",coalesce(r.version,cv.version_no) AS "ruleVersion",
-   CASE WHEN l.practice_enrollment_id IS NOT NULL AND rv.order_id<>o.order_id THEN rv.order_id END AS "replayTriggerOrderId",
-   coalesce(package.name,r.label) AS "ruleLabel",
+   o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",o.id AS "sourceVersionId",coalesce(rv.version,cv.version_no) AS "ruleVersion",
+   CASE WHEN l.practice_enrollment_id IS NOT NULL AND event.order_id<>o.order_id THEN event.order_id END AS "replayTriggerOrderId",
+   coalesce(package.name,rv.label) AS "ruleLabel",
+   l.component_type AS "component",` + draftPostingLabelSQL + ` AS "componentLabel",
+   nullif(split_part(l.component_type,':',2),'') AS "componentRole",
    original_period.name AS "originalPeriod",refund_period.name AS "refundPeriod",posting_period.name AS "postingPeriod"
   FROM calculation_draft_refunds a
-  JOIN source_order_versions rv ON rv.id=a.refund_source_version_id
+  JOIN source_order_versions event ON event.id=a.refund_source_version_id
   JOIN calculation_draft_lines l ON l.id=a.original_line_id
   LEFT JOIN catalog_aggregate_draft_events aggregate_refund ON l.aggregate_group_key IS NOT NULL
    AND aggregate_refund.period_id=a.period_id AND aggregate_refund.source_version_id=a.refund_source_version_id
   JOIN source_order_versions o ON o.id=coalesce(l.source_version_id,aggregate_refund.payment_version_id)
   LEFT JOIN people p ON p.id=l.person_id LEFT JOIN organization_units beneficiary ON beneficiary.id=l.beneficiary_unit_id
   LEFT JOIN practice_pools practice_pool ON practice_pool.id=l.practice_pool_id
-  LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
+  LEFT JOIN rule_versions rv ON rv.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
   LEFT JOIN product_rule_packages package ON package.source_id=cv.package_id
+  LEFT JOIN practice_enrollments e ON e.id=l.practice_enrollment_id
+  LEFT JOIN source_payment_companies company ON company.source_version_id=l.source_version_id AND e.id IS NOT NULL
   LEFT JOIN LATERAL (
-   SELECT b->>'pool_name' AS name FROM jsonb_array_elements(cv.definition->'benefit_actions') b
-   WHERE l.allocation_owner_id IS NOT NULL AND b->>'item_key'=l.component_type LIMIT 1
-  ) pool ON true
+   SELECT b AS definition FROM jsonb_array_elements(cv.definition->'benefit_actions') b
+   WHERE b->>'item_key'=l.component_type OR
+    (b->>'item_key'=cv.definition#>>'{internal_sales_direct_split,sales_item_key}' AND starts_with(l.component_type,(b->>'item_key')||':'))
+   ORDER BY (b->>'item_key'=l.component_type) DESC LIMIT 1
+  ) action ON true
   JOIN periods original_period ON original_period.id=l.period_id JOIN periods refund_period ON refund_period.id=a.refund_period_id
   JOIN periods posting_period ON posting_period.id=a.period_id
   WHERE a.period_id=d.period_id AND a.id>$5
@@ -791,7 +805,7 @@ var filteredDraftDetailSQL = organizationScopeQuery(strings.NewReplacer(
 		draftDetailFilter(draftDetailOrderMatch("o", "o.fact->>'orderNo'")+" OR "+draftAggregateOrderMatch,
 			"coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name)"),
 	"{{refundSearch}}", draftDetailFilter(draftDetailOrderMatch("o", "o.fact->>'orderNo'"),
-		"coalesce(p.name,practice_pool.name,pool.name,beneficiary.name)"),
+		"coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name)"),
 	"{{correctionSearch}}", draftDetailFilter(draftDetailOrderMatch("paid",
 		"CASE WHEN paid.order_id=v.order_id AND v.kind='ORDER_PAID' THEN v.fact->>'orderNo' ELSE paid.fact->>'orderNo' END"),
 		"coalesce(p.name,pool.name,recipient.name)", "coalesce(old_person.name,pool.name,old_recipient.name)"),
@@ -838,28 +852,59 @@ func withDraftDetailPagination(raw json.RawMessage) (json.RawMessage, error) {
 	return json.Marshal(result)
 }
 
-const draftRuleReferenceSQL = `SELECT rule_id,catalog_rule_id::text,component_type,aggregate_group_key IS NOT NULL
+const draftRuleReferenceSQL = `WITH ref AS (
+ SELECT rule_id,catalog_rule_id::text,component_type,aggregate_group_key IS NOT NULL AS aggregate,
+  practice_enrollment_id,period_id,source_version_id
  FROM calculation_draft_lines WHERE $3::text='lines' AND period_id=$1 AND id=$2
  UNION ALL
- SELECT l.rule_id,l.catalog_rule_id::text,l.component_type,l.aggregate_group_key IS NOT NULL FROM calculation_draft_refunds r
+ SELECT l.rule_id,l.catalog_rule_id::text,l.component_type,l.aggregate_group_key IS NOT NULL,
+  l.practice_enrollment_id,l.period_id,l.source_version_id FROM calculation_draft_refunds r
  JOIN calculation_draft_lines l ON l.id=r.original_line_id
  WHERE $3::text='refunds' AND r.period_id=$1 AND r.id=$2
  UNION ALL
- SELECT l.rule_id,l.catalog_rule_id::text,l.component_type,false FROM calculation_draft_corrections c
+ SELECT l.rule_id,l.catalog_rule_id::text,l.component_type,false,l.practice_enrollment_id,l.period_id,l.source_version_id
+ FROM calculation_draft_corrections c
  JOIN calculation_draft_lines l ON l.id=c.original_line_id
  WHERE $3::text='corrections' AND c.period_id=$1 AND c.id=$2
  UNION ALL
- SELECT d.rule_id,NULL::text,i.component_type,false FROM calculation_draft_issues i
+ SELECT d.rule_id,NULL::text,i.component_type,false,i.practice_enrollment_id,i.period_id,i.source_version_id
+ FROM calculation_draft_issues i
  JOIN calculation_drafts d ON d.period_id=i.period_id
  WHERE $3::text='issues' AND i.period_id=$1 AND i.id=$2 AND d.rule_id IS NOT NULL
-  AND starts_with(i.component_type,'period:')`
+  AND starts_with(i.component_type,'period:')
+)
+SELECT ref.rule_id,ref.catalog_rule_id,ref.component_type,ref.aggregate,e.membership_type,company.company_id
+FROM ref LEFT JOIN practice_enrollments e ON e.id=ref.practice_enrollment_id
+LEFT JOIN calculation_draft_performance company
+ ON ref.catalog_rule_id IS NOT NULL AND NOT ref.aggregate AND company.period_id=ref.period_id
+ AND company.source_version_id=ref.source_version_id AND company.payment_version_id IS NULL`
 
 type draftRuleDetails struct {
-	Rule      json.RawMessage       `json:"rule,omitempty"`
-	Catalog   *catalogRateSheet     `json:"catalog,omitempty"`
-	Aggregate *catalogPeriodVersion `json:"aggregate,omitempty"`
-	Directory json.RawMessage       `json:"directory,omitempty"`
-	Component string                `json:"component"`
+	Rule           json.RawMessage       `json:"rule,omitempty"`
+	Catalog        *catalogRateSheet     `json:"catalog,omitempty"`
+	Aggregate      *catalogPeriodVersion `json:"aggregate,omitempty"`
+	Directory      json.RawMessage       `json:"directory,omitempty"`
+	Component      string                `json:"component"`
+	MembershipType *int                  `json:"membershipType,omitempty"`
+	TeamKey        string                `json:"teamKey,omitempty"`
+}
+
+func (s workspace) appliedCatalogTeamKey(ctx context.Context, company pgtype.UUID, teams []catalogRuleTeam) (string, error) {
+	if !company.Valid || len(teams) == 0 {
+		return "", nil
+	}
+	keys := make([]string, 0, len(teams))
+	for _, team := range teams {
+		keys = append(keys, team.Key)
+	}
+	// The company in the original posting is authoritative. A historical
+	// alias is usable only if it identifies one team in the applied version.
+	var key string
+	err := s.db.QueryRow(ctx, `SELECT CASE WHEN count(DISTINCT t.key)=1 THEN min(t.key) ELSE '' END
+	 FROM unnest($2::text[]) AS t(key) WHERE t.key=$1::uuid::text OR EXISTS (
+	  SELECT 1 FROM catalog_sales_company_aliases a WHERE a.source='DCAI' AND a.company_unit_id=$1
+	   AND a.company_uuid::text=t.key)`, company, keys).Scan(&key)
+	return key, err
 }
 
 func (s workspace) getDraftRule(w http.ResponseWriter, r *http.Request) {
@@ -877,7 +922,9 @@ func (s workspace) getDraftRule(w http.ResponseWriter, r *http.Request) {
 	var ruleID *int64
 	var catalogID *string
 	var aggregate bool
-	err := s.db.QueryRow(ctx, draftRuleReferenceSQL, periodID, rowID, section).Scan(&ruleID, &catalogID, &result.Component, &aggregate)
+	var company pgtype.UUID
+	err := s.db.QueryRow(ctx, draftRuleReferenceSQL, periodID, rowID, section).
+		Scan(&ruleID, &catalogID, &result.Component, &aggregate, &result.MembershipType, &company)
 	if err != nil {
 		respond(w, nil, err)
 		return
@@ -899,6 +946,10 @@ func (s workspace) getDraftRule(w http.ResponseWriter, r *http.Request) {
 		sheet, sheetErr := s.catalogRuleRateSheet(ctx, *catalogID)
 		sheet.MayPublish = false
 		result.Catalog, err = &sheet, sheetErr
+		if err == nil && (strings.HasSuffix(result.Component, ":DCAI_SERVICE") ||
+			strings.HasSuffix(result.Component, ":DCAI_TEAM_HEAD") || result.Component == vipTeamLeaderItem) {
+			result.TeamKey, err = s.appliedCatalogTeamKey(ctx, company, sheet.Teams)
+		}
 	case ruleID != nil:
 		err = s.db.QueryRow(ctx, `SELECT to_jsonb(rv_row) FROM (`+ruleVersionRowsSQL+` WHERE rv.id=$1) rv_row`, *ruleID).Scan(&result.Rule)
 		if err == nil {

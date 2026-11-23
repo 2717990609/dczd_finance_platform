@@ -9,14 +9,25 @@ import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyMatchLabe
 const props = defineProps({
   rule: Object, canCopy: Boolean, canEditService: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
   formatTime: Function, formatMoney: Function, people: Array, openingLabel: Function, title: String, recipients: Object,
-  embedded: Boolean, component: String, registrationCompanies: Array,
+  embedded: Boolean, component: String, membershipType:Number, registrationCompanies: Array,
 })
 const emit = defineEmits(['close','copy','edit-service'])
 const loadedRecipients = ref()
 const match = /^period:([^:]+):(\d+)$/.exec(props.component || '')
-const selectedPart = match ? Number(match[2]) : undefined
-const activePart = ref(match && props.rule.components[selectedPart]?.type===match[1]
+const partType = {retrain_service:'sales',retrain_pool:'sales',company_referral:'company_sales'}[match?.[1]] || match?.[1]
+const membership = {2:'retrain',3:'new'}[props.membershipType]
+const selectedPart = match ? Number(match[2]) : props.component
+  ? props.rule.components.findIndex(part=>part.type===props.component &&
+    (!part.classMember || part.classMember===membership || (membership==='retrain' && part.tiers?.includeRetrain)))
+  : -1
+const activePart = ref(selectedPart>=0 && (!match || props.rule.components[selectedPart]?.type===partType)
   ? selectedPart : props.embedded || props.rule.components.length===1 ? 0 : undefined)
+const ruleSection = ref()
+function scrollToApplied(open) {
+  if (open && props.component) {
+    ruleSection.value?.querySelector('.rule-block-header[aria-expanded="true"]')?.scrollIntoView({block:'start'})
+  }
+}
 const directoryError = ref('')
 const directory = computed(() => loadedRecipients.value ?? props.recipients)
 const label = (group, key) => props.optionLabel(group, key) || key
@@ -168,8 +179,9 @@ onMounted(async () => {
 </script>
 
 <template>
-  <component :is="embedded ? 'div' : Drawer" v-bind="embedded ? {} : {open:true,title:title || '查看规则',width:'min(1120px, 100vw)',rootClassName:'finance-rule-editor'}" @close="emit('close')">
-    <section aria-label="规则详情" class="rule-preview">
+  <component :is="embedded ? 'div' : Drawer" v-bind="embedded ? {} : {open:true,title:title || '查看规则',width:'min(1120px, 100vw)',rootClassName:'finance-rule-editor'}"
+    @after-open-change="scrollToApplied" @close="emit('close')">
+    <section ref="ruleSection" aria-label="规则详情" class="rule-preview">
       <h2>{{ rule.label }} <a-tag>{{ embedded ? '待发布' : 'v'+rule.version }}</a-tag></h2>
       <a-alert v-if="directoryError" class="feedback" :message="directoryError" type="warning" show-icon/>
       <a-descriptions bordered size="small" :column="{xs:1,sm:1,md:2}" class="rule-preview-scope">
