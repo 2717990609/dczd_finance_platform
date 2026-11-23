@@ -11,9 +11,14 @@ import (
 var errCorrectionRecoveryStillAppointed = errors.New("原收款人当前仍有有效任职，请登记扣回")
 
 func correctionRecipientHasActiveAssignmentSQL(personID string) string {
-	return `EXISTS(SELECT 1 FROM organization_assignments a JOIN organization_units u ON u.id=a.unit_id
+	return `(EXISTS(SELECT 1 FROM organization_assignments a JOIN organization_units u ON u.id=a.unit_id
  WHERE a.person_id=` + personID + ` AND u.status='ACTIVE'
-  AND a.valid_from<=CURRENT_TIMESTAMP AND (a.valid_to IS NULL OR CURRENT_TIMESTAMP<a.valid_to))`
+  AND a.valid_from<=CURRENT_TIMESTAMP AND (a.valid_to IS NULL OR CURRENT_TIMESTAMP<a.valid_to))
+ OR EXISTS(SELECT 1 FROM catalog_current_sales_appointments a
+ WHERE a.person_id=` + personID + ` AND a.valid_from<=CURRENT_TIMESTAMP
+  AND (a.valid_to IS NULL OR CURRENT_TIMESTAMP<a.valid_to)
+  AND (a.scope<>'ORGANIZATION_UNIT' OR EXISTS(SELECT 1 FROM organization_units u
+   WHERE u.id::text=a.scope_key AND u.status='ACTIVE'))))`
 }
 
 type reviewCorrectionRecoveryInput struct {

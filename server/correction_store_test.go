@@ -215,10 +215,38 @@ func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t 
 		t.Fatal(err)
 	}
 	waiverAvailable(true)
+	// A salesperson may still have a product or project appointment while
+	// switching departments. Only the current appointment version is relevant.
+	if _, err := service.db.Exec(ctx, `INSERT INTO catalog_sales_context(source,captured_at,appointments_at,snapshot_digest)
+	 VALUES('DCAI',now()-interval '3 days',now()-interval '2 days',decode('ff','hex'));`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.Exec(ctx, `INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,valid_from,observed_at)
+	 SELECT gen_random_uuid(),source,$1,'SALES','PROJECT','AI',now()-interval '1 month',snapshot.at
+	 FROM catalog_sales_context CROSS JOIN LATERAL unnest(ARRAY[captured_at,appointments_at]) AS snapshot(at)
+	 WHERE source='DCAI'`, a); err != nil {
+		t.Fatal(err)
+	}
+	waiverAvailable(false)
+	callDecision(key, needsCheck.Version, issueID, "departed_unreachable", http.StatusConflict)
+	if _, err := service.db.Exec(ctx, `UPDATE catalog_sales_appointments a SET valid_to=now()
+	 FROM catalog_sales_context c WHERE a.source=c.source AND a.person_id=$1 AND a.observed_at=c.appointments_at`, a); err != nil {
+		t.Fatal(err)
+	}
+	waiverAvailable(true)
 	// The stored issue must not authorize a write when its deduction no longer exists.
 	review(a, "departed_unreachable")
 	callDecision(key, needsCheck.Version, issueID, "recover", http.StatusConflict)
 	if _, err := service.db.Exec(ctx, `DELETE FROM correction_recovery_decisions WHERE original_line_id=$1 AND person_id=$2`, originalLine, a); err != nil {
+		t.Fatal(err)
+	}
+	callDecision(key, needsCheck.Version, issueID, "departed_unreachable", http.StatusOK)
+	draftAt(july, 120, 1, 0)
+	if _, err := service.db.Exec(ctx, `DELETE FROM correction_recovery_decisions WHERE original_line_id=$1 AND person_id=$2`, originalLine, a); err != nil {
+		t.Fatal(err)
+	}
+	needsCheck = draftAt(july, 120, 1, 1)
+	if err := service.db.QueryRow(ctx, `SELECT id FROM calculation_draft_issues WHERE period_id=$1 AND code='CORRECTION_RECOVERY_PENDING'`, july).Scan(&issueID); err != nil {
 		t.Fatal(err)
 	}
 	local := service
