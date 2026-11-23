@@ -15,6 +15,12 @@ const draftRefreshNewCalendarPeriod = `SELECT $1::bigint UNION SELECT period_id 
  WHERE created.id=$1 AND refund.occurred_at>=created.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
   AND refund.occurred_at<(created.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'`
 
+const draftRefreshNewAggregatePeriod = `SELECT $1::bigint
+ UNION SELECT issue.period_id FROM periods created JOIN periods pending USING(aggregate_package_id)
+ JOIN calculation_draft_issues issue ON issue.period_id=pending.id AND issue.code='AGGREGATE_REFUND_MONTH_MISSING'
+ JOIN source_order_versions refund ON refund.id=issue.source_version_id
+ WHERE created.id=$1 AND (refund.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN created.starts_on AND created.ends_on`
+
 const draftFinancialFactChanged = `(current.fact-` + draftDisplayFactFields + `,current.occurred_at,
  cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,cv.company_id,cv.recommendation_company_id,cv.recommendation_conflict,
  current.practice_registration) IS DISTINCT FROM (previous.fact-` + draftDisplayFactFields + `,previous.occurred_at,
@@ -153,9 +159,14 @@ UNION SELECT p.id FROM mapped events JOIN product_catalog_settings source ON sou
 UNION ` + healthCompletionAffectedPeriodsSQL + `
 UNION SELECT p.id FROM late l JOIN calendar p USING(product_id)
  WHERE (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
+UNION SELECT p.id FROM refund_versions changed JOIN source_order_versions v USING(id)
+ JOIN periods p ON p.aggregate_package_id IS NOT NULL
+  AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
+  AND v.occurred_at<p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
+ WHERE ` + catalogAggregateMissingRefundMonthSQL("p.aggregate_package_id") + `
 UNION SELECT refund.period_id FROM refund_versions v JOIN calculation_draft_refunds refund ON refund.refund_source_version_id=v.id
 UNION SELECT issue.period_id FROM refund_versions v JOIN calculation_draft_issues issue ON issue.source_version_id=v.id
- WHERE issue.code='REFUND_MONTH_MISSING'
+ WHERE issue.code IN ('REFUND_MONTH_MISSING','AGGREGATE_REFUND_MONTH_MISSING')
 UNION SELECT a.period_id FROM refund_versions v JOIN catalog_aggregate_draft_events a ON a.source_version_id=v.id
 UNION SELECT posted.period_id FROM refund_versions v JOIN calculation_draft_performance posted ON posted.source_version_id=v.id
  WHERE posted.payment_version_id IS NOT NULL

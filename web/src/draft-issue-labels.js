@@ -12,6 +12,7 @@ export const draftIssueLabels = {
   AGGREGATE_SCENARIO_UNMAPPED: '参与场景缺少本期订单映射',
   AGGREGATE_PRIOR_UNSETTLED: '上一账期尚未确认，结转退款待核',
   AGGREGATE_ORIGINAL_AMOUNT_CHANGED: '已结算的原付款金额有变更',
+  AGGREGATE_REFUND_MONTH_MISSING: '请按该整期规则打开退款发生月的草稿',
   AGGREGATE_SALES_ORGANIZATION_MISSING: '原付款缺少有效的部门或小组归属',
   COMMISSION_SALES_ORGANIZATION_MISSING: '付款时的销售公司、部门或小组归属待核',
   AGGREGATE_PERFORMANCE_APPOINTMENT_MISSING: '缺少规则指定的任职记录',

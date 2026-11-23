@@ -290,7 +290,7 @@ func createCatalogAggregatePeriod(ctx context.Context, tx pgx.Tx, input catalogA
 		month, rule.packageID).Scan(&id); err != nil {
 		return 0, err
 	}
-	return id, enqueueDraftPeriods(ctx, tx, `SELECT $1::bigint`, id)
+	return id, enqueueDraftPeriods(ctx, tx, draftRefreshNewAggregatePeriod, id)
 }
 
 func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window periodWindow) (paymentDraft, []byte, error) {

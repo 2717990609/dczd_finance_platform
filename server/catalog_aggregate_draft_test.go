@@ -13,6 +13,122 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func TestCatalogAggregateRefundWaitsForItsMissingAccountingMonth(t *testing.T) {
+	ctx := context.Background()
+	db := integrationDB(t)
+	s := workspace{db: db, development: true}
+	now := time.Now().In(shanghai)
+	currentMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, shanghai)
+	refundMonth, paidMonth := currentMonth.AddDate(0, -1, 0), currentMonth.AddDate(0, -2, 0)
+	const packageID = "10000000-0000-4000-8000-000000000820"
+	const ruleID = "10000000-0000-4000-8000-000000000805"
+	setup := []string{
+		`INSERT INTO products(id,code,name,period_mode,cycle_start_day) OVERRIDING SYSTEM VALUE VALUES(805,'REFUND_GAP','整期样本','calendar',25)`,
+		`INSERT INTO product_catalog_settings(product_id,source_id,source_environment,project_code,source_system,source_key,captured_at,snapshot_digest)
+		 VALUES(805,gen_random_uuid(),'test','DCAI','DCAI','fixture','2020-01-01',sha256('fixture'::bytea))`,
+		`INSERT INTO product_rule_packages(source_id,product_id,code,name,project_code,policy_kind,scope_type,scope_id,paused)
+		 VALUES('10000000-0000-4000-8000-000000000820',805,'period-test','整期奖','DCAI','COMPONENT_RULE','CROSS_SCENARIO_AGGREGATE','period-test',false)`,
+		`INSERT INTO catalog_business_routes(source_id,product_id,source,domain,entity_type,record_table,business_key,classifier,
+		 sku_code,sku_label,mapping_version,effective_from,observed_at,source_product_code)
+		 VALUES(gen_random_uuid(),805,'DCAI','VIP','ORDER','vip','first','VIP','FIRST','会员',1,'2020-01-01','2020-01-01','fixture')`,
+		`INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES(5801,'整期收款人')`,
+	}
+	for _, statement := range setup {
+		if _, err := db.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	const definition = `{
+	 "amount_basis":"ACTUAL_RECEIVED","recognition_trigger":"PAID","refund_policy":"PROPORTIONAL","stacking_policy":"SUM",
+	 "rounding_policy":{"mode":"HALF_UP","scale":2},
+	 "policy_scope":{"sales_systems":["DCAI"],"business_sku_codes":["FIRST"],"financial_event_types":["order.paid"]},
+	 "settlement_policy":{"cycle":"MONTHLY","negative_balance_policy":"CARRY_FORWARD"},
+	 "benefit_actions":[{"item_key":"ops","label":"整期分润","type":"TIER_RATE","metric_code":"MONTHLY_NET_RECEIPTS","metric_unit":"AMOUNT_MINOR",
+	  "beneficiary_mode":"PARTY","designated_party_id":"person:5801","role":"DIRECT_BENEFIT","tier_table":[{"rate_bps":1000}]}]}`
+	if _, err := db.Exec(ctx, `INSERT INTO product_rule_versions(source_id,package_id,version_no,source_status,effective_from,content_hash,definition,observed_at)
+	 VALUES($1,$2,1,'PUBLISHED',$3,'fixture',$4,'2020-01-01')`, ruleID, packageID, paidMonth, definition); err != nil {
+		t.Fatal(err)
+	}
+	open := func(month time.Time) draftSummary {
+		t.Helper()
+		value, err := s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: ruleID, Month: month.Format("2006-01")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(draftSummary)
+	}
+	save := func(f sourceFact) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+			_, err := storeSourceFacts(ctx, tx, []sourceFact{f})
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paidAt, refundedAt := paidMonth.AddDate(0, 0, 4), refundMonth.AddDate(0, 0, 4)
+	paid, returned := int64(100000), int64(50000)
+	save(sourceFact{Source: "DCAI", Domain: "VIP", SourceKey: "fixture", Kind: "ORDER_PAID", OrderID: "101",
+		PaymentID: "101", RecordKey: "vip:101", Version: "1", AmountMinor: &paid, OccurredAt: paidAt, UpdatedAt: paidAt,
+		Classification: sourceClassification{Entity: "ORDER", Key: "first", Classifier: "VIP"}})
+	original := open(paidMonth)
+	if original.Total != 10000 || original.IssueCount != 0 {
+		t.Fatalf("settle the original payment: %+v", original)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`,
+		original.PeriodID, original.Version); err != nil {
+		t.Fatal(err)
+	}
+	current := open(currentMonth)
+	save(sourceFact{Source: "DCAI", Domain: "VIP", SourceKey: "fixture", Kind: "REFUND_SUCCEEDED", OrderID: "101",
+		RefundID: "refund-101", RecordKey: "vip:refund-101", Version: "1", AmountMinor: &returned, OccurredAt: refundedAt, UpdatedAt: now,
+		RefundsPayment: []sourcePaymentReference{{OrderID: "101", RecordID: "101"}}})
+	refresh := func() {
+		t.Helper()
+		if err := s.refreshPendingDrafts(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	assertMissing := func(want bool) {
+		t.Helper()
+		var missing bool
+		var counted int
+		if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM calculation_draft_issues WHERE period_id=$1 AND code='AGGREGATE_REFUND_MONTH_MISSING'),
+		 (SELECT count(*) FROM catalog_aggregate_draft_events WHERE period_id=$1 AND source_version_id<>payment_version_id)`, current.PeriodID).
+			Scan(&missing, &counted); err != nil || missing != want || counted != 0 {
+			t.Fatalf("current draft: missing=%t, refunds=%d, err=%v, expected missing=%t and no posting", missing, counted, err, want)
+		}
+	}
+	refresh()
+	assertMissing(true)
+	reply := httptest.NewRecorder()
+	s.getCatalogPeriodActivity(reply, httptest.NewRequest(http.MethodGet,
+		"/api/v1/catalog-period-activity?ruleId="+ruleID+"&month="+currentMonth.Format("2006-01"), nil))
+	var preview catalogPeriodActivity
+	if err := json.Unmarshal(reply.Body.Bytes(), &preview); err != nil || reply.Code != http.StatusOK ||
+		preview.Issues["AGGREGATE_REFUND_MONTH_MISSING"] != 1 || preview.Refunds != 0 {
+		t.Fatalf("preview must report the missing month without a debit: %d %s %v", reply.Code, reply.Body, err)
+	}
+	posting := open(refundMonth)
+	var refund, carry int64
+	if err := db.QueryRow(ctx, `SELECT refunds_minor,carry_out_minor FROM catalog_aggregate_draft_groups WHERE period_id=$1`, posting.PeriodID).
+		Scan(&refund, &carry); err != nil || refund != returned || carry != -returned || posting.IssueCount != 0 {
+		t.Fatalf("refund principal belongs to the refund month: refund=%d carry=%d draft=%+v err=%v", refund, carry, posting, err)
+	}
+	refresh()
+	assertMissing(false)
+	if _, err := db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`,
+		posting.PeriodID, posting.Version); err != nil {
+		t.Fatal(err)
+	}
+	open(currentMonth)
+	assertMissing(false)
+	if err := db.QueryRow(ctx, `SELECT refunds_minor,carry_in_minor FROM catalog_aggregate_draft_groups WHERE period_id=$1`, current.PeriodID).
+		Scan(&refund, &carry); err != nil || refund != 0 || carry != -returned {
+		t.Fatalf("only the balance carries forward: new refunds=%d carry=%d err=%v", refund, carry, err)
+	}
+}
+
 func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t *testing.T) {
 	ctx := context.Background()
 	db := integrationDB(t)

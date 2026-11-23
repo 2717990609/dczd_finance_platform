@@ -93,7 +93,7 @@ const issueColumns = [
   { title: '处理说明', key: 'reason', width: 240 },
 ]
 const ruleIssues = new Set(['RULE_MISSING','RULE_CONFLICT','MISSING_EFFECTIVE_RULE','UNCONFIGURED_COMPONENT',
-  'PRACTICE_MEMBER_RULE_MISSING','PRACTICE_TIER_COMPANY_NOT_CONFIGURED','PRACTICE_PERIOD_BENEFIT_TIER_MISSING'])
+  'PRACTICE_MEMBER_RULE_MISSING','PRACTICE_TIER_COMPANY_NOT_CONFIGURED','PRACTICE_PERIOD_BENEFIT_TIER_MISSING','AGGREGATE_REFUND_MONTH_MISSING'])
 
 function appendDetailFilters(params) {
   for (const [name,value] of Object.entries(detailQuery.value)) {

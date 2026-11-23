@@ -54,6 +54,7 @@ let activityRequest = 0
 const cycleLabels = {MONTHLY:'自然月',MONTHLY_25_TO_24:'每月 25 日至次月 24 日'}
 const cycleOptions = Object.entries(cycleLabels).map(([value,label])=>({value,label}))
 const activityIssueLabels = {
+  AGGREGATE_REFUND_MONTH_MISSING:'请按该整期规则打开退款发生月的草稿',
   REFUND_ADJUSTMENT:'退款更正待核对', INVALID_EVENT:'交易编号或金额缺失', DUPLICATE_EVENT:'交易编号重复',
   REFUND_ORIGIN_MISSING:'退款未能唯一关联原付款', UNCLASSIFIED:'原付款未分类', MAPPING_MISSING:'缺少场景映射',
   MAPPING_CONFLICT:'场景映射冲突', INVALID_PAYMENT:'原付款信息不完整', REFUND_EXCEEDS_PAYMENT:'累计退款超过原付款',
