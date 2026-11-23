@@ -351,15 +351,20 @@ func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPe
 	if event.originClosed {
 		return catalogPerformanceDecision{excluded: true}
 	}
-	if decision := d.matchAppointment(scope.Appointment, event.PaidAt); decision.excluded || decision.issue != "" {
+	appointment := d.matchAppointment(scope.Appointment, event.PaidAt)
+	if appointment.excluded {
+		return appointment
+	}
+	if decision := d.matchSales(event, scope.UnitIDs, 0); decision.excluded || decision.issue != "" {
 		return decision
 	}
-	return d.matchSales(event, scope.UnitIDs, 0)
+	return appointment
 }
 
 func (d catalogPerformanceDirectory) matchItem(event catalogActivityEvent, item catalogPeriodItem) catalogPerformanceDecision {
-	if decision := d.matchAppointment(item.Appointment, event.PaidAt); decision.excluded || decision.issue != "" {
-		return decision
+	appointment := d.matchAppointment(item.Appointment, event.PaidAt)
+	if appointment.excluded {
+		return appointment
 	}
 	var seller int64
 	if item.OwnSales {
@@ -370,7 +375,10 @@ func (d catalogPerformanceDirectory) matchItem(event catalogActivityEvent, item 
 	}
 	category := d.categories[event.PaymentID]
 	matches, issue := catalogSalesCategoryMatches(item.ScopeCategories, category.id, category.issue)
-	return catalogPerformanceDecision{excluded: !matches && issue == "", issue: issue}
+	if !matches {
+		return catalogPerformanceDecision{excluded: issue == "", issue: issue}
+	}
+	return appointment
 }
 
 func (d catalogPerformanceDirectory) matchAppointment(duty *catalogPerformanceDuty, at time.Time) catalogPerformanceDecision {

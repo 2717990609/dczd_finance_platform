@@ -296,11 +296,13 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		"/api/v1/catalog-period-activity?ruleId="+published.ID+"&month=2026-10", nil))
 	var missingAppointment catalogPeriodActivity
 	if err := json.Unmarshal(w.Body.Bytes(), &missingAppointment); err != nil || w.Code != 200 ||
-		missingAppointment.OutsideScope != nil || missingAppointment.Issues["AGGREGATE_PERFORMANCE_APPOINTMENT_MISSING"] != 5 {
+		missingAppointment.OutsideScope == nil ||
+		*missingAppointment.OutsideScope != (catalogPeriodScopeExclusions{Payments: 2, ReceiptsMinor: 120000}) ||
+		missingAppointment.Issues["AGGREGATE_PERFORMANCE_APPOINTMENT_MISSING"] != 3 {
 		t.Fatalf("a missing appointment history must be reported separately from a real out-of-scope payment: %d %s %v", w.Code, w.Body.String(), err)
 	}
 	trial, err = s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: published.ID, Month: "2026-10"})
-	if err != nil || trial.(draftSummary).IssueCount != 5 || trial.(draftSummary).Total != 0 {
+	if err != nil || trial.(draftSummary).IssueCount != 3 || trial.(draftSummary).Total != 0 {
 		t.Fatalf("missing appointment history must prevent settlement instead of producing an empty valid draft: %+v %v", trial, err)
 	}
 	if _, err := db.Exec(ctx, `UPDATE products SET settlement_enabled=true WHERE id=980`); err != nil {

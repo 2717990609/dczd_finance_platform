@@ -331,6 +331,43 @@ func TestPracticeOwnSalesAndLeadershipPayTheSamePersonIndependently(t *testing.T
 	}
 }
 
+func TestPracticeMissingAppointmentAppliesOnlyToMatchingSalesScope(t *testing.T) {
+	const team = "41000000-0000-4000-8000-000000000213"
+	const role = "DIRECT_REFERRER"
+	at := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	amount := int64(10000)
+	members := []practiceEnrollment{
+		{ID: 1, MembershipType: 3, CommissionEligible: true, ConfirmedAt: at, PaidOrderIDs: []string{"11"}},
+		{ID: 2, MembershipType: 3, CommissionEligible: true, ConfirmedAt: at, PaidOrderIDs: []string{"22"}},
+	}
+	orders := map[string][]paymentInput{
+		"11": {{ID: 11, Fact: sourceFact{Source: "DCZD", OrderID: "11", PaymentID: "11", ReferrerID: "a", SalesCompanyID: "company", AmountMinor: &amount, OccurredAt: at.Add(-time.Hour)}}},
+		"22": {{ID: 22, Fact: sourceFact{Source: "DCZD", OrderID: "22", PaymentID: "22", ReferrerID: "b", SalesCompanyID: "company", AmountMinor: &amount, OccurredAt: at.Add(-time.Hour)}}},
+	}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "a"}: {{PersonID: 4}}, {"DCZD", "b"}: {{PersonID: 5}}}
+	runtime := practiceDraftRuntime{salesOrganizations: practiceSalesOrganizations{
+		11: {role: {PersonID: 4, SourceCompany: "company", Group: "other"}},
+		22: {role: {PersonID: 5, SourceCompany: "company", Group: team}},
+	}}
+	rule := paymentRule{ID: 1, Components: []component{
+		{Type: "manager", Mode: "period_rate", ClassMember: "new", SourceRole: role, Value: 100000,
+			PeriodBenefit: &practicePeriodBenefit{PersonID: 7, AppointmentUnitID: team, AppointmentKind: "TEAM_LEAD", SalesUnits: []string{team}}},
+		{Type: "manager", Mode: "period_rate", Value: 50000, PeriodBenefit: &practicePeriodBenefit{PersonID: 8}},
+	}}
+	draft, err := calculatePracticeDraft(members[:1], rule, orders, identities, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || len(draft.Issues) != 0 || len(draft.Lines) != 1 || draft.Total != 500 {
+		t.Fatalf("unrelated sales must not require the appointment: %+v / %v", draft, err)
+	}
+	draft, err = calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || len(draft.Issues) != 1 || len(draft.Lines) != 2 || draft.Total != 1000 {
+		t.Fatalf("missing appointment must affect only the matching arrangement: %+v / %v", draft, err)
+	}
+	issue := draft.Issues[0]
+	if issue.Code != "PRACTICE_PERIOD_APPOINTMENT_MISSING" || issue.FactID != 22 || issue.EnrollmentID != 2 || issue.RuleID != rule.ID {
+		t.Fatalf("issue must point to the in-scope payment and rule: %+v", issue)
+	}
+}
+
 func TestPracticePersonalAndReferralArrangementsUseConfiguredOrderScope(t *testing.T) {
 	const category = "41000000-0000-4000-8000-000000000212"
 	const team = "41000000-0000-4000-8000-000000000213"

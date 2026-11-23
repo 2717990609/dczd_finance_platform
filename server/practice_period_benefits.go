@@ -494,7 +494,7 @@ func (s practiceBenefitShare) paymentShare(index int) practiceBenefitShare {
 func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string, assignments []practiceAppointment,
 	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) (bool, string) {
 	f := payment.Fact
-	if b.AppointmentUnitID != "" && !slices.ContainsFunc(assignments, func(a practiceAppointment) bool {
+	if b.AppointmentUnitID != "" && len(assignments) > 0 && !slices.ContainsFunc(assignments, func(a practiceAppointment) bool {
 		return !f.OccurredAt.Before(a.From) && (a.To == nil || f.OccurredAt.Before(*a.To))
 	}) {
 		return false, ""
@@ -662,6 +662,9 @@ func scopePracticeBenefitPurchase(part component, p practicePurchase, assignment
 				if rate == 0 {
 					continue
 				}
+			}
+			if b.AppointmentUnitID != "" && len(assignments) == 0 {
+				return blocked("PRACTICE_PERIOD_APPOINTMENT_MISSING", payment.ID)
 			}
 			if b.OrderAppointmentLevel != "" {
 				person, unit, issue := practiceOrderAppointmentRecipient(payment, b, part.SourceRole, identities, runtime)
@@ -892,10 +895,6 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 			unit = &sink
 		}
 		validAppointments := runtime.appointments[b.appointmentKey()]
-		if b.AppointmentUnitID != "" && len(validAppointments) == 0 {
-			draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, Component: key, Code: "PRACTICE_PERIOD_APPOINTMENT_MISSING"})
-			continue
-		}
 		participants := purchases
 		if b.FixedPerClass {
 			participants = classPurchases

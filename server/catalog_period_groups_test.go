@@ -6,6 +6,28 @@ import (
 	"time"
 )
 
+func TestCatalogMissingItemAppointmentAppliesOnlyToMatchingSalesScope(t *testing.T) {
+	const category = "10000000-0000-4000-8000-000000000701"
+	const outside = "10000000-0000-4000-8000-000000000702"
+	inScope, outOfScope := category, outside
+	directory := catalogPerformanceDirectory{categories: map[int64]catalogPaymentCategory{
+		1: {id: &inScope}, 2: {id: &outOfScope}, 3: {issue: "SALES_COMPANY_CONFLICT"},
+	}}
+	item := catalogPeriodItem{ScopeCategories: []string{category}, Appointment: &catalogPerformanceDuty{PersonID: 7}}
+	for _, tc := range []struct {
+		id   int64
+		want catalogPerformanceDecision
+	}{
+		{1, catalogPerformanceDecision{issue: "AGGREGATE_PERFORMANCE_APPOINTMENT_MISSING"}},
+		{2, catalogPerformanceDecision{excluded: true}},
+		{3, catalogPerformanceDecision{issue: "SALES_COMPANY_CONFLICT"}},
+	} {
+		if got := directory.matchItem(catalogActivityEvent{PaymentID: tc.id}, item); got != tc.want {
+			t.Errorf("payment %d got %+v, want %+v", tc.id, got, tc.want)
+		}
+	}
+}
+
 func TestCatalogPeriodPublishesSalesOrganizationAppointmentTarget(t *testing.T) {
 	base := json.RawMessage(twoTierPeriodRule)
 	var edit catalogPeriodComponentEdit
