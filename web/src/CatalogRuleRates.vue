@@ -80,6 +80,7 @@ const displayLinkedTeamRate = row => linkedTeamRateChanges(row) ? splitEdits.val
 const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:item.key,label:item.label})))
 const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
 const itemRemoved = computed(() => removedItems.value.has(selected.value))
+const orderTypeText = computed(() => props.rule?.scopeLabel?.replace(sheet.value?.productName+' · ','') || sheet.value?.productName)
 const splitItem = computed(() => sheet.value?.components.find(item=>item.teamSplit))
 const splitRemoved = computed(() => splitItem.value && removedItems.value.has(splitItem.value.itemKey))
 const editable = computed(() => sheet.value?.mayPublish && !props.applied && !saving.value && !itemRemoved.value)
@@ -98,12 +99,12 @@ const canAddRates = computed(() => sheet.value?.mayPublish && !props.applied && 
 const rateNames = computed(() => Object.fromEntries(['companies','categories','relationships'].map(kind=>
   [kind,new Map((sheet.value?.structureOptions?.[kind] || []).map(option=>[option.value,option.label]))])))
 function stagedRateRow(change, original) {
-  const {companyIds,categoryIds,relationship,payee,rateBps,draftKey} = change
+  const {companyIds,categoryIds,relationship,payee,rateBps,draftKey,externalCompanyDefault} = change
   const names = rateNames.value
   const labelList = (ids, labels, missing) => ids?.map(id=>labels.get(id) || missing).join('、')
   return {
     ...original,draftKey,companyIds,categoryIds,payee,rateBps,staged:true,
-    scope:companyIds?.length ? 'company' : categoryIds?.length ? 'category' : 'general',
+    scope:externalCompanyDefault ? 'external' : companyIds?.length ? 'company' : categoryIds?.length ? 'category' : 'general',
     company:labelList(companyIds,names.companies,'公司名称待补'),
     category:labelList(categoryIds,names.categories,'销售类别名称待补'),
     relationshipCode:relationship,limitsRelationship:relationship!=='ANY',
@@ -136,6 +137,8 @@ const rateGroups = computed(() => {
     {key:'category',title:'销售类别默认',add:mayAdd && sheet.value.structureOptions.categories.length && '添加类别默认比例'},
     {key:'company',title:'公司特例',add:mayAdd && '添加公司特例'},
     {key:'inherited',title:'公司补充比例'},
+    ...(targetKind.value==='seller' ? [{key:'external',title:'外部公司默认比例',
+      add:mayAdd && !rateRows.value.some(row=>row.scope==='external' && !removedRateRows.value.has(cellKey(selected.value,row.row))) && '设置默认比例'}] : []),
     {key:'general',title:'通用比例',add:mayAdd && '添加通用比例'},
   ]
     .map(group=>({...group,rows:rateRows.value.filter(row=>row.scope===group.key)}))
@@ -157,7 +160,7 @@ watch([selected,rateGroups], ([item,groups],[previousItem]) => {
   }
 })
 const ratePriority = computed(() => {
-  const titles = ['company','category','inherited','general']
+  const titles = ['company','category','inherited','external','general']
     .map(key=>rateGroups.value.find(group=>group.key===key))
     .filter(group=>group && (group.rows.length || group.key!=='general'))
     .map(group=>group.title)
@@ -374,9 +377,9 @@ function commissionScopeNames(item) {
     const positive = rows.filter(row=>!removedRateRows.value.has(cellKey(item.itemKey,row.row)) &&
       (edits.value[cellKey(item.itemKey,row.row)] ? Number(edits.value[cellKey(item.itemKey,row.row)].value)>0 : row.rateBps>0))
     if (!positive.length) return ['当前无正比例']
-    if (positive.some(row=>row.scope==='general' || !row.company && !row.category)) return ['按比例条件匹配']
-    return [...new Set(positive.map(row=>[row.scope==='category' ? '' : row.company,row.category]
-      .filter(Boolean).join(' / ')))].filter(Boolean)
+    if (positive.some(row=>row.scope==='general')) return ['按比例条件匹配']
+    return [...new Set(positive.map(row=>row.scope==='external' ? '未命中指定公司或类别的外部公司' :
+      [row.scope==='category' ? '' : row.company,row.category].filter(Boolean).join(' / ')))].filter(Boolean)
   }
   if (units==null) return ['整个适用账期']
   if (!units.length) return ['待选择销售组织']
@@ -593,7 +596,7 @@ async function publish() {
           <a-alert v-if="itemRemoved" type="warning" :message="teamSplit ? '成交销售及其内部团队拆分将从新版移除' : '此分项将从新版移除'" show-icon class="feedback"/>
           <template v-if="!applied && sheet.mayPublish && sheet.structureOptions && !itemRemoved">
             <RuleArrangementFields name-id="catalog-rate-label" :name="labelEdits.get(item.itemKey) ?? item.label"
-              :order-type-text="rule?.scopeLabel?.replace(sheet.productName+' · ','') || sheet.productName"
+              :order-type-text="orderTypeText"
               :disabled="!editable || structureEditing" @update:name="setLabel(item,$event)">
               <CatalogPayeeFields :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
                 prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters" :product-id="sheet.productId"
@@ -679,8 +682,10 @@ async function publish() {
                   <a-button v-if="removedRateRows.has(cellKey(selected,record.row))" type="link" size="small"
                     :disabled="saving || structureEditing" @click="toggleRowRemoval(record.row)">撤销删除</a-button>
                   <template v-else>
-                    <a-button v-if="!record.teamRate && !record.companyFallback" type="link" size="small" :disabled="saving || structureEditing"
-                      @click="editRateScope(record)">编辑范围</a-button>
+                    <a-button v-if="!record.teamRate && !record.companyFallback && (record.scope!=='external' || record.staged)"
+                      type="link" size="small" :disabled="saving || structureEditing" @click="editRateScope(record)">
+                      {{ record.scope==='external' ? '修改比例' : '编辑范围' }}
+                    </a-button>
                     <a-button v-if="record.row && (record.staged || Object.hasOwn(edits,cellKey(selected,record.row)))"
                       type="link" size="small" :disabled="saving || structureEditing" @click="undoRateChange(record)">撤销修改</a-button>
                     <a-button type="link" danger size="small" :disabled="saving || structureEditing || record.teamRate"
@@ -732,7 +737,7 @@ async function publish() {
             </button>
             <div v-if="selected===leader.itemKey" :id="'catalog-rate-'+leader.itemKey" class="rule-block-body">
               <CatalogLeaderArrangement :item-key="leader.itemKey" :model-value="leaderForm(leader)" :teams="sheet.teams || []"
-                :api="api" :people-filters="peopleFilters" :disabled="!editable || structureEditing"
+                :api="api" :people-filters="peopleFilters" :disabled="!editable || structureEditing" :order-type-text="orderTypeText"
                 :inherited="leader.targetKind==='inherit' ? originalLeader(leader) : undefined"
                 @update:model-value="setLeader(leader,$event)">
                 <div v-if="leader.itemKey==='internal-team-leader' && leaderForm(leader).target==='inherit' && team" class="catalog-rule-fields">
@@ -754,12 +759,12 @@ async function publish() {
             <Teleport v-if="sheet.structureOptions" defer :disabled="!component || itemRemoved"
               :to="component && !itemRemoved ? rateEditorTarget : 'body'">
               <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id" :product-id="sheet.productId"
-                :order-type-text="rule?.scopeLabel?.replace(sheet.productName+' · ','') || sheet.productName"
+                :order-type-text="orderTypeText"
                 v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
                 :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!hasSales && !structure.sales"
                 @rate-staged="showRateGroup"/>
             </Teleport>
-            <a-collapse v-model:active-key="more" ghost class="catalog-more">
+            <a-collapse v-if="component || targetSkus.length && !copy" v-model:active-key="more" ghost class="catalog-more">
               <a-collapse-panel key="more" header="更多配置">
                 <div class="catalog-rate-options">
                   <a-space wrap :size="4">

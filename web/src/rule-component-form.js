@@ -67,7 +67,11 @@ export function newCatalogRateCondition(options, scope = options.categories.leng
 
 export function catalogRateConditionBody(row, scope = row.scope) {
   const rateBps = rateAsBasisPoints(row.rate)
-  if (!row.relationship || rateBps===undefined) throw new Error('请核对销售范围和比例。')
+  if (rateBps===undefined) throw new Error('请填写有效比例。')
+  if (scope==='external') {
+    return {company:'ANY',relationship:'ANY',rateBps,payee:'sales_company',externalCompanyDefault:true}
+  }
+  if (!row.relationship) throw new Error('请选择销售关系。')
   if (scope==='category' && !row.categoryIds.length) throw new Error('请选择销售类别。')
   if (scope==='company' && !row.companyIds.length) throw new Error('请选择特例公司。')
   return {relationship:row.relationship,rateBps,

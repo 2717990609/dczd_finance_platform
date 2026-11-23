@@ -78,9 +78,39 @@ type vipRuntimeData struct {
 	Organizations                         []vipBenefitOrganization
 	PersonIDs                             map[string]int64
 	CompanyNames                          map[string]string
+	CompanyTypes                          map[string]vipCompanyTypeHistory
+	OrganizationSnapshotAt                *time.Time
 	HasCommissionScopes                   bool
 	CommissionDirectory                   *reportAttribution `json:"-"`
 	vipSalesData
+}
+
+type vipCompanyTypeHistory struct {
+	CompanyType string
+	Version     int
+	Changes     []struct {
+		Version      int
+		PreviousType string
+		ChangedAt    time.Time
+	}
+}
+
+func (h vipCompanyTypeHistory) at(at time.Time, snapshotAt *time.Time) string {
+	companyType, version := h.CompanyType, h.Version
+	for i, change := range h.Changes {
+		if change.ChangedAt.After(at) {
+			companyType, version = change.PreviousType, change.Version-1
+			if version == 1 || i > 0 && h.Changes[i-1].Version == version {
+				return companyType
+			}
+			return ""
+		}
+	}
+	if version == 1 || len(h.Changes) != 0 && h.Changes[len(h.Changes)-1].Version == version ||
+		(snapshotAt != nil && !snapshotAt.After(at)) {
+		return companyType
+	}
+	return ""
 }
 
 const vipReferralParticipantsPath = `'$.participants[*] ? (@.role == "DIRECT_PID_USER" || @.role == "LOCK_DIRECT_SHARE_USER")'`
@@ -176,6 +206,14 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
  'directoryCompanies',(SELECT jsonb_agg(to_jsonb(directory_companies)) FROM directory_companies),
  'companyNames',(SELECT jsonb_object_agg(u.id,u.name) FROM organization_units u WHERE u.kind='COMPANY'
   AND u.id IN (SELECT unit FROM companies UNION SELECT unit FROM directory_companies)),
+ 'companyTypes',CASE WHEN EXISTS(SELECT 1 FROM definitions WHERE
+  jsonb_path_exists(definition,'$.benefit_actions[*].rate_table[*] ? (@.external_company_default == true)')) THEN (
+  SELECT jsonb_object_agg(u.id,jsonb_build_object('companyType',u.sales_company_type,'version',u.sales_company_type_version,
+   'changes',(SELECT jsonb_agg(jsonb_build_object('version',t.version,'previousType',t.previous_type,'changedAt',t.changed_at)
+    ORDER BY t.version) FROM organization_sales_company_type_changes t WHERE t.unit_id=u.id)))
+  FROM organization_units u WHERE u.kind='COMPANY' AND u.id IN (SELECT unit FROM companies UNION SELECT unit FROM directory_companies)
+ ) END,
+ 'organizationSnapshotAt',(SELECT captured_at FROM organization_import_state WHERE singleton),
  'directoryAliases',(SELECT jsonb_agg(to_jsonb(directory_aliases)) FROM directory_aliases),
  'categories',(SELECT jsonb_agg(jsonb_build_object('key',h.company_uuid,'value',h.category_uuid,'from',h.valid_from,'to',h.valid_to))
   FROM catalog_sales_categories h WHERE h.source='DCAI' AND h.observed_at=s.captured_at
@@ -300,6 +338,9 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 	}
 	req.Company, req.CompanyUnit = company.Value, company.Unit
 	req.CompanyName = d.CompanyNames[company.Unit]
+	if history, ok := d.CompanyTypes[company.Unit]; ok {
+		req.CompanyType = history.at(sale.PaidAt, d.OrganizationSnapshotAt)
+	}
 	if d.CommissionDirectory != nil && (company.Unit != "" || claim.Company == "") {
 		var companyID pgtype.UUID
 		_ = companyID.Scan(company.Unit)

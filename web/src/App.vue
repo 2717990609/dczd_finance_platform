@@ -394,22 +394,20 @@ const recipientChoices = computed(() => {
     {type:'sales',label:'订单上的成交销售'},
     {type:'referral',label:'订单上的推荐人'},
     ...(classRule.value ? [
-      {key:'company_sales_by_category',type:'company_sales',standardScope:'category',label:'按销售类别计提',
-        unavailable:!options('practiceSalesCategory').length},
-      {key:'company_sales_by_company',type:'company_sales',standardScope:'companies',label:'按公司计提'},
+      {type:'company_sales',label:'公司销售提成'},
       {type:'service',label:'服务提成'},
       {type:'delivery',label:'交付提成'},
       {key:'referral_company',type:'manager',recipient:'referral_company',label:'推荐公司提成'},
       {type:'manager',label:'独立收款安排'},
     ] : []),
   ]
-  return choices.filter(choice=>!choice.unavailable && componentTypes.value.some(type=>type.value===choice.type)).map(choice=>({
+  return choices.filter(choice=>componentTypes.value.some(type=>type.value===choice.type)).map(choice=>({
     ...choice,key:choice.key || choice.type,disabled:classRule.value ? classMemberChoices({},choice.type).every(member=>member.disabled) :
       draft.value.components.some(row=>row.type===choice.type),
   }))
 })
 function addRuleComponent(key) {
-  const {type,standardScope,recipient,label} = recipientChoices.value.find(choice=>choice.key===key)
+  const {type,recipient,label} = recipientChoices.value.find(choice=>choice.key===key)
   const members = classRule.value ? classMemberChoices({},type).filter(member=>!member.disabled) : []
   const member = type==='company_sales' ? members.find(option=>!draft.value.components.some(
     part=>part.type===type && part.classMember===option.value)) || members[0] : members[0]
@@ -417,7 +415,6 @@ function addRuleComponent(key) {
     mode:baseModes.value[0]?.value}
   if (classRule.value && ['sales','referral'].includes(type)) row.label = optionLabel('component',type)
   resetAmountMode(row)
-  if (row.companySales) row.companySales.standardScope = standardScope
   if (row.periodBenefit && ['service','delivery'].includes(type)) row.periodBenefit.label=optionLabel('component',type)
   if (row.periodBenefit && recipient) Object.assign(row.periodBenefit,{recipient,label})
   draft.value.components.push(row)

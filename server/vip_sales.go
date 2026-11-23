@@ -16,6 +16,7 @@ type vipRateRow struct {
 	Category        string   `json:"sales_category_id,omitempty"`
 	CategoryIDs     []string `json:"sales_category_ids,omitempty"`
 	SnapshotDefault bool     `json:"sales_category_snapshot_default"`
+	ExternalDefault bool     `json:"external_company_default,omitempty"`
 	Rate            int64    `json:"rate_bps"`
 	Payee           string   `json:"sales_payee,omitempty"`
 }
@@ -60,6 +61,11 @@ func validVIPRateGroup(single string, grouped []string) bool {
 func (r vipRateRow) validScope() bool {
 	return (r.Company != "" || len(r.CompanyIDs) != 0) && validVIPRateGroup(r.Company, r.CompanyIDs) &&
 		validVIPRateGroup(r.Category, r.CategoryIDs)
+}
+
+func (r vipRateRow) validExternalDefault() bool {
+	return !r.ExternalDefault || r.Company == "ANY" && len(r.CompanyIDs) == 0 && !r.hasCategory() &&
+		!r.SnapshotDefault && r.Relationship == "ANY" && r.Payee == vipPayeeSalesCompany
 }
 
 type vipInternalTeam struct {
@@ -217,14 +223,14 @@ func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(raw, &row) != nil || json.Unmarshal(raw, &fields) != nil ||
 			len(fields["rate_bps"]) == 0 || string(fields["rate_bps"]) == "null" ||
-			!row.validScope() || row.Rate < 0 || row.Rate > 10000 || row.Payee != "" && row.Payee != vipPayeeSalesCompany ||
+			!row.validScope() || !row.validExternalDefault() || row.Rate < 0 || row.Rate > 10000 || row.Payee != "" && row.Payee != vipPayeeSalesCompany ||
 			!slices.Contains([]string{"ANY", "DIRECT", "INDIRECT", "NONE"}, row.Relationship) {
 			return nil, false
 		}
 		for key := range fields {
 			switch key {
 			case "id", "rate_bps", "sales_relationship", "sales_organization_party_id", "sales_organization_party_ids",
-				"sales_category_id", "sales_category_ids", "sales_category_snapshot_default", "sales_payee":
+				"sales_category_id", "sales_category_ids", "sales_category_snapshot_default", "external_company_default", "sales_payee":
 			default:
 				return nil, false
 			}
@@ -240,25 +246,35 @@ func resolveVIPRate(rows []vipRateRow, company, relationship string, category *s
 }
 
 func selectVIPRate(rows []vipRateRow, company, relationship string, category *string) (vipRateRow, string) {
-	categorized := slices.ContainsFunc(rows, vipRateRow.hasCategory)
-	return resolveVIPRateRows(rows, company, relationship, category, categorized)
+	return selectVIPRateForCompany(rows, company, relationship, category, "")
 }
 
-func resolveVIPRateRows(rows []vipRateRow, company, relationship string, category *string, categorized bool) (vipRateRow, string) {
+func selectVIPRateForCompany(rows []vipRateRow, company, relationship string, category *string, companyType string) (vipRateRow, string) {
+	categorized := slices.ContainsFunc(rows, vipRateRow.hasCategory)
+	return resolveVIPRateRows(rows, company, relationship, category, categorized, companyType)
+}
+
+func resolveVIPRateRows(rows []vipRateRow, company, relationship string, category *string, categorized bool, companyType string) (vipRateRow, string) {
 	if company == "" {
 		return vipRateRow{}, "SALES_COMPANY_MISSING"
 	}
 	if relationship != "" && relationship != "DIRECT" && relationship != "INDIRECT" && relationship != "NONE" {
 		return vipRateRow{}, "SALES_RELATIONSHIP_MISSING"
 	}
-	var groups [4][]vipRateRow
+	const externalDefaultTier = 3
+	var groups [5][]vipRateRow
 	for _, row := range rows {
 		if row.Company != "ANY" && !row.namesCompany(company) || row.Relationship != "ANY" && relationship != "" && row.Relationship != relationship ||
 			row.hasCategory() && (category == nil || row.Category != *category && !slices.Contains(row.CategoryIDs, *category)) {
 			continue
 		}
-		tier := 3
+		tier := 4
 		switch {
+		case row.ExternalDefault:
+			if companyType == "INTERNAL" {
+				continue
+			}
+			tier = externalDefaultTier
 		case row.Company != "ANY" && !row.SnapshotDefault:
 			tier = 0
 		case row.Company == "ANY" && row.hasCategory():
@@ -268,12 +284,15 @@ func resolveVIPRateRows(rows []vipRateRow, company, relationship string, categor
 		}
 		groups[tier] = append(groups[tier], row)
 	}
-	if categorized && category == nil && len(groups[0])+len(groups[2]) == 0 {
+	if categorized && category == nil && len(groups[0])+len(groups[2])+len(groups[externalDefaultTier]) == 0 {
 		return vipRateRow{}, "SALES_CATEGORY_MISSING"
 	}
-	for _, choices := range groups {
+	for tier, choices := range groups {
 		if len(choices) == 0 {
 			continue
+		}
+		if tier == externalDefaultTier && companyType != "EXTERNAL" {
+			return vipRateRow{}, "SALES_COMPANY_TYPE_MISSING"
 		}
 		best := -1
 		var winner vipRateRow
@@ -331,7 +350,7 @@ type vipSalesData struct {
 
 type vipSalesRequest struct {
 	Order, Product, Project, Seller, Company, Relationship string
-	CompanyUnit, CompanyName                               string
+	CompanyUnit, CompanyName, CompanyType                  string
 	Category                                               *string // Empty when explicitly unclassified, nil without a history record.
 	Paid, OriginalPaid                                     int64
 	At                                                     time.Time
@@ -401,7 +420,7 @@ func calculateVIPSales(policy vipSalesPolicy, req vipSalesRequest, d vipSalesDat
 			return nil, "SALES_COMPANY_REVIEW"
 		}
 	}
-	standard, issue := selectVIPRate(policy.Sales, req.Company, req.Relationship, req.Category)
+	standard, issue := selectVIPRateForCompany(policy.Sales, req.Company, req.Relationship, req.Category, req.CompanyType)
 	rate := standard.Rate
 	sellerName := d.People[req.Seller]
 	if issue == "" && rate == 0 {

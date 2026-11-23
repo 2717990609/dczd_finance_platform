@@ -148,6 +148,8 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 			for i, entry := range rows {
 				scope := "company"
 				switch {
+				case entry.ExternalDefault:
+					scope = "external"
 				case entry.Company == "ANY" && entry.hasCategory():
 					scope = "category"
 				case entry.Company == "ANY":

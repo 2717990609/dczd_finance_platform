@@ -1179,4 +1179,62 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+
+	t.Run("外部公司兜底按付款时的公司类型", func(t *testing.T) {
+		may := createPeriod("2032-05", "外部公司默认标准验证")
+		at := time.Date(2032, 5, 5, 12, 0, 0, 0, shanghai)
+		var base string
+		if err := s.db.QueryRow(ctx, `SELECT source_id::text FROM product_rule_versions WHERE source_status='PUBLISHED'
+		 AND effective_from<$1 ORDER BY effective_from DESC LIMIT 1`, at).Scan(&base); err != nil {
+			t.Fatal(err)
+		}
+		save("external-default", "1", 10000, at, at, "VIP_ORDER")
+		save("internal-general", "1", 10000, at.Add(time.Second), at.Add(time.Second), "VIP_ORDER")
+		if _, err := s.db.Exec(ctx, `UPDATE organization_units SET sales_company_type='INTERNAL',sales_company_type_version=2 WHERE id=$1`, id(17)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, `INSERT INTO organization_sales_company_type_changes(unit_id,version,previous_type,company_type,changed_at)
+		 VALUES($1,2,'EXTERNAL','INTERNAL',$2)`, id(17), at.Add(time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		rate := int64(425)
+		input := publishCatalogRatesInput{BaseID: base, EffectiveFrom: at,
+			NewRateRows: []catalogNewRateRow{{ItemKey: "sales", catalogConditionInput: catalogConditionInput{
+				Company: "ANY", Relationship: "ANY", Rate: &rate, Payee: vipPayeeSalesCompany, ExternalDefault: true,
+			}}}}
+		w := preview(may, input)
+		var result ruleImpactReport
+		if err := json.Unmarshal(w.Body.Bytes(), &result); w.Code != http.StatusOK || err != nil || result.DeltaMinor != 425-newSalesRate {
+			t.Fatalf("expected preview to replace the general rate only for the external sale: %d %s", w.Code, w.Body)
+		}
+		published, err := s.publishCatalogRates(ctx, input, "external-default-fixture")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sheet, err := s.catalogRuleRateSheet(ctx, published.ID)
+		if err != nil || !slices.ContainsFunc(sheet.Components, func(item catalogRateComponent) bool {
+			return item.ItemKey == "sales" && slices.ContainsFunc(item.Rows, func(row catalogRateRow) bool {
+				return row.Scope == "external" && row.Payee == vipPayeeSalesCompany && row.Rate == rate
+			})
+		}) {
+			t.Fatalf("published company default could not be loaded: %+v %v", sheet, err)
+		}
+		got := draftAt(may)
+		if got.IssueCount != 0 || got.Total != result.AfterMinor {
+			t.Fatalf("saved calculation differs from preview: %+v", got)
+		}
+		for _, want := range []struct {
+			order, company string
+			amount         int64
+		}{{"external-default", id(17), rate}, {"internal-general", "", newSalesRate}} {
+			var company string
+			var amount int64
+			err := s.db.QueryRow(ctx, `SELECT coalesce(l.beneficiary_unit_id::text,''),l.amount_minor
+			 FROM calculation_draft_lines l JOIN source_order_versions source ON source.id=l.source_version_id
+			 WHERE l.period_id=$1 AND l.component_type='sales' AND source.order_id=$2`, may, want.order).Scan(&company, &amount)
+			if err != nil || company != want.company || amount != want.amount {
+				t.Fatalf("%+v: got company=%s amount=%d (%v)", want, company, amount, err)
+			}
+		}
+	})
 }

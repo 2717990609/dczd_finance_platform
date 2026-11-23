@@ -82,7 +82,7 @@ func quoteVIPLeader(a vipBenefitAction, req vipSalesRequest, sourceIssue string,
 		line.Status = "SALES_COMPANY_MISSING"
 		return line
 	}
-	standard, issue := selectVIPRate(policy.leaderSales, req.Company, req.Relationship, req.Category)
+	standard, issue := selectVIPRateForCompany(policy.leaderSales, req.Company, req.Relationship, req.Category, "INTERNAL")
 	if issue != "" {
 		line.Status = issue
 		return line

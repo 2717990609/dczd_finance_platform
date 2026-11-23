@@ -6,6 +6,7 @@ export const salesStatus = {
   SALES_PERSON_CONFLICT:'成交人标识冲突',
   SALES_COMPANY_MISSING:'成交时的销售公司待核',
   SALES_COMPANY_CONFLICT:'成交时的销售公司有冲突',
+  SALES_COMPANY_TYPE_MISSING:'付款时的销售公司类型待核',
   SALES_APPOINTMENT_MISSING:'成交时的销售任职待核',
   SALES_APPOINTMENT_INACTIVE:'付款时销售任职未生效 · 不计提',
   SALES_CATEGORY_MISSING:'成交时的销售类别待核',

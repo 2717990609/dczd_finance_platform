@@ -57,7 +57,9 @@ function changePayee(payee) {
   if (payee.target==='seller' && previous!=='seller') {
     form.value.format = 'table'
   } else if (previous==='seller' && payee.target!=='seller') {
+    form.value.rows = form.value.rows.filter(row=>row.scope!=='external')
     form.value.rows.forEach(row=>{ delete row.payee })
+    if (!form.value.rows.length) form.value.rows.push(blankCondition())
   }
 }
 async function editRecipient(index) {
@@ -76,7 +78,7 @@ function calculationForm({fixedMinor,rateBps,rows}, defaultFormat='rate') {
     rate:rateBps==null ? undefined : String(rateBps/100),
     amount:fixedMinor==null ? undefined : String(fixedMinor/100),
     rows:rows?.map(row=>({
-      scope:row.companyIds?.length ? 'company' : row.categoryIds?.length ? 'category' : 'general',
+      scope:row.externalCompanyDefault ? 'external' : row.companyIds?.length ? 'company' : row.categoryIds?.length ? 'category' : 'general',
       companyIds:[...(row.companyIds || [])],categoryIds:[...(row.categoryIds || [])],
       relationship:row.relationship,payee:row.payee,rate:String(row.rateBps/100),
     })) || [blankCondition()],
@@ -191,7 +193,7 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
           :options="options.salesUnits" :can-own="form.target==='person'"/>
         <template v-if="form.format==='table'">
           <small v-if="options.categories.length" class="finance-rate-priority">
-            匹配顺序 {{ catalogRatePriorityLabel }} → 通用比例
+            匹配顺序 {{ catalogRatePriorityLabel }}{{ isSales ? ' → 外部公司默认比例' : '' }} → 通用比例
           </small>
           <div v-for="(_,index) in form.rows" :key="index" class="catalog-add-condition">
             <CatalogRateCondition v-model="form.rows[index]" :options="options" :suffix="'-'+index" :sales-payee="isSales">

@@ -35,13 +35,14 @@ type catalogStructureOptions struct {
 }
 
 type catalogConditionInput struct {
-	Company      string   `json:"company"`
-	CompanyIDs   []string `json:"companyIds,omitempty"`
-	Relationship string   `json:"relationship"`
-	Category     string   `json:"category,omitempty"`
-	CategoryIDs  []string `json:"categoryIds,omitempty"`
-	Rate         *int64   `json:"rateBps"`
-	Payee        string   `json:"payee,omitempty"`
+	Company         string   `json:"company"`
+	CompanyIDs      []string `json:"companyIds,omitempty"`
+	Relationship    string   `json:"relationship"`
+	Category        string   `json:"category,omitempty"`
+	CategoryIDs     []string `json:"categoryIds,omitempty"`
+	Rate            *int64   `json:"rateBps"`
+	Payee           string   `json:"payee,omitempty"`
+	ExternalDefault bool     `json:"externalCompanyDefault,omitempty"`
 }
 
 type catalogNewRateRow struct {
@@ -148,8 +149,12 @@ func catalogStructureOptionFor(choices []catalogStructureOption, value string) c
 
 func (o catalogStructureOptions) condition(row catalogConditionInput) (json.RawMessage, error) {
 	rate := vipRateRow{Company: row.Company, CompanyIDs: row.CompanyIDs, Relationship: row.Relationship,
-		Category: row.Category, CategoryIDs: row.CategoryIDs}
+		Category: row.Category, CategoryIDs: row.CategoryIDs, ExternalDefault: row.ExternalDefault}
+	if row.Payee == vipPayeeSalesCompany {
+		rate.Payee = row.Payee
+	}
 	if row.Rate == nil || *row.Rate < 0 || *row.Rate > 10000 || !rate.validScope() ||
+		!rate.validExternalDefault() ||
 		row.Payee != "" && row.Payee != "seller" && row.Payee != vipPayeeSalesCompany ||
 		catalogStructureOptionFor(o.Relationships, row.Relationship).Value == "" {
 		return nil, invalid
@@ -165,9 +170,6 @@ func (o catalogStructureOptions) condition(row catalogConditionInput) (json.RawM
 		}
 	}
 	rate.Rate = *row.Rate
-	if row.Payee == vipPayeeSalesCompany {
-		rate.Payee = row.Payee
-	}
 	return json.Marshal(rate)
 }
 
@@ -647,7 +649,10 @@ func validateCatalogNewRateConditions(existing, updated []json.RawMessage) error
 	if !ok {
 		return invalid
 	}
-	type condition struct{ company, relationship, category string }
+	type condition struct {
+		company, relationship, category string
+		externalDefault                 bool
+	}
 	seen := make(map[condition]bool, len(after))
 	companies := map[string]bool{"unlisted-company": true}
 	categories := map[string]bool{"": true}
@@ -657,7 +662,7 @@ func validateCatalogNewRateConditions(existing, updated []json.RawMessage) error
 				companies[company] = true
 			}
 			for _, category := range row.categories() {
-				key := condition{company, row.Relationship, category}
+				key := condition{company, row.Relationship, category, row.ExternalDefault}
 				if n >= len(before) && seen[key] {
 					return errCatalogRateConditions
 				}
@@ -680,11 +685,11 @@ func validateCatalogNewRateConditions(existing, updated []json.RawMessage) error
 				continue
 			}
 			for _, relationship := range []string{"DIRECT", "INDIRECT", "NONE"} {
-				if _, issue := resolveVIPRateRows(newRows, company, relationship, category, next.categorized); issue != "SALES_RATE_CONFLICT" {
+				if _, issue := resolveVIPRateRows(newRows, company, relationship, category, next.categorized, "INTERNAL"); issue != "SALES_RATE_CONFLICT" {
 					continue
 				}
 				oldRows := previous.candidates(company, category)
-				if _, issue := resolveVIPRateRows(oldRows, company, relationship, category, previous.categorized); issue != "SALES_RATE_CONFLICT" {
+				if _, issue := resolveVIPRateRows(oldRows, company, relationship, category, previous.categorized, "INTERNAL"); issue != "SALES_RATE_CONFLICT" {
 					return errCatalogRateConditions
 				}
 			}

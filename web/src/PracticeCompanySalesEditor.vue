@@ -10,7 +10,7 @@ const emit = defineEmits(['member-change'])
 const categories = computed(() => props.component.companySales.categories)
 const companyOnly = categories.value.every(standard=>standard.scope==='companies') &&
   (categories.value.length > 0 || props.component.companySales.defaultRate != null)
-const standardScope = ref(props.component.companySales.standardScope || (companyOnly ? 'companies' : 'category'))
+const standardScope = ref(companyOnly ? 'companies' : 'category')
 const overrides = computed(() => categories.value.flatMap((category,index)=>
   category.overrides.map((override,position)=>({category,index,override,position}))))
 const standardGroups = computed(() => [

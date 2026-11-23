@@ -544,8 +544,8 @@ func internalTeamRatesChanged(before, after vipSalesPolicy) bool {
 	for _, team := range before.Split.Teams {
 		for _, relationship := range []string{"", "DIRECT", "INDIRECT", "NONE"} {
 			for _, category := range categoryChecks {
-				oldRate, oldIssue := selectVIPRate(before.Sales, team.Company, relationship, category)
-				newRate, newIssue := selectVIPRate(after.Sales, team.Company, relationship, category)
+				oldRate, oldIssue := selectVIPRateForCompany(before.Sales, team.Company, relationship, category, "INTERNAL")
+				newRate, newIssue := selectVIPRateForCompany(after.Sales, team.Company, relationship, category, "INTERNAL")
 				expected := oldRate.Rate
 				if oldIssue == "" && oldRate.Payee != vipPayeeSalesCompany && oldRate.Rate == before.Split.Total {
 					expected = after.Split.Total

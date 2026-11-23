@@ -4,7 +4,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import { catalogFlatMethods } from './rule-component-form'
 
-const props = defineProps({itemKey:String,teams:Array,api:Function,peopleFilters:Object,disabled:Boolean,inherited:Object})
+const props = defineProps({itemKey:String,teams:Array,api:Function,peopleFilters:Object,disabled:Boolean,inherited:Object,orderTypeText:String})
 const form = defineModel({type:Object,required:true})
 const field = name => props.itemKey+'-'+name
 const isGroup = computed(() => props.itemKey==='internal-group-leader')
@@ -48,7 +48,8 @@ function selectCompanies(companies) {
 </script>
 
 <template>
-  <RuleArrangementFields :name="form.label" :name-id="field('label')" :disabled="disabled" @update:name="update({label:$event})">
+  <RuleArrangementFields :name="form.label" :name-id="field('label')" :order-type-text="orderTypeText"
+    :disabled="disabled" @update:name="update({label:$event})">
     <a-form-item label="收款对象" :html-for="field('target')" required>
       <a-select :id="field('target')" :value="form.target" :options="targets" :disabled="disabled"
         @change="selectTarget"/>
@@ -58,16 +59,22 @@ function selectCompanies(companies) {
         :filters="peopleFilters" :disabled="disabled" :current="form.personId ? {id:form.personId,name:form.personName} : undefined"
         @change="(personId,option)=>update({personId,personName:option?.name})"/>
     </a-form-item>
-    <a-form-item label="计提方式" :html-for="field('method')">
-      <a-select :id="field('method')" :value="form.method" :options="catalogFlatMethods" :disabled="disabled"
-        @change="update({method:$event,amount:undefined})"/>
-    </a-form-item>
-    <a-form-item :label="form.method==='fixed' ? '金额（元/笔）' : '比例（%）'" :html-for="field('amount')" required>
-      <a-input-number :id="field('amount')" :value="form.amount" :disabled="disabled"
-        :min="0" :max="form.method==='rate' ? 100 : undefined" :precision="2" string-mode @update:value="update({amount:$event})"/>
-    </a-form-item>
+    <template #calculation>
+      <a-form-item label="计提方式" :html-for="field('method')">
+        <a-select :id="field('method')" :value="form.method" :options="catalogFlatMethods" :disabled="disabled"
+          @change="update({method:$event,amount:undefined})"/>
+      </a-form-item>
+      <a-form-item :label="form.method==='fixed' ? '金额（元）' : '比例（%）'" :html-for="field('amount')" required>
+        <a-input-number :id="field('amount')" :value="form.amount" :disabled="disabled"
+          :min="0" :max="form.method==='rate' ? 100 : undefined" :precision="2" string-mode @update:value="update({amount:$event})"/>
+      </a-form-item>
+    </template>
   </RuleArrangementFields>
   <div class="rule-basics">
+    <a-form-item label="计提订单范围" :html-for="field('orders')">
+      <a-select :id="field('orders')" :value="form.scope.orders" :options="orderScopes" :disabled="disabled"
+        @change="updateScope({orders:$event})"/>
+    </a-form-item>
     <a-form-item label="适用内部团队" :html-for="field('companies')">
       <a-select :id="field('companies')" :value="form.scope.companies" :options="teamOptions"
         :disabled="disabled" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="全部内部团队"
@@ -77,10 +84,6 @@ function selectCompanies(companies) {
       <a-select :id="field('groups')" :value="form.scope.groups" :options="groupOptions"
         :disabled="disabled" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label"
         :placeholder="isGroup ? '上述团队内全部小组' : '上述团队全部成员'" @change="updateScope({groups:$event})"/>
-    </a-form-item>
-    <a-form-item label="适用成交" :html-for="field('orders')">
-      <a-select :id="field('orders')" :value="form.scope.orders" :options="orderScopes" :disabled="disabled"
-        @change="updateScope({orders:$event})"/>
     </a-form-item>
   </div>
   <small v-if="form.target==='person'" class="rule-block-recipient">按付款时在相应{{ isGroup ? '小组' : '团队' }}的任职期间计提</small>

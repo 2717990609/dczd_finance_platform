@@ -33,6 +33,41 @@ func TestVIPRateResolvesCompanyBeforeCategoryAndKeepsExplicitZero(t *testing.T) 
 	}
 }
 
+func TestVIPExternalCompanyFallbackIsAnIndependentStandard(t *testing.T) {
+	raw := []json.RawMessage{
+		json.RawMessage(`{"sales_organization_party_id":"ANY","sales_relationship":"ANY","rate_bps":500}`),
+		json.RawMessage(`{"sales_organization_party_id":"ANY","sales_relationship":"ANY","external_company_default":true,"sales_payee":"sales_company","rate_bps":425}`),
+		json.RawMessage(`{"sales_organization_party_id":"ANY","sales_relationship":"ANY","sales_category_id":"partner","rate_bps":900}`),
+		json.RawMessage(`{"sales_organization_party_id":"special","sales_relationship":"ANY","rate_bps":0}`),
+	}
+	if err := validateCatalogNewRateConditions(nil, raw); err != nil {
+		t.Fatalf("external default must coexist with the general rate: %v", err)
+	}
+	if err := validateCatalogNewRateConditions(raw, append(raw, raw[1])); err == nil {
+		t.Fatal("allowed two external defaults in the same arrangement")
+	}
+	rows, _ := parseVIPRateTable(raw)
+	partner, other := "partner", "other-category"
+	for _, tc := range []struct {
+		company, companyType string
+		category             *string
+		rate                 int64
+		payee, issue         string
+	}{
+		{"special", "EXTERNAL", &partner, 0, "", ""},
+		{"company", "EXTERNAL", &partner, 900, "", ""},
+		{"company", "EXTERNAL", nil, 425, vipPayeeSalesCompany, ""},
+		{"company", "EXTERNAL", &other, 425, vipPayeeSalesCompany, ""},
+		{"company", "INTERNAL", &other, 500, "", ""},
+		{"company", "", &other, 0, "", "SALES_COMPANY_TYPE_MISSING"},
+	} {
+		row, issue := selectVIPRateForCompany(rows, tc.company, "DIRECT", tc.category, tc.companyType)
+		if row.Rate != tc.rate || row.Payee != tc.payee || issue != tc.issue {
+			t.Errorf("%+v: got rate=%d payee=%q issue=%q", tc, row.Rate, row.Payee, issue)
+		}
+	}
+}
+
 func TestVIPInternalAllocationUsesHistoricalHoldersAndConservesCents(t *testing.T) {
 	at := time.Date(2026, 8, 1, 0, 0, 0, 0, shanghai)
 	prior := at.AddDate(0, -1, 0)
