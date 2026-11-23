@@ -442,7 +442,7 @@ func TestPracticeCorporateAndIndividualClaimsCannotPayTheSamePayment(t *testing.
 		{Type: "sales", Mode: "rate", Value: 1000, SourceRole: "DIRECT_REFERRER"},
 		{Type: "company_sales", ClassMember: "new", Mode: "company_sales", SourceRole: "DIRECT_REFERRER",
 			CompanySales: &practiceCompanySales{InternalCompanies: []string{"internal"}, Categories: []practiceCompanyCategory{
-				{Label: "标准外部", Companies: []string{"partner"}, practiceCompanyValue: practiceCompanyValue{"rate", 400000}},
+				{Label: "标准外部", Companies: []string{"partner"}, practiceCompanyValue: practiceCompanyValue{Mode: "rate", Value: 400000}},
 			}}},
 	}}
 	orders := map[string][]paymentInput{
@@ -467,17 +467,19 @@ func TestPracticeCorporateAndIndividualClaimsCannotPayTheSamePayment(t *testing.
 }
 
 func TestPracticeSalesCategoryAdmitsNewCompanyAndKeepsOriginalRefundRate(t *testing.T) {
-	t.Run("公司比例", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false, false, false) })
-	t.Run("公司比例和整班阶梯", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, false, false, false, false) })
-	t.Run("仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false, false, false) })
-	t.Run("历史结算保留尾款补计", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, true, false, false) })
-	t.Run("公司新报固定金额", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false, true, false) })
-	t.Run("公司新报固定金额仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false, true, false) })
+	t.Run("公司比例", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false, false, "") })
+	t.Run("公司比例和整班阶梯", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, false, false, false, "") })
+	t.Run("仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false, false, "") })
+	t.Run("历史结算保留尾款补计", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, true, false, "") })
+	t.Run("公司新报固定金额", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false, false, "new") })
+	t.Run("公司新报固定金额仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false, false, "new") })
+	t.Run("公司复训固定金额", func(t *testing.T) { verifyPracticeCategoryRefund(t, false, false, false, false, "retrain") })
+	t.Run("公司复训固定金额仅退订金", func(t *testing.T) { verifyPracticeCategoryRefund(t, true, true, false, false, "retrain") })
 	t.Run("未分类外部公司按默认比例结算和退款", func(t *testing.T) {
-		verifyPracticeCategoryRefund(t, false, false, false, false, true)
+		verifyPracticeCategoryRefund(t, false, false, false, true, "")
 	})
 	t.Run("未分类外部公司按默认比例回放整班阶梯", func(t *testing.T) {
-		verifyPracticeCategoryRefund(t, true, true, false, false, true)
+		verifyPracticeCategoryRefund(t, true, true, false, true, "")
 	})
 }
 
@@ -506,7 +508,54 @@ func TestPracticeNewFixedCompanyAwardProratesRefundBeforeConfirmation(t *testing
 	}
 }
 
-func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacyShares, fixedNew, externalDefault bool) {
+func TestPracticeFixedCompanyRetrainingRefundUsesSelectedPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name, policy  string
+		deposit, tail int64
+	}{
+		{name: "original policy", deposit: 4000, tail: 6000},
+		{name: "proportional policy", policy: "proportional", deposit: 2000, tail: 6000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deposit, balance := int64(40000), int64(60000)
+			payments := []paymentInput{
+				{ID: 1, Fact: sourceFact{Source: "DCZD", ReferrerID: "seller", AmountMinor: &deposit}},
+				{ID: 2, Fact: sourceFact{Source: "DCZD", ReferrerID: "seller", AmountMinor: &balance}},
+			}
+			var rule paymentRule
+			if err := json.Unmarshal([]byte(fmt.Sprintf(`{"components":[{"type":"company_sales","mode":"company_sales","classMember":"retrain",
+			 "sourceRole":"DIRECT_REFERRER","companySales":{"payee":{"kind":"person","personId":2},"categories":[{"companies":["partner"],"mode":"fixed","value":10000,"refundPolicy":%q}]}}]}`, tc.policy)), &rule); err != nil {
+				t.Fatal(err)
+			}
+			if err := validateComponents(rule.Components); err != nil {
+				t.Fatal(err)
+			}
+			award, matched := practiceCompanyStandards(rule).match("retrain", "partner", "")
+			if !matched {
+				t.Fatal("company standard not matched")
+			}
+			purchase := practicePurchase{member: practiceEnrollment{MembershipType: 2}, companyAward: &award,
+				payments: payments, gross: 100000, base: 80000, netPayments: map[int64]int64{1: 20000}}
+			identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{PersonID: 1}}}
+			var draft paymentDraft
+			if err := appendPracticeCompanySale(&draft, rule, purchase, practiceDraftRuntime{}, identities); err != nil ||
+				len(draft.Issues) != 0 || len(draft.Lines) != 2 || draft.Lines[0].Amount != tc.deposit || draft.Lines[1].Amount != tc.tail {
+				t.Fatalf("wrong refund on the original shares: %+v %v", draft, err)
+			}
+			line := refundObligation{Base: 100000, Accrued: 10000, ComponentType: award.key}
+			terms := practiceMonthlyRefundPolicy(rule.Components, line, 1, 2, "partner", "")
+			want := int64(0)
+			if tc.policy != "" {
+				want = -5000
+			}
+			if got, err := refundDelta(terms, line.Base, line.Accrued, 50000, 0); err != nil || got != want {
+				t.Fatalf("refunding half the frozen payment: got %d, want %d: %v", got, want, err)
+			}
+		})
+	}
+}
+
+func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacyShares, externalDefault bool, fixedMember string) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
 	id := func(value any, err error) int64 {
@@ -537,11 +586,17 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 		Components: []component{{Type: "sales", Mode: "rate", Value: 1000, ClassMember: "new", SourceRole: "DIRECT_REFERRER"},
 			{Type: "company_sales", Mode: "company_sales", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
 				CompanySales: &practiceCompanySales{Categories: []practiceCompanyCategory{
-					{SalesCategoryID: first, practiceCompanyValue: practiceCompanyValue{"rate", 400000}},
-					{SalesCategoryID: second, practiceCompanyValue: practiceCompanyValue{"rate", 100000}},
+					{SalesCategoryID: first, practiceCompanyValue: practiceCompanyValue{Mode: "rate", Value: 400000}},
+					{SalesCategoryID: second, practiceCompanyValue: practiceCompanyValue{Mode: "rate", Value: 100000}},
 				}}}}}
-	if fixedNew {
-		rule.Components[1].CompanySales.Categories[0].practiceCompanyValue = practiceCompanyValue{"fixed", 4000}
+	membership := 3
+	if fixedMember != "" {
+		rule.Components[1].CompanySales.Categories[0].practiceCompanyValue = practiceCompanyValue{Mode: "fixed", Value: 4000}
+		if fixedMember == "retrain" {
+			membership = 2
+			rule.Components[0].ClassMember, rule.Components[1].ClassMember = fixedMember, fixedMember
+			rule.Components[1].CompanySales.Categories[0].RefundPolicy = "proportional"
+		}
 	}
 	if externalDefault {
 		sales := rule.Components[1].CompanySales
@@ -605,9 +660,9 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		_, err := storePracticeRoster(ctx, tx, practiceRoster{Key: "PRACTICE:1:1:1", Hash: "category", SourceVersion: 1, StartsAt: start, ConfirmedAt: start.Add(time.Hour),
 			Enrollments: []practiceEnrollment{
-				{SourceEnrollmentID: "1", ParticipantID: "11", MembershipType: 3, CommissionEligible: true, SignedAt: start, PaidOrderIDs: firstPurchase, ContentHash: "ab"},
-				{SourceEnrollmentID: "2", ParticipantID: "12", MembershipType: 3, CommissionEligible: true, SignedAt: start, PaidOrderIDs: []string{"32"}, ContentHash: "cd"},
-				{SourceEnrollmentID: "3", ParticipantID: "13", MembershipType: 3, CommissionEligible: true, SignedAt: start, PaidOrderIDs: []string{"33"}, ContentHash: "ef"},
+				{SourceEnrollmentID: "1", ParticipantID: "11", MembershipType: membership, CommissionEligible: true, SignedAt: start, PaidOrderIDs: firstPurchase, ContentHash: "ab"},
+				{SourceEnrollmentID: "2", ParticipantID: "12", MembershipType: membership, CommissionEligible: true, SignedAt: start, PaidOrderIDs: []string{"32"}, ContentHash: "cd"},
+				{SourceEnrollmentID: "3", ParticipantID: "13", MembershipType: membership, CommissionEligible: true, SignedAt: start, PaidOrderIDs: []string{"33"}, ContentHash: "ef"},
 			}})
 		if err != nil {
 			return err
@@ -942,11 +997,11 @@ func TestPracticeCompanyArrangementsUseDefaultAndExceptionPayees(t *testing.T) {
 			CompanySales: &practiceCompanySales{Payee: payee, Categories: []practiceCompanyCategory{standard}}}
 	}
 	rule := paymentRule{ID: 11, Components: []component{
-		companyPart(nil, practiceCompanyCategory{SalesCategoryID: firstCategory, practiceCompanyValue: practiceCompanyValue{"rate", 100000}}),
+		companyPart(nil, practiceCompanyCategory{SalesCategoryID: firstCategory, practiceCompanyValue: practiceCompanyValue{Mode: "rate", Value: 100000}}),
 		companyPart(&practiceCompanyPayee{Kind: "pool", Pool: &practicePoolTarget{PoolID: 6, OwnerID: 9}},
-			practiceCompanyCategory{SalesCategoryID: secondCategory, practiceCompanyValue: practiceCompanyValue{"rate", 250000}}),
+			practiceCompanyCategory{SalesCategoryID: secondCategory, practiceCompanyValue: practiceCompanyValue{Mode: "rate", Value: 250000}}),
 		companyPart(&practiceCompanyPayee{Kind: "person", PersonID: 8},
-			practiceCompanyCategory{Companies: []string{"special"}, practiceCompanyValue: practiceCompanyValue{"fixed", 4000}}),
+			practiceCompanyCategory{Companies: []string{"special"}, practiceCompanyValue: practiceCompanyValue{Mode: "fixed", Value: 4000}}),
 	}}
 	if err := validateComponents(rule.Components); err != nil {
 		t.Fatalf("same signup type should allow separate default and company payees: %v", err)

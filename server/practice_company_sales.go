@@ -64,8 +64,9 @@ func (p *practiceCompanyPayee) valid() bool {
 }
 
 type practiceCompanyValue struct {
-	Mode  string `json:"mode"`
-	Value int64  `json:"value"`
+	Mode         string `json:"mode"`
+	Value        int64  `json:"value"`
+	RefundPolicy string `json:"refundPolicy,omitempty"`
 }
 
 type practiceCompanyCategory struct {
@@ -102,12 +103,16 @@ func (o practiceCompanyOverride) companyIDs() []string {
 func (v practiceCompanyValue) valid() bool {
 	switch v.Mode {
 	case "rate":
-		return v.Value >= 0 && v.Value <= periodRateScale
+		return v.RefundPolicy == "" && v.Value >= 0 && v.Value <= periodRateScale
 	case "fixed":
-		return v.Value >= 0 && v.Value <= 100000000000
+		return (v.RefundPolicy == "" || v.RefundPolicy == "proportional") && v.Value >= 0 && v.Value <= 100000000000
 	default:
 		return false
 	}
+}
+
+func (v practiceCompanyValue) proratesFixedRefunds(member string) bool {
+	return v.Mode == "fixed" && (member == "new" || v.RefundPolicy == "proportional")
 }
 
 func validCompanyRecommendation(member string, rate *int64) bool {
@@ -609,9 +614,9 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		draft.Issues = append(draft.Issues, practiceIssue(issue, p.member, rule, award.key))
 		return nil
 	}
-	fixedNew := award.Mode == "fixed" && classMember(p.member.MembershipType) == "new"
+	proportionalFixed := award.proratesFixedRefunds(classMember(p.member.MembershipType))
 	line := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: award.key,
-		practiceProportionalRefund: award.Mode == "rate" || fixedNew}
+		practiceProportionalRefund: award.Mode == "rate" || proportionalFixed}
 	var salesCompany pgtype.UUID
 	var companyIssue string
 	kind := award.payee.kind()
@@ -649,7 +654,7 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 	}
 	amount := award.Value
 	share := practiceBenefitShare{purchase: p, payments: p.payments}
-	if fixedNew {
+	if proportionalFixed {
 		if len(p.originalPayments) != 0 {
 			share.payments = p.originalPayments
 		}
@@ -668,7 +673,7 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		return nil
 	}
 	amounts := share.fixed
-	if !fixedNew {
+	if !proportionalFixed {
 		amounts = p.benefitShares(p.payments, amount, !runtime.legacyGrossRateShares && award.Mode == "rate")
 	}
 	if err := appendPracticeCompanyShare(draft, line, share, amount, amounts); err != nil {

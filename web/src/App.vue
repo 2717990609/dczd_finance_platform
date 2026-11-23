@@ -1261,6 +1261,7 @@ function ruleComponentBody(row) {
     const value = item => {
       const mode = must(item.mode,'请选择外部公司计算方式')
       return {mode,value:mode==='rate' ? periodRate(item.value) : minor(must(item.value,'请填写计提金额')),
+        ...(mode==='fixed' && item.refundPolicy ? {refundPolicy:item.refundPolicy} : {}),
         ...(row.classMember==='new' && item.recommendationRate != null ? {recommendationRate:periodRate(item.recommendationRate)} : {})}
     }
     component.companySales = {label:sales.label.trim(),payee,

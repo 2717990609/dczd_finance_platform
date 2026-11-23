@@ -141,7 +141,7 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 	if key[1] == "company_referral" {
 		rate = c.recommendationRate
 	} else if c.Mode == "fixed" {
-		if member == "new" {
+		if c.proratesFixedRefunds(member) {
 			return component{RefundPolicy: "proportional"}
 		}
 		if c.Value == original.Accrued {

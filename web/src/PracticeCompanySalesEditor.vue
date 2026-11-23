@@ -89,9 +89,10 @@ function salesCategoryOptions(category) {
   return props.salesCategories.filter(option=>!categories.value.some(other=>
     other!==category && other.scope==='category' && other.salesCategoryIds.includes(option.value)))
 }
+const standardMethod = mode => ({mode,refundPolicy:mode==='fixed' ? 'proportional' : undefined})
 async function addStandard(scope) {
   const index = categories.value.length
-  categories.value.push({scope,mode:amounts.value[0]?.value,companies:[],salesCategoryIds:[],overrides:[]})
+  categories.value.push({scope,...standardMethod(amounts.value[0]?.value),companies:[],salesCategoryIds:[],overrides:[]})
   if (scope==='companies') {
     companyPage.value = Math.ceil(standardRowsByScope.value.companies.length/companyPageSize)
   }
@@ -99,15 +100,14 @@ async function addStandard(scope) {
   document.getElementById(field((scope==='category' ? 'sales-category-' : 'companies-')+index))?.focus()
 }
 async function addCategoryOverride(category,i) {
-  category.overrides.push({companyIds:[],mode:category.mode})
+  category.overrides.push({companyIds:[],...standardMethod(category.mode)})
   const rowIndex = companyRows.value.findIndex(row=>row.override===category.overrides.at(-1))
   companyPage.value = Math.floor(rowIndex/companyPageSize)+1
   await nextTick()
   document.getElementById(field('override-'+i+'-'+(category.overrides.length-1)))?.focus()
 }
 function modeChanged(item, mode) {
-  item.mode = mode
-  item.value = undefined
+  Object.assign(item,standardMethod(mode),{value:undefined})
 }
 watch(amounts, choices => {
   for (const category of categories.value) {
