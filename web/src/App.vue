@@ -293,20 +293,7 @@ const practiceRetrainSales = computed(() => classRule.value
   ? draft.value.components?.find(part=>part.type==='sales' && ['fixed','rate'].includes(part.mode) && part.classMember==='retrain') : undefined)
 const retrainSplits = computed(() => practiceRetrainSales.value?.retrainSplits || [])
 const recordedServiceShares = computed(() => retrainSplits.value.filter(split=>split.serviceEnabled))
-const companiesWithoutService = computed(() => retrainSplits.value.filter(split=>split.companyId && !split.serviceEnabled))
 const serviceCardKey = companyId => 'retrain-service-'+companyId
-function addRetrainService(companyId) {
-  const split = companiesWithoutService.value.find(split=>split.companyId===companyId)
-  if (!split) return
-  split.serviceEnabled = true
-  split.serviceLabel = ''
-  split.serviceScopeMode = 'all'
-  split.serviceSalesPeople = []
-  split.serviceSalesUnits = []
-  split.serviceBasis = 'fixed'
-  split.service = undefined
-  activeRuleComponent.value = serviceCardKey(companyId)
-}
 function removeRetrainService(split) {
   split.serviceEnabled = false
   split.servicePersonId = undefined
@@ -1919,7 +1906,7 @@ async function save() {
             <a-button v-if="draft.components.length>1" type="link" danger class="rule-remove"
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
           </div>
-          <PracticeRetrainSplitEditor v-if="c===practiceRetrainSales" :component="c" :index="i"
+          <PracticeRetrainSplitEditor v-if="c===practiceRetrainSales && c.retrainSplits?.length" :component="c" :index="i"
             :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"
             :pools="practicePoolOptions" :create-pool="createPracticePool" :format-money="formatMoney"/>
           <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')"
@@ -1979,18 +1966,6 @@ async function save() {
                 :format-money="formatMoney" @remove="removeRetrainService(split)"/>
             </div>
           </section>
-          <div v-if="companiesWithoutService.length">
-            <a-dropdown :trigger="['click']">
-              <a-button size="small">添加复训服务提成</a-button>
-              <template #overlay>
-                <a-menu @click="({key})=>addRetrainService(key)">
-                  <a-menu-item v-for="split in companiesWithoutService" :key="split.companyId">
-                    {{ practiceScopeNames.company(split.companyId) }}
-                  </a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
-          </div>
         </div>
       </template>
       <a-form-item v-if="drawer==='person'" label="人员名称" required><a-input v-model:value="draft.name" aria-label="人员名称"/></a-form-item>

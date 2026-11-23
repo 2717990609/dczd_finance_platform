@@ -259,8 +259,6 @@ export const practiceRetrainShareMethods = [
   {value:'fixed',label:'每份报名固定金额'},
 ]
 
-export const newPracticeRetrainSplit = () => ({salesBasis:'commission',serviceBasis:'commission',pool:{}})
-
 export function practiceRetrainSplitAmounts(split) {
   function share(basis, amount, label) {
     if (basis==='fixed') {

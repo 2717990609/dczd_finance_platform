@@ -1,7 +1,6 @@
 <script setup>
 import { computed } from 'vue'
 import PracticeRetrainSplitFields from './PracticeRetrainSplitFields.vue'
-import { newPracticeRetrainSplit } from './rule-component-form'
 
 const props = defineProps({ component:Object, index:Number, companies:Array, pools:Array, people:Array, units:Array, createPool:Function, formatMoney:Function })
 const field = (name,index) => 'practice-retrain-'+props.index+'-'+index+'-'+name
@@ -9,10 +8,6 @@ const eligibleCompanies = computed(() => props.component.salesCompanies?.length
   ? props.companies.filter(company=>props.component.salesCompanies.includes(company.value))
   : props.companies)
 
-function addSplit() {
-  props.component.retrainSplits ||= []
-  props.component.retrainSplits.push(newPracticeRetrainSplit())
-}
 </script>
 
 <template>
@@ -28,7 +23,6 @@ function addSplit() {
           :pools="pools" :people="people" :units="units" :create-pool="createPool" :format-money="formatMoney"/>
         <a-button type="link" danger @click="component.retrainSplits.splice(i,1)">移除公司拆分</a-button>
       </section>
-      <a-button block type="dashed" @click="addSplit">添加公司拆分</a-button>
     </div>
   </details>
 </template>
