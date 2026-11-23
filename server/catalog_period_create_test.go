@@ -446,11 +446,17 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		  (gen_random_uuid(),'DCAI',9804,'DELIVERY_TEAM','ORGANIZATION_UNIT',$1,'2026-09-01',NULL,$2)`, pool, appointmentSnapshot); err != nil {
 			t.Fatal(err)
 		}
-		const fixedInput = `{"create":{"productId":980,"label":"固定规则","cycle":"MONTHLY_25_TO_24"},
+		registered, err := s.createCatalogTeamPool(ctx, createPracticePoolInput{ProductID: 980, UnitID: pool, Name: "固定池"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		poolID := registered.(teamPool).ID
+		fixedInput := fmt.Sprintf(`{"create":{"productId":980,"label":"固定规则","cycle":"MONTHLY_25_TO_24"},
 		 "effectiveFrom":"2026-09-25T00:00:00+08:00","scenarioCodes":["SECOND"],"components":[
-		 {"label":"公司比例","targetKind":"company","organizationKey":"unit:10000000-0000-4000-8000-000000000981","tiers":[{"rate_bps":1500}]},
-		 {"label":"每期固定池","targetKind":"pool","organizationKey":"unit:10000000-0000-4000-8000-000000000983",
-		  "poolName":"固定池","ownerRole":"PROJECT_OWNER","memberRole":"DELIVERY_TEAM","fixedMinor":5000}]}`
+		 {"label":"池比例计提","targetKind":"pool","poolId":%d,
+		  "ownerPersonId":9801,"memberRole":"DELIVERY_TEAM","tiers":[{"rate_bps":1500}]},
+		 {"label":"每期固定池","targetKind":"pool","poolId":%d,
+		  "ownerRole":"PROJECT_OWNER","memberRole":"DELIVERY_TEAM","fixedMinor":5000}]}`, poolID, poolID)
 		manual := submit(980, path+"/preview", s.postCatalogPeriodQuote, strings.TrimSuffix(fixedInput, "}")+`,"receiptsMinor":123}`)
 		var fixedQuote catalogPeriodQuote
 		if err := json.Unmarshal(manual.Body.Bytes(), &fixedQuote); err != nil || manual.Code != 200 || len(fixedQuote.Awards) != 2 ||
@@ -480,7 +486,7 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		}
 		opened, err := s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: publishedFixed.ID, Month: "2026-10"})
 		if err != nil || opened.(draftSummary).Total != 9500 || opened.(draftSummary).LineCount != 2 || opened.(draftSummary).IssueCount != 0 {
-			t.Fatalf("one fixed pool award and the company percentage must survive publication: %+v %v", opened, err)
+			t.Fatalf("both independent arrangements for the same pool must survive publication: %+v %v", opened, err)
 		}
 		draft := opened.(draftSummary)
 		var owner, fixedAmount int64
@@ -501,12 +507,13 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 			fmt.Sprintf("/api/v1/draft-pools?periodId=%d&version=%d", draft.PeriodID, draft.Version), nil))
 		var pools poolDraftReport
 		if err := json.Unmarshal(poolResponse.Body.Bytes(), &pools); err != nil || poolResponse.Code != 200 ||
-			len(pools.Items) != 1 || pools.Items[0].Balance != 5000 || len(pools.Items[0].Members) != 1 ||
+			len(pools.Items) != 1 || pools.Items[0].Balance != 9500 || len(pools.Items[0].Members) != 1 ||
+			pools.Items[0].Scenario != "team-pool" || pools.Items[0].Item != fmt.Sprint(poolID) ||
 			pools.Items[0].Members[0].ID != 9804 {
-			t.Fatalf("fixed group funding and closing members are required for allocation: %d %s %v", poolResponse.Code, poolResponse.Body, err)
+			t.Fatalf("the two arrangements must fund one pool with the selected members: %d %s %v", poolResponse.Code, poolResponse.Body, err)
 		}
 		if _, err := s.savePoolAllocation(ctx, savePoolAllocationInput{PeriodID: draft.PeriodID, Version: draft.Version,
-			Basis: pools.Basis, poolScope: pools.Items[0].poolScope, Shares: []poolAllocationShare{{PersonID: 9804, Amount: 5000}}}); err != nil {
+			Basis: pools.Basis, poolScope: pools.Items[0].poolScope, Shares: []poolAllocationShare{{PersonID: 9804, Amount: 9500}}}); err != nil {
 			t.Fatal(err)
 		}
 		reviewResponse := httptest.NewRecorder()

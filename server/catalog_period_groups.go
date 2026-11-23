@@ -108,6 +108,7 @@ type catalogGroupTargetKey struct {
 	Owner      int64
 	Members    []int64
 	Person     int64 `json:"person,omitempty"`
+	PoolID     int64 `json:"poolId,omitempty"`
 }
 
 // Posting keys preserve the applied version. Carry uses the same scope and
@@ -198,6 +199,7 @@ func (d catalogAggregateDirectory) groupTarget(item catalogPeriodItem, at time.T
 		return target, key, ""
 	}
 	target.Name = item.PoolName
+	key.PoolID = item.PoolID
 	if item.OwnerPersonID != 0 {
 		key.Owner, target.OwnerName = item.OwnerPersonID, d.People[item.OwnerPersonID]
 		if target.OwnerName == "" {

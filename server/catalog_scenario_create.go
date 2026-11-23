@@ -71,7 +71,7 @@ func (s workspace) catalogScenarioOptions(ctx context.Context, raw string, actor
 	if err != nil {
 		return result, err
 	}
-	result.Options, err = readCatalogStructureOptions(ctx, s.db)
+	result.Options, err = readCatalogStructureOptions(ctx, s.db, product)
 	return result, err
 }
 
@@ -130,7 +130,7 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	if err != nil {
 		return result, err
 	}
-	body, err := editCatalogStructure(ctx, tx, base, publishCatalogRatesInput{
+	body, err := editCatalogStructure(ctx, tx, input.ProductID, base, publishCatalogRatesInput{
 		Create: &input, NewItems: items, NewSalesRates: input.SalesRates, NewSalesLabel: input.SalesLabel, NewSalesScope: input.SalesScope,
 	})
 	if err != nil {

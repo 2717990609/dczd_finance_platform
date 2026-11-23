@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -22,24 +24,77 @@ type createPracticePoolInput struct {
 	Name      string `json:"name"`
 }
 
+type teamPool struct {
+	ID       int64  `json:"id"`
+	UnitID   string `json:"unitId"`
+	Name     string `json:"name"`
+	UnitName string `json:"unitName"`
+}
+
+const catalogPoolPrefix = "team-pool:"
+
+func catalogPoolID(code string) int64 {
+	key, ok := strings.CutPrefix(code, catalogPoolPrefix)
+	id, err := strconv.ParseInt(key, 10, 64)
+	if !ok || err != nil || id <= 0 || strconv.FormatInt(id, 10) != key {
+		return 0
+	}
+	return id
+}
+
+func catalogRegisteredPool(pools []teamPool, id int64) (teamPool, bool) {
+	i := slices.IndexFunc(pools, func(pool teamPool) bool { return pool.ID == id })
+	if i < 0 {
+		return teamPool{}, false
+	}
+	return pools[i], true
+}
+
+func (p teamPool) bind(action *vipBenefitAction) {
+	action.PoolCode = catalogPoolPrefix + strconv.FormatInt(p.ID, 10)
+	action.PoolUnit, action.PoolParty, action.PoolName = p.UnitID, catalogPeriodUnitPrefix+p.UnitID, p.Name
+}
+
+func readCatalogTeamPools(ctx context.Context, db catalogPeriodReader, productID int64) ([]teamPool, error) {
+	var pools []teamPool
+	err := db.QueryRow(ctx, `SELECT coalesce(jsonb_agg(jsonb_build_object('id',p.id,'name',p.name,'unitId',u.id,
+	  'unitName',concat_ws(' / ',parent.name,u.name)) ORDER BY p.name,p.id),'[]')
+	 FROM practice_pools p JOIN organization_units u ON u.id=p.unit_id
+	 LEFT JOIN organization_units parent ON parent.id=u.parent_id WHERE p.product_id=$1 AND u.status='ACTIVE'`, productID).Scan(&pools)
+	return pools, err
+}
+
 func (s workspace) createPracticePool(ctx context.Context, input createPracticePoolInput) (any, error) {
+	pool, err := s.upsertTeamPool(ctx, input, "class")
+	return map[string]int64{"id": pool.ID}, err
+}
+
+func (s workspace) createCatalogTeamPool(ctx context.Context, input createPracticePoolInput) (any, error) {
+	return s.upsertTeamPool(ctx, input, "calendar")
+}
+
+func (s workspace) upsertTeamPool(ctx context.Context, input createPracticePoolInput, mode string) (teamPool, error) {
+	var pool teamPool
 	unit, ok := canonicalSourceUUID(input.UnitID)
 	if input.ProductID <= 0 || !ok || !textOK(input.Name, 80) {
-		return nil, invalid
+		return pool, invalid
 	}
 	if actor := financeUser(ctx); actor != nil && !actor.permitsRule(input.ProductID, true) {
-		return nil, errFinanceForbidden
+		return pool, errFinanceForbidden
 	}
-	var id int64
-	err := s.db.QueryRow(ctx, `INSERT INTO practice_pools(product_id,unit_id,name)
+	err := s.db.QueryRow(ctx, `WITH saved AS (
+	 INSERT INTO practice_pools(product_id,unit_id,name)
 	 SELECT p.id,u.id,btrim($3) FROM products p CROSS JOIN organization_units u
-	 WHERE p.id=$1 AND p.period_mode='class' AND u.id=$2::uuid AND u.status='ACTIVE'
-	 ON CONFLICT(product_id,unit_id,name) DO UPDATE SET name=excluded.name RETURNING id`,
-		input.ProductID, unit, input.Name).Scan(&id)
+	 WHERE p.id=$1 AND p.period_mode=$4 AND u.id=$2::uuid AND u.status='ACTIVE'
+	 ON CONFLICT(product_id,unit_id,name) DO UPDATE SET name=excluded.name RETURNING id,unit_id,name)
+	 SELECT saved.id,saved.unit_id::text,saved.name,concat_ws(' / ',parent.name,u.name)
+	 FROM saved JOIN organization_units u ON u.id=saved.unit_id
+	 LEFT JOIN organization_units parent ON parent.id=u.parent_id`,
+		input.ProductID, unit, input.Name, mode).Scan(&pool.ID, &pool.UnitID, &pool.Name, &pool.UnitName)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = invalid
 	}
-	return map[string]int64{"id": id}, err
+	return pool, err
 }
 
 func practicePoolTargets(items []component) []practicePoolTarget {

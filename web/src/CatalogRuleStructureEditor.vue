@@ -6,7 +6,8 @@ import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import { catalogCalculationMethods, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesCalculationMethods, catalogSalesPayees, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
-const props = defineProps({options:Object, component:Object, api:Function, peopleFilters:Object, parseRate:Function,salesAvailable:Boolean,orderTypeText:String})
+const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
+  orderTypeText:String,productId:Number})
 const emit = defineEmits(['rate-staged'])
 const draft = defineModel({type:Object,required:true})
 const editing = defineModel('editing', {type:Boolean,default:false})
@@ -22,7 +23,9 @@ const labelFor = (choices,value) => choices.find(option=>option.value===value)?.
 const percent = basisPoints => (basisPoints/100)+'%'
 function itemLabel(item) {
   const recipient = item.target==='referrer' ? '订单直接推荐人'
-    : item.target==='person' ? item.personName : labelFor(props.options.organizations,item.organization)
+    : item.target==='person' ? item.personName
+    : item.target==='pool' ? props.options.teamPools?.find(pool=>pool.id===item.poolId)?.name
+    : labelFor(props.options.organizations,item.organization)
   const standard = item.rows?.length ? item.rows.length+' 条费率条件'
     : item.fixedMinor != null ? (item.fixedMinor/100).toFixed(2)+' 元/笔' : percent(item.rateBps)
   return [item.label,recipient,standard].join(' · ')
@@ -140,7 +143,7 @@ function stage() {
         return
       }
       const item = {label,target:staged.target,role:staged.role,personId:staged.personId,recipientDuty:staged.recipientDuty,ownSales,
-        personName:staged.personName,organization:staged.organization,memberRole:staged.memberRole,
+        personName:staged.personName,organization:staged.poolId ? undefined : staged.organization,memberRole:staged.memberRole,poolId:staged.poolId,
         ownerPersonId:staged.ownerPersonId,ownerName:staged.ownerName,salesScopeUnitIds,...calculationBody(staged)}
       if (staged.itemIndex==null) draft.value.items.push(item)
       else draft.value.items.splice(staged.itemIndex,1,item)
@@ -164,7 +167,8 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
       <template v-else>
         <RuleArrangementFields ref="itemName" v-model:name="form.label" :name-id="form.kind==='item' ? 'catalog-add-label' : undefined"
           :order-type-text="form.kind==='item' ? orderTypeText : undefined">
-          <CatalogPayeeFields v-if="form.kind==='item'" :model-value="form" prefix="catalog-add" :options="options" :api="api" :people-filters="peopleFilters"
+          <CatalogPayeeFields v-if="form.kind==='item'" :model-value="form" prefix="catalog-add" :options="options" :api="api"
+            :product-id="productId" :people-filters="peopleFilters"
             :sales-available="!form.editingSales && form.itemIndex==null && salesAvailable" @update:model-value="changePayee"/>
           <template #calculation>
           <a-form-item v-if="form.kind==='item'" label="计提方式" html-for="catalog-add-format">

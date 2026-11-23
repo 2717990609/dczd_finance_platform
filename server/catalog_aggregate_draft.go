@@ -316,7 +316,7 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 				continue
 			}
 			target := posting.Targets[i]
-			benefit := &catalogDraftBenefit{Rule: applied, AllocationOwnerID: target.Owner, Rate: award.Rate}
+			benefit := &catalogDraftBenefit{Rule: applied, AllocationOwnerID: target.Owner, Rate: award.Rate, PoolID: target.PoolID}
 			if target.Unit != "" {
 				if err := benefit.Unit.Scan(target.Unit); err != nil {
 					return result, nil, err

@@ -17,6 +17,7 @@ type catalogRateComponent struct {
 	Rows            []catalogRateRow   `json:"rows,omitempty"`
 	Recipient       *catalogRulePerson `json:"recipient,omitempty"`
 	PoolOwner       *catalogRulePerson `json:"poolOwner,omitempty"`
+	PoolID          int64              `json:"poolId,omitempty"`
 	TargetKind      string             `json:"targetKind"`
 	TargetLabel     string             `json:"targetLabel,omitempty"`
 	TargetOrg       string             `json:"targetOrganization,omitempty"`
@@ -129,6 +130,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		}
 		if item.TargetKind == "pool" {
 			item.TargetOrg, item.TargetRole = action.PoolParty, action.OwnerRole
+			item.PoolID = catalogPoolID(action.PoolCode)
 			item.MemberRole = action.Role
 			item.TargetLabel = action.PoolName
 			if name := organizations[action.PoolParty]; name != "" {
@@ -215,7 +217,7 @@ func (s workspace) getCatalogRuleRates(w http.ResponseWriter, r *http.Request) {
 	sheet, err := s.catalogRuleRateSheet(r.Context(), id)
 	sheet.MayPublish = sheet.MayPublish && actor.permits(product, true)
 	if err == nil && sheet.MayPublish {
-		options, optionsErr := readCatalogStructureOptions(r.Context(), s.db)
+		options, optionsErr := readCatalogStructureOptions(r.Context(), s.db, product)
 		sheet.StructureOptions, err = &options, optionsErr
 	}
 	respond(w, sheet, err)

@@ -36,7 +36,7 @@ func (s workspace) catalogPeriodSetup(ctx context.Context, raw string, actor fin
 	if day == 25 {
 		rule.Cycle = "MONTHLY_25_TO_24"
 	}
-	rule.Options, err = readCatalogPeriodEditorOptions(ctx, s.db)
+	rule.Options, err = readCatalogPeriodEditorOptions(ctx, s.db, product)
 	if err != nil {
 		return rule, err
 	}
@@ -75,7 +75,7 @@ func buildCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, create 
 	if err != nil {
 		return nil, err
 	}
-	options, err := readCatalogPeriodComponentOptions(ctx, db, components)
+	options, err := readCatalogPeriodComponentOptions(ctx, db, create.ProductID, components)
 	if err != nil {
 		return nil, err
 	}

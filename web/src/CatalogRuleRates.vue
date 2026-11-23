@@ -285,18 +285,19 @@ function targetName(item) {
     return item.targetKind==='pool' ? [name,item.poolOwner?.name || roleLabel(item.targetRole)].filter(Boolean).join(' · ') : name
   }
   if (edit.target==='person') return withDuty(edit.personName,edit.recipientDuty)
-  const organization = sheet.value.structureOptions.organizations.find(org=>org.value===edit.organization)?.label
+  const pool = edit.poolId && sheet.value.structureOptions.teamPools?.find(pool=>pool.id===edit.poolId)
+  const organization = pool?.name || sheet.value.structureOptions.organizations.find(org=>org.value===edit.organization)?.label
   return edit.target==='pool' ? [organization,edit.ownerName || roleLabel(edit.role)].filter(Boolean).join(' · ') : organization
 }
 const roleLabel = role => props.optionLabel('catalogAppointmentRole',role) || role
 function originalTarget(item) {
-  return {target:item.targetKind,role:item.targetRole,memberRole:item.memberRole,organization:item.targetOrganization,
+  return {target:item.targetKind,role:item.targetRole,memberRole:item.memberRole,organization:item.targetOrganization,poolId:item.poolId,
     personId:item.recipient?.id,personName:item.recipient?.name,recipientDuty:item.recipientDuty,
     ownerPersonId:item.poolOwner?.id,ownerName:item.poolOwner?.name}
 }
 function setTarget(item, payee) {
   const original = originalTarget(item)
-  if (['target','role','memberRole','organization','personId','recipientDuty','ownerPersonId'].every(field=>payee[field]===original[field])) {
+  if (['target','role','memberRole','organization','personId','recipientDuty','ownerPersonId','poolId'].every(field=>payee[field]===original[field])) {
     targetEdits.value.delete(item.itemKey)
   } else {
     targetEdits.value.set(item.itemKey,payee)
@@ -499,7 +500,8 @@ function publicationInput() {
     copy:copy.value,
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
     changes,
-    targetChanges:Array.from(targetEdits.value,([itemKey, {personName,ownerName,...payee}])=>({itemKey,...payee}))
+    targetChanges:Array.from(targetEdits.value,([itemKey, {personName,ownerName,organization,...payee}])=>
+      ({itemKey,...payee,organization:payee.poolId ? undefined : organization}))
       .filter(({itemKey})=>!removedItems.value.has(itemKey)),
     teamChanges:splitRemoved.value ? [] : Array.from(teamEdits.value,([teamKey,changes])=>({
       teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
@@ -594,7 +596,8 @@ async function publish() {
               :order-type-text="rule?.scopeLabel?.replace(sheet.productName+' · ','') || sheet.productName"
               :disabled="!editable || structureEditing" @update:name="setLabel(item,$event)">
               <CatalogPayeeFields :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
-                prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters"
+                prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters" :product-id="sheet.productId"
+                :saved-pool-label="item.targetLabel" :existing-pool="item.targetKind==='pool' && !item.poolId"
                 :disabled="!editable || structureEditing" @update:model-value="setTarget(item,$event)"/>
               <template #calculation>
               <a-form-item label="计提方式" html-for="catalog-flat-method">
@@ -750,7 +753,7 @@ async function publish() {
           <template v-if="sheet.mayPublish && !applied">
             <Teleport v-if="sheet.structureOptions" defer :disabled="!component || itemRemoved"
               :to="component && !itemRemoved ? rateEditorTarget : 'body'">
-              <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id"
+              <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id" :product-id="sheet.productId"
                 :order-type-text="rule?.scopeLabel?.replace(sheet.productName+' · ','') || sheet.productName"
                 v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
                 :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!hasSales && !structure.sales"

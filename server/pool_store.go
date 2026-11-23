@@ -152,7 +152,7 @@ const poolEntriesSQL = `WITH scope AS (
  JOIN periods origin ON origin.id=l.period_id
  LEFT JOIN scope ON scope.id=l.period_id
  LEFT JOIN product_rule_versions r ON r.source_id=l.catalog_rule_id
- LEFT JOIN practice_pools pool ON pool.id=l.practice_pool_id
+ LEFT JOIN practice_pools pool ON pool.id=coalesce(l.practice_pool_id,l.catalog_pool_id)
  LEFT JOIN LATERAL (
   SELECT e.payment_version_id FROM catalog_aggregate_event_groups membership JOIN catalog_aggregate_draft_events e USING(period_id,source_version_id)
   WHERE (membership.period_id,membership.group_key)=(l.period_id,l.aggregate_group_key)
@@ -349,7 +349,7 @@ func readPoolSavedPlans(ctx context.Context, tx pgx.Tx, periodID int64, states m
 	 FROM monthly_pool_allocations a JOIN calculation_drafts d USING(period_id)
 	 JOIN organization_units u ON u.id=a.unit_id
 	 JOIN periods target ON target.id=a.period_id
-	 LEFT JOIN practice_pools pool ON a.scenario_key='class' AND pool.id::text=a.item_key AND pool.product_id=target.product_id
+	 LEFT JOIN practice_pools pool ON a.scenario_key IN ('class','team-pool') AND pool.id::text=a.item_key AND pool.product_id=target.product_id
 	  AND pool.unit_id=a.unit_id
 	 LEFT JOIN monthly_pool_allocation_shares s ON s.allocation_id=a.id LEFT JOIN people p ON p.id=s.person_id
 	 WHERE a.period_id=$1 ORDER BY a.id,s.person_id`, periodID)

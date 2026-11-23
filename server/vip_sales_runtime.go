@@ -154,9 +154,16 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
   jsonb_path_exists(definition,'$.benefit_actions[*].sales_scope_unit_ids[*]')),
  'directoryFingerprint',CASE WHEN $4 THEN (SELECT encode(sha256(convert_to(
   coalesce(jsonb_agg(jsonb_build_array(` + vipPersonKey + `,p.name) ORDER BY p.id)::text,'[]'),'UTF8')),'hex') FROM people p) END,
- 'organizations',(SELECT jsonb_agg(jsonb_build_object('party',b.party_uuid,'unit',o.id,'name',o.name) ORDER BY b.party_uuid,o.id)
+ 'organizations',(SELECT jsonb_agg(to_jsonb(target) ORDER BY target.party,target.unit) FROM (
+  SELECT b.party_uuid::text AS party,o.id AS unit,o.name
   FROM catalog_benefit_organizations b JOIN organization_units o ON o.id=b.unit_id AND o.status='ACTIVE'
-  WHERE b.source='DCAI' AND b.observed_at=s.captured_at),
+  WHERE b.source='DCAI' AND b.observed_at=s.captured_at
+  UNION
+  SELECT 'unit:'||o.id,o.id,o.name FROM definitions d
+  CROSS JOIN LATERAL jsonb_array_elements(d.definition->'benefit_actions') a
+  JOIN organization_units o ON o.id::text=a->>'pool_organization_unit_id' AND o.status='ACTIVE'
+   AND a->>'pool_party_id'='unit:'||o.id
+ ) target),
  'claims',(SELECT jsonb_object_agg(source_version_id::text,sales_claims) FROM claims),
  'definitions',(SELECT jsonb_object_agg(source_id::text,jsonb_build_object(
   'amount_basis',definition->'amount_basis','stacking_policy',definition->'stacking_policy','rounding_policy',definition->'rounding_policy',

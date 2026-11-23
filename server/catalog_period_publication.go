@@ -83,6 +83,7 @@ type catalogPeriodOptions struct {
 	Roles         []catalogStructureOption `json:"roles"`
 	SalesUnits    []catalogStructureOption `json:"salesUnits"`
 	Duties        []catalogStructureOption `json:"duties"`
+	TeamPools     []teamPool               `json:"teamPools"`
 	Scenarios     []catalogPeriodSKU       `json:"scenarios"`
 }
 
@@ -167,7 +168,7 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 		rule.Scenarios = append(rule.Scenarios, sku)
 	}
 	if err == nil && rule.MayPublish {
-		rule.Options, err = readCatalogPeriodEditorOptions(ctx, s.db)
+		rule.Options, err = readCatalogPeriodEditorOptions(ctx, s.db, rule.ProductID)
 		if err == nil {
 			first := firstCatalogPeriodChange(rule.From, rule.Cycle)
 			var eligible []catalogPeriodScenarioOption
@@ -213,7 +214,7 @@ func (s workspace) postCatalogPeriodQuote(w http.ResponseWriter, r *http.Request
 		if !actor.permits(rule.ProductID, len(input.Edits) != 0 || input.Components != nil || input.Performance != nil) {
 			return catalogPeriodQuote{}, errRulePermission
 		}
-		regulated, err := applyCatalogPeriodChanges(ctx, s.db, rule.raw, input.Edits, input.Components)
+		regulated, err := applyCatalogPeriodChanges(ctx, s.db, rule.ProductID, rule.raw, input.Edits, input.Components)
 		if err != nil {
 			return catalogPeriodQuote{}, err
 		}
@@ -349,7 +350,7 @@ func prepareCatalogPeriodRevision(ctx context.Context, db catalogPeriodReader, b
 	if closed {
 		return nil, errSettlementClosed
 	}
-	body, err := applyCatalogPeriodChanges(ctx, db, base.raw, input.Edits, input.Components)
+	body, err := applyCatalogPeriodChanges(ctx, db, base.ProductID, base.raw, input.Edits, input.Components)
 	if err != nil {
 		return nil, err
 	}
@@ -372,7 +373,7 @@ func catalogPeriodVersionAt(ctx context.Context, db catalogPeriodReader, package
 	return active, err
 }
 
-func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, raw json.RawMessage,
+func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, productID int64, raw json.RawMessage,
 	edits []catalogPeriodTierEdit, components []catalogPeriodComponentEdit) (json.RawMessage, error) {
 	if components == nil {
 		return editCatalogPeriodTiers(raw, edits)
@@ -380,14 +381,14 @@ func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, raw 
 	if len(edits) != 0 {
 		return nil, invalid
 	}
-	options, err := readCatalogPeriodComponentOptions(ctx, db, components)
+	options, err := readCatalogPeriodComponentOptions(ctx, db, productID, components)
 	if err != nil {
 		return nil, err
 	}
 	return editCatalogPeriodComponents(raw, components, options)
 }
 
-func readCatalogPeriodComponentOptions(ctx context.Context, db catalogPeriodReader, components []catalogPeriodComponentEdit) (catalogStructureOptions, error) {
+func readCatalogPeriodComponentOptions(ctx context.Context, db catalogPeriodReader, productID int64, components []catalogPeriodComponentEdit) (catalogStructureOptions, error) {
 	var personIDs []int64
 	var appointments []catalogPerformanceDuty
 	for _, item := range components {
@@ -425,11 +426,11 @@ func readCatalogPeriodComponentOptions(ctx context.Context, db catalogPeriodRead
 			return catalogStructureOptions{}, errCatalogPeriodRecipient
 		}
 	}
-	return readCatalogPeriodStructureOptions(ctx, db)
+	return readCatalogPeriodStructureOptions(ctx, db, productID)
 }
 
-func readCatalogPeriodEditorOptions(ctx context.Context, db catalogPeriodReader) (*catalogPeriodOptions, error) {
-	options, err := readCatalogPeriodStructureOptions(ctx, db)
+func readCatalogPeriodEditorOptions(ctx context.Context, db catalogPeriodReader, productID int64) (*catalogPeriodOptions, error) {
+	options, err := readCatalogPeriodStructureOptions(ctx, db, productID)
 	if err != nil {
 		return nil, err
 	}
@@ -438,11 +439,11 @@ func readCatalogPeriodEditorOptions(ctx context.Context, db catalogPeriodReader)
 		return !direct
 	})
 	return &catalogPeriodOptions{Organizations: organizations, Roles: options.Roles, SalesUnits: options.SalesUnits,
-		Duties: options.Duties, Scenarios: []catalogPeriodSKU{}}, nil
+		Duties: options.Duties, TeamPools: options.TeamPools, Scenarios: []catalogPeriodSKU{}}, nil
 }
 
-func readCatalogPeriodStructureOptions(ctx context.Context, db catalogPeriodReader) (catalogStructureOptions, error) {
-	options, err := readCatalogStructureOptions(ctx, db)
+func readCatalogPeriodStructureOptions(ctx context.Context, db catalogPeriodReader, productID int64) (catalogStructureOptions, error) {
+	options, err := readCatalogStructureOptions(ctx, db, productID)
 	if err != nil {
 		return options, err
 	}

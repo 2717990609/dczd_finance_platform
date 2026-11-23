@@ -47,6 +47,27 @@ func TestCatalogPoolCanAssignNamedOwner(t *testing.T) {
 	}
 }
 
+func TestCatalogPoolSelectionResolvesRegisteredUnit(t *testing.T) {
+	unit := "40000000-0000-4000-8000-000000000011"
+	options := catalogStructureOptions{
+		TeamPools: []teamPool{{ID: 9, UnitID: unit, Name: "交付池"}},
+		Roles:     []catalogStructureOption{{Value: "MEMBER", Organization: true}},
+	}
+	target := catalogBenefitTarget{Target: "pool", PoolID: 9, OwnerPersonID: 7, MemberRole: "MEMBER"}
+	action := vipBenefitAction{Item: "service", Label: "交付服务"}
+	if err := configureCatalogBenefitTarget(&action, target, options, map[int64]string{7: "person:7"}); err != nil {
+		t.Fatal(err)
+	}
+	if !action.validTarget() || action.PoolCode != "team-pool:9" || action.PoolParty != "unit:"+unit ||
+		action.PoolUnit != unit || action.PoolName != "交付池" {
+		t.Fatalf("registered pool must supply its own identity and organization: %+v", action)
+	}
+	target.PoolID = 10
+	if err := configureCatalogBenefitTarget(&action, target, options, map[int64]string{7: "person:7"}); err == nil {
+		t.Fatal("pool IDs outside the authorized product directory must be rejected")
+	}
+}
+
 func TestCatalogGroupedRateConditionsKeepOneRowAndCompanyPriority(t *testing.T) {
 	base := json.RawMessage(`{"sales_organization_party_id":"ANY","sales_category_ids":["partner","regional"],"sales_relationship":"ANY","rate_bps":1200}`)
 	special := json.RawMessage(`{"sales_organization_party_ids":["alpha","beta"],"sales_relationship":"ANY","rate_bps":2000}`)

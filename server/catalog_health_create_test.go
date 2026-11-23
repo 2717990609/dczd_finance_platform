@@ -180,6 +180,11 @@ func verifyHealthScenarioRecognition(t *testing.T, namedOwner bool) {
 	fixed, poolRate := int64(20000), int64(200)
 	poolTarget := catalogBenefitTarget{Target: "pool", Organization: pool, Role: "TEAM_LEAD"}
 	if namedOwner {
+		registered, err := s.createCatalogTeamPool(ctx, createPracticePoolInput{ProductID: creatorID, UnitID: pool, Name: "登记交付团队池"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		poolTarget.PoolID, poolTarget.Organization = registered.(teamPool).ID, ""
 		poolTarget.Role, poolTarget.MemberRole = "", "DELIVERY_TEAM"
 		if err := s.db.QueryRow(ctx, "SELECT id FROM people WHERE name='原团队池负责人'").Scan(&poolTarget.OwnerPersonID); err != nil {
 			t.Fatal(err)
@@ -199,7 +204,8 @@ func verifyHealthScenarioRecognition(t *testing.T, namedOwner bool) {
 	if namedOwner {
 		saved, err := s.catalogRuleRateSheet(ctx, organizationRule.ID)
 		if err != nil || len(saved.Components) != 2 || saved.Components[1].PoolOwner == nil ||
-			saved.Components[1].PoolOwner.ID != poolTarget.OwnerPersonID || saved.Components[1].TargetRole != "" {
+			saved.Components[1].PoolOwner.ID != poolTarget.OwnerPersonID || saved.Components[1].TargetRole != "" ||
+			saved.Components[1].PoolID != poolTarget.PoolID {
 			t.Fatalf("stored pool owner should reopen as the selected person: %+v %v", saved, err)
 		}
 	}
@@ -311,6 +317,15 @@ func verifyHealthScenarioRecognition(t *testing.T, namedOwner bool) {
 		posting, company, pool, organizationRule.ID).Scan(&companyDebit, &poolDebit, &owner); err != nil ||
 		companyDebit != -10000 || poolDebit != -16800 || owner != "原团队池负责人" {
 		t.Fatalf("refund must reverse the original company and pool owner: %d %d %s %v", companyDebit, poolDebit, owner, err)
+	}
+	if namedOwner {
+		var accounts int
+		if err := s.db.QueryRow(ctx, `SELECT count(DISTINCT (account.item_key,account.scenario_key))
+		 FROM calculation_draft_refunds r JOIN pool_line_accounts account ON account.line_id=r.original_line_id
+		 WHERE r.period_id=$1 AND account.item_key=$2::text AND account.scenario_key='team-pool'`,
+			posting, strconv.FormatInt(poolTarget.PoolID, 10)).Scan(&accounts); err != nil || accounts != 1 {
+			t.Fatalf("the registered pool's refund postings must keep its account: %d %v", accounts, err)
+		}
 	}
 
 	putRefunds(refund("99", refundedAt))

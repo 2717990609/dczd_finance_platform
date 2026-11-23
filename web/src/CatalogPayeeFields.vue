@@ -2,8 +2,10 @@
 import { computed } from 'vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
+import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 
-const props = defineProps({options:Object,api:Function,peopleFilters:Object,prefix:String,disabled:Boolean,salesAvailable:Boolean})
+const props = defineProps({options:Object,api:Function,peopleFilters:Object,prefix:String,disabled:Boolean,salesAvailable:Boolean,
+  productId:Number,savedPoolLabel:String,existingPool:Boolean})
 const payee = defineModel({type:Object,required:true})
 const seller = {value:'seller',label:'按成交销售归属'}
 const targets = computed(() => [
@@ -29,7 +31,11 @@ function update(fields) {
 }
 function changeTarget(target) {
   update({target,role:undefined,memberRole:undefined,personId:undefined,personName:undefined,
-    ownerPersonId:undefined,ownerName:undefined,organization:undefined,recipientDuty:undefined})
+    ownerPersonId:undefined,ownerName:undefined,organization:undefined,poolId:undefined,recipientDuty:undefined})
+}
+function addPool(pool) {
+  const pools=props.options.teamPools ??= []
+  if (!pools.some(option=>option.id===pool.id)) pools.push(pool)
 }
 </script>
 
@@ -43,11 +49,15 @@ function changeTarget(target) {
       :filters="peopleFilters" :disabled="disabled" :current="payee.personId ? {id:payee.personId,name:payee.personName} : undefined"
       @change="(personId,option)=>update({personId,personName:option?.name})"/>
   </a-form-item>
-  <a-form-item v-else-if="payee.target==='company' || payee.target==='pool'" :label="payee.target==='pool'?'归集组织':'收款公司'" :html-for="field('organization')" required>
+  <a-form-item v-else-if="payee.target==='company'" label="收款公司" :html-for="field('organization')" required>
     <a-select :id="field('organization')" :value="payee.organization" :options="organizations"
       show-search option-filter-prop="label" :disabled="disabled" placeholder="从组织目录选择"
       @update:value="update({organization:$event})"/>
   </a-form-item>
+  <CatalogTeamPoolFields v-else-if="payee.target==='pool'" :prefix="prefix" :pools="options.teamPools" :units="options.salesUnits"
+    :api="api" :product-id="productId" :disabled="disabled" :model-value="payee.poolId"
+    :saved-label="savedPoolLabel" :existing="existingPool && !!payee.organization"
+    @created="addPool" @update:model-value="update({poolId:$event})"/>
   <a-form-item v-if="payee.target==='person'" label="收款人职责" :html-for="field('duty')">
     <a-select :id="field('duty')" :value="payee.recipientDuty" :options="options.duties"
       show-search option-filter-prop="label" :disabled="disabled" allow-clear placeholder="选填"

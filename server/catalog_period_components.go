@@ -21,6 +21,7 @@ type catalogPeriodComponentEdit struct {
 	PoolName        string                  `json:"poolName,omitempty"`
 	OwnerRole       string                  `json:"ownerRole,omitempty"`
 	OwnerPersonID   int64                   `json:"ownerPersonId,omitempty"`
+	PoolID          int64                   `json:"poolId,omitempty"`
 	MemberRole      string                  `json:"memberRole,omitempty"`
 	Tiers           []catalogPeriodTier     `json:"tiers"`
 	FixedMinor      *int64                  `json:"fixedMinor,omitempty"`
@@ -82,9 +83,13 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 		} else {
 			edit.ItemKey = "period-benefit-" + strings.ToLower(rand.Text())
 		}
-		if before.TargetKind != edit.TargetKind || before.OrganizationKey != edit.OrganizationKey || before.PersonID != edit.PersonID ||
+		beforeOrg, beforeName := before.OrganizationKey, before.PoolName
+		if before.PoolID != 0 {
+			beforeOrg, beforeName = "", ""
+		}
+		if before.TargetKind != edit.TargetKind || beforeOrg != edit.OrganizationKey || before.PersonID != edit.PersonID ||
 			before.OwnerRole != edit.OwnerRole || before.OwnerPersonID != edit.OwnerPersonID ||
-			before.MemberRole != edit.MemberRole || before.PoolName != edit.PoolName {
+			before.MemberRole != edit.MemberRole || beforeName != edit.PoolName || before.PoolID != edit.PoolID {
 			if err := setCatalogPeriodTarget(fields, before, edit, options); err != nil {
 				return nil, err
 			}
@@ -171,10 +176,11 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPeriodItem,
 	edit catalogPeriodComponentEdit, options catalogStructureOptions) error {
 	org := catalogStructureOptionFor(options.Organizations, edit.OrganizationKey)
-	if edit.TargetKind != "pool" && edit.OwnerPersonID != 0 {
+	pool, registered := catalogRegisteredPool(options.TeamPools, edit.PoolID)
+	if edit.TargetKind != "pool" && (edit.OwnerPersonID != 0 || edit.PoolID != 0) {
 		return errCatalogPeriodRecipient
 	}
-	if edit.TargetKind != "person" && (org.Value == "" || edit.PersonID != 0) {
+	if edit.TargetKind != "person" && (org.Value == "" && !registered || edit.PersonID != 0) {
 		return errCatalogPeriodRecipient
 	}
 	action := vipBenefitAction{Item: edit.ItemKey, Mode: "PARTY", Role: "COMPANY", Company: org.Value}
@@ -192,9 +198,11 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 		roleAllowed := func(role, previous string) bool {
 			return role != "" && (role == previous || catalogStructureOptionFor(options.Roles, role).Organization)
 		}
-		if org.UnitID == "" || edit.OwnerPersonID < 0 || (edit.OwnerPersonID > 0) == (edit.OwnerRole != "") ||
+		validDestination := registered && edit.OrganizationKey == "" && edit.PoolName == "" ||
+			edit.PoolID == 0 && org.UnitID != "" && textOK(edit.PoolName, 80)
+		if !validDestination || edit.OwnerPersonID < 0 || (edit.OwnerPersonID > 0) == (edit.OwnerRole != "") ||
 			edit.OwnerRole != "" && !roleAllowed(edit.OwnerRole, before.OwnerRole) ||
-			!roleAllowed(edit.MemberRole, before.MemberRole) || !textOK(edit.PoolName, 80) {
+			!roleAllowed(edit.MemberRole, before.MemberRole) {
 			return errCatalogPeriodRecipient
 		}
 		action.Mode, action.Company = "TEAM_POOL", ""
@@ -206,8 +214,11 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 		if _, direct := catalogPeriodUnit(org.Value); direct {
 			action.PoolUnit = ""
 		}
-		if json.Unmarshal(fields["pool_code"], &action.PoolCode) != nil || action.PoolCode == "" {
+		if json.Unmarshal(fields["pool_code"], &action.PoolCode) != nil || action.PoolCode == "" || catalogPoolID(action.PoolCode) != 0 {
 			action.PoolCode = edit.ItemKey
+		}
+		if registered {
+			pool.bind(&action)
 		}
 	default:
 		return errCatalogPeriodRecipient

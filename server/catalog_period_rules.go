@@ -26,6 +26,7 @@ type catalogPeriodItem struct {
 	OrganizationKey string                  `json:"organizationKey"`
 	PersonID        int64                   `json:"personId,omitempty"`
 	PoolName        string                  `json:"poolName,omitempty"`
+	PoolID          int64                   `json:"poolId,omitempty"`
 	OwnerRole       string                  `json:"ownerRole,omitempty"`
 	OwnerPersonID   int64                   `json:"ownerPersonId,omitempty"`
 	OwnerName       string                  `json:"ownerName,omitempty"`
@@ -170,6 +171,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		}
 		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: action.targetKind(),
 			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OwnerPersonID: ownerID, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
+			PoolID:     catalogPoolID(action.PoolCode),
 			MemberRole: memberRole, FixedMinor: action.Fixed, unit: unit, OwnSales: action.OwnSales,
 			CommissionUnits: action.CommissionUnits, RecipientDuty: action.RecipientDuty, Appointment: action.Appointment})
 	}

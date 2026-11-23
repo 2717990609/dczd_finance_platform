@@ -77,7 +77,7 @@ func TestCatalogPeriodRulesUseOrganizationDirectoryWithoutImportedAliases(t *tes
 		{Label: "团队收款", TargetKind: "pool", OrganizationKey: "unit:" + team, PoolName: "交付池",
 			OwnerRole: "SERVICE_DELIVERY", MemberRole: "DELIVERY_TEAM", Tiers: []catalogPeriodTier{{Rate: 125}}},
 	}
-	updated, err := applyCatalogPeriodChanges(ctx, db, base, nil, edits)
+	updated, err := applyCatalogPeriodChanges(ctx, db, 0, base, nil, edits)
 	if err != nil {
 		t.Fatalf("active organizations from the directory must be configurable: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestCatalogPeriodRulesUseOrganizationDirectoryWithoutImportedAliases(t *tes
 		t.Fatal(err)
 	}
 	edits[1].OrganizationKey = "unit:" + disabled
-	if _, err := applyCatalogPeriodChanges(ctx, db, base, nil, edits); !errors.Is(err, errCatalogPeriodRecipient) {
+	if _, err := applyCatalogPeriodChanges(ctx, db, 0, base, nil, edits); !errors.Is(err, errCatalogPeriodRecipient) {
 		t.Fatalf("accepted a disabled organization: %v", err)
 	}
 }

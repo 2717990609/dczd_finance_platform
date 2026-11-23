@@ -228,6 +228,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/practice-registration-companies", Handler: s.practiceRegistrationCompanyOptions},
 		{Method: http.MethodPost, Path: "/api/v1/practice-registration-import/preview", Handler: submitJSON(896<<10, s.previewPracticeRegistrationImport)},
 		{Method: http.MethodPost, Path: "/api/v1/practice-pools", Handler: submit(s.createPracticePool)},
+		{Method: http.MethodPost, Path: "/api/v1/team-pools", Handler: submit(s.createCatalogTeamPool)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
 		{Method: http.MethodPost, Path: "/api/v1/rules/retire", Handler: submit(s.retireRule)},
 		{Method: http.MethodPost, Path: "/api/v1/rule-impact", Handler: submitJSON(1<<20, s.postComponentRuleImpact)},

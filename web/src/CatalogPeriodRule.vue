@@ -4,6 +4,7 @@ import { DownOutlined } from '@ant-design/icons-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
+import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 
 const props = defineProps({rule:Object, applied:Object, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
@@ -122,7 +123,8 @@ function editableRows(items) {
     const tiers = item.tiers || []
     return {uid:item.itemKey,itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,
       organizationKey:item.organizationKey,personId:item.personId,personName:item.personId ? item.targetName : undefined,
-      poolName:item.poolName || '',ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
+      poolName:item.poolName || '',poolId:item.poolId,legacyPool:item.targetKind==='pool' && !item.poolId,
+      ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
       ownerPersonId:item.ownerPersonId,ownerName:item.ownerName,
       salesScope:item.ownSales ? 'own' : item.salesScopeUnitIds || null,recipientDuty:item.recipientDuty,
       appointment:item.appointment ? {...item.appointment} : undefined,
@@ -132,10 +134,14 @@ function editableRows(items) {
       tiers:tiers.length===1 ? [] : tiers.map(row=>({from:(row.min_inclusive || 0)/100,rate:row.rate_bps/100}))}
   })
 }
-function configuredRow(item) {
-  const target = {itemKey:item.itemKey,label:item.label.trim(),targetKind:item.targetKind,organizationKey:item.organizationKey,
-    personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,ownerPersonId:item.ownerPersonId,
+function componentTarget(item) {
+  return {itemKey:item.itemKey,label:item.label.trim(),targetKind:item.targetKind,organizationKey:item.poolId ? undefined : item.organizationKey,
+    personId:item.personId,poolId:item.poolId,poolName:item.poolId ? undefined : item.poolName,
+    ownerRole:item.ownerRole,ownerPersonId:item.ownerPersonId,
     memberRole:item.memberRole,...orderScopeBody(item)}
+}
+function configuredRow(item) {
+  const target = componentTarget(item)
   if (item.method==='fixed') return {...target,fixedAmount:item.fixedAmount}
   return {...target,tiers:item.method==='rate' ? [{from:0,rate:item.uniformRate}] : item.tiers}
 }
@@ -172,10 +178,11 @@ const unitOptions = computed(() => (sheet.value?.options?.organizations || [])
 function targetLabel(item) {
   if (item.targetKind==='person') return [item.personName || '待选择收款人',
     item.recipientDuty && props.optionLabel('organizationDuty',item.recipientDuty)].filter(Boolean).join(' · ')
-  const name = availableOrganizations(item).find(org=>org.value===item.organizationKey)?.label ||
+  const pool = item.poolId && sheet.value.options?.teamPools?.find(pool=>pool.id===item.poolId)
+  const name = pool?.unitName || availableOrganizations(item).find(org=>org.value===item.organizationKey)?.label ||
     sheet.value.items.find(old=>old.itemKey===item.itemKey)?.targetName
   const owner = item.targetKind==='pool' && (item.ownerName || (item.ownerRole && props.optionLabel('catalogAppointmentRole',item.ownerRole)))
-  return [item.poolName,name,owner].filter(Boolean).join(' · ') || '待选择收款对象'
+  return [pool?.name || item.poolName,name,owner].filter(Boolean).join(' · ') || '待选择收款对象'
 }
 function availableOrganizations(row) {
   const options = (sheet.value?.options?.organizations || []).filter(item=>row.targetKind==='pool' || item.kind==='COMPANY')
@@ -184,6 +191,7 @@ function availableOrganizations(row) {
   return [...options,{value:row.organizationKey,label:original?.targetName || row.organizationName || row.organizationKey}]
 }
 const copiedOrganizationUnavailable = row => copiedFrom.value && row.organizationKey &&
+  !row.poolId &&
   !sheet.value.options?.organizations?.some(option=>option.value===row.organizationKey)
 function availableRoles(role) {
   const options = (sheet.value?.options?.roles || []).filter(item=>item.organization)
@@ -200,6 +208,8 @@ function setTarget(row, target) {
   row.ownerName = undefined
   row.memberRole = ''
   row.poolName = ''
+  row.poolId = undefined
+  row.legacyPool = false
   row.recipientDuty = undefined
   row.appointment = undefined
   if (target!=='person' && row.salesScope==='own') row.salesScope = null
@@ -208,6 +218,10 @@ function addComponent() {
   const uid = 'new-' + (++newComponentID)
   rows.value.push({uid,label:'',targetKind:'company',method:'rate',tiers:[],salesScope:null})
   activeComponent.value = uid
+}
+function addPool(pool) {
+  const pools=sheet.value.options.teamPools ??= []
+  if (!pools.some(option=>option.id===pool.id)) pools.push(pool)
 }
 function initializeCreation(data, product) {
   const copy = copiedFrom.value
@@ -253,17 +267,15 @@ function minor(value, message) {
 function componentChanges() {
   if (!canSave.value || (!creating.value && !componentsChanged.value)) return {}
   return {components:rows.value.map(item=>{
-    if (!item.label.trim() || (item.targetKind==='person' ? !item.personId : !item.organizationKey)) {
+    if (!item.label.trim() || (item.targetKind==='person' ? !item.personId : !item.organizationKey && !item.poolId)) {
       throw new Error('请填写收款安排名称并选择收款对象。')
     }
-    if (item.targetKind==='pool' && (!item.poolName?.trim() || !(item.ownerRole || item.ownerPersonId) || !item.memberRole)) {
-      throw new Error('请填写团队池名称、分配负责人和成员职责。')
+    if (item.targetKind==='pool' && (!(item.poolId || item.poolName?.trim()) || !(item.ownerRole || item.ownerPersonId) || !item.memberRole)) {
+      throw new Error('请选择团队池、分配负责人和成员职责。')
     }
     if (Array.isArray(item.salesScope) && !item.salesScope.length) throw new Error('请为「'+item.label+'」选择适用销售组织。')
     if (item.appointment && (!item.appointment.unitId || !item.appointment.role)) throw new Error('请为「'+item.label+'」选择任职组织和岗位。')
-    const target = {itemKey:item.itemKey,label:item.label,targetKind:item.targetKind,organizationKey:item.organizationKey,
-      personId:item.personId,poolName:item.poolName,ownerRole:item.ownerRole,ownerPersonId:item.ownerPersonId,
-      memberRole:item.memberRole,...orderScopeBody(item)}
+    const target = componentTarget(item)
     if (item.method==='fixed') return {...target,fixedMinor:minor(item.fixedAmount,'请输入整期固定金额。')}
     const {tiers} = configuredRow(item)
     const starts = tiers.map(row=>minor(row.from,'请输入每档净额起点。'))
@@ -515,15 +527,16 @@ async function resumeRule() {
                   :filters="peopleFilters" :current="item.personId ? {id:item.personId,name:item.personName} : undefined"
                   :disabled="saving" @change="(_,option)=>item.personName=option?.name"/>
               </a-form-item>
-              <a-form-item v-else :label="item.targetKind==='pool' ? '归集组织' : '收款公司'" html-for="period-benefit-org" required
+              <a-form-item v-else-if="item.targetKind==='company'" label="收款公司" html-for="period-benefit-org" required
                 :extra="copiedOrganizationUnavailable(item) ? '请重新选择当前有效的收款组织。' : undefined">
                 <a-select id="period-benefit-org" v-model:value="item.organizationKey" :options="availableOrganizations(item)"
                   :disabled="saving" show-search option-filter-prop="label"/>
               </a-form-item>
               <template v-if="item.targetKind==='pool'">
-                <a-form-item label="团队池名称" html-for="period-benefit-pool">
-                  <a-input id="period-benefit-pool" v-model:value="item.poolName" :maxlength="80" :disabled="saving"/>
-                </a-form-item>
+                <CatalogTeamPoolFields v-model="item.poolId" prefix="period-benefit" :pools="sheet.options?.teamPools"
+                  :units="sheet.options?.salesUnits" :product-id="sheet.productId" :api="api" :disabled="saving"
+                  :saved-label="[item.poolName,item.organizationName || sheet.items.find(old=>old.itemKey===item.itemKey)?.targetName].filter(Boolean).join(' · ')"
+                  :existing="item.legacyPool" @created="addPool"/>
                 <CatalogPoolOwnerFields prefix="period-benefit-owner" :roles="availableRoles(item.ownerRole)" :api="api"
                   :people-filters="peopleFilters" :disabled="saving"
                   :model-value="{role:item.ownerRole,personId:item.ownerPersonId,personName:item.ownerName}"

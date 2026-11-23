@@ -34,6 +34,7 @@ type catalogDraftBenefit struct {
 	Rule, Unit        pgtype.UUID
 	AllocationOwnerID int64
 	Rate              int64
+	PoolID            int64 `json:",omitempty"`
 }
 
 type catalogRuleImpactMatch struct {
@@ -206,7 +207,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 		if len(row.SalesParts) > 1 {
 			key += ":" + part.Role
 		}
-		if err := appendVIPDraftLine(result, row, rule, key, part.Person, part.CompanyUnit, "", part.Amount, salesRate, data, organizations); err != nil {
+		if err := appendVIPDraftLine(result, row, rule, key, part.Person, part.CompanyUnit, "", 0, part.Amount, salesRate, data, organizations); err != nil {
 			return err
 		}
 	}
@@ -217,7 +218,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	for _, part := range row.BenefitParts {
 		switch part.Status {
 		case "CALCULATED":
-			if err := appendVIPDraftLine(result, row, rule, part.Item, part.Party, part.Unit, part.Owner, part.Amount, part.Rate, data, organizations); err != nil {
+			if err := appendVIPDraftLine(result, row, rule, part.Item, part.Party, part.Unit, part.Owner, catalogPoolID(part.Pool), part.Amount, part.Rate, data, organizations); err != nil {
 				return err
 			}
 		case "ZERO", "INACTIVE", vipCommissionOutsideScope:
@@ -238,12 +239,12 @@ func excludedVIPPayment(status string) bool {
 	}
 }
 
-func appendVIPDraftLine(result *paymentDraft, row catalogPaymentMatch, rule pgtype.UUID, key, party, unit, owner string, amount, rate int64,
+func appendVIPDraftLine(result *paymentDraft, row catalogPaymentMatch, rule pgtype.UUID, key, party, unit, owner string, poolID, amount, rate int64,
 	data vipRuntimeData, organizations reportAttribution) error {
 	if amount == 0 {
 		return nil
 	}
-	benefit := catalogDraftBenefit{Rule: rule, AllocationOwnerID: data.PersonIDs[owner], Rate: rate}
+	benefit := catalogDraftBenefit{Rule: rule, AllocationOwnerID: data.PersonIDs[owner], Rate: rate, PoolID: poolID}
 	person := int64(0)
 	var org reportOrganization
 	if unit != "" {

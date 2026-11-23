@@ -256,7 +256,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			}
 		}
 		if structureChanged {
-			body, err = editCatalogStructure(ctx, tx, body, input)
+			body, err = editCatalogStructure(ctx, tx, product, body, input)
 			if err != nil {
 				return err
 			}

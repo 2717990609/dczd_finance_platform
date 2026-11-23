@@ -115,7 +115,7 @@ async function publish() {
           <h3 class="form-subhead">收款安排</h3>
           <a-button size="small" :disabled="editing" @click="structureEditor?.addRecipient()">添加收款安排</a-button>
         </div>
-        <CatalogRuleStructureEditor ref="structureEditor" v-model="structure" v-model:editing="editing"
+        <CatalogRuleStructureEditor ref="structureEditor" v-model="structure" v-model:editing="editing" :product-id="productId"
           :order-type-text="skus.find(option=>option.value===sku)?.label"
           :options="options" :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!structure.sales"/>
       </template>

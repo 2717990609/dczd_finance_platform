@@ -31,6 +31,7 @@ type catalogStructureOptions struct {
 	Organizations []catalogStructureOption `json:"organizations"`
 	SalesUnits    []catalogStructureOption `json:"salesUnits"`
 	Duties        []catalogStructureOption `json:"duties"`
+	TeamPools     []teamPool               `json:"teamPools"`
 }
 
 type catalogConditionInput struct {
@@ -55,6 +56,7 @@ type catalogBenefitTarget struct {
 	MemberRole    string `json:"memberRole,omitempty"`
 	PersonID      int64  `json:"personId,omitempty"`
 	OwnerPersonID int64  `json:"ownerPersonId,omitempty"`
+	PoolID        int64  `json:"poolId,omitempty"`
 	Organization  string `json:"organization,omitempty"`
 	RecipientDuty string `json:"recipientDuty,omitempty"`
 }
@@ -127,11 +129,12 @@ SELECT jsonb_build_object(
  'roles',coalesce((SELECT items FROM configured WHERE group_key='catalogAppointmentRole'),'[]'),
  'duties',coalesce((SELECT items FROM configured WHERE group_key='organizationDuty'),'[]'))`
 
-func readCatalogStructureOptions(ctx context.Context, db interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}) (catalogStructureOptions, error) {
+func readCatalogStructureOptions(ctx context.Context, db catalogPeriodReader, productID int64) (catalogStructureOptions, error) {
 	var result catalogStructureOptions
 	err := db.QueryRow(ctx, catalogStructureOptionsSQL).Scan(&result)
+	if err == nil {
+		result.TeamPools, err = readCatalogTeamPools(ctx, db, productID)
+	}
 	return result, err
 }
 
@@ -168,11 +171,11 @@ func (o catalogStructureOptions) condition(row catalogConditionInput) (json.RawM
 	return json.Marshal(rate)
 }
 
-func editCatalogStructure(ctx context.Context, tx pgx.Tx, raw json.RawMessage, input publishCatalogRatesInput) (json.RawMessage, error) {
+func editCatalogStructure(ctx context.Context, tx pgx.Tx, productID int64, raw json.RawMessage, input publishCatalogRatesInput) (json.RawMessage, error) {
 	if _, err := tx.Exec(ctx, `SELECT source FROM catalog_sales_context WHERE source='DCAI' FOR SHARE`); err != nil {
 		return nil, err
 	}
-	options, err := readCatalogStructureOptions(ctx, tx)
+	options, err := readCatalogStructureOptions(ctx, tx, productID)
 	if err != nil {
 		return nil, err
 	}
@@ -513,7 +516,7 @@ func configureCatalogBenefitCalculation(action *vipBenefitAction, calculation ca
 
 func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenefitTarget,
 	options catalogStructureOptions, people map[int64]string) error {
-	if target.Target != "pool" && (target.MemberRole != "" || target.OwnerPersonID != 0) {
+	if target.Target != "pool" && (target.MemberRole != "" || target.OwnerPersonID != 0 || target.PoolID != 0) {
 		return invalid
 	}
 	if target.RecipientDuty != "" && (target.Target != "person" ||
@@ -548,7 +551,9 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 			action.Role = before.Role
 		}
 	case "pool":
-		if target.PersonID != 0 || org.Value == "" || (target.Role != "") == (target.OwnerPersonID != 0) ||
+		pool, registered := catalogRegisteredPool(options.TeamPools, target.PoolID)
+		validDestination := target.PoolID == 0 && org.Value != "" || registered && target.Organization == ""
+		if target.PersonID != 0 || !validDestination || (target.Role != "") == (target.OwnerPersonID != 0) ||
 			target.Role != "" && role.Value == "" || target.OwnerPersonID != 0 && people[target.OwnerPersonID] == "" {
 			return invalid
 		}
@@ -557,7 +562,13 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 		action.OwnerParty = people[target.OwnerPersonID]
 		action.PoolCode, action.PoolName = action.Item, action.Label
 		if before.Mode == "TEAM_POOL" {
-			action.Role, action.PoolCode, action.PoolName = before.Role, before.PoolCode, before.PoolName
+			action.Role = before.Role
+			if catalogPoolID(before.PoolCode) == 0 {
+				action.PoolCode, action.PoolName = before.PoolCode, before.PoolName
+			}
+		}
+		if registered {
+			pool.bind(action)
 		}
 		if target.MemberRole != "" && target.MemberRole != action.Role {
 			member := catalogStructureOptionFor(options.Roles, target.MemberRole)
