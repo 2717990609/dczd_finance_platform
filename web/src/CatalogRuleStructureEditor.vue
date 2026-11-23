@@ -4,7 +4,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRatePriorityLabel, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRatePriority, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
   orderTypeText:String,productId:Number,membershipSku:Boolean,defaultMembershipNewOnly:Boolean,replacementItemKey:String})
@@ -15,6 +15,8 @@ const form = ref()
 const revising = computed(() => form.value?.kind==='calculation' || form.value?.itemIndex!=null ||
   form.value?.rowNumber || form.value?.draftKey || form.value?.editingSales)
 const isSales = computed(() => form.value?.kind==='item' && form.value.target==='seller')
+const ratePriority = computed(() => catalogRatePriority((form.value?.rows || [])
+  .filter(row=>props.parseRate(row.rate)!==undefined).map(row=>row.scope)))
 const stagedEntries = computed(() => [
   ...(draft.value.sales && !props.replacementItemKey ? [{item:{...draft.value.sales,target:'seller'},index:null}] : []),
   ...draft.value.items.map((item,index)=>({item,index})).filter(({item})=>item.replacesItemKey===props.replacementItemKey),
@@ -229,9 +231,7 @@ defineExpose({addRecipient,editRecipient,editCalculation,editRateScope,cancel,ad
           {{ form.format==='table' ? '改用统一比例' : '按类别或公司设比例' }}
         </a-button>
         <template v-if="form.format==='table'">
-          <small v-if="options.categories.length" class="finance-rate-priority">
-            匹配顺序 {{ catalogRatePriorityLabel }}{{ isSales ? ' → 外部公司默认比例' : '' }} → 通用比例
-          </small>
+          <small v-if="ratePriority" class="finance-rate-priority">匹配顺序 {{ ratePriority }}</small>
           <div v-for="(_,index) in form.rows" :key="index" class="catalog-add-condition">
             <CatalogRateCondition v-model="form.rows[index]" :options="options" :suffix="'-'+index" :sales-payee="isSales">
               <a-button v-if="form.rows.length>1" type="link" danger size="small" @click="form.rows.splice(index,1)">移除</a-button>

@@ -693,6 +693,7 @@ func validateCatalogNewRateConditions(existing, updated []json.RawMessage) error
 	type condition struct {
 		company, relationship, category string
 		externalDefault                 bool
+		companyFallback                 bool
 	}
 	seen := make(map[condition]bool, len(after))
 	companies := map[string]bool{"unlisted-company": true}
@@ -703,7 +704,7 @@ func validateCatalogNewRateConditions(existing, updated []json.RawMessage) error
 				companies[company] = true
 			}
 			for _, category := range row.categories() {
-				key := condition{company, row.Relationship, category, row.ExternalDefault}
+				key := condition{company, row.Relationship, category, row.ExternalDefault, company != "ANY" && row.SnapshotDefault}
 				if n >= len(before) && seen[key] {
 					return errCatalogRateConditions
 				}

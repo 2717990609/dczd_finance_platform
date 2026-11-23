@@ -30,13 +30,16 @@ export function moneyAsMinor(value) {
   return Number.isSafeInteger(minor) ? minor : undefined
 }
 
-export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
 export const catalogRateScopeTitles = {
   company:'公司特例',
   category:'销售类别默认',
   inherited:'公司补充比例',
   external:'外部公司默认比例',
   general:'通用比例',
+}
+export function catalogRatePriority(scopes) {
+  const titles = Object.entries(catalogRateScopeTitles).filter(([scope])=>scopes.includes(scope)).map(([,title])=>title)
+  return titles.length>1 ? titles.join(' → ') : ''
 }
 export const catalogPercent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
 

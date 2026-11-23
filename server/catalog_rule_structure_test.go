@@ -198,6 +198,18 @@ func TestCatalogNewRateConditionsPreserveMatcherPrecedence(t *testing.T) {
 	if rate, issue := resolveVIPRate(parsed, "company", "DIRECT", &category); issue != "" || rate != 1500 {
 		t.Fatalf("category rate=%d issue=%s", rate, issue)
 	}
+	zeroException := row("company", "ANY", "", 0, false)
+	override = append(slices.Clone(withCategory), zeroException)
+	if err := validateCatalogNewRateConditions(withCategory, override); err != nil {
+		t.Fatalf("company exception and company fallback can share the same company and relationship: %v", err)
+	}
+	parsed, _ = parseVIPRateTable(override)
+	if rate, issue := resolveVIPRate(parsed, "company", "DIRECT", &category); issue != "" || rate != 0 {
+		t.Fatalf("the explicit zero rate must win over both the category and company fallback: rate=%d issue=%s", rate, issue)
+	}
+	if err := validateCatalogNewRateConditions(override, append(slices.Clone(override), zeroException)); !errors.Is(err, errCatalogRateConditions) {
+		t.Fatalf("the same company exception cannot be configured twice: %v", err)
+	}
 }
 
 func TestCatalogStructureCannotChangeInternalSplitViaNewCategory(t *testing.T) {

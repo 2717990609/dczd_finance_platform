@@ -8,7 +8,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionScope, catalogRateIndicators, catalogRateScopeTitles as rateScopeTitles, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionScope, catalogRateIndicators, catalogRatePriority, catalogRateScopeTitles as rateScopeTitles, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule:Object, applied:Object, api:Function, formatTime:Function, formatMoney:Function,
   optionLabel:Function, periods:Array, skus:Array })
@@ -174,7 +174,11 @@ const rateGroups = computed(() => {
       add:mayAdd && !rateRows.value.some(row=>row.scope==='external' && !removedRateRows.value.has(cellKey(selected.value,row.row))) && '设置默认比例'}] : []),
     {key:'general',add:mayAdd && '添加通用比例'},
   ]
-    .map(group=>({...group,title:rateScopeTitles[group.key],rows:rateRows.value.filter(row=>row.scope===group.key)}))
+    .map(group=>{
+      const rows = rateRows.value.filter(row=>row.scope===group.key)
+      const activeCount = rows.filter(row=>!removedRateRows.value.has(cellKey(selected.value,row.row))).length
+      return {...group,title:rateScopeTitles[group.key],rows,activeCount}
+    })
     .filter(group=>group.add || group.rows.length)
 })
 const rateGroup = ref()
@@ -192,13 +196,7 @@ watch([selected,rateGroups], ([item,groups],[previousItem]) => {
       candidates.find(group=>group.key==='general') || candidates[0] || groups[0])?.key
   }
 })
-const ratePriority = computed(() => {
-  const titles = Object.keys(rateScopeTitles)
-    .map(key=>rateGroups.value.find(group=>group.key===key))
-    .filter(group=>group && (group.rows.length || group.key!=='general'))
-    .map(group=>group.title)
-  return titles.length>1 ? titles.join(' → ') : ''
-})
+const ratePriority = computed(() => catalogRatePriority(rateGroups.value.filter(group=>group.activeCount).map(group=>group.key)))
 const activeRateGroup = computed(() => rateGroups.value.find(group=>group.key===rateGroup.value))
 const displayedRates = computed(() => {
   const term = filter.value.trim().toLowerCase()
@@ -780,7 +778,7 @@ async function publish() {
               <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" size="small"
                 :disabled="structureEditing" role="radiogroup" aria-label="查看比例">
                 <a-radio-button v-for="group in rateGroups" :key="group.key" :value="group.key">
-                  <span>{{ group.title }}</span><small class="finance-rate-count">{{ group.rows.length }}</small>
+                  <span>{{ group.title }}</span><small class="finance-rate-count">{{ group.activeCount }}</small>
                 </a-radio-button>
               </a-radio-group>
               <strong v-else-if="activeRateGroup">{{ activeRateGroup.title }}</strong>
