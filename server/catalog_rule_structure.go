@@ -70,6 +70,7 @@ type catalogBenefitTargetChange struct {
 type catalogNewBenefitItem struct {
 	Label           string   `json:"label"`
 	CommissionUnits []string `json:"salesScopeUnitIds,omitempty"`
+	ScopeCategories []string `json:"salesScopeCategoryIds,omitempty"`
 	OwnSales        bool     `json:"ownSales,omitempty"`
 	catalogBenefitTarget
 	catalogBenefitCalculation
@@ -319,11 +320,15 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, productID int64, raw j
 			"item_key": rawKey, "label": rawLabel, "role": json.RawMessage(`"SALES"`),
 			"type": json.RawMessage(`"RATE_TABLE"`), "beneficiary_mode": json.RawMessage(`"PARTY"`), "rate_table": rawRates,
 		}
-		if !catalogCommissionUnitsValid(input.NewSalesScope, options.SalesUnits) {
+		if !catalogScopeIDsValid(input.NewSalesScope, nil, options.SalesUnits) ||
+			!catalogScopeIDsValid(input.NewSalesCategories, nil, options.Categories) {
 			return nil, errCatalogCommissionScope
 		}
 		if len(input.NewSalesScope) > 0 {
 			fields[catalogCommissionScopeKey], _ = json.Marshal(input.NewSalesScope)
+		}
+		if len(input.NewSalesCategories) > 0 {
+			fields[catalogCategoryScopeKey], _ = json.Marshal(input.NewSalesCategories)
 		}
 		positions[key] = len(actions)
 		actions = append(actions, fields)
@@ -468,10 +473,12 @@ func newCatalogBenefitAction(key string,
 	if !textOK(label, 80) {
 		return nil, invalid
 	}
-	if !catalogCommissionUnitsValid(item.CommissionUnits, options.SalesUnits) {
+	if !catalogScopeIDsValid(item.CommissionUnits, nil, options.SalesUnits) ||
+		!catalogScopeIDsValid(item.ScopeCategories, nil, options.Categories) {
 		return nil, errCatalogCommissionScope
 	}
-	action := vipBenefitAction{Item: key, Label: label, CommissionUnits: item.CommissionUnits, OwnSales: item.OwnSales}
+	action := vipBenefitAction{Item: key, Label: label, CommissionUnits: item.CommissionUnits,
+		ScopeCategories: item.ScopeCategories, OwnSales: item.OwnSales}
 	if err := configureCatalogBenefitCalculation(&action, item.catalogBenefitCalculation, options); err != nil {
 		return nil, err
 	}

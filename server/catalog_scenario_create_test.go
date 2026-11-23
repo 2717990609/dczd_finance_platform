@@ -43,9 +43,10 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		 ('DCAI','standard-company','10000000-0000-4000-8000-000000000956','2026-09-01')`,
 		`INSERT INTO organization_sales_categories(id,name,active) VALUES
 		 ('10000000-0000-4000-8000-000000000957','类别甲',true),('10000000-0000-4000-8000-000000000958','类别乙',true)`,
-		`INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from) VALUES
-		 ('10000000-0000-4000-8000-000000000953','10000000-0000-4000-8000-000000000957','2026-09-01'),
-		 ('10000000-0000-4000-8000-000000000956','10000000-0000-4000-8000-000000000958','2026-09-01')`,
+		`INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from,valid_to) VALUES
+		 ('10000000-0000-4000-8000-000000000953','10000000-0000-4000-8000-000000000957','2026-09-01',NULL),
+		 ('10000000-0000-4000-8000-000000000956','10000000-0000-4000-8000-000000000958','2026-09-01','2026-10-03'),
+		 ('10000000-0000-4000-8000-000000000956','10000000-0000-4000-8000-000000000957','2026-10-03',NULL)`,
 		`INSERT INTO catalog_benefit_organizations(source,party_uuid,unit_id,observed_at)
 		 VALUES('DCAI','10000000-0000-4000-8000-000000000954','10000000-0000-4000-8000-000000000953','2026-11-01')`,
 		`WITH payment AS (INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
@@ -77,7 +78,8 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		 "effectiveFrom":"2026-10-01T00:00:00+08:00","create":{"productId":950,"sku":"FIRST","label":"首版分润",
 		 "salesRates":[{"company":"ANY","categoryIds":["10000000-0000-4000-8000-000000000957","10000000-0000-4000-8000-000000000958"],"relationship":"ANY","rateBps":1000,"payee":"sales_company"},
 		 {"companyIds":["10000000-0000-4000-8000-000000000953","10000000-0000-4000-8000-000000000955"],"relationship":"ANY","rateBps":1250}]},
-		 "newItems":[{"label":"公司安排","target":"company","organization":"10000000-0000-4000-8000-000000000954","rateBps":250},
+		 "newItems":[{"label":"公司安排","target":"company","organization":"10000000-0000-4000-8000-000000000954","rateBps":250,
+		 "salesScopeCategoryIds":["10000000-0000-4000-8000-000000000957","10000000-0000-4000-8000-000000000958"]},
 		 {"label":"固定交付","target":"company","organization":"10000000-0000-4000-8000-000000000954","fixedMinor":501},
 		 {"label":"推荐提成","target":"referrer","rateBps":1000}]}`
 		path := "/api/v1/catalog-rule-rates"
@@ -149,7 +151,8 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	sheet, err := s.catalogRuleRateSheet(ctx, published.ID)
 	if err != nil || len(sheet.Components) != 4 || len(sheet.Components[0].Rows) != 2 ||
 		sheet.Components[0].Rows[1].Rate != 1250 || sheet.Components[3].TargetKind != "referrer" ||
-		sheet.Components[0].Rows[0].Category != "类别甲、类别乙" || sheet.Components[0].Rows[1].Company != "收款公司样本、特例乙" {
+		sheet.Components[0].Rows[0].Category != "类别甲、类别乙" || sheet.Components[0].Rows[1].Company != "收款公司样本、特例乙" ||
+		len(sheet.Components[1].ScopeCategories) != 2 {
 		t.Fatalf("the first rule must be editable: %+v %v", sheet, err)
 	}
 	fixedKey := sheet.Components[2].ItemKey
@@ -205,6 +208,19 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	})
 	if err != nil || scoped.AfterIssueCount != 0 || scoped.BeforeMinor != 4752 || scoped.AfterMinor != 4251 {
 		t.Fatalf("a fixed arrangement for one group should only pay the order within that scope: %+v %v", scoped, err)
+	}
+	categoryScope, err := s.compareRuleImpact(ctx, 951, 950, nil, false, func(tx pgx.Tx) (ruleImpactCandidate, error) {
+		var change catalogCommissionScopeChange
+		if err := json.Unmarshal([]byte(`{"itemKey":"`+fixedKey+`","categoryIds":["10000000-0000-4000-8000-000000000958"]}`), &change); err != nil {
+			return ruleImpactCandidate{}, err
+		}
+		version, err := writeCatalogRates(ctx, tx, publishCatalogRatesInput{
+			BaseID: published.ID, EffectiveFrom: cut, ScopeChanges: []catalogCommissionScopeChange{change},
+		}, "fixture", false)
+		return ruleImpactCandidate{catalog: &catalogRuleImpactMatch{ruleID: version.ID}}, err
+	})
+	if err != nil || categoryScope.AfterIssueCount != 0 || categoryScope.AfterMinor != 4251 || len(categoryScope.Items) != 1 || categoryScope.Items[0].OrderID != "101" {
+		t.Fatalf("a fixed arrangement scoped by category should apply to exactly one of the two orders: %+v %v", categoryScope, err)
 	}
 
 	revisedRate := int64(1250)

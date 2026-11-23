@@ -26,6 +26,7 @@ type catalogPeriodComponentEdit struct {
 	Tiers           []catalogPeriodTier     `json:"tiers"`
 	FixedMinor      *int64                  `json:"fixedMinor,omitempty"`
 	CommissionUnits []string                `json:"salesScopeUnitIds,omitempty"`
+	ScopeCategories []string                `json:"salesScopeCategoryIds,omitempty"`
 	OwnSales        bool                    `json:"ownSales,omitempty"`
 	RecipientDuty   string                  `json:"recipientDuty,omitempty"`
 	Appointment     *catalogPerformanceDuty `json:"appointment,omitempty"`
@@ -100,8 +101,9 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 			changed = true
 		}
 		if edit.TargetKind != "person" && (edit.OwnSales || edit.RecipientDuty != "") ||
-			edit.OwnSales && len(edit.CommissionUnits) != 0 ||
-			!catalogCommissionUnitsValid(edit.CommissionUnits, options.SalesUnits) ||
+			edit.OwnSales && len(edit.CommissionUnits)+len(edit.ScopeCategories) != 0 ||
+			!catalogScopeIDsValid(edit.CommissionUnits, before.CommissionUnits, options.SalesUnits) ||
+			!catalogScopeIDsValid(edit.ScopeCategories, before.ScopeCategories, options.Categories) ||
 			edit.RecipientDuty != "" && catalogStructureOptionFor(options.Duties, edit.RecipientDuty).Value == "" {
 			return nil, errCatalogCommissionScope
 		}
@@ -119,13 +121,16 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 				changed = true
 			}
 		}
-		if !slices.Equal(before.CommissionUnits, edit.CommissionUnits) || before.OwnSales != edit.OwnSales ||
+		if !slices.Equal(before.CommissionUnits, edit.CommissionUnits) || !slices.Equal(before.ScopeCategories, edit.ScopeCategories) || before.OwnSales != edit.OwnSales ||
 			before.RecipientDuty != edit.RecipientDuty {
-			for _, field := range []string{"sales_scope_unit_ids", "own_sales", "recipient_duty"} {
+			for _, field := range []string{catalogCommissionScopeKey, catalogCategoryScopeKey, "own_sales", "recipient_duty"} {
 				delete(fields, field)
 			}
 			if len(edit.CommissionUnits) != 0 {
-				fields["sales_scope_unit_ids"], _ = json.Marshal(edit.CommissionUnits)
+				fields[catalogCommissionScopeKey], _ = json.Marshal(edit.CommissionUnits)
+			}
+			if len(edit.ScopeCategories) != 0 {
+				fields[catalogCategoryScopeKey], _ = json.Marshal(edit.ScopeCategories)
 			}
 			if edit.OwnSales {
 				fields["own_sales"] = json.RawMessage("true")

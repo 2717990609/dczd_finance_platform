@@ -27,6 +27,7 @@ type vipBenefitAction struct {
 	rates           []vipRateRow
 	Leader          *vipLeaderScope `json:"leader_scope,omitempty"`
 	CommissionUnits []string        `json:"sales_scope_unit_ids,omitempty"`
+	ScopeCategories []string        `json:"sales_scope_category_ids,omitempty"`
 	OwnSales        bool            `json:"own_sales,omitempty"`
 	RecipientDuty   string          `json:"recipient_duty,omitempty"`
 }
@@ -92,11 +93,11 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 		dec := json.NewDecoder(bytes.NewReader(payload))
 		dec.DisallowUnknownFields()
 		if dec.Decode(&action) != nil || action.Label == "" || action.Role == "" && action.Designated == "" || !action.validTarget() ||
-			!validVIPCommissionUnits(action.CommissionUnits) {
+			!validUniqueScopeIDs(action.CommissionUnits) || !validUniqueScopeIDs(action.ScopeCategories) {
 			return vipBenefitPolicy{}, false
 		}
 		if action.Leader != nil {
-			if !action.Leader.validFor(policy.split.Teams) || action.Type == "RATE_TABLE" || len(action.CommissionUnits) != 0 {
+			if !action.Leader.validFor(policy.split.Teams) || action.Type == "RATE_TABLE" || len(action.CommissionUnits)+len(action.ScopeCategories) != 0 {
 				return vipBenefitPolicy{}, false
 			}
 			if policy.leaderSales == nil {
@@ -134,7 +135,7 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 }
 
 func (a vipBenefitAction) validTarget() bool {
-	if a.OwnSales && (a.Mode != "PARTY" || a.Designated == "" || len(a.CommissionUnits) != 0 || a.Leader != nil) ||
+	if a.OwnSales && (a.Mode != "PARTY" || a.Designated == "" || len(a.CommissionUnits)+len(a.ScopeCategories) != 0 || a.Leader != nil) ||
 		a.RecipientDuty != "" && (a.Designated == "" || !validSourceRole(a.RecipientDuty)) {
 		return false
 	}
@@ -214,7 +215,7 @@ func (a vipBenefitAction) eligibleSale(req vipSalesRequest, sourceIssue string, 
 		}
 		return false, sourceIssue
 	}
-	return vipCommissionScope(a.CommissionUnits, req, sourceIssue, data)
+	return vipScopedSale(a.CommissionUnits, a.ScopeCategories, req, sourceIssue, data)
 }
 
 func (a vipBenefitAction) targetKind() string {

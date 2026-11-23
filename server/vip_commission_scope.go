@@ -8,7 +8,7 @@ import (
 
 const vipCommissionOutsideScope = "OUTSIDE_COMMISSION_SCOPE"
 
-func validVIPCommissionUnits(units []string) bool {
+func validUniqueScopeIDs(units []string) bool {
 	for index, unit := range units {
 		id, ok := canonicalSourceUUID(unit)
 		if !ok || id != unit || slices.Contains(units[:index], unit) {
@@ -16,6 +16,26 @@ func validVIPCommissionUnits(units []string) bool {
 		}
 	}
 	return true
+}
+
+func catalogSalesCategoryMatches(ids []string, category *string, sourceIssue string) (bool, string) {
+	if len(ids) == 0 {
+		return true, ""
+	}
+	if category != nil {
+		return slices.Contains(ids, *category), ""
+	}
+	if sourceIssue != "" {
+		return false, sourceIssue
+	}
+	return false, "SALES_CATEGORY_MISSING"
+}
+
+func vipScopedSale(units, categories []string, req vipSalesRequest, sourceIssue string, data vipRuntimeData) (bool, string) {
+	if eligible, issue := vipCommissionScope(units, req, sourceIssue, data); !eligible {
+		return false, issue
+	}
+	return catalogSalesCategoryMatches(categories, req.Category, sourceIssue)
 }
 
 func vipCommissionScope(units []string, req vipSalesRequest, sourceIssue string, data vipRuntimeData) (bool, string) {

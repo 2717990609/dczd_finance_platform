@@ -82,6 +82,7 @@ type catalogPeriodOptions struct {
 	Organizations []catalogStructureOption `json:"organizations"`
 	Roles         []catalogStructureOption `json:"roles"`
 	SalesUnits    []catalogStructureOption `json:"salesUnits"`
+	Categories    []catalogStructureOption `json:"categories"`
 	Duties        []catalogStructureOption `json:"duties"`
 	TeamPools     []teamPool               `json:"teamPools"`
 	Scenarios     []catalogPeriodSKU       `json:"scenarios"`
@@ -137,8 +138,10 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 		scope = *period.Performance
 		scope.UnitIDs = slices.Clone(scope.UnitIDs)
 	}
+	var categoryIDs []string
 	for _, item := range period.Items {
 		scope.UnitIDs = append(scope.UnitIDs, item.CommissionUnits...)
+		categoryIDs = append(categoryIDs, item.ScopeCategories...)
 		if item.Appointment != nil {
 			scope.UnitIDs = append(scope.UnitIDs, item.Appointment.UnitID)
 		}
@@ -147,6 +150,16 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 	if err != nil {
 		respond(w, nil, err)
 		return
+	}
+	if len(categoryIDs) != 0 {
+		if rule.ScopeLabels == nil {
+			rule.ScopeLabels = &catalogPerformanceLabels{}
+		}
+		if err := s.db.QueryRow(ctx, `SELECT coalesce(jsonb_object_agg(key,label),'{}') FROM catalog_sales_category_options
+		 WHERE key=ANY($1::text[])`, categoryIDs).Scan(&rule.ScopeLabels.Categories); err != nil {
+			respond(w, nil, err)
+			return
+		}
 	}
 	skus, err := readCatalogPeriodScenarioOptions(ctx, s.db, rule.ProductID, nil, nil)
 	if err != nil {
@@ -438,7 +451,7 @@ func readCatalogPeriodEditorOptions(ctx context.Context, db catalogPeriodReader,
 		_, direct := catalogPeriodUnit(org.Value)
 		return !direct
 	})
-	return &catalogPeriodOptions{Organizations: organizations, Roles: options.Roles, SalesUnits: options.SalesUnits,
+	return &catalogPeriodOptions{Organizations: organizations, Roles: options.Roles, SalesUnits: options.SalesUnits, Categories: options.Categories,
 		Duties: options.Duties, TeamPools: options.TeamPools, Scenarios: []catalogPeriodSKU{}}, nil
 }
 

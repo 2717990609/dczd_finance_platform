@@ -34,6 +34,7 @@ type catalogPeriodItem struct {
 	Tiers           []catalogPeriodTier     `json:"tiers,omitempty"`
 	FixedMinor      *int64                  `json:"fixedMinor,omitempty"`
 	CommissionUnits []string                `json:"salesScopeUnitIds,omitempty"`
+	ScopeCategories []string                `json:"salesScopeCategoryIds,omitempty"`
 	OwnSales        bool                    `json:"ownSales,omitempty"`
 	RecipientDuty   string                  `json:"recipientDuty,omitempty"`
 	Appointment     *catalogPerformanceDuty `json:"appointment,omitempty"`
@@ -126,7 +127,8 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			}
 		}
 		if action.Item == "" || items[action.Item] || action.Label == "" ||
-			(action.Mode != "PARTY" && action.Mode != "TEAM_POOL") || action.Leader != nil || !validVIPCommissionUnits(action.CommissionUnits) ||
+			(action.Mode != "PARTY" && action.Mode != "TEAM_POOL") || action.Leader != nil || !validUniqueScopeIDs(action.CommissionUnits) ||
+			!validUniqueScopeIDs(action.ScopeCategories) ||
 			!action.validTarget() {
 			return result, errCatalogRateUnavailable
 		}
@@ -173,7 +175,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OwnerPersonID: ownerID, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
 			PoolID:     catalogPoolID(action.PoolCode),
 			MemberRole: memberRole, FixedMinor: action.Fixed, unit: unit, OwnSales: action.OwnSales,
-			CommissionUnits: action.CommissionUnits, RecipientDuty: action.RecipientDuty, Appointment: action.Appointment})
+			CommissionUnits: action.CommissionUnits, ScopeCategories: action.ScopeCategories, RecipientDuty: action.RecipientDuty, Appointment: action.Appointment})
 	}
 	return result, nil
 }

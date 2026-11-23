@@ -4,7 +4,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
-import { catalogCalculationMethods, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesCalculationMethods, catalogSalesPayees, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
+import { catalogCalculationMethods, catalogOrderScope, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesCalculationMethods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
   orderTypeText:String,productId:Number})
@@ -44,9 +44,9 @@ async function addRecipient() {
 }
 async function editSales() {
   error.value = ''
-  const {label,rows,format,salesScopeUnitIds} = draft.value.sales
+  const {label,rows,format} = draft.value.sales
   form.value = {kind:'item',target:'seller',editingSales:true,label,...calculationForm({rows},format),
-    format,orderScope:salesScopeUnitIds,rate:format==='rate' ? String(rows[0].rateBps/100) : undefined,salesPayee:rows[0].payee}
+    format,orderScope:catalogOrderScope(draft.value.sales),rate:format==='rate' ? String(rows[0].rateBps/100) : undefined,salesPayee:rows[0].payee}
   await nextTick()
   itemName.value?.focus()
 }
@@ -66,7 +66,7 @@ async function editRecipient(index) {
   const {fixedMinor,rateBps,rows,...payee} = draft.value.items[index]
   error.value = ''
   form.value = {
-    ...payee,orderScope:payee.ownSales ? 'own' : payee.salesScopeUnitIds,kind:'item',itemIndex:index,
+    ...payee,orderScope:catalogOrderScope(payee),kind:'item',itemIndex:index,
     ...calculationForm({fixedMinor,rateBps,rows}),
   }
   await nextTick()
@@ -135,18 +135,18 @@ function stage() {
         throw new Error('请填写收款安排名称，并补齐收款对象。')
       }
       const ownSales = staged.orderScope==='own'
-      const salesScopeUnitIds = ownSales ? undefined : staged.orderScope
-      if (salesScopeUnitIds?.length===0) throw new Error('请至少选择一个适用销售组织。')
+      if (emptyCatalogOrderScope(staged.orderScope)) throw new Error('请选择适用的销售组织或销售类别。')
+      const scope = {salesScopeUnitIds:staged.orderScope?.unitIds,salesScopeCategoryIds:staged.orderScope?.categoryIds}
       if (isSales.value) {
         const calculation = calculationBody(staged)
         const rows = calculation.rows || [{company:'ANY',relationship:'ANY',rateBps:calculation.rateBps,payee:staged.salesPayee}]
-        draft.value.sales = {label,format:staged.format,rows,salesScopeUnitIds}
+        draft.value.sales = {label,format:staged.format,rows,...scope}
         cancel()
         return
       }
       const item = {label,target:staged.target,role:staged.role,personId:staged.personId,recipientDuty:staged.recipientDuty,ownSales,
         personName:staged.personName,organization:staged.poolId ? undefined : staged.organization,memberRole:staged.memberRole,poolId:staged.poolId,
-        ownerPersonId:staged.ownerPersonId,ownerName:staged.ownerName,salesScopeUnitIds,...calculationBody(staged)}
+        ownerPersonId:staged.ownerPersonId,ownerName:staged.ownerName,...scope,...calculationBody(staged)}
       if (staged.itemIndex==null) draft.value.items.push(item)
       else draft.value.items.splice(staged.itemIndex,1,item)
     }
@@ -190,7 +190,7 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
           </template>
         </RuleArrangementFields>
         <CatalogCommissionScopeFields v-if="form.kind==='item'" prefix="catalog-add" v-model="form.orderScope"
-          :options="options.salesUnits" :can-own="form.target==='person'"/>
+          :options="options.salesUnits" :categories="options.categories" :can-own="form.target==='person'"/>
         <template v-if="form.format==='table'">
           <small v-if="options.categories.length" class="finance-rate-priority">
             匹配顺序 {{ catalogRatePriorityLabel }}{{ isSales ? ' → 外部公司默认比例' : '' }} → 通用比例

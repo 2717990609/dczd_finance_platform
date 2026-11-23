@@ -6,6 +6,7 @@ import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
+import { catalogOrderScope, emptyCatalogOrderScope } from './rule-component-form'
 
 const props = defineProps({rule:Object, applied:Object, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
 const emit = defineEmits(['close','published','open-draft','copy','open-version','resumed'])
@@ -58,6 +59,8 @@ const activityIssueLabels = {
   SALES_PERSON_MISSING:'原付款缺少销售人员', SALES_PERSON_CONFLICT:'销售人员无法唯一确定',
   SALES_SOURCE_CONFLICT:'订单销售归属冲突', SALES_COMPANY_CONFLICT:'销售公司无法唯一确定',
   AGGREGATE_SALES_ORGANIZATION_MISSING:'原付款缺少有效的部门或小组归属',
+  SALES_CATEGORY_MISSING:'原付款的销售类别待核',
+  SALES_CATEGORY_CONFLICT:'原付款的销售类别有冲突',
   AGGREGATE_PERFORMANCE_APPOINTMENT_MISSING:'缺少规则指定的任职记录',
   SALES_ORGANIZATION_SCOPE_CONFLICT:'付款时的销售归属存在重叠，无法确认是否计入所选范围',
 }
@@ -126,7 +129,7 @@ function editableRows(items) {
       poolName:item.poolName || '',poolId:item.poolId,legacyPool:item.targetKind==='pool' && !item.poolId,
       ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
       ownerPersonId:item.ownerPersonId,ownerName:item.ownerName,
-      salesScope:item.ownSales ? 'own' : item.salesScopeUnitIds || null,recipientDuty:item.recipientDuty,
+      salesScope:catalogOrderScope(item),recipientDuty:item.recipientDuty,
       appointment:item.appointment ? {...item.appointment} : undefined,
       method:item.fixedMinor!=null ? 'fixed' : tiers.length===1 ? 'rate' : 'tiers',
       fixedAmount:item.fixedMinor==null ? undefined : item.fixedMinor/100,
@@ -146,16 +149,21 @@ function configuredRow(item) {
   return {...target,tiers:item.method==='rate' ? [{from:0,rate:item.uniformRate}] : item.tiers}
 }
 const periodScopeUnits = computed(() => sheet.value?.options?.salesUnits || [])
-const salesUnitNames = computed(() => new Map([...Object.entries(sheet.value?.scopeLabels?.units || {}),
-  ...periodScopeUnits.value.map(unit=>[unit.value,unit.label])]))
+const periodScopeCategories = computed(() => sheet.value?.options?.categories || [])
+const salesUnitNames = computed(() => ({...sheet.value?.scopeLabels?.units,
+  ...Object.fromEntries(periodScopeUnits.value.map(unit=>[unit.value,unit.label]))}))
+const salesCategoryNames = computed(() => ({...sheet.value?.scopeLabels?.categories,
+  ...Object.fromEntries(periodScopeCategories.value.map(category=>[category.value,category.label]))}))
 function orderScopeText(item) {
-  const scope = item.salesScope==='own' ? '本人销售' : item.salesScope==null ? '整个适用账期'
-    : item.salesScope.length ? '指定团队 · '+item.salesScope.map(id=>salesUnitNames.value.get(id) || '组织待核').join('、') : '请选择销售组织'
-  return item.appointment ? scope+' · 任职期间' : scope
+  const scope = item.salesScope
+  const label = scope==='own' ? '本人销售' : scope==null ? '整个适用账期' : emptyCatalogOrderScope(scope) ? '请选择销售范围' :
+    [scope.unitIds.map(id=>salesUnitNames.value[id] || '组织待核').join('、'),
+      scope.categoryIds.map(id=>salesCategoryNames.value[id] || '类别待核').join('、')].filter(Boolean).join(' · ')
+  return item.appointment ? label+' · 任职期间' : label
 }
 function orderScopeBody(item) {
   return {ownSales:item.salesScope==='own' || undefined,
-    salesScopeUnitIds:Array.isArray(item.salesScope) ? item.salesScope : undefined,recipientDuty:item.recipientDuty,
+    salesScopeUnitIds:item.salesScope?.unitIds,salesScopeCategoryIds:item.salesScope?.categoryIds,recipientDuty:item.recipientDuty,
     appointment:item.appointment ? {...item.appointment,personId:item.personId} : undefined}
 }
 const methodLabels = {rate:'比例',fixed:'固定金额',tiers:'阶梯'}
@@ -273,7 +281,7 @@ function componentChanges() {
     if (item.targetKind==='pool' && (!(item.poolId || item.poolName?.trim()) || !(item.ownerRole || item.ownerPersonId) || !item.memberRole)) {
       throw new Error('请选择团队池、分配负责人和成员职责。')
     }
-    if (Array.isArray(item.salesScope) && !item.salesScope.length) throw new Error('请为「'+item.label+'」选择适用销售组织。')
+    if (emptyCatalogOrderScope(item.salesScope)) throw new Error('请为「'+item.label+'」选择适用的销售组织或销售类别。')
     if (item.appointment && (!item.appointment.unitId || !item.appointment.role)) throw new Error('请为「'+item.label+'」选择任职组织和岗位。')
     const target = componentTarget(item)
     if (item.method==='fixed') return {...target,fixedMinor:minor(item.fixedAmount,'请输入整期固定金额。')}
@@ -562,7 +570,8 @@ async function resumeRule() {
           </a-form>
           <RuleArrangementFields v-else :order-type-text="periodOrderTypes" :calculation-text="methodSummary(item)"/>
           <CatalogCommissionScopeFields v-if="canSave" :prefix="'period-scope-'+item.uid" v-model="item.salesScope"
-            :options="periodScopeUnits" :can-own="item.targetKind==='person'" :disabled="saving"/>
+            :options="periodScopeUnits" :unit-names="salesUnitNames" :categories="periodScopeCategories" :category-names="salesCategoryNames"
+            :can-own="item.targetKind==='person'" :disabled="saving"/>
           <a-form v-if="canSave && item.targetKind==='person'" layout="vertical" size="small" class="rule-basics">
             <a-form-item>
               <a-checkbox :checked="!!item.appointment" :disabled="saving"

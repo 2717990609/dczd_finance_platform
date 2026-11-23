@@ -24,6 +24,21 @@ export function moneyAsMinor(value) {
 export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
 export const practiceCompanyRatePriorityLabel = '指定公司 → 销售类别默认 → 外部公司默认'
 
+export function catalogOrderScope(item) {
+  if (item.ownSales) return 'own'
+  const {salesScopeUnitIds:unitIds=[],salesScopeCategoryIds:categoryIds=[]} = item
+  return unitIds.length || categoryIds.length ? {unitIds,categoryIds} : null
+}
+
+export function emptyCatalogOrderScope(scope) {
+  return scope && scope!=='own' && !scope.unitIds.length && !scope.categoryIds.length
+}
+
+export function catalogScopeOptions(options, selected, names, unknown) {
+  const active = new Set(options.map(option=>option.value))
+  return [...options,...(selected || []).filter(id=>!active.has(id)).map(id=>({value:id,label:names?.[id] || unknown}))]
+}
+
 export function checkPracticeCompanyArrangementScopes(components) {
   const arrangements = new Map()
   function register(member, scope, ids, arrangement) {

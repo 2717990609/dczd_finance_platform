@@ -119,12 +119,14 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 		Units       []string
 		OwnSales    bool
 		Appointment *catalogPerformanceDuty
+		Categories  []string `json:",omitempty"`
 	}
 	scopes := make([]orderScope, 0, len(targets))
 	for _, target := range targets {
 		for _, item := range definition.Items {
 			if item.ItemKey == target.Item {
-				scopes = append(scopes, orderScope{item.ItemKey, slices.Sorted(slices.Values(item.CommissionUnits)), item.OwnSales, item.Appointment})
+				scopes = append(scopes, orderScope{Item: item.ItemKey, Units: slices.Sorted(slices.Values(item.CommissionUnits)),
+					OwnSales: item.OwnSales, Appointment: item.Appointment, Categories: slices.Sorted(slices.Values(item.ScopeCategories))})
 				break
 			}
 		}

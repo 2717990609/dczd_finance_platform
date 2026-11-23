@@ -522,7 +522,7 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 	var decisions map[int64]catalogPerformanceDecision
 	if groupPayments && slices.ContainsFunc(rules, func(rule catalogAggregateRule) bool {
 		return rule.Definition.Performance.active() || slices.ContainsFunc(rule.Definition.Items, func(item catalogPeriodItem) bool {
-			return item.OwnSales || len(item.CommissionUnits) != 0 || item.Appointment != nil
+			return item.OwnSales || len(item.CommissionUnits)+len(item.ScopeCategories) != 0 || item.Appointment != nil
 		})
 	}) {
 		performance, err = readCatalogPerformanceDirectory(ctx, tx, events)

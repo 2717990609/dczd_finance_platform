@@ -47,6 +47,7 @@ type publishCatalogRatesInput struct {
 	NewSalesRates      []catalogConditionInput           `json:"newSalesRates,omitempty"`
 	NewSalesLabel      string                            `json:"newSalesLabel,omitempty"`
 	NewSalesScope      []string                          `json:"newSalesScope,omitempty"`
+	NewSalesCategories []string                          `json:"newSalesCategoryScope,omitempty"`
 	NewRateRows        []catalogNewRateRow               `json:"newRateRows"`
 	TargetChanges      []catalogBenefitTargetChange      `json:"targetChanges"`
 	CalculationChanges []catalogBenefitCalculationChange `json:"calculationChanges,omitempty"`
@@ -166,7 +167,7 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRatesInput, actor string, refreshDrafts bool) (catalogPublication, error) {
 	if input.Create != nil {
 		if input.BaseID != "" || input.Copy != nil || input.TeamSplitRates != nil || input.NewSalesLabel != "" ||
-			len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges)+len(input.LeaderChanges)+len(input.ScopeChanges)+len(input.NewSalesScope)+
+			len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges)+len(input.LeaderChanges)+len(input.ScopeChanges)+len(input.NewSalesScope)+len(input.NewSalesCategories)+
 				len(input.NewSalesRates)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges)+len(input.RemovedItems)+len(input.RemovedRateRows) != 0 {
 			return catalogPublication{}, invalid
 		}
@@ -175,7 +176,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 	published := catalogPublication{ID: input.BaseID}
 	id, valid := canonicalSourceUUID(input.BaseID)
 	from := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
-	if (input.NewSalesLabel != "" || len(input.NewSalesScope) > 0) && len(input.NewSalesRates) == 0 {
+	if (input.NewSalesLabel != "" || len(input.NewSalesScope)+len(input.NewSalesCategories) > 0) && len(input.NewSalesRates) == 0 {
 		return published, invalid
 	}
 	structureChanged := len(input.NewItems)+len(input.NewSalesRates)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges) != 0

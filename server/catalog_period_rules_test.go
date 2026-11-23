@@ -36,7 +36,8 @@ func TestCatalogPeriodRuleRejectsInvalidPerArrangementScopes(t *testing.T) {
 
 func TestCatalogPeriodItemsSaveIndependentScopes(t *testing.T) {
 	const team = "41000000-0000-4000-8000-000000000112"
-	options := catalogStructureOptions{SalesUnits: []catalogStructureOption{{Value: team}}}
+	const category = "41000000-0000-4000-8000-000000000113"
+	options := catalogStructureOptions{SalesUnits: []catalogStructureOption{{Value: team}}, Categories: []catalogStructureOption{{Value: category}}}
 	edits := []catalogPeriodComponentEdit{
 		{Label: "本人销售", TargetKind: "person", PersonID: 64, Tiers: []catalogPeriodTier{{Rate: 1000}}},
 		{Label: "团队负责人", TargetKind: "person", PersonID: 64, Tiers: []catalogPeriodTier{{Rate: 200}}},
@@ -44,7 +45,7 @@ func TestCatalogPeriodItemsSaveIndependentScopes(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"ownSales":true}`), &edits[0]); err != nil {
 		t.Fatal(err)
 	}
-	if err := json.Unmarshal([]byte(`{"salesScopeUnitIds":["`+team+`"]}`), &edits[1]); err != nil {
+	if err := json.Unmarshal([]byte(`{"salesScopeUnitIds":["`+team+`"],"salesScopeCategoryIds":["`+category+`"]}`), &edits[1]); err != nil {
 		t.Fatal(err)
 	}
 	body, err := editCatalogPeriodComponents(json.RawMessage(twoTierPeriodRule), edits, options)
@@ -56,7 +57,8 @@ func TestCatalogPeriodItemsSaveIndependentScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	readback, err := json.Marshal(period.Items)
-	if err != nil || !strings.Contains(string(readback), `"ownSales":true`) || !strings.Contains(string(readback), `"salesScopeUnitIds":["`+team+`"]`) {
+	if err != nil || !strings.Contains(string(readback), `"ownSales":true`) || !strings.Contains(string(readback), `"salesScopeUnitIds":["`+team+`"]`) ||
+		!strings.Contains(string(readback), `"salesScopeCategoryIds":["`+category+`"]`) {
 		t.Fatalf("independent scope fields missing: %s (%v)", readback, err)
 	}
 }

@@ -210,6 +210,42 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 			t.Fatalf("an unchanged definition must keep its stored version and carry identity: %+v", group)
 		}
 	}
+	const selectedCategory = "10000000-0000-4000-8000-000000000106"
+	const otherCategory = "10000000-0000-4000-8000-000000000107"
+	const sellerCompany = "10000000-0000-4000-8000-000000000108"
+	const otherCompany = "10000000-0000-4000-8000-000000000109"
+	for _, statement := range []string{
+		`INSERT INTO organization_units(id,kind,name,status) VALUES
+		 ('` + sellerCompany + `','COMPANY','成交公司','ACTIVE'),('` + otherCompany + `','COMPANY','健康业务公司','ACTIVE')`,
+		`INSERT INTO organization_sales_categories VALUES ('` + selectedCategory + `','选择的类别',true),('` + otherCategory + `','其他类别',true)`,
+		`INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from) VALUES
+		 ('DCAI','seller-company','` + sellerCompany + `','2026-01-01')`,
+		`INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from,valid_to) VALUES
+		 ('` + sellerCompany + `','` + selectedCategory + `','2026-01-01','2026-10-02T00:00+08'),
+		 ('` + sellerCompany + `','` + otherCategory + `','2026-10-02T00:00+08',NULL)`,
+		`INSERT INTO catalog_sales_company_aliases(id,source,external_id,company_uuid,company_unit_id,valid_from,observed_at)
+		 VALUES(gen_random_uuid(),'DCAI','other-company','` + otherCompany + `','` + otherCompany + `','2026-01-01','2026-10-01')`,
+		`INSERT INTO catalog_sales_categories(source,company_uuid,category_uuid,valid_from,observed_at)
+		 VALUES('DCAI','` + otherCompany + `','` + otherCategory + `','2026-01-01','2026-10-01')`,
+		`UPDATE source_order_classifications c SET sales_claims=jsonb_build_array(jsonb_build_object(
+		 'role','PID_USER','user','seller','relationship','DIRECT','company',CASE WHEN p.order_id='20' THEN 'other-company' ELSE 'seller-company' END))
+		 FROM source_order_versions p WHERE c.source_version_id=p.id AND p.order_id IN ('10','11','20')`,
+	} {
+		if _, err := db.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	categoryTrial := requestTrial(ruleID, "2026-10-01", `"components":[{"itemKey":"operations","label":"运营",
+	 "targetKind":"pool","organizationKey":"`+orgID+`","poolName":"运营池","ownerRole":"owner","memberRole":"member",
+	 "salesScopeCategoryIds":["`+selectedCategory+`"],"tiers":[{"rate_bps":1000}]}]`)
+	if categoryTrial.Receipts != 32000 || categoryTrial.Refunds != 3000 || len(categoryTrial.Grouping.Groups) != 2 || len(categoryTrial.Grouping.Issues) != 0 {
+		t.Fatalf("company category filters the arrangement and leaves product receipts and earlier refunds available: %+v", categoryTrial.Grouping)
+	}
+	for _, group := range categoryTrial.Grouping.Groups {
+		if group.RuleID == ruleID && group.Refunds != 3000 || group.RuleID == "" && (group.Receipts != 12000 || group.quote().Total != 1200) {
+			t.Fatalf("category matches the original payment date and leaves the earlier open-period refund on its rule: %+v", group)
+		}
+	}
 	var versions int
 	if err := db.QueryRow(ctx, `SELECT count(*) FROM product_rule_versions WHERE package_id=$1`, packageID).Scan(&versions); err != nil || versions != 1 {
 		t.Fatalf("order trial must leave published versions unchanged: %d %v", versions, err)

@@ -103,8 +103,9 @@ func editCatalogPerformanceScope(ctx context.Context, db catalogPeriodReader, bo
 }
 
 type catalogPerformanceLabels struct {
-	Units  map[string]string `json:"units"`
-	Person string            `json:"person,omitempty"`
+	Units      map[string]string `json:"units"`
+	Person     string            `json:"person,omitempty"`
+	Categories map[string]string `json:"categories,omitempty"`
 }
 
 func nameCatalogPerformanceScope(ctx context.Context, db catalogPeriodReader, scope *catalogPerformanceScope) (*catalogPerformanceLabels, error) {
@@ -134,10 +135,16 @@ type catalogPerformanceDecision struct {
 type catalogPerformanceDirectory struct {
 	claims       map[int64]vipClaim
 	claimIssues  map[int64]string
+	categories   map[int64]catalogPaymentCategory
 	users        [2]map[string][]vipLink
 	companies    [2]map[string][]vipLink
 	organization reportAttribution
 	duties       map[catalogPerformanceDuty][]vipInterval
+}
+
+type catalogPaymentCategory struct {
+	id    *string
+	issue string
 }
 
 const catalogPerformanceLinksSQL = `WITH snapshot AS (SELECT captured_at FROM catalog_sales_context WHERE source='DCAI')
@@ -159,6 +166,8 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 	dir := catalogPerformanceDirectory{claims: map[int64]vipClaim{}, claimIssues: map[int64]string{},
 		duties: map[catalogPerformanceDuty][]vipInterval{}}
 	var payments []int64
+	var categoryPayments []catalogActivityEvent
+	needsSalesDirectory := false
 	seen := make(map[int64]bool)
 	wanted := make(map[catalogPerformanceDuty]bool)
 	for _, event := range events {
@@ -168,10 +177,16 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 		seen[event.PaymentID] = true
 		definition := event.selection.rule.Definition
 		scope := definition.Performance
-		if scope.active() && len(scope.UnitIDs) != 0 || slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool {
+		needsSales := scope.active() && len(scope.UnitIDs) != 0 || slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool {
 			return item.OwnSales || len(item.CommissionUnits) != 0
-		}) {
+		})
+		needsCategories := slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool { return len(item.ScopeCategories) != 0 })
+		if needsSales || needsCategories {
 			payments = append(payments, event.PaymentID)
+		}
+		needsSalesDirectory = needsSalesDirectory || needsSales
+		if needsCategories {
+			categoryPayments = append(categoryPayments, event)
 		}
 		if scope.active() {
 			if duty := scope.Appointment; duty != nil {
@@ -230,6 +245,15 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 	if err != nil {
 		return dir, err
 	}
+	if len(categoryPayments) != 0 {
+		dir.categories, err = readCatalogPaymentCategories(ctx, tx, categoryPayments, dir.claims, dir.claimIssues)
+		if err != nil {
+			return dir, err
+		}
+	}
+	if !needsSalesDirectory {
+		return dir, nil
+	}
 	links := func(keys map[string]bool) []string {
 		result := make([]string, 0, len(keys))
 		for key := range keys {
@@ -272,6 +296,48 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 	return dir, err
 }
 
+func readCatalogPaymentCategories(ctx context.Context, tx pgx.Tx, payments []catalogActivityEvent, claims map[int64]vipClaim,
+	issues map[int64]string) (map[int64]catalogPaymentCategory, error) {
+	keys := make(map[string]bool)
+	var companies []string
+	for _, payment := range payments {
+		if company := claims[payment.PaymentID].Company; company != "" && !keys[company] {
+			keys[company] = true
+			companies = append(companies, company)
+		}
+	}
+	var directory vipRuntimeData
+	if len(companies) != 0 {
+		if err := tx.QueryRow(ctx, `WITH scope AS (SELECT (SELECT captured_at FROM catalog_sales_context WHERE source='DCAI') AS captured_at),
+		 keys AS (SELECT unnest($1::text[]) AS company), `+vipSalesCompanyLinksSQL+`
+		 SELECT jsonb_build_object(`+vipSalesCompanyFieldsSQL+`) FROM scope s`, companies).Scan(&directory); err != nil {
+			return nil, err
+		}
+	}
+	result := make(map[int64]catalogPaymentCategory, len(payments))
+	for _, payment := range payments {
+		id := payment.PaymentID
+		claim, known := claims[id]
+		issue := issues[id]
+		var category *string
+		if issue == "" {
+			company, fromDirectory, conflict := directory.salesCompanyAt(claim.Company, payment.PaidAt)
+			switch {
+			case !known:
+				issue = "SALES_SOURCE_MISSING"
+			case conflict:
+				issue = "SALES_COMPANY_CONFLICT"
+			case company.Key == "":
+				issue = "SALES_COMPANY_MISSING"
+			default:
+				category, issue = directory.salesCategoryAt(company, fromDirectory, payment.PaidAt)
+			}
+		}
+		result[id] = catalogPaymentCategory{category, issue}
+	}
+	return result, nil
+}
+
 func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPerformanceDecision {
 	if event.frozenPeriod != 0 || event.selection == nil || event.selection.rule == nil {
 		return catalogPerformanceDecision{}
@@ -297,7 +363,12 @@ func (d catalogPerformanceDirectory) matchItem(event catalogActivityEvent, item 
 	if item.OwnSales {
 		seller = item.PersonID
 	}
-	return d.matchSales(event, item.CommissionUnits, seller)
+	if decision := d.matchSales(event, item.CommissionUnits, seller); decision.excluded || decision.issue != "" {
+		return decision
+	}
+	category := d.categories[event.PaymentID]
+	matches, issue := catalogSalesCategoryMatches(item.ScopeCategories, category.id, category.issue)
+	return catalogPerformanceDecision{excluded: !matches && issue == "", issue: issue}
 }
 
 func (d catalogPerformanceDirectory) matchAppointment(duty *catalogPerformanceDuty, at time.Time) catalogPerformanceDecision {

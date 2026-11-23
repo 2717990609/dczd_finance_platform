@@ -153,6 +153,19 @@ func TestVIPInternalAllocationUsesHistoricalHoldersAndConservesCents(t *testing.
 	if got := quote(); got[0].Status != "ZERO" || got[1].Status != "ZERO" {
 		t.Fatalf("unrelated company: %+v", got)
 	}
+	req.Company = "company"
+	category, other := "partner", "other"
+	if err := json.Unmarshal([]byte(`{"orders":"all","companies":["company"],"categoryIds":["partner"]}`), policy.actions[1].Leader); err != nil {
+		t.Fatal(err)
+	}
+	req.Category = &other
+	if got := quote(); got[0].Status != "CALCULATED" || got[1].Status != "ZERO" {
+		t.Fatalf("only the category-filtered team leader should be excluded: %+v", got)
+	}
+	req.Category = &category
+	if got := quote(); got[1].Amount != 300 || got[1].Party != "head" {
+		t.Fatalf("team and payment category must both match: %+v", got)
+	}
 }
 
 func TestVIPExplicitZeroSaleNeedsNoPayeeButPreservesReview(t *testing.T) {

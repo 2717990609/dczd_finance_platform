@@ -26,6 +26,7 @@ type catalogRateComponent struct {
 	TeamSplit       *catalogSplitRates `json:"teamSplit,omitempty"`
 	LeaderScope     *vipLeaderScope    `json:"leaderScope,omitempty"`
 	CommissionUnits []string           `json:"salesScopeUnitIds,omitempty"`
+	ScopeCategories []string           `json:"salesScopeCategoryIds,omitempty"`
 	OwnSales        bool               `json:"ownSales,omitempty"`
 	RecipientDuty   string             `json:"recipientDuty,omitempty"`
 }
@@ -69,6 +70,7 @@ type catalogRateSheet struct {
 	Teams              []catalogRuleTeam        `json:"teams,omitempty"`
 	StructureOptions   *catalogStructureOptions `json:"structureOptions,omitempty"`
 	ScopeUnitNames     map[string]string        `json:"scopeUnitNames,omitempty"`
+	ScopeCategoryNames map[string]string        `json:"scopeCategoryNames,omitempty"`
 }
 
 func catalogRateComponents(raw json.RawMessage, companies, categories, relationships, organizations map[string]string) ([]catalogRateComponent, error) {
@@ -108,6 +110,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		}
 		item := catalogRateComponent{ItemKey: action.Item, Label: action.Label, Rate: action.Rate, Fixed: action.Fixed, TargetKind: action.targetKind()}
 		item.CommissionUnits = action.CommissionUnits
+		item.ScopeCategories = action.ScopeCategories
 		item.OwnSales, item.RecipientDuty = action.OwnSales, action.RecipientDuty
 		if item.ItemKey == sales.Item {
 			item.TargetKind = "seller"
@@ -297,6 +300,7 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 		return sheet, errCatalogRateUnavailable
 	}
 	companyNames["ANY"] = "不限公司"
+	sheet.ScopeCategoryNames = categoryNames
 	sheet.Components, err = catalogRateComponents(definition, companyNames, categoryNames, relationshipNames, organizationNames)
 	if err == nil {
 		policy, _ := readVIPBenefits(definition)

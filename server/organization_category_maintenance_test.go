@@ -40,7 +40,17 @@ func TestCompanyCategoryMaintenanceUsesEffectiveHistory(t *testing.T) {
  VALUES('DCAI','sample','sample','sample','1','ORDER_PAID',now(),now(),'{}');
  INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier,sales_claims)
  SELECT id,'VIP_ORDER','sample','sample','[{"role":"PID_USER","user":"sample","company":"source-company","relationship":"DIRECT"}]'::jsonb
- FROM source_order_versions;`)
+ FROM source_order_versions;
+ INSERT INTO products(code,name,period_mode) VALUES ('PRACTICE_CATEGORY','实战班样本','class');
+ INSERT INTO source_mappings(product_id,source,domain,source_key)
+ SELECT id,'DCZD','PRACTICE','fixture-practice' FROM products WHERE code='PRACTICE_CATEGORY';
+ INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
+ VALUES('DCZD','fixture-company','00000000-0000-4000-8000-000000000061','2025-01-01');
+ INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on)
+ SELECT id,'班次样本',3,current_date,current_date FROM products WHERE code='PRACTICE_CATEGORY';
+ INSERT INTO rule_versions(product_id,version,label,components)
+ SELECT id,1,'独立服务提成','[{"periodBenefit":{"salesCategoryIds":["00000000-0000-4000-8000-000000000062"]}}]'::jsonb
+ FROM products WHERE code='PRACTICE_CATEGORY';`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,16 +105,20 @@ func TestCompanyCategoryMaintenanceUsesEffectiveHistory(t *testing.T) {
 	if err := s.db.QueryRow(ctx, "SELECT label FROM catalog_sales_category_options WHERE key=$1 AND active", created.ID).Scan(&selectable); err != nil || selectable != created.Name {
 		t.Fatalf("edited category absent from rule options after import: %s %v", selectable, err)
 	}
-	var period, version int64
+	var period, practicePeriod, version int64
 	if err := s.db.QueryRow(ctx, "SELECT id FROM periods WHERE ordinal=1").Scan(&period); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.db.QueryRow(ctx, "SELECT id FROM source_order_versions WHERE order_id='sample'").Scan(&version); err != nil {
 		t.Fatal(err)
 	}
+	if err := s.db.QueryRow(ctx, "SELECT id FROM periods WHERE ordinal=3").Scan(&practicePeriod); err != nil {
+		t.Fatal(err)
+	}
 	var booked int64
 	var pending []int64
-	if err := s.db.QueryRow(ctx, "SELECT array_agg(period_id ORDER BY period_id) FROM draft_refresh_queue").Scan(&pending); err != nil || len(pending) != 1 || pending[0] != period {
+	if err := s.db.QueryRow(ctx, "SELECT array_agg(period_id ORDER BY period_id) FROM draft_refresh_queue").Scan(&pending); err != nil ||
+		len(pending) != 2 || pending[0] != period || pending[1] != practicePeriod {
 		t.Fatalf("refresh queue: %v %v", pending, err)
 	}
 	if err := s.db.QueryRow(ctx, "SELECT d.total_minor FROM calculation_drafts d JOIN settlements s USING(period_id)").Scan(&booked); err != nil || booked != 1200 {

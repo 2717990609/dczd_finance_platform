@@ -54,6 +54,8 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 		return nil, err
 	}
 	policy, _ := readVIPSalesPolicy(raw)
+	prior, _ := readVIPBenefits(raw)
+	categoryAdditions := make(map[string]bool)
 	seen := make(map[string]bool, len(changes))
 	var recipients []catalogRuleRecipientChange
 	for _, change := range changes {
@@ -64,6 +66,15 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 		if change.Target == "person" {
 			recipients = append(recipients, catalogRuleRecipientChange{PersonID: change.PersonID})
 		}
+		index := slices.IndexFunc(prior.actions, func(item vipBenefitAction) bool { return item.Item == change.ItemKey })
+		for _, id := range change.Scope.CategoryIDs {
+			if index < 0 || !slices.Contains(prior.actions[index].Leader.CategoryIDs, id) {
+				categoryAdditions[id] = true
+			}
+		}
+	}
+	if err := validateNewCatalogScopeCategories(ctx, tx, categoryAdditions); err != nil {
+		return nil, err
 	}
 	var people map[int64]string
 	var inheritedLabels map[string]string
@@ -94,7 +105,7 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 				amount, orders = policy.Split.TeamHead, "all"
 			}
 			if change.PersonID != 0 || change.Fixed != nil || change.Rate == nil || *change.Rate != amount ||
-				change.Scope.Orders != orders || len(change.Scope.Companies)+len(change.Scope.Groups) != 0 {
+				change.Scope.Orders != orders || len(change.Scope.Companies)+len(change.Scope.Groups)+len(change.Scope.CategoryIDs) != 0 {
 				return nil, invalid
 			}
 			if inheritedLabels == nil {

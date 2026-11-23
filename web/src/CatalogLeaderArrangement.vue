@@ -2,9 +2,10 @@
 import { computed } from 'vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogFlatMethods } from './rule-component-form'
+import { catalogFlatMethods, catalogScopeOptions } from './rule-component-form'
 
-const props = defineProps({itemKey:String,teams:Array,api:Function,peopleFilters:Object,disabled:Boolean,inherited:Object,orderTypeText:String})
+const props = defineProps({itemKey:String,teams:Array,api:Function,peopleFilters:Object,disabled:Boolean,inherited:Object,orderTypeText:String,
+  salesCategories:Array,categoryNames:Object})
 const form = defineModel({type:Object,required:true})
 const field = name => props.itemKey+'-'+name
 const isGroup = computed(() => props.itemKey==='internal-group-leader')
@@ -24,6 +25,8 @@ const groupsFor = companies => Array.from(new Map(
     .flatMap(team=>(team.groups || []).map(group=>[group.value,group])),
 ).values())
 const groupOptions = computed(() => groupsFor(form.value.scope.companies))
+const categoryOptions = computed(() => catalogScopeOptions(props.salesCategories || [],form.value.scope.categoryIds,
+  props.categoryNames,'已选类别名称待核'))
 function update(fields) {
   const changingTerms = 'amount' in fields && (fields.amount==null || Number(fields.amount)!==Number(form.value.amount)) ||
     'method' in fields && fields.method!==form.value.method ||
@@ -84,6 +87,11 @@ function selectCompanies(companies) {
       <a-select :id="field('groups')" :value="form.scope.groups" :options="groupOptions"
         :disabled="disabled" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label"
         :placeholder="isGroup ? '上述团队内全部小组' : '上述团队全部成员'" @change="updateScope({groups:$event})"/>
+    </a-form-item>
+    <a-form-item v-if="categoryOptions.length" label="适用销售类别" :html-for="field('categories')">
+      <a-select :id="field('categories')" :value="form.scope.categoryIds" :options="categoryOptions" :disabled="disabled"
+        mode="multiple" :max-tag-count="2" allow-clear show-search option-filter-prop="label" placeholder="不限销售类别"
+        @change="updateScope({categoryIds:$event})"/>
     </a-form-item>
   </div>
   <small v-if="form.target==='person'" class="rule-block-recipient">按付款时在相应{{ isGroup ? '小组' : '团队' }}的任职期间计提</small>

@@ -115,6 +115,33 @@ func (h vipCompanyTypeHistory) at(at time.Time, snapshotAt *time.Time) string {
 
 const vipReferralParticipantsPath = `'$.participants[*] ? (@.role == "DIRECT_PID_USER" || @.role == "LOCK_DIRECT_SHARE_USER")'`
 
+const vipSalesCompanyLinksSQL = `companies AS MATERIALIZED (
+ SELECT a.external_id AS key,a.company_uuid AS value,a.company_unit_id AS unit,a.valid_from AS "from",a.valid_to AS "to"
+ FROM catalog_sales_company_aliases a JOIN scope s ON a.source='DCAI' AND a.observed_at=s.captured_at
+ WHERE a.external_id IN (SELECT company FROM keys)
+), directory_companies AS MATERIALIZED (
+ SELECT a.source_company_id AS key,a.company_id AS value,a.company_id AS unit,
+  a.valid_from AS "from",a.valid_to AS "to"
+ FROM organization_company_sources a JOIN organization_units u ON u.id=a.company_id AND u.kind='COMPANY'
+ WHERE a.source='DCAI' AND a.source_company_id IN (SELECT company FROM keys)
+), directory_aliases AS MATERIALIZED (
+ SELECT b.company_unit_id AS key,b.company_uuid AS value,b.valid_from AS "from",b.valid_to AS "to"
+ FROM catalog_sales_company_aliases b JOIN scope s ON b.source='DCAI' AND b.observed_at=s.captured_at
+ WHERE b.company_unit_id IN (SELECT unit FROM directory_companies)
+)`
+
+const vipSalesCompanyFieldsSQL = `'companies',(SELECT jsonb_agg(to_jsonb(companies)) FROM companies),
+ 'directoryCompanies',(SELECT jsonb_agg(to_jsonb(directory_companies)) FROM directory_companies),
+ 'directoryAliases',(SELECT jsonb_agg(to_jsonb(directory_aliases)) FROM directory_aliases),
+ 'categories',(SELECT jsonb_agg(jsonb_build_object('key',h.company_uuid,'value',h.category_uuid,'from',h.valid_from,'to',h.valid_to))
+  FROM catalog_sales_categories h WHERE h.source='DCAI' AND h.observed_at=s.captured_at
+   AND h.company_uuid IN (SELECT value FROM companies UNION SELECT value FROM directory_aliases)),
+ 'localCategories',(SELECT jsonb_agg(jsonb_build_object('key',h.unit_id,'value',h.category_id,'from',h.valid_from,'to',h.valid_to))
+  FROM organization_sales_category_history h
+  WHERE h.recorded_at IS NOT NULL AND h.unit_id IN (SELECT unit FROM companies)),
+ 'directoryCategories',(SELECT jsonb_agg(jsonb_build_object('key',h.unit_id,'value',h.category_id,'from',h.valid_from,'to',h.valid_to))
+  FROM organization_sales_category_history h WHERE h.unit_id IN (SELECT unit FROM directory_companies))`
+
 // The directory fingerprint is independent of which people are needed by the
 // current payments. Only reusable draft quotes require this fingerprint.
 const vipRuntimeSQL = `WITH scope AS (
@@ -147,20 +174,7 @@ const vipRuntimeSQL = `WITH scope AS (
  SELECT u.external_id AS key,` + vipPersonKey + ` AS value,p.id,u.valid_from AS "from",u.valid_to AS "to"
  FROM identity_mappings u JOIN people p ON p.id=u.person_id
  WHERE u.source='DCAI' AND u.external_id IN (SELECT person FROM keys)
-), companies AS MATERIALIZED (
- SELECT a.external_id AS key,a.company_uuid AS value,a.company_unit_id AS unit,a.valid_from AS "from",a.valid_to AS "to"
- FROM catalog_sales_company_aliases a JOIN scope s ON a.source='DCAI' AND a.observed_at=s.captured_at
- WHERE a.external_id IN (SELECT company FROM keys)
-), directory_companies AS MATERIALIZED (
- SELECT a.source_company_id AS key,a.company_id AS value,a.company_id AS unit,
-  a.valid_from AS "from",a.valid_to AS "to"
- FROM organization_company_sources a JOIN organization_units u ON u.id=a.company_id AND u.kind='COMPANY'
- WHERE a.source='DCAI' AND a.source_company_id IN (SELECT company FROM keys)
-), directory_aliases AS MATERIALIZED (
- SELECT b.company_unit_id AS key,b.company_uuid AS value,b.valid_from AS "from",b.valid_to AS "to"
- FROM catalog_sales_company_aliases b JOIN scope s ON b.source='DCAI' AND b.observed_at=s.captured_at
- WHERE b.company_unit_id IN (SELECT unit FROM directory_companies)
-), roles AS (
+), ` + vipSalesCompanyLinksSQL + `, roles AS (
  SELECT ` + vipPersonKey + ` AS person,p.id,a.role,a.scope,a.scope_key AS key,a.valid_from AS "from",a.valid_to AS "to"
  FROM catalog_current_sales_appointments a JOIN people p ON p.id=a.person_id CROSS JOIN scope s
  WHERE a.source='DCAI' AND (a.scope='ORGANIZATION_UNIT' OR a.scope='PRODUCT' AND a.scope_key=s.code OR a.scope='PROJECT' AND a.scope_key=s.project_code)
@@ -202,8 +216,6 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
   'benefit_actions',definition->'benefit_actions')) FROM definitions),
  'users',(SELECT jsonb_agg(to_jsonb(users)-'id') FROM users),
  'directoryUsers',(SELECT jsonb_agg(to_jsonb(directory_users)-'id') FROM directory_users),
- 'companies',(SELECT jsonb_agg(to_jsonb(companies)) FROM companies),
- 'directoryCompanies',(SELECT jsonb_agg(to_jsonb(directory_companies)) FROM directory_companies),
  'companyNames',(SELECT jsonb_object_agg(u.id,u.name) FROM organization_units u WHERE u.kind='COMPANY'
   AND u.id IN (SELECT unit FROM companies UNION SELECT unit FROM directory_companies)),
  'companyTypes',CASE WHEN EXISTS(SELECT 1 FROM definitions WHERE
@@ -214,15 +226,7 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
   FROM organization_units u WHERE u.kind='COMPANY' AND u.id IN (SELECT unit FROM companies UNION SELECT unit FROM directory_companies)
  ) END,
  'organizationSnapshotAt',(SELECT captured_at FROM organization_import_state WHERE singleton),
- 'directoryAliases',(SELECT jsonb_agg(to_jsonb(directory_aliases)) FROM directory_aliases),
- 'categories',(SELECT jsonb_agg(jsonb_build_object('key',h.company_uuid,'value',h.category_uuid,'from',h.valid_from,'to',h.valid_to))
-  FROM catalog_sales_categories h WHERE h.source='DCAI' AND h.observed_at=s.captured_at
-   AND h.company_uuid IN (SELECT value FROM companies UNION SELECT value FROM directory_aliases)),
- 'localCategories',(SELECT jsonb_agg(jsonb_build_object('key',h.unit_id,'value',h.category_id,'from',h.valid_from,'to',h.valid_to))
-  FROM organization_sales_category_history h
-  WHERE h.recorded_at IS NOT NULL AND h.unit_id IN (SELECT unit FROM companies)),
- 'directoryCategories',(SELECT jsonb_agg(jsonb_build_object('key',h.unit_id,'value',h.category_id,'from',h.valid_from,'to',h.valid_to))
-  FROM organization_sales_category_history h WHERE h.unit_id IN (SELECT unit FROM directory_companies)),
+ ` + vipSalesCompanyFieldsSQL + `,
  'roles',(SELECT jsonb_agg(to_jsonb(roles)-'id' ORDER BY person,role,scope,key,"from","to") FROM roles),
  'memberships',(SELECT jsonb_agg(jsonb_build_object('person',` + vipPersonKey + `,'unit',a.unit_id,'kind',a.kind,'unitKind',u.kind,'from',a.valid_from,'to',a.valid_to)
    ORDER BY p.id,a.unit_id,a.kind,a.valid_from,a.valid_to)
@@ -321,18 +325,7 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 	if conflict {
 		return req, "SALES_PERSON_CONFLICT"
 	}
-	company, conflict := resolveVIPLinkRecord(d.Companies, claim.Company, sale.PaidAt)
-	companyFromDirectory := company.Key == "" && !conflict
-	if companyFromDirectory {
-		company, conflict = resolveVIPLinkRecord(d.DirectoryCompanies, claim.Company, sale.PaidAt)
-		if !conflict && company.Unit != "" {
-			var alias string
-			alias, conflict = resolveVIPLink(d.DirectoryAliases, company.Unit, sale.PaidAt)
-			if alias != "" {
-				company.Value = alias
-			}
-		}
-	}
+	company, companyFromDirectory, conflict := d.salesCompanyAt(claim.Company, sale.PaidAt)
 	if conflict {
 		return req, "SALES_COMPANY_CONFLICT"
 	}
@@ -349,23 +342,46 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 		)
 		req.commissionSalesOrg = &org
 	}
-	category, conflict := resolveVIPLinkRecord(d.LocalCategories, req.CompanyUnit, sale.PaidAt)
-	if companyFromDirectory {
-		category, conflict = resolveVIPLinkRecord(d.DirectoryCategories, req.CompanyUnit, sale.PaidAt)
-	}
-	if category.Key == "" && !conflict {
-		category, conflict = resolveVIPLinkRecord(d.Categories, req.Company, sale.PaidAt)
-	}
-	if conflict {
-		return req, "SALES_CATEGORY_CONFLICT"
-	}
-	if category.Key != "" {
-		req.Category = &category.Value
-	}
-	return req, ""
+	category, issue := d.salesCategoryAt(company, companyFromDirectory, sale.PaidAt)
+	req.Category = category
+	return req, issue
 }
 
 type vipOrderReferrer struct{ Party, Issue string }
+
+func (d vipRuntimeData) salesCompanyAt(companyKey string, at time.Time) (vipLink, bool, bool) {
+	company, conflict := resolveVIPLinkRecord(d.Companies, companyKey, at)
+	companyFromDirectory := company.Key == "" && !conflict
+	if companyFromDirectory {
+		company, conflict = resolveVIPLinkRecord(d.DirectoryCompanies, companyKey, at)
+		if !conflict && company.Unit != "" {
+			var alias string
+			alias, conflict = resolveVIPLink(d.DirectoryAliases, company.Unit, at)
+			if alias != "" {
+				company.Value = alias
+			}
+		}
+	}
+	return company, companyFromDirectory, conflict
+}
+
+func (d vipRuntimeData) salesCategoryAt(company vipLink, fromDirectory bool, at time.Time) (*string, string) {
+	local := d.LocalCategories
+	if fromDirectory {
+		local = d.DirectoryCategories
+	}
+	category, conflict := resolveVIPLinkRecord(local, company.Unit, at)
+	if category.Key == "" && !conflict {
+		category, conflict = resolveVIPLinkRecord(d.Categories, company.Value, at)
+	}
+	if conflict {
+		return nil, "SALES_CATEGORY_CONFLICT"
+	}
+	if category.Key == "" {
+		return nil, ""
+	}
+	return &category.Value, ""
+}
 
 func (d vipRuntimeData) orderReferrer(claims []vipClaim, at time.Time) vipOrderReferrer {
 	user := ""
@@ -427,7 +443,7 @@ func (p vipQuotePolicies) apply(row *catalogPaymentMatch, data vipRuntimeData, r
 		row.SalesParts, row.SalesStatus = nil, issue
 		if policy.Item == "" {
 			row.SalesStatus = vipSalesNotConfigured
-		} else if eligible, scopeIssue := vipCommissionScope(policy.CommissionUnits, req, issue, data); !eligible {
+		} else if eligible, scopeIssue := vipScopedSale(policy.CommissionUnits, policy.ScopeCategories, req, issue, data); !eligible {
 			row.SalesStatus = vipCommissionOutsideScope
 			if scopeIssue != "" {
 				row.SalesStatus = scopeIssue

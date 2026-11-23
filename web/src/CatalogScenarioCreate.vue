@@ -59,7 +59,7 @@ function publicationInput() {
   return {
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
     create:{productId:productId.value,sku:sku.value,label:name.value.trim(),salesRates:sales?.rows,salesLabel:sales?.label,
-      salesScopeUnitIds:sales?.salesScopeUnitIds},
+      salesScopeUnitIds:sales?.salesScopeUnitIds,salesScopeCategoryIds:sales?.salesScopeCategoryIds},
     newItems:items.map(({personName,ownerName,...item})=>item),
   }
 }

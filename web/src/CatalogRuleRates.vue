@@ -8,7 +8,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogCalculationMethods, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesCalculationMethods, catalogSalesPayees, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogCalculationMethods, catalogOrderScope, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesCalculationMethods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule:Object, applied:Object, api:Function, formatTime:Function, formatMoney:Function,
   optionLabel:Function, periods:Array, skus:Array })
@@ -323,7 +323,8 @@ function originalLeader(item) {
     label:item.label,target:item.targetKind,method:item.fixedMinor==null ? 'rate' : 'fixed',
     amount:((item.fixedMinor ?? item.rateBps)/100).toFixed(2),
     personId:item.recipient?.id,personName:item.recipient?.name,
-    scope:{orders:item.leaderScope.orders,companies:item.leaderScope.companies || [],groups:item.leaderScope.groups || []},
+    scope:{orders:item.leaderScope.orders,companies:item.leaderScope.companies || [],groups:item.leaderScope.groups || [],
+      categoryIds:item.leaderScope.categoryIds || []},
   }
 }
 const leaderForm = item => leaderEdits.value.get(item.itemKey) || originalLeader(item)
@@ -332,7 +333,8 @@ function setLeader(item, form) {
   const normalize = value=>JSON.stringify({
     ...value,personName:undefined,label:value.label.trim(),
     amount:value.method==='fixed' ? moneyAsMinor(value.amount) : rateAsBasisPoints(value.amount),
-    scope:{...value.scope,companies:[...value.scope.companies].sort(),groups:[...value.scope.groups].sort()},
+    scope:{...value.scope,companies:[...value.scope.companies].sort(),groups:[...value.scope.groups].sort(),
+      categoryIds:[...value.scope.categoryIds].sort()},
   })
   if (normalize(form)===normalize(original)) leaderEdits.value.delete(item.itemKey)
   else leaderEdits.value.set(item.itemKey,form)
@@ -352,17 +354,18 @@ function formatScope(names, order) {
   return [names.length>2 ? names.slice(0,2).join('、')+' 等 '+names.length+' 个' : names.join('、'),order].filter(Boolean).join(' · ')
 }
 function leaderScopeText(item) {
-  const {companies,groups,orders} = leaderForm(item).scope
+  const {companies,groups,orders,categoryIds} = leaderForm(item).scope
   const identifiers = groups.length ? groups : companies.length ? companies : (sheet.value?.teams || []).map(team=>team.key)
   const names = identifiers.map(id=>leaderScopeNames.value.get(id) || '已选组织')
   const groupScope = item.itemKey==='internal-group-leader' && !groups.length ? '各团队下属小组' : ''
-  return formatScope(names,[groupScope,{all:'范围内全部成交',members:'范围内其他团队成员成交',head:'范围内负责人亲自成交'}[orders]]
+  const categories = categoryIds.map(id=>sheet.value.scopeCategoryNames?.[id] || '已选类别名称待核').join('、')
+  return formatScope(names,[groupScope,categories,{all:'范围内全部成交',members:'范围内其他团队成员成交',head:'范围内负责人亲自成交'}[orders]]
     .filter(Boolean).join(' · '))
 }
-const originalOrderScope = item => item.ownSales ? 'own' : item.salesScopeUnitIds || null
+const originalOrderScope = catalogOrderScope
 const commissionScope = item => scopeEdits.value.has(item.itemKey) ? scopeEdits.value.get(item.itemKey) : originalOrderScope(item)
 function setCommissionScope(item, scope) {
-  const normalize = value => JSON.stringify(Array.isArray(value) ? [...value].sort() : value)
+  const normalize = value => JSON.stringify(!value || value==='own' ? value : [[...value.unitIds].sort(),[...value.categoryIds].sort()])
   if (normalize(scope)===normalize(originalOrderScope(item))) {
     scopeEdits.value.delete(item.itemKey)
   } else {
@@ -370,10 +373,10 @@ function setCommissionScope(item, scope) {
   }
 }
 function commissionScopeNames(item) {
-  const units = commissionScope(item)
-  if (units==='own') return ['本人销售']
+  const scope = commissionScope(item)
+  if (scope==='own') return ['本人销售']
   const rows = configuredRateRows(item)
-  if (units==null && rows?.length) {
+  if (scope==null && rows?.length) {
     const positive = rows.filter(row=>!removedRateRows.value.has(cellKey(item.itemKey,row.row)) &&
       (edits.value[cellKey(item.itemKey,row.row)] ? Number(edits.value[cellKey(item.itemKey,row.row)].value)>0 : row.rateBps>0))
     if (!positive.length) return ['当前无正比例']
@@ -381,9 +384,10 @@ function commissionScopeNames(item) {
     return [...new Set(positive.map(row=>row.scope==='external' ? '未命中指定公司或类别的外部公司' :
       [row.scope==='category' ? '' : row.company,row.category].filter(Boolean).join(' / ')))].filter(Boolean)
   }
-  if (units==null) return ['整个适用账期']
-  if (!units.length) return ['待选择销售组织']
-  return units.map(id=>commissionUnitNames.value[id] || '已选组织名称待核')
+  if (scope==null) return ['整个适用账期']
+  if (emptyCatalogOrderScope(scope)) return ['待选择销售范围']
+  return [...scope.unitIds.map(id=>commissionUnitNames.value[id] || '已选组织名称待核'),
+    ...scope.categoryIds.map(id=>sheet.value.scopeCategoryNames?.[id] || '已选类别名称待核')]
 }
 
 watch(() => [props.rule, props.applied], async ([rule, applied]) => {
@@ -491,12 +495,11 @@ function publicationInput() {
   })
   const scopeChanges = [...scopeEdits.value].filter(([itemKey])=>!removedItems.value.has(itemKey)).map(([itemKey,scope])=>{
     if (scope==='own') return {itemKey,ownSales:true}
-    const unitIds = scope
-    if (unitIds?.length===0) {
+    if (emptyCatalogOrderScope(scope)) {
       selected.value = itemKey
-      throw new Error('请为收款安排选择至少一个销售组织。')
+      throw new Error('请为收款安排选择适用的销售组织或销售类别。')
     }
-    return {itemKey,unitIds:unitIds || []}
+    return {itemKey,unitIds:scope?.unitIds || [],categoryIds:scope?.categoryIds || []}
   })
   return {
     baseId:props.rule.id,
@@ -516,6 +519,7 @@ function publicationInput() {
     newSalesRates:structure.value.sales?.rows,
     newSalesLabel:structure.value.sales?.label,
     newSalesScope:structure.value.sales?.salesScopeUnitIds,
+    newSalesCategoryScope:structure.value.sales?.salesScopeCategoryIds,
     calculationChanges:structure.value.calculations.filter(({itemKey})=>!removedItems.value.has(itemKey)),
     newRateRows:structure.value.rateRows.filter(({itemKey,row})=>!removedItems.value.has(itemKey) &&
       !removedRateRows.value.has(cellKey(itemKey,row)) && !calculationFor(itemKey))
@@ -587,7 +591,7 @@ async function publish() {
             <strong>{{ labelEdits.get(item.itemKey)?.trim() || item.label }}</strong>
             <span class="rule-block-badge">{{ removedItems.has(item.itemKey) ? '待删除' : targetShortLabels[targetEdits.get(item.itemKey)?.target || item.targetKind] }}</span>
             <span class="rule-block-recipient" :title="commissionScopeNames(item).join('、')">
-              提成范围 · {{ Array.isArray(commissionScope(item)) && commissionScope(item).length ? '指定团队 · ' : '' }}{{ formatScope(commissionScopeNames(item)) }}
+              提成范围 · {{ formatScope(commissionScopeNames(item)) }}
               <template v-if="commissionScope(item) && (calculationFor(item.itemKey) || item).rows?.length"> · 按比例条件匹配</template>
             </span>
             <small>{{ [targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}</small>
@@ -624,7 +628,8 @@ async function publish() {
               </template>
             </RuleArrangementFields>
             <CatalogCommissionScopeFields prefix="catalog-edit" :model-value="commissionScope(item)"
-              :options="sheet.structureOptions.salesUnits" :unit-names="commissionUnitNames" :disabled="!editable || structureEditing"
+              :options="sheet.structureOptions.salesUnits" :unit-names="commissionUnitNames" :categories="sheet.structureOptions.categories"
+              :category-names="sheet.scopeCategoryNames" :disabled="!editable || structureEditing"
               :can-own="targetKind==='person'"
               @update:model-value="setCommissionScope(item,$event)"/>
           </template>
@@ -738,6 +743,7 @@ async function publish() {
             <div v-if="selected===leader.itemKey" :id="'catalog-rate-'+leader.itemKey" class="rule-block-body">
               <CatalogLeaderArrangement :item-key="leader.itemKey" :model-value="leaderForm(leader)" :teams="sheet.teams || []"
                 :api="api" :people-filters="peopleFilters" :disabled="!editable || structureEditing" :order-type-text="orderTypeText"
+                :sales-categories="sheet.structureOptions?.categories" :category-names="sheet.scopeCategoryNames"
                 :inherited="leader.targetKind==='inherit' ? originalLeader(leader) : undefined"
                 @update:model-value="setLeader(leader,$event)">
                 <div v-if="leader.itemKey==='internal-team-leader' && leaderForm(leader).target==='inherit' && team" class="catalog-rule-fields">

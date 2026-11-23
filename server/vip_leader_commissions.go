@@ -9,9 +9,10 @@ const (
 )
 
 type vipLeaderScope struct {
-	Orders    string   `json:"orders"`
-	Companies []string `json:"companies,omitempty"`
-	Groups    []string `json:"groups,omitempty"`
+	Orders      string   `json:"orders"`
+	Companies   []string `json:"companies,omitempty"`
+	Groups      []string `json:"groups,omitempty"`
+	CategoryIDs []string `json:"categoryIds,omitempty"`
 }
 
 func vipLeaderRole(item string) string {
@@ -49,7 +50,7 @@ func (scope vipLeaderScope) validFor(teams []vipInternalTeam) bool {
 		}
 		return true
 	}
-	return validIDs(scope.Companies, companies) && validIDs(scope.Groups, groups)
+	return validIDs(scope.Companies, companies) && validIDs(scope.Groups, groups) && validUniqueScopeIDs(scope.CategoryIDs)
 }
 
 func vipSellerGroup(team vipInternalTeam, req vipSalesRequest, memberships []vipMembership) (string, bool) {
@@ -125,6 +126,12 @@ func quoteVIPLeader(a vipBenefitAction, req vipSalesRequest, sourceIssue string,
 		if a.Role == "GROUP_LEAD" {
 			unit = group
 		}
+	}
+	if eligible, categoryIssue := catalogSalesCategoryMatches(a.Leader.CategoryIDs, req.Category, sourceIssue); !eligible {
+		if categoryIssue != "" {
+			line.Status = categoryIssue
+		}
+		return line
 	}
 	holder, conflict := vipRoleHolder(data.Roles, a.Role, "ORGANIZATION_UNIT", unit, req.At)
 	if !conflict && a.Designated != "" && a.Designated != holder {

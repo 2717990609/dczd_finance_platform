@@ -143,6 +143,7 @@ const draftRefreshCompanyCategory = `SELECT p.id FROM periods p JOIN product_cat
  AND EXISTS(SELECT 1 FROM rule_versions r WHERE r.product_id=p.product_id
   AND (jsonb_path_exists(r.components,'$[*].companySales.categories[*].salesCategoryId')
     OR jsonb_path_exists(r.components,'$[*].companySales.categories[*].salesCategoryIds[0]')
+    OR jsonb_path_exists(r.components,'$[*].periodBenefit.salesCategoryIds[0]')
     OR jsonb_path_exists(r.components,'$[*].tiers.categorySchedules[*].salesCategoryIds[0]')))`
 
 func (s workspace) assignOrganizationCategory(ctx context.Context, input assignOrganizationCategoryInput) (categoryAssignmentResult, error) {
