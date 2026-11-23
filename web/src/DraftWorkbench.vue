@@ -12,7 +12,7 @@ import { draftIssueLabels } from './draft-issue-labels'
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
   recoveryOptions: Array, settlementProducts: Array, localSettlement: Boolean, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
   requestedPeriod:Number, requestedView:String, ruleSetupLink:String, issueRuleLink:String, relatedOrderLink:Function, relatedPeriodLink:Function,
-  periodsLoading:Boolean, month:String, rosterEditReady:Boolean })
+  periodsLoading:Boolean, refreshWorkspace:Function, month:String, rosterEditReady:Boolean })
 const emit = defineEmits(['show-order', 'show-issue-order', 'show-applied-rule', 'show-roster'])
 const selected = defineModel('periodId', {type:Number})
 const view = defineModel('view', {type:String})
@@ -238,7 +238,9 @@ async function pullRoster() {
   try {
     const result = await props.api('/practice-rosters/pull', { method: 'POST', body: JSON.stringify({ periodId }) })
     if (selected.value !== periodId || unmounted) return
-    notice.value = result.changed ? `已读取签到名单 v${result.version}，可重新试算。` : `签到名单已是 v${result.version}。`
+    await props.refreshWorkspace()
+    if (selected.value !== periodId || unmounted) return
+    notice.value = result.changed ? `已读取签到名单 v${result.version}。` : `签到名单已是 v${result.version}。`
     if (result.changed && view.value === 'review') await load()
     await checkRefresh()
   } catch (err) {
@@ -313,7 +315,9 @@ async function loadMore(section, cursorName) {
           <a-button v-if="needsRosterEdit" :disabled="!rosterEditReady || loading || pullingRoster || calculating"
             @click="emit('show-roster',selectedPeriod)">{{ selectedPeriod.sourcePeriodKey ? '更正签到关联' : '关联签到名单' }}</a-button>
           <a-button v-if="canPullRoster && (view!=='review' || !draft)" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
-          <a-button v-if="!matchingOnly && !draft?.settlement && (view!=='review' || !draft)" :disabled="loading || pullingRoster" :loading="calculating"
+          <a-button v-if="ruleSetupLink && draft && !draft.settlement" :href="ruleSetupLink">配置本期规则</a-button>
+          <a-button v-if="!matchingOnly && !ruleSetupLink && !draft?.settlement && (view!=='review' || !draft)"
+            :disabled="loading || pullingRoster || periodsLoading || selectedPeriod?.classStartOutsidePeriod" :loading="calculating"
             :type="draft ? 'default' : 'primary'" @click="calculate">{{ draft ? '重新试算' : '生成草稿' }}</a-button>
           <a-button v-if="!matchingOnly && (view!=='review' || !draft)" :disabled="loading || calculating || pullingRoster" @click="load()">刷新结果</a-button>
           <a-button v-if="hasSettlementReview && !draft?.settlement && view!=='review'" type="primary" :disabled="loading || calculating || pullingRoster" @click="view='review'">去结算核对</a-button>
@@ -324,6 +328,9 @@ async function loadMore(section, cursorName) {
         <strong class="mobile-period-name">{{ selectedPeriod.name }}</strong>
         {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
         <span v-if="draft?.practiceRosterVersion"> · 签到名单 v{{ draft.practiceRosterVersion }} · 到课 {{ draft.attendanceCount }} 人</span>
+        <span v-if="selectedPeriod.practiceRosterVersion && selectedPeriod.practiceRosterVersion!==draft?.practiceRosterVersion">
+          · 最新签到名单 v{{ selectedPeriod.practiceRosterVersion }} · 到课 {{ selectedPeriod.practiceRosterAttendance }} 人
+        </span>
         <span v-if="draft?.settlement"> · 确认于 {{ formatTime(draft.settlement.confirmedAt) }}</span>
         <span v-else-if="draft"> · 试算于 {{ formatTime(draft.calculatedAt) }}</span>
         <span v-if="!draft?.settlement && refreshStatus?.pending && !refreshStatus.message"> · 有变更待试算</span>
@@ -350,6 +357,8 @@ async function loadMore(section, cursorName) {
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
   <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon />
+  <a-alert v-if="selectedPeriod?.classStartOutsidePeriod" class="feedback" type="warning" show-icon
+    :message="'开班时间超出本期 · 来源开班时间 ' + formatTime(selectedPeriod.classStartsAt)" />
   <a-alert v-if="!draft?.settlement && refreshStatus?.message" class="feedback" type="warning" :message="refreshStatus.message" show-icon/>
   <p v-if="unitId && draft" class="workbench-scope-note">明细与汇总按组织筛选，合计及结算核对为全期</p>
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney" :unit-id="unitId"/>

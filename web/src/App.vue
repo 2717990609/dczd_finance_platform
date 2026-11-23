@@ -1627,7 +1627,7 @@ async function save() {
             :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" :requested-period="requestedPeriod"
             :rule-setup-link="classRuleSetupLink(selectedWorkbenchPeriod, true)" :issue-rule-link="issueRuleLink"
             :related-order-link="orderRecordsLink" :related-period-link="relatedPeriodLink"
-            :periods-loading="loading" :month="workspaceMonth" :requested-view="requestedView" :roster-edit-ready="configurationReady"
+            :periods-loading="loading" :refresh-workspace="refresh" :month="workspaceMonth" :requested-view="requestedView" :roster-edit-ready="configurationReady"
             @show-order="orderDetails={versionId:$event,allowPull:true}" @show-issue-order="orderDetails={versionId:$event,allowPull:true}"
             @show-roster="open('periodRoster',$event)"
             @show-applied-rule="showAppliedRule" />
