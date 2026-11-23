@@ -218,7 +218,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createAccountingMonth)},
 		{Method: http.MethodPost, Path: "/api/v1/period-report-month", Handler: submit(s.setPeriodReportMonth)},
 		{Method: http.MethodPost, Path: "/api/v1/period-practice-roster", Handler: submit(s.setPeriodPracticeRoster)},
-		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.listForAuthorizedProducts(rulesSQL, false)},
+		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.getComponentRules},
 		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.listForAuthorizedProducts(catalogRulesSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-rates", Handler: s.getCatalogRuleRates},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-rule-rates", Handler: s.postCatalogRuleRates},
@@ -456,10 +456,12 @@ const matchingRuleScope = `rv.product_id=p.product_id AND
   (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal))) AND ` + matchingPracticeActivity
 const matchingRuleOrder = `(rv.period_id IS NOT NULL) DESC,rv.from_ordinal DESC NULLS LAST,
   (rv.activity_type<>0) DESC,rv.effective_from DESC NULLS LAST,rv.version DESC`
-const ruleVersionRowsSQL = `SELECT rv.id,rv.product_id AS "productId",p.name AS "productName",rv.version,rv.label,
+const ruleVersionColumnsSQL = `rv.id,rv.product_id AS "productId",p.name AS "productName",rv.version,rv.label,
  rv.from_ordinal AS "fromOrdinal",rv.period_id AS "periodId",pr.name AS "periodName",rv.effective_from AS "effectiveFrom",rv.activity_type AS "activityType",
- ` + componentRuleRetiredAtSQL + ` AS "retiredFrom",rv.components
- FROM rule_versions rv JOIN products p ON p.id=rv.product_id LEFT JOIN periods pr ON pr.id=rv.period_id`
+ ` + componentRuleRetiredAtSQL + ` AS "retiredFrom"`
+
+const ruleVersionTablesSQL = ` FROM rule_versions rv JOIN products p ON p.id=rv.product_id LEFT JOIN periods pr ON pr.id=rv.period_id`
+const ruleVersionRowsSQL = `SELECT ` + ruleVersionColumnsSQL + `,rv.components` + ruleVersionTablesSQL
 
 const rulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM (` + ruleVersionRowsSQL + `
  WHERE ($1::bigint[] IS NULL OR rv.product_id=ANY($1)) ORDER BY rv.id DESC LIMIT 500) a`

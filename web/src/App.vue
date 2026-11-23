@@ -117,7 +117,10 @@ const ruleBusinessOptions = computed(() => {
     return choices
   })
 })
-watch(productScope,()=>{ ruleBusinessScope.value=undefined })
+watch(productScope,()=>{
+  ruleBusinessScope.value=undefined
+  loadingRule.value=undefined
+})
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
 const organization = ref()
 const monthlyReport = ref()
@@ -139,6 +142,7 @@ const rateRule = ref()
 const periodRule = ref()
 const catalogScenarioCreation = ref()
 const ruleDetails = ref()
+const loadingRule = ref()
 const ruleRetirement = ref()
 const retiringRule = ref(false)
 const retirementError = ref('')
@@ -634,7 +638,7 @@ const mainRows = computed(() => {
     rows = rows.filter(row=>row.productId===Number(product) && (
       kind==='sku' && row.scopeType==='BUSINESS_SCENARIO' && row.scopeId===businessKey ||
       kind==='aggregate' && row.scopeType==='CROSS_SCENARIO_AGGREGATE' ||
-      kind==='member' && row.components?.some(component=>matchesPracticeMember(component,businessKey))
+      kind==='member' && row.classMembers?.includes(businessKey)
     ))
   }
   if (key==='identities' && identityAccount.value) {
@@ -692,6 +696,7 @@ async function refresh(reloadOptions = false) {
     requests.identities += '?'+new URLSearchParams({source,externalId})
   }
   if (requests.catalogRules) requests.catalogRules = '/rule-catalog'
+  if (requests.rules) requests.rules = '/rules?view=summary'
   if (requests.practiceCountOpenings) requests.practiceCountOpenings = '/practice-count-openings'
   if (!wholeWorkspace.value) delete requests.people
   if (!configurationReady.value || reloadOptions) requests.configuration = '/configuration-options'
@@ -844,6 +849,7 @@ function changeRoute() {
   periodRule.value = undefined
   catalogScenarioCreation.value = undefined
   ruleDetails.value = undefined
+  loadingRule.value = undefined
   ruleRetirement.value = undefined
   appliedRule.value = undefined
   rulePreview.value = undefined
@@ -900,6 +906,7 @@ function clearWorkspace() {
   periodRule.value = undefined
   catalogScenarioCreation.value = undefined
   ruleDetails.value = undefined
+  loadingRule.value = undefined
   ruleRetirement.value = undefined
   appliedRule.value = undefined
   rulePreview.value = undefined
@@ -1126,6 +1133,21 @@ function pullFromDetails(order) {
   const references = order.refundsPayment
   const originalOrder = references?.length===1 ? references[0].orderId : ''
   open('pull', originalOrder ? {...order,orderId:originalOrder} : order)
+}
+async function loadRuleVersion(row, action) {
+  loadingRule.value = {id:row.id,action}
+  const request = loadingRule.value
+  globalError.value = ''
+  try {
+    const rule = await api('/rules?'+new URLSearchParams({view:'detail',id:row.id}))
+    if (loadingRule.value!==request) return
+    if (action==='view') ruleDetails.value = rule
+    else open('rule',rule,action==='edit')
+  } catch (err) {
+    if (loadingRule.value===request) globalError.value = err.message
+  } finally {
+    if (loadingRule.value===request) loadingRule.value = undefined
+  }
 }
 function copyRuleDetails() {
   const rule = ruleDetails.value
@@ -1753,20 +1775,23 @@ async function save() {
                   <a-button v-else-if="record.periodConfigAvailable && canReadRules(record.productId)" type="link" size="small"
                     @click="periodRule=record">整期分润</a-button>
                   <template v-else-if="!record.catalogPending">
-                    <a-button type="link" size="small" @click="ruleDetails=record">查看规则</a-button>
+                    <a-button type="link" size="small" :loading="loadingRule?.id===record.id && loadingRule.action==='view'"
+                      @click="loadRuleVersion(record,'view')">查看规则</a-button>
                     <a-button v-if="canPublishRule(record.productId) && !record.retiredFrom && ruleEditVersionIDs.has(record.id)" :disabled="!configurationReady"
-                      type="link" size="small" @click="open('rule',record,true)">编辑规则</a-button>
+                      type="link" size="small" :loading="loadingRule?.id===record.id && loadingRule.action==='edit'"
+                      @click="loadRuleVersion(record,'edit')">编辑规则</a-button>
                     <a-button v-if="canPublishRule(record.productId)" :disabled="!configurationReady"
-                      type="link" size="small" @click="open('rule',record)">复制配置</a-button>
+                      type="link" size="small" :loading="loadingRule?.id===record.id && loadingRule.action==='copy'"
+                      @click="loadRuleVersion(record,'copy')">复制配置</a-button>
                   </template>
                   <a-button v-if="canPublishRule(record.productId) && !record.retiredFrom &&
                     (record.catalogPending ? record.retirementAvailable : ruleRetirementIDs.has(record.id))"
                     type="link" danger size="small" @click="openRuleRetirement(record)">停用规则</a-button>
                 </template>
                 <template v-else-if="column.key==='components'">
-                  {{ text.length }} 项收款安排
-                  <small v-if="text.some(c=>c.classMember)" class="order-version">
-                    {{ [...new Set(text.filter(c=>c.classMember).flatMap(c=>tierIncludesRetrain(c) ? ['新报','复训'] : [optionLabel('classMember',c.classMember)]))].join(' · ') }}
+                  {{ record.componentCount }} 项收款安排
+                  <small v-if="record.classMembers?.length" class="order-version">
+                    {{ record.classMembers.map(member=>optionLabel('classMember',member)).join(' · ') }}
                   </small>
                 </template>
                 <template v-else-if="column.key==='source'">{{ sourceLabel(text) }}</template>

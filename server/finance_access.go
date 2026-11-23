@@ -92,17 +92,22 @@ func (s workspace) financeRoute(route rest.Route) rest.Route {
 
 func (s workspace) listForAuthorizedProducts(query string, allowWorkspaceScope bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var scope []int64
-		if actor := financeUser(r.Context()); actor != nil && (!actor.Workspace || !allowWorkspaceScope) {
-			scope = make([]int64, 0, len(actor.Rules))
-			for _, grant := range actor.Rules {
-				scope = append(scope, grant.ProductID)
-			}
-		}
 		var result json.RawMessage
-		err := s.db.QueryRow(r.Context(), query, scope).Scan(&result)
+		err := s.db.QueryRow(r.Context(), query, authorizedProductScope(r.Context(), allowWorkspaceScope)).Scan(&result)
 		respond(w, result, err)
 	}
+}
+
+func authorizedProductScope(ctx context.Context, allowWorkspaceScope bool) []int64 {
+	actor := financeUser(ctx)
+	if actor == nil || actor.Workspace && allowWorkspaceScope {
+		return nil
+	}
+	scope := make([]int64, 0, len(actor.Rules))
+	for _, grant := range actor.Rules {
+		scope = append(scope, grant.ProductID)
+	}
+	return scope
 }
 
 func (s workspace) publishAuthorizedRule(ctx context.Context, input publishRuleInput) (any, error) {
