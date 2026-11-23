@@ -84,7 +84,7 @@ const calculationMethods = computed(() => [
   </RuleArrangementFields>
   <div class="period-fields period-scope" :class="{'period-scope-all':scopeMode==='all'}">
     <RuleOrderScope :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
-      team-label="指定销售范围" :additional="registrationOption" @update:model-value="changeScope"/>
+      team-label="指定销售范围" all-label="全班" :additional="registrationOption" @update:model-value="changeScope"/>
     <template v-if="scopeMode==='team'">
       <a-form-item label="适用销售类别" :html-for="field('categories')">
         <a-select :id="field('categories')" v-model:value="config.salesCategoryIds" :options="salesCategories"

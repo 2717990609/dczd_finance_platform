@@ -134,7 +134,7 @@ export function practicePeriodScopeText(benefit, names, limit = 2) {
     list('销售类别',benefit.salesCategoryIds,names.category)
     list('销售公司',benefit.salesCompanies,names.company)
     list('销售人员',benefit.salesPeople,names.person)
-    if (!entries.length) entries.push(benefit.restrictPayments ? '待选择销售范围' : '整个适用账期')
+    if (!entries.length) entries.push(benefit.restrictPayments ? '待选择销售范围' : '全班')
   }
   if (benefit.appointmentUnitId && (benefit.recipient == null || benefit.recipient==='person')) {
     entries.push(names.unit(benefit.appointmentUnitId)+'任职期间')
@@ -224,6 +224,7 @@ export function practiceSalesScopeText(part, names, limit = 2) {
     if (part.companySales.defaultRate != null) entries.push('其他外部公司')
     return entries.join(' · ') || '待配置类别或公司'
   }
+  if (part.type==='referral') return '全班适用报名'
   if (part.type!=='sales') return
   if (part.salesCompanies?.length) {
     list('销售公司',part.salesCompanies,names.company)

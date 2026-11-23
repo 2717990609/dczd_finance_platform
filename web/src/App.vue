@@ -179,7 +179,10 @@ function componentSourceRoles(saved) {
   return saved && !configured.some(option => option.value === saved)
     ? [...configured, {value:saved,label:saved}] : configured
 }
-const baseModes = computed(() => options('amountMode').filter(option => !option.scope?.componentTypes))
+const ruleAmountModes = computed(() => options('amountMode').map(option => ({...option,
+  label:option.value==='rate' ? '比例' : option.value==='fixed' ? '固定金额' : option.label,
+})))
+const baseModes = computed(() => ruleAmountModes.value.filter(option => !option.scope?.componentTypes))
 function matchesOption(option, periodMode, type, member) {
   const scope = option.scope || {}
   return (!scope.periodModes || scope.periodModes.includes(periodMode)) &&
@@ -331,11 +334,12 @@ const companySalesMode = computed(() => options('amountMode').find(option=>optio
 const componentMode = type => isPeriodBenefit(type) ? 'period_rate' : type==='company_sales' ? 'company_sales' : undefined
 const amountModes = row => {
   const expected = componentMode(row.type)
-  return options('amountMode').filter(option =>
+  return ruleAmountModes.value.filter(option =>
     matchesOption(option, selectedProduct.value?.periodMode, row.type, row.classMember) &&
     (expected ? option.value===expected : !['period_rate','company_sales'].includes(option.value)))
 }
 function updateAmountMode(row, mode) {
+  if (row.mode !== mode && (mode === 'rate' || mode === 'fixed')) row.amount = undefined
   row.mode = mode
   if (mode==='period_rate' && !row.periodBenefit) {
     row.periodBenefit = {label:'',pool:{},tiers:[{from:0}],method:'rate'}
@@ -1917,6 +1921,9 @@ async function save() {
               <a-form-item v-if="classRule && c.type==='sales'" :html-for="'rule-sales-companies-'+i" label="计提订单范围">
                 <a-select :id="'rule-sales-companies-'+i" v-model:value="c.salesCompanies" :options="options('practiceSalesCompany')"
                   mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label" placeholder="全部适用销售公司"/>
+              </a-form-item>
+              <a-form-item v-else-if="classRule && c.type==='referral'" label="计提订单范围">
+                <span class="rule-field-value">全班适用报名</span>
               </a-form-item>
             </template>
           </RuleArrangementFields>
