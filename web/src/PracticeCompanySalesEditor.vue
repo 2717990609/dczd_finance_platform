@@ -151,7 +151,7 @@ watch(amounts, choices => {
         <template v-if="group.scope!=='default'">
           <small v-if="group.scope==='category' && scopes.categories.length">{{ scopes.categories.length }} 类</small>
           <small v-else-if="group.scope==='companies' && scopes.companies.length">{{ scopes.companies.length }} 家</small>
-          <small v-else>{{ group.scope==='category' ? '未配置类别' : '未配置公司' }}</small>
+          <small v-else>未配置</small>
           <div v-if="group.scope==='companies' && companyPageCount>1" class="company-standard-pages" role="group" aria-label="指定公司标准分页">
             <a-button size="small" type="text" :disabled="companyPage===1" @click="companyPage--">上一页</a-button>
             <small role="status">{{ companyPage }} / {{ companyPageCount }}</small>
@@ -171,7 +171,7 @@ watch(amounts, choices => {
       <div v-if="group.scope!=='default' && (standardRowsByScope[group.scope].length || (group.scope==='companies' && overrides.length))"
         class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations}">
         <div class="company-standard-fields company-standard-column-labels" aria-hidden="true">
-          <span>{{ group.scope==='category' ? '销售类别' : '指定公司' }}</span>
+          <span>{{ group.scope==='category' ? '适用销售类别' : '适用销售公司' }}</span>
           <span v-if="amounts.length>1">计提方式</span>
           <span>{{ amounts.length>1 ? '计提标准' : '比例（%）' }}</span>
           <span v-if="legacyRecommendations">推荐比例（%）</span>
@@ -181,7 +181,7 @@ watch(amounts, choices => {
             <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryIds" :options="salesCategoryOptions(category)" size="small"
               mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择销售类别"/>
           </a-form-item>
-          <a-form-item v-else class="company-scope-field" label="适用公司" :html-for="field('companies-'+i)" required>
+          <a-form-item v-else class="company-scope-field" label="适用销售公司" :html-for="field('companies-'+i)" required>
             <a-select :id="field('companies-'+i)" :value="category.companies" :options="availableCompanies(category)" size="small"
               mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司" @change="selectCompanies(category,$event)"/>
           </a-form-item>

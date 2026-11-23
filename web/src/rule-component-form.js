@@ -44,9 +44,9 @@ export function catalogRatePriority(scopes) {
 export const catalogPercent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
 
 export const practiceCompanyMatchLabels = {
-  category:'销售类别默认',
+  category:'按销售类别计提',
+  companies:'按指定公司计提',
   default:'其他外部公司默认比例',
-  companies:'指定公司标准',
 }
 
 export function catalogRateConditionScope(row) {
@@ -69,6 +69,13 @@ export function catalogRateOrderScopeLabel(rows, getRate = row => row.rateBps) {
     if (scopes.has('external')) return '其他外部公司'
     if (positive.every(limited)) return '按销售关系匹配'
     if (rows.every(row=>catalogRateConditionScope(row)==='general' && !limited(row))) return '本规则全部订单'
+  }
+  if (scopes.size>1 && !scopes.has('general')) {
+    return [
+      scopes.has('company') && '按指定公司',
+      scopes.has('category') && '按销售类别',
+      scopes.has('external') && '其他外部公司用默认比例',
+    ].filter(Boolean).join('、')
   }
   return '按比例条件匹配'
 }
@@ -366,10 +373,11 @@ export function practiceCompanyStandardIndicators(sales, formatRate, formatAmoun
     return minimum===maximum ? format(minimum) : format(minimum)+'–'+format(maximum)
   }).filter(Boolean).join(' / ')
   const scopes = practiceCompanyScopes(sales)
+  const only = [scopes.companies.length>0,scopes.categories.length>0,scopes.hasDefault].filter(Boolean).length===1 ? '仅' : ''
   const withStandard = (scope, rows) => [scope,summary(rows)].filter(Boolean).join(' · ')
   return [
-    scopes.companies.length && withStandard('按指定公司 '+scopes.companies.length+' 家',companies),
-    scopes.categories.length && withStandard('按销售类别 '+scopes.categories.length+' 类',categories),
+    scopes.companies.length && withStandard(only+'按指定公司 · '+scopes.companies.length+' 家',companies),
+    scopes.categories.length && withStandard(only+'按销售类别 · '+scopes.categories.length+' 类',categories),
     scopes.hasDefault && '外部公司默认 · '+formatRate(sales.defaultRate),
   ].filter(Boolean)
 }
@@ -384,12 +392,14 @@ export function practiceCompanyScopes(sales = {}) {
 }
 
 export function practiceCompanyMatchText({companies,categories,hasDefault}) {
-  const company = companies.length && `指定公司 ${companies.length} 家`
-  const category = categories.length && `销售类别 ${categories.length} 类`
-  const scopes = [company,category,hasDefault && '其他外部公司按默认比例'].filter(Boolean)
-  if (scopes.length>1) return scopes.join(' · ')
-  if (company) return `仅按指定公司计提（${companies.length} 家）`
-  if (category) return `仅按销售类别计提（${categories.length} 类）`
+  const scopes = [
+    companies.length && `按指定公司（${companies.length} 家）`,
+    categories.length && `按销售类别（${categories.length} 类）`,
+    hasDefault && '其他外部公司用默认比例',
+  ].filter(Boolean)
+  if (scopes.length>1) return scopes.join('、')
+  if (companies.length) return `仅按指定公司计提（${companies.length} 家）`
+  if (categories.length) return `仅按销售类别计提（${categories.length} 类）`
   return hasDefault ? '仅按外部公司默认比例计提' : '待配置计提标准'
 }
 
