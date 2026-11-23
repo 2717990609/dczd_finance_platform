@@ -157,6 +157,7 @@ const loading = ref(false)
 const saving = ref(false)
 const globalError = ref('')
 const notice = ref('')
+const pulledOrderLink = ref()
 const formError = ref('')
 const formFeedback = ref()
 const drawer = ref('')
@@ -868,6 +869,7 @@ function changeRoute() {
   olderThan.value = ''
   pageStack.value = []
   notice.value = ''
+  pulledOrderLink.value = undefined
   if (reviewRootPeriod.value || previousReviewRoot || configurationReturn.value || orderReturn.value) {
     nextTick(() => window.scrollTo(0,0))
   }
@@ -914,6 +916,7 @@ function clearWorkspace() {
   formError.value = ''
   globalError.value = ''
   notice.value = ''
+  pulledOrderLink.value = undefined
   filter.value = ''
   orderQuery.value = ''
   identityAccount.value = undefined
@@ -1080,6 +1083,7 @@ function open(kind, row, edit = false) {
   if (!configurationReady.value) return
   formError.value = ''
   notice.value = ''
+  pulledOrderLink.value = undefined
   rulePreview.value = undefined
   drawer.value = kind
   activeRuleComponent.value = 0
@@ -1496,7 +1500,10 @@ async function save() {
     drawer.value = ''
     rulePreview.value = undefined
     if (kind === 'pull') {
-      if (current.value === 'settlement') await workbench.value?.checkRefresh()
+      if (current.value === 'settlement') {
+        pulledOrderLink.value = orderRecordsLink(payload)
+        await workbench.value?.checkRefresh()
+      }
       if (current.value === 'orders') {
         sourceFilter.value = payload.source
         searchOrders(payload.orderId)
@@ -1610,7 +1617,9 @@ async function save() {
         </template>
         <template v-else-if="current==='settlement'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
-          <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
+          <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''">
+            <template v-if="pulledOrderLink" #action><a :href="pulledOrderLink">查看最新来源订单</a></template>
+          </a-alert>
           <DraftWorkbench ref="workbench" v-model:period-id="workbenchPeriod" v-model:view="workbenchView" v-model:detail-query="workbenchQuery"
             :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
@@ -1619,7 +1628,7 @@ async function save() {
             :rule-setup-link="classRuleSetupLink(selectedWorkbenchPeriod, true)" :issue-rule-link="issueRuleLink"
             :related-order-link="orderRecordsLink" :related-period-link="relatedPeriodLink"
             :periods-loading="loading" :month="workspaceMonth" :requested-view="requestedView" :roster-edit-ready="configurationReady"
-            @show-order="orderDetails={versionId:$event}" @show-issue-order="orderDetails={versionId:$event,allowPull:true}"
+            @show-order="orderDetails={versionId:$event,allowPull:true}" @show-issue-order="orderDetails={versionId:$event,allowPull:true}"
             @show-roster="open('periodRoster',$event)"
             @show-applied-rule="showAppliedRule" />
         </template>
