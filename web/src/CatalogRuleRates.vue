@@ -81,7 +81,11 @@ const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:
 const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
 const itemRemoved = computed(() => removedItems.value.has(selected.value))
 const orderTypeText = computed(() => props.rule?.scopeLabel?.replace(sheet.value?.productName+' · ','') || sheet.value?.productName)
-const originalMembership = item => item?.membershipNewOnly ?? Boolean(sheet.value?.membershipNewOnly)
+function originalMembership(item) {
+  if (item?.membershipNewOnly!=null) return item.membershipNewOnly
+  if (item?.itemKey===serviceItemKey || item?.targetKind==='inherit' && !item.disabled) return originalMembership(splitItem.value)
+  return Boolean(sheet.value?.membershipNewOnly)
+}
 const memberValue = item => (membershipEdits.value.get(item?.itemKey) ?? originalMembership(item)) ? 'new' : 'all'
 const memberLabel = item => catalogMembershipTypes.find(option=>option.value===memberValue(item))?.label
 function selectMemberType(item, value) {
@@ -93,7 +97,8 @@ const splitItem = computed(() => sheet.value?.components.find(item=>item.teamSpl
 const splitRemoved = computed(() => splitItem.value && removedItems.value.has(splitItem.value.itemKey))
 const serviceVisible = computed(() => !splitRemoved.value && splitItem.value?.teamSplit.service>0 && !splitItem.value?.serviceDisabled)
 const serviceRemoved = computed(() => !serviceVisible.value || removedItems.value.has(serviceItemKey))
-const serviceArrangement = computed(() => ({itemKey:serviceItemKey,label:splitItem.value?.serviceLabel || '内部团队服务提成'}))
+const serviceArrangement = computed(() => ({itemKey:serviceItemKey,label:splitItem.value?.serviceLabel || '内部团队服务提成',
+  membershipNewOnly:splitItem.value?.serviceMembershipNewOnly}))
 const leaderArrangements = computed(() => splitRemoved.value ? [] : sheet.value?.leaderArrangements || [])
 const availableLeaders = computed(() => leaderArrangements.value.filter(leader=>leader.disabled && !leaderEdits.value.has(leader.itemKey)))
 const visibleLeaders = computed(() => leaderArrangements.value.filter(leader=>!leader.disabled || leaderEdits.value.has(leader.itemKey)))
@@ -527,7 +532,8 @@ function publicationInput() {
     copy:copy.value,
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
     membershipArrangements:[...membershipEdits.value]
-      .filter(([itemKey])=>!removedItems.value.has(itemKey))
+      .filter(([itemKey])=>!removedItems.value.has(itemKey) &&
+        (!splitRemoved.value || itemKey!==serviceItemKey && !sheet.value.leaderArrangements?.some(item=>item.itemKey===itemKey)))
       .map(([itemKey,newOnly])=>({itemKey,newOnly})),
     changes,
     targetChanges:Array.from(targetEdits.value,([itemKey, {personName,ownerName,organization,...payee}])=>
@@ -769,12 +775,14 @@ async function publish() {
               <strong>{{ labelEdits.get(serviceItemKey)?.trim() || serviceArrangement.label }}</strong>
               <span v-if="serviceRemoved" class="rule-block-badge">待删除</span>
               <span class="rule-block-recipient">提成范围 · {{ formatScope(teamOptions.map(option=>option.label)) }}</span>
-              <small>{{ splitValue('service') }}%</small>
+              <small>{{ [sheet.membershipSku && memberLabel(serviceArrangement),splitValue('service')+'%'].filter(Boolean).join(' · ') }}</small>
             </button>
             <div v-if="selected===serviceItemKey" id="catalog-internal-service" class="rule-block-body">
               <RuleArrangementFields v-if="!serviceRemoved" name-id="catalog-service-label" :name="labelEdits.get(serviceItemKey) ?? serviceArrangement.label"
                 :disabled="!editable || structureEditing" calculation-text="比例"
-                :order-type-text="sheet.membershipSku ? memberLabel(splitItem) : orderTypeText" scope-text="全部已配置内部团队"
+                :order-type-text="orderTypeText" :order-type-id="sheet.membershipSku ? 'catalog-service-member-type' : undefined"
+                :order-types="catalogMembershipTypes" :order-type="memberValue(serviceArrangement)"
+                scope-text="全部已配置内部团队" @update:order-type="selectMemberType(serviceArrangement,$event)"
                 @update:name="setLabel(serviceArrangement,$event)">
                 <a-form-item label="销售公司" html-for="catalog-team-company">
                   <a-select id="catalog-team-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
@@ -806,13 +814,13 @@ async function publish() {
               <strong>{{ leaderForm(leader).label.trim() || leader.label }}</strong>
               <span v-if="removedItems.has(leader.itemKey)" class="rule-block-badge">待删除</span>
               <span class="rule-block-recipient">提成范围 · {{ leaderScopeText(leader) }}</span>
-              <small>{{ [sheet.membershipSku && memberLabel(leaderForm(leader).target==='inherit' ? splitItem : leader),leaderSummary(leader)].filter(Boolean).join(' · ') }}</small>
+              <small>{{ [sheet.membershipSku && memberLabel(leader),leaderSummary(leader)].filter(Boolean).join(' · ') }}</small>
             </button>
             <div v-if="selected===leader.itemKey" :id="'catalog-rate-'+leader.itemKey" class="rule-block-body">
               <CatalogLeaderArrangement v-if="!removedItems.has(leader.itemKey)" :item-key="leader.itemKey" :model-value="leaderForm(leader)" :teams="sheet.teams || []"
                 :api="api" :people-filters="peopleFilters" :disabled="!editable || structureEditing"
-                :order-type-text="sheet.membershipSku ? memberLabel(leaderForm(leader).target==='inherit' ? splitItem : leader) : orderTypeText"
-                :membership-editable="sheet.membershipSku && leaderForm(leader).target!=='inherit'" :order-type="memberValue(leader)"
+                :order-type-text="orderTypeText"
+                :membership-editable="sheet.membershipSku" :order-type="memberValue(leader)"
                 @update:order-type="selectMemberType(leader,$event)"
                 :sales-categories="sheet.structureOptions?.categories" :category-names="sheet.scopeCategoryNames"
                 :inherited="leader.targetKind==='inherit' && !leader.disabled ? originalLeader(leader) : undefined"

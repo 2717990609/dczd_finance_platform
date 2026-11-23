@@ -50,6 +50,22 @@ func TestVIPRefundRoundsOnceForTheSplitAndCapsEachPriorBalance(t *testing.T) {
 	if draft.RefundTotal != -20 {
 		t.Fatalf("full refund cumulative=%d", draft.RefundTotal)
 	}
+	// The service arrangement did not post for this renewal.
+	unposted := parts[2].key()
+	parts = append(parts[:2:2], parts[3])
+	clear(history)
+	for _, part := range parts {
+		history[part.key()] = &refundHistory{byID: map[string]int64{}}
+	}
+	draft = paymentDraft{}
+	refund("renewal-partial", 3, false)
+	if draft.RefundTotal != -2 || history[unposted] != nil {
+		t.Fatalf("partial refund of the actual postings = %+v", draft.Refunds)
+	}
+	refund("renewal-rest", 26, true)
+	if draft.RefundTotal != -16 {
+		t.Fatalf("full refund must return only the 16 cents originally posted, got %d", draft.RefundTotal)
+	}
 	// A very asymmetric cap still produces the correct balance without iterating cents.
 	shares := []vipRefundShare{
 		{role: "a", original: 999999999, cap: 0}, {role: "b", original: 1000, cap: 1000}, {role: "c", original: 1000, cap: 1000},

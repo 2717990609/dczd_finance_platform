@@ -64,6 +64,7 @@ func catalogNewMembershipOnly(raw json.RawMessage) bool {
 }
 
 const catalogMembershipArrangementKey = "vip_membership_new_only"
+const catalogSplitMembershipScopesKey = "vip_membership_scopes"
 
 type catalogMembershipArrangementEdit struct {
 	ItemKey string `json:"itemKey"`
@@ -84,13 +85,31 @@ func editCatalogMembershipArrangements(raw json.RawMessage, edits []catalogMembe
 		byItem[key] = action
 	}
 	fallback := catalogNewMembershipOnly(raw)
+	sales, _ := readVIPSalesPolicy(raw)
+	primaryScope := newMembershipOnly(sales.MembershipNewOnly, fallback)
+	shareScopes := make(map[string]bool, len(vipSplitRoles))
+	for _, share := range vipSplitRoles {
+		if sales.Split.hasShare(share.item) {
+			shareScopes[share.item] = newMembershipOnly(sales.Split.membershipOverride(share.item), primaryScope)
+		}
+	}
+	seen := make(map[string]bool, len(edits))
 	changed := false
 	for _, edit := range edits {
 		action := byItem[edit.ItemKey]
-		if action == nil {
+		if seen[edit.ItemKey] {
 			return nil, false, invalid
 		}
-		delete(byItem, edit.ItemKey)
+		seen[edit.ItemKey] = true
+		if action == nil {
+			prior, found := shareScopes[edit.ItemKey]
+			if !found {
+				return nil, false, invalid
+			}
+			shareScopes[edit.ItemKey] = edit.NewOnly
+			changed = changed || prior != edit.NewOnly
+			continue
+		}
 		prior := fallback
 		if value := action[catalogMembershipArrangementKey]; len(value) > 0 && json.Unmarshal(value, &prior) != nil {
 			return nil, false, errCatalogRateUnavailable
@@ -99,6 +118,9 @@ func editCatalogMembershipArrangements(raw json.RawMessage, edits []catalogMembe
 			continue
 		}
 		changed = true
+		if edit.ItemKey == sales.Item {
+			primaryScope = edit.NewOnly
+		}
 		if edit.NewOnly == fallback {
 			delete(action, catalogMembershipArrangementKey)
 		} else {
@@ -107,6 +129,23 @@ func editCatalogMembershipArrangements(raw json.RawMessage, edits []catalogMembe
 	}
 	if !changed {
 		return raw, false, nil
+	}
+	if len(shareScopes) != 0 {
+		var split map[string]json.RawMessage
+		if json.Unmarshal(root["internal_sales_direct_split"], &split) != nil || split == nil {
+			return nil, false, errCatalogRateUnavailable
+		}
+		for key, newOnly := range shareScopes {
+			if newOnly == primaryScope {
+				delete(shareScopes, key)
+			}
+		}
+		if len(shareScopes) == 0 {
+			delete(split, catalogSplitMembershipScopesKey)
+		} else {
+			split[catalogSplitMembershipScopesKey], _ = json.Marshal(shareScopes)
+		}
+		root["internal_sales_direct_split"], _ = json.Marshal(split)
 	}
 	root["benefit_actions"], _ = json.Marshal(actions)
 	body, err := json.Marshal(root)
@@ -121,12 +160,20 @@ func catalogUsesNewMembershipScope(raw json.RawMessage) bool {
 		Actions []struct {
 			NewOnly bool `json:"vip_membership_new_only"`
 		} `json:"benefit_actions"`
+		Split struct {
+			Scopes map[string]bool `json:"vip_membership_scopes"`
+		} `json:"internal_sales_direct_split"`
 	}
 	if json.Unmarshal(raw, &rule) != nil {
 		return false
 	}
 	for _, action := range rule.Actions {
 		if action.NewOnly {
+			return true
+		}
+	}
+	for _, newOnly := range rule.Split.Scopes {
+		if newOnly {
 			return true
 		}
 	}

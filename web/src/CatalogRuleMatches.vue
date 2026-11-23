@@ -166,9 +166,12 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
           <details v-if="record.salesStatus==='CALCULATED' && record.salesParts?.length" class="rule-count-review">
             <summary>查看销售分项</summary>
             <div v-for="part in record.salesParts" :key="part.role" class="order-version">
-              <template v-if="part.companyName">收款公司 {{ part.companyName }} · 成交销售 {{ part.personName }}</template>
-              <template v-else>{{ salesRoles[part.role] }} · {{ part.personName }}</template>
-              · {{ formatMoney(part.amountMinor) }}
+              <template v-if="part.status">{{ salesRoles[part.role] }} · {{ salesStatus[part.status] }}</template>
+              <template v-else>
+                <template v-if="part.companyName">收款公司 {{ part.companyName }} · 成交销售 {{ part.personName }}</template>
+                <template v-else>{{ salesRoles[part.role] }} · {{ part.personName }}</template>
+                · {{ formatMoney(part.amountMinor) }}
+              </template>
             </div>
           </details>
           <small v-else-if="record.salesStatus==='CALCULATED'" class="order-version">销售分润 {{ formatMoney(0) }}</small>

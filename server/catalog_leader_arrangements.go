@@ -34,6 +34,7 @@ func catalogLeaderComponents(policy vipBenefitPolicy) []catalogRateComponent {
 		row.Disabled = slices.Contains(policy.split.DisabledShares, row.ItemKey)
 		index := slices.IndexFunc(policy.actions, func(a vipBenefitAction) bool { return a.Item == row.ItemKey })
 		if index < 0 {
+			row.MembershipNewOnly = policy.split.membershipOverride(row.ItemKey)
 			if label := policy.split.LeaderLabels[row.ItemKey]; label != "" {
 				row.Label = label
 			}
@@ -80,6 +81,7 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 	}
 	var people map[int64]string
 	var inheritedLabels map[string]string
+	var movedMembership bool
 	disabled := slices.Clone(policy.Split.DisabledShares)
 	if len(recipients) > 0 {
 		people, err = catalogNewRecipientKeys(ctx, tx, recipients, nil)
@@ -129,6 +131,16 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 		index := slices.IndexFunc(prior.actions, func(item vipBenefitAction) bool { return item.Item == change.ItemKey })
 		if index >= 0 {
 			action.MembershipNewOnly = prior.actions[index].MembershipNewOnly
+		} else if policy.Split.hasShare(change.ItemKey) {
+			fallback := catalogNewMembershipOnly(raw)
+			newOnly := newMembershipOnly(policy.Split.membershipOverride(change.ItemKey), newMembershipOnly(policy.MembershipNewOnly, fallback))
+			if newOnly != fallback {
+				action.MembershipNewOnly = &newOnly
+			}
+			if _, exists := policy.Split.MembershipScopes[change.ItemKey]; exists {
+				delete(policy.Split.MembershipScopes, change.ItemKey)
+				movedMembership = true
+			}
 		}
 		switch change.Target {
 		case "appointment":
@@ -166,12 +178,21 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 			disabled = slices.Delete(disabled, index, index+1)
 		}
 	}
-	if inheritedLabels != nil {
+	if inheritedLabels != nil || movedMembership {
 		var split map[string]json.RawMessage
 		if err := json.Unmarshal(root["internal_sales_direct_split"], &split); err != nil {
 			return nil, err
 		}
-		split["leader_labels"], _ = json.Marshal(inheritedLabels)
+		if inheritedLabels != nil {
+			split["leader_labels"], _ = json.Marshal(inheritedLabels)
+		}
+		if movedMembership {
+			if len(policy.Split.MembershipScopes) == 0 {
+				delete(split, catalogSplitMembershipScopesKey)
+			} else {
+				split[catalogSplitMembershipScopesKey], _ = json.Marshal(policy.Split.MembershipScopes)
+			}
+		}
 		root["internal_sales_direct_split"], _ = json.Marshal(split)
 	}
 	if !slices.Equal(disabled, policy.Split.DisabledShares) {

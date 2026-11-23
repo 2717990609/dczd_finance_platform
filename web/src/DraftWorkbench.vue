@@ -56,7 +56,7 @@ const componentLabel = code => {
   if (type==='company_referral') return '公司推荐分润'
   if (type==='retrain_service') return '复训服务分润'
   if (type==='retrain_pool') return '复训销售归集'
-  return props.componentOptions.find(option=>option.value===type)?.label || type
+  return props.componentOptions.find(option=>option.value===type)?.label || salesRoles[type?.split(':').at(-1)] || type
 }
 const memberLabel = type => props.memberOptions.find(option=>option.value===(type===3 ? 'new' : 'retrain'))?.label
 function showAppliedRule(section, record) {

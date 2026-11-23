@@ -118,6 +118,64 @@ func TestVIPInternalAllocationUsesHistoricalHoldersAndConservesCents(t *testing.
 	if issue != "" {
 		t.Fatal(issue)
 	}
+	rule.Split.Mode, rule.Split.Item = "DCAI_INTERNAL_DIRECT", "sales"
+	base, err := json.Marshal(map[string]any{
+		"amount_basis": "ACTUAL_RECEIVED", "stacking_policy": "SUM", "rounding_policy": map[string]any{"mode": "HALF_UP", "scale": 2},
+		"policy_scope": map[string]any{},
+		"benefit_actions": []map[string]any{{"item_key": "sales", "label": "销售", "type": "RATE_TABLE", "role": "SALES",
+			"beneficiary_mode": "PARTY", "rate_table": rule.Sales}},
+		"internal_sales_direct_split": rule.Split,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selectedService, _, err := editCatalogMembershipArrangements(base, []catalogMembershipArrangementEdit{
+		{ItemKey: vipInternalServiceItem, NewOnly: true},
+	})
+	if err != nil || len(selectedService) == 0 {
+		t.Fatalf("cannot set the existing service scope independently: %s %v", selectedService, err)
+	}
+	check := func(definition json.RawMessage, orderType string, excluded map[string]string) {
+		t.Helper()
+		policies := readVIPQuotePolicies(map[string]json.RawMessage{"rule": definition})
+		row := catalogPaymentMatch{RuleID: "rule", MembershipOrder: true, SourceTransactionType: orderType}
+		policies.apply(&row, vipRuntimeData{vipSalesData: data}, req, "")
+		if row.SalesStatus != "CALCULATED" || len(row.SalesParts) != len(original) {
+			t.Fatalf("membership type %q: %s %+v", orderType, row.SalesStatus, row.SalesParts)
+		}
+		for i, part := range row.SalesParts {
+			want := original[i]
+			if status := excluded[part.Role]; status != "" {
+				want.Status, want.Amount, want.Person, want.Name = status, 0, "", ""
+			}
+			if want != part {
+				t.Fatalf("membership type %q: got %+v, want %+v", orderType, part, want)
+			}
+		}
+	}
+	check(selectedService, "NEW", nil)
+	check(selectedService, "RENEWAL", map[string]string{"DCAI_SERVICE": vipCommissionOutsideScope})
+	check(selectedService, "", map[string]string{"DCAI_SERVICE": "MEMBERSHIP_TYPE_PENDING"})
+	selectedSales, _, err := editCatalogMembershipArrangements(base, []catalogMembershipArrangementEdit{{ItemKey: "sales", NewOnly: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(selectedSales, "RENEWAL", map[string]string{"SALES": vipCommissionOutsideScope})
+	check(selectedSales, "", map[string]string{"SALES": "MEMBERSHIP_TYPE_PENDING"})
+
+	legacy, err := editCatalogNewMembershipScope(base, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyService, _, err := editCatalogMembershipArrangements(legacy, []catalogMembershipArrangementEdit{
+		{ItemKey: vipInternalServiceItem, NewOnly: false},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	check(legacyService, "RENEWAL", map[string]string{
+		"SALES": vipCommissionOutsideScope, "DCAI_GROUP_LEAD": vipCommissionOutsideScope, "DCAI_TEAM_HEAD": vipCommissionOutsideScope,
+	})
 	removed := rule
 	removed.Split.Teams = slices.Clone(rule.Split.Teams)
 	removed.Split.DisabledShares = []string{vipGroupLeaderItem, vipInternalServiceItem, vipTeamLeaderItem}

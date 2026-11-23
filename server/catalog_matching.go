@@ -52,7 +52,8 @@ const catalogMatchSQL = `WITH period AS (
  v.definition->'policy_scope'->'sales_systems' AS sales_systems,
  v.definition->'policy_scope'->'business_sku_codes' AS skus,
  v.definition->'policy_scope'->'vip_new_membership_only'='true'::jsonb AND NOT jsonb_path_exists(v.definition,
-  '$.benefit_actions[*].vip_membership_new_only ? (@ == true || @ == false)') AS new_membership_only,
+  '$.benefit_actions[*].vip_membership_new_only ? (@ == true || @ == false)')
+ AND coalesce(v.definition->'internal_sales_direct_split'->'vip_membership_scopes','{}'::jsonb)='{}'::jsonb AS new_membership_only,
  v.definition->>'recognition_plan' IS NOT NULL AS compound_recognition,
  coalesce((` + catalogHealthRecognitionPlan + `),false) AS health_recognition,
  ` + catalogRulePriority + ` AS priority

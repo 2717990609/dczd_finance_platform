@@ -137,6 +137,20 @@ func writeCatalogDisabledShares(root map[string]json.RawMessage, shares []string
 	} else {
 		slices.Sort(shares)
 		split["disabled_shares"], _ = json.Marshal(shares)
+		if encoded := split[catalogSplitMembershipScopesKey]; len(encoded) != 0 {
+			var scopes map[string]bool
+			if json.Unmarshal(encoded, &scopes) != nil {
+				return errCatalogRateUnavailable
+			}
+			for _, share := range shares {
+				delete(scopes, share)
+			}
+			if len(scopes) == 0 {
+				delete(split, catalogSplitMembershipScopesKey)
+			} else {
+				split[catalogSplitMembershipScopesKey], _ = json.Marshal(scopes)
+			}
+		}
 	}
 	var err error
 	root[key], err = json.Marshal(split)

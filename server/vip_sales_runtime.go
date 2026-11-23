@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -460,24 +461,43 @@ func newMembershipOnly(override *bool, fallback bool) bool {
 	return fallback
 }
 
+func (row catalogPaymentMatch) splitMembershipStatuses(policy vipSalesPolicy, req vipSalesRequest, primary bool) map[string]string {
+	if !row.MembershipOrder || row.SourceTransactionType == "NEW" || len(policy.Split.MembershipScopes) == 0 ||
+		!slices.ContainsFunc(policy.Split.Teams, func(team vipInternalTeam) bool { return team.Company == req.Company }) {
+		return nil
+	}
+	statuses := map[string]string{vipSalesPrimaryRole: row.membershipScopeStatus(primary)}
+	for _, share := range vipSplitRoles {
+		if enabled, found := policy.Split.MembershipScopes[share.item]; found {
+			statuses[share.role] = row.membershipScopeStatus(enabled)
+		} else {
+			statuses[share.role] = statuses[vipSalesPrimaryRole]
+		}
+	}
+	return statuses
+}
+
 func (p vipQuotePolicies) apply(row *catalogPaymentMatch, data vipRuntimeData, req vipSalesRequest, issue string) {
 	fallback := p.newMembershipDefaults[row.RuleID]
 	if policy, ok := p.sales[row.RuleID]; ok {
 		row.SalesItem = policy.Item
 		row.SalesParts, row.SalesStatus = nil, issue
+		newOnly := newMembershipOnly(policy.MembershipNewOnly, fallback)
+		splitStatuses := row.splitMembershipStatuses(policy, req, newOnly)
+		membershipStatus := row.membershipScopeStatus(newOnly)
 		if policy.Item == "" {
 			row.SalesStatus = vipSalesNotConfigured
-		} else if row.MembershipOrder && row.SourceTransactionType == "RENEWAL" && newMembershipOnly(policy.MembershipNewOnly, fallback) {
+		} else if splitStatuses == nil && membershipStatus == vipCommissionOutsideScope {
 			row.SalesStatus = vipCommissionOutsideScope
 		} else if eligible, scopeIssue := vipScopedSale(policy.CommissionUnits, policy.ScopeCategories, req, issue, data); !eligible {
 			row.SalesStatus = vipCommissionOutsideScope
 			if scopeIssue != "" {
 				row.SalesStatus = scopeIssue
 			}
-		} else if status := row.membershipScopeStatus(newMembershipOnly(policy.MembershipNewOnly, fallback)); status != "" {
-			row.SalesStatus = status
+		} else if splitStatuses == nil && membershipStatus != "" {
+			row.SalesStatus = membershipStatus
 		} else if issue == "" {
-			row.SalesParts, row.SalesStatus = calculateVIPSales(policy, req, data.vipSalesData)
+			row.SalesParts, row.SalesStatus = calculateVIPSalesWithMembership(policy, req, data.vipSalesData, splitStatuses)
 		}
 		if row.SalesStatus == "" {
 			row.SalesStatus = "CALCULATED"
