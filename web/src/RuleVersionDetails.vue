@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyRatePriority, practiceCompanyScopes, practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
+import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyMatchLabels, practiceCompanyRatePriority, practiceCompanyScopes, practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
   practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, practiceStandardRateScope, practiceStandardRateSummary,
   ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
@@ -78,10 +78,10 @@ const companyStandards = computed(() => {
     }
   }
   return [
-    {scope:'category',label:'按销售类别计提',column:'销售类别',rows:defaults},
-    {scope:'default',label:'外部公司默认比例',rate:arrangement?.defaultRate},
-    {scope:'company',label:'按指定公司计提',column:'指定公司',rows:companies},
-  ].map(group=>({...group,hasRecommendation:group.rows?.some(({row,inheritedRate})=>
+    {scope:'category',column:'销售类别',rows:defaults},
+    {scope:'default',rate:arrangement?.defaultRate},
+    {scope:'companies',column:'指定公司',rows:companies},
+  ].map(group=>({...group,label:practiceCompanyMatchLabels[group.scope],hasRecommendation:group.rows?.some(({row,inheritedRate})=>
     row.recommendationRate!=null || inheritedRate!=null)}))
 })
 const companyPriority = computed(() =>
@@ -216,8 +216,7 @@ onMounted(async () => {
           <a-descriptions-item label="提成怎么算">{{ formula(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.periodBenefit" label="计提订单范围">{{ practicePeriodScopeText(part.periodBenefit,practiceScopeNames,Infinity) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.salesPersonId" label="业绩归属">{{ roleName(part.sourceRole) }}</a-descriptions-item>
-          <a-descriptions-item v-if="part.companySales" label="计提订单范围">{{ salesScope(part,0) }}</a-descriptions-item>
-          <a-descriptions-item v-else-if="salesScope(part)" label="提成范围">{{ salesScope(part) }}</a-descriptions-item>
+          <a-descriptions-item v-if="!part.companySales && salesScope(part)" label="提成范围">{{ salesScope(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.periodBenefit?.tiers?.length" label="阶梯选档范围">
             {{ part.periodBenefit.tierOnWholeClass ? '全班净实收（新报及复训）' : '适用报名净实收' }}
           </a-descriptions-item>
@@ -236,8 +235,12 @@ onMounted(async () => {
             </tr>
           </tbody>
         </table>
-        <div v-if="part.companySales" class="practice-company-criteria">
-          <small v-if="companyPriority" class="finance-rate-priority">匹配顺序 {{ companyPriority }}</small>
+        <section v-if="part.companySales" class="practice-company-criteria" aria-label="计提订单范围">
+          <header class="practice-company-scope-heading">
+            <h4>计提订单范围</h4>
+            <span>{{ salesScope(part,0) }}</span>
+            <small v-if="companyPriority" class="finance-rate-priority">匹配顺序 {{ companyPriority }}</small>
+          </header>
           <section v-for="group in companyStandards" :key="group.scope" :aria-label="group.label" class="practice-company-criterion">
             <header>
               <strong>{{ group.label }}</strong>
@@ -264,7 +267,7 @@ onMounted(async () => {
               </tbody>
             </table>
           </section>
-        </div>
+        </section>
         <details v-if="part.tiers || part.periodBenefit || part.retrainSplits?.length ||
           part.companySales?.internalCompanies?.length || part.companySales?.recommendationRecipients?.length">
           <summary>查看计算条件</summary>

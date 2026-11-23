@@ -148,6 +148,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .finance-rate-add { margin-inline-start:auto; }
 .finance-rate-empty { margin:0; padding-block:4px; color:var(--muted); font-size:13px; }
 .practice-company-criteria { display:grid; gap:6px; margin-block:6px; }
+.practice-company-scope-heading { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px; padding:3px 0; }
+.practice-company-scope-heading h4 { margin:0; font:inherit; font-weight:600; }
+.practice-company-scope-heading > span { color:var(--muted); }
+.practice-company-scope-heading > small { margin-inline-start:auto; }
 .practice-company-criterion { min-width:0; padding:5px 8px; border:1px solid var(--line); border-radius:5px; }
 .practice-company-criterion > header { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; min-height:28px; }
 .practice-company-criterion > header > strong { color:var(--accent); }

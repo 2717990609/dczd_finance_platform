@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { practiceCompanyMatchText, practiceCompanyRatePriority, practiceCompanyScopes, practiceRecipientIsPerson } from './rule-component-form'
+import { practiceCompanyMatchLabels, practiceCompanyMatchText, practiceCompanyRatePriority, practiceCompanyScopes, practiceRecipientIsPerson } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
   sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array,duties:Array})
@@ -12,9 +12,9 @@ const categories = computed(() => sales.value.categories)
 const overrides = computed(() => categories.value.flatMap((category,index)=>
   category.overrides.map((override,position)=>({category,index,override,position}))))
 const standardGroups = [
-  {scope:'category',label:'按销售类别计提',action:'添加销售类别'},
-  {scope:'default',label:'外部公司默认比例'},
-  {scope:'companies',label:'按指定公司计提',action:'添加指定公司'},
+  {scope:'category',action:'添加销售类别'},
+  {scope:'default'},
+  {scope:'companies',action:'添加指定公司'},
 ]
 const standardRowsByScope = computed(() => ({
   companies:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='companies'),
@@ -120,7 +120,7 @@ watch(amounts, choices => {
 
 <template>
   <RuleArrangementFields :name-id="field('label')" v-model:name="component.companySales.label"
-    :calculation-text="calculationText" :scope-text="practiceCompanyMatchText(scopes)"
+    :calculation-text="calculationText"
     :duty-id="practiceRecipientIsPerson(payee.kind) ? field('duty') : undefined" :duties="duties" v-model:duty="component.recipientDuty"
     :order-type-id="'rule-member-'+index" :order-types="memberChoices" :order-type="component.classMember"
     @update:order-type="component.classMember=$event; emit('member-change')">
@@ -139,12 +139,16 @@ watch(amounts, choices => {
   </RuleArrangementFields>
   <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
-  <div class="practice-company-criteria">
-    <small v-if="priority" class="finance-rate-priority">匹配顺序 {{ priority }}</small>
-    <section v-for="group in standardGroups" :key="group.scope" :aria-label="group.label"
+  <section class="practice-company-criteria" :aria-labelledby="field('scope-heading')">
+    <header class="practice-company-scope-heading">
+      <h4 :id="field('scope-heading')">计提订单范围</h4>
+      <span>{{ practiceCompanyMatchText(scopes) }}</span>
+      <small v-if="priority" class="finance-rate-priority">匹配顺序 {{ priority }}</small>
+    </header>
+    <section v-for="group in standardGroups" :key="group.scope" :aria-label="practiceCompanyMatchLabels[group.scope]"
       class="practice-company-criterion">
       <header>
-        <strong>{{ group.label }}</strong>
+        <strong>{{ practiceCompanyMatchLabels[group.scope] }}</strong>
         <template v-if="group.scope!=='default'">
           <small v-if="group.scope==='category' && scopes.categories.length">{{ scopes.categories.length }} 类</small>
           <small v-else-if="group.scope==='companies' && scopes.companies.length">{{ scopes.companies.length }} 家</small>
@@ -157,10 +161,13 @@ watch(amounts, choices => {
           <a-button :disabled="group.scope==='category' && !salesCategories.length" size="small"
             @click="addStandard(group.scope)">{{ group.action }}</a-button>
         </template>
-        <a-form-item v-else class="company-default-rate" :html-for="field('default-rate')">
-          <a-input-number :id="field('default-rate')" v-model:value="component.companySales.defaultRate"
-            aria-label="外部公司默认比例（%）" addon-after="%" size="small" :min="0" :max="100" :precision="4" placeholder="未配置"/>
-        </a-form-item>
+        <template v-else>
+          <small v-if="!scopes.hasDefault">未配置</small>
+          <a-form-item class="company-default-rate" :html-for="field('default-rate')">
+            <a-input-number :id="field('default-rate')" v-model:value="component.companySales.defaultRate"
+              aria-label="外部公司默认比例（%）" addon-after="%" size="small" :min="0" :max="100" :precision="4" placeholder="填写比例"/>
+          </a-form-item>
+        </template>
       </header>
       <div v-if="group.scope!=='default' && (standardRowsByScope[group.scope].length || (group.scope==='companies' && overrides.length))"
         class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations}">
@@ -221,7 +228,7 @@ watch(amounts, choices => {
         </template>
       </div>
     </section>
-  </div>
+  </section>
   <a-form-item v-if="hasRecommendations" label="可收推荐分润的公司" :html-for="field('referral-recipients')" required>
     <a-select :id="field('referral-recipients')" v-model:value="component.companySales.recommendationRecipients"
       :options="recipients" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
