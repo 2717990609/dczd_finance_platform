@@ -8,7 +8,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionScope, catalogRateIndicators, catalogRateScopeTitles as rateScopeTitles, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule:Object, applied:Object, api:Function, formatTime:Function, formatMoney:Function,
   optionLabel:Function, periods:Array, skus:Array })
@@ -129,18 +129,17 @@ const hasEdits = computed(() => copy.value || membershipEdits.value.size || spli
   removedItems.value.size || removedRateRows.value.size)
 const impactPeriods = computed(() => catalogRuleImpactPeriods(props.periods,sheet.value?.productId,impactInput.value?.effectiveFrom))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
-const percent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
 const canAddRates = computed(() => sheet.value?.mayPublish && !props.applied && !!sheet.value.structureOptions &&
   !itemRemoved.value && !selectedCalculation.value)
 const rateNames = computed(() => Object.fromEntries(['companies','categories','relationships'].map(kind=>
   [kind,new Map((sheet.value?.structureOptions?.[kind] || []).map(option=>[option.value,option.label]))])))
 function stagedRateRow(change, original) {
-  const {companyIds,categoryIds,relationship,payee,rateBps,draftKey,externalCompanyDefault} = change
+  const {companyIds,categoryIds,relationship,payee,rateBps,draftKey} = change
   const names = rateNames.value
   const labelList = (ids, labels, missing) => ids?.map(id=>labels.get(id) || missing).join('、')
   return {
     ...original,draftKey,companyIds,categoryIds,payee,rateBps,staged:true,
-    scope:externalCompanyDefault ? 'external' : companyIds?.length ? 'company' : categoryIds?.length ? 'category' : 'general',
+    scope:catalogRateConditionScope(change),
     company:labelList(companyIds,names.companies,'公司名称待补'),
     category:labelList(categoryIds,names.categories,'销售类别名称待补'),
     relationshipCode:relationship,limitsRelationship:relationship!=='ANY',
@@ -165,13 +164,6 @@ const singleSalesRate = computed(() => {
   const [row,...others] = rateRows.value
   if (targetKind.value==='seller' && !teamSplit.value && row?.scope==='general' && !row.limitsRelationship && !others.length) return row
 })
-const rateScopeTitles = {
-  company:'公司特例',
-  category:'销售类别默认',
-  inherited:'公司补充比例',
-  external:'外部公司默认比例',
-  general:'通用比例',
-}
 const rateGroups = computed(() => {
   const mayAdd = canAddRates.value
   return [
@@ -301,22 +293,10 @@ function currentRate(item,row) {
   const edit = edits.value[cellKey(item.itemKey,row.row)]
   return edit ? rateAsBasisPoints(edit.value) : row.rateBps
 }
-const rateIndicators = computed(() => Object.fromEntries((sheet.value?.components || []).map(item=>{
-  const byScope = new Map()
-  for (const row of configuredRateRows(item)) {
-    if (removedRateRows.value.has(cellKey(item.itemKey,row.row))) continue
-    if (!byScope.has(row.scope)) byScope.set(row.scope,[])
-    const rate = currentRate(item,row)
-    if (rate!=null) byScope.get(row.scope).push(rate)
-  }
-  const summaries = Object.entries(rateScopeTitles).filter(([scope])=>byScope.has(scope)).map(([scope,title])=>{
-    const rates = byScope.get(scope)
-    if (!rates.length) return title+' · 待填写'
-    const low = Math.min(...rates), high = Math.max(...rates)
-    return title+' · '+(low===high ? percent(low) : percent(low)+'–'+percent(high))
-  })
-  return [item.itemKey,summaries]
-})))
+const rateIndicators = computed(() => Object.fromEntries((sheet.value?.components || []).map(item=>[
+  item.itemKey,catalogRateIndicators(configuredRateRows(item).filter(row=>!removedRateRows.value.has(cellKey(item.itemKey,row.row))),
+    row=>currentRate(item,row)),
+])))
 const savedMethod = item => item.fixedMinor == null ? 'rate' : 'fixed'
 const flatMethod = item => edits.value[cellKey(item.itemKey)]?.method || savedMethod(item)
 function calculationMethod(item) {

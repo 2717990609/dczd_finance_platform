@@ -4,7 +4,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRatePriorityLabel, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
   orderTypeText:String,productId:Number,membershipSku:Boolean,defaultMembershipNewOnly:Boolean,replacementItemKey:String})
@@ -15,29 +15,44 @@ const form = ref()
 const revising = computed(() => form.value?.kind==='calculation' || form.value?.itemIndex!=null ||
   form.value?.rowNumber || form.value?.draftKey || form.value?.editingSales)
 const isSales = computed(() => form.value?.kind==='item' && form.value.target==='seller')
-const visibleItems = computed(() => draft.value.items.map((item,index)=>({item,index}))
-  .filter(({item})=>item.replacesItemKey===props.replacementItemKey))
+const stagedEntries = computed(() => [
+  ...(draft.value.sales && !props.replacementItemKey ? [{item:{...draft.value.sales,target:'seller'},index:null}] : []),
+  ...draft.value.items.map((item,index)=>({item,index})).filter(({item})=>item.replacesItemKey===props.replacementItemKey),
+].map(({item,index})=>({index,...stagedSummary(item)})))
 const itemName = ref()
 const error = ref('')
 let nextDraftKey = 0
 const blankCondition = scope => newCatalogRateCondition(props.options,scope)
 const labelFor = (choices,value) => choices.find(option=>option.value===value)?.label || value
-const percent = basisPoints => (basisPoints/100)+'%'
-function itemLabel(item) {
+function stagedSummary(item) {
+  const rows = item.rows || []
   const recipient = catalogOrderSalesPayees[item.target] || (item.target==='referrer' ? '订单直接推荐人'
+    : item.target==='seller' ? [...new Set(rows.map(row=>labelFor(catalogSalesPayees,row.payee || 'seller')))].join('、')
     : item.target==='person' ? item.personName
     : item.target==='pool' ? props.options.teamPools?.find(pool=>pool.id===item.poolId)?.name
     : item.target==='appointment' ? [labelFor(catalogAppointmentLevels,item.appointmentLevel),labelFor(props.options.roles,item.role)].join(' · ')
     : labelFor(props.options.organizations,item.organization))
-  const standard = item.rows?.length ? item.rows.length+' 条费率条件'
-    : item.fixedMinor != null ? (item.fixedMinor/100).toFixed(2)+' 元/笔' : percent(item.rateBps)
-  const scope = item.ownSales ? '本人销售' : [
+  const standard = rows.length ? '' : item.fixedMinor != null ? (item.fixedMinor/100).toFixed(2)+' 元/笔' : catalogPercent(item.rateBps)
+  const scopeNames = [
     ...(item.salesScopeUnitIds || []).map(id=>labelFor(props.options.salesUnits,id)),
     ...(item.salesScopeCategoryIds || []).map(id=>labelFor(props.options.categories,id)),
-  ].join('、') || '本规则全部订单'
+  ]
+  const positive = rows.filter(row=>row.rateBps>0)
+  if (!item.ownSales && !scopeNames.length && !positive.some(row=>catalogRateConditionScope(row)==='general')) {
+    for (const row of positive) {
+      const names = row.externalCompanyDefault ? '其他外部公司' : [
+        ...(row.companyIds || []).map(id=>labelFor(props.options.companies,id)),
+        ...(row.categoryIds || []).map(id=>labelFor(props.options.categories,id)),
+      ].join('、')
+      if (names && !scopeNames.includes(names)) scopeNames.push(names)
+    }
+  }
+  const scope = item.ownSales ? '本人销售' : scopeNames.length>2 ? scopeNames.slice(0,2).join('、')+' 等 '+scopeNames.length+' 个'
+    : scopeNames.join('、') || (rows.length ? positive.length ? '按比例条件匹配' : '当前无正比例' : '本规则全部订单')
   const orderType = props.membershipSku && catalogMembershipTypes.find(option=>option.value===(item.membershipNewOnly ? 'new' : 'all'))?.label
   const duty = item.recipientDuty && labelFor(props.options.duties,item.recipientDuty)
-  return [item.label,recipient,duty,standard,scope,orderType].filter(Boolean).join(' · ')
+  return {text:[item.label,recipient,duty,standard,'提成范围 '+scope,orderType].filter(Boolean).join(' · '),
+    indicators:catalogRateIndicators(rows),scopeTitle:scopeNames.join('、')}
 }
 function begin(kind,scope) {
   error.value = ''
@@ -87,7 +102,7 @@ function calculationForm({fixedMinor,rateBps,rows}, defaultFormat='rate') {
     rate:rateBps==null ? undefined : String(rateBps/100),
     amount:fixedMinor==null ? undefined : String(fixedMinor/100),
     rows:rows?.map(row=>({
-      scope:row.externalCompanyDefault ? 'external' : row.companyIds?.length ? 'company' : row.categoryIds?.length ? 'category' : 'general',
+      scope:catalogRateConditionScope(row),
       companyIds:[...(row.companyIds || [])],categoryIds:[...(row.categoryIds || [])],
       relationship:row.relationship,payee:row.payee,rate:String(row.rateBps/100),
     })) || [blankCondition()],
@@ -232,22 +247,18 @@ defineExpose({addRecipient,editRecipient,editCalculation,editRateScope,cancel,ad
         </a-button>
       </div>
     </div>
-    <ul v-if="visibleItems.length || draft.sales && !replacementItemKey" class="catalog-staged-entries" aria-label="待发布新增配置">
-      <li v-if="draft.sales && !replacementItemKey">
-        <div><span>{{ draft.sales.label }} · {{ draft.sales.rows.length }} 条费率条件</span><small class="order-version">未保存</small></div>
-        <a-space :size="0">
-          <a-button type="link" size="small" :disabled="!!form" @click="editSales">编辑</a-button>
-          <a-button type="link" danger size="small" :disabled="!!form" @click="draft.sales=undefined">移除</a-button>
-        </a-space>
-      </li>
-      <li v-for="{item,index} in visibleItems" :key="'item-'+index">
+    <ul v-if="stagedEntries.length" class="catalog-staged-entries" aria-label="待发布新增配置">
+      <li v-for="{index,text,indicators,scopeTitle} in stagedEntries" :key="index ?? 'sales'">
         <div>
-          <span>{{ itemLabel(item) }}</span>
+          <span :title="scopeTitle">{{ text }}</span>
           <small class="order-version">未保存</small>
+          <div v-if="indicators.length" class="rule-rate-indicators">
+            <span v-for="indicator in indicators" :key="indicator" class="rule-rate-indicator">{{ indicator }}</span>
+          </div>
         </div>
         <a-space :size="0">
-          <a-button type="link" size="small" :disabled="!!form" @click="editRecipient(index)">编辑</a-button>
-          <a-button type="link" size="small" danger :disabled="!!form" @click="draft.items.splice(index,1)">移除</a-button>
+          <a-button type="link" size="small" :disabled="!!form" @click="index==null ? editSales() : editRecipient(index)">编辑</a-button>
+          <a-button type="link" size="small" danger :disabled="!!form" @click="index==null ? draft.sales=undefined : draft.items.splice(index,1)">移除</a-button>
         </a-space>
       </li>
     </ul>

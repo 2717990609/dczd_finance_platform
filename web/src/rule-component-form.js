@@ -31,6 +31,38 @@ export function moneyAsMinor(value) {
 }
 
 export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
+export const catalogRateScopeTitles = {
+  company:'公司特例',
+  category:'销售类别默认',
+  inherited:'公司补充比例',
+  external:'外部公司默认比例',
+  general:'通用比例',
+}
+export const catalogPercent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
+
+export function catalogRateConditionScope(row) {
+  if (row.scope) return row.scope
+  if (row.externalCompanyDefault) return 'external'
+  if (row.companyIds?.length) return 'company'
+  return row.categoryIds?.length ? 'category' : 'general'
+}
+
+export function catalogRateIndicators(rows, getRate = row => row.rateBps) {
+  const byScope = new Map()
+  for (const row of rows) {
+    const scope = catalogRateConditionScope(row)
+    if (!byScope.has(scope)) byScope.set(scope,[])
+    const rate = getRate(row)
+    if (rate!=null) byScope.get(scope).push(rate)
+  }
+  return Object.entries(catalogRateScopeTitles).filter(([scope])=>byScope.has(scope)).map(([scope,title])=>{
+    const rates = byScope.get(scope)
+    if (!rates.length) return title+' · 待填写'
+    const low = Math.min(...rates), high = Math.max(...rates)
+    return title+' · '+(low===high ? catalogPercent(low) : catalogPercent(low)+'–'+catalogPercent(high))
+  })
+}
+
 export function practiceCompanyRatePriority({companies,categories,hasDefault}) {
   const configured = [
     companies.length && '指定公司',
