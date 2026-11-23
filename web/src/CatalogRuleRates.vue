@@ -76,8 +76,8 @@ function setSplitRate(field,value) {
   else splitEdits.value[field] = value
 }
 const teamCompanyIDs = computed(() => new Set((sheet.value?.teams || []).map(team=>team.key)))
-const linkedTeamRateChanges = row => row.teamRate && Object.hasOwn(splitEdits.value,'total') &&
-  row.rateBps===teamSplit.value?.total && row.companyIds?.every(id=>teamCompanyIDs.value.has(id))
+const linkedTeamRateChanges = (row,item=component.value) => row.teamRate && Object.hasOwn(splitEdits.value,'total') &&
+  row.rateBps===item?.teamSplit?.total && row.companyIds?.every(id=>teamCompanyIDs.value.has(id))
 const displayLinkedTeamRate = row => linkedTeamRateChanges(row) ? splitEdits.value.total : displayRate(row.rateBps,row.row)
 const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:item.key,label:item.label})))
 const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
@@ -295,6 +295,28 @@ const displayRate = (rate, row, item=selected.value) => {
   const key = cellKey(item,row)
   return Object.hasOwn(edits.value,key) ? edits.value[key].value : (rate/100).toFixed(2)
 }
+function currentRate(item,row) {
+  if (row.staged) return row.rateBps
+  if (linkedTeamRateChanges(row,item)) return rateAsBasisPoints(splitEdits.value.total)
+  const edit = edits.value[cellKey(item.itemKey,row.row)]
+  return edit ? rateAsBasisPoints(edit.value) : row.rateBps
+}
+const rateIndicators = computed(() => Object.fromEntries((sheet.value?.components || []).map(item=>{
+  const byScope = new Map()
+  for (const row of configuredRateRows(item)) {
+    if (removedRateRows.value.has(cellKey(item.itemKey,row.row))) continue
+    if (!byScope.has(row.scope)) byScope.set(row.scope,[])
+    const rate = currentRate(item,row)
+    if (rate!=null) byScope.get(row.scope).push(rate)
+  }
+  const summaries = Object.entries(rateScopeTitles).filter(([scope])=>byScope.has(scope)).map(([scope,title])=>{
+    const rates = byScope.get(scope)
+    if (!rates.length) return title+' · 待填写'
+    const low = Math.min(...rates), high = Math.max(...rates)
+    return title+' · '+(low===high ? percent(low) : percent(low)+'–'+percent(high))
+  })
+  return [item.itemKey,summaries]
+})))
 const savedMethod = item => item.fixedMinor == null ? 'rate' : 'fixed'
 const flatMethod = item => edits.value[cellKey(item.itemKey)]?.method || savedMethod(item)
 function calculationMethod(item) {
@@ -323,19 +345,13 @@ function setFlat(item, method, value) {
 }
 function componentStandard(item) {
   const calculation = calculationFor(item.itemKey)
-  const configuredScopes = new Set(configuredRateRows(item)
-    .filter(row=>!removedRateRows.value.has(cellKey(item.itemKey,row.row)))
-    .map(row=>row.scope))
-  const standard = Object.entries(rateScopeTitles).filter(([key])=>configuredScopes.has(key)).map(([,title])=>title).join('、')
+  const standard = rateIndicators.value[item.itemKey]?.join('、')
   if (calculation) {
     if (calculation.rows?.length) return standard
     if (calculation.fixedMinor!=null) return (calculation.fixedMinor/100).toFixed(2)+' 元/笔'
     return percent(calculation.rateBps)
   }
-  if (item.rows?.length) {
-    const row = item===component.value ? singleSalesRate.value : undefined
-    return row ? displayRate(row.rateBps,row.row)+'%' : standard || '未配置比例'
-  }
+  if (item.rows?.length) return standard || '未配置比例'
   if (item.fixedMinor == null && item.rateBps == null) return ''
   const value = flatValue(item)
   return value == null || value==='' ? '' : value+(flatMethod(item)==='fixed' ? ' 元/笔' : '%')
@@ -477,7 +493,7 @@ function commissionScopeNames(item) {
   const rows = configuredRateRows(item)
   if (scope==null && rows?.length) {
     const positive = rows.filter(row=>!removedRateRows.value.has(cellKey(item.itemKey,row.row)) &&
-      (edits.value[cellKey(item.itemKey,row.row)] ? Number(edits.value[cellKey(item.itemKey,row.row)].value)>0 : row.rateBps>0))
+      currentRate(item,row)>0)
     if (!positive.length) return ['当前无正比例']
     if (positive.some(row=>row.scope==='general')) return ['按比例条件匹配']
     return [...new Set(positive.map(row=>row.scope==='external' ? '未命中指定公司或类别的外部公司' :
@@ -713,7 +729,10 @@ async function publish() {
             <span class="rule-block-recipient" :title="commissionScopeNames(item).join('、')">
               提成范围 · {{ formatScope(commissionScopeNames(item)) }}
             </span>
-            <small>{{ [targetName(item),sheet.membershipSku && memberLabel(item),componentStandard(item)].filter(Boolean).join(' · ') }}</small>
+            <span v-if="rateIndicators[item.itemKey]?.length" class="rule-rate-indicators">
+              <span v-for="indicator in rateIndicators[item.itemKey]" :key="indicator" class="rule-rate-indicator">{{ indicator }}</span>
+            </span>
+            <small>{{ [targetName(item),sheet.membershipSku && memberLabel(item),!rateIndicators[item.itemKey]?.length && componentStandard(item)].filter(Boolean).join(' · ') }}</small>
           </button>
           <div v-if="selected===item.itemKey" :id="'catalog-rate-'+item.itemKey" class="rule-block-body">
           <a-alert v-if="itemRemoved" type="warning" :message="teamSplit ? '成交销售及其内部团队拆分将从新版移除' : '此分项将从新版移除'" show-icon class="feedback"/>

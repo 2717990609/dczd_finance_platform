@@ -105,8 +105,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .rule-block-recipient { color:var(--muted); font-size:13px; overflow-wrap:anywhere; }
 .rule-block-header small { margin-inline-start:auto; color:var(--muted); text-align:right; overflow-wrap:anywhere; }
 .rule-block-badge { font-size:12px; color:var(--muted); border:1px solid var(--line); border-radius:4px; padding:1px 6px; white-space:nowrap; }
-.practice-company-matches { display:flex; flex-wrap:wrap; align-items:center; gap:4px; min-width:0; }
-.practice-company-match { padding:1px 6px; border:1px solid var(--line); border-radius:4px; background:#fff;
+.practice-company-matches, .rule-rate-indicators { display:flex; flex-wrap:wrap; align-items:center; gap:4px; min-width:0; }
+.practice-company-match, .rule-rate-indicator { padding:1px 6px; border:1px solid var(--line); border-radius:4px; background:#fff;
   color:var(--accent); font-size:12px; overflow-wrap:anywhere; }
 .rule-block-body { border-top:1px solid var(--line); padding:16px; min-width:0; }
 .rule-block-body.component-editor { border:0; border-top:1px solid var(--line); border-radius:0 0 6px 6px; margin:0; padding:16px; background:#fff; }
