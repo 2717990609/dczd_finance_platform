@@ -30,6 +30,7 @@ type vipBenefitAction struct {
 	ScopeCategories   []string        `json:"sales_scope_category_ids,omitempty"`
 	OwnSales          bool            `json:"own_sales,omitempty"`
 	RecipientDuty     string          `json:"recipient_duty,omitempty"`
+	AppointmentUnit   string          `json:"appointment_organization_unit_id,omitempty"`
 	MembershipNewOnly *bool           `json:"vip_membership_new_only,omitempty"`
 }
 
@@ -139,6 +140,12 @@ func (a vipBenefitAction) validTarget() bool {
 	if a.OwnSales && (a.Mode != "PARTY" || a.Designated == "" || len(a.CommissionUnits)+len(a.ScopeCategories) != 0 || a.Leader != nil) ||
 		a.RecipientDuty != "" && (a.Designated == "" || !validSourceRole(a.RecipientDuty)) {
 		return false
+	}
+	if a.AppointmentUnit != "" {
+		unit, ok := canonicalSourceUUID(a.AppointmentUnit)
+		if !ok || unit != a.AppointmentUnit || a.Mode != "PARTY" || a.Designated == "" || a.Role == "" || a.Leader != nil {
+			return false
+		}
 	}
 	poolFields := a.PoolParty != "" || a.PoolUnit != "" || a.PoolCode != "" || a.PoolName != "" || a.OwnerRole != "" || a.OwnerParty != ""
 	if role := vipLeaderRole(a.Item); role != "" || a.Leader != nil {
@@ -267,8 +274,13 @@ func bindVIPBenefit(line *vipBenefitPart, a vipBenefitAction, req vipSalesReques
 		if name == "" {
 			line.Status = "BENEFIT_PERSON_MISSING"
 		} else if a.Role != "" && !slices.ContainsFunc(data.Roles, func(r vipRole) bool {
-			return r.Person == a.Designated && r.Role == a.Role && r.contains(req.At) &&
-				(r.Scope == "PRODUCT" && r.Key == req.Product || r.Scope == "PROJECT" && r.Key == req.Project)
+			if r.Person != a.Designated || r.Role != a.Role || !r.contains(req.At) {
+				return false
+			}
+			if a.AppointmentUnit != "" {
+				return r.Scope == "ORGANIZATION_UNIT" && r.Key == a.AppointmentUnit
+			}
+			return r.Scope == "PRODUCT" && r.Key == req.Product || r.Scope == "PROJECT" && r.Key == req.Project
 		}) {
 			line.Status = "INACTIVE"
 		} else {

@@ -275,10 +275,11 @@ func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, produc
 		return invalid
 	}
 	type requiredAppointment struct {
-		Label string `json:"label"`
-		Key   string `json:"key"`
-		Role  string `json:"role"`
-		Unit  string `json:"unit"`
+		Label             string `json:"label"`
+		Key               string `json:"key"`
+		Role              string `json:"role"`
+		Unit              string `json:"unit"`
+		NamedOrganization bool   `json:"named_organization"`
 	}
 	var requirements []requiredAppointment
 	beforePayees := make(map[string]vipBenefitAction, len(before.actions))
@@ -288,8 +289,9 @@ func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, produc
 	for _, action := range after.actions {
 		original := beforePayees[action.Item]
 		if action.Leader == nil && action.Designated != "" && action.Role != "" &&
-			(action.Designated != original.Designated || action.Role != original.Role) {
-			requirements = append(requirements, requiredAppointment{Label: action.Label, Key: action.Designated, Role: action.Role})
+			(action.Designated != original.Designated || action.Role != original.Role || action.AppointmentUnit != original.AppointmentUnit) {
+			requirements = append(requirements, requiredAppointment{Label: action.Label, Key: action.Designated, Role: action.Role,
+				Unit: action.AppointmentUnit, NamedOrganization: action.AppointmentUnit != ""})
 		}
 		if action.Mode == "TEAM_POOL" && action.OwnerRole != "" &&
 			(action.PoolUnit != original.PoolUnit || action.OwnerRole != original.OwnerRole) {
@@ -319,17 +321,17 @@ func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, produc
 	}
 	var label string
 	err = tx.QueryRow(ctx, `SELECT wanted.label
-	 FROM jsonb_to_recordset($3) AS wanted(label text,key text,role text,unit text)
+	 FROM jsonb_to_recordset($3) AS wanted(label text,key text,role text,unit text,named_organization boolean)
 	 JOIN products pro ON pro.id=$1 JOIN product_catalog_settings settings ON settings.product_id=pro.id
 	 CROSS JOIN LATERAL (
 	  SELECT count(DISTINCT a.person_id) AS holders,bool_or(`+vipPersonKey+`=wanted.key) AS chosen
 	  FROM catalog_current_sales_appointments a JOIN people p ON p.id=a.person_id
-	  WHERE a.source='DCAI' AND a.role=wanted.role AND a.valid_from<=$2 AND (a.valid_to IS NULL OR a.valid_to>$2)
+	  WHERE a.source='DCAI' AND a.role=wanted.role AND (wanted.named_organization OR a.valid_from<=$2) AND (a.valid_to IS NULL OR a.valid_to>$2)
 	   AND ((wanted.unit='' AND ((a.scope='PRODUCT' AND a.scope_key=pro.code)
 	    OR (a.scope='PROJECT' AND a.scope_key=settings.project_code)))
 	    OR (wanted.unit<>'' AND a.scope='ORGANIZATION_UNIT' AND a.scope_key=wanted.unit))
 	 ) actual
-	 WHERE NOT (coalesce(actual.chosen,false) AND (wanted.unit='' OR actual.holders=1))
+	 WHERE NOT (coalesce(actual.chosen,false) AND (wanted.unit='' OR wanted.named_organization OR actual.holders=1))
 	 ORDER BY wanted.label LIMIT 1`, product, at, targets).Scan(&label)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil

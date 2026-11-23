@@ -52,14 +52,15 @@ type catalogNewRateRow struct {
 }
 
 type catalogBenefitTarget struct {
-	Target        string `json:"target"`
-	Role          string `json:"role,omitempty"`
-	MemberRole    string `json:"memberRole,omitempty"`
-	PersonID      int64  `json:"personId,omitempty"`
-	OwnerPersonID int64  `json:"ownerPersonId,omitempty"`
-	PoolID        int64  `json:"poolId,omitempty"`
-	Organization  string `json:"organization,omitempty"`
-	RecipientDuty string `json:"recipientDuty,omitempty"`
+	Target          string `json:"target"`
+	Role            string `json:"role,omitempty"`
+	MemberRole      string `json:"memberRole,omitempty"`
+	PersonID        int64  `json:"personId,omitempty"`
+	OwnerPersonID   int64  `json:"ownerPersonId,omitempty"`
+	PoolID          int64  `json:"poolId,omitempty"`
+	Organization    string `json:"organization,omitempty"`
+	RecipientDuty   string `json:"recipientDuty,omitempty"`
+	AppointmentUnit string `json:"appointmentUnitId,omitempty"`
 }
 
 type catalogBenefitTargetChange struct {
@@ -459,7 +460,8 @@ func changeCatalogBenefitTargets(actions []map[string]json.RawMessage, salesKey 
 			"company_beneficiary_party_id": action.Company, "pool_party_id": action.PoolParty,
 			"pool_organization_unit_id": action.PoolUnit, "pool_code": action.PoolCode, "pool_name": action.PoolName,
 			"allocation_owner_role": action.OwnerRole, "allocation_owner_party_id": action.OwnerParty,
-			"recipient_duty": action.RecipientDuty,
+			"recipient_duty":                   action.RecipientDuty,
+			"appointment_organization_unit_id": action.AppointmentUnit,
 		} {
 			if value == "" {
 				delete(fields, key)
@@ -536,9 +538,13 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 		catalogStructureOptionFor(options.Duties, target.RecipientDuty).Value == "") {
 		return invalid
 	}
+	if target.AppointmentUnit != "" && target.Target != "person" {
+		return invalid
+	}
 	before := *action
 	action.Mode, action.Role = "PARTY", ""
 	action.RecipientDuty = target.RecipientDuty
+	action.AppointmentUnit = target.AppointmentUnit
 	action.Designated, action.Company = "", ""
 	action.PoolParty, action.PoolUnit, action.PoolCode, action.PoolName, action.OwnerRole = "", "", "", "", ""
 	action.OwnerParty = ""
@@ -551,7 +557,12 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 		}
 		action.Mode, action.Role = vipOrderReferrerMode, "REFERRAL"
 	case "person":
-		if target.Organization != "" || target.Role != "" && !role.Personal || people[target.PersonID] == "" {
+		if target.Organization != "" || people[target.PersonID] == "" {
+			return invalid
+		}
+		if target.AppointmentUnit == "" && target.Role != "" && !role.Personal ||
+			target.AppointmentUnit != "" && (!role.Organization ||
+				target.AppointmentUnit != before.AppointmentUnit && catalogStructureOptionFor(options.SalesUnits, target.AppointmentUnit).Value == "") {
 			return invalid
 		}
 		action.Role, action.Designated = role.Value, people[target.PersonID]

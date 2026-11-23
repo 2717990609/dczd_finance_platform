@@ -341,12 +341,12 @@ function targetName(item) {
 const roleLabel = role => props.optionLabel('catalogAppointmentRole',role) || role
 function originalTarget(item) {
   return {target:item.targetKind,role:item.targetRole,memberRole:item.memberRole,organization:item.targetOrganization,poolId:item.poolId,
-    personId:item.recipient?.id,personName:item.recipient?.name,recipientDuty:item.recipientDuty,
+    personId:item.recipient?.id,personName:item.recipient?.name,recipientDuty:item.recipientDuty,appointmentUnitId:item.appointmentUnitId,
     ownerPersonId:item.poolOwner?.id,ownerName:item.poolOwner?.name}
 }
 function setTarget(item, payee) {
   const original = originalTarget(item)
-  if (['target','role','memberRole','organization','personId','recipientDuty','ownerPersonId','poolId'].every(field=>payee[field]===original[field])) {
+  if (['target','role','memberRole','organization','personId','recipientDuty','ownerPersonId','poolId','appointmentUnitId'].every(field=>payee[field]===original[field])) {
     targetEdits.value.delete(item.itemKey)
   } else {
     targetEdits.value.set(item.itemKey,payee)
@@ -503,7 +503,7 @@ function publicationInput() {
   const removed = new Set(removedItems.value)
   if (serviceReplacement.value) removed.add(serviceItemKey)
   for (const [itemKey,payee] of targetEdits.value) {
-    if (!removedItems.value.has(itemKey) && !catalogPayeeComplete(payee)) {
+    if (!removedItems.value.has(itemKey) && !catalogPayeeComplete(payee,sheet.value.structureOptions.roles)) {
       const item = sheet.value.components.find(component=>component.itemKey===itemKey)
       selected.value = itemKey
       throw new Error('请补齐「'+(labelEdits.value.get(itemKey)?.trim() || item.label)+'」的收款对象和适用岗位。')
@@ -682,6 +682,7 @@ async function publish() {
               :disabled="!editable || structureEditing" @update:name="setLabel(item,$event)">
               <CatalogPayeeFields :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
                 prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters" :product-id="sheet.productId"
+                :unit-names="sheet.scopeUnitNames"
                 :saved-pool-label="item.targetLabel" :existing-pool="item.targetKind==='pool' && !item.poolId"
                 :disabled="!editable || structureEditing" @update:model-value="setTarget(item,$event)"/>
               <template #calculation>
@@ -717,6 +718,9 @@ async function publish() {
             <a-descriptions v-if="item.targetRole || item.memberRole" size="small" :column="{xs:1,sm:2}">
               <a-descriptions-item v-if="item.targetRole" :label="targetKind==='pool' ? '负责人岗位' : '收款人任职岗位'">
                 {{ roleLabel(item.targetRole) }}
+              </a-descriptions-item>
+              <a-descriptions-item v-if="item.appointmentUnitId" label="任职组织">
+                {{ sheet.scopeUnitNames?.[item.appointmentUnitId] || '已选组织' }}
               </a-descriptions-item>
               <a-descriptions-item v-if="item.poolOwner" label="分配负责人">{{ item.poolOwner.name }}</a-descriptions-item>
               <a-descriptions-item label="计提订单类型">{{ sheet.membershipSku ? memberLabel(item) : orderTypeText }}</a-descriptions-item>

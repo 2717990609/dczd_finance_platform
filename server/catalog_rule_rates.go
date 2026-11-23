@@ -22,6 +22,7 @@ type catalogRateComponent struct {
 	TargetLabel              string             `json:"targetLabel,omitempty"`
 	TargetOrg                string             `json:"targetOrganization,omitempty"`
 	TargetRole               string             `json:"targetRole,omitempty"`
+	AppointmentUnit          string             `json:"appointmentUnitId,omitempty"`
 	MemberRole               string             `json:"memberRole,omitempty"`
 	TeamSplit                *catalogSplitRates `json:"teamSplit,omitempty"`
 	LeaderScope              *vipLeaderScope    `json:"leaderScope,omitempty"`
@@ -153,6 +154,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		}
 		if item.TargetKind == "person" {
 			item.TargetRole = action.Role
+			item.AppointmentUnit = action.AppointmentUnit
 		}
 		if len(action.RateTable) > 0 {
 			rows, valid := parseVIPRateTable(action.RateTable)
@@ -301,7 +303,9 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	  FROM organization_units u LEFT JOIN organization_units p ON p.id=u.parent_id
 	  LEFT JOIN organization_units gp ON gp.id=p.parent_id
 	  WHERE u.id::text IN (SELECT unit_id#>>'{}' FROM jsonb_path_query(r.definition,
-	   '$.benefit_actions[*].sales_scope_unit_ids[*]') unit_id)),'{}')
+	   '$.benefit_actions[*].sales_scope_unit_ids[*]') unit_id
+	   UNION ALL SELECT unit_id#>>'{}' FROM jsonb_path_query(r.definition,
+	   '$.benefit_actions[*].appointment_organization_unit_id') unit_id)),'{}')
 	FROM rule r`, id).Scan(&sheet.ProductID, &sheet.ProductName, &sheet.Label, &sheet.Version, &sheet.EffectiveFrom, &sheet.EffectiveTo,
 		&definition, &sheet.MayPublish, &supported, &sheet.RequiresCompletion, &sheet.MembershipSKU, &companyNames, &categoryNames, &relationshipNames,
 		&organizationNames, &groupNames, &sheet.ScopeUnitNames)

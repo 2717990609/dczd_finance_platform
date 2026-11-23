@@ -103,11 +103,14 @@ export const catalogSalesPayees = [
   {value:'sales_company',label:'销售所属公司'},
 ]
 
-export function catalogPayeeComplete(payee) {
+export function catalogPayeeComplete(payee, roles) {
   switch (payee.target) {
     case 'seller':
     case 'referrer': return true
-    case 'person': return !!payee.personId
+    case 'person': {
+      const role = roles.find(option=>option.value===payee.role)
+      return !!(payee.personId && (!role?.organization || role.personal || payee.appointmentUnitId))
+    }
     case 'company': return !!payee.organization
     case 'pool': return !!((payee.poolId || payee.organization) && (payee.role || payee.ownerPersonId) && payee.memberRole)
     default: return false

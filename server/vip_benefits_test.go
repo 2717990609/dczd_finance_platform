@@ -30,6 +30,46 @@ func TestVIPMembershipOrderScopeIsIndependentByArrangement(t *testing.T) {
 	}
 }
 
+func TestVIPNamedLeaderUsesTheirOrganizationAppointmentSeparatelyFromSalesScope(t *testing.T) {
+	appointment := "10000000-0000-4000-8000-000000000701"
+	teamA := "10000000-0000-4000-8000-000000000702"
+	teamB := "10000000-0000-4000-8000-000000000703"
+	raw := json.RawMessage(`{"amount_basis":"ACTUAL_RECEIVED","stacking_policy":"SUM","sales_attribution":"ORDER_SELLER",
+	  "rounding_policy":{"mode":"HALF_UP","scale":2},"benefit_actions":[
+	  {"item_key":"leader","label":"多团队负责人","type":"RATE","beneficiary_mode":"PARTY","designated_party_id":"leader",
+	   "role":"GROUP_LEAD","appointment_organization_unit_id":"` + appointment + `",
+	   "sales_scope_unit_ids":["` + teamA + `","` + teamB + `"],"rate_bps":100} ]}`)
+	policy, ok := readVIPBenefits(raw)
+	if !ok {
+		t.Fatal("the named leader must be configurable with an independent appointment organization")
+	}
+	start := time.Date(2026, 10, 7, 0, 0, 0, 0, shanghai)
+	end := start.AddDate(0, 0, 12)
+	data := vipRuntimeData{BenefitReady: true, vipSalesData: vipSalesData{
+		People: map[string]string{"leader": "负责人"},
+		Roles: []vipRole{
+			{Person: "leader", Scope: "PRODUCT", Key: "VIP", Role: "GROUP_LEAD"},
+			{Person: "leader", Scope: "ORGANIZATION_UNIT", Key: teamA, Role: "GROUP_LEAD"},
+			{Person: "leader", Scope: "ORGANIZATION_UNIT", Key: appointment, Role: "GROUP_LEAD", vipInterval: vipInterval{From: start, To: &end}},
+		},
+	}}
+	for _, tc := range []struct {
+		at              time.Time
+		company, status string
+		amount          int64
+	}{
+		{start.Add(-time.Second), teamA, "INACTIVE", 0},
+		{start, teamA, "CALCULATED", 100},
+		{end.Add(-time.Second), teamB, "CALCULATED", 100},
+		{end, teamB, "INACTIVE", 0},
+	} {
+		row := quoteVIPBenefits(vipSalesRequest{Paid: 10000, Product: "VIP", CompanyUnit: tc.company, At: tc.at}, "", policy, data)[0]
+		if row.Status != tc.status || row.Amount != tc.amount {
+			t.Fatalf("appointment boundary or sales scope mismatched for %+v: %+v", tc, row)
+		}
+	}
+}
+
 func TestVIPCommissionScopeUsesPaymentSalesOrganization(t *testing.T) {
 	unit := func(value string) pgtype.UUID {
 		t.Helper()

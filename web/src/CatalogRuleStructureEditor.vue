@@ -138,7 +138,7 @@ function stage() {
       else draft.value.calculations.push(change)
     } else {
       const label = staged.label?.trim()
-      if (!label || !catalogPayeeComplete(staged)) {
+      if (!label || !catalogPayeeComplete(staged,props.options.roles)) {
         throw new Error('请填写收款安排名称，并补齐收款对象。')
       }
       const ownSales = staged.orderScope==='own'
@@ -153,7 +153,7 @@ function stage() {
         return
       }
       const item = {label,target:staged.target,role:staged.role,personId:staged.personId,recipientDuty:staged.recipientDuty,ownSales,membershipNewOnly,
-        replacesItemKey:staged.replacesItemKey,
+        replacesItemKey:staged.replacesItemKey,appointmentUnitId:staged.appointmentUnitId,
         personName:staged.personName,organization:staged.poolId ? undefined : staged.organization,memberRole:staged.memberRole,poolId:staged.poolId,
         ownerPersonId:staged.ownerPersonId,ownerName:staged.ownerName,...scope,...calculationBody(staged)}
       if (staged.itemIndex==null) draft.value.items.push(item)
