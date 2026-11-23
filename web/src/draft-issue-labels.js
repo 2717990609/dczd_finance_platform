@@ -96,7 +96,7 @@ export const draftIssueLabels = {
   PRACTICE_TIER_EXCEEDS_PAYMENT: '命中的档位计提超过实付金额',
   PRACTICE_PERIOD_APPOINTMENT_MISSING: '找不到分项指定的组织任职记录',
   PRACTICE_SALES_ORGANIZATION_MISSING: '无法确认付款时的销售部门或小组',
-  PRACTICE_PERIOD_BENEFIT_INCOMPLETE: '适用报名或付款待核，暂未汇总此分项',
+  PRACTICE_PERIOD_BENEFIT_INCOMPLETE: '适用报名或付款待核对',
   PRACTICE_REGISTRATION_ATTENDANCE_MISSING: '缺少本期报名的签到记录，请重新拉取大春之道订单',
   PRACTICE_REGISTRATION_ORDER_MISMATCH: '签到关联订单与确认名单不一致，请到大春之道核对',
   PRACTICE_REGISTRATION_PERIOD_MISMATCH: '签到班次或时间与确认名单不一致，请到大春之道核对',

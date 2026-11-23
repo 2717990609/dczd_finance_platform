@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -390,6 +391,66 @@ func TestPracticePeriodBenefitChecksTheConfiguredPaymentRole(t *testing.T) {
 	shares, base, issues, err = collectPracticeBenefitShares(part, purchases, nil, identities, nil, practiceDraftRuntime{legacyBenefitAttribution: true})
 	if err != nil || len(issues) != 0 || len(shares) != 1 || base != amount {
 		t.Fatalf("a legacy replay must preserve the original attribution and scope for refunds: %+v %d %+v %v", shares, base, issues, err)
+	}
+}
+
+func TestPracticePeriodBenefitTrialsKeepResolvedEnrollments(t *testing.T) {
+	at := time.Date(2026, 10, 8, 8, 0, 0, 0, time.UTC)
+	member := func(id int64, order string) practiceEnrollment {
+		return practiceEnrollment{ID: id, SourceEnrollmentID: order, MembershipType: 3,
+			CommissionEligible: true, PaidOrderIDs: []string{order}, ConfirmedAt: at.Add(time.Hour)}
+	}
+	paid := func(id int64, order, seller string) paymentInput {
+		amount := int64(10000)
+		return paymentInput{ID: id, Fact: sourceFact{Source: "DCZD", OrderID: order, PaymentID: order,
+			AmountMinor: &amount, OccurredAt: at, ReferrerID: seller}}
+	}
+	members := []practiceEnrollment{member(101, "101"), member(102, "102"), member(103, "103")}
+	orders := map[string][]paymentInput{"101": {paid(1, "101", "a")}, "102": {paid(2, "102", "b")}}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "a"}: {{ID: 1, PersonID: 30}}}
+	fixed := int64(2000)
+	for _, tc := range []struct {
+		name              string
+		method            practicePeriodBenefit
+		rate              int64
+		partial, resolved int64
+	}{
+		{name: "比例", rate: 100000, partial: 1000, resolved: 3000},
+		{name: "报名固定金额", method: practicePeriodBenefit{FixedMinor: &fixed}, partial: 2000, resolved: 6000},
+		{name: "整班固定金额", method: practicePeriodBenefit{FixedMinor: &fixed, FixedPerClass: true}, resolved: 2000},
+		{name: "阶梯", method: practicePeriodBenefit{Tiers: []practicePeriodRate{{Value: 100000}}}, resolved: 3000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			benefit := tc.method
+			benefit.Label, benefit.PersonID, benefit.SalesPeople = tc.name, 7, []int64{30}
+			rule := paymentRule{ID: 1, Components: []component{{Type: "delivery", Mode: "period_rate", ClassMember: "new",
+				SourceRole: "DIRECT_REFERRER", Value: tc.rate, PeriodBenefit: &benefit}}}
+			if err := validateComponents(rule.Components); err != nil {
+				t.Fatal(err)
+			}
+			draft, err := calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil, practiceDraftRuntime{})
+			if err != nil || draft.Total != tc.partial || draft.blockingIssues() == 0 {
+				t.Fatalf("expected partial trial %d with a blocking source issue: %+v %v", tc.partial, draft, err)
+			}
+			for _, line := range draft.Lines {
+				if line.PersonID != 7 || line.FactID != 1 {
+					t.Fatalf("only the resolved payment may be priced: %+v", line)
+				}
+			}
+			if tc.partial > 0 && !slices.ContainsFunc(draft.Issues, func(issue draftIssue) bool {
+				return issue.Code == "MISSING_IDENTITY" && issue.FactID == 2 && issue.EnrollmentID == 102
+			}) {
+				t.Fatalf("the source gap must identify the exact payment and enrollment: %+v", draft.Issues)
+			}
+			orders["103"] = []paymentInput{paid(3, "103", "a")}
+			identities[identityKey{"DCZD", "b"}] = []identityAssignment{{ID: 2, PersonID: 30}}
+			draft, err = calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil, practiceDraftRuntime{})
+			delete(orders, "103")
+			delete(identities, identityKey{"DCZD", "b"})
+			if err != nil || draft.Total != tc.resolved || len(draft.Issues) != 0 || len(draft.Lines) != 3 {
+				t.Fatalf("corrected source data should restore the complete result %d: %+v %v", tc.resolved, draft, err)
+			}
+		})
 	}
 }
 

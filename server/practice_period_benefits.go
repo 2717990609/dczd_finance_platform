@@ -540,9 +540,7 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 func collectPracticeBenefitShares(part component, purchases []practicePurchase, assignments []practiceAppointment,
 	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int, runtime practiceDraftRuntime) ([]practiceBenefitShare, int64, []draftIssue, error) {
 	b := part.PeriodBenefit
-	checkSalesAgreement := len(b.StandardRates) == 0 && b.OrderAppointmentLevel == "" &&
-		b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
-	checkConfiguredRole := b.usesSalesPerson() && !runtime.legacyBenefitAttribution
+	requiresCompleteScope := b.FixedPerClass || len(b.Tiers) != 0
 	var eligible []practiceBenefitShare
 	var tierBase int64
 	var issues []draftIssue
@@ -562,9 +560,11 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		repeatedPayment := slices.ContainsFunc(p.payments, func(payment paymentInput) bool {
 			return paymentCounts[paymentKey{payment.Fact.Source, payment.Fact.PaymentID}] > 1
 		})
+		requireComplete := requiresCompleteScope || p.replaying
 		if p.issue != "" || repeatedPayment {
-			if memberMatches || b.TierOnWholeClass {
-				return nil, 0, append(issues, draftIssue{Code: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"}), nil
+			if requireComplete && (memberMatches || b.TierOnWholeClass) {
+				issue := draftIssue{Code: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE", FactID: p.issueFactID, EnrollmentID: p.member.ID}
+				return nil, 0, append(issues, issue), nil
 			}
 			continue
 		}
@@ -588,85 +588,13 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 				continue
 			}
 		}
-		payments := p.payments
-		if b.FixedMinor != nil && len(p.originalPayments) != 0 {
-			payments = p.originalPayments
-		}
-		if len(payments) == 2 && checkSalesAgreement {
-			left, right := payments[0].Fact, payments[1].Fact
-			if left.SalesCompanyID != right.SalesCompanyID ||
-				(!checkConfiguredRole && left.ReferrerID != "" && right.ReferrerID != "" && left.ReferrerID != right.ReferrerID) {
-				return nil, 0, append(issues, draftIssue{Code: "PRACTICE_PERIOD_BENEFIT_INCOMPLETE"}), nil
-			}
-			if checkConfiguredRole {
-				if _, issue := practiceBeneficiaries(payments, part.SourceRole, identities); issue != "" {
-					return nil, 0, append(issues, draftIssue{Code: issue}), nil
-				}
-			}
-		}
-		share := practiceBenefitShare{purchase: p}
-		for _, payment := range payments {
-			yes, issue := b.eligiblePayment(payment, part.SourceRole, assignments, identities, runtime)
-			if issue != "" {
-				return nil, 0, append(issues, draftIssue{Code: issue}), nil
-			}
-			if yes {
-				var rate int64
-				if len(b.StandardRates) != 0 {
-					rate, issue = standards.match(payment, p.noReferrer, runtime)
-					if issue != "" {
-						issues = append(issues, draftIssue{Code: issue, FactID: payment.ID, EnrollmentID: p.member.ID})
-						continue
-					}
-					if rate == 0 {
-						continue
-					}
-				}
-				if b.OrderAppointmentLevel != "" {
-					person, unit, issue := practiceOrderAppointmentRecipient(payment, b, part.SourceRole, identities, runtime)
-					if issue != "" {
-						return nil, 0, append(issues, draftIssue{Code: issue, FactID: payment.ID, EnrollmentID: p.member.ID}), nil
-					}
-					if person == 0 {
-						continue
-					}
-					share.people = append(share.people, identityAssignment{PersonID: person})
-					share.organizations = append(share.organizations, unit)
-				}
-				if len(b.StandardRates) != 0 {
-					share.rates = append(share.rates, rate)
-				}
-				share.payments = append(share.payments, payment)
-				share.net += p.netAmount(payment)
-			}
+		share, purchaseIssues, incomplete := scopePracticeBenefitPurchase(part, p, assignments, identities, runtime, standards)
+		issues = append(issues, purchaseIssues...)
+		if incomplete && requireComplete {
+			return nil, 0, issues, nil
 		}
 		if len(share.payments) == 0 {
 			continue
-		}
-		var recipientIssue string
-		if b.OrderRecipientRole != "" {
-			share.people, recipientIssue = practiceBeneficiaries(share.payments, b.OrderRecipientRole, identities)
-		}
-		if b.SalesCompanyRecipient || b.ReferralCompanyRecipient {
-			share.company, recipientIssue = practiceSalesCompanyUnit(share.payments, runtime.companyRecipients)
-		}
-		if b.ReferralCompanyRecipient && recipientIssue == "" {
-			share.company, recipientIssue = runtime.recommendations.resolve(share.payments, share.company)
-			if recipientIssue == "" {
-				if !share.company.Valid {
-					continue
-				}
-				if len(b.ReferralCompanyIDs) != 0 && !slices.Contains(b.ReferralCompanyIDs, share.company.String()) {
-					recipientIssue = "PRACTICE_RECOMMENDATION_ROUTE_MISSING"
-				}
-			}
-		}
-		if recipientIssue != "" {
-			return nil, 0, append(issues, draftIssue{Code: recipientIssue, EnrollmentID: p.member.ID}), nil
-		}
-		share.key = share.payments[0].Fact.OrderID
-		if len(payments) == 2 {
-			share.key = p.member.SourceEnrollmentID
 		}
 		if b.FixedMinor == nil && !b.TierOnWholeClass {
 			var err error
@@ -678,6 +606,100 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		eligible = append(eligible, share)
 	}
 	return eligible, tierBase, issues, nil
+}
+
+func scopePracticeBenefitPurchase(part component, p practicePurchase, assignments []practiceAppointment,
+	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime, standards practicePeriodStandardRates) (practiceBenefitShare, []draftIssue, bool) {
+	b := part.PeriodBenefit
+	var issues []draftIssue
+	blocked := func(code string, factID int64) (practiceBenefitShare, []draftIssue, bool) {
+		issue := draftIssue{Code: code, FactID: factID, EnrollmentID: p.member.ID}
+		return practiceBenefitShare{}, append(issues, issue), true
+	}
+	payments := p.payments
+	if b.FixedMinor != nil && len(p.originalPayments) != 0 {
+		payments = p.originalPayments
+	}
+	checkSalesAgreement := len(b.StandardRates) == 0 && b.OrderAppointmentLevel == "" &&
+		b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
+	checkConfiguredRole := b.usesSalesPerson() && !runtime.legacyBenefitAttribution
+	if len(payments) == 2 && checkSalesAgreement {
+		left, right := payments[0].Fact, payments[1].Fact
+		if left.SalesCompanyID != right.SalesCompanyID ||
+			(!checkConfiguredRole && left.ReferrerID != "" && right.ReferrerID != "" && left.ReferrerID != right.ReferrerID) {
+			return blocked("PRACTICE_PERIOD_BENEFIT_INCOMPLETE", 0)
+		}
+		if checkConfiguredRole {
+			if _, issue := practiceBeneficiaries(payments, part.SourceRole, identities); issue != "" {
+				return blocked(issue, 0)
+			}
+		}
+	}
+	share := practiceBenefitShare{purchase: p}
+	for _, payment := range payments {
+		yes, issue := b.eligiblePayment(payment, part.SourceRole, assignments, identities, runtime)
+		if issue != "" {
+			return blocked(issue, payment.ID)
+		}
+		if yes {
+			var rate int64
+			if len(b.StandardRates) != 0 {
+				rate, issue = standards.match(payment, p.noReferrer, runtime)
+				if issue != "" {
+					issues = append(issues, draftIssue{Code: issue, FactID: payment.ID, EnrollmentID: p.member.ID})
+					continue
+				}
+				if rate == 0 {
+					continue
+				}
+			}
+			if b.OrderAppointmentLevel != "" {
+				person, unit, issue := practiceOrderAppointmentRecipient(payment, b, part.SourceRole, identities, runtime)
+				if issue != "" {
+					return blocked(issue, payment.ID)
+				}
+				if person == 0 {
+					continue
+				}
+				share.people = append(share.people, identityAssignment{PersonID: person})
+				share.organizations = append(share.organizations, unit)
+			}
+			if len(b.StandardRates) != 0 {
+				share.rates = append(share.rates, rate)
+			}
+			share.payments = append(share.payments, payment)
+			share.net += p.netAmount(payment)
+		}
+	}
+	if len(share.payments) == 0 {
+		return practiceBenefitShare{}, issues, false
+	}
+	var recipientIssue string
+	if b.OrderRecipientRole != "" {
+		share.people, recipientIssue = practiceBeneficiaries(share.payments, b.OrderRecipientRole, identities)
+	}
+	if b.SalesCompanyRecipient || b.ReferralCompanyRecipient {
+		share.company, recipientIssue = practiceSalesCompanyUnit(share.payments, runtime.companyRecipients)
+	}
+	if b.ReferralCompanyRecipient && recipientIssue == "" {
+		share.company, recipientIssue = runtime.recommendations.resolve(share.payments, share.company)
+		if recipientIssue == "" {
+			if !share.company.Valid {
+				return practiceBenefitShare{}, issues, false
+			}
+			if len(b.ReferralCompanyIDs) != 0 && !slices.Contains(b.ReferralCompanyIDs, share.company.String()) {
+				recipientIssue = "PRACTICE_RECOMMENDATION_ROUTE_MISSING"
+			}
+		}
+	}
+	if recipientIssue != "" {
+		return blocked(recipientIssue, 0)
+	}
+	share.key = share.payments[0].Fact.OrderID
+	if len(payments) == 2 {
+		share.key = p.member.SourceEnrollmentID
+	}
+	return share, issues, false
 }
 
 func (b practicePeriodBenefit) rate(configured, basis int64) (int64, bool) {
