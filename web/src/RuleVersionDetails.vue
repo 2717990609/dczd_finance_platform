@@ -104,6 +104,9 @@ function recipient(part) {
   if (benefit?.pool) return poolName(benefit.pool)
   if (benefit?.personId) return personWithDuty(benefit.personId,benefit.recipientDuty)
   if (benefit?.unitId) return unitName(benefit.unitId)
+  if (benefit?.orderRecipientRole) return [roleName(benefit.orderRecipientRole),
+    benefit.recipientDuty && label('organizationDuty',benefit.recipientDuty)].filter(Boolean).join(' · ')
+  if (benefit?.salesCompanyRecipient) return '销售所属公司'
   if (part.companySales) {
     const payee = part.companySales.payee
     if (payee?.kind==='order_person') return roleName(payee.role)

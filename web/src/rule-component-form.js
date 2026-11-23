@@ -347,7 +347,8 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
     if (periodBenefit) {
       form.periodBenefit = {...periodBenefit,
         restrictPayments:hasPracticePaymentScope(periodBenefit),
-        recipient:periodBenefit.pool ? 'pool' : periodBenefit.unitId ? 'unit' : 'person',
+        recipient:periodBenefit.pool ? 'pool' : periodBenefit.unitId ? 'unit' : periodBenefit.orderRecipientRole ? 'order_person'
+          : periodBenefit.salesCompanyRecipient ? 'sales_company' : 'person',
         pool:periodBenefit.pool || {},
         method:periodBenefit.fixedMinor != null ? (periodBenefit.fixedPerClass ? 'class_fixed' : 'fixed')
           : periodBenefit.tiers?.length ? 'tiers' : 'rate',

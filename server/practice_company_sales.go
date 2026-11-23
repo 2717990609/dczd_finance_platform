@@ -499,16 +499,30 @@ func (offers *practiceCompanyOffers) match(member, company, category string) (pr
 }
 
 func loadPracticeCompanyRecipients(ctx context.Context, tx pgx.Tx, offers *practiceCompanyOffers,
-	orders map[string][]paymentInput, categories map[string]string) (map[string][]companySourceAssignment, error) {
-	if offers == nil {
+	orders map[string][]paymentInput, categories map[string]string, orderCompanyMembers []practiceEnrollment) (map[string][]companySourceAssignment, error) {
+	if offers == nil && len(orderCompanyMembers) == 0 {
 		return nil, nil
 	}
 	selected := make(map[string]bool)
+	for _, member := range orderCompanyMembers {
+		if !member.CommissionEligible {
+			continue
+		}
+		for _, order := range member.PaidOrderIDs {
+			for _, payment := range orders[order] {
+				if company := payment.Fact.SalesCompanyID; company != "" {
+					selected[company] = true
+				}
+			}
+		}
+	}
 	// Keep configured company recipients available to replay a later attribution correction.
-	for _, group := range offers.companies {
-		for company, award := range group {
-			if !award.internal {
-				selected[company] = true
+	if offers != nil {
+		for _, group := range offers.companies {
+			for company, award := range group {
+				if !award.internal {
+					selected[company] = true
+				}
 			}
 		}
 	}
@@ -516,6 +530,9 @@ func loadPracticeCompanyRecipients(ctx context.Context, tx pgx.Tx, offers *pract
 		for _, matches := range orders {
 			for _, payment := range matches {
 				f := payment.Fact
+				if f.SalesCompanyID == "" || selected[f.SalesCompanyID] {
+					continue
+				}
 				for _, member := range []string{"new", "retrain"} {
 					award, configured := offers.match(member, f.SalesCompanyID, categories[f.PaymentID])
 					if configured && !award.internal {

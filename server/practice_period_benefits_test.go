@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 func TestPracticeRefundCreditsOriginallyZeroPoolTier(t *testing.T) {
@@ -347,6 +348,79 @@ func TestPracticeArrangementSalesCategoryScope(t *testing.T) {
 	part.PeriodBenefit.SalesCategoryIDs = []string{category, category}
 	if validateComponents([]component{part}) == nil {
 		t.Fatal("duplicate category IDs must be rejected")
+	}
+}
+
+func TestPracticeArrangementResolvesRecipientsFromPayments(t *testing.T) {
+	const orderRole = "DIRECT_REFERRER"
+	var company pgtype.UUID
+	if err := company.Scan("40000000-0000-4000-8000-000000000001"); err != nil {
+		t.Fatal(err)
+	}
+	const amountTotal int64 = 10000
+	deposit, balance := int64(4000), int64(6000)
+	timestamp := time.Date(2026, 8, 8, 12, 0, 0, 0, time.UTC)
+	paid := func(id int64, amount *int64, at time.Time, referrer string) paymentInput {
+		key := strconv.FormatInt(id, 10)
+		return paymentInput{ID: id, Fact: sourceFact{Source: "DCZD", OrderID: key, PaymentID: key,
+			AmountMinor: amount, OccurredAt: at, ReferrerID: referrer, SalesCompanyID: "partner"}}
+	}
+	parts := []component{
+		{Type: "manager", Mode: "period_rate", Value: 100000, PeriodBenefit: &practicePeriodBenefit{Label: "订单人员提成", OrderRecipientRole: orderRole}},
+		{Type: "manager", Mode: "period_rate", Value: 50000, PeriodBenefit: &practicePeriodBenefit{Label: "公司提成", SalesCompanyRecipient: true}},
+	}
+	if err := validateComponents(parts); err != nil {
+		t.Fatal(err)
+	}
+	invalidRecipient := *parts[0].PeriodBenefit
+	invalidRecipient.PersonID = 7
+	bad := parts[0]
+	bad.PeriodBenefit = &invalidRecipient
+	if validateComponents([]component{bad}) == nil {
+		t.Fatal("an arrangement cannot have a named recipient and an order recipient")
+	}
+	members := []practiceEnrollment{{ID: 1, MembershipType: 3, CommissionEligible: true,
+		PaidOrderIDs: []string{"1", "2"}, ConfirmedAt: timestamp.Add(2 * time.Hour)}}
+	first, second := paid(1, &deposit, timestamp, "seller"), paid(2, &balance, timestamp.Add(time.Hour), "seller")
+	orders := map[string][]paymentInput{"1": {first}, "2": {second}}
+	identities := map[identityKey][]identityAssignment{
+		{"DCZD", "seller"}: {{PersonID: 7, ID: 10, ValidTo: &second.Fact.OccurredAt}, {PersonID: 7, ID: 11, ValidFrom: second.Fact.OccurredAt}},
+		{"DCZD", "other"}:  {{PersonID: 8, ID: 12}},
+	}
+	rule := paymentRule{ID: 1, Components: parts}
+	runtime := practiceDraftRuntime{companyRecipients: map[string][]companySourceAssignment{"partner": {{Company: company}}}}
+	calculate := func(refunds map[int64][]practiceRefundMatch) paymentDraft {
+		t.Helper()
+		draft, err := calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, refunds, runtime)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return draft
+	}
+	baseline := calculate(nil)
+	if baseline.Total != amountTotal*15/100 || len(baseline.Lines) != 4 || len(baseline.Issues) != 0 || len(baseline.Performance) != 2 {
+		t.Fatalf("both configured arrangements should share performance and pay independently: %+v", baseline)
+	}
+	for index, line := range baseline.Lines[:2] {
+		if line.PersonID != 7 || line.IdentityID != int64(index+10) || line.Amount != []int64{400, 600}[index] {
+			t.Fatalf("expected the order's person and identity at payment time: %+v", line)
+		}
+	}
+	for index, line := range baseline.Lines[2:] {
+		if line.BeneficiaryUnit == nil || *line.BeneficiaryUnit != company || line.Amount != []int64{200, 300}[index] {
+			t.Fatalf("expected the order's company with the payment share: %+v", line)
+		}
+	}
+	refundAmount := int64(2000)
+	partial := calculate(map[int64][]practiceRefundMatch{1: {{event: paymentInput{ID: 3,
+		Fact: sourceFact{AmountMinor: &refundAmount, OccurredAt: timestamp.Add(time.Minute)}}}}})
+	if partial.Total != 1200 || len(partial.Issues) != 0 || partial.Lines[0].Amount != 200 || partial.Lines[2].Amount != 100 {
+		t.Fatalf("partial refund must reduce each arrangement by its own share: %+v", partial)
+	}
+	orders["2"][0].Fact.ReferrerID = "other"
+	conflict := calculate(nil)
+	if len(conflict.Issues) != 1 || conflict.Issues[0].Code != "PRACTICE_ATTRIBUTION_CONFLICT" || conflict.Total != 500 {
+		t.Fatalf("conflicting payment attribution must block only the order-person arrangement: %+v", conflict)
 	}
 }
 

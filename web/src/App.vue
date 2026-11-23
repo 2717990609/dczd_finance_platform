@@ -453,11 +453,12 @@ function ruleRecipientSummary(row) {
     const payee = benefit.recipient==='pool' ? practicePoolOptions.value.find(option=>option.value===benefit.pool?.poolId)?.label || '团队池'
       : benefit.recipient==='unit' ? unitOptions.value.find(option=>option.value===benefit.unitId)?.label || '指定组织'
       : benefit.recipient==='person' ? classPeopleOptions.value.find(option=>option.value===benefit.personId)?.label || '指定个人'
-      : '选择收款对象'
+      : benefit.recipient==='order_person' ? orderRoleLabel(benefit.orderRecipientRole) || '订单上的人员'
+      : optionLabel('practicePeriodRecipient',benefit.recipient) || '选择收款对象'
     const amount = benefit.method==='tiers' ? '阶梯' : benefit.method==='rate'
       ? (row.amount == null ? '' : row.amount+'%')
       : (benefit.fixedAmount == null ? '' : formatMoney(minor(benefit.fixedAmount)))
-    return [payee,benefit.recipient==='person' ? optionLabel('organizationDuty',benefit.recipientDuty) : '',amount].filter(Boolean).join(' · ')
+    return [payee,['person','order_person'].includes(benefit.recipient) ? optionLabel('organizationDuty',benefit.recipientDuty) : '',amount].filter(Boolean).join(' · ')
   }
   if (row.mode==='company_sales') {
     const payee = row.companySales?.payee
@@ -1246,9 +1247,12 @@ function ruleComponentBody(row) {
     component.periodBenefit = {
       label,
       ...(b.labelIsCustom && practiceLegacyArrangementLabel(label,optionLabel)!==label ? {labelIsCustom:true} : {}),
-      ...(b.recipient==='pool' ? {pool:practicePoolBody(b.pool)} : b.recipient==='unit'
-        ? {unitId:must(b.unitId,'请选择收款组织')} : {personId:must(b.personId,'请选择收款人员')}),
-      ...(b.recipient==='person' && b.recipientDuty ? {recipientDuty:b.recipientDuty} : {}),
+      ...(b.recipient==='pool' ? {pool:practicePoolBody(b.pool)} : {}),
+      ...(b.recipient==='unit' ? {unitId:must(b.unitId,'请选择收款组织')} : {}),
+      ...(b.recipient==='person' ? {personId:must(b.personId,'请选择收款人员')} : {}),
+      ...(b.recipient==='order_person' ? {orderRecipientRole:must(b.orderRecipientRole,'请选择从订单读取的收款人')} : {}),
+      ...(b.recipient==='sales_company' ? {salesCompanyRecipient:true} : {}),
+      ...(['person','order_person'].includes(b.recipient) && b.recipientDuty ? {recipientDuty:b.recipientDuty} : {}),
       ...(b.ownSales && b.recipient==='person' ? {ownSales:true} : {}),
       ...(!registration && b.salesCategoryIds?.length ? {salesCategoryIds:b.salesCategoryIds} : {}),
       ...(!registration && b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
@@ -1923,6 +1927,7 @@ async function save() {
             :sales-categories="options('practiceSalesCategory')"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
             :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')" :sales-units="salesUnitOptions"
+            :payee-roles="componentSourceRoles(c.periodBenefit.orderRecipientRole)"
             :pools="practicePoolOptions" :create-pool="createPracticePool" :member-choices="classMemberChoices(c)"
             :duties="options('organizationDuty')"/>
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"

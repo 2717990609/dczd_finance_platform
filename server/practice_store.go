@@ -361,7 +361,11 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 		}
 		history.liveCategories = companyClassifications
 	}
-	companyRecipients, err := loadPracticeCompanyRecipients(ctx, tx, companyOffers, orders, companyClassifications)
+	var orderCompanyMembers []practiceEnrollment
+	if practiceBenefitPaysSalesCompany(rule) {
+		orderCompanyMembers = members
+	}
+	companyRecipients, err := loadPracticeCompanyRecipients(ctx, tx, companyOffers, orders, companyClassifications, orderCompanyMembers)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}

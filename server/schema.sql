@@ -664,6 +664,8 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('practicePeriodRecipient','person','人员',10,'{}'),
  ('practicePeriodRecipient','unit','组织',20,'{}'),
  ('practicePeriodRecipient','pool','资金池',30,'{}'),
+ ('practicePeriodRecipient','order_person','订单上的人员',40,'{}'),
+ ('practicePeriodRecipient','sales_company','销售所属公司',50,'{}'),
  ('practicePeriodSourceRole','DIRECT_REFERRER','推荐销售',10,'{}'),
  ('practicePeriodSourceRole','LOCK_SALES_USER','锁定销售',20,'{}'),
  ('orderAttributionRole','DIRECT_REFERRER','直接推荐人',10,'{}'),
@@ -1159,14 +1161,14 @@ ALTER TABLE calculation_draft_lines
 DO $$
 BEGIN
  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass
-   AND conname='draft_line_rule_and_recipient_check' AND strpos(pg_get_constraintdef(oid),'component_type = ''sales''')>0) THEN
+   AND conname='draft_line_rule_and_recipient_check' AND strpos(pg_get_constraintdef(oid),'''referral''')>0) THEN
   ALTER TABLE calculation_draft_lines DROP CONSTRAINT IF EXISTS draft_line_rule_and_recipient_check;
   ALTER TABLE calculation_draft_lines ADD CONSTRAINT draft_line_rule_and_recipient_check CHECK (
    (catalog_rule_id IS NULL AND rule_id IS NOT NULL AND identity_id IS NOT NULL AND person_id IS NOT NULL
      AND beneficiary_unit_id IS NULL AND allocation_owner_id IS NULL AND practice_pool_id IS NULL)
    OR
    (catalog_rule_id IS NULL AND rule_id IS NOT NULL AND identity_id IS NULL AND practice_enrollment_id IS NOT NULL
-     AND (starts_with(component_type,'period:') OR (component_type='sales' AND person_id IS NOT NULL))
+     AND (starts_with(component_type,'period:') OR (component_type IN ('sales','referral') AND person_id IS NOT NULL))
      AND ((person_id IS NOT NULL) <> (beneficiary_unit_id IS NOT NULL))
      AND ((practice_pool_id IS NULL AND allocation_owner_id IS NULL)
       OR (practice_pool_id IS NOT NULL AND allocation_owner_id IS NOT NULL AND beneficiary_unit_id IS NOT NULL)))

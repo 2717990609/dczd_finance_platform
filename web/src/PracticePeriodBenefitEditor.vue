@@ -8,10 +8,11 @@ import { hasPracticePaymentScope } from './rule-component-form'
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array, salesCategories:Array,
   registrationCompanies:Array, registrationLoading:Boolean, registrationError:String,
-  recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
+  recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array, payeeRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
   memberChoices:Array, duties:Array,
 })
 const config = computed(() => props.component.periodBenefit)
+const personalRecipient = computed(() => ['person','order_person'].includes(config.value.recipient))
 const registration = computed(() => config.value.registrationScope)
 const registrationOption = [{value:'registration',label:'签到报名归属'}]
 const scopeMode = computed(() => registration.value ? 'registration' : config.value.ownSales ? 'own' :
@@ -46,7 +47,7 @@ const calculationMethods = computed(() => [
 
 <template>
   <RuleArrangementFields class="period-arrangement" :name="config.label" :name-id="field('name')"
-    :duty-id="config.recipient==='person' ? field('duty') : undefined" :duties="duties" v-model:duty="config.recipientDuty"
+    :duty-id="personalRecipient ? field('duty') : undefined" :duties="duties" v-model:duty="config.recipientDuty"
     :order-type-id="'rule-member-'+index" :order-types="memberChoices" v-model:order-type="component.classMember"
     @update:name="config.label=$event; config.labelIsCustom=true">
     <a-form-item label="收款对象" :html-for="field('recipient')" required>
@@ -57,6 +58,10 @@ const calculationMethods = computed(() => [
     </a-form-item>
     <a-form-item v-if="config.recipient==='person'" label="收款人员" :html-for="field('person')" required>
       <a-select :id="field('person')" v-model:value="config.personId" :options="people" show-search :filter-option="byName"/>
+    </a-form-item>
+    <a-form-item v-if="config.recipient==='order_person'" label="从订单取收款人" :html-for="field('payee-role')" required>
+      <a-select :id="field('payee-role')" v-model:value="config.orderRecipientRole" :options="payeeRoles"
+        show-search :filter-option="byName" placeholder="选择订单角色"/>
     </a-form-item>
     <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
       :pools="pools" :people="people" :units="units" :create-pool="createPool"/>

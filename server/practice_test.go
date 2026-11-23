@@ -18,18 +18,27 @@ import (
 func TestPracticeNamedRecommendationPayee(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
-	product, err := s.createProduct(ctx, createProductInput{Code: "PRACTICE_REFERRAL_NAME", Name: "推荐计提样本", PeriodMode: "class"})
-	if err != nil {
-		t.Fatal(err)
+	id := func(result any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.(map[string]int64)["id"]
 	}
-	recipient, err := s.createPerson(ctx, createPersonInput{Name: "指定收款人"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	person := recipient.(map[string]int64)["id"]
+	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_REFERRAL_NAME", Name: "推荐计提样本", PeriodMode: "class"}))
+	person := id(s.createPerson(ctx, createPersonInput{Name: "指定收款人"}))
+	seller := id(s.createPerson(ctx, createPersonInput{Name: "订单上的推荐人"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: "reference"}))
+	const rosterKey = "PRACTICE:1:1:61"
+	period := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "推荐验收", Ordinal: 61,
+		StartsOn: "2026-08-08", EndsOn: "2026-08-08", SourcePeriodKey: rosterKey}))
+	refundMonth := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "退款账期", SettlementMonth: "2026-09"}))
 	part := component{Type: "referral", Mode: "rate", ClassMember: "new", SourceRole: "DIRECT_REFERRER", Value: 1000,
 		ArrangementLabel: "渠道推荐服务", SalesPersonID: person, RecipientDuty: "PRACTICE_RESOURCE_RECOMMENDATION"}
-	input := publishRuleInput{ProductID: product.(map[string]int64)["id"], Label: "推荐规则", Components: []component{part}}
+	input := publishRuleInput{ProductID: product, PeriodID: &period, Label: "推荐规则", Components: []component{part,
+		{Type: "manager", Mode: "period_rate", Value: 100000, PeriodBenefit: &practicePeriodBenefit{Label: "订单人员提成", OrderRecipientRole: "DIRECT_REFERRER"}},
+		{Type: "manager", Mode: "period_rate", Value: 50000, PeriodBenefit: &practicePeriodBenefit{Label: "所属公司提成", SalesCompanyRecipient: true}},
+	}}
 	input.Components[0].RecipientDuty = "UNREGISTERED_DUTY"
 	if _, err := s.publishRule(ctx, input); !errors.Is(err, invalid) {
 		t.Fatalf("expected publication to reject an unregistered duty: %v", err)
@@ -45,15 +54,70 @@ func TestPracticeNamedRecommendationPayee(t *testing.T) {
 	if saved[0].ArrangementLabel != part.ArrangementLabel || saved[0].RecipientDuty != part.RecipientDuty {
 		t.Fatalf("rule must persist the configured label and duty: %+v", saved[0])
 	}
-	amount := int64(10000)
-	payment := paymentInput{ID: 1, Fact: sourceFact{Source: "DCZD", OrderID: "1", PaymentID: "1", AmountMinor: &amount, ReferrerID: "seller"}}
-	member := practiceEnrollment{ID: 1, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"1"}}
-	identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{PersonID: person + 1}}}
-	draft, err := calculatePracticeDraft([]practiceEnrollment{member}, paymentRule{ID: 1, Components: saved},
-		map[string][]paymentInput{"1": {payment}}, identities, nil, practiceTierHistory{}, nil, practiceDraftRuntime{})
-	if err != nil || len(draft.Issues) != 0 || len(draft.Lines) != 1 || draft.Total != 1000 ||
-		draft.Lines[0].PersonID != person || draft.Lines[0].practiceArrangementLabel != part.ArrangementLabel {
-		t.Fatalf("configured recommendation must use the named recipient and label: %+v %v", draft, err)
+	const company = "41000000-0000-4000-8000-000000000211"
+	at := time.Date(2026, 8, 8, 9, 0, 0, 0, shanghai)
+	paidAt := at.Add(-time.Hour)
+	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: seller, Source: "DCZD", ExternalID: "10", ValidFrom: paidAt.Format(time.RFC3339)}))
+	deposit, balance := int64(4000), int64(6000)
+	paid := func(order string, amount *int64) sourceFact {
+		return sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: "reference", Kind: "ORDER_PAID", Version: "1",
+			OrderID: order, PaymentID: order, RecordKey: "payment:" + order, ReferrerID: "10", SalesCompanyID: "partner",
+			OccurredAt: paidAt, UpdatedAt: paidAt, AmountMinor: amount}
+	}
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `INSERT INTO organization_units(id,name,kind,status) VALUES($1,'样本公司','COMPANY','ACTIVE')`, company); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
+			VALUES('DCZD','partner',$1,$2)`, company, paidAt); err != nil {
+			return err
+		}
+		if _, err := storePracticeRoster(ctx, tx, practiceRoster{Key: rosterKey, Hash: "reference", SourceVersion: 1,
+			StartsAt: at, ConfirmedAt: at.Add(time.Hour), Enrollments: []practiceEnrollment{{SourceEnrollmentID: "1", ParticipantID: "1",
+				MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"1", "2"}, SignedAt: at, ContentHash: "aa"}}}); err != nil {
+			return err
+		}
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{paid("1", &deposit), paid("2", &balance)})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	draft, err := s.calculateCurrentDraft(ctx, period, 0)
+	if err != nil || draft.IssueCount != 0 || draft.Total != 2500 || draft.LineCount != 6 {
+		t.Fatalf("all selected recipients should earn their separate shares: %+v %v", draft, err)
+	}
+	var recipients string
+	if err := s.db.QueryRow(ctx, `SELECT string_agg(coalesce(person_id::text,beneficiary_unit_id::text),',' ORDER BY component_type)
+	 FROM calculation_draft_lines WHERE period_id=$1 AND base_minor=4000`, period).Scan(&recipients); err != nil ||
+		recipients != fmt.Sprintf("%d,%s,%d", seller, company, person) {
+		t.Fatalf("wrong recipients for the original deposit: %s %v", recipients, err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, draft.Version); err != nil {
+		t.Fatal(err)
+	}
+	// End the source company link. Refunds still use the recipient frozen with the deposit.
+	refundAt := time.Date(2026, 9, 5, 9, 0, 0, 0, shanghai)
+	if _, err := s.db.Exec(ctx, `UPDATE organization_company_sources SET valid_to=$1 WHERE source_company_id='partner'`, refundAt); err != nil {
+		t.Fatal(err)
+	}
+	refundAmount := int64(2000)
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCZD", Domain: "PRACTICE", SourceKey: "reference", Kind: "REFUND_SUCCEEDED", Version: "1",
+			OrderID: "1", RefundID: "1", RecordKey: "refund:1", OccurredAt: refundAt, UpdatedAt: refundAt, AmountMinor: &refundAmount,
+			RefundsPayment: []sourcePaymentReference{{OrderID: "1", RecordID: "1"}}}})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	refund, err := s.calculateCurrentDraft(ctx, refundMonth, 0)
+	if err != nil || refund.IssueCount != 0 || refund.Total != -500 {
+		t.Fatalf("the refund should debit 200, 200 and 100 against the original three recipients: %+v %v", refund, err)
+	}
+	var deductions string
+	if err := s.db.QueryRow(ctx, `SELECT string_agg(coalesce(l.person_id::text,l.beneficiary_unit_id::text)||':'||r.amount_minor,',' ORDER BY l.component_type)
+	 FROM calculation_draft_refunds r JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1`, refundMonth).Scan(&deductions); err != nil ||
+		deductions != fmt.Sprintf("%d:-200,%s:-100,%d:-200", seller, company, person) {
+		t.Fatalf("refund must refer to the original recipients and shares: %s %v", deductions, err)
 	}
 }
 

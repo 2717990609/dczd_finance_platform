@@ -134,24 +134,26 @@ func (s workspace) practiceRecipientNames(ctx context.Context, people []int64, u
 }
 
 type practicePeriodBenefit struct {
-	Label             string                     `json:"label"`
-	LabelIsCustom     bool                       `json:"labelIsCustom,omitempty"`
-	PersonID          int64                      `json:"personId,omitempty"`
-	RecipientDuty     string                     `json:"recipientDuty,omitempty"`
-	OwnSales          bool                       `json:"ownSales,omitempty"`
-	UnitID            string                     `json:"unitId,omitempty"`
-	SalesCategoryIDs  []string                   `json:"salesCategoryIds,omitempty"`
-	SalesCompanies    []string                   `json:"salesCompanies,omitempty"`
-	SalesPeople       []int64                    `json:"salesPeople,omitempty"`
-	SalesUnits        []string                   `json:"salesUnits,omitempty"`
-	RegistrationScope *practiceRegistrationScope `json:"registrationScope,omitempty"`
-	AppointmentUnitID string                     `json:"appointmentUnitId,omitempty"`
-	AppointmentKind   string                     `json:"appointmentKind,omitempty"`
-	FixedMinor        *int64                     `json:"fixedMinor,omitempty"`
-	FixedPerClass     bool                       `json:"fixedPerClass,omitempty"`
-	TierOnWholeClass  bool                       `json:"tierOnWholeClass,omitempty"`
-	Tiers             []practicePeriodRate       `json:"tiers,omitempty"`
-	Pool              *practicePoolTarget        `json:"pool,omitempty"`
+	Label                 string                     `json:"label"`
+	LabelIsCustom         bool                       `json:"labelIsCustom,omitempty"`
+	PersonID              int64                      `json:"personId,omitempty"`
+	RecipientDuty         string                     `json:"recipientDuty,omitempty"`
+	OrderRecipientRole    string                     `json:"orderRecipientRole,omitempty"`
+	SalesCompanyRecipient bool                       `json:"salesCompanyRecipient,omitempty"`
+	OwnSales              bool                       `json:"ownSales,omitempty"`
+	UnitID                string                     `json:"unitId,omitempty"`
+	SalesCategoryIDs      []string                   `json:"salesCategoryIds,omitempty"`
+	SalesCompanies        []string                   `json:"salesCompanies,omitempty"`
+	SalesPeople           []int64                    `json:"salesPeople,omitempty"`
+	SalesUnits            []string                   `json:"salesUnits,omitempty"`
+	RegistrationScope     *practiceRegistrationScope `json:"registrationScope,omitempty"`
+	AppointmentUnitID     string                     `json:"appointmentUnitId,omitempty"`
+	AppointmentKind       string                     `json:"appointmentKind,omitempty"`
+	FixedMinor            *int64                     `json:"fixedMinor,omitempty"`
+	FixedPerClass         bool                       `json:"fixedPerClass,omitempty"`
+	TierOnWholeClass      bool                       `json:"tierOnWholeClass,omitempty"`
+	Tiers                 []practicePeriodRate       `json:"tiers,omitempty"`
+	Pool                  *practicePoolTarget        `json:"pool,omitempty"`
 }
 
 type practicePeriodRate struct {
@@ -167,6 +169,12 @@ func (b practicePeriodBenefit) hasSalesScope() bool {
 func practiceBenefitUsesCategories(rule paymentRule) bool {
 	return slices.ContainsFunc(rule.Components, func(part component) bool {
 		return part.PeriodBenefit != nil && len(part.PeriodBenefit.SalesCategoryIDs) != 0
+	})
+}
+
+func practiceBenefitPaysSalesCompany(rule paymentRule) bool {
+	return slices.ContainsFunc(rule.Components, func(part component) bool {
+		return part.PeriodBenefit != nil && part.PeriodBenefit.SalesCompanyRecipient
 	})
 }
 
@@ -186,6 +194,15 @@ func validPracticePeriodBenefit(c component) bool {
 	if b.UnitID != "" {
 		recipients++
 	}
+	if b.OrderRecipientRole != "" {
+		if !validSourceRole(b.OrderRecipientRole) {
+			return false
+		}
+		recipients++
+	}
+	if b.SalesCompanyRecipient {
+		recipients++
+	}
 	if b.Pool != nil {
 		if !b.Pool.valid() {
 			return false
@@ -196,7 +213,7 @@ func validPracticePeriodBenefit(c component) bool {
 		(b.AppointmentUnitID == "") != (b.AppointmentKind == "") || b.AppointmentUnitID != "" && b.PersonID == 0 ||
 		b.usesSalesPerson() && !validSourceRole(c.SourceRole) ||
 		b.OwnSales && (b.PersonID == 0 || len(b.SalesCompanies)+len(b.SalesCategoryIDs)+len(b.SalesPeople)+len(b.SalesUnits) != 0) ||
-		b.RecipientDuty != "" && (b.PersonID == 0 || !validSourceRole(b.RecipientDuty)) {
+		b.RecipientDuty != "" && (b.PersonID == 0 && b.OrderRecipientRole == "" || !validSourceRole(b.RecipientDuty)) {
 		return false
 	}
 	for _, unit := range []string{b.UnitID, b.AppointmentUnitID} {
@@ -298,6 +315,8 @@ func loadPracticeAppointments(ctx context.Context, tx pgx.Tx, rule paymentRule) 
 type practiceBenefitShare struct {
 	purchase practicePurchase
 	payments []paymentInput
+	people   []identityAssignment
+	company  pgtype.UUID
 	fixed    [2]int64
 	key      string
 	net      int64
@@ -388,7 +407,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		if !memberMatches {
 			continue
 		}
-		if p.noReferrer && (b.RegistrationScope != nil || b.hasSalesScope()) {
+		if p.noReferrer && (b.RegistrationScope != nil || b.hasSalesScope() || b.OrderRecipientRole != "" || b.SalesCompanyRecipient) {
 			continue
 		}
 		if scope := b.RegistrationScope; scope != nil {
@@ -426,6 +445,16 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		}
 		if len(share.payments) == 0 {
 			continue
+		}
+		var recipientIssue string
+		if b.OrderRecipientRole != "" {
+			share.people, recipientIssue = practiceBeneficiaries(share.payments, b.OrderRecipientRole, identities)
+		}
+		if b.SalesCompanyRecipient {
+			share.company, recipientIssue = practiceSalesCompanyUnit(share.payments, runtime.companyRecipients)
+		}
+		if recipientIssue != "" {
+			return nil, 0, draftIssue{Code: recipientIssue, EnrollmentID: p.member.ID}, nil
 		}
 		share.key = share.payments[0].Fact.OrderID
 		if len(payments) == 2 {
@@ -652,6 +681,9 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 			base := draftLine{PersonID: b.PersonID, RuleID: rule.ID, EnrollmentID: share.purchase.member.ID,
 				Component: key, BeneficiaryUnit: unit, reportUnit: reportUnit, PracticePool: b.Pool,
 				practiceProportionalRefund: b.FixedMinor == nil && len(b.Tiers) == 0, practiceTierRefund: len(b.Tiers) != 0}
+			if share.company.Valid {
+				base.BeneficiaryUnit = &share.company
+			}
 			amounts := share.fixed
 			if b.FixedMinor == nil {
 				amounts = share.purchase.benefitShares(share.payments, share.amount, !runtime.legacyGrossRateShares)
@@ -669,6 +701,9 @@ func appendPracticePeriodShare(draft *paymentDraft, line draftLine, share practi
 			continue
 		}
 		line.FactID, line.Base, line.Amount = payment.ID, net, amounts[i]
+		if share.people != nil {
+			line.PersonID, line.IdentityID = share.people[i].PersonID, share.people[i].ID
+		}
 		line.PracticeTierReference = line.practiceTierRefund && line.Amount == 0
 		draft.Lines = append(draft.Lines, line)
 	}
