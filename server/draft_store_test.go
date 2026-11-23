@@ -124,8 +124,18 @@ func TestDraftStoreReusesUnchangedVersionAndReplacesOnlyChangedOrdinaryLines(t *
 		}
 		return id
 	}
+	performanceRowVersion := func(order string) string {
+		t.Helper()
+		var version string
+		if err := service.db.QueryRow(ctx, `SELECT a.xmin::text FROM calculation_draft_performance a
+		 JOIN source_order_versions v ON v.id=a.source_version_id WHERE a.period_id=$1 AND v.order_id=$2`, period, order).Scan(&version); err != nil {
+			t.Fatal(err)
+		}
+		return version
+	}
 	check(1, 299)
 	first, second := idFor("O1"), idFor("O2")
+	firstPerformance, secondPerformance := performanceRowVersion("O1"), performanceRowVersion("O2")
 	fact.OrderNo = "display-only change"
 	insert("2", 990, at.Add(time.Minute))
 	check(1, 299)
@@ -134,6 +144,9 @@ func TestDraftStoreReusesUnchangedVersionAndReplacesOnlyChangedOrdinaryLines(t *
 	updated := idFor("O1")
 	if updated == first || idFor("O2") != second {
 		t.Fatal("an order revision should replace its line and keep the unrelated line")
+	}
+	if performanceRowVersion("O1") == firstPerformance || performanceRowVersion("O2") != secondPerformance {
+		t.Fatal("an order revision should replace its performance posting and keep the unrelated posting")
 	}
 	var count int
 	var amount int64
@@ -169,6 +182,9 @@ func TestDraftStoreReusesUnchangedVersionAndReplacesOnlyChangedOrdinaryLines(t *
 	check(3, 263)
 	if idFor("O1") == updated || idFor("O2") == second {
 		t.Fatal("both orders should use the new rule and receive new detail rows")
+	}
+	if performanceRowVersion("O2") != secondPerformance {
+		t.Fatal("a rate-only rule change should not rewrite identical performance")
 	}
 	appliedResponse = httptest.NewRecorder()
 	service.getDraftRule(appliedResponse, appliedRequest)

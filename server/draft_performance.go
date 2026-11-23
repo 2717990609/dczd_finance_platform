@@ -134,31 +134,54 @@ func recordPerformanceRefund(draft *paymentDraft, event refundInput, origins []p
 	return ""
 }
 
-func storeDraftPerformance(ctx context.Context, tx pgx.Tx, periodID int64, postings []draftPerformance) error {
-	if _, err := tx.Exec(ctx, "DELETE FROM calculation_draft_performance WHERE period_id=$1", periodID); err != nil {
+const draftPerformanceTable = "calculation_draft_performance"
+const draftPerformanceInput = "draft_performance_input"
+
+var draftPerformanceFields = strings.Fields(`period_id source_version_id payment_version_id person_id company_id
+ department_id completion_version_id prior_refund_version_id group_id`)
+
+func storeDraftPerformance(ctx context.Context, tx pgx.Tx, summary *draftSummary, postings []draftPerformance) error {
+	if len(postings) == 0 {
+		_, err := tx.Exec(ctx, "DELETE FROM "+draftPerformanceTable+" WHERE period_id=$1", summary.PeriodID)
 		return err
 	}
-	if len(postings) == 0 {
-		return nil
+	if summary.Version == 1 {
+		return copyDraftPerformance(ctx, tx, pgx.Identifier{draftPerformanceTable}, summary.PeriodID, postings)
 	}
-	_, err := tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_performance"},
-		[]string{"period_id", "source_version_id", "payment_version_id", "person_id", "company_id", "department_id", "completion_version_id", "prior_refund_version_id", "group_id"},
+
+	columns := strings.Join(draftPerformanceFields, ",")
+	stage := "pg_temp." + draftPerformanceInput
+	if _, err := tx.Exec(ctx, `CREATE TEMP TABLE `+draftPerformanceInput+` ON COMMIT DROP AS
+	 SELECT `+columns+` FROM `+draftPerformanceTable+` WITH NO DATA`); err != nil {
+		return err
+	}
+	if err := copyDraftPerformance(ctx, tx, pgx.Identifier{"pg_temp", draftPerformanceInput}, summary.PeriodID, postings); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `CREATE UNIQUE INDEX ON `+stage+`(source_version_id)`); err != nil {
+		return err
+	}
+	key := `stored.period_id=incoming.period_id AND stored.source_version_id=incoming.source_version_id`
+	stored := "stored." + strings.Join(draftPerformanceFields, ",stored.")
+	incoming := "incoming." + strings.Join(draftPerformanceFields, ",incoming.")
+	if _, err := tx.Exec(ctx, `DELETE FROM `+draftPerformanceTable+` stored WHERE stored.period_id=$1
+	 AND NOT EXISTS(SELECT 1 FROM `+stage+` incoming WHERE `+key+`
+	  AND ROW(`+stored+`) IS NOT DISTINCT FROM ROW(`+incoming+`))`, summary.PeriodID); err != nil {
+		return err
+	}
+	_, err := tx.Exec(ctx, `INSERT INTO `+draftPerformanceTable+` (`+columns+`)
+	 SELECT `+incoming+` FROM `+stage+` incoming
+	 WHERE NOT EXISTS(SELECT 1 FROM `+draftPerformanceTable+` stored WHERE `+key+`)`)
+	return err
+}
+
+func copyDraftPerformance(ctx context.Context, tx pgx.Tx, table pgx.Identifier, periodID int64, postings []draftPerformance) error {
+	_, err := tx.CopyFrom(ctx, table, draftPerformanceFields,
 		pgx.CopyFromSlice(len(postings), func(i int) ([]any, error) {
 			p := postings[i]
-			var payment, person, completion, priorRefund *int64
-			if p.PaymentVersionID != 0 {
-				payment = &p.PaymentVersionID
-			}
-			if p.PersonID != 0 {
-				person = &p.PersonID
-			}
-			if p.CompletionVersionID != 0 {
-				completion = &p.CompletionVersionID
-			}
-			if p.PriorRefundVersionID != 0 {
-				priorRefund = &p.PriorRefundVersionID
-			}
-			return []any{periodID, p.SourceVersionID, payment, person, p.Organization.Company, p.Organization.Department, completion, priorRefund, p.Organization.groupID()}, nil
+			return []any{periodID, p.SourceVersionID, optionalDraftID(p.PaymentVersionID), optionalDraftID(p.PersonID),
+				p.Organization.Company, p.Organization.Department, optionalDraftID(p.CompletionVersionID),
+				optionalDraftID(p.PriorRefundVersionID), p.Organization.groupID()}, nil
 		}))
 	return err
 }

@@ -479,7 +479,7 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	if summary.Total, err = addMinor(summary.Accrued+summary.RefundTotal, summary.CorrectionTotal); err != nil {
 		return err
 	}
-	if err = storeDraftPerformance(ctx, tx, summary.PeriodID, result.Performance); err != nil {
+	if err = storeDraftPerformance(ctx, tx, summary, result.Performance); err != nil {
 		return err
 	}
 	if summary.AggregatePackage != nil {
