@@ -353,7 +353,11 @@ const amountModes = row => {
       ? {...option,disabled:true,label:'阶梯（当前使用复训分账）'} : option)
 }
 function updateAmountMode(row, mode) {
-  if (row.mode !== mode && (mode === 'rate' || mode === 'fixed')) row.amount = undefined
+  if (row.mode !== mode && (mode === 'rate' || mode === 'fixed')) {
+    row.amount = undefined
+    if (classRule.value && mode==='fixed' && ['sales','referral'].includes(row.type) &&
+        options('refundPolicy').some(option=>option.value==='proportional')) row.refundPolicy ||= 'proportional'
+  }
   row.mode = mode
   if (mode==='period_rate' && !row.periodBenefit) {
     row.periodBenefit = {label:'',pool:{},tiers:[{from:0}],method:'rate'}

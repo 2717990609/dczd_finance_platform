@@ -169,7 +169,12 @@ func (p practicePurchase) netAmount(payment paymentInput) int64 {
 	return *payment.Fact.AmountMinor
 }
 
-func (p practicePurchase) fixedTierPaymentShares(sale practicePurchase, part component,
+func (part component) usesFixedPersonalPaymentShares() bool {
+	return (part.Type == "sales" || part.Type == "referral") && part.Mode == "fixed" &&
+		part.RefundPolicy == "proportional" && len(part.retrainSplits()) == 0
+}
+
+func (p practicePurchase) fixedPaymentShares(sale practicePurchase, part component,
 	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) ([2]int64, string) {
 	original := sale.payments
 	if len(p.originalPayments) != 0 {

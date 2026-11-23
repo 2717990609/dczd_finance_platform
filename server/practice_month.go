@@ -111,6 +111,9 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 					return part
 				}
 			case "fixed":
+				if part.usesFixedPersonalPaymentShares() {
+					return part
+				}
 				if part.Value == original.Accrued {
 					if part.RefundPolicy != "" {
 						return part

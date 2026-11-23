@@ -63,6 +63,7 @@ type practiceDraftRuntime struct {
 	legacyBenefitSalesAgreement bool
 	legacyBenefitAttribution    bool
 	legacyFixedTierRefund       bool
+	legacyFixedPersonalRefund   bool
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -349,10 +350,12 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		}
 		var amount int64
 		var fixedShares [2]int64
-		fixedByPayment := isTiered && part.Mode == "fixed" && !runtime.legacyFixedTierRefund &&
+		proportionalFixed := !isTiered && part.usesFixedPersonalPaymentShares()
+		fixedTierByPayment := isTiered && part.Mode == "fixed" && !runtime.legacyFixedTierRefund &&
 			(part.RefundPolicy == "" || part.RefundPolicy == "proportional")
+		fixedByPayment := proportionalFixed && !runtime.legacyFixedPersonalRefund || fixedTierByPayment
 		if fixedByPayment {
-			fixedShares, issue = purchase.fixedTierPaymentShares(sale, part, identities, runtime)
+			fixedShares, issue = purchase.fixedPaymentShares(sale, part, identities, runtime)
 			amount = fixedShares[0] + fixedShares[1]
 		} else {
 			amount, issue = sale.commissionAmount(part)
@@ -383,7 +386,7 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 			draft.Lines = append(draft.Lines, draftLine{
 				FactID: payment.ID, RuleID: rule.ID, EnrollmentID: member.ID, PersonID: payee.PersonID,
 				IdentityID: payee.ID, Component: part.Type, Base: net, Amount: paymentAmount,
-				practiceProportionalRefund: !isTiered && (part.Mode == "rate" || part.SaleScope != nil && part.RefundPolicy == "proportional"),
+				practiceProportionalRefund: !isTiered && (part.Mode == "rate" || proportionalFixed),
 				practiceTierRefund:         isTiered,
 				practiceArrangementLabel:   part.arrangementLabel(),
 			})

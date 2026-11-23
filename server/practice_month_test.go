@@ -297,14 +297,21 @@ func TestPracticeRefundUsesFinancialMonthAndKeepsFrozenClass(t *testing.T) {
 }
 
 func TestPracticeRefundUsesFrozenSinglePaymentTerms(t *testing.T) {
+	sale := component{Type: "sales", Mode: "fixed", ClassMember: "new", Value: 2000, RefundPolicy: "proportional"}
+	line := refundObligation{Base: 8000, Accrued: 1600, ComponentType: "sales"}
+	policy := practiceMonthlyRefundPolicy([]component{sale}, line, 1, 3, "", "")
+	got, err := refundDelta(policy, line.Base, line.Accrued, 2000, 0)
+	if err != nil || got != -400 {
+		t.Fatalf("a single payment partially refunded before class settlement must use its booked amount: %d %v", got, err)
+	}
 	rate := int64(400000)
 	company := component{Type: "company_sales", Mode: "company_sales", ClassMember: "new",
 		CompanySales: &practiceCompanySales{Categories: []practiceCompanyCategory{
 			{Label: "类别", Companies: []string{"company"}, practiceCompanyValue: practiceCompanyValue{Mode: "rate", Value: rate}},
 		}}}
-	line := refundObligation{Base: 10000, Accrued: 4000, ComponentType: "period:company_sales:0"}
-	policy := practiceMonthlyRefundPolicy([]component{company}, line, 1, 3, "company", "")
-	got, err := refundDelta(policy, line.Base, line.Accrued, 2500, 0)
+	line = refundObligation{Base: 10000, Accrued: 4000, ComponentType: "period:company_sales:0"}
+	policy = practiceMonthlyRefundPolicy([]component{company}, line, 1, 3, "company", "")
+	got, err = refundDelta(policy, line.Base, line.Accrued, 2500, 0)
 	if err != nil || got != -1000 {
 		t.Fatalf("expected exact company deduction, got %d %v", got, err)
 	}

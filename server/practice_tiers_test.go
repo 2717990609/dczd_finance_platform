@@ -57,6 +57,19 @@ func TestPracticeCumulativeAmountUsesSelectedEnrollmentTypes(t *testing.T) {
 }
 
 func TestPracticeFixedTierRefundKeepsOriginalPaymentShares(t *testing.T) {
+	checkPracticeFixedRefundPaymentShares(t, component{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
+		Tiers: &practiceSalesTiers{CountFromOrdinal: 1, Count: []practiceTier{{Mode: "fixed", Value: 2000}}}}, false, 1200)
+}
+
+func TestPracticeFixedSalesRefundKeepsOriginalPaymentShares(t *testing.T) {
+	part := component{Type: "sales", Mode: "fixed", ClassMember: "new", Value: 2001,
+		SourceRole: "DIRECT_REFERRER", RefundPolicy: "proportional"}
+	t.Run("new settlement", func(t *testing.T) { checkPracticeFixedRefundPaymentShares(t, part, false, 1200) })
+	t.Run("legacy settlement", func(t *testing.T) { checkPracticeFixedRefundPaymentShares(t, part, true, 1201) })
+}
+
+func checkPracticeFixedRefundPaymentShares(t *testing.T, part component, legacy bool, tailShare int64) {
+	t.Helper()
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
 	id := func(value any, err error) int64 {
@@ -103,22 +116,29 @@ func TestPracticeFixedTierRefundKeepsOriginalPaymentShares(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &period, Label: "新报固定阶梯", Components: []component{
-		{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
-			Tiers: &practiceSalesTiers{CountFromOrdinal: 1, Count: []practiceTier{{Mode: "fixed", Value: 2000}}}},
-	}}); err != nil {
+	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &period, Label: "新报固定提成", Components: []component{part}}); err != nil {
 		t.Fatal(err)
 	}
 	class, err := s.calculateCurrentDraft(ctx, period, 0)
 	if err != nil || class.IssueCount != 0 || class.Total != 1600 || class.LineCount != 2 {
 		t.Fatalf("a 50%% refund of a 40-yuan deposit must leave 4 and 12 yuan in the two original shares: %+v %v", class, err)
 	}
+	if legacy {
+		if _, err := s.db.Exec(ctx, `UPDATE calculation_drafts SET practice_replay_inputs=jsonb_set(practice_replay_inputs,'{version}',to_jsonb($2::int)),
+		 total_minor=total_minor+1 WHERE period_id=$1`, period, practiceReplayFixedTierPaymentShares); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, `UPDATE calculation_draft_lines l SET amount_minor=$2 FROM source_order_versions v
+		 WHERE l.period_id=$1 AND v.id=l.source_version_id AND v.order_id='2'`, period, tailShare); err != nil {
+			t.Fatal(err)
+		}
+	}
 	verifyShares := func() {
 		t.Helper()
 		var amounts []int64
 		err := s.db.QueryRow(ctx, `SELECT array_agg(l.amount_minor ORDER BY v.order_id) FROM calculation_draft_lines l
 		 JOIN source_order_versions v ON v.id=l.source_version_id WHERE l.period_id=$1`, period).Scan(&amounts)
-		if err != nil || len(amounts) != 2 || amounts[0] != 400 || amounts[1] != 1200 {
+		if err != nil || len(amounts) != 2 || amounts[0] != 400 || amounts[1] != tailShare {
 			t.Fatalf("the split allocation must remain tied to the original payment legs: %v %v", amounts, err)
 		}
 	}
@@ -143,7 +163,7 @@ func TestPracticeFixedTierRefundKeepsOriginalPaymentShares(t *testing.T) {
 	}
 	post(refund("2", "13", 3000, september.Add(time.Hour)))
 	booked, err = s.calculateCurrentDraft(ctx, refundPeriod, 0)
-	if err != nil || booked.IssueCount != 0 || booked.RefundTotal != -1000 || booked.RefundCount != 2 {
+	if err != nil || booked.IssueCount != 0 || booked.RefundTotal != -400-(tailShare+1)/2 || booked.RefundCount != 2 {
 		t.Fatalf("halving the balance must reverse 6 additional yuan: %+v %v", booked, err)
 	}
 	verifyShares()
