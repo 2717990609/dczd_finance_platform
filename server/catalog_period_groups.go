@@ -39,16 +39,18 @@ type catalogAggregateRule struct {
 type catalogAggregateDutyKey struct{ Unit, Role string }
 
 type catalogAggregateDuty struct {
-	ID   int64
-	Name string
+	ID       int64
+	Name     string
+	UnitName string
 	vipInterval
 }
 
 type catalogAggregateDirectory struct {
-	Organizations []vipBenefitOrganization
-	Duties        map[catalogAggregateDutyKey][]catalogAggregateDuty
-	InactiveUnits map[string]bool
-	People        map[int64]string
+	Organizations     []vipBenefitOrganization
+	Duties            map[catalogAggregateDutyKey][]catalogAggregateDuty
+	AppointmentDuties map[catalogAggregateDutyKey][]catalogAggregateDuty
+	InactiveUnits     map[string]bool
+	People            map[int64]string
 }
 
 type catalogPeriodGroupReport struct {
@@ -98,18 +100,20 @@ func (g catalogPeriodGroup) quote() catalogPeriodQuote {
 }
 
 type catalogPeriodGroupTarget struct {
-	ItemKey     string `json:"itemKey"`
-	Name        string `json:"name"`
-	OwnerName   string `json:"ownerName,omitempty"`
-	MemberCount int    `json:"memberCount,omitempty"`
+	ItemKey          string `json:"itemKey"`
+	Name             string `json:"name"`
+	OwnerName        string `json:"ownerName,omitempty"`
+	MemberCount      int    `json:"memberCount,omitempty"`
+	OrganizationName string `json:"organizationName,omitempty"`
 }
 
 type catalogGroupTargetKey struct {
-	Item, Unit string
-	Owner      int64
-	Members    []int64
-	Person     int64 `json:"person,omitempty"`
-	PoolID     int64 `json:"poolId,omitempty"`
+	Item, Unit      string
+	Owner           int64
+	Members         []int64
+	Person          int64  `json:"person,omitempty"`
+	PoolID          int64  `json:"poolId,omitempty"`
+	AppointmentUnit string `json:"appointmentUnit,omitempty"`
 }
 
 // Posting keys preserve the applied version. Carry uses the same scope and
@@ -123,6 +127,8 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 		Categories        []string `json:",omitempty"`
 		SKUs              []string `json:",omitempty"`
 		MembershipNewOnly bool     `json:",omitempty"`
+		AppointmentLevel  string   `json:",omitempty"`
+		AppointmentRole   string   `json:",omitempty"`
 	}
 	scopes := make([]orderScope, 0, len(targets))
 	scenarios := definition.Scenarios
@@ -131,7 +137,7 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 			if item.ItemKey == target.Item {
 				scope := orderScope{Item: item.ItemKey, Units: slices.Sorted(slices.Values(item.CommissionUnits)),
 					OwnSales: item.OwnSales, Appointment: item.Appointment, Categories: slices.Sorted(slices.Values(item.ScopeCategories)),
-					MembershipNewOnly: item.MembershipNewOnly}
+					MembershipNewOnly: item.MembershipNewOnly, AppointmentLevel: item.AppointmentLevel, AppointmentRole: item.AppointmentRole}
 				if len(item.ScenarioCodes) > 0 {
 					if len(targets) == 1 {
 						scenarios = item.ScenarioCodes
@@ -245,6 +251,21 @@ func (d catalogAggregateDirectory) groupTarget(item catalogPeriodItem, at time.T
 	return target, key, ""
 }
 
+func (d catalogAggregateDirectory) groupAppointmentTarget(item catalogPeriodItem, unit string, at time.Time) (catalogPeriodGroupTarget, catalogGroupTargetKey, string) {
+	target := catalogPeriodGroupTarget{ItemKey: item.ItemKey}
+	key := catalogGroupTargetKey{Item: item.ItemKey, AppointmentUnit: unit}
+	for _, duty := range d.AppointmentDuties[catalogAggregateDutyKey{unit, item.AppointmentRole}] {
+		if !duty.contains(at) {
+			continue
+		}
+		if key.Person != 0 && key.Person != duty.ID {
+			return target, key, "BENEFIT_APPOINTMENT_CONFLICT"
+		}
+		key.Person, target.Name, target.OrganizationName = duty.ID, duty.Name, duty.UnitName
+	}
+	return target, key, ""
+}
+
 type catalogAggregateMatch struct {
 	rule     *catalogAggregateRule
 	issue    string
@@ -337,7 +358,18 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 						issue = "MEMBERSHIP_TYPE_PENDING"
 					}
 					if issue == "" {
-						target, key, issue = directory.groupTarget(item, at)
+						if item.AppointmentLevel == "" {
+							target, key, issue = directory.groupTarget(item, at)
+						} else {
+							unit, lookupIssue := performance.appointmentOrganization(event, item.AppointmentLevel)
+							issue = lookupIssue
+							if issue == "" {
+								target, key, issue = directory.groupAppointmentTarget(item, unit, at)
+								if issue == "" && key.Person == 0 {
+									continue
+								}
+							}
+						}
 					}
 					if issue != "" {
 						problemKey := issueKey{rule.ID, item.ItemKey, issue}
@@ -470,11 +502,13 @@ const catalogAggregateDutySQL = `SELECT a.scope_key,a.role,person.id,person.name
 
 func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catalogAggregateRule, from, through time.Time) (catalogAggregateDirectory, error) {
 	directory := catalogAggregateDirectory{Duties: map[catalogAggregateDutyKey][]catalogAggregateDuty{}, InactiveUnits: make(map[string]bool)}
-	var parties, units, directUnits, targetUnits, roles []string
+	var parties, units, directUnits, targetUnits, roles, appointmentRoles []string
 	var people []int64
 	for _, version := range rules {
 		for _, item := range version.Definition.Items {
-			if item.PersonID > 0 {
+			if item.AppointmentLevel != "" {
+				appointmentRoles = append(appointmentRoles, item.AppointmentRole)
+			} else if item.PersonID > 0 {
 				people = append(people, item.PersonID)
 			} else if unit, direct := catalogPeriodUnit(item.OrganizationKey); direct {
 				directUnits = append(directUnits, unit)
@@ -491,6 +525,25 @@ func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catal
 					people = append(people, item.OwnerPersonID)
 				}
 			}
+		}
+	}
+	if len(appointmentRoles) > 0 {
+		rows, err := tx.Query(ctx, `SELECT a.scope_key,a.role,p.id,p.name,coalesce(u.name,''),a.valid_from,a.valid_to
+		 FROM catalog_current_sales_appointments a JOIN people p ON p.id=a.person_id
+		 LEFT JOIN organization_units u ON u.id::text=a.scope_key
+		 WHERE a.source='DCAI' AND a.scope='ORGANIZATION_UNIT' AND a.role=ANY($1)
+		  AND a.valid_from<$3 AND (a.valid_to IS NULL OR a.valid_to>$2)`, appointmentRoles, from, through)
+		if err != nil {
+			return directory, err
+		}
+		directory.AppointmentDuties = make(map[catalogAggregateDutyKey][]catalogAggregateDuty)
+		var key catalogAggregateDutyKey
+		var duty catalogAggregateDuty
+		if _, err := pgx.ForEachRow(rows, []any{&key.Unit, &key.Role, &duty.ID, &duty.Name, &duty.UnitName, &duty.From, &duty.To}, func() error {
+			directory.AppointmentDuties[key] = append(directory.AppointmentDuties[key], duty)
+			return nil
+		}); err != nil {
+			return directory, err
 		}
 	}
 	if len(people) > 0 {

@@ -40,6 +40,8 @@ type catalogPeriodItem struct {
 	OwnSales          bool                    `json:"ownSales,omitempty"`
 	RecipientDuty     string                  `json:"recipientDuty,omitempty"`
 	Appointment       *catalogPerformanceDuty `json:"appointment,omitempty"`
+	AppointmentLevel  string                  `json:"appointmentLevel,omitempty"`
+	AppointmentRole   string                  `json:"appointmentRole,omitempty"`
 	unit              string
 }
 
@@ -131,7 +133,8 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			}
 		}
 		if action.Item == "" || items[action.Item] || action.Label == "" ||
-			(action.Mode != "PARTY" && action.Mode != "TEAM_POOL") || action.Leader != nil || !validUniqueScopeIDs(action.CommissionUnits) ||
+			(action.Mode != "PARTY" && action.Mode != "TEAM_POOL" && action.Mode != vipOrganizationAppointmentMode) ||
+			action.Leader != nil || !validUniqueScopeIDs(action.CommissionUnits) ||
 			!validUniqueScopeIDs(action.ScopeCategories) ||
 			!action.validTarget() {
 			return result, errCatalogRateUnavailable
@@ -180,12 +183,18 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		if action.Mode == "TEAM_POOL" {
 			memberRole = catalogAggregateMemberRole(action.Role, action.EligibilityRole)
 		}
-		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: action.targetKind(),
+		targetKind := action.targetKind()
+		appointmentRole := ""
+		if action.AppointmentLevel != "" {
+			targetKind, appointmentRole = "appointment", action.Role
+		}
+		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: targetKind,
 			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OwnerPersonID: ownerID, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
 			PoolID:     catalogPoolID(action.PoolCode),
 			MemberRole: memberRole, FixedMinor: action.Fixed, ScenarioCodes: action.ScenarioCodes, MembershipNewOnly: action.MembershipNewOnly,
 			unit: unit, OwnSales: action.OwnSales,
-			CommissionUnits: action.CommissionUnits, ScopeCategories: action.ScopeCategories, RecipientDuty: action.RecipientDuty, Appointment: action.Appointment})
+			CommissionUnits: action.CommissionUnits, ScopeCategories: action.ScopeCategories, RecipientDuty: action.RecipientDuty,
+			Appointment: action.Appointment, AppointmentLevel: action.AppointmentLevel, AppointmentRole: appointmentRole})
 	}
 	return result, nil
 }

@@ -178,7 +178,7 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 		definition := event.selection.rule.Definition
 		scope := definition.Performance
 		needsSales := scope.active() && len(scope.UnitIDs) != 0 || slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool {
-			return item.OwnSales || len(item.CommissionUnits) != 0
+			return item.OwnSales || len(item.CommissionUnits) != 0 || item.AppointmentLevel != ""
 		})
 		needsCategories := slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool { return len(item.ScopeCategories) != 0 })
 		if needsSales || needsCategories {
@@ -389,17 +389,10 @@ func (d catalogPerformanceDirectory) matchSales(event catalogActivityEvent, unit
 	if issue := d.claimIssues[event.PaymentID]; issue != "" {
 		return catalogPerformanceDecision{issue: issue}
 	}
-	resolve := func(links [2]map[string][]vipLink, key string) (string, bool) {
-		value, conflict := resolveVIPLink(links[0][key], key, event.PaidAt)
-		if value == "" && !conflict {
-			value, conflict = resolveVIPLink(links[1][key], key, event.PaidAt)
-		}
-		return value, conflict
-	}
 	claim := d.claims[event.PaymentID]
 	var company pgtype.UUID
 	if len(units) != 0 && claim.Company != "" {
-		key, conflict := resolve(d.companies, claim.Company)
+		key, conflict := catalogPerformanceLinkAt(d.companies, claim.Company, event.PaidAt)
 		if conflict {
 			return catalogPerformanceDecision{issue: "SALES_COMPANY_CONFLICT"}
 		}
@@ -416,7 +409,7 @@ func (d catalogPerformanceDirectory) matchSales(event catalogActivityEvent, unit
 			return catalogPerformanceDecision{excluded: true}
 		}
 	}
-	key, conflict := resolve(d.users, claim.User)
+	key, conflict := catalogPerformanceLinkAt(d.users, claim.User, event.PaidAt)
 	if conflict {
 		return catalogPerformanceDecision{issue: "SALES_PERSON_CONFLICT"}
 	}
@@ -439,4 +432,45 @@ func (d catalogPerformanceDirectory) matchSales(event catalogActivityEvent, unit
 		return catalogPerformanceDecision{issue: "SALES_ORGANIZATION_SCOPE_CONFLICT"}
 	}
 	return catalogPerformanceDecision{excluded: !matches}
+}
+
+func catalogPerformanceLinkAt(links [2]map[string][]vipLink, key string, at time.Time) (string, bool) {
+	value, conflict := resolveVIPLink(links[0][key], key, at)
+	if value == "" && !conflict {
+		return resolveVIPLink(links[1][key], key, at)
+	}
+	return value, conflict
+}
+
+func (d catalogPerformanceDirectory) appointmentOrganization(event catalogActivityEvent, level string) (string, string) {
+	if issue := d.claimIssues[event.PaymentID]; issue != "" {
+		return "", issue
+	}
+	claim, found := d.claims[event.PaymentID]
+	if !found {
+		return "", "SALES_SOURCE_MISSING"
+	}
+	var company pgtype.UUID
+	if claim.Company != "" {
+		key, conflict := catalogPerformanceLinkAt(d.companies, claim.Company, event.PaidAt)
+		if conflict {
+			return "", "SALES_COMPANY_CONFLICT"
+		}
+		if company.Scan(key) != nil || !company.Valid {
+			return "", "AGGREGATE_SALES_ORGANIZATION_MISSING"
+		}
+		if level == "COMPANY" {
+			return company.String(), ""
+		}
+	}
+	key, conflict := catalogPerformanceLinkAt(d.users, claim.User, event.PaidAt)
+	if conflict {
+		return "", "SALES_PERSON_CONFLICT"
+	}
+	person, err := strconv.ParseInt(key, 10, 64)
+	if err != nil || person <= 0 {
+		return "", "SALES_PERSON_MISSING"
+	}
+	org := d.organization.resolveAssignments(person, event.PaidAt, company, !company.Valid)
+	return vipSalesAppointmentOrganization(vipSalesRequest{commissionSalesOrg: &org}, level)
 }

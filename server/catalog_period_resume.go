@@ -101,6 +101,9 @@ func checkCatalogPeriodResumeTargets(ctx context.Context, tx pgx.Tx, period cata
 		return err
 	}
 	for _, item := range period.Items {
+		if item.AppointmentLevel != "" {
+			continue
+		}
 		_, target, issue := directory.groupTarget(item, at)
 		if issue == "" && target.Unit != "" {
 			var status string

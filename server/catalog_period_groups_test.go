@@ -6,6 +6,96 @@ import (
 	"time"
 )
 
+func TestCatalogPeriodPublishesSalesOrganizationAppointmentTarget(t *testing.T) {
+	base := json.RawMessage(twoTierPeriodRule)
+	var edit catalogPeriodComponentEdit
+	if err := json.Unmarshal([]byte(`{"label":"在任负责人","targetKind":"appointment","appointmentLevel":"COMPANY",
+	 "appointmentRole":"TEAM_LEAD","tiers":[{"rate_bps":1000}]}`), &edit); err != nil {
+		t.Fatal(err)
+	}
+	body, err := editCatalogPeriodComponents(base, base, []catalogPeriodComponentEdit{edit},
+		catalogStructureOptions{Roles: []catalogStructureOption{{Value: "TEAM_LEAD", Organization: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, err := parseCatalogPeriodRule(body)
+	if err != nil || definition.Items[0].TargetKind != "appointment" {
+		t.Fatalf("appointment did not survive publication: %+v / %v", definition, err)
+	}
+	open := time.Date(2026, 10, 1, 0, 0, 0, 0, shanghai)
+	transfer := open.AddDate(0, 0, 12)
+	unit := "10000000-0000-4000-8000-000000000701"
+	versions := []catalogAggregateRule{{ID: "rule", Version: 1, From: open, Definition: definition}}
+	events := []catalogActivityEvent{{EventID: 1, PaymentID: 1, PaidAt: transfer.Add(-time.Second), Scenario: "FIRST", Amount: 10000},
+		{EventID: 2, PaymentID: 2, PaidAt: transfer, Scenario: "FIRST", Amount: 20000}}
+	performance := catalogPerformanceDirectory{claims: map[int64]vipClaim{1: {Company: "company"}, 2: {Company: "company"}},
+		companies: [2]map[string][]vipLink{{"company": {{Key: "company", Value: unit, vipInterval: vipInterval{From: open}}}}}}
+	directory := catalogAggregateDirectory{AppointmentDuties: map[catalogAggregateDutyKey][]catalogAggregateDuty{
+		{unit, "TEAM_LEAD"}: {{ID: 10, Name: "前任", vipInterval: vipInterval{From: open, To: &transfer}},
+			{ID: 20, Name: "接任", vipInterval: vipInterval{From: transfer}}},
+	}}
+	report, err := groupCatalogPeriodEvents(events, versions, directory, nil, performance, open.AddDate(0, 1, 0))
+	if err != nil || len(report.Groups) != 2 || len(report.Issues) != 0 {
+		t.Fatalf("split at appointment transfer: %+v / %v", report, err)
+	}
+	frozen := map[catalogFrozenGroupReference]catalogPeriodGroup{}
+	var original catalogFrozenGroupReference
+	for _, g := range report.Groups {
+		target := g.posting.Targets[0]
+		if target.AppointmentUnit != unit || target.Unit != "" || g.quote().Total != g.Receipts/10 {
+			t.Fatalf("appointment payout must stay personal, scoped to its original organization: %+v", g)
+		}
+		if target.Person == 10 {
+			original = catalogFrozenGroupReference{PeriodID: 7, Key: g.ID}
+			g.Receipts, g.Payments = 0, 0
+			frozen[original] = g
+		}
+	}
+	refund := events[0]
+	refund.EventID, refund.Amount, refund.Refund = 3, 1000, true
+	refund.frozenPeriod, refund.frozenGroups = 7, []catalogFrozenGroupReference{original}
+	report, err = groupCatalogPeriodEvents([]catalogActivityEvent{refund}, versions, catalogAggregateDirectory{}, frozen, catalogPerformanceDirectory{}, open.AddDate(0, 2, 0))
+	if err != nil || len(report.Groups) != 1 || report.Groups[0].posting.Targets[0].Person != 10 || report.Groups[0].Refunds != 1000 {
+		t.Fatalf("refund must use the original confirmed recipient: %+v / %v", report, err)
+	}
+	fixed := int64(100000)
+	edit.Tiers, edit.FixedMinor = nil, &fixed
+	body, err = editCatalogPeriodComponents(base, base, []catalogPeriodComponentEdit{edit},
+		catalogStructureOptions{Roles: []catalogStructureOption{{Value: "TEAM_LEAD", Organization: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	versions[0].Definition, err = parseCatalogPeriodRule(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other := "10000000-0000-4000-8000-000000000702"
+	fullyRefunded := "10000000-0000-4000-8000-000000000703"
+	for _, organization := range []string{other, fullyRefunded} {
+		performance.companies[0][organization] = []vipLink{{Key: organization, Value: organization}}
+		directory.AppointmentDuties[catalogAggregateDutyKey{organization, "TEAM_LEAD"}] = []catalogAggregateDuty{{ID: 20, Name: "接任"}}
+	}
+	performance.claims[3], performance.claims[4] = vipClaim{Company: other}, vipClaim{Company: fullyRefunded}
+	events = append(events, catalogActivityEvent{EventID: 3, PaymentID: 3, PaidAt: transfer, Scenario: "FIRST", Amount: 10000},
+		catalogActivityEvent{EventID: 4, PaymentID: 4, PaidAt: transfer, Scenario: "FIRST", Amount: 3000},
+		catalogActivityEvent{EventID: 5, PaymentID: 4, PaidAt: transfer, Scenario: "FIRST", Amount: 3000, Refund: true})
+	report, err = groupCatalogPeriodEvents(events, versions, directory, nil, performance, open.AddDate(0, 1, 0))
+	if err != nil || len(report.Groups) != 3 || len(report.Issues) != 0 {
+		t.Fatalf("fixed organization groups: %+v / %v", report, err)
+	}
+	totals := map[string]int64{}
+	for _, g := range report.Groups {
+		target := g.posting.Targets[0]
+		if target.Person != 20 {
+			t.Fatalf("fixed award belongs to the period-end holder: %+v", target)
+		}
+		totals[target.AppointmentUnit] = g.quote().Total
+	}
+	if totals[unit] != 100000 || totals[other] != 100000 || totals[fullyRefunded] != 0 {
+		t.Fatalf("each eligible organization receives one fixed award per period: %v", totals)
+	}
+}
+
 func TestCatalogPeriodItemsFilterSKUAndKeepOriginalRefundScope(t *testing.T) {
 	month := time.Date(2026, 10, 1, 0, 0, 0, 0, shanghai)
 	base := json.RawMessage(twoTierPeriodRule)

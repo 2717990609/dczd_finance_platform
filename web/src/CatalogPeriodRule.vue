@@ -3,10 +3,11 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
+import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
 import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogOrderScope, emptyCatalogOrderScope } from './rule-component-form'
+import { catalogAppointmentLevels, catalogOrderScope, emptyCatalogOrderScope } from './rule-component-form'
 
 const props = defineProps({rule:Object, applied:Object, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
 const emit = defineEmits(['close','published','open-draft','copy','open-version','resumed'])
@@ -63,6 +64,10 @@ const activityIssueLabels = {
   SALES_ORGANIZATION_SCOPE_CONFLICT:'付款时的销售归属存在重叠，无法确认是否计入所选范围',
 }
 const groupingIssueLabels = {
+  BENEFIT_APPOINTMENT_CONFLICT:'付款时存在多位在任人员',
+  COMMISSION_SALES_ORGANIZATION_MISSING:'付款时的销售组织待核',
+  AGGREGATE_SALES_ORGANIZATION_MISSING:'付款时的销售组织待核',
+  SALES_ORGANIZATION_SCOPE_CONFLICT:'付款时的销售组织归属有冲突',
   ORIGINAL_RULE_MISSING:'原付款时没有适用规则',
   ORIGINAL_RULE_CONFLICT:'原付款时有多个适用版本',
   BENEFIT_ORG_MISSING:'缺少收款组织映射',
@@ -148,6 +153,7 @@ function editableRows(items) {
       scenarioCodes:item.scenarioCodes || [],membershipNewOnly:Boolean(item.membershipNewOnly),
       salesScope:catalogOrderScope(item),recipientDuty:item.recipientDuty,
       appointment:item.appointment ? {...item.appointment} : undefined,
+      appointmentLevel:item.appointmentLevel,appointmentRole:item.appointmentRole,
       method:item.fixedMinor!=null ? 'fixed' : tiers.length===1 ? 'rate' : 'tiers',
       fixedAmount:item.fixedMinor==null ? undefined : item.fixedMinor/100,
       uniformRate:tiers.length===1 ? tiers[0].rate_bps/100 : undefined,
@@ -158,6 +164,7 @@ function componentTarget(item) {
   return {itemKey:item.itemKey,label:item.label.trim(),targetKind:item.targetKind,organizationKey:item.poolId ? undefined : item.organizationKey,
     personId:item.personId,poolId:item.poolId,poolName:item.poolId ? undefined : item.poolName,
     ownerRole:item.ownerRole,ownerPersonId:item.ownerPersonId,
+    appointmentLevel:item.appointmentLevel,appointmentRole:item.appointmentRole,
     memberRole:item.memberRole,scenarioCodes:[...item.scenarioCodes].sort(),membershipNewOnly:Boolean(item.membershipNewOnly),
     ...orderScopeBody(item)}
 }
@@ -192,16 +199,20 @@ function setMethod(item, method) {
   item.method = method
 }
 function methodSummary(item) {
-  if (item.method==='fixed') return item.fixedAmount==null ? methodLabels.fixed : props.formatMoney(Math.round(item.fixedAmount*100))+' / 期'
+  if (item.method==='fixed') return item.fixedAmount==null ? methodLabels.fixed :
+    props.formatMoney(Math.round(item.fixedAmount*100))+(item.targetKind==='appointment' ? ' / 组织 / 期' : ' / 期')
   if (item.method==='tiers') return item.tiers.length+' 档阶梯'
   return item.uniformRate==null ? methodLabels.rate : '统一 '+item.uniformRate+'%'
 }
-const targetTypes = [{value:'person',label:'指定个人'},{value:'company',label:'指定公司'},{value:'pool',label:'团队池'}]
-const targetLabels = {person:'个人',company:'公司',pool:'团队池'}
+const targetTypes = [{value:'person',label:'指定个人'},{value:'company',label:'指定公司'},{value:'pool',label:'团队池'},
+  {value:'appointment',label:'销售组织的在任人员'}]
+const targetLabels = {person:'个人',company:'公司',pool:'团队池',appointment:'在任人员'}
 const peopleFilters = computed(() => creating.value ? {productId:productId.value,scope:'period'} : {ruleId:props.rule?.id,scope:'period'})
 const unitOptions = computed(() => (sheet.value?.options?.organizations || [])
   .map(unit=>({value:unit.unitId,label:unit.label,kind:unit.kind})))
 function targetLabel(item) {
+  if (item.targetKind==='appointment') return [catalogAppointmentLevels.find(option=>option.value===item.appointmentLevel)?.label,
+    item.appointmentRole && props.optionLabel('catalogAppointmentRole',item.appointmentRole)].filter(Boolean).join(' · ') || '待选择岗位'
   if (item.targetKind==='person') return [item.personName || '待选择收款人',
     item.recipientDuty && props.optionLabel('organizationDuty',item.recipientDuty)].filter(Boolean).join(' · ')
   const pool = item.poolId && sheet.value.options?.teamPools?.find(pool=>pool.id===item.poolId)
@@ -238,6 +249,8 @@ function setTarget(row, target) {
   row.legacyPool = false
   row.recipientDuty = undefined
   row.appointment = undefined
+  row.appointmentLevel = undefined
+  row.appointmentRole = undefined
   if (target!=='person' && row.salesScope==='own') row.salesScope = null
 }
 function addComponent() {
@@ -297,7 +310,9 @@ function componentChanges() {
   if (missingMembership) throw new Error('请为「'+missingMembership.label+'」选择适用的会员 SKU，或关闭会员仅计新报。')
   if (!canSave.value || (!creating.value && !componentsChanged.value)) return {}
   return {components:rows.value.map(item=>{
-    if (!item.label.trim() || (item.targetKind==='person' ? !item.personId : !item.organizationKey && !item.poolId)) {
+    if (!item.label.trim() ||
+      (item.targetKind==='person' ? !item.personId : item.targetKind==='appointment'
+        ? !item.appointmentRole || !item.appointmentLevel : !item.organizationKey && !item.poolId)) {
       throw new Error('请填写收款安排名称并选择收款对象。')
     }
     if (item.targetKind==='pool' && (!(item.poolId || item.poolName?.trim()) || !(item.ownerRole || item.ownerPersonId) || !item.memberRole)) {
@@ -425,7 +440,7 @@ async function preview() {
     if (request === quoteRequest) previewing.value = false
   }
 }
-const scopedQuote = computed(() => rows.value.some(item=>item.salesScope!=null || item.appointment || item.scenarioCodes?.length || item.membershipNewOnly))
+const scopedQuote = computed(() => rows.value.some(item=>item.salesScope!=null || item.appointment || item.appointmentLevel || item.scenarioCodes?.length || item.membershipNewOnly))
 function creationInput() {
   if (!changed.value || !effectiveDate.value) throw new Error('请填写规则名称、生效日期，并选择参与场景。')
   const selectable = new Set(sheet.value.options.scenarios.map(sku=>sku.code))
@@ -563,6 +578,9 @@ async function resumeRule() {
                 <a-select id="period-benefit-org" v-model:value="item.organizationKey" :options="availableOrganizations(item)"
                   :disabled="saving" show-search option-filter-prop="label"/>
               </a-form-item>
+              <CatalogOrganizationAppointmentFields v-if="item.targetKind==='appointment'" prefix="period-benefit"
+                v-model:level="item.appointmentLevel" v-model:role="item.appointmentRole"
+                :roles="availableRoles(item.appointmentRole)" :disabled="saving"/>
               <template v-if="item.targetKind==='pool'">
                 <CatalogTeamPoolFields v-model="item.poolId" prefix="period-benefit" :pools="sheet.options?.teamPools"
                   :units="sheet.options?.salesUnits" :product-id="sheet.productId" :api="api" :disabled="saving"
@@ -585,7 +603,8 @@ async function resumeRule() {
                   <a-input-number id="period-benefit-uniform-rate" v-model:value="item.uniformRate" :min="0" :max="100"
                     :precision="2" :disabled="saving"/>
                 </a-form-item>
-                <a-form-item v-if="item.method==='fixed'" label="金额（元）" html-for="period-benefit-fixed-amount" required>
+                <a-form-item v-if="item.method==='fixed'" :label="item.targetKind==='appointment' ? '每个组织整期金额（元）' : '金额（元）'"
+                  html-for="period-benefit-fixed-amount" required>
                   <a-input-number id="period-benefit-fixed-amount" v-model:value="item.fixedAmount" :min="0" :precision="2" :disabled="saving"/>
                 </a-form-item>
               </template>
@@ -725,6 +744,7 @@ async function resumeRule() {
                         <td>
                           <div v-for="target in group.targets" :key="target.itemKey">
                             {{ target.name }}
+                            <small v-if="target.organizationName" class="order-version">{{ target.organizationName }}</small>
                             <small v-if="target.ownerName" class="order-version">{{ target.ownerName }}负责 · {{ target.memberCount }} 人可分配</small>
                           </div>
                         </td>

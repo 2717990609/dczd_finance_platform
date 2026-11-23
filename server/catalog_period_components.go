@@ -32,6 +32,8 @@ type catalogPeriodComponentEdit struct {
 	OwnSales          bool                    `json:"ownSales,omitempty"`
 	RecipientDuty     string                  `json:"recipientDuty,omitempty"`
 	Appointment       *catalogPerformanceDuty `json:"appointment,omitempty"`
+	AppointmentLevel  string                  `json:"appointmentLevel,omitempty"`
+	AppointmentRole   string                  `json:"appointmentRole,omitempty"`
 }
 
 func editCatalogPeriodComponents(original, raw json.RawMessage, edits []catalogPeriodComponentEdit, options catalogStructureOptions) (json.RawMessage, error) {
@@ -92,7 +94,8 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 		}
 		if before.TargetKind != edit.TargetKind || beforeOrg != edit.OrganizationKey || before.PersonID != edit.PersonID ||
 			before.OwnerRole != edit.OwnerRole || before.OwnerPersonID != edit.OwnerPersonID ||
-			before.MemberRole != edit.MemberRole || beforeName != edit.PoolName || before.PoolID != edit.PoolID {
+			before.MemberRole != edit.MemberRole || beforeName != edit.PoolName || before.PoolID != edit.PoolID ||
+			before.AppointmentLevel != edit.AppointmentLevel || before.AppointmentRole != edit.AppointmentRole {
 			if err := setCatalogPeriodTarget(fields, before, edit, options); err != nil {
 				return nil, err
 			}
@@ -204,11 +207,21 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 	if edit.TargetKind != "pool" && (edit.OwnerPersonID != 0 || edit.PoolID != 0) {
 		return errCatalogPeriodRecipient
 	}
-	if edit.TargetKind != "person" && (org.Value == "" && !registered || edit.PersonID != 0) {
+	if edit.TargetKind == "appointment" {
+		if !validVIPSalesOrganizationLevel(edit.AppointmentLevel) || edit.AppointmentRole == "" ||
+			edit.AppointmentRole != before.AppointmentRole && !catalogStructureOptionFor(options.Roles, edit.AppointmentRole).Organization ||
+			edit.PersonID != 0 || edit.OrganizationKey != "" || edit.PoolName != "" || edit.OwnerRole != "" || edit.MemberRole != "" {
+			return errCatalogPeriodRecipient
+		}
+	} else if edit.AppointmentLevel != "" || edit.AppointmentRole != "" ||
+		edit.TargetKind != "person" && (org.Value == "" && !registered || edit.PersonID != 0) {
 		return errCatalogPeriodRecipient
 	}
 	action := vipBenefitAction{Item: edit.ItemKey, Mode: "PARTY", Role: "COMPANY", Company: org.Value}
 	switch edit.TargetKind {
+	case "appointment":
+		action.Mode, action.Role, action.Company = vipOrganizationAppointmentMode, edit.AppointmentRole, ""
+		action.AppointmentLevel = edit.AppointmentLevel
 	case "person":
 		if edit.PersonID <= 0 || edit.OrganizationKey != "" || edit.PoolName != "" || edit.OwnerRole != "" || edit.MemberRole != "" {
 			return errCatalogPeriodRecipient
@@ -248,14 +261,15 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 		return errCatalogPeriodRecipient
 	}
 	for _, key := range []string{"designated_party_id", "company_beneficiary_party_id", "pool_party_id", "pool_organization_unit_id",
-		"pool_code", "pool_name", "allocation_owner_role", "allocation_owner_party_id", "eligibility_role"} {
+		"pool_code", "pool_name", "allocation_owner_role", "allocation_owner_party_id", "eligibility_role", "appointment_sales_org_level"} {
 		delete(fields, key)
 	}
 	values := map[string]string{"item_key": action.Item, "role": action.Role, "beneficiary_mode": action.Mode,
 		"designated_party_id":          action.Designated,
 		"company_beneficiary_party_id": action.Company, "pool_party_id": action.PoolParty, "pool_organization_unit_id": action.PoolUnit,
 		"pool_code": action.PoolCode, "pool_name": action.PoolName,
-		"allocation_owner_role": action.OwnerRole, "allocation_owner_party_id": action.OwnerParty}
+		"allocation_owner_role": action.OwnerRole, "allocation_owner_party_id": action.OwnerParty,
+		"appointment_sales_org_level": action.AppointmentLevel}
 	for key, value := range values {
 		if value != "" {
 			fields[key], _ = json.Marshal(value)
