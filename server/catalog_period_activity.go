@@ -3,7 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"time"
@@ -331,8 +335,13 @@ SELECT r.stream,` + settlementSourceStatusSQL + `,s.initial_from,s.completed_thr
 
 func (s workspace) getCatalogPeriodActivity(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var result catalogPeriodActivity
-	err := pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+	detail, err := parseCatalogTrialEventsQuery(r)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	var result any
+	err = pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		rule, err := readCatalogPeriodVersion(ctx, tx, r.URL.Query().Get("ruleId"))
 		if err != nil {
 			return err
@@ -349,9 +358,9 @@ func (s workspace) getCatalogPeriodActivity(w http.ResponseWriter, r *http.Reque
 		if err != nil {
 			return err
 		}
-		result, err = readCatalogPeriodActivity(ctx, tx, catalogPeriodActivityRequest{ProductID: rule.ProductID,
+		result, err = catalogPeriodActivityResult(ctx, tx, catalogPeriodActivityRequest{ProductID: rule.ProductID,
 			Scenarios: definition.Scenarios, Window: window, Provider: s.dcaiSourceKey(), MaxAge: s.settlementSyncMaxAge, GroupRule: &rule,
-			TrialPaused: r.URL.Query().Get("trialPaused") == "1"})
+			TrialPaused: r.URL.Query().Get("trialPaused") == "1"}, detail)
 		return err
 	})
 	respond(w, result, err)
@@ -368,8 +377,13 @@ func (s workspace) postCatalogPeriodActivity(w http.ResponseWriter, r *http.Requ
 		}
 		actor.permits = principal.permitsRule
 	}
-	submitJSON(128<<10, func(ctx context.Context, input catalogPeriodPublishInput) (catalogPeriodActivity, error) {
-		var report catalogPeriodActivity
+	detail, err := parseCatalogTrialEventsQuery(r)
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
+	submitJSON(128<<10, func(ctx context.Context, input catalogPeriodPublishInput) (any, error) {
+		var report any
 		err := pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 			var base catalogPeriodVersion
 			var body json.RawMessage
@@ -409,13 +423,94 @@ func (s workspace) postCatalogPeriodActivity(w http.ResponseWriter, r *http.Requ
 			if !bytes.Equal(body, base.raw) {
 				proposed = &catalogAggregateRule{From: at, Through: base.Through, Definition: proposal}
 			}
-			report, err = readCatalogPeriodActivity(ctx, tx, catalogPeriodActivityRequest{ProductID: base.ProductID,
+			report, err = catalogPeriodActivityResult(ctx, tx, catalogPeriodActivityRequest{ProductID: base.ProductID,
 				Scenarios: proposal.Scenarios, Window: window, Provider: s.dcaiSourceKey(), MaxAge: s.settlementSyncMaxAge,
-				GroupRule: &base, TrialPaused: true, ProposedRule: proposed})
+				GroupRule: &base, TrialPaused: true, ProposedRule: proposed}, detail)
 			return err
 		})
 		return report, err
 	})(w, r)
+}
+
+var errCatalogTrialEventsChanged = errors.New("试算分组的收退款已变化，请重新试算")
+
+type catalogTrialEventsQuery struct {
+	group, token string
+	offset       int
+}
+
+func parseCatalogTrialEventsQuery(r *http.Request) (catalogTrialEventsQuery, error) {
+	params := r.URL.Query()
+	detail := catalogTrialEventsQuery{group: params.Get("group"), token: params.Get("eventToken")}
+	if detail.group == "" && detail.token == "" {
+		return detail, nil
+	}
+	if len(detail.group) != 64 || len(detail.token) != 64 {
+		return detail, invalid
+	}
+	offset, err := reportPageOffset(params.Get("page"))
+	detail.offset = offset
+	return detail, err
+}
+
+const catalogTrialEventsSQL = `WITH related AS (
+ SELECT * FROM unnest($1::bigint[],$2::bigint[],$3::bigint[]) AS e(source_version_id,payment_version_id,completion_version_id)
+)` + catalogAggregateEventsPageSQL
+
+func catalogPeriodActivityResult(ctx context.Context, tx pgx.Tx, input catalogPeriodActivityRequest, detail catalogTrialEventsQuery) (any, error) {
+	report, err := readCatalogPeriodActivity(ctx, tx, input)
+	if err != nil {
+		return nil, err
+	}
+	if report.Grouping == nil || len(report.Grouping.events) == 0 {
+		if detail.group != "" {
+			return nil, errCatalogTrialEventsChanged
+		}
+		return report, nil
+	}
+	refs := make(map[int64]catalogAggregateEventReference, len(report.Grouping.events))
+	for _, event := range report.Grouping.events {
+		refs[event.EventID] = event
+	}
+	for i := range report.Grouping.Groups {
+		group := &report.Grouping.Groups[i]
+		ids := group.posting.Events
+		if len(ids) == 0 || detail.group != "" && detail.group != group.ID {
+			continue
+		}
+		slices.Sort(ids)
+		group.EventToken = catalogTrialEventToken(ids, refs)
+		if detail.group == "" {
+			continue
+		}
+		if group.EventToken != detail.token {
+			return nil, errCatalogTrialEventsChanged
+		}
+		payments, completions := make([]int64, len(ids)), make([]int64, len(ids))
+		for n, id := range ids {
+			payments[n], completions[n] = refs[id].PaymentID, refs[id].CompletionVersionID
+		}
+		var page json.RawMessage
+		err := tx.QueryRow(ctx, catalogTrialEventsSQL, ids, payments, completions, detail.offset).Scan(&page)
+		return page, err
+	}
+	if detail.group != "" {
+		return nil, errCatalogTrialEventsChanged
+	}
+	return report, nil
+}
+
+func catalogTrialEventToken(ids []int64, refs map[int64]catalogAggregateEventReference) string {
+	hash := sha256.New()
+	var version [24]byte
+	for _, id := range ids {
+		ref := refs[id]
+		binary.LittleEndian.PutUint64(version[0:8], uint64(id))
+		binary.LittleEndian.PutUint64(version[8:16], uint64(ref.PaymentID))
+		binary.LittleEndian.PutUint64(version[16:24], uint64(ref.CompletionVersionID))
+		hash.Write(version[:])
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
 
 func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodActivityRequest) (catalogPeriodActivity, error) {
@@ -501,7 +596,7 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 			RecognizedAt: recognizedAt, OccurredAt: occurredAt, Scenario: code, MembershipType: membershipType,
 			Amount: amount, OriginalAmount: originalAmount, PriorBookedRefunds: priorBookedRefunds,
 			Refund: kind != "ORDER_PAID", frozenPeriod: frozenPeriod, originClosed: originClosed}
-		if in.DraftPeriodID != 0 {
+		if groupPayments {
 			event.EventID = eventID
 		}
 		if groupPayments && paymentID != 0 && frozenPeriod == 0 && in.GroupRule.ResumeFrom != nil && paidAt.Before(*in.GroupRule.ResumeFrom) {

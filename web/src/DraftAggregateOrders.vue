@@ -1,7 +1,7 @@
 <script setup>
 import { ref, watch } from 'vue'
 
-const props = defineProps({periodId:Number,version:Number,group:String,api:Function,formatMoney:Function,formatTime:Function})
+const props = defineProps({periodId:Number,version:Number,group:String,api:Function,loadPage:Function,formatMoney:Function,formatTime:Function})
 const emit = defineEmits(['show-order','close'])
 const page = ref(1)
 const result = ref({items:[],total:0})
@@ -14,8 +14,8 @@ watch([()=>props.group,page], async ()=>{
   loading.value = true
   error.value = ''
   try {
-    const query = new URLSearchParams({periodId:props.periodId,version:props.version,group:props.group,page:page.value})
-    const rows = await props.api('/catalog-aggregate-drafts/events?'+query)
+    const rows = props.loadPage ? await props.loadPage(page.value) : await props.api('/catalog-aggregate-drafts/events?'+
+      new URLSearchParams({periodId:props.periodId,version:props.version,group:props.group,page:page.value}))
     if (request===sequence) result.value = rows
   } catch (failure) {
     if (request===sequence) error.value = failure.message
@@ -30,7 +30,7 @@ watch([()=>props.group,page], async ()=>{
     <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon/>
     <a-table v-else :data-source="result.items" row-key="sourceVersionId" :loading="loading" size="small"
       :pagination="{current:page,pageSize:25,total:result.total,showSizeChanger:false,hideOnSinglePage:true,onChange:value=>page=value}"
-      :columns="[{title:'订单',key:'order'},{title:'交易',key:'kind'},{title:'发生时间',key:'time'},{title:'金额',key:'amount'}]">
+      :columns="[{title:'原订单',key:'order'},{title:'交易',key:'kind'},{title:'发生时间',key:'time'},{title:'金额',key:'amount'}]">
       <template #bodyCell="{column,record}">
         <template v-if="column.key==='order'">
           <button class="order-link" type="button" @click="emit('show-order',record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>

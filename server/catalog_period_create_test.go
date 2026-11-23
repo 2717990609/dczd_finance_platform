@@ -114,6 +114,40 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		actualReport.Grouping.Groups[0].quote().Total+actualReport.Grouping.Groups[1].quote().Total != 8000 {
 		t.Fatalf("new definition should group both real inputs without publishing: %d %s %v", actual.Code, actual.Body.String(), err)
 	}
+	var activityResponse struct {
+		Grouping struct {
+			Groups []struct{ ID, EventToken string }
+		}
+	}
+	if err := json.Unmarshal(actual.Body.Bytes(), &activityResponse); err != nil ||
+		len(activityResponse.Grouping.Groups) != 2 || len(activityResponse.Grouping.Groups[0].EventToken) != 64 {
+		t.Fatalf("each proposed group with accepted payments needs an order drilldown: %d %s %v", actual.Code, actual.Body, err)
+	}
+	firstGroup := activityResponse.Grouping.Groups[0]
+	detailPath := "/api/v1/catalog-period-activity?group=" + firstGroup.ID + "&eventToken=" + firstGroup.EventToken
+	detail := submit(0, detailPath, s.postCatalogPeriodActivity, input)
+	var eventPage struct {
+		Total int
+		Items []struct {
+			OrderID, Kind string
+			AmountMinor   int64
+		}
+	}
+	if err := json.Unmarshal(detail.Body.Bytes(), &eventPage); err != nil || detail.Code != 200 || eventPage.Total != 2 ||
+		len(eventPage.Items) != 2 || eventPage.Items[0].OrderID != "101" || eventPage.Items[1].OrderID != "102" ||
+		eventPage.Items[0].Kind != "ORDER_PAID" || eventPage.Items[0].AmountMinor+eventPage.Items[1].AmountMinor != 40000 {
+		t.Fatalf("drilldown must use the same unsaved rule's group across requests: %d %s %v", detail.Code, detail.Body, err)
+	}
+	stale := submit(0, "/api/v1/catalog-period-activity?group="+firstGroup.ID+"&eventToken="+strings.Repeat("0", 64),
+		s.postCatalogPeriodActivity, input)
+	if stale.Code != 409 {
+		t.Fatalf("an outdated list of trial events must be rejected: %d %s", stale.Code, stale.Body)
+	}
+	nextPage := submit(0, detailPath+"&page=2", s.postCatalogPeriodActivity, input)
+	if err := json.Unmarshal(nextPage.Body.Bytes(), &eventPage); err != nil || nextPage.Code != 200 ||
+		eventPage.Total != 2 || len(eventPage.Items) != 0 {
+		t.Fatalf("drilldown must page the event list without changing its count: %d %s %v", nextPage.Code, nextPage.Body, err)
+	}
 	var writes int
 	if err := db.QueryRow(ctx, `SELECT (SELECT count(*) FROM product_rule_packages WHERE product_id=980)
 		+(SELECT count(*) FROM periods WHERE product_id=980)`).Scan(&writes); err != nil || writes != 0 {
@@ -568,6 +602,27 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 			laterDraft.(draftSummary).PeriodID, draft.PeriodID, owner).Scan(&refunds, &carry, &closedAward, &sourceRefunds); err != nil ||
 			refunds != 60000 || carry != -60000 || closedAward != 5000 || sourceRefunds != 2 {
 			t.Fatalf("each refund is recorded once and applied to both arrangements while the original award stays booked: %d %d %d %d %v", refunds, carry, closedAward, sourceRefunds, err)
+		}
+		activityURL := "/api/v1/catalog-period-activity?ruleId=" + publishedFixed.ID + "&month=2026-11"
+		refundReport := httptest.NewRecorder()
+		s.getCatalogPeriodActivity(refundReport, httptest.NewRequest(http.MethodGet, activityURL, nil))
+		var current catalogPeriodActivity
+		if err := json.Unmarshal(refundReport.Body.Bytes(), &current); err != nil || refundReport.Code != 200 || current.Grouping == nil ||
+			len(current.Grouping.Groups) != 2 {
+			t.Fatalf("read refund activity: %d %s %v", refundReport.Code, refundReport.Body, err)
+		}
+		for _, group := range current.Grouping.Groups {
+			details := httptest.NewRecorder()
+			s.getCatalogPeriodActivity(details, httptest.NewRequest(http.MethodGet, activityURL+"&group="+group.ID+"&eventToken="+group.EventToken, nil))
+			if err := json.Unmarshal(details.Body.Bytes(), &eventPage); err != nil || details.Code != 200 || eventPage.Total != 2 ||
+				len(eventPage.Items) != 2 || eventPage.Items[0].AmountMinor+eventPage.Items[1].AmountMinor != group.Refunds {
+				t.Fatalf("each group's detail must reconcile to its refunds: %d %s %v", details.Code, details.Body, err)
+			}
+			for _, event := range eventPage.Items {
+				if event.Kind != "REFUND_SUCCEEDED" || event.OrderID != "102" {
+					t.Fatalf("refund must show the original payment's order: %+v", event)
+				}
+			}
 		}
 	})
 

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -89,6 +90,7 @@ type catalogPeriodGroup struct {
 	Payments        int                        `json:"paymentCount"`
 	FixedOnly       bool                       `json:"fixedOnly,omitempty"`
 	FixedPerOrder   bool                       `json:"fixedPerOrder,omitempty"`
+	EventToken      string                     `json:"eventToken,omitempty"`
 	BeforeCarry     catalogPeriodQuote         `json:"beforeCarry"`
 	CarryIn         int64                      `json:"carryInMinor,omitempty"`
 	AfterCarry      *catalogPeriodQuote        `json:"afterCarry,omitempty"`
@@ -406,10 +408,15 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 						applied.issues = append(applied.issues, problem)
 						continue
 					}
+					groupTarget := key
+					if rule.ID == "" {
+						// New items receive random keys during every preview rebuild.
+						groupTarget.Item = strconv.Itoa(index)
+					}
 					raw, err := json.Marshal(struct {
 						Rule   string
 						Target catalogGroupTargetKey
-					}{rule.ID, key})
+					}{rule.ID, groupTarget})
 					if err != nil {
 						return report, err
 					}

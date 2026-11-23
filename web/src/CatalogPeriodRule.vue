@@ -6,11 +6,12 @@ import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
 import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
+import DraftAggregateOrders from './DraftAggregateOrders.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import { catalogAppointmentLevels, catalogOrderScope, emptyCatalogOrderScope } from './rule-component-form'
 
 const props = defineProps({rule:Object, applied:Object, focusItemKey:String, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
-const emit = defineEmits(['close','published','open-draft','copy','open-version','resumed'])
+const emit = defineEmits(['close','published','open-draft','copy','open-version','resumed','show-order'])
 const creating = computed(() => Boolean(props.rule?.create))
 const copiedFrom = computed(() => props.rule?.copiedFrom)
 const productId = ref(props.rule?.productId || (props.products?.length===1 ? props.products[0].value : undefined))
@@ -37,6 +38,7 @@ const activityMonth = ref(props.rule?.reviewMonth || new Date(Date.now()+8*36000
 const reviewingActivity = ref(false)
 const activity = ref()
 const activityMode = ref()
+const activityGroup = ref()
 const showsPriorCarry = computed(() => activity.value?.grouping?.groups.some(group=>group.carryInMinor<0))
 const otherGroupingIssues = computed(() => {
   const totals = {...activity.value?.grouping?.issues}
@@ -390,6 +392,7 @@ watch([rows,amounts,scenarioCodes,creationCycle,effectiveDate,ruleName,quoteItem
 function clearActivity() {
   ++activityRequest
   activity.value = undefined
+  activityGroup.value = undefined
   activityMode.value = undefined
   activityError.value = ''
   reviewingActivity.value = false
@@ -404,22 +407,35 @@ async function readActivity(mode = 'published') {
   reviewingActivity.value = true
   activityError.value = ''
   activity.value = undefined
+  activityGroup.value = undefined
   activityMode.value = mode
   try {
-    let result
-    if (mode==='edits') {
-      result = await props.api('/catalog-period-activity',{method:'POST',body:JSON.stringify(versionInput())})
-    } else {
-      const query = new URLSearchParams({ruleId:props.rule.id,month:activityMonth.value})
-      if (mode==='paused') query.set('trialPaused','1')
-      result = await props.api('/catalog-period-activity?'+query)
-    }
+    const result = await fetchActivity(mode)
     if (request === activityRequest) activity.value = result
   } catch (err) {
     if (request === activityRequest) activityError.value = err.message
   } finally {
     if (request === activityRequest) reviewingActivity.value = false
   }
+}
+
+function fetchActivity(mode, params = {}) {
+  const query = new URLSearchParams(params)
+  if (mode==='edits') {
+    return props.api('/catalog-period-activity'+(query.size ? '?'+query : ''),{method:'POST',body:JSON.stringify(versionInput())})
+  }
+  query.set('ruleId',props.rule.id)
+  query.set('month',activityMonth.value)
+  if (mode==='paused') query.set('trialPaused','1')
+  return props.api('/catalog-period-activity?'+query)
+}
+function loadActivityEvents(page) {
+  const {id, eventToken} = activityGroup.value
+  return fetchActivity(activityMode.value,{group:id,eventToken,page})
+}
+function showActivityOrder(versionId) {
+  activityGroup.value = undefined
+  emit('show-order',versionId)
 }
 
 async function openDraft() {
@@ -757,7 +773,7 @@ async function resumeRule() {
                   <table>
                     <thead><tr><th>规则版本</th><th>收款对象</th><th>安排实收</th><th>安排退款</th><th>计提净额</th>
                       <th v-if="showsPriorCarry">上期结转退款</th>
-                      <th>{{ activity.grouping.priorUnsettled ? '结转前试算' : '分润试算' }}</th></tr></thead>
+                      <th>{{ activity.grouping.priorUnsettled ? '结转前试算' : '分润试算' }}</th><th>明细</th></tr></thead>
                     <tbody>
                       <tr v-for="group in activity.grouping.groups" :key="group.id">
                         <td>{{ group.ruleId ? 'v'+group.version : '待发布' }}
@@ -783,6 +799,10 @@ async function resumeRule() {
                           <small v-if="(group.afterCarry || group.beforeCarry).carryForwardMinor<0" class="order-version">
                             {{ activity.grouping.priorUnsettled ? '本期未抵扣退款' : '转下期退款' }} {{ formatMoney(-(group.afterCarry || group.beforeCarry).carryForwardMinor) }}
                           </small>
+                        </td>
+                        <td>
+                          <button v-if="group.eventToken" type="button" class="order-link" @click="activityGroup=group">查看收退款</button>
+                          <span v-else>—</span>
                         </td>
                       </tr>
                     </tbody>
@@ -835,6 +855,8 @@ async function resumeRule() {
         </template>
       </section>
     </a-spin>
+    <DraftAggregateOrders v-if="activityGroup" :key="activityGroup.id" :group="activityGroup.id" :load-page="loadActivityEvents"
+      :format-money="formatMoney" :format-time="formatTime" @close="activityGroup=undefined" @show-order="showActivityOrder"/>
     <template #footer>
       <div class="workspace-edit-footer">
         <a-button :disabled="saving" @click="emit('close')">关闭</a-button>

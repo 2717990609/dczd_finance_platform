@@ -547,18 +547,20 @@ const catalogAggregateDraftEventsSQL = `WITH scope AS (
 ), related AS NOT MATERIALIZED (
  SELECT a.* FROM scope JOIN catalog_aggregate_event_groups membership USING(period_id,group_key)
  JOIN catalog_aggregate_draft_events a USING(period_id,source_version_id)
-), page AS (
- SELECT o.id AS "sourceVersionId",o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",
+)` + catalogAggregateEventsPageSQL + ` FROM scope`
+
+const catalogAggregateEventsPageSQL = `, page AS (
+ SELECT o.id AS "sourceVersionId",paid.order_id AS "orderId",paid.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",
   o.kind,o.occurred_at AS "occurredAt",coalesce((o.fact->>'amountMinor')::bigint,0) AS "amountMinor",
   completed.occurred_at AS "completedAt"
  FROM related a
  JOIN source_order_versions o ON o.id=a.source_version_id
+ JOIN source_order_versions paid ON paid.id=a.payment_version_id
  LEFT JOIN source_order_versions completed ON completed.id=a.completion_version_id
  ORDER BY o.occurred_at,o.id LIMIT 25 OFFSET $4
 )
 SELECT jsonb_build_object('items',coalesce((SELECT jsonb_agg(to_jsonb(page) ORDER BY "occurredAt","sourceVersionId") FROM page),'[]'),
- 'total',(SELECT count(*) FROM related))
-FROM scope`
+ 'total',(SELECT count(*) FROM related))`
 
 func (s workspace) getCatalogAggregateDraftEvents(w http.ResponseWriter, r *http.Request) {
 	period, version, offset, err := draftReportPage(r)
