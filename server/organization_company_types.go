@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -65,8 +66,12 @@ func (s workspace) updateOrganizationCompanyType(ctx context.Context, input upda
 		if err != nil {
 			return err
 		}
-		if _, err = tx.Exec(ctx, `INSERT INTO organization_sales_company_type_changes(unit_id,version,previous_type,company_type,changed_at,changed_by)
-		 VALUES($1,$2,$3,$4,clock_timestamp(),$5)`, unit, result.Version, previous, result.CompanyType, by); err != nil {
+		var at time.Time
+		if err := tx.QueryRow(ctx, `INSERT INTO organization_sales_company_type_changes(unit_id,version,previous_type,company_type,changed_at,changed_by)
+		 VALUES($1,$2,$3,$4,clock_timestamp(),$5) RETURNING changed_at`, unit, result.Version, previous, result.CompanyType, by).Scan(&at); err != nil {
+			return err
+		}
+		if err := enqueueDraftConfiguration(ctx, tx, draftRefreshCompanyClassification, []string{unit}, at, true); err != nil {
 			return err
 		}
 		result.Changed = true

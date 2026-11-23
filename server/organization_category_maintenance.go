@@ -129,7 +129,7 @@ type categoryAssignmentResult struct {
 	EffectiveAt *time.Time `json:"effectiveAt,omitempty"`
 }
 
-const draftRefreshCompanyCategory = `SELECT p.id FROM periods p JOIN product_catalog_settings cfg USING(product_id)
+const draftRefreshCompanyClassification = `SELECT p.id FROM periods p JOIN product_catalog_settings cfg USING(product_id)
  WHERE cfg.source_system='DCAI' AND $2<((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
  AND (EXISTS(SELECT 1 FROM catalog_sales_company_aliases a JOIN catalog_sales_context c
   ON c.source=a.source AND c.captured_at=a.observed_at WHERE a.source=cfg.source_system
@@ -143,7 +143,9 @@ const draftRefreshCompanyCategory = `SELECT p.id FROM periods p JOIN product_cat
  AND EXISTS(SELECT 1 FROM rule_versions r WHERE r.product_id=p.product_id
   AND (jsonb_path_exists(r.components,'$[*].companySales.categories[*].salesCategoryId')
     OR jsonb_path_exists(r.components,'$[*].companySales.categories[*].salesCategoryIds[0]')
+    OR ($3::boolean AND jsonb_path_exists(r.components,'$[*].companySales.defaultRate'))
     OR jsonb_path_exists(r.components,'$[*].periodBenefit.salesCategoryIds[0]')
+    OR jsonb_path_exists(r.components,'$[*].periodBenefit.standardRates[*].salesCategoryIds[0]')
     OR jsonb_path_exists(r.components,'$[*].saleScope.salesCategoryIds[0]')
     OR jsonb_path_exists(r.components,'$[*].tiers.categorySchedules[*].salesCategoryIds[0]')))`
 
@@ -243,7 +245,7 @@ func (s workspace) assignOrganizationCategory(ctx context.Context, input assignO
 		 SELECT unit_id,$2,$3,$3,$4 FROM unnest($1::uuid[]) AS targets(unit_id)`, changed, id, at, by); err != nil {
 			return err
 		}
-		if err := enqueueDraftConfiguration(ctx, tx, draftRefreshCompanyCategory, changed, at); err != nil {
+		if err := enqueueDraftConfiguration(ctx, tx, draftRefreshCompanyClassification, changed, at, false); err != nil {
 			return err
 		}
 		result = categoryAssignmentResult{Changed: len(changed), EffectiveAt: &at}

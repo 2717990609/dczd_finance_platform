@@ -49,7 +49,8 @@ func TestCompanyCategoryMaintenanceUsesEffectiveHistory(t *testing.T) {
  INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on)
  SELECT id,'班次样本',3,current_date,current_date FROM products WHERE code='PRACTICE_CATEGORY';
  INSERT INTO rule_versions(product_id,version,label,components)
- SELECT id,1,'独立服务提成','[{"periodBenefit":{"salesCategoryIds":["00000000-0000-4000-8000-000000000062"]}}]'::jsonb
+ SELECT id,1,'独立服务提成',
+  '[{"periodBenefit":{"standardRates":[{"salesCategoryIds":["00000000-0000-4000-8000-000000000062"],"value":50000}]}}]'::jsonb
  FROM products WHERE code='PRACTICE_CATEGORY';`)
 	if err != nil {
 		t.Fatal(err)
