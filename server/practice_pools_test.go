@@ -296,6 +296,10 @@ func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testi
 	if entry.Name != "共用资金池" || entry.Unit != dept || entry.Income != 4800 || entry.Balance != 4800 || len(entry.Members) != 1 {
 		t.Fatalf("unexpected account: %+v", entry)
 	}
+	if entry.UnitName != "销售公司 / 归集部门" || len(entry.Owners) != 1 ||
+		entry.Owners[0] != (poolOwner{ID: service, Name: "服务", Income: 4800}) {
+		t.Fatalf("expected both arrangements to show the same owner and organization: %+v", entry)
+	}
 	// Cumulative splitting leaves exactly the same funding capacity per payment.
 	// The member joined just in time for the balance so the deposit cannot fund them.
 	if entry.Members[0].ID != member || entry.Members[0].Available != 3614 {
@@ -365,6 +369,9 @@ func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testi
 	report = readPools()
 	if report.Items[0].Name != "共用资金池" || report.Items[0].PlanCurrent || report.Items[0].Balance != 0 {
 		t.Fatalf("stale plan lost its original pool name: %+v", report.Items[0])
+	}
+	if report.Items[0].UnitName != "销售公司 / 归集部门" || len(report.Items[0].Owners) != 0 {
+		t.Fatalf("stale plan should show its organization without an owner for current income: %+v", report.Items[0])
 	}
 	allocation.Version, allocation.Basis, allocation.Shares, allocation.Retained = draft.Version, report.Basis, nil, 0
 	if _, err := s.savePoolAllocation(ctx, allocation); err != nil {

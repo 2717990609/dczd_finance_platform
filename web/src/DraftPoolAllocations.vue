@@ -13,12 +13,16 @@ const saving = ref(false)
 let sequence = 0
 
 const key = row => [row.unitId,row.scenario,row.itemKey].join('/')
-const options = computed(() => (report.value?.items || []).map(pool => ({value:key(pool),label:pool.name})))
+const options = computed(() => (report.value?.items || []).map(pool => ({
+  value:key(pool),label:[pool.name,pool.unitName].filter(Boolean).join(' · '),
+})))
 const pool = computed(() => report.value?.items.find(item => key(item)===selected.value))
+const membersById = computed(() => new Map((pool.value?.members || []).map(member=>[member.personId,member])))
 const memberOptions = computed(() => (pool.value?.members || []).map(member => ({
   value:member.personId,
-  label:member.availableMinor>0 ? member.name : member.name+' · 资格待核',
-  disabled:member.availableMinor===0,
+  label:[member.name,member.personId,report.value.closed ? '' : member.availableMinor>0
+    ? '可分配 '+props.formatMoney(member.availableMinor) : '当前不可分'].filter(Boolean).join(' · '),
+  disabled:!report.value.closed && member.availableMinor===0,
 })))
 const editable = computed(() => !props.draft.settlement && !report.value?.closed && !saving.value && !loading.value)
 const moneyInput = amount => (amount/100).toFixed(2)
@@ -29,7 +33,10 @@ const toMinor = value => {
   const [whole, fraction=''] = text.split('.')
   return Number(whole)*100+Number(fraction.padEnd(2,'0'))
 }
-const amountTotal = computed(() => rows.value.reduce((sum,row) => sum+toMinor(row.amount),toMinor(retained.value)))
+const memberTotal = computed(() => rows.value.reduce((sum,row) => sum+toMinor(row.amount),0))
+const remaining = computed(() => Math.max(0,pool.value?.balanceMinor || 0)-memberTotal.value-toMinor(retained.value))
+const memberOverLimit = row => row.personId && toMinor(row.amount)>(membersById.value.get(row.personId)?.availableMinor || 0)
+const overMemberLimit = computed(() => rows.value.some(memberOverLimit))
 
 async function load() {
   const request = ++sequence
@@ -60,11 +67,15 @@ onBeforeUnmount(() => { sequence++ })
 
 async function save() {
   const current = pool.value
-  if (!current || !editable.value) return
+  if (!current || !editable.value || remaining.value<0 || overMemberLimit.value) return
   const shares = rows.value.map(row => ({personId:row.personId,amountMinor:toMinor(row.amount)}))
   const retainedMinor=toMinor(retained.value)
   if (!Number.isSafeInteger(retainedMinor) || shares.some(share=>share.personId==null || !Number.isSafeInteger(share.amountMinor) || share.amountMinor<=0)) {
     error.value='请选择人员并填写大于零的金额。'
+    return
+  }
+  if (new Set(shares.map(share=>share.personId)).size!==shares.length) {
+    error.value='同一成员只填写一行。'
     return
   }
   const request = sequence
@@ -111,6 +122,12 @@ async function save() {
           <div v-if="report.closed"><dt>确认分配</dt><dd>{{ formatMoney(pool.confirmedMinor) }}</dd></div>
           <div><dt>{{ report.closed ? '期末余额' : '池余额' }}</dt><dd>{{ formatMoney(pool.balanceMinor) }}</dd></div>
         </dl>
+        <div v-if="pool.owners?.length" class="pool-owners">
+          <span>本期归集负责人</span>
+          <span v-for="owner in pool.owners" :key="owner.personId">
+            {{ owner.name || ('人员 '+owner.personId) }}<template v-if="pool.owners.length>1"> · {{ formatMoney(owner.incomeMinor) }}</template>
+          </span>
+        </div>
         <a-alert v-if="pool.revision && !pool.planCurrent" type="warning" show-icon
           message="试算已变化，请核对已填金额后重新保存。"/>
         <p v-if="pool.balanceMinor<0" class="draft-report-note">后续归集优先弥补负余额。</p>
@@ -120,7 +137,7 @@ async function save() {
             show-search option-filter-prop="label" placeholder="选择成员" :disabled="!editable"/>
           <label class="sr-only" :for="'pool-amount-'+index">分配金额 {{ index+1 }}</label>
           <a-input-number :id="'pool-amount-'+index" v-model:value="row.amount" string-mode :min="0" :precision="2"
-            placeholder="金额（元）" :disabled="!editable"/>
+            placeholder="金额（元）" :status="!report.closed && memberOverLimit(row) ? 'error' : undefined" :disabled="!editable"/>
           <a-button v-if="!report.closed" type="text" :disabled="!editable" @click="rows.splice(index,1)">移除</a-button>
         </div>
         <a-button v-if="!report.closed && memberOptions.some(item=>!item.disabled)" :disabled="!editable" @click="rows.push({})">添加成员</a-button>
@@ -130,8 +147,13 @@ async function save() {
             placeholder="金额（元）" :disabled="!editable"/>
         </div>
         <div v-if="!report.closed" class="form-actions">
-          <span>拟分配 {{ formatMoney(amountTotal) }}</span>
-          <a-button type="primary" :loading="saving" :disabled="!editable" @click="save">保存分配草稿</a-button>
+          <span>拟分配 {{ formatMoney(memberTotal) }}</span>
+          <span>拟留存 {{ formatMoney(toMinor(retained)) }}</span>
+          <strong v-if="!Number.isNaN(remaining)" :class="{'pool-over-limit':remaining<0}" aria-live="polite">
+            {{ remaining<0 ? '超出池余额' : '待分配' }} {{ formatMoney(Math.abs(remaining)) }}
+          </strong>
+          <span v-if="overMemberLimit" role="alert" class="pool-over-limit">有成员超过可分配金额</span>
+          <a-button type="primary" :loading="saving" :disabled="!editable || remaining<0 || overMemberLimit" @click="save">保存分配草稿</a-button>
         </div>
       </template>
     </div>

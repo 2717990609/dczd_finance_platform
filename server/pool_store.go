@@ -22,9 +22,17 @@ type poolMember struct {
 	Available int64  `json:"availableMinor"`
 }
 
+type poolOwner struct {
+	ID     int64  `json:"personId"`
+	Name   string `json:"name"`
+	Income int64  `json:"incomeMinor"`
+}
+
 type poolDraftItem struct {
 	poolScope
 	Name        string                `json:"name"`
+	UnitName    string                `json:"unitName"`
+	Owners      []poolOwner           `json:"owners,omitempty"`
 	Opening     int64                 `json:"openingMinor"`
 	Income      int64                 `json:"incomeMinor"`
 	Refund      int64                 `json:"refundMinor"`
@@ -40,7 +48,8 @@ type poolDraftItem struct {
 type poolStage struct {
 	poolDraftItem
 	poolAccount
-	current bool
+	current     bool
+	ownerIncome map[int64]int64
 }
 
 type poolDraftReport struct {
@@ -145,7 +154,7 @@ const poolEntriesSQL = `WITH scope AS (
  UNION SELECT original_line_id FROM corrections
 ), lines AS MATERIALIZED (
  SELECT l.id,account.unit_id::text AS unit,account.item_key AS item,account.scenario_key AS scenario,
-  coalesce(pool.name,a.name,l.component_type) AS name,l.period_id,l.amount_minor,scope.seq,
+  coalesce(pool.name,a.name,l.component_type) AS name,l.period_id,l.amount_minor,scope.seq,l.allocation_owner_id,
   coalesce(v.occurred_at,(origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai') AS occurred_at
  FROM required_lines needed JOIN pool_line_accounts account ON account.line_id=needed.line_id
  JOIN calculation_draft_lines l ON l.id=account.line_id
@@ -166,11 +175,12 @@ const poolEntriesSQL = `WITH scope AS (
 ), entries AS (
  SELECT l.unit,l.item,l.scenario,l.name,l.period_id,l.seq,l.id AS source_id,l.amount_minor,
   0 AS kind,l.occurred_at,l.id AS sort_id,false AS practice_distribution,
-  0::bigint AS refunded,0::bigint AS corrected FROM lines l WHERE l.seq IS NOT NULL AND l.amount_minor>0
+  0::bigint AS refunded,0::bigint AS corrected,coalesce(l.allocation_owner_id,0) AS owner_id
+ FROM lines l WHERE l.seq IS NOT NULL AND l.amount_minor>0
  UNION ALL
  SELECT l.unit,l.item,l.scenario,l.name,r.period_id,r.seq,
   CASE WHEN r.amount_minor<0 AND r.practice AND (l.seq IS NULL OR l.seq>r.seq) THEN 0 ELSE l.id END,r.amount_minor,1,v.occurred_at,r.id,false,
-  r.amount_minor,0
+  r.amount_minor,0,0
  FROM refunds r
  JOIN lines l ON l.id=r.original_line_id JOIN source_order_versions v ON v.id=r.refund_source_version_id
  WHERE NOT EXISTS(SELECT 1 FROM corrections c WHERE c.period_id=r.period_id AND c.original_line_id=r.original_line_id)
@@ -178,17 +188,17 @@ const poolEntriesSQL = `WITH scope AS (
  SELECT l.unit,l.item,l.scenario,l.name,c.period_id,c.seq,
   CASE WHEN c.amount_minor+coalesce(r.refunded,0)<0 AND c.practice AND (l.seq IS NULL OR l.seq>c.seq) THEN 0 ELSE l.id END,
   c.amount_minor+coalesce(r.refunded,0),1,coalesce(r.occurred_at,v.received_at),c.id,false,
-  coalesce(r.refunded,0),c.amount_minor
+  coalesce(r.refunded,0),c.amount_minor,0
  FROM corrections c
  JOIN lines l ON l.id=c.original_line_id JOIN source_order_versions v ON v.id=c.source_version_id
  LEFT JOIN corrected_refunds r ON r.id=c.id
  UNION ALL
- SELECT l.unit,l.item,l.scenario,l.name,a.period_id,p.seq,l.id,-f.amount_minor,2,s.confirmed_at,sh.id,p.practice,0,0
+ SELECT l.unit,l.item,l.scenario,l.name,a.period_id,p.seq,l.id,-f.amount_minor,2,s.confirmed_at,sh.id,p.practice,0,0,0
  FROM scope p JOIN settlements s ON s.period_id=p.id JOIN monthly_pool_allocations a ON a.period_id=p.id AND a.draft_version=s.draft_version
  JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
  JOIN monthly_pool_allocation_funding f ON f.share_id=sh.id JOIN lines l ON l.id=f.source_line_id
 )
-SELECT unit,item,scenario,name,period_id,source_id,amount_minor,kind,practice_distribution,refunded,corrected FROM entries
+SELECT unit,item,scenario,name,period_id,source_id,amount_minor,kind,practice_distribution,refunded,corrected,owner_id FROM entries
 ORDER BY seq,kind,occurred_at,sort_id,source_id`
 
 const poolEligibilitySQL = `SELECT DISTINCT l.id,m.person_id,person.name FROM unnest($1::bigint[]) source(id)
@@ -226,11 +236,11 @@ func readPoolStages(ctx context.Context, tx pgx.Tx, periodID int64) (map[poolSco
 	}
 	var scope poolScope
 	var name string
-	var postingPeriod, source, amount, refunded, corrected int64
+	var postingPeriod, source, amount, refunded, corrected, owner int64
 	var kind int
 	var practiceDistribution bool
 	_, err = pgx.ForEachRow(rows, []any{&scope.Unit, &scope.Item, &scope.Scenario, &name, &postingPeriod, &source, &amount, &kind,
-		&practiceDistribution, &refunded, &corrected}, func() error {
+		&practiceDistribution, &refunded, &corrected, &owner}, func() error {
 		a := states[scope]
 		if a == nil {
 			a = &poolStage{poolDraftItem: poolDraftItem{poolScope: scope, Shares: []poolAllocationShare{}, Members: []poolMember{}}, poolAccount: newPoolAccount()}
@@ -247,6 +257,12 @@ func readPoolStages(ctx context.Context, tx pgx.Tx, periodID int64) (map[poolSco
 			}
 			if postingPeriod == periodID {
 				a.Income, err = addMinor(a.Income, amount)
+				if err == nil && owner > 0 {
+					if a.ownerIncome == nil {
+						a.ownerIncome = make(map[int64]int64)
+					}
+					a.ownerIncome[owner] += amount
+				}
 			}
 		case 1:
 			// Apply the net to the original payment lot. A refund and its
@@ -415,12 +431,48 @@ func (s workspace) draftPools(w http.ResponseWriter, r *http.Request) {
 				report.Items = append(report.Items, item.poolDraftItem)
 			}
 		}
+		if err := readPoolDraftLabels(ctx, tx, report.Items, states); err != nil {
+			return err
+		}
 		slices.SortFunc(report.Items, func(a, b poolDraftItem) int {
 			return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Unit, b.Unit), cmp.Compare(a.Scenario, b.Scenario), cmp.Compare(a.Item, b.Item))
 		})
 		return nil
 	})
 	respond(w, report, err)
+}
+
+func readPoolDraftLabels(ctx context.Context, tx pgx.Tx, items []poolDraftItem, states map[poolScope]*poolStage) error {
+	if len(items) == 0 {
+		return nil
+	}
+	var units []string
+	var owners []int64
+	for _, item := range items {
+		units = append(units, item.Unit)
+		for owner := range states[item.poolScope].ownerIncome {
+			owners = append(owners, owner)
+		}
+	}
+	var unitNames map[string]string
+	var ownerNames map[int64]string
+	err := tx.QueryRow(ctx, `SELECT
+	 (SELECT jsonb_object_agg(u.id,concat_ws(' / ',grandparent.name,parent.name,u.name))
+	  FROM organization_units u LEFT JOIN organization_units parent ON parent.id=u.parent_id
+	  LEFT JOIN organization_units grandparent ON grandparent.id=parent.parent_id WHERE u.id=ANY($1::uuid[])),
+	 (SELECT jsonb_object_agg(id,name) FROM people WHERE id=ANY($2::bigint[]))`, units, owners).Scan(&unitNames, &ownerNames)
+	if err != nil {
+		return err
+	}
+	for i := range items {
+		item := &items[i]
+		item.UnitName = unitNames[item.Unit]
+		for owner, income := range states[item.poolScope].ownerIncome {
+			item.Owners = append(item.Owners, poolOwner{ID: owner, Name: ownerNames[owner], Income: income})
+		}
+		slices.SortFunc(item.Owners, func(a, b poolOwner) int { return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.ID, b.ID)) })
+	}
+	return nil
 }
 
 type savePoolAllocationInput struct {
