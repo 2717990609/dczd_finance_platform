@@ -198,7 +198,9 @@ func impactArrangements(ctx context.Context, tx pgx.Tx, all ...[]ruleImpactPosti
 	 )
 	 SELECT p.rule_id,p.catalog_id,p.code,p.kind,coalesce(p.part->>'classMember',''),
 	  coalesce(title.name,''),coalesce(duplicate.ord,0)::int,
-	  coalesce(nullif(action.label,''),opt.label,
+	  coalesce(CASE WHEN action.item IS NOT NULL AND p.code=action.item||':DCAI_SERVICE'
+	    THEN nullif(p.definition->'internal_sales_direct_split'->>'service_label','') END,
+	   nullif(action.label,''),opt.label,
 	   CASE p.kind WHEN 'company_referral' THEN '公司推荐分润' WHEN 'retrain_service' THEN '服务提成'
 	    WHEN 'retrain_pool' THEN '复训销售归集' ELSE p.kind END),
 	  CASE WHEN action.item IS NOT NULL AND action.item<>p.code THEN split_part(p.code,':',2) ELSE '' END

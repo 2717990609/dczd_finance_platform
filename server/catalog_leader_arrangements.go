@@ -31,6 +31,7 @@ func catalogLeaderComponents(policy vipBenefitPolicy) []catalogRateComponent {
 	}
 	for i := range arrangements {
 		row := &arrangements[i]
+		row.Disabled = slices.Contains(policy.split.DisabledShares, row.ItemKey)
 		index := slices.IndexFunc(policy.actions, func(a vipBenefitAction) bool { return a.Item == row.ItemKey })
 		if index < 0 {
 			if label := policy.split.LeaderLabels[row.ItemKey]; label != "" {
@@ -78,6 +79,7 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 	}
 	var people map[int64]string
 	var inheritedLabels map[string]string
+	disabled := slices.Clone(policy.Split.DisabledShares)
 	if len(recipients) > 0 {
 		people, err = catalogNewRecipientKeys(ctx, tx, recipients, nil)
 		if err != nil {
@@ -90,6 +92,9 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 			return nil, invalid
 		}
 		if change.Target == "inherit" {
+			if slices.Contains(disabled, change.ItemKey) {
+				return nil, invalid
+			}
 			var amount int64
 			var orders string
 			switch change.ItemKey {
@@ -152,6 +157,9 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 		} else {
 			actions[index] = fields
 		}
+		if index := slices.Index(disabled, change.ItemKey); index >= 0 {
+			disabled = slices.Delete(disabled, index, index+1)
+		}
 	}
 	if inheritedLabels != nil {
 		var split map[string]json.RawMessage
@@ -160,6 +168,11 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 		}
 		split["leader_labels"], _ = json.Marshal(inheritedLabels)
 		root["internal_sales_direct_split"], _ = json.Marshal(split)
+	}
+	if !slices.Equal(disabled, policy.Split.DisabledShares) {
+		if err := writeCatalogDisabledShares(root, disabled); err != nil {
+			return nil, err
+		}
 	}
 	root["benefit_actions"], err = json.Marshal(actions)
 	if err != nil {

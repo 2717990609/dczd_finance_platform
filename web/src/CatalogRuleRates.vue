@@ -58,19 +58,19 @@ const targetKind = computed(() => targetEdits.value.get(selected.value)?.target 
 const targetKindLabels = {seller:'按下表结算',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人'}
 const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人'}
 const teamSplit = computed(() => component.value?.teamSplit)
+const serviceItemKey = 'internal-service'
 const splitFields = [
   {key:'total',label:'销售分项总比例'},
   {key:'sales',label:'普通成交销售'},
   {key:'headSales',label:'负责人亲自成交'},
-  {key:'service',label:'服务比例'},
 ]
 const splitRows = computed(() => {
   const split = teamSplit.value
   return split ? splitFields.map(field=>({...field,rate:split[field.key]})) : []
 })
-const splitValue = field => Object.hasOwn(splitEdits.value,field) ? splitEdits.value[field] : (teamSplit.value[field]/100).toFixed(2)
+const splitValue = field => Object.hasOwn(splitEdits.value,field) ? splitEdits.value[field] : (splitItem.value.teamSplit[field]/100).toFixed(2)
 function setSplitRate(field,value) {
-  if (rateAsBasisPoints(value)===teamSplit.value[field]) delete splitEdits.value[field]
+  if (rateAsBasisPoints(value)===splitItem.value.teamSplit[field]) delete splitEdits.value[field]
   else splitEdits.value[field] = value
 }
 const teamCompanyIDs = computed(() => new Set((sheet.value?.teams || []).map(team=>team.key)))
@@ -85,6 +85,12 @@ const orderTypeText = computed(() => sheet.value?.membershipSku
   : props.rule?.scopeLabel?.replace(sheet.value?.productName+' · ','') || sheet.value?.productName)
 const splitItem = computed(() => sheet.value?.components.find(item=>item.teamSplit))
 const splitRemoved = computed(() => splitItem.value && removedItems.value.has(splitItem.value.itemKey))
+const serviceVisible = computed(() => !splitRemoved.value && splitItem.value?.teamSplit.service>0 && !splitItem.value?.serviceDisabled)
+const serviceRemoved = computed(() => !serviceVisible.value || removedItems.value.has(serviceItemKey))
+const serviceArrangement = computed(() => ({itemKey:serviceItemKey,label:splitItem.value?.serviceLabel || '内部团队服务提成'}))
+const leaderArrangements = computed(() => splitRemoved.value ? [] : sheet.value?.leaderArrangements || [])
+const availableLeaders = computed(() => leaderArrangements.value.filter(leader=>leader.disabled && !leaderEdits.value.has(leader.itemKey)))
+const visibleLeaders = computed(() => leaderArrangements.value.filter(leader=>!leader.disabled || leaderEdits.value.has(leader.itemKey)))
 const editable = computed(() => sheet.value?.mayPublish && !props.applied && !saving.value && !itemRemoved.value)
 const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKind==='seller'))
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
@@ -324,6 +330,18 @@ function originalLeader(item) {
   }
 }
 const leaderForm = item => leaderEdits.value.get(item.itemKey) || originalLeader(item)
+function addLeader(item) {
+  leaderEdits.value.set(item.itemKey,{...originalLeader(item),target:'appointment',amount:undefined})
+  selected.value = item.itemKey
+}
+function removeLeader(item) {
+  if (!item.disabled) {
+    toggleItemRemoval()
+    return
+  }
+  leaderEdits.value.delete(item.itemKey)
+  selected.value = undefined
+}
 function setLeader(item, form) {
   const original = originalLeader(item)
   const normalize = value=>JSON.stringify({
@@ -412,7 +430,8 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
     membershipOrders.value = result.membershipNewOnly ? 'new' : 'all'
     const leaderKey = applied.component.endsWith(':DCAI_GROUP_LEAD') ? 'internal-group-leader' :
       applied.component.endsWith(':DCAI_TEAM_HEAD') ? 'internal-team-leader' : applied.component
-    selected.value = result.leaderArrangements?.find(item=>item.itemKey===leaderKey)?.itemKey ||
+    selected.value = applied.component.endsWith(':DCAI_SERVICE') && serviceVisible.value ? serviceItemKey :
+      result.leaderArrangements?.find(item=>item.itemKey===leaderKey)?.itemKey ||
       result.components.find(item=>item.itemKey===applied.component || applied.component.startsWith(item.itemKey+':'))?.itemKey
       || result.components[0]?.itemKey
     selectedTeam.value = result.teams?.[0]?.key
@@ -448,13 +467,14 @@ function publicationInput() {
   if (!effectiveFrom.value) throw new Error('请选择生效时间。')
   if (copy.value && (!copy.value.sku || !copy.value.label?.trim())) throw new Error('请选择目标 SKU，并填写规则名称。')
   let teamSplitRates
-  if (!splitRemoved.value && Object.keys(splitEdits.value).length) {
+  if (!splitRemoved.value && Object.keys(splitEdits.value).some(field=>field!=='service' || !serviceRemoved.value)) {
     const item = splitItem.value
     const original = item.teamSplit
     teamSplitRates = {...original}
     for (const {key} of splitFields) {
       teamSplitRates[key] = Object.hasOwn(splitEdits.value,key) ? rateAsBasisPoints(splitEdits.value[key]) : original[key]
     }
+    if (!serviceRemoved.value && Object.hasOwn(splitEdits.value,'service')) teamSplitRates.service = rateAsBasisPoints(splitEdits.value.service)
     const {total,sales,headSales,groupLead,service,teamLead} = teamSplitRates
     if (sales+groupLead+service+teamLead!==total || headSales+service+teamLead!==total) {
       selected.value = item.itemKey
@@ -480,7 +500,7 @@ function publicationInput() {
     if (!label) throw new Error('请填写收款安排名称。')
     changes.push({itemKey,label})
   }
-  const leaderChanges = splitRemoved.value ? [] : Array.from(leaderEdits.value,([itemKey,form])=>{
+  const leaderChanges = splitRemoved.value ? [] : [...leaderEdits.value].filter(([itemKey])=>!removedItems.value.has(itemKey)).map(([itemKey,form])=>{
     const label = form.label.trim()
     const value = form.method==='fixed' ? moneyAsMinor(form.amount) : rateAsBasisPoints(form.amount)
     if (!label || value===undefined || form.target==='person' && !form.personId) {
@@ -508,8 +528,8 @@ function publicationInput() {
       ({itemKey,...payee,organization:payee.poolId ? undefined : organization}))
       .filter(({itemKey})=>!removedItems.value.has(itemKey)),
     teamChanges:splitRemoved.value ? [] : Array.from(teamEdits.value,([teamKey,changes])=>({
-      teamKey,headPersonId:changes.head?.id,servicePersonId:changes.service?.id,
-    })),
+      teamKey,headPersonId:changes.head?.id,servicePersonId:serviceRemoved.value ? undefined : changes.service?.id,
+    })).filter(change=>change.headPersonId || change.servicePersonId),
     teamSplitRates,
     leaderChanges,
     scopeChanges,
@@ -583,7 +603,16 @@ async function publish() {
             <h3 class="form-subhead">收款安排</h3>
             <a-space v-if="sheet.mayPublish && !applied && sheet.structureOptions" wrap :size="4">
               <a-button v-if="targetSkus.length && !copy" size="small" :disabled="saving || structureEditing" @click="copy={}">复制到其他 SKU</a-button>
-              <a-button size="small" :disabled="saving || structureEditing" @click="addRecipient">添加收款安排</a-button>
+              <a-dropdown v-if="availableLeaders.length" :trigger="['click']" :disabled="saving || structureEditing">
+                <a-button size="small">添加收款安排 <DownOutlined aria-hidden="true"/></a-button>
+                <template #overlay>
+                  <a-menu>
+                    <a-menu-item @click="addRecipient">通用收款安排</a-menu-item>
+                    <a-menu-item v-for="leader in availableLeaders" :key="leader.itemKey" @click="addLeader(leader)">{{ leader.label }}</a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+              <a-button v-else size="small" :disabled="saving || structureEditing" @click="addRecipient">添加收款安排</a-button>
             </a-space>
           </div>
           <section v-for="item in sheet.components" :key="item.itemKey" class="rule-block">
@@ -709,7 +738,7 @@ async function publish() {
             </a-table>
           </template>
           <a-collapse v-if="teamSplit" ghost class="catalog-more">
-            <a-collapse-panel key="team" header="内部团队销售与服务">
+            <a-collapse-panel key="team" header="内部团队成交比例">
               <div v-if="!applied && sheet.mayPublish" class="catalog-rule-fields">
                 <a-form-item v-for="row in splitRows" :key="row.key" :label="row.label+'（%）'" :html-for="'catalog-split-'+row.key">
                   <a-input-number :id="'catalog-split-'+row.key" :value="splitValue(row.key)"
@@ -720,21 +749,6 @@ async function publish() {
               <a-descriptions v-else size="small" bordered :column="1">
                 <a-descriptions-item v-for="row in splitRows" :key="row.key" :label="row.label">{{ percent(row.rate) }}</a-descriptions-item>
               </a-descriptions>
-              <p class="rule-formula">销售总比例的拆分校验使用登记的小组负责人 {{ percent(teamSplit.groupLead) }} 和团队负责人 {{ percent(teamSplit.teamLead) }}。</p>
-              <template v-if="team">
-              <div class="catalog-rule-fields">
-              <a-form-item label="销售公司" html-for="catalog-team-company">
-                <a-select id="catalog-team-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
-              </a-form-item>
-              <a-form-item v-if="team.service || (!applied && sheet.mayPublish)"
-                label="服务收款人" html-for="catalog-team-service">
-                <AppointmentPersonSelect v-if="!applied && sheet.mayPublish" id="catalog-team-service" :key="selectedTeam"
-                  :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('service')" :value="teamPerson('service')?.id"
-                  :disabled="!editable" :placeholder="teamPerson('service')?.id?'输入姓名搜索':teamPerson('service')?.name" @change="(id,option)=>setTeamPerson('service',id,option)"/>
-                <span v-else>{{ team.service.name }}</span>
-              </a-form-item>
-              </div>
-              </template>
             </a-collapse-panel>
           </a-collapse>
           <div v-if="sheet.mayPublish && !applied" class="form-actions">
@@ -743,20 +757,56 @@ async function publish() {
           </div>
           </div>
           </section>
-          <section v-for="leader in (splitRemoved ? [] : sheet.leaderArrangements)" :key="leader.itemKey" class="rule-block">
+          <section v-if="serviceVisible" class="rule-block">
+            <button type="button" class="rule-block-header" :disabled="saving || structureEditing" :aria-expanded="selected===serviceItemKey"
+              aria-controls="catalog-internal-service" @click="selected=selected===serviceItemKey ? undefined : serviceItemKey">
+              <DownOutlined aria-hidden="true"/>
+              <strong>{{ labelEdits.get(serviceItemKey)?.trim() || serviceArrangement.label }}</strong>
+              <span v-if="serviceRemoved" class="rule-block-badge">待删除</span>
+              <span class="rule-block-recipient">提成范围 · {{ formatScope(teamOptions.map(option=>option.label)) }}</span>
+              <small>{{ splitValue('service') }}%</small>
+            </button>
+            <div v-if="selected===serviceItemKey" id="catalog-internal-service" class="rule-block-body">
+              <RuleArrangementFields v-if="!serviceRemoved" name-id="catalog-service-label" :name="labelEdits.get(serviceItemKey) ?? serviceArrangement.label"
+                :disabled="!editable || structureEditing" calculation-text="比例" :order-type-text="orderTypeText" scope-text="全部已配置内部团队"
+                @update:name="setLabel(serviceArrangement,$event)">
+                <a-form-item label="销售公司" html-for="catalog-team-company">
+                  <a-select id="catalog-team-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
+                </a-form-item>
+                <a-form-item v-if="team" label="收款对象" html-for="catalog-team-service">
+                  <AppointmentPersonSelect v-if="editable" id="catalog-team-service" :key="selectedTeam"
+                    :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('service')" :value="teamPerson('service')?.id"
+                    @change="(id,option)=>setTeamPerson('service',id,option)"/>
+                  <span v-else>{{ team.service?.name }}</span>
+                </a-form-item>
+                <template #scope>
+                  <a-form-item label="比例（%）" html-for="catalog-split-service">
+                    <a-input-number id="catalog-split-service" :value="splitValue('service')" :disabled="!editable || structureEditing"
+                      :min="0" :max="100" :precision="2" string-mode @update:value="setSplitRate('service',$event)"/>
+                  </a-form-item>
+                </template>
+              </RuleArrangementFields>
+              <div v-if="sheet.mayPublish && !applied" class="form-actions">
+                <a-button size="small" type="link" :danger="!serviceRemoved" :disabled="structureEditing || saving"
+                  @click="toggleItemRemoval">{{ serviceRemoved ? '撤销移除' : '移除此安排' }}</a-button>
+              </div>
+            </div>
+          </section>
+          <section v-for="leader in visibleLeaders" :key="leader.itemKey" class="rule-block">
             <button type="button" class="rule-block-header" :disabled="saving || structureEditing"
               :aria-expanded="selected===leader.itemKey" :aria-controls="'catalog-rate-'+leader.itemKey"
               @click="selected=selected===leader.itemKey ? undefined : leader.itemKey">
               <DownOutlined aria-hidden="true"/>
               <strong>{{ leaderForm(leader).label.trim() || leader.label }}</strong>
+              <span v-if="removedItems.has(leader.itemKey)" class="rule-block-badge">待删除</span>
               <span class="rule-block-recipient">提成范围 · {{ leaderScopeText(leader) }}</span>
               <small>{{ leaderSummary(leader) }}</small>
             </button>
             <div v-if="selected===leader.itemKey" :id="'catalog-rate-'+leader.itemKey" class="rule-block-body">
-              <CatalogLeaderArrangement :item-key="leader.itemKey" :model-value="leaderForm(leader)" :teams="sheet.teams || []"
+              <CatalogLeaderArrangement v-if="!removedItems.has(leader.itemKey)" :item-key="leader.itemKey" :model-value="leaderForm(leader)" :teams="sheet.teams || []"
                 :api="api" :people-filters="peopleFilters" :disabled="!editable || structureEditing" :order-type-text="orderTypeText"
                 :sales-categories="sheet.structureOptions?.categories" :category-names="sheet.scopeCategoryNames"
-                :inherited="leader.targetKind==='inherit' ? originalLeader(leader) : undefined"
+                :inherited="leader.targetKind==='inherit' && !leader.disabled ? originalLeader(leader) : undefined"
                 @update:model-value="setLeader(leader,$event)">
                 <div v-if="leader.itemKey==='internal-team-leader' && leaderForm(leader).target==='inherit' && team" class="catalog-rule-fields">
                   <a-form-item label="查看登记人所属团队" html-for="catalog-head-company">
@@ -770,6 +820,10 @@ async function publish() {
                   </a-form-item>
                 </div>
               </CatalogLeaderArrangement>
+              <div v-if="sheet.mayPublish && !applied" class="form-actions">
+                <a-button size="small" type="link" :danger="!removedItems.has(leader.itemKey)" :disabled="structureEditing || saving"
+                  @click="removeLeader(leader)">{{ removedItems.has(leader.itemKey) ? '撤销移除' : '移除此安排' }}</a-button>
+              </div>
             </div>
           </section>
           </div>

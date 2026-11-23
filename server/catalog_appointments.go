@@ -147,8 +147,9 @@ const catalogAppointmentRequiresHolder = `EXISTS(
      THEN v.definition->'internal_sales_direct_split'->'teams' ELSE '[]'::jsonb END) team
      WHERE ($2='TEAM_LEAD' AND team->>'team_unit_id'=$4)
       OR ($2='GROUP_LEAD' AND team->'seller_group_unit_ids'?$4
-       AND (CASE WHEN jsonb_typeof(v.definition->'internal_sales_direct_split'->'group_lead_rate_bps')='number'
-        THEN (v.definition->'internal_sales_direct_split'->>'group_lead_rate_bps')::numeric>0 ELSE false END
+       AND ((NOT coalesce(v.definition->'internal_sales_direct_split'->'disabled_shares' ? 'internal-group-leader',false)
+        AND CASE WHEN jsonb_typeof(v.definition->'internal_sales_direct_split'->'group_lead_rate_bps')='number'
+        THEN (v.definition->'internal_sales_direct_split'->>'group_lead_rate_bps')::numeric>0 ELSE false END)
         OR EXISTS(SELECT 1 FROM jsonb_path_query(v.definition,'$.benefit_actions[*] ? (@.item_key == "internal-group-leader")') leader
          WHERE (NOT leader->'leader_scope' ? 'companies' OR leader->'leader_scope'->'companies' ? (team->>'sales_company_party_id'))
           AND (NOT leader->'leader_scope' ? 'groups' OR leader->'leader_scope'->'groups' ? $4))))

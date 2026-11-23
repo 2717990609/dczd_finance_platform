@@ -84,9 +84,11 @@ type vipInternalSplit struct {
 	HeadSeller                        int64             `json:"head_seller_rate_bps"`
 	Group                             int64             `json:"group_lead_rate_bps"`
 	Service                           int64             `json:"service_rate_bps"`
+	ServiceLabel                      string            `json:"service_label,omitempty"`
 	TeamHead                          int64             `json:"team_head_rate_bps"`
 	Teams                             []vipInternalTeam `json:"teams"`
 	LeaderLabels                      map[string]string `json:"leader_labels,omitempty"`
+	DisabledShares                    []string          `json:"disabled_shares,omitempty"`
 	independentGroup, independentTeam bool
 	Reviews                           []struct {
 		Order   string `json:"source_order_id"`
@@ -462,8 +464,12 @@ func calculateVIPSales(policy vipSalesPolicy, req vipSalesRequest, d vipSalesDat
 		return parts, ""
 	}
 	p, team := policy.Split, policy.Split.Teams[teamIdx]
+	replaceGroup := p.independentGroup || slices.Contains(p.DisabledShares, vipGroupLeaderItem)
+	replaceTeam := p.independentTeam || slices.Contains(p.DisabledShares, vipTeamLeaderItem)
+	removeService := slices.Contains(p.DisabledShares, vipInternalServiceItem)
 	head := d.holder("TEAM_LEAD", team.TeamUnit, req.At)
-	if rate != p.Total || head == "" || !p.independentTeam && head != team.HeadParty {
+	needsHead := !replaceTeam || p.HeadSeller != p.Assistant
+	if rate != p.Total || head == "" && needsHead || !replaceTeam && head != team.HeadParty {
 		return nil, "SALES_TEAM_PENDING"
 	}
 
@@ -472,7 +478,7 @@ func calculateVIPSales(policy vipSalesPolicy, req vipSalesRequest, d vipSalesDat
 		parts[0].Rate = p.Assistant
 		if p.Group > 0 {
 			part := vipSalesPart{Role: "DCAI_GROUP_LEAD", Rate: p.Group}
-			if !p.independentGroup {
+			if !replaceGroup {
 				group, conflict := vipSellerGroup(team, req, d.Memberships)
 				if conflict {
 					return nil, "SALES_GROUP_PENDING"
@@ -488,10 +494,11 @@ func calculateVIPSales(policy vipSalesPolicy, req vipSalesRequest, d vipSalesDat
 	parts = append(parts, vipSalesPart{Role: "DCAI_TEAM_HEAD", Person: head, Rate: p.TeamHead})
 
 	replaced := func(part vipSalesPart) bool {
-		return part.Role == "DCAI_GROUP_LEAD" && p.independentGroup || part.Role == "DCAI_TEAM_HEAD" && p.independentTeam
+		return part.Role == "DCAI_GROUP_LEAD" && replaceGroup || part.Role == "DCAI_TEAM_HEAD" && replaceTeam ||
+			part.Role == "DCAI_SERVICE" && removeService
 	}
-	// Allocate against the original shares first. Replacing a leader
-	// arrangement must not redistribute cents to sales or service.
+	// Allocate against the original shares so removing a payee does not
+	// redistribute any cents to the other payees.
 	var assignedRate int64
 	for i := range parts {
 		part := &parts[i]

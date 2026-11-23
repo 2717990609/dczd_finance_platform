@@ -280,7 +280,8 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			}
 			if splitChanged && input.TeamSplitRates.Service > 0 {
 				policy, ok := readVIPSalesPolicy(body)
-				if !ok || slices.ContainsFunc(policy.Split.Teams, func(team vipInternalTeam) bool { return team.ServiceParty == "" }) {
+				if !ok || !slices.Contains(policy.Split.DisabledShares, vipInternalServiceItem) &&
+					slices.ContainsFunc(policy.Split.Teams, func(team vipInternalTeam) bool { return team.ServiceParty == "" }) {
 					return errCatalogTeamSplitService
 				}
 			}
@@ -448,10 +449,13 @@ func editCatalogRates(raw json.RawMessage, changes []catalogRateChange) (json.Ra
 	}
 	seen := make(map[cell]bool, len(changes))
 	renamed := make(map[string]bool)
+	before, _ := readVIPSalesPolicy(raw)
 	changed := false
 	for _, change := range changes {
 		action := items[change.ItemKey]
-		if action == nil {
+		service := change.ItemKey == vipInternalServiceItem && len(before.Split.Teams) != 0 && before.Split.Service > 0 &&
+			!slices.Contains(before.Split.DisabledShares, vipInternalServiceItem)
+		if action == nil && (!service || change.Label == nil) {
 			return nil, false, invalid
 		}
 		if change.Label != nil {
@@ -460,6 +464,18 @@ func editCatalogRates(raw json.RawMessage, changes []catalogRateChange) (json.Ra
 				return nil, false, invalid
 			}
 			renamed[change.ItemKey] = true
+			if service {
+				if label != before.Split.ServiceLabel {
+					var fields map[string]json.RawMessage
+					if json.Unmarshal(root["internal_sales_direct_split"], &fields) != nil || fields == nil {
+						return nil, false, invalid
+					}
+					fields["service_label"], _ = json.Marshal(label)
+					root["internal_sales_direct_split"], _ = json.Marshal(fields)
+					changed = true
+				}
+				continue
+			}
 			var previous string
 			if len(action["label"]) > 0 && json.Unmarshal(action["label"], &previous) != nil {
 				return nil, false, invalid
@@ -539,7 +555,6 @@ func editCatalogRates(raw json.RawMessage, changes []catalogRateChange) (json.Ra
 	if err != nil {
 		return nil, false, err
 	}
-	before, _ := readVIPSalesPolicy(raw)
 	if len(before.Split.Teams) != 0 && len(tables[before.Split.Item]) != 0 {
 		after, ok := readVIPSalesPolicy(body)
 		if !ok || internalTeamRatesChanged(before, after) {

@@ -1,6 +1,9 @@
 package main
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"slices"
+)
 
 type catalogRateRowRemoval struct {
 	ItemKey string `json:"itemKey"`
@@ -21,6 +24,20 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 		removeItems[key] = true
 	}
 	removeSplit := sales.Split.Item != "" && removeItems[sales.Split.Item]
+	disabled := slices.Clone(sales.Split.DisabledShares)
+	var splitRemovals []string
+	if len(sales.Split.Teams) != 0 {
+		for _, key := range []string{vipGroupLeaderItem, vipTeamLeaderItem, vipInternalServiceItem} {
+			if !removeItems[key] {
+				continue
+			}
+			if slices.Contains(disabled, key) {
+				return nil, invalid
+			}
+			disabled = append(disabled, key)
+			splitRemovals = append(splitRemovals, key)
+		}
+	}
 	removeRows := make(map[string]map[int]bool)
 	for _, row := range rows {
 		if row.Row < 1 || removeItems[row.ItemKey] || removeRows[row.ItemKey][row.Row] {
@@ -75,6 +92,9 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 		}
 		kept = append(kept, action)
 	}
+	for _, key := range splitRemovals {
+		delete(removeItems, key)
+	}
 	if len(removeItems)+len(removeRows) != 0 {
 		return nil, invalid
 	}
@@ -83,6 +103,10 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 	}
 	if removeSplit {
 		delete(root, "internal_sales_direct_split")
+	} else if len(splitRemovals) != 0 {
+		if err := writeCatalogDisabledShares(root, disabled); err != nil {
+			return nil, err
+		}
 	}
 	root["benefit_actions"], err = json.Marshal(kept)
 	if err != nil {
@@ -100,4 +124,21 @@ func removeCatalogEntries(raw json.RawMessage, items []string, rows []catalogRat
 		return nil, errCatalogTeamRate
 	}
 	return body, nil
+}
+
+func writeCatalogDisabledShares(root map[string]json.RawMessage, shares []string) error {
+	var split map[string]json.RawMessage
+	const key = "internal_sales_direct_split"
+	if json.Unmarshal(root[key], &split) != nil || split == nil {
+		return errCatalogRateUnavailable
+	}
+	if len(shares) == 0 {
+		delete(split, "disabled_shares")
+	} else {
+		slices.Sort(shares)
+		split["disabled_shares"], _ = json.Marshal(shares)
+	}
+	var err error
+	root[key], err = json.Marshal(split)
+	return err
 }

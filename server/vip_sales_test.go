@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -116,6 +117,23 @@ func TestVIPInternalAllocationUsesHistoricalHoldersAndConservesCents(t *testing.
 	original, issue := calculateVIPSales(rule, req, data)
 	if issue != "" {
 		t.Fatal(issue)
+	}
+	removed := rule
+	removed.Split.Teams = slices.Clone(rule.Split.Teams)
+	removed.Split.DisabledShares = []string{vipGroupLeaderItem, vipInternalServiceItem, vipTeamLeaderItem}
+	removed.Split.Teams[0].ServiceParty = ""
+	kept, issue := calculateVIPSales(removed, req, data)
+	if issue != "" || len(kept) != 1 || kept[0] != original[0] {
+		t.Fatalf("removed shares must neither block the sale nor redistribute cents: %s %+v", issue, kept)
+	}
+	noHead := data
+	noHead.Roles = slices.DeleteFunc(slices.Clone(data.Roles), func(role vipRole) bool { return role.Role == "TEAM_LEAD" })
+	if _, issue := calculateVIPSales(removed, req, noHead); issue != "SALES_TEAM_PENDING" {
+		t.Fatal("a missing appointment still matters when it changes the seller's rate")
+	}
+	removed.Split.Assistant, removed.Split.Group = removed.Split.HeadSeller, 0
+	if kept, issue := calculateVIPSales(removed, req, noHead); issue != "" || len(kept) != 1 || kept[0].Rate != removed.Split.HeadSeller {
+		t.Fatalf("uniform sale rates do not require the removed leader's appointment: %s %+v", issue, kept)
 	}
 	rule.Split.independentGroup, rule.Split.independentTeam = true, true
 	revised, issue := calculateVIPSales(rule, req, data)

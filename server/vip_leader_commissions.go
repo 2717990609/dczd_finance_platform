@@ -6,6 +6,7 @@ const (
 	vipOrganizationAppointmentMode = "ORDER_ORGANIZATION_APPOINTMENT"
 	vipGroupLeaderItem             = "internal-group-leader"
 	vipTeamLeaderItem              = "internal-team-leader"
+	vipInternalServiceItem         = "internal-service"
 )
 
 type vipLeaderScope struct {

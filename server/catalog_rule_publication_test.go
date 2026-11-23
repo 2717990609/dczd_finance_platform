@@ -92,6 +92,31 @@ func TestEditCatalogTeamSplitRatesKeepsLinkedRateAndFrozenDefinition(t *testing.
 	if renamedSales.Split.independentTeam || catalogLeaderComponents(renamedBenefits)[1].Label != "改名后的负责人" {
 		t.Fatal("renaming should keep the leader within the original rounded split")
 	}
+	removed, err := removeCatalogEntries(rename, []string{vipTeamLeaderItem, "internal-service"}, nil)
+	if err != nil {
+		t.Fatalf("remove inherited portions separately: %v", err)
+	}
+	removedBenefits, _ := readVIPBenefits(removed)
+	if !strings.Contains(string(removed), `"disabled_shares"`) || removedBenefits.split.Service != 150 || removedBenefits.split.TeamHead != 250 {
+		t.Fatal("the original amounts must remain available for rounding")
+	}
+	revised, err := editCatalogLeaderArrangements(context.Background(), nil, removed, []catalogLeaderChange{{
+		ItemKey: vipTeamLeaderItem, Label: "新负责人安排", Target: "appointment", Scope: vipLeaderScope{Orders: "all"},
+		catalogBenefitCalculation: catalogBenefitCalculation{Rate: &teamRate},
+	}})
+	if err != nil {
+		t.Fatalf("reconfigure a removed leader: %v", err)
+	}
+	removed, err = removeCatalogEntries(revised, []string{vipTeamLeaderItem}, nil)
+	if err != nil {
+		t.Fatalf("remove an explicit leader arrangement: %v", err)
+	}
+	removedBenefits, _ = readVIPBenefits(removed)
+	for _, action := range removedBenefits.actions {
+		if action.Item == vipTeamLeaderItem {
+			t.Fatal("the explicit arrangement must be removed without restoring its inherited share")
+		}
+	}
 	rates := catalogSplitRates{Total: 1000, Sales: 450, HeadSales: 600, GroupLead: 150, Service: 175, TeamLead: 225}
 	body, changed, err := editCatalogTeamSplitRates(definition, rates)
 	if err != nil || !changed {
