@@ -663,6 +663,62 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 				}
 			}
 		}
+
+		if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+			refundDraft := laterDraft.(draftSummary)
+			if _, err := insertSettlement(ctx, tx, refundDraft.PeriodID, refundDraft.Version, "carry fixture", "", nil); err != nil {
+				return err
+			}
+			var raw json.RawMessage
+			if err := tx.QueryRow(ctx, `SELECT definition FROM product_rule_versions WHERE source_id=$1`, publishedFixed.ID).Scan(&raw); err != nil {
+				return err
+			}
+			definition, err := parseCatalogPeriodRule(raw)
+			if err != nil {
+				return err
+			}
+			var fixed catalogPeriodItem
+			for _, item := range definition.Items {
+				if item.FixedMinor != nil {
+					fixed = item
+				}
+			}
+			var previous []catalogGroupTargetKey
+			if err := tx.QueryRow(ctx, `SELECT targets FROM catalog_aggregate_draft_groups WHERE period_id=$1 AND fixed_only`,
+				refundDraft.PeriodID).Scan(&previous); err != nil {
+				return err
+			}
+			if len(previous) != 1 || previous[0].Owner != 9803 || previous[0].PoolID != poolID {
+				return fmt.Errorf("the original refund must retain its frozen pool reference: %+v", previous)
+			}
+			target := previous[0]
+			target.Owner, target.Members = 9801, []int64{9803}
+			for _, receipts := range []int64{20000, 40000} {
+				incoming := catalogPeriodGroup{ID: "incoming", RuleID: publishedFixed.ID, Receipts: receipts, Net: receipts, FixedOnly: true,
+					posting: catalogAggregateGroupInput{Targets: []catalogGroupTargetKey{target}}, items: []catalogPeriodItem{fixed}}
+				incoming.BeforeCarry, err = incoming.calculateQuote(0)
+				if err != nil {
+					return err
+				}
+				groups, err := applyCatalogAggregateCarry(ctx, tx, refundDraft.PeriodID, 0, []catalogPeriodGroup{incoming},
+					[]catalogAggregateRule{{ID: publishedFixed.ID, Definition: definition}}, false)
+				if err != nil {
+					return err
+				}
+				wantAward := int64(0)
+				if receipts > 30000 {
+					wantAward = *fixed.FixedMinor
+				}
+				got := groups[0]
+				if len(groups) != 2 || got.CarryIn != -30000 || got.quote().Total != wantAward ||
+					got.quote().CarryForward != min(receipts-30000, 0) || got.posting.Targets[0].Owner != 9801 {
+					return fmt.Errorf("the same fixed pool must offset its carry and award the remainder under the incoming owner: %+v", groups)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
 	})
 
 	t.Run("shared fixed standards and cumulative refund", func(t *testing.T) {

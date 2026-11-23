@@ -149,13 +149,19 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 		AppointmentRole   string   `json:",omitempty"`
 	}
 	scopes := make([]orderScope, 0, len(targets))
+	canonicalTargets := slices.Clone(targets)
 	scenarios := definition.Scenarios
-	for _, target := range targets {
+	for i, target := range targets {
 		for _, item := range definition.Items {
 			if item.ItemKey == target.Item {
 				scope := orderScope{Item: item.ItemKey, Units: slices.Sorted(slices.Values(item.CommissionUnits)),
 					OwnSales: item.OwnSales, Appointment: item.Appointment, Categories: slices.Sorted(slices.Values(item.ScopeCategories)),
 					MembershipNewOnly: item.MembershipNewOnly, AppointmentLevel: item.AppointmentLevel, AppointmentRole: item.AppointmentRole}
+				if target.PoolID > 0 && item.TargetKind == "pool" && item.FixedMinor != nil && !item.FixedPerOrder {
+					// The pool receives the fixed award. Its distribution roster can change independently.
+					canonicalTargets[i].Owner = 0
+					canonicalTargets[i].Members = nil
+				}
 				if len(item.ScenarioCodes) > 0 {
 					if len(targets) == 1 {
 						scenarios = item.ScenarioCodes
@@ -169,7 +175,6 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 		}
 	}
 	slices.SortFunc(scopes, func(a, b orderScope) int { return cmp.Compare(a.Item, b.Item) })
-	canonicalTargets := slices.Clone(targets)
 	slices.SortFunc(canonicalTargets, func(a, b catalogGroupTargetKey) int { return cmp.Compare(a.Item, b.Item) })
 	shared := catalogPerformanceScope{}
 	if definition.Performance.active() {
