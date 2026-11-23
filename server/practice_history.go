@@ -29,6 +29,7 @@ type practiceTierHistory struct {
 	members        []practiceEnrollment
 	opening        *practiceCountOpening
 	replaying      bool
+	legacyMeasures bool
 	frozenPrior    map[int64]int64
 	frozenAmounts  map[int64]int64
 	liveCategories map[string]string
@@ -93,7 +94,7 @@ func indexPracticePrior(history practiceTierHistory, role string, orders map[str
 	for _, purchase := range past {
 		member := purchase.member
 		kind := classMember(member.MembershipType)
-		if purchase.issue == practicePaymentAlreadySettled ||
+		if purchase.noReferrer || purchase.issue == practicePaymentAlreadySettled ||
 			history.cumulative == "" && kind != "new" ||
 			history.cumulative != "" && !history.cumulative.includes(kind) {
 			continue

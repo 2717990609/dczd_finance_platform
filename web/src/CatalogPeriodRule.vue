@@ -21,7 +21,7 @@ const activeComponent = ref()
 const scenarioCodes = ref([])
 const editingScenarios = ref(false)
 const periodOrderTypes = computed(() => scenarioCodes.value.map(code=>
-  scenarioOptions.value.find(option=>option.value===code)?.label || code).join('、'))
+  scenarioOptions.value.find(option=>option.value===code)?.label || code).join('、') || '待选择 SKU')
 let newComponentID = 0
 const effectiveDate = ref('')
 const resumeDate = ref('')
@@ -495,16 +495,16 @@ async function resumeRule() {
           <a-descriptions-item v-if="!creating" label="结算周期">{{ cycleLabels[sheet.cycle] }}</a-descriptions-item>
           <a-descriptions-item v-if="!creating" label="有效范围">{{ formatTime(sheet.effectiveFrom) }}<template v-if="sheet.effectiveTo"> 至 {{ formatTime(sheet.effectiveTo) }}</template></a-descriptions-item>
           <a-descriptions-item v-if="sheet.resumeFrom && !sheet.paused" label="恢复执行时间" :span="2">{{ formatTime(sheet.resumeFrom) }}</a-descriptions-item>
-          <a-descriptions-item label="参与场景" :span="2">
+          <a-descriptions-item label="适用 SKU" :span="2">
             <template v-if="creating || editingScenarios">
               <a-select id="period-rule-scenarios" v-model:value="scenarioCodes" :options="scenarioOptions"
-                mode="multiple" show-search option-filter-prop="label" aria-label="参与场景"
+                mode="multiple" show-search option-filter-prop="label" aria-label="适用 SKU"
                 placeholder="选择参与整期计提的 SKU" :disabled="saving" class="period-scenario-select"/>
               <a-button v-if="!creating" type="link" @click="editingScenarios=false">完成选择</a-button>
             </template>
             <template v-else>
               <a-tag v-for="code in scenarioCodes" :key="code">{{ scenarioOptions.find(option=>option.value===code)?.label || code }}</a-tag>
-              <a-button v-if="canSave" type="link" :disabled="saving" @click="editingScenarios=true">编辑参与场景</a-button>
+              <a-button v-if="canSave" type="link" :disabled="saving" @click="editingScenarios=true">编辑适用 SKU</a-button>
             </template>
           </a-descriptions-item>
         </a-descriptions>
@@ -566,12 +566,14 @@ async function resumeRule() {
                   <a-input-number id="period-benefit-fixed-amount" v-model:value="item.fixedAmount" :min="0" :precision="2" :disabled="saving"/>
                 </a-form-item>
               </template>
+              <template #scope>
+                <CatalogCommissionScopeFields :prefix="'period-scope-'+item.uid" v-model="item.salesScope"
+                  :options="periodScopeUnits" :unit-names="salesUnitNames" :categories="periodScopeCategories" :category-names="salesCategoryNames"
+                  :can-own="item.targetKind==='person'" :disabled="saving"/>
+              </template>
             </RuleArrangementFields>
           </a-form>
-          <RuleArrangementFields v-else :order-type-text="periodOrderTypes" :calculation-text="methodSummary(item)"/>
-          <CatalogCommissionScopeFields v-if="canSave" :prefix="'period-scope-'+item.uid" v-model="item.salesScope"
-            :options="periodScopeUnits" :unit-names="salesUnitNames" :categories="periodScopeCategories" :category-names="salesCategoryNames"
-            :can-own="item.targetKind==='person'" :disabled="saving"/>
+          <RuleArrangementFields v-else :order-type-text="periodOrderTypes" :calculation-text="methodSummary(item)" :scope-text="orderScopeText(item)"/>
           <a-form v-if="canSave && item.targetKind==='person'" layout="vertical" size="small" class="rule-basics">
             <a-form-item>
               <a-checkbox :checked="!!item.appointment" :disabled="saving"

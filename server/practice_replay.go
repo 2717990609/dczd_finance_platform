@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -33,6 +34,7 @@ type practiceReplayInputs struct {
 const practiceReplayNetRateShares = 2
 const practiceReplayIndependentBenefits = 3
 const practiceReplayConfiguredBenefitRole = 4
+const practiceReplayIndependentTierMeasurement = 5
 
 const practiceRefundReplaySQL = `(d.practice_replay_inputs IS NOT NULL
  AND d.practice_replay_inputs->'independentRefunds' IS DISTINCT FROM 'true'::jsonb)`
@@ -126,12 +128,17 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 		}
 	}
 	for index, part := range rule.Components {
+		if part.Tiers != nil && slices.ContainsFunc([]string{"new", "retrain"}, func(member string) bool {
+			return !part.matchesPracticeMember(member) && part.Tiers.measuresUnpaidMember(member)
+		}) {
+			inputs.Version = practiceReplayIndependentTierMeasurement
+		}
 		if benefit := part.PeriodBenefit; benefit != nil {
 			if benefit.RegistrationScope == nil && !benefit.hasSalesScope() {
 				inputs.Version = max(inputs.Version, practiceReplayIndependentBenefits)
 			}
 			if benefit.usesSalesPerson() {
-				inputs.Version = practiceReplayConfiguredBenefitRole
+				inputs.Version = max(inputs.Version, practiceReplayConfiguredBenefitRole)
 			}
 			if assignments := runtime.appointments[benefit.appointmentKey()]; len(assignments) != 0 {
 				inputs.Appointments[index] = assignments
@@ -173,7 +180,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 	if err != nil {
 		return replay, err
 	}
-	if saved != nil && (saved.Version < 1 || saved.Version > practiceReplayConfiguredBenefitRole) {
+	if saved != nil && (saved.Version < 1 || saved.Version > practiceReplayIndependentTierMeasurement) {
 		return replay, errPracticeRefundReplay
 	}
 	replay.members, err = readPracticeMembers(ctx, tx, []int64{rosterID}, false)
@@ -240,7 +247,8 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 			return replay, err
 		}
 	}
-	replay.history = practiceTierHistory{replaying: true, frozenPrior: values.PriorCounts, frozenAmounts: values.TierAmounts}
+	replay.history = practiceTierHistory{replaying: true, frozenPrior: values.PriorCounts, frozenAmounts: values.TierAmounts,
+		legacyMeasures: values.Version < practiceReplayIndependentTierMeasurement}
 	if len(values.TierArrangements) != 0 {
 		replay.history.arrangements = make(map[string]practiceTierHistory, len(values.TierArrangements))
 		for member, tier := range values.TierArrangements {

@@ -11,10 +11,9 @@ const categories = computed(() => catalogScopeOptions(props.categories || [],sco
 </script>
 
 <template>
-  <div class="commission-scope-fields">
-    <RuleOrderScope :id="prefix+'-scope-type'" :model-value="mode" :disabled="disabled" :can-own="canOwn" team-label="指定销售范围"
-      @update:model-value="scope=$event==='team' ? {unitIds:[],categoryIds:[]} : $event==='own' ? 'own' : null"/>
-    <template v-if="mode==='team'">
+  <RuleOrderScope :id="prefix+'-scope-type'" :model-value="mode" :disabled="disabled" :can-own="canOwn" team-label="指定销售范围"
+    @update:model-value="scope=$event==='team' ? {unitIds:[],categoryIds:[]} : $event==='own' ? 'own' : null"/>
+  <div v-if="mode==='team'" class="rule-scope-filters">
       <a-form-item label="适用销售组织" :html-for="prefix+'-scope-units'">
         <a-select :id="prefix+'-scope-units'" :value="scope.unitIds" @update:value="scope={...scope,unitIds:$event}" :options="units" :disabled="disabled"
           mode="multiple" allow-clear :max-tag-count="2" show-search option-filter-prop="label" placeholder="不限公司、部门或小组"/>
@@ -23,12 +22,5 @@ const categories = computed(() => catalogScopeOptions(props.categories || [],sco
         <a-select :id="prefix+'-scope-categories'" :value="scope.categoryIds" @update:value="scope={...scope,categoryIds:$event}" :options="categories"
           :disabled="disabled" mode="multiple" allow-clear :max-tag-count="2" show-search option-filter-prop="label" placeholder="不限销售类别"/>
       </a-form-item>
-    </template>
   </div>
 </template>
-
-<style scoped>
-.commission-scope-fields {display:flex;flex-wrap:wrap;gap:0 10px}
-.commission-scope-fields > :deep(.ant-form-item) {flex:0 1 210px;min-width:0;max-width:100%}
-.commission-scope-fields > :deep(.ant-form-item:not(:first-child)) {flex:1 1 250px}
-</style>

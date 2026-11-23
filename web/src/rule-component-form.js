@@ -11,8 +11,6 @@ export const catalogFlatMethods = [
   {value:'rate',label:'比例'},
   {value:'fixed',label:'固定金额'},
 ]
-export const catalogCalculationMethods = [...catalogFlatMethods,{value:'table',label:'按类别或公司设置比例'}]
-export const catalogSalesCalculationMethods = catalogCalculationMethods.filter(method=>method.value!=='fixed')
 
 export function moneyAsMinor(value) {
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value ?? ''))

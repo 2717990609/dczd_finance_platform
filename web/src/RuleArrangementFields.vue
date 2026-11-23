@@ -37,7 +37,13 @@ defineExpose({focus:()=>input.value?.focus()})
 
 <style scoped>
 .rule-basics { grid-template-columns:repeat(auto-fit,minmax(min(100%,155px),1fr)) }
-.rule-arrangement-terms { grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr)) }
+.rule-arrangement-terms { grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr)) }
+.rule-arrangement-terms :deep(.rule-scope-filters) {
+  grid-column:1 / -1;
+  display:grid;
+  grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));
+  gap:0 10px;
+}
 .rule-basics :deep(.ant-form-item) { min-width:0 }
 .rule-basics :deep(.ant-input-number) { width:100% }
 .rule-field-value { display:block; padding:4px 0; overflow-wrap:anywhere }

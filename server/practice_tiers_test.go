@@ -56,6 +56,88 @@ func TestPracticeCumulativeAmountUsesSelectedEnrollmentTypes(t *testing.T) {
 	}
 }
 
+func TestPracticeTierMeasuresOtherEnrollmentWithoutAPayoutSchedule(t *testing.T) {
+	at := time.Date(2026, 11, 5, 4, 0, 0, 0, time.UTC)
+	newAmount, retrainAmount := int64(10000), int64(30000)
+	orders := map[string][]paymentInput{
+		"1": {{ID: 1, Fact: sourceFact{Source: "DCZD", OrderID: "1", PaymentID: "1", ReferrerID: "seller", SalesCompanyID: "other", AmountMinor: &newAmount, OccurredAt: at.Add(-time.Hour)}}},
+		"2": {{ID: 2, Fact: sourceFact{Source: "DCZD", OrderID: "2", PaymentID: "2", ReferrerID: "seller", SalesCompanyID: "configured", AmountMinor: &retrainAmount, OccurredAt: at}}},
+	}
+	members := []practiceEnrollment{
+		{ID: 1, RosterID: 9, SourceEnrollmentID: "1", MembershipType: 3, CommissionEligible: true, ConfirmedAt: at, PaidOrderIDs: []string{"1"}},
+		{ID: 2, RosterID: 9, SourceEnrollmentID: "2", MembershipType: 2, CommissionEligible: true, ConfirmedAt: at, PaidOrderIDs: []string{"2"}},
+	}
+	history := practiceTierHistory{current: practiceHistoryPeriod{rosterID: 9, ordinal: 1, startsAt: &at}}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{PersonID: 7}}}
+	for _, c := range []struct {
+		name   string
+		metric practiceAmountMetric
+		count  []practiceTier
+		amount []practiceTier
+	}{
+		{name: "累计新报人数", count: []practiceTier{{Mode: "rate", Value: 100}, {From: 1, Mode: "rate", Value: 300}}},
+		{name: "累计新报及复训金额", metric: "cumulative_combined", amount: []practiceTier{{Mode: "rate", Value: 100}, {From: 40000, Mode: "rate", Value: 300}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			part := component{Type: "sales", Mode: "tiered", ClassMember: "retrain", SourceRole: "DIRECT_REFERRER",
+				Tiers: &practiceSalesTiers{CountFromOrdinal: 1, CumulativeMetric: c.metric,
+					CompanySchedules: []practiceCompanySchedule{{CompanyIDs: []string{"configured"}, Count: c.count, Performance: c.amount}}}}
+			rule := paymentRule{Components: []component{part}}
+			if err := validateComponents(rule.Components); err != nil {
+				t.Fatal(err)
+			}
+			result, err := calculatePracticeDraft(members, rule, orders, identities, nil, history, nil, practiceDraftRuntime{})
+			if err != nil || len(result.Issues) != 0 || len(result.Lines) != 1 || result.Lines[0].FactID != 2 || result.Total != 900 {
+				t.Fatalf("new enrollment must increase the tier without a payout: %+v, %v", result, err)
+			}
+			if c.metric == "" {
+				legacy := history
+				legacy.replaying, legacy.legacyMeasures, legacy.frozenPrior = true, true, result.practicePriorCounts
+				old, err := calculatePracticeDraft(members, rule, orders, identities, nil, legacy, nil, practiceDraftRuntime{})
+				if err != nil || len(old.Issues) != 0 || old.Total != 300 {
+					t.Fatalf("earlier settlements keep the original count when replayed: %+v, %v", old, err)
+				}
+			}
+			rule.Components[0].SalesCompanies = &[]string{"configured"}
+			scoped, err := calculatePracticeDraft(members, rule, orders, identities, nil, history, nil, practiceDraftRuntime{})
+			if err != nil || len(scoped.Issues) != 0 || scoped.Total != 300 {
+				t.Fatalf("the explicit company range still limits orders that only contribute to the metric: %+v, %v", scoped, err)
+			}
+		})
+	}
+}
+
+func TestPracticePriorTierSkipsConfirmedUnattributedRetrain(t *testing.T) {
+	amount := int64(10000)
+	old := time.Date(2026, 10, 5, 4, 0, 0, 0, time.UTC)
+	orders := map[string][]paymentInput{
+		"1": {{ID: 1, Fact: sourceFact{Source: "DCZD", OrderID: "1", PaymentID: "1", ReferrerID: "known", AmountMinor: &amount, OccurredAt: old}}},
+		"2": {{ID: 2, Fact: sourceFact{Source: "DCZD", OrderID: "2", PaymentID: "2", AmountMinor: &amount, OccurredAt: old,
+			PracticeNoReferrer: &sourcePracticeSignup{EnrollmentID: 12, ParticipantID: 81, StrategyID: 4}}}},
+	}
+	state := practiceTierHistory{cumulative: "cumulative_retrain", periods: []practiceHistoryPeriod{{rosterID: 9, settled: true, retrainRole: "DIRECT_REFERRER"}},
+		members: []practiceEnrollment{
+			{ID: 11, RosterID: 9, SourceEnrollmentID: "11", MembershipType: 2, CommissionEligible: true, PaidOrderIDs: []string{"1"}},
+			{ID: 12, RosterID: 9, SourceEnrollmentID: "12", ParticipantID: "81", PeriodKey: "PRACTICE:1:4:9", MembershipType: 2, CommissionEligible: true, PaidOrderIDs: []string{"2"}},
+		}}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "known"}: {{PersonID: 7}}}
+	index, err := indexPracticePrior(state, "DIRECT_REFERRER", orders, identities, nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ready, err := index.personTotal(7, map[int64]bool{9: true}); err != nil || !ready || got != amount {
+		t.Fatalf("known unattributed enrollment must not block or inflate the seller's prior total: %d %t %v", got, ready, err)
+	}
+	state.members[1].ParticipantID = "82"
+	index, err = indexPracticePrior(state, "DIRECT_REFERRER", orders, identities, nil, nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ready, err := index.personTotal(7, map[int64]bool{9: true}); err != nil || ready {
+		t.Fatalf("an unverified source exception must still block the history: %t %v", ready, err)
+	}
+}
+
 func TestPracticeCumulativeAmountUsesRefundBookingMonth(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
@@ -105,9 +187,30 @@ func TestPracticeCumulativeAmountUsesRefundBookingMonth(t *testing.T) {
 		}
 	}
 	assertBooked(late, 0)
-	exec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,1,'fixture')`, accounting)
+	for _, period := range []int64{early, late} {
+		if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &period, Label: "金额阶梯", Components: []component{{
+			Type: "sales", Mode: "tiered", SourceRole: "DIRECT_REFERRER", ClassMember: "new",
+			Tiers: &practiceSalesTiers{CumulativeMetric: "cumulative_new", CountFromOrdinal: 1, Performance: []practiceTier{{Mode: "rate", Value: 100}}},
+		}}}); err != nil {
+			t.Fatal(err)
+		}
+		exec(`INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at)
+		 SELECT period_id,id,1,decode('','hex'),0,0,0,now() FROM rule_versions WHERE period_id=$1`, period)
+	}
+	exec(`DELETE FROM draft_refresh_queue WHERE period_id=ANY($1::bigint[])`, []int64{early, late, accounting})
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		_, err := insertSettlement(ctx, tx, accounting, 1, "fixture", "", nil)
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
 	assertBooked(early, 0)
 	assertBooked(late, 10000)
+	var queued []int64
+	if err := s.db.QueryRow(ctx, `SELECT array_agg(period_id ORDER BY period_id) FROM draft_refresh_queue
+	 WHERE period_id=ANY($1::bigint[])`, []int64{early, late}).Scan(&queued); err != nil || len(queued) != 1 || queued[0] != late {
+		t.Fatalf("refund settlement must refresh the applicable month only: %v %v", queued, err)
+	}
 }
 
 func TestPracticeBookedRefundChangesOnlyOpenCumulativeTier(t *testing.T) {
@@ -246,8 +349,8 @@ func TestPracticeSeparateTierStartsPersistAndReplay(t *testing.T) {
 		{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER", ArrangementLabel: "新报销售",
 			Tiers: &practiceSalesTiers{CountFromOrdinal: 1, Count: []practiceTier{{Mode: "rate", Value: 100}, {From: 1, Mode: "rate", Value: 200}}}},
 		{Type: "sales", Mode: "tiered", ClassMember: "retrain", SourceRole: "DIRECT_REFERRER", ArrangementLabel: "复训销售",
-			Tiers: &practiceSalesTiers{CountFromOrdinal: 1, CumulativeMetric: "cumulative_retrain",
-				Performance: []practiceTier{{Mode: "rate", Value: 100}, {From: 30000, Mode: "rate", Value: 300}, {From: 60000, Mode: "rate", Value: 400}}}},
+			Tiers: &practiceSalesTiers{CountFromOrdinal: 1, CumulativeMetric: "cumulative_combined",
+				Performance: []practiceTier{{Mode: "rate", Value: 100}, {From: 40000, Mode: "rate", Value: 300}, {From: 80000, Mode: "rate", Value: 400}}}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -280,6 +383,10 @@ func TestPracticeSeparateTierStartsPersistAndReplay(t *testing.T) {
 		t.Fatalf("the retrain restart must not change the new-enrollment ladder: %+v", arrangements)
 	}
 	original := calculate(current, 1100)
+	var algorithm int
+	if err := s.db.QueryRow(ctx, `SELECT (practice_replay_inputs->>'version')::int FROM calculation_drafts WHERE period_id=$1`, current).Scan(&algorithm); err != nil || algorithm != practiceReplayIndependentTierMeasurement {
+		t.Fatalf("draft should save the measurement behavior for refund replay: %d %v", algorithm, err)
+	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, current, original.Version); err != nil {
 		t.Fatal(err)
 	}

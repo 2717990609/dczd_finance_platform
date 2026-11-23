@@ -81,47 +81,49 @@ const calculationMethods = computed(() => [
         <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
       </a-form-item>
     </template>
+    <template #scope>
+      <RuleOrderScope :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
+        team-label="指定销售范围" all-label="全班" :additional="registrationOption" @update:model-value="changeScope"/>
+      <div v-if="scopeMode!=='all'" class="rule-scope-filters">
+        <template v-if="scopeMode==='team'">
+          <a-form-item label="适用销售类别" :html-for="field('categories')">
+            <a-select :id="field('categories')" v-model:value="config.salesCategoryIds" :options="salesCategories"
+              mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售类别"/>
+          </a-form-item>
+          <a-form-item label="适用销售组织" :html-for="field('sales-units')">
+            <a-select :id="field('sales-units')" v-model:value="config.salesUnits" :options="salesUnits"
+              mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司、部门或小组"/>
+          </a-form-item>
+          <a-form-item v-if="companies?.length" label="销售公司" :html-for="field('companies')">
+            <a-select :id="field('companies')" v-model:value="config.salesCompanies" :options="companies"
+              mode="multiple" :max-tag-count="1" allow-clear :filter-option="byName" placeholder="不限销售公司"/>
+          </a-form-item>
+          <a-form-item v-if="config.salesPeople?.length" label="销售人员" :html-for="field('sales')">
+            <a-select :id="field('sales')" v-model:value="config.salesPeople" :options="people"
+              mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售人员"/>
+          </a-form-item>
+        </template>
+        <a-form-item v-if="scopeMode==='own' || scopeMode==='team' && (config.salesPeople?.length || config.salesUnits?.length)"
+          label="订单上的销售角色" :html-for="field('role')" required>
+          <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
+        </a-form-item>
+        <template v-if="registration">
+          <a-form-item label="本人销售账号" :html-for="field('registration-seller')">
+            <a-input :id="field('registration-seller')" v-model:value="registration.sellerId" inputmode="numeric"
+              :maxlength="19" placeholder="大春之道销售账号" allow-clear/>
+          </a-form-item>
+          <a-form-item label="本人销售公司" :html-for="field('registration-company')">
+            <a-select :id="field('registration-company')" v-model:value="registration.sellerCompanyId" :options="registrationCompanies"
+              :loading="registrationLoading" show-search allow-clear :filter-option="byName"/>
+          </a-form-item>
+          <a-form-item label="下属公司" :html-for="field('registration-companies')">
+            <a-select :id="field('registration-companies')" v-model:value="registration.companies" :options="registrationCompanies"
+              :loading="registrationLoading" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
+          </a-form-item>
+        </template>
+      </div>
+    </template>
   </RuleArrangementFields>
-  <div class="period-fields period-scope" :class="{'period-scope-all':scopeMode==='all'}">
-    <RuleOrderScope :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
-      team-label="指定销售范围" all-label="全班" :additional="registrationOption" @update:model-value="changeScope"/>
-    <template v-if="scopeMode==='team'">
-      <a-form-item label="适用销售类别" :html-for="field('categories')">
-        <a-select :id="field('categories')" v-model:value="config.salesCategoryIds" :options="salesCategories"
-          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售类别"/>
-      </a-form-item>
-      <a-form-item label="适用销售组织" :html-for="field('sales-units')">
-        <a-select :id="field('sales-units')" v-model:value="config.salesUnits" :options="salesUnits"
-          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司、部门或小组"/>
-      </a-form-item>
-      <a-form-item v-if="companies?.length" label="销售公司" :html-for="field('companies')">
-        <a-select :id="field('companies')" v-model:value="config.salesCompanies" :options="companies"
-          mode="multiple" :max-tag-count="1" allow-clear :filter-option="byName" placeholder="不限销售公司"/>
-      </a-form-item>
-      <a-form-item v-if="config.salesPeople?.length" label="销售人员" :html-for="field('sales')">
-        <a-select :id="field('sales')" v-model:value="config.salesPeople" :options="people"
-          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售人员"/>
-      </a-form-item>
-    </template>
-    <a-form-item v-if="scopeMode==='own' || scopeMode==='team' && (config.salesPeople?.length || config.salesUnits?.length)"
-      label="订单上的销售角色" :html-for="field('role')" required>
-      <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
-    </a-form-item>
-    <template v-if="registration">
-      <a-form-item label="本人销售账号" :html-for="field('registration-seller')">
-        <a-input :id="field('registration-seller')" v-model:value="registration.sellerId" inputmode="numeric"
-          :maxlength="19" placeholder="大春之道销售账号" allow-clear/>
-      </a-form-item>
-      <a-form-item label="本人销售公司" :html-for="field('registration-company')">
-        <a-select :id="field('registration-company')" v-model:value="registration.sellerCompanyId" :options="registrationCompanies"
-          :loading="registrationLoading" show-search allow-clear :filter-option="byName"/>
-      </a-form-item>
-      <a-form-item label="下属公司" :html-for="field('registration-companies')">
-        <a-select :id="field('registration-companies')" v-model:value="registration.companies" :options="registrationCompanies"
-          :loading="registrationLoading" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
-      </a-form-item>
-    </template>
-  </div>
   <a-alert v-if="registration && registrationError" type="warning" :message="registrationError" show-icon/>
   <a-form-item v-if="registration">
     <a-checkbox v-model:checked="registration.exclusive">与其他已标记互斥的报名安排不重复匹配</a-checkbox>
@@ -164,7 +166,6 @@ const calculationMethods = computed(() => [
 .period-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:0 10px;align-items:start}
 .period-tier {grid-template-columns:repeat(3,minmax(0,1fr));align-items:end}
 .period-fields :deep(.ant-input-number) {width:100%}
-.period-scope-all {max-width:280px}
 .period-appointment :deep(.ant-collapse-header),.period-appointment :deep(.ant-collapse-content-box) {padding:4px 0}
 @media (max-width:480px) { .period-tier {grid-template-columns:repeat(2,minmax(0,1fr))} }
 </style>

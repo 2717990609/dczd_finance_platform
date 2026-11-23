@@ -31,6 +31,10 @@ func (t practiceSalesTiers) usesPriorTiers() bool {
 	return t.CumulativeMetric != "" || t.hasCountTiers()
 }
 
+func (t practiceSalesTiers) measuresUnpaidMember(member string) bool {
+	return t.CumulativeMetric.includes(member) || t.CumulativeMetric == "" && member == "new"
+}
+
 type practiceCountStart struct {
 	FromOrdinal int        `json:"countFromOrdinal,omitempty"`
 	FromAt      *time.Time `json:"countFromAt,omitempty"`
@@ -193,6 +197,7 @@ type practiceTierPurchase struct {
 	Base            int64
 	Retrain         bool
 	MeasureOnly     bool
+	unpricedMeasure bool
 }
 
 func (part component) tierIncludesRetrain() bool {
@@ -336,6 +341,9 @@ func choosePracticeSalesTiers(config practiceSalesTiers, purchases []practiceTie
 	schedules := config.schedules()
 	metrics := make(map[int64]*personalMetric)
 	for _, purchase := range ordered {
+		if purchase.unpricedMeasure {
+			continue
+		}
 		schedule, ok := schedules.forSale(purchase.PersonID, purchase.CompanyID, purchase.SalesCategoryID)
 		if !ok {
 			continue
@@ -355,11 +363,14 @@ func choosePracticeSalesTiers(config practiceSalesTiers, purchases []practiceTie
 	awards := make(map[int64]practiceTier, len(ordered))
 	var fallback []practiceTierPurchase
 	for _, purchase := range ordered {
-		schedule, ok := schedules.forSale(purchase.PersonID, purchase.CompanyID, purchase.SalesCategoryID)
-		if !ok {
+		metric := metrics[purchase.PersonID]
+		if metric == nil {
 			continue
 		}
-		metric := metrics[purchase.PersonID]
+		schedule, ok := schedules.forSale(purchase.PersonID, purchase.CompanyID, purchase.SalesCategoryID)
+		if !ok && !purchase.unpricedMeasure {
+			continue
+		}
 		count, err := addMinor(prior[purchase.PersonID], metric.seen)
 		if err != nil {
 			return nil, err
@@ -407,7 +418,7 @@ func practiceCumulativeAmountTotals(config practiceSalesTiers, purchases []pract
 	schedules := config.schedules()
 	totals := make(map[int64]int64, len(prior))
 	for _, purchase := range purchases {
-		if _, configured := schedules.forSale(purchase.PersonID, purchase.CompanyID, purchase.SalesCategoryID); !configured {
+		if _, configured := schedules.forSale(purchase.PersonID, purchase.CompanyID, purchase.SalesCategoryID); !configured && !purchase.unpricedMeasure {
 			continue
 		}
 		person := purchase.PersonID

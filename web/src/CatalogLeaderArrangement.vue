@@ -57,7 +57,8 @@ function selectCompanies(companies) {
       <a-select :id="field('target')" :value="form.target" :options="targets" :disabled="disabled"
         @change="selectTarget"/>
     </a-form-item>
-    <a-form-item v-if="form.target==='person'" label="指定收款人" :html-for="field('person')" required>
+    <a-form-item v-if="form.target==='person'" label="指定收款人" :html-for="field('person')"
+      extra="计提其任职期间的订单" required>
       <AppointmentPersonSelect :id="field('person')" :value="form.personId" :api="api" endpoint="/catalog-rule-people"
         :filters="peopleFilters" :disabled="disabled" :current="form.personId ? {id:form.personId,name:form.personName} : undefined"
         @change="(personId,option)=>update({personId,personName:option?.name})"/>
@@ -72,28 +73,29 @@ function selectCompanies(companies) {
           :min="0" :max="form.method==='rate' ? 100 : undefined" :precision="2" string-mode @update:value="update({amount:$event})"/>
       </a-form-item>
     </template>
+    <template #scope>
+      <a-form-item label="计提订单范围" :html-for="field('orders')">
+        <a-select :id="field('orders')" :value="form.scope.orders" :options="orderScopes" :disabled="disabled"
+          @change="updateScope({orders:$event})"/>
+      </a-form-item>
+      <div class="rule-scope-filters">
+        <a-form-item label="适用内部团队" :html-for="field('companies')">
+          <a-select :id="field('companies')" :value="form.scope.companies" :options="teamOptions"
+            :disabled="disabled" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="全部内部团队"
+            @change="selectCompanies"/>
+        </a-form-item>
+        <a-form-item v-if="groupOptions.length" label="适用销售小组" :html-for="field('groups')">
+          <a-select :id="field('groups')" :value="form.scope.groups" :options="groupOptions"
+            :disabled="disabled" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label"
+            :placeholder="isGroup ? '上述团队内全部小组' : '上述团队全部成员'" @change="updateScope({groups:$event})"/>
+        </a-form-item>
+        <a-form-item v-if="categoryOptions.length" label="适用销售类别" :html-for="field('categories')">
+          <a-select :id="field('categories')" :value="form.scope.categoryIds" :options="categoryOptions" :disabled="disabled"
+            mode="multiple" :max-tag-count="2" allow-clear show-search option-filter-prop="label" placeholder="不限销售类别"
+            @change="updateScope({categoryIds:$event})"/>
+        </a-form-item>
+      </div>
+    </template>
   </RuleArrangementFields>
-  <div class="rule-basics">
-    <a-form-item label="计提订单范围" :html-for="field('orders')">
-      <a-select :id="field('orders')" :value="form.scope.orders" :options="orderScopes" :disabled="disabled"
-        @change="updateScope({orders:$event})"/>
-    </a-form-item>
-    <a-form-item label="适用内部团队" :html-for="field('companies')">
-      <a-select :id="field('companies')" :value="form.scope.companies" :options="teamOptions"
-        :disabled="disabled" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="全部内部团队"
-        @change="selectCompanies"/>
-    </a-form-item>
-    <a-form-item v-if="groupOptions.length" label="适用销售小组" :html-for="field('groups')">
-      <a-select :id="field('groups')" :value="form.scope.groups" :options="groupOptions"
-        :disabled="disabled" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label"
-        :placeholder="isGroup ? '上述团队内全部小组' : '上述团队全部成员'" @change="updateScope({groups:$event})"/>
-    </a-form-item>
-    <a-form-item v-if="categoryOptions.length" label="适用销售类别" :html-for="field('categories')">
-      <a-select :id="field('categories')" :value="form.scope.categoryIds" :options="categoryOptions" :disabled="disabled"
-        mode="multiple" :max-tag-count="2" allow-clear show-search option-filter-prop="label" placeholder="不限销售类别"
-        @change="updateScope({categoryIds:$event})"/>
-    </a-form-item>
-  </div>
-  <small v-if="form.target==='person'" class="rule-block-recipient">按付款时在相应{{ isGroup ? '小组' : '团队' }}的任职期间计提</small>
   <slot/>
 </template>

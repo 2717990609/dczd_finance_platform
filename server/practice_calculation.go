@@ -163,6 +163,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		if configured, ok := history.arrangements[part.ClassMember]; ok {
 			state = configured
 			state.replaying, state.bookedRefunds, state.liveCategories = history.replaying, history.bookedRefunds, history.liveCategories
+			state.legacyMeasures = history.legacyMeasures
 		}
 		awards, issues, err := practiceTierAwards(part, purchases, orders, identities, blocked, state, refunds, runtime)
 		if err != nil {
@@ -417,7 +418,7 @@ func practiceTierAwards(part component, current []practicePurchase, orders map[s
 		kind := classMember(member.MembershipType)
 		retrain := kind == "retrain"
 		pays := part.matchesPracticeMember(kind)
-		measures := config.CumulativeMetric.includes(kind) || !cumulative && !pays && kind == "new"
+		measures := config.CumulativeMetric.includes(kind) || !pays && config.measuresUnpaidMember(kind)
 		if !pays && !measures || purchase.noReferrer || purchase.issue == practicePaymentAlreadySettled ||
 			retrain && !measures && (purchase.issue != "" || purchase.companyRoutingIssue != "") {
 			continue
@@ -436,9 +437,10 @@ func practiceTierAwards(part component, current []practicePurchase, orders map[s
 			continue
 		}
 		person := practicePurchaseOwner(purchase, part.SourceRole, identities)
+		unpricedMeasure := !pays && !history.legacyMeasures
 		_, hasPersonalSchedule := schedules.people[person]
 		var company, category, companyIssue string
-		if !hasPersonalSchedule && len(config.CompanySchedules)+len(config.CategorySchedules) != 0 && purchase.issue == "" {
+		if !unpricedMeasure && !hasPersonalSchedule && len(config.CompanySchedules)+len(config.CategorySchedules) != 0 && purchase.issue == "" {
 			company, companyIssue = practicePurchaseCompany(purchase.payments)
 		}
 		if _, exception := schedules.companies[company]; company != "" && !exception && len(schedules.categories) != 0 {
@@ -471,7 +473,8 @@ func practiceTierAwards(part component, current []practicePurchase, orders map[s
 			needsHistory[person] = true
 		}
 		row := practiceTierPurchase{EnrollmentID: member.ID, PersonID: person, CompanyID: company, SalesCategoryID: category, Base: purchase.base,
-			SequenceKey: purchase.payments[0].Fact.OrderID, PaidAt: purchase.payments[0].Fact.OccurredAt, Retrain: retrain, MeasureOnly: !pays}
+			SequenceKey: purchase.payments[0].Fact.OrderID, PaidAt: purchase.payments[0].Fact.OccurredAt, Retrain: retrain, MeasureOnly: !pays,
+			unpricedMeasure: unpricedMeasure}
 		if len(purchase.payments) == 2 {
 			row.SequenceKey = member.SourceEnrollmentID
 			if second := purchase.payments[1].Fact.OccurredAt; second.Before(row.PaidAt) {

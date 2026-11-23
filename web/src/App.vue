@@ -25,7 +25,7 @@ import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
-  practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
+  practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
   practiceSalesScopeText, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
@@ -482,7 +482,10 @@ function ruleRecipientSummary(row) {
     optionLabel('organizationDuty',row.recipientDuty)].filter(Boolean).join(' · '))
     : row.sourceRole ? optionLabel('orderAttributionRole',row.sourceRole) : '选择订单上的收款人'
   if (row===practiceRetrainSales.value && row.retrainSplits?.length) return who+' · 按公司分账'
-  if (row.mode==='tiered') return who+' · 按阶梯'
+  if (row.mode==='tiered') {
+    const metric = practiceCumulativeAmountMetrics.find(option=>option.value===row.tierConfig?.cumulativeMetric)?.label
+    return who+' · '+(metric || (row.tierConfig?.forceCount ? '累计新报人数' : '按阶梯'))
+  }
   if (row.amount == null) return who
   return who+' · '+(row.mode==='fixed' ? formatMoney(Math.round(row.amount*100)) : row.amount+'%')
 }

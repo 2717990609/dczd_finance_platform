@@ -4,7 +4,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
-import { catalogCalculationMethods, catalogOrderScope, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesCalculationMethods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
+import { catalogFlatMethods, catalogOrderScope, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
   orderTypeText:String,productId:Number})
@@ -168,13 +168,15 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
       </template>
       <template v-else>
         <RuleArrangementFields ref="itemName" v-model:name="form.label" :name-id="form.kind==='item' ? 'catalog-add-label' : undefined"
+          :calculation-text="form.kind==='item' && isSales ? '比例' : undefined"
           :order-type-text="form.kind==='item' ? orderTypeText : undefined">
           <CatalogPayeeFields v-if="form.kind==='item'" :model-value="form" prefix="catalog-add" :options="options" :api="api"
             :product-id="productId" :people-filters="peopleFilters"
             :sales-available="!form.editingSales && form.itemIndex==null && salesAvailable" @update:model-value="changePayee"/>
           <template #calculation>
-          <a-form-item v-if="form.kind==='item'" label="计提方式" html-for="catalog-add-format">
-            <a-select id="catalog-add-format" v-model:value="form.format" :options="isSales ? catalogSalesCalculationMethods : catalogCalculationMethods"/>
+          <a-form-item v-if="form.kind==='item' && !isSales" label="计提方式" html-for="catalog-add-format">
+            <a-select id="catalog-add-format" :value="form.format==='table' ? 'rate' : form.format" :options="catalogFlatMethods"
+              @update:value="form.format=$event"/>
           </a-form-item>
           <a-form-item v-if="isSales && form.format==='rate'" label="比例收款方" html-for="catalog-add-sales-payee">
             <a-select id="catalog-add-sales-payee" :value="form.salesPayee || 'seller'" :options="catalogSalesPayees" @change="form.salesPayee=$event"/>
@@ -188,9 +190,15 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
               :min="0" :precision="2" string-mode/>
           </a-form-item>
           </template>
+          <template #scope>
+            <CatalogCommissionScopeFields v-if="form.kind==='item'" prefix="catalog-add" v-model="form.orderScope"
+              :options="options.salesUnits" :categories="options.categories" :can-own="form.target==='person'"/>
+          </template>
         </RuleArrangementFields>
-        <CatalogCommissionScopeFields v-if="form.kind==='item'" prefix="catalog-add" v-model="form.orderScope"
-          :options="options.salesUnits" :categories="options.categories" :can-own="form.target==='person'"/>
+        <a-button v-if="form.kind==='item' && form.format!=='fixed'" size="small"
+          @click="form.format=form.format==='table' ? 'rate' : 'table'">
+          {{ form.format==='table' ? '改用统一比例' : '按类别或公司设比例' }}
+        </a-button>
         <template v-if="form.format==='table'">
           <small v-if="options.categories.length" class="finance-rate-priority">
             匹配顺序 {{ catalogRatePriorityLabel }}{{ isSales ? ' → 外部公司默认比例' : '' }} → 通用比例
