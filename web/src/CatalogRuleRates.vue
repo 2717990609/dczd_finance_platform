@@ -96,7 +96,8 @@ function selectMemberType(item, value) {
 const splitItem = computed(() => sheet.value?.components.find(item=>item.teamSplit))
 const splitRemoved = computed(() => splitItem.value && removedItems.value.has(splitItem.value.itemKey))
 const serviceVisible = computed(() => !splitRemoved.value && splitItem.value?.teamSplit.service>0 && !splitItem.value?.serviceDisabled)
-const serviceRemoved = computed(() => !serviceVisible.value || removedItems.value.has(serviceItemKey))
+const serviceReplacement = computed(() => structure.value.items.some(item=>item.replacesItemKey===serviceItemKey))
+const serviceRemoved = computed(() => !serviceVisible.value || removedItems.value.has(serviceItemKey) || serviceReplacement.value)
 const serviceArrangement = computed(() => ({itemKey:serviceItemKey,label:splitItem.value?.serviceLabel || '内部团队服务提成',
   membershipNewOnly:splitItem.value?.serviceMembershipNewOnly}))
 const leaderArrangements = computed(() => splitRemoved.value ? [] : sheet.value?.leaderArrangements || [])
@@ -165,6 +166,7 @@ const rateGroup = ref()
 const rateTableRevision = ref(0)
 const rateRowKey = row => row.draftKey || row.row
 const rateEditorTarget = computed(() => '#'+CSS.escape('catalog-rates-edit-'+selected.value))
+const editorInCard = computed(() => component.value && !itemRemoved.value || selected.value===serviceItemKey && serviceReplacement.value)
 watch([selected,rateGroups], ([item,groups],[previousItem]) => {
   const changedItem = item!==previousItem
   if (changedItem || !groups.some(group=>group.key===rateGroup.value)) {
@@ -198,6 +200,38 @@ async function addRecipient() {
   selected.value = undefined
   await nextTick()
   await structureEditor.value?.addRecipient()
+}
+async function makeServiceIndependent() {
+  error.value = ''
+  const label = (labelEdits.value.get(serviceItemKey) ?? serviceArrangement.value.label).trim()
+  const rateBps = rateAsBasisPoints(splitValue('service'))
+  if (!label || rateBps===undefined) {
+    error.value = '请填写收款安排名称和有效比例。'
+    return
+  }
+  const units = new Map(sheet.value.structureOptions.companies.map(option=>[option.value,option.unitId]))
+  const recipients = new Map()
+  for (const team of sheet.value.teams) {
+    const unitId = units.get(team.key)
+    const person = teamEdits.value.get(team.key)?.service ?? team.service
+    if (!unitId || !person?.id) {
+      error.value = '请先核对「'+team.label+'」的销售公司和服务收款人。'
+      return
+    }
+    const item = recipients.get(person.id) ?? {label,target:'person',personId:person.id,personName:person.name,rateBps,
+      salesScopeUnitIds:[],membershipNewOnly:sheet.value.membershipSku ? memberValue(serviceArrangement.value)==='new' : undefined,
+      replacesItemKey:serviceItemKey}
+    if (!item.salesScopeUnitIds.includes(unitId)) item.salesScopeUnitIds.push(unitId)
+    recipients.set(person.id,item)
+  }
+  const first = structure.value.items.length
+  structure.value.items.push(...recipients.values())
+  await nextTick()
+  await structureEditor.value?.editRecipient(first)
+}
+function restoreService() {
+  structureEditor.value?.cancel()
+  structure.value.items = structure.value.items.filter(item=>item.replacesItemKey!==serviceItemKey)
 }
 async function editRateScope(row) {
   await nextTick()
@@ -466,6 +500,8 @@ watch([selected, rateGroup], () => { filter.value = '' })
 
 function publicationInput() {
   if (structureEditing.value) throw new Error('请先完成正在编辑的配置。')
+  const removed = new Set(removedItems.value)
+  if (serviceReplacement.value) removed.add(serviceItemKey)
   for (const [itemKey,payee] of targetEdits.value) {
     if (!removedItems.value.has(itemKey) && !catalogPayeeComplete(payee)) {
       const item = sheet.value.components.find(component=>component.itemKey===itemKey)
@@ -504,7 +540,7 @@ function publicationInput() {
       return {itemKey,row,rateBps}
     })
   for (const [itemKey,value] of labelEdits.value) {
-    if (removedItems.value.has(itemKey)) continue
+    if (removed.has(itemKey)) continue
     const label = value.trim()
     if (!label) throw new Error('请填写收款安排名称。')
     changes.push({itemKey,label})
@@ -532,7 +568,7 @@ function publicationInput() {
     copy:copy.value,
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
     membershipArrangements:[...membershipEdits.value]
-      .filter(([itemKey])=>!removedItems.value.has(itemKey) &&
+      .filter(([itemKey])=>!removed.has(itemKey) &&
         (!splitRemoved.value || itemKey!==serviceItemKey && !sheet.value.leaderArrangements?.some(item=>item.itemKey===itemKey)))
       .map(([itemKey,newOnly])=>({itemKey,newOnly})),
     changes,
@@ -545,7 +581,7 @@ function publicationInput() {
     teamSplitRates,
     leaderChanges,
     scopeChanges,
-    newItems:structure.value.items.map(({personName,ownerName,...item})=>item),
+    newItems:structure.value.items.map(({personName,ownerName,replacesItemKey,...item})=>item),
     newSalesRates:structure.value.sales?.rows,
     newSalesLabel:structure.value.sales?.label,
     newSalesMembership:structure.value.sales?.membershipNewOnly,
@@ -555,7 +591,7 @@ function publicationInput() {
     newRateRows:structure.value.rateRows.filter(({itemKey,row})=>!removedItems.value.has(itemKey) &&
       !removedRateRows.value.has(cellKey(itemKey,row)) && !calculationFor(itemKey))
       .map(({draftKey,...row})=>row),
-    removedItems:[...removedItems.value],
+    removedItems:[...removed],
     removedRateRows:[...removedRateRows.value.values()].filter(row=>!removedItems.value.has(row.itemKey) && !calculationFor(row.itemKey)),
   }
 }
@@ -773,9 +809,10 @@ async function publish() {
               aria-controls="catalog-internal-service" @click="selected=selected===serviceItemKey ? undefined : serviceItemKey">
               <DownOutlined aria-hidden="true"/>
               <strong>{{ labelEdits.get(serviceItemKey)?.trim() || serviceArrangement.label }}</strong>
-              <span v-if="serviceRemoved" class="rule-block-badge">待删除</span>
-              <span class="rule-block-recipient">提成范围 · {{ formatScope(teamOptions.map(option=>option.label)) }}</span>
-              <small>{{ [sheet.membershipSku && memberLabel(serviceArrangement),splitValue('service')+'%'].filter(Boolean).join(' · ') }}</small>
+              <span v-if="serviceReplacement" class="rule-block-badge">待替换</span>
+              <span v-else-if="serviceRemoved" class="rule-block-badge">待删除</span>
+              <span v-if="!serviceReplacement" class="rule-block-recipient">提成范围 · {{ formatScope(teamOptions.map(option=>option.label)) }}</span>
+              <small v-if="!serviceReplacement">{{ [sheet.membershipSku && memberLabel(serviceArrangement),splitValue('service')+'%'].filter(Boolean).join(' · ') }}</small>
             </button>
             <div v-if="selected===serviceItemKey" id="catalog-internal-service" class="rule-block-body">
               <RuleArrangementFields v-if="!serviceRemoved" name-id="catalog-service-label" :name="labelEdits.get(serviceItemKey) ?? serviceArrangement.label"
@@ -800,9 +837,16 @@ async function publish() {
                   </a-form-item>
                 </template>
               </RuleArrangementFields>
+              <template v-if="serviceReplacement">
+                <small class="order-version">切换后按独立安排计提，可预览差额。</small>
+                <div id="catalog-rates-edit-internal-service"></div>
+              </template>
               <div v-if="sheet.mayPublish && !applied" class="form-actions">
+                <a-button v-if="serviceReplacement" size="small" type="link" @click="restoreService">恢复原安排</a-button>
+                <a-button v-else-if="!serviceRemoved && sheet.structureOptions" size="small" :disabled="structureEditing || saving"
+                  @click="makeServiceIndependent">改为独立配置</a-button>
                 <a-button size="small" type="link" :danger="!serviceRemoved" :disabled="structureEditing || saving"
-                  @click="toggleItemRemoval">{{ serviceRemoved ? '撤销移除' : '移除此安排' }}</a-button>
+                  v-if="!serviceReplacement" @click="toggleItemRemoval">{{ serviceRemoved ? '撤销移除' : '移除此安排' }}</a-button>
               </div>
             </div>
           </section>
@@ -845,10 +889,11 @@ async function publish() {
           </section>
           </div>
           <template v-if="sheet.mayPublish && !applied">
-            <Teleport v-if="sheet.structureOptions" defer :disabled="!component || itemRemoved"
-              :to="component && !itemRemoved ? rateEditorTarget : 'body'">
+            <Teleport v-if="sheet.structureOptions" defer :disabled="!editorInCard"
+              :to="editorInCard ? rateEditorTarget : 'body'">
               <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id" :product-id="sheet.productId"
                 :order-type-text="orderTypeText" :membership-sku="sheet.membershipSku" :default-membership-new-only="sheet.membershipNewOnly"
+                :replacement-item-key="selected===serviceItemKey && serviceReplacement ? serviceItemKey : undefined"
                 v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
                 :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!hasSales && !structure.sales"
                 @rate-staged="showRateGroup"/>

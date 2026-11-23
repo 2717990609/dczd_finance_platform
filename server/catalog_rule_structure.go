@@ -98,7 +98,7 @@ const catalogSalesCompanyKeysSQL = `SELECT a.company_uuid AS key,a.company_unit_
    WHERE a.source=s.source AND a.company_unit_id=s.company_id)`
 
 const catalogStructureOptionsSQL = `WITH company_keys AS (` + catalogSalesCompanyKeysSQL + `), companies AS (
- SELECT a.key::text AS value,min(u.name) AS label
+ SELECT a.key::text AS value,min(u.name) AS label,min(u.id::text) AS "unitId"
  FROM company_keys a
  JOIN organization_units u ON u.id=a.unit AND u.kind='COMPANY' AND u.status='ACTIVE'
  GROUP BY a.key HAVING count(DISTINCT u.id)=1

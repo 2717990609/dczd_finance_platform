@@ -7,7 +7,7 @@ import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import { catalogFlatMethods, catalogMembershipTypes, catalogOrderScope, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
-  orderTypeText:String,productId:Number,membershipSku:Boolean,defaultMembershipNewOnly:Boolean})
+  orderTypeText:String,productId:Number,membershipSku:Boolean,defaultMembershipNewOnly:Boolean,replacementItemKey:String})
 const emit = defineEmits(['rate-staged'])
 const draft = defineModel({type:Object,required:true})
 const editing = defineModel('editing', {type:Boolean,default:false})
@@ -15,6 +15,8 @@ const form = ref()
 const revising = computed(() => form.value?.kind==='calculation' || form.value?.itemIndex!=null ||
   form.value?.rowNumber || form.value?.draftKey || form.value?.editingSales)
 const isSales = computed(() => form.value?.kind==='item' && form.value.target==='seller')
+const visibleItems = computed(() => draft.value.items.map((item,index)=>({item,index}))
+  .filter(({item})=>item.replacesItemKey===props.replacementItemKey))
 const itemName = ref()
 const error = ref('')
 let nextDraftKey = 0
@@ -28,7 +30,12 @@ function itemLabel(item) {
     : labelFor(props.options.organizations,item.organization)
   const standard = item.rows?.length ? item.rows.length+' 条费率条件'
     : item.fixedMinor != null ? (item.fixedMinor/100).toFixed(2)+' 元/笔' : percent(item.rateBps)
-  return [item.label,recipient,standard].join(' · ')
+  const scope = item.ownSales ? '本人销售' : [
+    ...(item.salesScopeUnitIds || []).map(id=>labelFor(props.options.salesUnits,id)),
+    ...(item.salesScopeCategoryIds || []).map(id=>labelFor(props.options.categories,id)),
+  ].join('、') || '本规则全部订单'
+  const orderType = props.membershipSku && catalogMembershipTypes.find(option=>option.value===(item.membershipNewOnly ? 'new' : 'all'))?.label
+  return [item.label,recipient,standard,scope,orderType].filter(Boolean).join(' · ')
 }
 function begin(kind,scope) {
   error.value = ''
@@ -146,6 +153,7 @@ function stage() {
         return
       }
       const item = {label,target:staged.target,role:staged.role,personId:staged.personId,recipientDuty:staged.recipientDuty,ownSales,membershipNewOnly,
+        replacesItemKey:staged.replacesItemKey,
         personName:staged.personName,organization:staged.poolId ? undefined : staged.organization,memberRole:staged.memberRole,poolId:staged.poolId,
         ownerPersonId:staged.ownerPersonId,ownerName:staged.ownerName,...scope,...calculationBody(staged)}
       if (staged.itemIndex==null) draft.value.items.push(item)
@@ -157,7 +165,7 @@ function stage() {
   }
 }
 watch(form, value => { editing.value = !!value })
-defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=>begin('row',scope)})
+defineExpose({addRecipient,editRecipient,editCalculation,editRateScope,cancel,addRateCondition:scope=>begin('row',scope)})
 </script>
 
 <template>
@@ -222,15 +230,15 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
         </a-button>
       </div>
     </div>
-    <ul v-if="draft.items.length || draft.sales" class="catalog-staged-entries" aria-label="待发布新增配置">
-      <li v-if="draft.sales">
+    <ul v-if="visibleItems.length || draft.sales && !replacementItemKey" class="catalog-staged-entries" aria-label="待发布新增配置">
+      <li v-if="draft.sales && !replacementItemKey">
         <div><span>{{ draft.sales.label }} · {{ draft.sales.rows.length }} 条费率条件</span><small class="order-version">未保存</small></div>
         <a-space :size="0">
           <a-button type="link" size="small" :disabled="!!form" @click="editSales">编辑</a-button>
           <a-button type="link" danger size="small" :disabled="!!form" @click="draft.sales=undefined">移除</a-button>
         </a-space>
       </li>
-      <li v-for="(item,index) in draft.items" :key="'item-'+index">
+      <li v-for="{item,index} in visibleItems" :key="'item-'+index">
         <div>
           <span>{{ itemLabel(item) }}</span>
           <small class="order-version">未保存</small>
