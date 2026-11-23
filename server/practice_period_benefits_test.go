@@ -781,13 +781,15 @@ func TestPracticePercentageBenefitSplitsNetPaymentsAndPreservesSettledShares(t *
 	for _, tc := range []struct {
 		name          string
 		legacyVersion int
-		fixedPerClass bool
+		fixedPerClass int64
 		deposit, tail int64
+		partialAfter  bool
 	}{
-		{"new percentage settlement", 0, false, 200, 600},
-		{"previous gross-share settlement", 1, false, 320, 480},
-		{"previous net-share settlement", 2, false, 200, 600},
-		{"fixed class with different sales attribution", 0, true, 200, 600},
+		{"new percentage settlement", 0, 0, 200, 600, false},
+		{"previous gross-share settlement", 1, 0, 320, 480, false},
+		{"previous net-share settlement", 2, 0, 200, 600, false},
+		{"fixed class with different sales attribution", 0, 1000, 200, 600, false},
+		{"fixed class partial refunds use the booked share", 0, 10, 3, 6, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -817,8 +819,8 @@ func TestPracticePercentageBenefitSplitsNetPaymentsAndPreservesSettledShares(t *
 				Type: "delivery", Mode: "period_rate", Value: 100000,
 				PeriodBenefit: &practicePeriodBenefit{Label: "交付分润", PersonID: person},
 			}
-			if tc.fixedPerClass {
-				award := int64(1000)
+			if tc.fixedPerClass != 0 {
+				award := tc.fixedPerClass
 				part.Value = 0
 				part.PeriodBenefit.FixedMinor, part.PeriodBenefit.FixedPerClass = &award, true
 			}
@@ -830,7 +832,7 @@ func TestPracticePercentageBenefitSplitsNetPaymentsAndPreservesSettledShares(t *
 				at := start.Add(-48 * time.Hour)
 				fact := sourceFact{Source: "DCZD", Domain: "PRACTICE", SourceKey: sourceKey, Kind: "ORDER_PAID",
 					OrderID: order, PaymentID: order, RecordKey: "payment:" + order, AmountMinor: &amount, Version: "1", OccurredAt: at, UpdatedAt: at}
-				if tc.fixedPerClass {
+				if tc.fixedPerClass != 0 {
 					fact.SalesCompanyID, fact.ReferrerID = "company-"+order, "seller-"+order
 				}
 				return fact
@@ -840,6 +842,10 @@ func TestPracticePercentageBenefitSplitsNetPaymentsAndPreservesSettledShares(t *
 					OrderID: order, RefundID: key, RecordKey: "refund:" + key, AmountMinor: &amount, Version: "1", OccurredAt: at, UpdatedAt: at,
 					RefundsPayment: []sourcePaymentReference{{OrderID: order, RecordID: order}}}
 			}
+			refundedBeforeClass := int64(2000)
+			if tc.partialAfter {
+				refundedBeforeClass = 500
+			}
 			if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 				if _, err := storePracticeRoster(ctx, tx, practiceRoster{Key: rosterKey, Hash: "rate-shares", SourceVersion: 1,
 					StartsAt: start, ConfirmedAt: start.Add(time.Hour), Enrollments: []practiceEnrollment{
@@ -848,14 +854,14 @@ func TestPracticePercentageBenefitSplitsNetPaymentsAndPreservesSettledShares(t *
 					}}); err != nil {
 					return err
 				}
-				_, err := storeSourceFacts(ctx, tx, []sourceFact{paid("1", 4000), paid("2", 6000), refund("1", "11", 2000, start.Add(-time.Hour))})
+				_, err := storeSourceFacts(ctx, tx, []sourceFact{paid("1", 4000), paid("2", 6000), refund("1", "11", refundedBeforeClass, start.Add(-time.Hour))})
 				return err
 			}); err != nil {
 				t.Fatal(err)
 			}
 			original, err := s.calculateCurrentDraft(ctx, class, 0)
-			if err != nil || original.Total != 800 || original.LineCount != 2 || original.IssueCount != 0 {
-				t.Fatalf("expected 8 yuan total, got %+v %v", original, err)
+			if err != nil || original.Total != tc.deposit+tc.tail || original.LineCount != 2 || original.IssueCount != 0 {
+				t.Fatalf("expected %d total, got %+v %v", tc.deposit+tc.tail, original, err)
 			}
 			if tc.legacyVersion != 0 {
 				exec(`UPDATE calculation_drafts SET practice_replay_inputs=jsonb_set(practice_replay_inputs,'{version}',to_jsonb($2::int))
@@ -878,15 +884,36 @@ func TestPracticePercentageBenefitSplitsNetPaymentsAndPreservesSettledShares(t *
 			}
 			assertShares()
 			exec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, class, original.Version)
-			if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-				_, err := storeSourceFacts(ctx, tx, []sourceFact{refund("2", "12", 6000, start.AddDate(0, 1, 0))})
-				return err
-			}); err != nil {
-				t.Fatal(err)
+			checkRefund := func(period int64, fact sourceFact, want int64) draftSummary {
+				t.Helper()
+				if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+					_, err := storeSourceFacts(ctx, tx, []sourceFact{fact})
+					return err
+				}); err != nil {
+					t.Fatal(err)
+				}
+				late, err := s.calculateCurrentDraft(ctx, period, 0)
+				if err != nil || late.RefundTotal != want || late.RefundCount != 1 || late.IssueCount != 0 {
+					t.Fatalf("refund %s should reverse %d of the booked share: %+v %v", fact.RefundID, want, late, err)
+				}
+				var oldPeriod, refundPeriod int64
+				var order string
+				err = s.db.QueryRow(ctx, `SELECT l.period_id,r.refund_period_id,p.order_id
+				 FROM calculation_draft_refunds r JOIN calculation_draft_lines l ON l.id=r.original_line_id
+				 JOIN source_order_versions p ON p.id=l.source_version_id WHERE r.period_id=$1`, period).
+					Scan(&oldPeriod, &refundPeriod, &order)
+				if err != nil || oldPeriod != class || refundPeriod != period || order != fact.RefundsPayment[0].OrderID {
+					t.Fatalf("refund %s linked to payment %s, original period %d and refund period %d: %v", fact.RefundID, order, oldPeriod, refundPeriod, err)
+				}
+				return late
 			}
-			late, err := s.calculateCurrentDraft(ctx, september, 0)
-			if err != nil || late.RefundTotal != -tc.tail || late.RefundCount != 1 || late.IssueCount != 0 {
-				t.Fatalf("refunding the tail must reverse its booked share only: %+v %v", late, err)
+			if tc.partialAfter {
+				late := checkRefund(september, refund("1", "12", 750, start.AddDate(0, 1, 0)), -1)
+				exec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, september, late.Version)
+				october := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "十月退款", SettlementMonth: "2026-10"}))
+				checkRefund(october, refund("1", "13", 2750, start.AddDate(0, 2, 0)), -2)
+			} else {
+				checkRefund(september, refund("2", "12", 6000, start.AddDate(0, 1, 0)), -tc.tail)
 			}
 			assertShares()
 		})

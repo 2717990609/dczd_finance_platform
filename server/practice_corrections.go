@@ -287,8 +287,8 @@ func (r practiceReplay) calculateCorrectionLines(ctx context.Context, tx pgx.Tx,
 		return revised.Lines, err
 	}
 
-	// Price the revised recipients before post-settlement refunds for the
-	// percentage lines. Linked tiers still use the replayed class balance.
+	// Price the revised recipients before post-settlement refunds for shares
+	// that are refunded proportionally. Linked tiers use the replayed balance.
 	r.refunds = classRefunds
 	baseline, err := r.calculate()
 	if err != nil {
