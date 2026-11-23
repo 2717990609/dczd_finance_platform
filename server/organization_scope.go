@@ -38,19 +38,38 @@ var reportInOrganization = `({{unit}} IS NULL OR EXISTS (
  SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("") + `
 ))`
 
-var orderInOrganization = `EXISTS (
- SELECT 1 FROM (VALUES (1)) seed(n) LEFT JOIN LATERAL (
-  SELECT a.company_id,a.department_id,a.group_id,true AS booked
+const orderPostingKey = `observed.source,observed.order_id,observed.line_id,observed.record_key,observed.kind`
+const orderPostingFields = `a.company_id,a.department_id,a.group_id,true AS has_posting`
+const orderPostingPriority = `s.id DESC NULLS LAST,observed.updated_at DESC,observed.id DESC,a.period_id DESC`
+const orderPostingSources = `
   FROM source_order_versions observed
   JOIN calculation_draft_performance a ON a.source_version_id=observed.id
-  LEFT JOIN settlements s ON s.period_id=a.period_id
-  WHERE (observed.source,observed.order_id,observed.line_id,observed.record_key,observed.kind)=
-   (latest.source,latest.order_id,latest.line_id,latest.record_key,latest.kind)
-  ORDER BY s.id DESC NULLS LAST,observed.updated_at DESC,observed.id DESC,a.period_id DESC LIMIT 1
- ) recognized ON true
- WHERE CASE WHEN recognized.booked THEN EXISTS(SELECT 1 FROM organization_scope org
+  LEFT JOIN settlements s ON s.period_id=a.period_id`
+
+// Make the same posting choice once per order when a page requires a full scan.
+const groupedOrderPostings = `order_postings AS MATERIALIZED (
+ SELECT DISTINCT ON (` + orderPostingKey + `) ` + orderPostingKey + `,` + orderPostingFields + orderPostingSources + `
+ WHERE ($1='' OR observed.source=$1) AND ($2='' OR observed.order_id=$2)
+ ORDER BY ` + orderPostingKey + `,` + orderPostingPriority + `
+)`
+
+var orderScopeMatch = `CASE WHEN recognized.has_posting THEN EXISTS(SELECT 1 FROM organization_scope org
   WHERE ` + organizationPostingInScope("recognized.") + `)
- ELSE latest.kind='ORDER_PAID' AND ` + uncalculatedOrderInOrganization + ` END
+ WHEN latest.kind='ORDER_PAID' AND EXISTS(
+  SELECT 1 FROM source_payment_companies c WHERE c.source_version_id=latest.id
+  UNION ALL SELECT 1 FROM source_order_classifications c WHERE c.source_version_id=latest.id AND c.sales_claims IS NOT NULL
+  UNION ALL SELECT 1 FROM source_mappings m
+   WHERE (m.source,m.domain,m.source_key)=(latest.source,latest.fact->>'domain',latest.fact->>'sourceKey')
+ ) THEN ` + uncalculatedOrderInOrganization + ` ELSE false END`
+
+var orderInOrganization = `EXISTS (
+ SELECT 1 FROM (VALUES (1)) seed(n) LEFT JOIN LATERAL (
+  SELECT ` + orderPostingFields + orderPostingSources + `
+  WHERE (` + orderPostingKey + `)=
+   (latest.source,latest.order_id,latest.line_id,latest.record_key,latest.kind)
+  ORDER BY ` + orderPostingPriority + ` LIMIT 1
+ ) recognized ON true
+ WHERE ` + orderScopeMatch + `
 )`
 
 // For an order awaiting its first trial, use the same dated source mappings

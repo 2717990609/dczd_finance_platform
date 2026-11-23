@@ -118,9 +118,22 @@ func TestFinanceReportsFilterUsingOrganizationTree(t *testing.T) {
 		detail.LineCount != 2 || detail.TotalMinor != 300 || detail.ScopeLineCount != 1 || len(detail.Lines) != 1 || detail.Lines[0].OrderID != "one" {
 		t.Fatalf("scoped settlement detail and overall total: %d %v %s", details.Code, err, details.Body)
 	}
+	// A newer source version can change its seller while the booked attribution
+	// still governs the organization view. Put it beyond the recent page scan.
+	revised := fixture[0]
+	revised.Version, revised.UpdatedAt = "2", revised.UpdatedAt.Add(time.Hour)
+	revised.Participants = []sourceParticipant{{Role: "SELLER", UserID: "two"}}
+	if err := storeScopeOrderFixture(ctx, s, []sourceFact{revised}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,kind,version,updated_at,occurred_at,fact)
+	 SELECT 'DCJK','unmapped:'||n,'','pending:'||n,'ORDER_PAID','1',now(),now(),'{"domain":"UNMAPPED","sourceKey":"unmapped"}'::jsonb
+	 FROM generate_series(1,800) n`); err != nil {
+		t.Fatal(err)
+	}
 	orders := call(s.orders, "/api/v1/orders?unitId="+team)
-	var rows []struct{ OrderID string }
-	if err := json.Unmarshal(orders.Body.Bytes(), &rows); err != nil || orders.Code != 200 || len(rows) != 1 || rows[0].OrderID != "one" {
+	var rows []struct{ OrderID, Version string }
+	if err := json.Unmarshal(orders.Body.Bytes(), &rows); err != nil || orders.Code != 200 || len(rows) != 1 || rows[0].OrderID != "one" || rows[0].Version != "2" {
 		t.Fatalf("team orders: %d %v %s", orders.Code, err, orders.Body)
 	}
 	if w := call(s.monthlyReport, monthURL+"&unitId=bogus"); w.Code != http.StatusBadRequest {

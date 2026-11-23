@@ -586,12 +586,12 @@ SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
   SELECT * FROM recent_order_page
   UNION ALL
   SELECT * FROM (
-   SELECT * FROM (
+   SELECT latest.* FROM (
     SELECT DISTINCT ON(source,order_id,line_id,record_key,kind) ` + sourceOrderPageFields + ` FROM source_order_versions v
     WHERE ` + sourceOrderPageFilters + `
     ORDER BY source,order_id,line_id,record_key,kind,` + sourceOrderVersionSort("v") + `
-   ) latest
-   WHERE latest.id<(SELECT min(id) FROM order_page_candidates) /* org scope */
+   ) latest /* grouped org join */
+   WHERE latest.id<(SELECT min(id) FROM order_page_candidates) /* grouped org scope */
    ORDER BY latest.id DESC LIMIT (SELECT ` + sourceOrderPageLimit + `-count(*) FROM recent_order_page)
   ) grouped_page WHERE (SELECT count(*) FROM order_page_candidates)=` + sourceOrderCandidateLimit + `
  ) v
@@ -609,8 +609,12 @@ SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
  ) q`
 
 var ordersSQL = "WITH " + ordersTemplateSQL
-var scopedOrdersSQL = organizationScopeQuery("WITH RECURSIVE "+organizationScopeCTE+", "+
-	strings.ReplaceAll(ordersTemplateSQL, "/* org scope */", "AND "+orderInOrganization), "$4")
+var scopedOrdersSQL = organizationScopeQuery("WITH RECURSIVE "+organizationScopeCTE+", "+groupedOrderPostings+", "+
+	strings.NewReplacer(
+		"/* org scope */", "AND "+orderInOrganization,
+		"/* grouped org join */", "LEFT JOIN order_postings recognized USING (source,order_id,line_id,record_key,kind)",
+		"/* grouped org scope */", "AND "+orderScopeMatch,
+	).Replace(ordersTemplateSQL), "$4")
 
 func (s workspace) orders(w http.ResponseWriter, r *http.Request) {
 	params := r.URL.Query()
