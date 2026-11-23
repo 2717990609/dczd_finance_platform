@@ -50,6 +50,45 @@ func TestVIPDraftReportsMissingSourceSellerOncePerPayment(t *testing.T) {
 	}
 }
 
+func TestVIPDraftReportsMissingMembershipTypeOncePerPayment(t *testing.T) {
+	amount := int64(49900)
+	row := catalogPaymentMatch{SourceVersionID: 19, PaidMinor: &amount, PaidInWindow: true, Status: "MATCHED",
+		RuleID: "60000000-0000-4000-8000-000000000004", SalesStatus: "MEMBERSHIP_TYPE_PENDING",
+		BenefitParts: []vipBenefitPart{
+			{Label: "另一项收款安排", Status: "MEMBERSHIP_TYPE_PENDING"},
+			{Label: "岗位安排", Status: "BENEFIT_APPOINTMENT_CONFLICT"},
+			{Item: "fixed", Party: "independent", Status: "CALCULATED", Amount: 500},
+		}}
+	data := vipRuntimeData{PersonIDs: map[string]int64{"independent": 9}}
+	var result paymentDraft
+	for _, id := range []int64{19, 20} {
+		row.SourceVersionID = id
+		if err := addVIPDraftPayment(&result, row, data, reportAttribution{}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []draftIssue{
+		{FactID: 19, Code: "MEMBERSHIP_TYPE_PENDING"},
+		{FactID: 19, Code: "BENEFIT_APPOINTMENT_CONFLICT", Component: "岗位安排"},
+		{FactID: 20, Code: "MEMBERSHIP_TYPE_PENDING"},
+		{FactID: 20, Code: "BENEFIT_APPOINTMENT_CONFLICT", Component: "岗位安排"},
+	}
+	if !slices.Equal(result.Issues, want) {
+		t.Fatalf("expected one shared classification issue per payment, plus independent issues: %+v", result.Issues)
+	}
+	if len(result.Lines) != 2 || len(result.Performance) != 2 || result.Total != 1000 {
+		t.Fatalf("source classification issues must retain receipts and unrelated arrangements: %+v", result)
+	}
+	row.BenefitParts = row.BenefitParts[1:]
+	result = paymentDraft{}
+	if err := addVIPDraftPayment(&result, row, data, reportAttribution{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Issues) != 2 || result.Issues[0].Component != "sales" {
+		t.Fatalf("retain the arrangement when only one is waiting on classification: %+v", result.Issues)
+	}
+}
+
 func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t), draftQuotes: &draftCalculationCaches{},

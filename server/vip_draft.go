@@ -151,6 +151,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 		return nil
 	}
 	var missingSourceSeller, reportedSourceSeller bool
+	membershipIssue := -1
 	issue := func(component, code string) {
 		if missingSourceSeller && code == "SALES_PERSON_MISSING" {
 			if reportedSourceSeller {
@@ -158,6 +159,16 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 			}
 			reportedSourceSeller = true
 			component, code = "", "SALES_ORDER_SELLER_MISSING"
+		}
+		if code == "MEMBERSHIP_TYPE_PENDING" {
+			if membershipIssue >= 0 {
+				// One source field can hold up several independent arrangements.
+				if previous := &result.Issues[membershipIssue]; previous.Component != component {
+					previous.Component = ""
+				}
+				return
+			}
+			membershipIssue = len(result.Issues)
 		}
 		result.Issues = append(result.Issues, draftIssue{FactID: row.SourceVersionID, Component: component, Code: code})
 	}
