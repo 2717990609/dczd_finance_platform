@@ -3,18 +3,29 @@ package main
 import (
 	"maps"
 	"slices"
+	"strings"
 )
 
 type practicePeriodStandardRate struct {
-	SalesCategoryIDs []string `json:"salesCategoryIds,omitempty"`
-	SalesCompanies   []string `json:"salesCompanies,omitempty"`
-	Value            int64    `json:"value"`
+	SalesCategoryIDs       []string `json:"salesCategoryIds,omitempty"`
+	SalesCompanies         []string `json:"salesCompanies,omitempty"`
+	ExternalCompanyDefault bool     `json:"externalCompanyDefault,omitempty"`
+	Value                  int64    `json:"value"`
 }
 
 type practicePeriodStandardRates struct {
-	companies  map[string]int64
-	categories map[string]int64
-	fallback   *int64
+	companies       map[string]int64
+	categories      map[string]int64
+	externalDefault *int64
+	fallback        *int64
+}
+
+func practiceStandardRatesUseExternalDefault(rule paymentRule) bool {
+	return slices.ContainsFunc(rule.Components, func(part component) bool {
+		return part.PeriodBenefit != nil && slices.ContainsFunc(part.PeriodBenefit.StandardRates, func(rate practicePeriodStandardRate) bool {
+			return rate.ExternalCompanyDefault
+		})
+	})
 }
 
 func indexPracticeStandardRates(rows []practicePeriodStandardRate) (practicePeriodStandardRates, bool) {
@@ -24,6 +35,11 @@ func indexPracticeStandardRates(rows []practicePeriodStandardRate) (practicePeri
 			return index, false
 		}
 		switch {
+		case row.ExternalCompanyDefault:
+			if index.externalDefault != nil || len(row.SalesCompanies)+len(row.SalesCategoryIDs) != 0 {
+				return index, false
+			}
+			index.externalDefault = &row.Value
 		case len(row.SalesCategoryIDs) != 0:
 			if !validUniqueScopeIDs(row.SalesCategoryIDs) {
 				return index, false
@@ -54,7 +70,7 @@ func indexPracticeStandardRates(rows []practicePeriodStandardRate) (practicePeri
 func (s practicePeriodStandardRates) match(payment paymentInput, noSales bool, runtime practiceDraftRuntime) (int64, string) {
 	if !noSales {
 		company := payment.Fact.SalesCompanyID
-		if company == "" && len(s.companies) != 0 {
+		if company == "" && (len(s.companies) != 0 || s.externalDefault != nil) {
 			return 0, "PRACTICE_TIER_COMPANY_MISSING"
 		}
 		if rate, ok := s.companies[company]; ok {
@@ -67,6 +83,15 @@ func (s practicePeriodStandardRates) match(payment paymentInput, noSales bool, r
 			}
 			if rate, ok := s.categories[category]; ok {
 				return rate, ""
+			}
+		}
+		if s.externalDefault != nil {
+			classification := runtime.companyClassifications[payment.Fact.PaymentID]
+			if externalCompanyDefaultEligible(classification) {
+				return *s.externalDefault, ""
+			}
+			if classification == "" || strings.HasPrefix(classification, practiceUnverifiedExternalPrefix) {
+				return 0, "PRACTICE_SALES_COMPANY_TYPE_MISSING"
 			}
 		}
 	}

@@ -115,6 +115,68 @@ func TestPracticeIndependentBenefitCanUseCompanyAndCategoryRates(t *testing.T) {
 	}
 }
 
+func TestPracticeIndependentBenefitExternalDefaultUsesOriginalClassification(t *testing.T) {
+	const category = "40000000-0000-4000-8000-000000000001"
+	var part component
+	if err := json.Unmarshal([]byte(`{"type":"service","mode":"period_rate","classMember":"new","value":0,"periodBenefit":{
+	  "label":"外部公司服务","personId":7,"standardRates":[
+	    {"salesCompanies":["31"],"value":0},{"salesCategoryIds":["40000000-0000-4000-8000-000000000001"],"value":50000},
+	    {"externalCompanyDefault":true,"value":30000},{"value":10000}]}}`), &part); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateComponents([]component{part}); err != nil {
+		t.Fatalf("external default and general rate are separate standards: %v", err)
+	}
+	at := time.Date(2026, 10, 8, 8, 0, 0, 0, time.UTC)
+	rule := paymentRule{ID: 1, Components: []component{part}}
+	runtime := practiceDraftRuntime{companyClassifications: map[string]string{
+		"1": category, "2": category, "3": practiceUncategorizedCompany, "4": practiceInternalCompany,
+		"5": practiceUnverifiedExternalPrefix + "uncalibrated-category",
+	}}
+	var members []practiceEnrollment
+	var payments []paymentInput
+	orders := make(map[string][]paymentInput)
+	gross := int64(10000)
+	for i := int64(1); i <= 5; i++ {
+		key := strconv.FormatInt(i, 10)
+		pay := paymentInput{ID: i, Fact: sourceFact{Source: "DCZD", OrderID: key, PaymentID: key, OccurredAt: at,
+			AmountMinor: &gross, SalesCompanyID: strconv.FormatInt(30+i, 10)}}
+		payments = append(payments, pay)
+		orders[key] = []paymentInput{pay}
+		members = append(members, practiceEnrollment{ID: i, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{key}})
+	}
+	got, err := calculatePracticeDraft(members, rule, orders, nil, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || got.Total != 900 || len(got.Lines) != 3 || len(got.Issues) != 1 ||
+		got.Issues[0].FactID != 5 || got.Issues[0].Code != "PRACTICE_SALES_COMPANY_TYPE_MISSING" {
+		t.Fatalf("expected company 0%%, category 5%%, external 3%%, internal 1%% and unresolved type pending: total=%d lines=%+v issues=%+v err=%v",
+			got.Total, got.Lines, got.Issues, err)
+	}
+	for _, line := range got.Lines {
+		want := map[int64]int64{2: 500, 3: 300, 4: 100}[line.FactID]
+		if line.PersonID != 7 || line.Amount != want || !line.practiceProportionalRefund {
+			t.Fatalf("the matching rule must use the configured recipient and payment: %+v", line)
+		}
+	}
+
+	// An external-only table must capture the classification for later refund replay.
+	part.PeriodBenefit.StandardRates = part.PeriodBenefit.StandardRates[2:3]
+	draft, err := calculatePracticeDraft(members[2:4], rule, orders, nil, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || draft.Total != 300 || len(draft.Issues) != 0 {
+		t.Fatalf("external-only rule should skip internal companies: %+v %v", draft, err)
+	}
+	frozen := capturePracticeReplayInputs(rule, draft, payments, nil, runtime)
+	if frozen.CompanyClassifications["3"] != practiceUncategorizedCompany {
+		t.Fatalf("external-only rate needs its payment-time classification: %+v", frozen.CompanyClassifications)
+	}
+	refund := int64(5000)
+	replayed, err := calculatePracticeDraft(members[2:4], rule, orders, nil, nil, practiceTierHistory{replaying: true},
+		map[int64][]practiceRefundMatch{3: {{event: paymentInput{Fact: sourceFact{AmountMinor: &refund, OccurredAt: at.AddDate(0, 1, 0)}}}}},
+		practiceDraftRuntime{companyClassifications: frozen.CompanyClassifications})
+	if err != nil || replayed.Total != 150 || len(replayed.Issues) != 0 {
+		t.Fatalf("half refund must deduct half of the original external company award: %d %+v %v", replayed.Total, replayed.Issues, err)
+	}
+}
+
 func TestPracticeRefundCreditsOriginallyZeroPoolTier(t *testing.T) {
 	t.Run("保留原归属", func(t *testing.T) { verifyPracticeZeroPoolTier(t, true) })
 	t.Run("历史原结算缺少归属明细", func(t *testing.T) { verifyPracticeZeroPoolTier(t, false) })

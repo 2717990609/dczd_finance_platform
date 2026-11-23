@@ -92,7 +92,8 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 			}
 		}
 	}
-	if practiceTierUsesCategories(rule) || practiceScopesUseCategories(rule) || runtime.companyOffers.needsClassifications() {
+	if practiceTierUsesCategories(rule) || practiceScopesUseCategories(rule) ||
+		practiceStandardRatesUseExternalDefault(rule) || runtime.companyOffers.needsClassifications() {
 		inputs.CompanyClassifications = make(map[string]string)
 	}
 	if len(runtime.internalSalesCategories) != 0 {

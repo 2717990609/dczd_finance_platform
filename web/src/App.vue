@@ -1336,6 +1336,7 @@ function ruleComponentBody(row) {
           if (!standard.salesCategoryIds?.length) throw new Error('请选择使用默认比例的销售类别。')
           return {salesCategoryIds:standard.salesCategoryIds,value}
         }
+        if (standard.scope==='external') return {externalCompanyDefault:true,value}
         return {value}
       })} : {}),
       ...(b.method==='tiers' ? {tierOnWholeClass:b.tierOnWholeClass || false,tiers:b.tiers.map(t=>({

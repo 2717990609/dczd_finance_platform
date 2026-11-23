@@ -202,12 +202,13 @@ export const hasPracticePaymentScope = benefit =>
   !!(benefit.salesCategoryIds?.length || benefit.salesCompanies?.length || benefit.salesPeople?.length || benefit.salesUnits?.length)
 
 export function practiceStandardRateScope(row) {
-  return row.scope || (row.salesCompanies?.length ? 'company' : row.salesCategoryIds?.length ? 'category' : 'general')
+  return row.scope || (row.externalCompanyDefault ? 'external' :
+    row.salesCompanies?.length ? 'company' : row.salesCategoryIds?.length ? 'category' : 'general')
 }
 
 export function practiceStandardRateGroups(rows = []) {
   const indexed = rows.map((row,index)=>({row,index}))
-  return Object.entries({company:'指定公司',category:'销售类别默认',general:'通用比例'}).map(([scope,label])=>({
+  return Object.entries({company:'指定公司',category:'销售类别默认',external:'其他外部公司默认比例',general:'通用比例'}).map(([scope,label])=>({
     scope,label,items:indexed.filter(({row})=>practiceStandardRateScope(row)===scope),
   }))
 }
@@ -250,6 +251,7 @@ export function practicePeriodScopeText(benefit, names, limit = 2) {
   if (standards?.length && !standards.some(row=>practiceStandardRateScope(row)==='general')) {
     list('比例适用公司',standards.flatMap(row=>row.salesCompanies || []),names.company)
     list('比例适用类别',standards.flatMap(row=>row.salesCategoryIds || []),names.category)
+    if (standards.some(row=>practiceStandardRateScope(row)==='external')) entries.push('其他外部公司')
   }
   if (!entries.length) entries.push('全班')
   if (benefit.appointmentUnitId && (benefit.recipient == null || benefit.recipient==='person')) {

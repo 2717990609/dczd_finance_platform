@@ -143,7 +143,8 @@ const draftRefreshCompanyClassification = `SELECT p.id FROM periods p JOIN produ
  AND EXISTS(SELECT 1 FROM rule_versions r WHERE r.product_id=p.product_id
   AND (jsonb_path_exists(r.components,'$[*].companySales.categories[*].salesCategoryId')
     OR jsonb_path_exists(r.components,'$[*].companySales.categories[*].salesCategoryIds[0]')
-    OR ($3::boolean AND jsonb_path_exists(r.components,'$[*].companySales.defaultRate'))
+    OR ($3::boolean AND (jsonb_path_exists(r.components,'$[*].companySales.defaultRate')
+      OR jsonb_path_exists(r.components,'$[*].periodBenefit.standardRates[*] ? (@.externalCompanyDefault == true)')))
     OR jsonb_path_exists(r.components,'$[*].periodBenefit.salesCategoryIds[0]')
     OR jsonb_path_exists(r.components,'$[*].periodBenefit.standardRates[*].salesCategoryIds[0]')
     OR jsonb_path_exists(r.components,'$[*].saleScope.salesCategoryIds[0]')

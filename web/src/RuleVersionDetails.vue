@@ -123,7 +123,9 @@ function recipient(part) {
 }
 function formula(part) {
   if (part.mode==='period_rate') {
-    if (part.periodBenefit?.standardRates?.length) return '按指定公司、销售类别默认、通用比例的顺序取值'
+    if (part.periodBenefit?.standardRates?.length) {
+      return practiceStandardRateGroups(part.periodBenefit.standardRates).filter(group=>group.items.length).map(group=>group.label).join(' → ')
+    }
     if (part.periodBenefit?.fixedMinor != null) {
       const benefit = part.periodBenefit
       const unit = benefit.fixedPerOrder ? '笔' : benefit.fixedPerClass ? (benefit.orderAppointmentLevel ? '组织 / 班' : '班次') : '报名'

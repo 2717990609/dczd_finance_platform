@@ -389,10 +389,10 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	companyOffers := practiceCompanyStandards(rule)
 	var companyClassifications, internalSalesCategories map[string]string
 	includeInternalCategories := practiceTierUsesCategories(rule) || practiceScopesUseCategories(rule)
-	includeExternalDefaults := companyOffers.hasDefault() || slices.ContainsFunc(history.periods, func(period practiceHistoryPeriod) bool {
+	includeExternalDefaults := practiceStandardRatesUseExternalDefault(rule) || companyOffers.hasDefault() || slices.ContainsFunc(history.periods, func(period practiceHistoryPeriod) bool {
 		return !period.settled && period.companyOffers.hasDefault()
 	})
-	if includeInternalCategories || companyOffers.needsClassifications() || slices.ContainsFunc(history.periods, func(period practiceHistoryPeriod) bool {
+	if includeInternalCategories || includeExternalDefaults || companyOffers.needsClassifications() || slices.ContainsFunc(history.periods, func(period practiceHistoryPeriod) bool {
 		return !period.settled && period.companyOffers.needsClassifications()
 	}) {
 		companyClassifications, internalSalesCategories, err = loadPracticeCompanyClassifications(ctx, tx, facts, includeInternalCategories, includeExternalDefaults)
