@@ -532,7 +532,8 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		}
 		if _, err := db.Exec(ctx, `INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,valid_from,valid_to,observed_at)
 		 VALUES(gen_random_uuid(),'DCAI',9801,'PROJECT_OWNER','ORGANIZATION_UNIT',$1,'2026-09-01','2026-10-10',$2),
-		  (gen_random_uuid(),'DCAI',9803,'PROJECT_OWNER','ORGANIZATION_UNIT',$1,'2026-10-10',NULL,$2),
+		  (gen_random_uuid(),'DCAI',9803,'PROJECT_OWNER','ORGANIZATION_UNIT',$1,'2026-10-10','2026-10-25',$2),
+		  (gen_random_uuid(),'DCAI',9801,'PROJECT_OWNER','ORGANIZATION_UNIT',$1,'2026-10-25',NULL,$2),
 		  (gen_random_uuid(),'DCAI',9804,'DELIVERY_TEAM','ORGANIZATION_UNIT',$1,'2026-09-01',NULL,$2)`, pool, appointmentSnapshot); err != nil {
 			t.Fatal(err)
 		}
@@ -664,6 +665,7 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 			}
 		}
 
+		rollbackCarryCheck := errors.New("rollback carry fixture")
 		if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
 			refundDraft := laterDraft.(draftSummary)
 			if _, err := insertSettlement(ctx, tx, refundDraft.PeriodID, refundDraft.Version, "carry fixture", "", nil); err != nil {
@@ -715,9 +717,43 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 					return fmt.Errorf("the same fixed pool must offset its carry and award the remainder under the incoming owner: %+v", groups)
 				}
 			}
-			return nil
-		}); err != nil {
+			return rollbackCarryCheck
+		}); !errors.Is(err, rollbackCarryCheck) {
 			t.Fatal(err)
+		}
+
+		for _, tc := range []struct{ version, receipts, total int64 }{{1, 20000, 0}, {2, 30000, 0}, {3, 40000, 6500}} {
+			if _, err := db.Exec(ctx, `WITH payment AS (
+			 INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
+			 VALUES('DCAI','196','','ai_vip_order:196',$1::bigint::text,'ORDER_PAID',
+			  '2026-11-06'::timestamptz+$1::bigint*interval '1 minute','2026-11-06',
+			  jsonb_build_object('domain','VIP','sourceKey','new','paymentId','196','amountMinor',$2::bigint)) RETURNING id
+			 ) INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier)
+			 SELECT id,'VIP_ORDER','second','vip' FROM payment`, tc.version, tc.receipts); err != nil {
+				t.Fatal(err)
+			}
+			opened, err := s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: publishedFixed.ID, Month: "2026-11"})
+			if err != nil || opened.(draftSummary).Total != tc.total || opened.(draftSummary).IssueCount != 0 {
+				t.Fatalf("the fixed pool awards only on positive current net receipts (%d received against 30000 refunded): %+v %v", tc.receipts, opened, err)
+			}
+			currentDraft := opened.(draftSummary)
+			var gotOwner, gotRefunds, gotCarry int64
+			var groupKey string
+			if err := db.QueryRow(ctx, `SELECT (targets->0->>'Owner')::bigint,refunds_minor,carry_out_minor,group_key
+			 FROM catalog_aggregate_draft_groups WHERE period_id=$1 AND fixed_only AND receipts_minor=$2`,
+				currentDraft.PeriodID, tc.receipts).Scan(&gotOwner, &gotRefunds, &gotCarry, &groupKey); err != nil ||
+				gotOwner != 9801 || gotRefunds != 30000 || gotCarry != min(tc.receipts-30000, 0) {
+				t.Fatalf("current pool must record the current owner and one net refund balance: %d %d %d %v", gotOwner, gotRefunds, gotCarry, err)
+			}
+			if err := db.QueryRow(ctx, catalogAggregateDraftEventsSQL, currentDraft.PeriodID, currentDraft.Version, groupKey, 0).Scan(&eventPage); err != nil ||
+				eventPage.Total != 3 || eventPage.Items[0].OrderID != "102" || eventPage.Items[1].OrderID != "102" || eventPage.Items[2].OrderID != "196" {
+				t.Fatalf("the draft group should expose both original refund orders and the current payment: %+v %v", eventPage, err)
+			}
+		}
+		if err := db.QueryRow(ctx, `SELECT allocation_owner_id,amount_minor FROM calculation_draft_lines
+		 WHERE period_id=$1 AND aggregate_group_key=$2`, draft.PeriodID, fixedGroup).Scan(&owner, &fixedAmount); err != nil ||
+			owner != 9803 || fixedAmount != 5000 {
+			t.Fatalf("October's frozen award should retain its original owner and amount: %d %d %v", owner, fixedAmount, err)
 		}
 	})
 

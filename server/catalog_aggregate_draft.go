@@ -191,6 +191,11 @@ func readCatalogAggregateGroupsByReference(ctx context.Context, tx pgx.Tx, refs 
 		}
 		group.FixedOnly = len(group.items) == 1 && group.items[0].FixedMinor != nil
 		group.FixedPerOrder = len(group.items) == 1 && group.items[0].FixedPerOrder
+		key, err := group.fixedPoolSettlementKey(definition)
+		if err != nil {
+			return err
+		}
+		group.fixedPoolKey = key
 		for i, target := range group.Targets {
 			for _, item := range group.items {
 				if target.ItemKey == item.ItemKey && item.PoolName != "" {

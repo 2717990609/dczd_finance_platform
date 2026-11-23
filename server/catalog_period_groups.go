@@ -96,6 +96,7 @@ type catalogPeriodGroup struct {
 	AfterCarry      *catalogPeriodQuote        `json:"afterCarry,omitempty"`
 	posting         catalogAggregateGroupInput
 	items           []catalogPeriodItem
+	fixedPoolKey    string
 	orderFixedMinor int64
 	originalLineID  int64
 	orderRefunds    []refundLine
@@ -190,6 +191,40 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 		Targets     []catalogGroupTargetKey
 	}{definition.Cycle, slices.Sorted(slices.Values(scenarios)), definition.ProductRecognition, shared, scopes, canonicalTargets})
 	return string(raw), err
+}
+
+func (g catalogPeriodGroup) fixedPoolSettlementKey(definition catalogPeriodDefinition) (string, error) {
+	if !g.FixedOnly || g.FixedPerOrder || g.items[0].TargetKind != "pool" || g.posting.Targets[0].PoolID <= 0 {
+		return "", nil
+	}
+	return catalogAggregateCarryKey(definition, g.posting.Targets)
+}
+
+func netCatalogFixedPoolRefunds(groups map[string]*catalogPeriodGroup) error {
+	active := make(map[string]*catalogPeriodGroup)
+	for _, group := range groups {
+		if group.fixedPoolKey == "" || group.Receipts == 0 {
+			continue
+		}
+		current := active[group.fixedPoolKey]
+		if current == nil || group.Version > current.Version || group.Version == current.Version && group.ID < current.ID {
+			active[group.fixedPoolKey] = group
+		}
+	}
+	for id, group := range groups {
+		target := active[group.fixedPoolKey]
+		if target == nil || group.Receipts != 0 || group.Refunds == 0 {
+			continue
+		}
+		// The refund keeps its original payment reference. Its principal reduces
+		// this cycle's net receipts of the same arrangement and registered pool.
+		if err := addCatalogActivityAmount(group.Refunds, &target.Refunds); err != nil {
+			return err
+		}
+		target.posting.Events = append(target.posting.Events, group.posting.Events...)
+		delete(groups, id)
+	}
+	return nil
 }
 
 func catalogAggregateMemberRole(role, eligibility string) string {
@@ -432,6 +467,10 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 						group = &catalogPeriodGroup{ID: id, RuleID: rule.ID, Version: rule.Version, Targets: []catalogPeriodGroupTarget{target},
 							posting: catalogAggregateGroupInput{Targets: []catalogGroupTargetKey{key}}, items: []catalogPeriodItem{item},
 							FixedOnly: item.FixedMinor != nil, FixedPerOrder: item.FixedPerOrder}
+						group.fixedPoolKey, err = group.fixedPoolSettlementKey(rule.Definition)
+						if err != nil {
+							return report, err
+						}
 						groups[id] = group
 					}
 					applied.groups = append(applied.groups, group)
@@ -528,6 +567,9 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 				return report, err
 			}
 		}
+	}
+	if err := netCatalogFixedPoolRefunds(groups); err != nil {
+		return report, err
 	}
 	for _, group := range groups {
 		group.Net = group.Receipts - group.Refunds
