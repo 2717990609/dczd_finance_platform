@@ -10,8 +10,8 @@ import (
 )
 
 // Reconstruct the monetary posting from its original rule version and payment
-// facts before comparing the corrected recipients. Payment timing, recognition
-// basis and organization payments belong to the already confirmed transaction.
+// facts before comparing the corrected recipients. The confirmed transaction
+// still supplies the payment timing, recognition basis and award terms.
 const vipCorrectionPaymentsSQL = `WITH booked AS (
  SELECT a.source_version_id,a.period_id FROM periods target
  JOIN periods origin ON origin.product_id=target.product_id AND origin.ends_on<target.starts_on AND origin.aggregate_package_id IS NULL
@@ -172,7 +172,7 @@ func loadVIPCorrectionPostings(ctx context.Context, tx pgx.Tx, payments []vipCor
 		periods[i], facts[i] = p.Period, p.OriginalID
 	}
 	rows, err := tx.Query(ctx, `SELECT req.position,l.id,l.component_type,coalesce(l.person_id,0),l.base_minor,l.amount_minor,
-	 l.catalog_rule_id,l.beneficiary_unit_id,coalesce(l.allocation_owner_id,0),coalesce(l.applied_rate_bps,0)
+	 l.catalog_rule_id,l.beneficiary_unit_id,coalesce(l.allocation_owner_id,0),coalesce(l.applied_rate_bps,0),coalesce(l.catalog_pool_id,0)
 	 FROM unnest($1::bigint[],$2::bigint[]) WITH ORDINALITY AS req(period_id,fact_id,position)
 	 JOIN calculation_draft_lines l ON l.period_id=req.period_id AND l.source_version_id=req.fact_id
 	 WHERE l.catalog_rule_id IS NOT NULL ORDER BY req.position,l.id`, periods, facts)
@@ -187,7 +187,7 @@ func loadVIPCorrectionPostings(ctx context.Context, tx pgx.Tx, payments []vipCor
 		var benefit catalogDraftBenefit
 		l := &saved.Line
 		if err := rows.Scan(&pos, &saved.ID, &l.Component, &l.PersonID, &l.Base, &l.Amount,
-			&benefit.Rule, &benefit.Unit, &benefit.AllocationOwnerID, &benefit.Rate); err != nil {
+			&benefit.Rule, &benefit.Unit, &benefit.AllocationOwnerID, &benefit.Rate, &benefit.PoolID); err != nil {
 			return nil, err
 		}
 		l.Catalog = &benefit
@@ -253,7 +253,7 @@ func (p vipCorrectionPayment) append(draft *paymentDraft, old, latest catalogPay
 		frozen := posting.Line
 		original, replacement := before[frozen.Component], after[frozen.Component]
 		if !sameVIPCorrectionPosting(frozen, original) || original.PersonID != frozen.PersonID ||
-			!sameVIPCorrectionPosting(frozen, replacement) || (frozen.PersonID != 0) != (replacement.PersonID != 0) {
+			!sameVIPReplacementTerms(frozen, replacement) {
 			return issue("CORRECTION_LINKED_REVIEW")
 		}
 		if balance := balances[posting.ID]; balance != nil && (balance.refundDebit < 0 || balance.refundDebit > frozen.Amount) {
@@ -262,12 +262,19 @@ func (p vipCorrectionPayment) append(draft *paymentDraft, old, latest catalogPay
 	}
 	for _, posting := range p.Frozen {
 		balance := balances[posting.ID]
-		if posting.Line.PersonID == 0 {
+		if posting.Line.PersonID == 0 && !isVIPCompanyPosting(posting.Line) {
 			continue
 		}
 		input := p.input(posting)
 		line := after[posting.Line.Component]
-		result, err := evaluateRecipientCorrection(input, balance, line.PersonID, line.Amount-balance.refundDebit)
+		expected := line.Amount - balance.refundDebit
+		var result correctionEvaluation
+		var err error
+		if posting.Line.PersonID != 0 {
+			result, err = evaluateRecipientCorrection(input, balance, line.PersonID, expected)
+		} else {
+			result, err = evaluateOrganizationCorrection(input, balance, &line.Catalog.Unit, expected)
+		}
 		if err != nil {
 			return err
 		}
@@ -332,4 +339,21 @@ func vipCorrectionQuote(row catalogPaymentMatch, data vipRuntimeData) (map[strin
 
 func sameVIPCorrectionPosting(frozen, computed draftLine) bool {
 	return computed.Catalog != nil && *frozen.Catalog == *computed.Catalog && frozen.Base == computed.Base && frozen.Amount == computed.Amount
+}
+
+func isVIPCompanyPosting(line draftLine) bool {
+	return line.PersonID == 0 && line.Catalog != nil && line.Catalog.Unit.Valid &&
+		line.Catalog.AllocationOwnerID == 0 && line.Catalog.PoolID == 0
+}
+
+func sameVIPReplacementTerms(frozen, replacement draftLine) bool {
+	if (frozen.PersonID != 0) != (replacement.PersonID != 0) {
+		return false
+	}
+	if isVIPCompanyPosting(frozen) && isVIPCompanyPosting(replacement) {
+		benefit := *replacement.Catalog
+		benefit.Unit = frozen.Catalog.Unit
+		replacement.Catalog = &benefit
+	}
+	return sameVIPCorrectionPosting(frozen, replacement)
 }

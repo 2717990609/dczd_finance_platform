@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"maps"
+	"math"
 	"slices"
 	"time"
 
@@ -350,4 +352,36 @@ func evaluateRecipientCorrection(input correctionInput, b *correctionBalance, re
 		lines = append(lines, correctionLine{OriginalLineID: input.OriginalLineID, SourceVersionID: input.SourceVersionID, PersonID: delta.PersonID, Amount: delta.Amount})
 	}
 	return correctionEvaluation{lines: lines, pending: pending}, nil
+}
+
+func evaluateOrganizationCorrection(input correctionInput, balance *correctionBalance, unit *pgtype.UUID, amount int64) (correctionEvaluation, error) {
+	var result correctionEvaluation
+	keys := slices.SortedFunc(maps.Keys(balance.organizations), func(a, b pgtype.UUID) int {
+		return slices.Compare(a.Bytes[:], b.Bytes[:])
+	})
+	if unit != nil {
+		if _, exists := balance.organizations[*unit]; !exists {
+			keys = append(keys, *unit)
+		}
+	}
+	for _, recipient := range keys {
+		var expected int64
+		if unit != nil && *unit == recipient {
+			expected = amount
+		}
+		current := balance.organizations[recipient]
+		if current == math.MinInt64 {
+			return correctionEvaluation{}, errCalculationOverflow
+		}
+		delta, err := addMinor(expected, -current)
+		if err != nil {
+			return correctionEvaluation{}, err
+		}
+		if delta != 0 {
+			result.lines = append(result.lines, correctionLine{
+				OriginalLineID: input.OriginalLineID, SourceVersionID: input.SourceVersionID, Unit: recipient, Amount: delta,
+			})
+		}
+	}
+	return result, nil
 }
