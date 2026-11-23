@@ -336,8 +336,8 @@ const amountModes = row => {
   return ruleAmountModes.value.filter(option =>
     matchesOption(option, selectedProduct.value?.periodMode, row.type, row.classMember) &&
     (expected ? option.value===expected : !['period_rate','company_sales'].includes(option.value)))
-    .map(option=>option.value==='tiered' && (row.saleScope?.ownSales || hasPracticePaymentScope(row.saleScope || {}))
-      ? {...option,disabled:true,label:'阶梯（请先清除当前范围）'} : option)
+    .map(option=>option.value==='tiered' && row.retrainSplits?.length
+      ? {...option,disabled:true,label:'阶梯（当前使用复训分账）'} : option)
 }
 function updateAmountMode(row, mode) {
   if (row.mode !== mode && (mode === 'rate' || mode === 'fixed')) row.amount = undefined
@@ -1352,6 +1352,9 @@ function ruleComponentBody(row) {
   if (form.includeRetrain) component.tiers.includeRetrain = true
   if (form.cumulativeMetric) component.tiers.cumulativeMetric = form.cumulativeMetric
   if (tierFormUsesHistory(form)) {
+    if (form.startMode==='opening' && hasPracticePaymentScope(row.saleScope || {})) {
+      throw new Error('按类别或组织限定累计范围时，请选择起始期数或开班时间。')
+    }
     if (form.startMode === 'opening' && !form.cumulativeMetric) component.tiers.openingId = must(form.openingId,'请选择冻结期初')
     else if (form.startMode === 'opening') throw new Error('请为累计金额选择起始期数或开班时间。')
     else Object.assign(component.tiers,countStartBody(form))
@@ -1866,7 +1869,8 @@ async function save() {
         <PracticeCountStartEditor v-for="(part,i) in practiceCountArrangements" :key="part.classMember" :config="part.tierConfig"
           :prefix="i===0 ? 'tier' : 'tier-'+i"
           :label="practiceCountArrangements.length>1 ? ruleComponentLabel(part,optionLabel) : undefined"
-          :start-modes="options('tierStartMode').filter(mode=>!part.tierConfig.cumulativeMetric || mode.value!=='opening')"
+          :start-modes="options('tierStartMode').map(mode=>mode.value==='opening' &&
+            (part.tierConfig.cumulativeMetric || hasPracticePaymentScope(part.saleScope || {})) ? {...mode,disabled:true} : mode)"
           :openings="practiceOpeningOptions"/>
         <div v-if="selectedProduct" class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">

@@ -13,14 +13,16 @@ type practiceSaleScope struct {
 }
 
 func (s practiceSaleScope) validFor(part component) bool {
-	if (part.Type != "sales" && part.Type != "referral") || (part.Mode != "rate" && part.Mode != "fixed") ||
+	tiered := part.Mode == "tiered" && part.Tiers != nil
+	if (part.Type != "sales" && part.Type != "referral") || (part.Mode != "rate" && part.Mode != "fixed" && !tiered) ||
 		part.SourceRole == "" || len(part.retrainSplits()) != 0 {
 		return false
 	}
 	if s.OwnSales {
 		return part.SalesPersonID > 0 && len(s.SalesCategoryIDs)+len(s.SalesUnits) == 0
 	}
-	return len(s.SalesCategoryIDs)+len(s.SalesUnits) != 0 && validUniqueScopeIDs(s.SalesCategoryIDs) && validUniqueScopeIDs(s.SalesUnits)
+	return (!tiered || part.Tiers.OpeningID == 0) && len(s.SalesCategoryIDs)+len(s.SalesUnits) != 0 &&
+		validUniqueScopeIDs(s.SalesCategoryIDs) && validUniqueScopeIDs(s.SalesUnits)
 }
 
 func (p practicePurchase) scopedSale(part component, identities map[identityKey][]identityAssignment,
@@ -62,11 +64,13 @@ type practiceSalesOrganization struct {
 type practiceSalesOrganizations map[int64]map[string]practiceSalesOrganization
 
 func loadPracticeSalesOrganizations(ctx context.Context, tx pgx.Tx, rule paymentRule, members []practiceEnrollment,
-	orders map[string][]paymentInput, identities map[identityKey][]identityAssignment) (practiceSalesOrganizations, error) {
+	history practiceTierHistory, orders map[string][]paymentInput, identities map[identityKey][]identityAssignment) (practiceSalesOrganizations, error) {
 	roles := make(map[string]bool)
+	loadPrior := false
 	for _, part := range rule.Components {
 		if scope := part.SaleScope; scope != nil && len(scope.SalesUnits) != 0 {
 			roles[part.SourceRole] = true
+			loadPrior = loadPrior || part.Tiers != nil && part.Tiers.usesPriorTiers()
 		}
 		if benefit := part.PeriodBenefit; benefit != nil && (len(benefit.SalesUnits) != 0 || benefit.OrderAppointmentLevel != "") {
 			roles[part.SourceRole] = true
@@ -79,6 +83,16 @@ func loadPracticeSalesOrganizations(ctx context.Context, tx pgx.Tx, rule payment
 	}
 	if len(roles) == 0 {
 		return nil, nil
+	}
+	if loadPrior {
+		for _, period := range history.periods {
+			for _, role := range []string{period.personalRole, period.retrainRole} {
+				if role != "" {
+					roles[role] = true
+				}
+			}
+		}
+		members = append(members[:len(members):len(members)], history.members...)
 	}
 
 	candidates := make(practiceSalesOrganizations)

@@ -246,7 +246,7 @@ func TestPracticePriorCompanyAndPersonalRolesFollowTheirOwnRuleVersion(t *testin
 		{"DCZD", "locked"}:      {{ID: 1, PersonID: 1}},
 		{"DCZD", "recommended"}: {{ID: 2, PersonID: 2}},
 	}
-	prior, err := indexPracticePrior(history, "DIRECT_REFERRER", orders, identities, nil, nil, true)
+	prior, err := indexPracticePrior(history, component{SourceRole: "DIRECT_REFERRER"}, orders, identities, nil, nil, practiceDraftRuntime{companyOffers: &practiceCompanyOffers{}})
 	if err != nil || prior.totals[1][1] != 1 || prior.totals[1][2] != 0 || len(prior.totals[2]) != 0 || !prior.incomplete[3] {
 		t.Fatalf("historical company scope and sales roles changed: %+v %v", prior, err)
 	}

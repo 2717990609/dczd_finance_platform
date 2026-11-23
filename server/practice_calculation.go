@@ -437,6 +437,20 @@ func practiceTierAwards(part component, current []practicePurchase, orders map[s
 			}
 			continue
 		}
+		if part.SaleScope != nil && purchase.issue == "" {
+			selected, scopeIssue := purchase.scopedSale(part, identities, runtime)
+			if scopeIssue != "" {
+				issues.enrollments[member.ID] = scopeIssue
+				if measures || !retrain {
+					issues.people[practicePurchaseOwner(purchase, part.SourceRole, identities)] = "PRACTICE_TIER_GROUP_INCOMPLETE"
+				}
+				continue
+			}
+			if len(selected.payments) == 0 {
+				continue
+			}
+			purchase = selected
+		}
 		person := practicePurchaseOwner(purchase, part.SourceRole, identities)
 		unpricedMeasure := !pays && !history.legacyMeasures
 		_, hasPersonalSchedule := schedules.people[person]
@@ -504,7 +518,7 @@ func practiceTierAwards(part component, current []practicePurchase, orders map[s
 	var index practicePriorIndex
 	if len(needsHistory) != 0 {
 		var err error
-		index, err = indexPracticePrior(history, part.SourceRole, orders, identities, blocked, refunds, runtime.companyOffers != nil)
+		index, err = indexPracticePrior(history, part, orders, identities, blocked, refunds, runtime)
 		if err != nil {
 			return nil, issues, err
 		}

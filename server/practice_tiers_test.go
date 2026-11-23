@@ -121,7 +121,7 @@ func TestPracticePriorTierSkipsConfirmedUnattributedRetrain(t *testing.T) {
 			{ID: 12, RosterID: 9, SourceEnrollmentID: "12", ParticipantID: "81", PeriodKey: "PRACTICE:1:4:9", MembershipType: 2, CommissionEligible: true, PaidOrderIDs: []string{"2"}},
 		}}
 	identities := map[identityKey][]identityAssignment{{"DCZD", "known"}: {{PersonID: 7}}}
-	index, err := indexPracticePrior(state, "DIRECT_REFERRER", orders, identities, nil, nil, false)
+	index, err := indexPracticePrior(state, component{SourceRole: "DIRECT_REFERRER"}, orders, identities, nil, nil, practiceDraftRuntime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +129,7 @@ func TestPracticePriorTierSkipsConfirmedUnattributedRetrain(t *testing.T) {
 		t.Fatalf("known unattributed enrollment must not block or inflate the seller's prior total: %d %t %v", got, ready, err)
 	}
 	state.members[1].ParticipantID = "82"
-	index, err = indexPracticePrior(state, "DIRECT_REFERRER", orders, identities, nil, nil, false)
+	index, err = indexPracticePrior(state, component{SourceRole: "DIRECT_REFERRER"}, orders, identities, nil, nil, practiceDraftRuntime{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,6 +250,95 @@ func TestPracticeBookedRefundChangesOnlyOpenCumulativeTier(t *testing.T) {
 	calculate(history, 100)
 	history.replaying, history.frozenAmounts = true, before.practiceTierAmounts
 	calculate(history, 200)
+}
+
+func TestPracticeScopedCumulativeTierMeasuresOnlyEligiblePayments(t *testing.T) {
+	at := time.Date(2026, 11, 5, 4, 0, 0, 0, time.UTC)
+	previous := at.AddDate(0, -1, 0)
+	const inside = "40000000-0000-4000-8000-000000000001"
+	const outside = "40000000-0000-4000-8000-000000000002"
+	const category = "40000000-0000-4000-8000-000000000003"
+	const otherCategory = "40000000-0000-4000-8000-000000000004"
+	const role = "DIRECT_REFERRER"
+	history := practiceTierHistory{current: practiceHistoryPeriod{rosterID: 22, ordinal: 2, startsAt: &at},
+		periods: []practiceHistoryPeriod{{rosterID: 11, ordinal: 1, startsAt: &previous, personalRole: role}}}
+	var current []practiceEnrollment
+	orders := make(map[string][]paymentInput)
+	runtime := practiceDraftRuntime{salesOrganizations: make(practiceSalesOrganizations), companyClassifications: make(map[string]string)}
+	add := func(id int64, payments []int64, units, categories []string, when time.Time, roster int64, seller string) {
+		member := practiceEnrollment{ID: id, RosterID: roster, SourceEnrollmentID: fmt.Sprint(id), MembershipType: 3,
+			CommissionEligible: true, ConfirmedAt: when.Add(time.Hour)}
+		for i, amount := range payments {
+			paymentID := id*10 + int64(i)
+			key := fmt.Sprint(paymentID)
+			payment := paymentInput{ID: paymentID, Fact: sourceFact{Source: "DCZD", OrderID: key, PaymentID: key,
+				ReferrerID: seller, SalesCompanyID: "company", AmountMinor: &amount, OccurredAt: when.Add(time.Duration(i) * time.Minute)}}
+			orders[key] = []paymentInput{payment}
+			runtime.salesOrganizations[paymentID] = map[string]practiceSalesOrganization{role: {PersonID: 7, SourceCompany: "company", Group: units[i]}}
+			runtime.companyClassifications[key] = categories[i]
+			member.PaidOrderIDs = append(member.PaidOrderIDs, key)
+		}
+		if roster == 11 {
+			history.members = append(history.members, member)
+		} else {
+			current = append(current, member)
+		}
+	}
+	add(1, []int64{4000, 6000}, []string{inside, inside}, []string{category, category}, previous, 11, "seller")
+	add(2, []int64{40000}, []string{outside}, []string{category}, previous, 11, "seller")
+	add(3, []int64{30000, 6000}, []string{outside, inside}, []string{category, category}, at, 22, "seller")
+	add(4, []int64{50000}, []string{inside}, []string{otherCategory}, at, 22, "seller")
+	add(5, []int64{1000}, []string{inside}, []string{""}, previous, 11, "another")
+	runtime.salesOrganizations[50][role] = practiceSalesOrganization{PersonID: 8, SourceCompany: "company", Group: inside}
+	identities := map[identityKey][]identityAssignment{
+		{"DCZD", "seller"}:  {{PersonID: 7}},
+		{"DCZD", "another"}: {{PersonID: 8}},
+	}
+	limit := int64(15999)
+	part := component{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: role,
+		SaleScope: &practiceSaleScope{SalesUnits: []string{inside}, SalesCategoryIDs: []string{category}},
+		Tiers: &practiceSalesTiers{CumulativeMetric: "cumulative_new", CountFromOrdinal: 1,
+			Performance: []practiceTier{{From: 0, Through: &limit, Mode: "rate", Value: 100}, {From: 16000, Mode: "rate", Value: 200}}}}
+	rule := paymentRule{ID: 1, Components: []component{part}}
+	if err := validateComponents(rule.Components); err != nil {
+		t.Errorf("eligible tier scopes must be publishable: %v", err)
+	}
+	prior, err := indexPracticePrior(history, part, orders, identities, nil, nil, runtime)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, valid, err := prior.personTotal(8, map[int64]bool{11: true}); err != nil || valid {
+		t.Fatalf("unresolved historical category must block the affected seller: valid=%v err=%v", valid, err)
+	}
+	calculate := func(state practiceTierHistory, want int64) paymentDraft {
+		t.Helper()
+		draft, err := calculatePracticeDraft(current, rule, orders, identities, nil, state, nil, runtime)
+		if err != nil || len(draft.Issues) != 0 || len(draft.Lines) != 1 || draft.Total != want ||
+			draft.Lines[0].FactID != 31 || draft.Lines[0].Base != 6000 {
+			t.Fatalf("only the selected company category and team can contribute or receive an award: total=%d lines=%+v issues=%+v err=%v",
+				draft.Total, draft.Lines, draft.Issues, err)
+		}
+		return draft
+	}
+	first := calculate(history, 120)
+	if first.practiceTierAmounts[7] != 16000 || len(first.Performance) != 3 {
+		t.Fatalf("scope must affect the tier alone, never the original performance: %v %+v", first.practiceTierAmounts, first.Performance)
+	}
+	history.bookedRefunds = map[int64]int64{10: 1000, 20: 3000}
+	calculate(history, 60)
+	replay := practiceTierHistory{replaying: true, frozenAmounts: first.practiceTierAmounts}
+	calculate(replay, 120)
+
+	zero, one := int64(0), int64(1)
+	rule.Components[0].Tiers = &practiceSalesTiers{CountFromOrdinal: 1, Count: []practiceTier{
+		{From: 0, Through: &zero, Mode: "rate", Value: 100},
+		{From: 1, Through: &one, Mode: "rate", Value: 200},
+		{From: 2, Mode: "rate", Value: 300},
+	}}
+	byEnrollment := calculate(history, 120)
+	if byEnrollment.practicePriorCounts[7] != 1 {
+		t.Fatalf("two eligible historical payments must count as one enrollment: %v", byEnrollment.practicePriorCounts)
+	}
 }
 
 func TestPracticeSeparateAndSharedEnrollmentTiers(t *testing.T) {

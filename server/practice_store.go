@@ -374,7 +374,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	salesOrganizations, err := loadPracticeSalesOrganizations(ctx, tx, rule, members, orders, identities)
+	salesOrganizations, err := loadPracticeSalesOrganizations(ctx, tx, rule, members, history, orders, identities)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}

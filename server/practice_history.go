@@ -70,18 +70,22 @@ func (h practiceTierHistory) window(start practiceCountStart) (map[int64]bool, b
 }
 
 type practicePriorIndex struct {
-	totals         map[int64]map[int64]int64
-	incomplete     map[int64]bool
-	enrollmentFrom map[string]int64
-	paymentFrom    map[string]int64
+	totals           map[int64]map[int64]int64
+	incomplete       map[int64]bool
+	incompleteSeller map[practicePriorSeller]bool
+	enrollmentFrom   map[string]int64
+	paymentFrom      map[string]int64
 }
 
-func indexPracticePrior(history practiceTierHistory, role string, orders map[string][]paymentInput,
+type practicePriorSeller struct{ roster, person int64 }
+
+func indexPracticePrior(history practiceTierHistory, part component, orders map[string][]paymentInput,
 	identities map[identityKey][]identityAssignment, blocked map[int64]string, refunds map[int64][]practiceRefundMatch,
-	strictCompanyScope bool) (practicePriorIndex, error) {
+	runtime practiceDraftRuntime) (practicePriorIndex, error) {
 	index := practicePriorIndex{
 		totals: make(map[int64]map[int64]int64), incomplete: make(map[int64]bool),
-		enrollmentFrom: make(map[string]int64), paymentFrom: make(map[string]int64),
+		incompleteSeller: make(map[practicePriorSeller]bool),
+		enrollmentFrom:   make(map[string]int64), paymentFrom: make(map[string]int64),
 	}
 	past, err := preparePracticePurchases(history.members, orders, blocked, refunds, false)
 	if err != nil {
@@ -121,11 +125,28 @@ func indexPracticePrior(history practiceTierHistory, role string, orders map[str
 			continue
 		}
 		if periodRole == "" {
-			if strictCompanyScope && (!period.ruleKnown || period.companyOffers != nil) {
+			if runtime.companyOffers != nil && (!period.ruleKnown || period.companyOffers != nil) {
 				index.incomplete[roster] = true
 				continue
 			}
-			periodRole = role
+			periodRole = part.SourceRole
+		}
+		if part.SaleScope != nil && purchase.issue == "" {
+			historicalPart := part
+			historicalPart.SourceRole = periodRole
+			selected, scopeIssue := purchase.scopedSale(historicalPart, identities, runtime)
+			if scopeIssue != "" {
+				if person := practicePurchaseOwner(purchase, periodRole, identities); person != 0 {
+					index.incompleteSeller[practicePriorSeller{roster, person}] = true
+				} else {
+					index.incomplete[roster] = true
+				}
+				continue
+			}
+			if len(selected.payments) == 0 {
+				continue
+			}
+			purchase = selected
 		}
 		person := practicePurchaseOwner(purchase, periodRole, identities)
 		if person == 0 || purchase.companyRoutingIssue != "" {
@@ -170,7 +191,7 @@ func (index practicePriorIndex) addReference(refs map[string]int64, key string, 
 func (index practicePriorIndex) personTotal(person int64, window map[int64]bool) (int64, bool, error) {
 	var total int64
 	for roster := range window {
-		if index.incomplete[roster] {
+		if index.incomplete[roster] || index.incompleteSeller[practicePriorSeller{roster, person}] {
 			return 0, false, nil
 		}
 		var err error
