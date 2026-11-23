@@ -88,7 +88,8 @@ func TestCalendarRefundWaitsForItsMissingAccountingMonth(t *testing.T) {
 	if initial.Total != 11000 {
 		t.Fatalf("original order must pay 100 and 10 yuan: %+v", initial)
 	}
-	if _, err := service.confirmSettlement(ctx, confirmSettlementInput{PeriodID: original, ExpectedVersion: initial.Version}, "fixture"); err != nil {
+	booked, err := service.confirmSettlement(ctx, confirmSettlementInput{PeriodID: original, ExpectedVersion: initial.Version}, "fixture")
+	if err != nil {
 		t.Fatal(err)
 	}
 	refreshed()
@@ -113,6 +114,28 @@ func TestCalendarRefundWaitsForItsMissingAccountingMonth(t *testing.T) {
 		len(deductions) != 2 || deductions[0] != -5000 || deductions[1] != -500 {
 		t.Fatalf("refund must recover 50 and 5 yuan in the occurrence month: %v %v", deductions, err)
 	}
+
+	if _, err := service.db.Exec(ctx, "DELETE FROM settlements WHERE id=$1", booked.ID); err != nil {
+		t.Fatal(err)
+	}
+	var queued int
+	if err := service.db.QueryRow(ctx, `SELECT count(*) FROM draft_refresh_queue WHERE period_id IN ($1,$2) AND retry_on_scan`,
+		original, posted).Scan(&queued); err != nil || queued != 2 {
+		t.Fatalf("technical removal should schedule the reopened and affected refund periods: %d %v", queued, err)
+	}
+	refreshed()
+	assertDraft(original, 0)
+	assertDraft(posted, 0, "REFUND_ORIGINAL_NOT_SETTLED")
+	reopened, err := service.recalculateDraft(ctx, calculateDraftInput{PeriodID: original})
+	if err != nil {
+		t.Fatal(err)
+	}
+	redo, err := service.confirmSettlement(ctx, confirmSettlementInput{PeriodID: original, ExpectedVersion: reopened.(draftSummary).Version}, "fixture")
+	if err != nil || redo.ID == booked.ID {
+		t.Fatalf("reopened financial result should confirm once under a new ID: %+v %v", redo, err)
+	}
+	refreshed()
+	assertDraft(posted, -5500)
 }
 
 func TestHistoricalRefundRoutesToAugustThenCurrentAndReusesFrozenRule(t *testing.T) {

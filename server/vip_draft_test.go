@@ -604,6 +604,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if got := readPools(emptyOctober); got.Closed || len(got.Items) != 1 || got.Items[0].Opening != -60 {
 		t.Fatalf("a reopened October must see the newly confirmed September refund: %+v", got)
 	}
+	emptyOctober = draftAt(october)
 	closeReviewed(emptyOctober, review(emptyOctober).Token)
 	if _, err := s.db.Exec(ctx, "DELETE FROM settlements WHERE period_id=$1", sept); err == nil || !strings.Contains(err.Error(), "booked adjustments") {
 		t.Fatalf("September removal would change the now-confirmed October opening, even with no October movement: %v", err)

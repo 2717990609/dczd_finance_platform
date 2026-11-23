@@ -179,8 +179,18 @@ func verifySettlementHTTP(t *testing.T, ctx context.Context, s workspace, person
 	if w := submit(operator, approved.Token); w.Code != http.StatusConflict {
 		t.Fatalf("an old review could reclose a technically removed result: %d %s", w.Code, w.Body)
 	}
+	if pending := view(operator); !pending.DraftStale || pending.CanConfirm {
+		t.Fatalf("reopened result should require a new calculation before confirmation: %+v", pending)
+	}
+	recalculated, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: draft.PeriodID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated := recalculated.(draftSummary); updated.Version != draft.Version || updated.Total != draft.Total {
+		t.Fatalf("recalculation with unchanged inputs should retain the draft: %+v", updated)
+	}
 	reopened := view(operator)
-	if !reopened.CanConfirm || reopened.Token == approved.Token {
+	if reopened.DraftStale || !reopened.CanConfirm || reopened.Token == approved.Token {
 		t.Fatalf("expected a fresh review after technical removal: %+v", reopened)
 	}
 	local := s

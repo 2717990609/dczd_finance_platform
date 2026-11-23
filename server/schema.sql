@@ -332,7 +332,7 @@ CREATE OR REPLACE TRIGGER protect_confirmed_issues BEFORE INSERT OR UPDATE OR DE
 
 CREATE OR REPLACE FUNCTION protect_settlement_record() RETURNS trigger LANGUAGE plpgsql AS $$
 DECLARE refund_dependents bigint[];
-        correction_dependents bigint[];
+        reset_dependents bigint[];
         adjustment_dependents bigint[];
         has_later_adjustment boolean;
 BEGIN
@@ -411,24 +411,22 @@ BEGIN
  ) THEN
   RAISE EXCEPTION 'settlement has booked adjustments' USING ERRCODE='55000';
  END IF;
- SELECT array_agg(dep.period_id) INTO correction_dependents FROM (
-  SELECT a.period_id FROM calculation_draft_corrections a JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id
+ -- Capture linked periods before their draft and source references are removed.
+ SELECT array_agg(dep.period_id) INTO reset_dependents FROM (
+  SELECT a.period_id FROM calculation_draft_refunds a JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id
+  UNION SELECT a.period_id FROM calculation_draft_corrections a JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id
   UNION SELECT i.period_id FROM calculation_draft_issues i JOIN calculation_draft_lines l ON l.id=i.correction_line_id WHERE l.period_id=OLD.period_id
   UNION SELECT c.period_id FROM calculation_draft_practice_changes c WHERE c.class_period_id=OLD.period_id
- ) dep;
- DELETE FROM calculation_drafts
- WHERE period_id IN (SELECT a.period_id FROM calculation_draft_refunds a
-   JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE l.period_id=OLD.period_id
-   UNION SELECT unnest(correction_dependents)
-   UNION SELECT a.period_id FROM calculation_draft_performance a
-   JOIN calculation_draft_performance o ON o.source_version_id=a.payment_version_id WHERE o.period_id=OLD.period_id)
- AND period_id<>OLD.period_id;
+  UNION SELECT a.period_id FROM calculation_draft_performance a
+   JOIN calculation_draft_performance o ON o.source_version_id=a.payment_version_id WHERE o.period_id=OLD.period_id
+ ) dep WHERE dep.period_id<>OLD.period_id;
+ DELETE FROM calculation_drafts WHERE period_id=ANY(reset_dependents);
  INSERT INTO draft_refresh_queue(period_id)
- SELECT p.id FROM periods p WHERE (p.id=OLD.period_id AND (p.source_period_key IS NOT NULL OR p.aggregate_package_id IS NOT NULL))
+ SELECT p.id FROM periods p WHERE p.id=OLD.period_id
  OR (p.id IN (SELECT period_id FROM calculation_drafts WHERE aggregate_predecessor_id=OLD.period_id)
   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id))
  OR p.id IN (SELECT period_id FROM health_completion_open_periods(OLD.period_id))
- OR ((p.id=ANY(refund_dependents) OR p.id=ANY(correction_dependents) OR p.id=ANY(adjustment_dependents)
+ OR ((p.id=ANY(refund_dependents) OR p.id=ANY(reset_dependents) OR p.id=ANY(adjustment_dependents)
   OR p.id IN (SELECT period_id FROM practice_payment_dependents(OLD.period_id)))
   AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id))
  ORDER BY p.id ON CONFLICT(period_id) DO UPDATE
