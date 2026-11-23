@@ -282,7 +282,7 @@ async function loadMore(section, cursorName) {
   const request = sequence
   const current = draft.value
   const cursor = current[section].at(-1).id
-  const params = new URLSearchParams({ periodId: selected.value, version: current.version, [cursorName]: cursor })
+  const params = new URLSearchParams({ periodId: selected.value, version: current.version, section, [cursorName]: cursor })
   if (props.unitId) params.set('unitId',props.unitId)
   appendDetailFilters(params)
   loading.value = true

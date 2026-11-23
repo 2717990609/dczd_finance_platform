@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -155,6 +156,50 @@ func TestDraftDetailSearchIncludesRefundsAndBothCorrectionRecipients(t *testing.
 		t.Fatalf("wildcards interpreted in literal search: %+v", literal)
 	}
 	get("order-1", "", "", "1", http.StatusConflict)
+	for _, section := range []string{"lines", "refunds", "corrections", "issues"} {
+		t.Run(section, func(t *testing.T) {
+			params := url.Values{"periodId": {"1"}, "version": {"2"}, "orderQuery": {"order-1"}, "section": {section}}
+			response := httptest.NewRecorder()
+			service.getDraft(response, httptest.NewRequest(http.MethodGet, "/api/v1/drafts?"+params.Encode(), nil))
+			var result map[string]json.RawMessage
+			if err := json.Unmarshal(response.Body.Bytes(), &result); response.Code != http.StatusOK || err != nil {
+				t.Fatalf("detail page failed: %d %s %v", response.Code, response.Body, err)
+			}
+			var rows []json.RawMessage
+			want := 1
+			if section == "issues" {
+				want = 0
+			}
+			if err := json.Unmarshal(result[section], &rows); err != nil || len(rows) != want {
+				t.Fatalf("%s page should return %d rows: %s %v", section, want, result[section], err)
+			}
+			for key := range result {
+				if key != section && key != "version" && key != "calculatedAt" && key != "detailHasMore" {
+					t.Fatalf("%s page returned an unrelated field %s", section, key)
+				}
+			}
+			if string(result["version"]) != "2" || len(result["calculatedAt"]) < 3 {
+				t.Fatalf("detail page is missing its draft version: %s", response.Body)
+			}
+			if section != "issues" {
+				var more map[string]bool
+				if err := json.Unmarshal(result["detailHasMore"], &more); err != nil || !maps.Equal(more, map[string]bool{section: false}) {
+					t.Fatalf("wrong pagination flags for %s: %v %v", section, more, err)
+				}
+			}
+		})
+	}
+	for _, tc := range []struct {
+		query, cursor string
+		status        int
+	}{{"unknown", "", http.StatusBadRequest}, {"refunds", "1", http.StatusConflict}} {
+		params := url.Values{"periodId": {"1"}, "version": {"1"}, "section": {tc.query}, "afterRefundId": {tc.cursor}}
+		response := httptest.NewRecorder()
+		service.getDraft(response, httptest.NewRequest(http.MethodGet, "/api/v1/drafts?"+params.Encode(), nil))
+		if response.Code != tc.status {
+			t.Fatalf("section %s returned %d, want %d", tc.query, response.Code, tc.status)
+		}
+	}
 }
 
 func TestConfirmedDraftLinePageUsesOrganizationBeforeLimit(t *testing.T) {
@@ -223,5 +268,15 @@ func TestConfirmedDraftLinePageUsesOrganizationBeforeLimit(t *testing.T) {
 	}
 	if page := get("", "PAY-120"); len(page) != 1 || page[0] != "显示订单 120" {
 		t.Fatalf("search did not reach past the first page: %v", page)
+	}
+	query := url.Values{"periodId": {"1"}, "version": {"2"}, "unitId": {department}, "afterLineId": {"110"}, "section": {"lines"}}
+	response := httptest.NewRecorder()
+	service.getDraft(response, httptest.NewRequest(http.MethodGet, "/api/v1/drafts?"+query.Encode(), nil))
+	var page struct {
+		Lines []struct{ OrderNo, SourceVersion string }
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &page); response.Code != http.StatusOK || err != nil || len(page.Lines) != 10 ||
+		page.Lines[0].OrderNo != "显示订单 111" || page.Lines[9].OrderNo != "显示订单 120" || page.Lines[9].SourceVersion != "v1" {
+		t.Fatalf("line-only page must use the original draft version, cursor and organization scope: %d %s %v", response.Code, response.Body, err)
 	}
 }

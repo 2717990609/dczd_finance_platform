@@ -613,42 +613,15 @@ const draftPostingLabelSQL = `CASE WHEN rv.id IS NOT NULL AND starts_with(l.comp
          OR (e.membership_type=2 AND part#>>'{tiers,includeRetrain}'='true')) LIMIT 1)
      ELSE action.definition->>'label' END`
 
-var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `{{lineDisplayCTE}}
- SELECT jsonb_build_object(
- 'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
- 'catalog',d.rule_id IS NULL AND NOT (` + practiceRefundMonthScope + `),
- 'aggregatePackageId',period.aggregate_package_id,
- 'aggregatePredecessorId',d.aggregate_predecessor_id,
- 'aggregateGroups',CASE WHEN period.aggregate_package_id IS NOT NULL AND {{unit}} IS NULL THEN (
-  SELECT coalesce(jsonb_agg(jsonb_build_object('key',g.group_key,'ruleVersion',v.version_no,'receiptsMinor',g.receipts_minor,
-   'refundsMinor',g.refunds_minor,'carryInMinor',g.carry_in_minor,'carryOutMinor',g.carry_out_minor,'fixedOnly',g.fixed_only)
-  ORDER BY v.version_no,g.group_key),'[]')
-  FROM catalog_aggregate_draft_groups g JOIN product_rule_versions v ON v.source_id=g.rule_id WHERE g.period_id=d.period_id
- ) END,
- 'practiceRefundMonth',(` + practiceRefundMonthScope + `),
- 'refundsReady',d.rule_id IS NOT NULL OR d.catalog_refunds_ready OR (` + practiceRefundMonthScope + `),
- 'settlementReviewAvailable',d.rule_id IS NULL AND d.catalog_refunds_ready OR d.practice_roster_id IS NOT NULL OR (` + practiceRefundMonthScope + `),
- 'poolAllocationAvailable',(d.rule_id IS NULL AND d.catalog_refunds_ready OR (d.practice_roster_id IS NOT NULL OR period.aggregate_package_id IS NOT NULL OR (` + practiceRefundMonthScope + `)) AND (EXISTS(
-  SELECT 1 FROM pool_account_activity movement JOIN pool_period_order origin ON origin.id=movement.period_id
-  JOIN pool_period_order target ON target.id=d.period_id
-  WHERE origin.product_id=target.product_id AND origin.aggregate_package_id IS NOT DISTINCT FROM target.aggregate_package_id AND (origin.id=target.id OR
-   (origin.book_date,origin.book_stage,origin.ordinal)<(target.book_date,target.book_stage,target.ordinal)
-   AND EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=origin.id AND (st.id IS NULL OR s.id<st.id))))
-  OR EXISTS(SELECT 1 FROM monthly_pool_allocations a JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
-   WHERE a.period_id=d.period_id))),
- 'totalMinor',d.total_minor+d.refund_minor+d.correction_minor,'accruedMinor',d.total_minor,
- 'refundMinor',d.refund_minor,'refundCount',d.refund_count,'correctionMinor',d.correction_minor,'correctionCount',d.correction_count,
- 'scopeLineCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_lines l
-  WHERE l.period_id=d.period_id AND NOT l.practice_tier_reference AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,
- 'scopeRefundCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_refunds a
-  JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE a.period_id=d.period_id
-   AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,
- 'scopeCorrectionCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_corrections c
-  WHERE c.period_id=d.period_id AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `)) END,
- 'lineCount',d.line_count,'issueCount',d.issue_count,'practiceRosterVersion',roster.source_version,
- 'advisoryCount',(SELECT count(*) FROM calculation_draft_issues i WHERE i.period_id=d.period_id AND i.advisory),
- 'attendanceCount',roster.attendance_count,
- 'settlement',CASE WHEN st.id IS NOT NULL THEN jsonb_build_object('id',st.id,'confirmedAt',st.confirmed_at,'draftVersion',st.draft_version) END,
+const draftDetailPrefixSQL = `WITH RECURSIVE ` + organizationScopeCTE + `{{lineDisplayCTE}}
+ SELECT jsonb_build_object(`
+
+const draftDetailFromSQL = `
+) FROM calculation_drafts d JOIN periods period ON period.id=d.period_id JOIN products product ON product.id=period.product_id
+ LEFT JOIN rule_versions r ON r.id=d.rule_id LEFT JOIN settlements st ON st.period_id=d.period_id
+ LEFT JOIN practice_rosters roster ON roster.id=d.practice_roster_id WHERE d.period_id=$1 AND ($4::bigint=0 OR d.version=$4)`
+
+var draftDetailLinesSQL = `
  'lines',coalesce((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM (
   SELECT l.id,coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name) AS "personName",
    CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
@@ -680,7 +653,9 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `{{lineD
   LEFT JOIN source_payment_companies company ON company.source_version_id=l.source_version_id AND e.id IS NOT NULL
   LEFT JOIN configuration_options company_label ON company_label.group_key='practiceSalesCompany' AND company_label.option_key=company.company_id
   {{lineSearch}} ORDER BY l.id LIMIT {{detailLimit}}
- ) l),'[]'),
+ ) l),'[]')`
+
+var draftDetailRefundsSQL = `
  'refunds',coalesce((SELECT jsonb_agg(to_jsonb(a) ORDER BY a.id) FROM (
   SELECT a.id,a.amount_minor AS "amountMinor",a.tier_credit AS "tierCredit",event.fact->>'refundId' AS "refundId",event.version AS "refundVersion",
    event.id AS "refundSourceVersionId",
@@ -715,7 +690,9 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `{{lineD
   WHERE a.period_id=d.period_id AND a.id>$5
   AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `))
   {{refundSearch}} ORDER BY a.id LIMIT {{detailLimit}}
- ) a),'[]'),
+ ) a),'[]')`
+
+var draftDetailCorrectionsSQL = `
  'corrections',coalesce((SELECT jsonb_agg(to_jsonb(c) ORDER BY c.id) FROM (
   SELECT c.id,c.amount_minor AS "amountMinor",paid.order_id AS "orderId",
    CASE WHEN paid.order_id=v.order_id AND v.kind='ORDER_PAID' THEN v.fact->>'orderNo' ELSE paid.fact->>'orderNo' END AS "orderNo",
@@ -738,7 +715,9 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `{{lineD
   WHERE c.period_id=d.period_id AND c.id>$6
   AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `))
   {{correctionSearch}} ORDER BY c.id LIMIT {{detailLimit}}
- ) c),'[]'),
+ ) c),'[]')`
+
+var draftDetailIssuesSQL = `
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
   SELECT i.id,i.component_type AS "component",i.code,i.advisory,o.source,o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",
    o.id AS "sourceVersionId",o.version AS "sourceVersion",e.source_enrollment_id AS "enrollmentId",
@@ -758,24 +737,60 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `{{lineD
   LEFT JOIN rule_versions original_rule ON original_rule.id=original.rule_id
   LEFT JOIN product_rule_versions original_catalog_rule ON original_catalog_rule.source_id=original.catalog_rule_id
   WHERE i.period_id=d.period_id AND i.id>$3 ORDER BY i.id LIMIT 50
- ) i),'[]')
-) FROM calculation_drafts d JOIN periods period ON period.id=d.period_id JOIN products product ON product.id=period.product_id
- LEFT JOIN rule_versions r ON r.id=d.rule_id LEFT JOIN settlements st ON st.period_id=d.period_id
- LEFT JOIN practice_rosters roster ON roster.id=d.practice_roster_id WHERE d.period_id=$1 AND ($4::bigint=0 OR d.version=$4)`
+ ) i),'[]')`
+
+var draftDetailTemplateSQL = draftDetailPrefixSQL + `
+ 'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
+ 'catalog',d.rule_id IS NULL AND NOT (` + practiceRefundMonthScope + `),
+ 'aggregatePackageId',period.aggregate_package_id,
+ 'aggregatePredecessorId',d.aggregate_predecessor_id,
+ 'aggregateGroups',CASE WHEN period.aggregate_package_id IS NOT NULL AND {{unit}} IS NULL THEN (
+  SELECT coalesce(jsonb_agg(jsonb_build_object('key',g.group_key,'ruleVersion',v.version_no,'receiptsMinor',g.receipts_minor,
+   'refundsMinor',g.refunds_minor,'carryInMinor',g.carry_in_minor,'carryOutMinor',g.carry_out_minor,'fixedOnly',g.fixed_only)
+  ORDER BY v.version_no,g.group_key),'[]')
+  FROM catalog_aggregate_draft_groups g JOIN product_rule_versions v ON v.source_id=g.rule_id WHERE g.period_id=d.period_id
+ ) END,
+ 'practiceRefundMonth',(` + practiceRefundMonthScope + `),
+ 'refundsReady',d.rule_id IS NOT NULL OR d.catalog_refunds_ready OR (` + practiceRefundMonthScope + `),
+ 'settlementReviewAvailable',d.rule_id IS NULL AND d.catalog_refunds_ready OR d.practice_roster_id IS NOT NULL OR (` + practiceRefundMonthScope + `),
+ 'poolAllocationAvailable',(d.rule_id IS NULL AND d.catalog_refunds_ready OR (d.practice_roster_id IS NOT NULL OR period.aggregate_package_id IS NOT NULL OR (` + practiceRefundMonthScope + `)) AND (EXISTS(
+  SELECT 1 FROM pool_account_activity movement JOIN pool_period_order origin ON origin.id=movement.period_id
+  JOIN pool_period_order target ON target.id=d.period_id
+  WHERE origin.product_id=target.product_id AND origin.aggregate_package_id IS NOT DISTINCT FROM target.aggregate_package_id AND (origin.id=target.id OR
+   (origin.book_date,origin.book_stage,origin.ordinal)<(target.book_date,target.book_stage,target.ordinal)
+   AND EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=origin.id AND (st.id IS NULL OR s.id<st.id))))
+  OR EXISTS(SELECT 1 FROM monthly_pool_allocations a JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
+   WHERE a.period_id=d.period_id))),
+ 'totalMinor',d.total_minor+d.refund_minor+d.correction_minor,'accruedMinor',d.total_minor,
+ 'refundMinor',d.refund_minor,'refundCount',d.refund_count,'correctionMinor',d.correction_minor,'correctionCount',d.correction_count,
+ 'scopeLineCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_lines l
+  WHERE l.period_id=d.period_id AND NOT l.practice_tier_reference AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,
+ 'scopeRefundCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_refunds a
+  JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE a.period_id=d.period_id
+   AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,
+ 'scopeCorrectionCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_corrections c
+  WHERE c.period_id=d.period_id AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `)) END,
+ 'lineCount',d.line_count,'issueCount',d.issue_count,'practiceRosterVersion',roster.source_version,
+ 'advisoryCount',(SELECT count(*) FROM calculation_draft_issues i WHERE i.period_id=d.period_id AND i.advisory),
+ 'attendanceCount',roster.attendance_count,
+ 'settlement',CASE WHEN st.id IS NOT NULL THEN jsonb_build_object('id',st.id,'confirmedAt',st.confirmed_at,'draftVersion',st.draft_version) END` + "," +
+	draftDetailLinesSQL + "," + draftDetailRefundsSQL + "," + draftDetailCorrectionsSQL + "," +
+	draftDetailIssuesSQL + draftDetailFromSQL
 
 const draftDetailPageSize = 50
 
 // A normal page has no joined-field filters. Bound its rows before loading
 // rule definitions and other display fields. Searches still filter before
 // limiting because their matches can depend on those fields.
-var standardDraftDetailsSQL = strings.NewReplacer(
+var standardDraftDetails = strings.NewReplacer(
 	"{{lineDisplayCTE}}", "", "{{lineDisplayJoin}}", "",
 	"{{lineActions}}", "cv.definition->'benefit_actions'",
 	"{{lineSalesItem}}", "cv.definition->'internal_sales_direct_split'->>'sales_item_key'",
 	"{{lineSource}}", "(SELECT l.* FROM calculation_draft_lines l WHERE "+draftLinePageScope+
 		" ORDER BY l.id LIMIT "+strconv.Itoa(draftDetailPageSize)+")",
 	"{{lineSearch}}", "", "{{refundSearch}}", "",
-	"{{correctionSearch}}", "", "{{detailLimit}}", strconv.Itoa(draftDetailPageSize)).Replace(draftDetailTemplateSQL)
+	"{{correctionSearch}}", "", "{{detailLimit}}", strconv.Itoa(draftDetailPageSize))
+var standardDraftDetailsSQL = standardDraftDetails.Replace(draftDetailTemplateSQL)
 var draftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "NULL")
 var scopedDraftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "$7")
 
@@ -796,8 +811,7 @@ const draftFilteredLineDisplaySQL = `, line_display AS MATERIALIZED (
  JOIN product_rule_versions v ON v.source_id=used.catalog_rule_id
 )`
 
-var filteredDraftDetailSQL = organizationScopeQuery(strings.NewReplacer(
-	"{{lineDisplayCTE}}", draftFilteredLineDisplaySQL,
+var filteredDraftDetails = strings.NewReplacer(
 	"{{lineDisplayJoin}}", "LEFT JOIN line_display display ON display.source_id=l.catalog_rule_id",
 	"{{lineActions}}", "display.actions", "{{lineSalesItem}}", "display.sales_item",
 	"{{lineSource}}", "calculation_draft_lines",
@@ -810,7 +824,45 @@ var filteredDraftDetailSQL = organizationScopeQuery(strings.NewReplacer(
 		"CASE WHEN paid.order_id=v.order_id AND v.kind='ORDER_PAID' THEN v.fact->>'orderNo' ELSE paid.fact->>'orderNo' END"),
 		"coalesce(p.name,pool.name,recipient.name)", "coalesce(old_person.name,pool.name,old_recipient.name)"),
 	"{{detailLimit}}", strconv.Itoa(draftDetailPageSize+1),
-).Replace(draftDetailTemplateSQL), "$7")
+)
+var filteredDraftDetailSQL = organizationScopeQuery(filteredDraftDetails.Replace(
+	strings.ReplaceAll(draftDetailTemplateSQL, "{{lineDisplayCTE}}", draftFilteredLineDisplaySQL)), "$7")
+
+type draftSectionPage struct {
+	cursor             int
+	standard, filtered string
+}
+
+var draftDetailSections = [...]struct{ name, sql, cursorParam, cursorSQL string }{
+	{"lines", draftDetailLinesSQL, "afterLineId", "$2"},
+	{"issues", draftDetailIssuesSQL, "afterIssueId", "$3"},
+	{"refunds", draftDetailRefundsSQL, "afterRefundId", "$5"},
+	{"corrections", draftDetailCorrectionsSQL, "afterCorrectionId", "$6"},
+}
+
+var draftDetailPages = makeDraftDetailPages()
+
+func makeDraftDetailPages() map[string]draftSectionPage {
+	pages := make(map[string]draftSectionPage, len(draftDetailSections))
+	for i, section := range draftDetailSections {
+		template := draftDetailPrefixSQL + "'version',d.version,'calculatedAt',d.calculated_at," + section.sql + draftDetailFromSQL
+		// The page uses one cursor. Rebind the other placeholders from the full
+		// draft query so both paths can use the same row projections.
+		parameters := strings.NewReplacer(section.cursorSQL, "$2", "$4", "$3", "$7", "$4", "$8", "$5", "$9", "$6")
+		standard := standardDraftDetails.Replace(template)
+		filtered := ""
+		if section.name != "issues" {
+			display := ""
+			if section.name == "lines" {
+				display = draftFilteredLineDisplaySQL
+			}
+			search := filteredDraftDetails.Replace(strings.ReplaceAll(template, "{{lineDisplayCTE}}", display))
+			filtered = parameters.Replace(organizationScopeQuery(search, "$7"))
+		}
+		pages[section.name] = draftSectionPage{i, parameters.Replace(organizationScopeQuery(standard, "$7")), filtered}
+	}
+	return pages
+}
 
 func draftDetailOrderMatch(orderAlias, orderName string) string {
 	return "strpos(lower(" + orderAlias + ".order_id),lower($8))>0 OR strpos(lower(" + orderName + "),lower($8))>0"
@@ -831,8 +883,12 @@ func withDraftDetailPagination(raw json.RawMessage) (json.RawMessage, error) {
 	}
 	more := make(map[string]bool, 3)
 	for _, section := range []string{"lines", "refunds", "corrections"} {
+		data, present := result[section]
+		if !present {
+			continue
+		}
 		var rows []json.RawMessage
-		if err := json.Unmarshal(result[section], &rows); err != nil {
+		if err := json.Unmarshal(data, &rows); err != nil {
 			return nil, err
 		}
 		more[section] = len(rows) > draftDetailPageSize
@@ -968,9 +1024,9 @@ func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, invalid)
 		return
 	}
-	cursors := [4]int64{}
-	for i, name := range []string{"afterLineId", "afterIssueId", "afterRefundId", "afterCorrectionId"} {
-		if value := query.Get(name); value != "" {
+	cursors := [len(draftDetailSections)]int64{}
+	for i, section := range draftDetailSections {
+		if value := query.Get(section.cursorParam); value != "" {
 			cursors[i], err = strconv.ParseInt(value, 10, 64)
 			if err != nil || cursors[i] < 1 {
 				respond(w, nil, invalid)
@@ -1000,7 +1056,20 @@ func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 	detailSQL := scopedDraftDetailSQL
 	args := []any{periodID, cursors[0], cursors[1], version, cursors[2], cursors[3], unit}
 	filtered := orderQuery != "" || beneficiaryQuery != ""
-	if filtered {
+	if section := query.Get("section"); section != "" {
+		page, ok := draftDetailPages[section]
+		if !ok {
+			respond(w, nil, invalid)
+			return
+		}
+		detailSQL = page.standard
+		args = []any{periodID, cursors[page.cursor], version, unit}
+		filtered = filtered && page.filtered != ""
+		if filtered {
+			detailSQL = page.filtered
+			args = append(args, orderQuery, beneficiaryQuery)
+		}
+	} else if filtered {
 		detailSQL = filteredDraftDetailSQL
 		args = append(args, orderQuery, beneficiaryQuery)
 	}
