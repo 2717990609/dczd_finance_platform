@@ -165,17 +165,24 @@ const singleSalesRate = computed(() => {
   const [row,...others] = rateRows.value
   if (targetKind.value==='seller' && !teamSplit.value && row?.scope==='general' && !row.limitsRelationship && !others.length) return row
 })
+const rateScopeTitles = {
+  company:'公司特例',
+  category:'销售类别默认',
+  inherited:'公司补充比例',
+  external:'外部公司默认比例',
+  general:'通用比例',
+}
 const rateGroups = computed(() => {
   const mayAdd = canAddRates.value
   return [
-    {key:'category',title:'销售类别默认',add:mayAdd && sheet.value.structureOptions.categories.length && '添加类别默认比例'},
-    {key:'company',title:'公司特例',add:mayAdd && '添加公司特例'},
-    {key:'inherited',title:'公司补充比例'},
-    ...(targetKind.value==='seller' ? [{key:'external',title:'外部公司默认比例',
+    {key:'category',add:mayAdd && sheet.value.structureOptions.categories.length && '添加类别默认比例'},
+    {key:'company',add:mayAdd && '添加公司特例'},
+    {key:'inherited'},
+    ...(targetKind.value==='seller' ? [{key:'external',
       add:mayAdd && !rateRows.value.some(row=>row.scope==='external' && !removedRateRows.value.has(cellKey(selected.value,row.row))) && '设置默认比例'}] : []),
-    {key:'general',title:'通用比例',add:mayAdd && '添加通用比例'},
+    {key:'general',add:mayAdd && '添加通用比例'},
   ]
-    .map(group=>({...group,rows:rateRows.value.filter(row=>row.scope===group.key)}))
+    .map(group=>({...group,title:rateScopeTitles[group.key],rows:rateRows.value.filter(row=>row.scope===group.key)}))
     .filter(group=>group.add || group.rows.length)
 })
 const rateGroup = ref()
@@ -194,7 +201,7 @@ watch([selected,rateGroups], ([item,groups],[previousItem]) => {
   }
 })
 const ratePriority = computed(() => {
-  const titles = ['company','category','inherited','external','general']
+  const titles = Object.keys(rateScopeTitles)
     .map(key=>rateGroups.value.find(group=>group.key===key))
     .filter(group=>group && (group.rows.length || group.key!=='general'))
     .map(group=>group.title)
@@ -229,7 +236,7 @@ async function makeServiceIndependent() {
   const recipients = new Map()
   for (const team of sheet.value.teams) {
     const unitId = units.get(team.key)
-    const person = teamEdits.value.get(team.key)?.service ?? team.service
+    const person = teamRecipient(team,'service')
     if (!unitId || !person?.id) {
       error.value = '请先核对「'+team.label+'」的销售公司和服务收款人。'
       return
@@ -316,14 +323,18 @@ function setFlat(item, method, value) {
 }
 function componentStandard(item) {
   const calculation = calculationFor(item.itemKey)
+  const configuredScopes = new Set(configuredRateRows(item)
+    .filter(row=>!removedRateRows.value.has(cellKey(item.itemKey,row.row)))
+    .map(row=>row.scope))
+  const standard = Object.entries(rateScopeTitles).filter(([key])=>configuredScopes.has(key)).map(([,title])=>title).join('、')
   if (calculation) {
-    if (calculation.rows?.length) return '按销售条件取比例'
+    if (calculation.rows?.length) return standard
     if (calculation.fixedMinor!=null) return (calculation.fixedMinor/100).toFixed(2)+' 元/笔'
     return percent(calculation.rateBps)
   }
   if (item.rows?.length) {
     const row = item===component.value ? singleSalesRate.value : undefined
-    return row ? displayRate(row.rateBps,row.row)+'%' : '按销售条件取比例'
+    return row ? displayRate(row.rateBps,row.row)+'%' : standard || '未配置比例'
   }
   if (item.fixedMinor == null && item.rateBps == null) return ''
   const value = flatValue(item)
@@ -380,7 +391,11 @@ function setTarget(item, payee) {
   if (payee.target!=='person' && commissionScope(item)==='own') setCommissionScope(item,null)
   error.value = ''
 }
-const teamPerson = field => teamEdits.value.get(selectedTeam.value)?.[field] || team.value?.[field]
+const teamRecipient = (current,field) => teamEdits.value.get(current.key)?.[field] ?? current[field]
+const teamPerson = field => team.value && teamRecipient(team.value,field)
+const serviceRecipients = computed(() => [...new Set((sheet.value?.teams || [])
+  .map(team=>teamRecipient(team,'service')?.name || '收款人待配置'))])
+const serviceScope = computed(() => formatScope(teamOptions.value.map(option=>option.label)))
 function setTeamPerson(field, id, option) {
   const key = selectedTeam.value
   const changes = {...teamEdits.value.get(key)}
@@ -843,8 +858,8 @@ async function publish() {
               <strong>{{ labelEdits.get(serviceItemKey)?.trim() || serviceArrangement.label }}</strong>
               <span v-if="serviceReplacement" class="rule-block-badge">待替换</span>
               <span v-else-if="serviceRemoved" class="rule-block-badge">待删除</span>
-              <span v-if="!serviceReplacement" class="rule-block-recipient">提成范围 · {{ formatScope(teamOptions.map(option=>option.label)) }}</span>
-              <small v-if="!serviceReplacement">{{ [sheet.membershipSku && memberLabel(serviceArrangement),splitDutyLabel(serviceArrangement),splitValue('service')+'%'].filter(Boolean).join(' · ') }}</small>
+              <span v-if="!serviceReplacement" class="rule-block-recipient" :title="teamOptions.map(option=>option.label).join('、')">提成范围 · {{ serviceScope }}</span>
+              <small v-if="!serviceReplacement" :title="serviceRecipients.join('、')">{{ [formatScope(serviceRecipients),sheet.membershipSku && memberLabel(serviceArrangement),splitDutyLabel(serviceArrangement),splitValue('service')+'%'].filter(Boolean).join(' · ') }}</small>
             </button>
             <div v-if="selected===serviceItemKey" id="catalog-internal-service" class="rule-block-body">
               <RuleArrangementFields v-if="!serviceRemoved" name-id="catalog-service-label" :name="labelEdits.get(serviceItemKey) ?? serviceArrangement.label"
@@ -853,9 +868,9 @@ async function publish() {
                 :disabled="!editable || structureEditing" calculation-text="比例"
                 :order-type-text="orderTypeText" :order-type-id="sheet.membershipSku ? 'catalog-service-member-type' : undefined"
                 :order-types="catalogMembershipTypes" :order-type="memberValue(serviceArrangement)"
-                scope-text="全部已配置内部团队" @update:order-type="selectMemberType(serviceArrangement,$event)"
+                :scope-text="serviceScope" @update:order-type="selectMemberType(serviceArrangement,$event)"
                 @update:name="setLabel(serviceArrangement,$event)">
-                <a-form-item label="销售公司" html-for="catalog-team-company">
+                <a-form-item label="查看销售公司" html-for="catalog-team-company">
                   <a-select id="catalog-team-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
                 </a-form-item>
                 <a-form-item v-if="team" label="收款对象" html-for="catalog-team-service">
