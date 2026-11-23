@@ -128,8 +128,10 @@ const skuLabel = code => scenarioOptions.value.find(option=>option.value===code)
 const membershipCodes = computed(() => new Set(scenarioOptions.value.filter(option=>option.membershipSku).map(option=>option.value)))
 const selectedSKUs = item => item.scenarioCodes?.length ? item.scenarioCodes : scenarioCodes.value
 const hasMembershipSKU = item => selectedSKUs(item).some(code=>membershipCodes.value.has(code))
-function itemOrderTypes(item) {
-  const text = selectedSKUs(item).map(skuLabel).join('、') || '待选择 SKU'
+function itemOrderTypes(item, limit = Infinity) {
+  const codes = selectedSKUs(item)
+  const names = codes.slice(0,limit).map(skuLabel).join('、')
+  const text = (names || '待选择 SKU')+(codes.length>limit ? ' 等 '+codes.length+' 个 SKU' : '')
   return item.membershipNewOnly ? text+' · 会员仅计新报' : text
 }
 function selectItemSKUs(item,codes) {
@@ -556,7 +558,7 @@ async function resumeRule() {
             <DownOutlined aria-hidden="true"/>
             <strong>{{ item.label || '新收款安排' }}</strong>
             <span class="rule-block-badge">{{ targetLabels[item.targetKind] }}</span>
-            <span v-if="item.scenarioCodes?.length || item.membershipNewOnly" class="rule-block-recipient" :title="itemOrderTypes(item)">{{ itemOrderTypes(item) }}</span>
+            <span class="rule-block-recipient" :title="itemOrderTypes(item)">{{ itemOrderTypes(item,2) }}</span>
             <span class="rule-block-recipient" :title="orderScopeText(item)">{{ orderScopeText(item) }}</span>
             <small>{{ targetLabel(item) }} · {{ methodSummary(item) }}</small>
           </button>

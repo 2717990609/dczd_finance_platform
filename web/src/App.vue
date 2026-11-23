@@ -25,7 +25,7 @@ import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { catalogAppointmentLevels, checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
-  practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
+  practiceCompanyStandardSummary, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
   practiceSalesScopeText, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
@@ -479,7 +479,8 @@ function ruleRecipientSummary(row) {
     if (payee?.kind==='person') who = classPeopleOptions.value.find(option=>option.value===payee.personId)?.label || '指定个人'
     if (payee?.kind==='company') who = companyRecipientOptions.value.find(option=>option.value===payee.companyId)?.label || '指定公司'
     if (payee?.kind==='pool') who = practicePoolOptions.value.find(option=>option.value===payee.pool?.poolId)?.label || '团队池'
-    return [who,payee?.kind==='person' && optionLabel('organizationDuty',row.recipientDuty)].filter(Boolean).join(' · ')
+    const standard = practiceCompanyStandardSummary(row.companySales,value=>value+'%',value=>formatMoney(minor(value)))
+    return [who,payee?.kind==='person' && optionLabel('organizationDuty',row.recipientDuty),standard].filter(Boolean).join(' · ')
   }
   const who = row.salesRecipientKind==='person' ? ([row.salesPersonId ? practiceScopeNames.value.person(row.salesPersonId) : '待选择收款人',
     optionLabel('organizationDuty',row.recipientDuty)].filter(Boolean).join(' · '))

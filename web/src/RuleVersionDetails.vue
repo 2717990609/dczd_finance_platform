@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
+import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practiceCompanyStandardSummary, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
   practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
@@ -136,6 +136,17 @@ function formula(part) {
   if (part.mode==='rate') return (props.classProduct ? '报名净实收' : '付款实收')+' × '+standard(part)
   return standard(part)+fixedUnit.value
 }
+function standardSummary(part) {
+  if (part.companySales) return practiceCompanyStandardSummary(part.companySales,value=>rate(value,10000),props.formatMoney)
+  if (part.tiers) {
+    const metric = cumulativeMetricLabel(part.tiers)
+    return metric ? metric+'阶梯' : '按阶梯'
+  }
+  if (part.periodBenefit?.tiers?.length) return '按阶梯'
+  if (part.periodBenefit?.fixedMinor != null || part.retrainSplits?.length) return formula(part)
+  if (part.periodBenefit) return rate(part.value,10000)
+  return part.mode==='rate' ? standard(part) : formula(part)
+}
 const salesScope = (part, limit) => props.classProduct ? practiceSalesScopeText(part,practiceScopeNames.value,limit) : undefined
 onMounted(async () => {
   if (props.embedded || props.recipients || !props.classProduct ||
@@ -190,7 +201,7 @@ onMounted(async () => {
             提成范围 · {{ salesScope(part) }}
           </span>
           <span v-if="part.periodBenefit?.tiers?.length && part.periodBenefit.tierOnWholeClass" class="rule-block-badge">全班净实收选档</span>
-          <small>{{ salesScope(part) ? '收款 · ' : '' }}{{ recipient(part) }}{{ part.periodBenefit?.orderAppointmentLevel ? ' · '+formula(part) : '' }}</small>
+          <small>{{ [recipient(part),standardSummary(part)].filter(Boolean).join(' · ') }}</small>
         </button>
         <div v-if="activePart===index" :id="'rule-preview-'+index" class="rule-block-body rule-preview-part">
         <a-descriptions size="small" :column="{xs:1,sm:2}">

@@ -244,6 +244,33 @@ function companyValue(row) {
 export const standardCategoryIDs = row => row.salesCategoryIds || (row.salesCategoryId ? [row.salesCategoryId] : [])
 export const exceptionCompanyIDs = row => row.companyIds || (row.companyId ? [row.companyId] : [])
 
+export function practiceCompanyStandardSummary(sales, formatRate, formatAmount) {
+  const categories = [], companies = []
+  for (const row of sales.categories || []) {
+    const overrides = row.overrides || []
+    if (standardCategoryIDs(row).length) {
+      categories.push(row)
+    } else {
+      const overridden = new Set(overrides.flatMap(exceptionCompanyIDs))
+      if (row.companies?.some(id=>!overridden.has(id))) companies.push(row)
+    }
+    companies.push(...overrides)
+  }
+  const summary = rows => ['rate','fixed'].map(mode => {
+    const values = rows.filter(row=>row.mode===mode && Number.isFinite(row.value)).map(row=>row.value)
+    if (!values.length) return ''
+    const format = mode==='rate' ? formatRate : formatAmount
+    const minimum = Math.min(...values), maximum = Math.max(...values)
+    return minimum===maximum ? format(minimum) : format(minimum)+'–'+format(maximum)
+  }).filter(Boolean).join(' / ')
+  const category = summary(categories), company = summary(companies)
+  return [
+    category && '类别默认 '+category,
+    company && '指定公司 '+company,
+    sales.defaultRate!=null && '其他外部公司 '+formatRate(sales.defaultRate),
+  ].filter(Boolean).join(' · ')
+}
+
 export function practiceSalesScopeText(part, names, limit = 2) {
   const entries = []
   const list = (label, ids, name) => {
