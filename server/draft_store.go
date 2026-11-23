@@ -592,7 +592,7 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 var draftLinePageScope = `l.period_id=d.period_id AND l.id>$2 AND NOT l.practice_tier_reference
  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `))`
 
-var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
+var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `{{lineDisplayCTE}}
  SELECT jsonb_build_object(
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
  'catalog',d.rule_id IS NULL AND NOT (` + practiceRefundMonthScope + `),
@@ -661,10 +661,11 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
   LEFT JOIN practice_pools practice_pool ON practice_pool.id=l.practice_pool_id
   LEFT JOIN rule_versions rv ON rv.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
   LEFT JOIN product_rule_packages package ON package.source_id=cv.package_id
+  {{lineDisplayJoin}}
   LEFT JOIN LATERAL (
-   SELECT b AS definition FROM jsonb_array_elements(cv.definition->'benefit_actions') b
+   SELECT b AS definition FROM jsonb_array_elements({{lineActions}}) b
    WHERE b->>'item_key'=l.component_type OR
-    (b->>'item_key'=cv.definition->'internal_sales_direct_split'->>'sales_item_key' AND starts_with(l.component_type,(b->>'item_key')||':'))
+    (b->>'item_key'={{lineSalesItem}} AND starts_with(l.component_type,(b->>'item_key')||':'))
    ORDER BY (b->>'item_key'=l.component_type) DESC LIMIT 1
   ) action ON true
   LEFT JOIN practice_enrollments e ON e.id=l.practice_enrollment_id
@@ -754,6 +755,9 @@ const draftDetailPageSize = 50
 // rule definitions and other display fields. Searches still filter before
 // limiting because their matches can depend on those fields.
 var standardDraftDetailsSQL = strings.NewReplacer(
+	"{{lineDisplayCTE}}", "", "{{lineDisplayJoin}}", "",
+	"{{lineActions}}", "cv.definition->'benefit_actions'",
+	"{{lineSalesItem}}", "cv.definition->'internal_sales_direct_split'->>'sales_item_key'",
 	"{{lineSource}}", "(SELECT l.* FROM calculation_draft_lines l WHERE "+draftLinePageScope+
 		" ORDER BY l.id LIMIT "+strconv.Itoa(draftDetailPageSize)+")",
 	"{{lineSearch}}", "", "{{refundSearch}}", "",
@@ -767,7 +771,21 @@ const draftAggregateOrderMatch = `(l.aggregate_group_key IS NOT NULL AND EXISTS(
  WHERE membership.period_id=l.period_id AND membership.group_key=l.aggregate_group_key
   AND (strpos(lower(paid.order_id),lower($8))>0 OR strpos(lower(paid.fact->>'orderNo'),lower($8))>0)))`
 
+// Beneficiary search may inspect every line in a period. Keep only the display
+// fields from each referenced catalog rule so rate tables are decoded once.
+const draftFilteredLineDisplaySQL = `, line_display AS MATERIALIZED (
+ SELECT v.source_id,v.definition#>>'{internal_sales_direct_split,sales_item_key}' AS sales_item,
+  (SELECT jsonb_agg(jsonb_build_object('item_key',b->>'item_key','label',b->>'label','pool_name',b->>'pool_name'))
+   FROM jsonb_array_elements(v.definition->'benefit_actions') b) AS actions
+ FROM (SELECT DISTINCT catalog_rule_id FROM calculation_draft_lines
+  WHERE period_id=$1 AND id>$2 AND NOT practice_tier_reference AND catalog_rule_id IS NOT NULL) used
+ JOIN product_rule_versions v ON v.source_id=used.catalog_rule_id
+)`
+
 var filteredDraftDetailSQL = organizationScopeQuery(strings.NewReplacer(
+	"{{lineDisplayCTE}}", draftFilteredLineDisplaySQL,
+	"{{lineDisplayJoin}}", "LEFT JOIN line_display display ON display.source_id=l.catalog_rule_id",
+	"{{lineActions}}", "display.actions", "{{lineSalesItem}}", "display.sales_item",
 	"{{lineSource}}", "calculation_draft_lines",
 	"{{lineSearch}}", "WHERE "+draftLinePageScope+
 		draftDetailFilter(draftDetailOrderMatch("o", "o.fact->>'orderNo'")+" OR "+draftAggregateOrderMatch,

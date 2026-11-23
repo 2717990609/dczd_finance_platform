@@ -9,6 +9,59 @@ import (
 	"testing"
 )
 
+func TestDraftBeneficiarySearchUsesLabelFromEachCatalogRuleVersion(t *testing.T) {
+	service := workspace{db: integrationDB(t)}
+	const seed = `
+	 INSERT INTO products(code,name,period_mode) VALUES('CATALOG_DETAIL_SEARCH','目录明细查找','calendar');
+	 INSERT INTO product_catalog_settings(product_id,source_id,source_environment,project_code,source_system,source_key,captured_at,snapshot_digest)
+	 VALUES(1,'11000000-0000-0000-0000-000000000001','TEST','AI','DCAI','sku',now(),sha256('fixture'::bytea));
+	 INSERT INTO product_rule_packages(source_id,product_id,code,name,project_code,policy_kind,scope_type,scope_id,paused)
+	 VALUES('11000000-0000-0000-0000-000000000002',1,'FIXTURE','目录规则','AI','COMPONENT_RULE','SKU','sku',false);
+	 INSERT INTO product_rule_versions(source_id,package_id,version_no,source_status,effective_from,content_hash,definition,observed_at)
+	 VALUES
+	 ('11000000-0000-0000-0000-000000000003','11000000-0000-0000-0000-000000000002',1,'PUBLISHED','2026-06-01','v1',
+	  '{"benefit_actions":[{"item_key":"delivery","label":"原交付","pool_name":"甲资金池"}]}',now()),
+	 ('11000000-0000-0000-0000-000000000004','11000000-0000-0000-0000-000000000002',2,'PUBLISHED','2026-06-02','v2',
+	  '{"benefit_actions":[{"item_key":"delivery","label":"后续交付","pool_name":"乙资金池"}]}',now());
+	 INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month)
+	 VALUES(1,'六月',202606,'2026-06-01','2026-06-30','2026-06-01');
+	 INSERT INTO people(name) VALUES('分配负责人');
+	 INSERT INTO organization_units(id,kind,name,status)
+	 VALUES('11000000-0000-0000-0000-000000000005','DEPARTMENT','交付部门','ACTIVE');
+	 INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
+	 VALUES('DCAI','OLD-ORDER','','paid-1','v1','ORDER_PAID',now(),'2026-06-01','{}'),
+	       ('DCAI','NEW-ORDER','','paid-2','v1','ORDER_PAID',now(),'2026-06-02','{}');
+	 INSERT INTO calculation_drafts(period_id,version,input_digest,total_minor,line_count,issue_count,calculated_at)
+	 VALUES(1,2,'\x01',200,2,0,now());
+	 INSERT INTO calculation_draft_lines(period_id,source_version_id,component_type,base_minor,amount_minor,catalog_rule_id,beneficiary_unit_id,allocation_owner_id)
+	 VALUES(1,1,'delivery',1000,100,'11000000-0000-0000-0000-000000000003','11000000-0000-0000-0000-000000000005',1),
+	       (1,2,'delivery',1000,100,'11000000-0000-0000-0000-000000000004','11000000-0000-0000-0000-000000000005',1);`
+	if _, err := service.db.Exec(context.Background(), seed); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, order, label string
+		version            int
+	}{{"甲资金池", "OLD-ORDER", "原交付", 1}, {"乙资金池", "NEW-ORDER", "后续交付", 2}} {
+		page := httptest.NewRecorder()
+		params := url.Values{"periodId": {"1"}, "version": {"2"}, "beneficiaryQuery": {tc.name}}
+		service.getDraft(page, httptest.NewRequest(http.MethodGet, "/api/v1/drafts?"+params.Encode(), nil))
+		var result struct {
+			Lines []struct {
+				OrderID, ComponentLabel, PersonName string
+				RuleVersion                         int
+			}
+		}
+		if err := json.Unmarshal(page.Body.Bytes(), &result); page.Code != http.StatusOK || err != nil || len(result.Lines) != 1 {
+			t.Fatalf("search for %s failed: %d %s %v", tc.name, page.Code, page.Body, err)
+		}
+		line := result.Lines[0]
+		if line.OrderID != tc.order || line.PersonName != tc.name || line.ComponentLabel != tc.label || line.RuleVersion != tc.version {
+			t.Fatalf("pool name and arrangement must use the line's catalog rule version: %+v", line)
+		}
+	}
+}
+
 func TestDraftDetailSearchIncludesRefundsAndBothCorrectionRecipients(t *testing.T) {
 	service := workspace{db: integrationDB(t)}
 	const seed = `
