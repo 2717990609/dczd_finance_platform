@@ -146,12 +146,64 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 	if next, err := s.calculateCurrentDraft(ctx, periodID, 0); err != nil || next.Version != draft.Version {
 		t.Fatalf("unchanged source must retain latest draft: %+v %v", next, err)
 	}
+	reviseEvent := func(original int64, version, patch string) int64 {
+		t.Helper()
+		var revisedID int64
+		err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+			if err := tx.QueryRow(ctx, `WITH revision AS (
+			 INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
+			 SELECT source,order_id,line_id,record_key,$2,kind,updated_at+interval '1 hour',fact||$3::jsonb,occurred_at
+			 FROM source_order_versions WHERE id=$1 RETURNING id
+			), classification AS (
+			 INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier)
+			 SELECT revision.id,c.entity_type,c.business_key,c.classifier FROM revision
+			 JOIN source_order_classifications c ON c.source_version_id=$1
+			)
+			SELECT id FROM revision`, original, version, patch).Scan(&revisedID); err != nil {
+				return err
+			}
+			return enqueueDraftFactChanges(ctx, tx, []int64{revisedID}, nil)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return revisedID
+	}
+	checkQueue := func(periodID int64, expected bool) {
+		t.Helper()
+		var pending bool
+		if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, periodID).
+			Scan(&pending); err != nil || pending != expected {
+			t.Fatalf("draft queue %t for period %d, want %t: %v", pending, periodID, expected, err)
+		}
+	}
+	displayVersion := reviseEvent(sourceID, "2", `{"orderNo":"仅显示单号更正"}`)
+	checkQueue(periodID, false)
+	if next, err := s.calculateCurrentDraft(ctx, periodID, 0); err != nil || next.Version != draft.Version || next.Total != draft.Total {
+		t.Fatalf("a display-only order version must preserve the aggregate draft: %+v %v", next, err)
+	}
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM catalog_aggregate_draft_events
+	 WHERE period_id=$1 AND source_version_id=$2`, periodID, sourceID).Scan(&facts); err != nil || facts != 1 {
+		t.Fatalf("equivalent recomputation should keep the original payment reference: %d %v", facts, err)
+	}
+	sourceID = reviseEvent(displayVersion, "3", `{"amountMinor":22000}`)
+	checkQueue(periodID, true)
+	if revised, err := s.calculateCurrentDraft(ctx, periodID, 0); err != nil ||
+		revised.Version != draft.Version+1 || revised.Total != 5400 {
+		t.Fatalf("financial change should replace the draft: %+v %v", revised, err)
+	} else {
+		draft = revised
+	}
+	reviseEvent(sourceID, "4", `{"orderNo":"结算前仅显示单号更正"}`)
+	checkQueue(periodID, false)
 
 	input.Month = "2026-09"
 	september := open()
-	if _, err := db.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
+	var refundID int64
+	if err := db.QueryRow(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
 	 VALUES('DCAI','101','','vip:101','1','REFUND_SUCCEEDED','2026-09-05',
-	  '{"domain":"VIP","sourceKey":"fixture","refundId":"refund-101","amountMinor":5000,"refundsPayment":[{"orderId":"101","recordId":"101"}]}','2026-09-05')`); err != nil {
+	  '{"domain":"VIP","sourceKey":"fixture","refundId":"refund-101","amountMinor":5000,"refundsPayment":[{"orderId":"101","recordId":"101"}]}','2026-09-05')
+	 RETURNING id`).Scan(&refundID); err != nil {
 		t.Fatal(err)
 	}
 	if result, err := s.calculateCurrentDraft(ctx, september, 0); err != nil || result.IssueCount != 1 {
@@ -200,6 +252,8 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 	if _, err := db.Exec(ctx, `DELETE FROM catalog_benefit_organizations WHERE unit_id='10000000-0000-4000-8000-000000000823'`); err != nil {
 		t.Fatal(err)
 	}
+	reviseEvent(refundID, "2", `{"orderNo":"仅显示退款单号更正"}`)
+	checkQueue(september, false)
 	freeze(september, refunds.Version)
 	trialWorkspace := s
 	trialWorkspace.development = true

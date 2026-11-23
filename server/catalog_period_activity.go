@@ -570,6 +570,13 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 		retiredFrom = in.GroupRule.retiredFrom
 		packageID = in.GroupRule.packageID
 	}
+	var equivalent equivalentCatalogReferences
+	if in.DraftPeriodID != 0 {
+		equivalent, err = readEquivalentCatalogReferences(ctx, tx, in.DraftPeriodID)
+		if err != nil {
+			return result, err
+		}
+	}
 	rows, err = tx.Query(ctx, catalogActivityAmountsSQL, in.ProductID, in.Scenarios, in.Window.Start, in.Window.Through,
 		maxDraftPayments+1, in.DraftPeriodID, retiredFrom, packageID, recognition)
 	if err != nil {
@@ -592,6 +599,9 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 		if seen > maxDraftPayments {
 			return errDraftLimit
 		}
+		eventID = equivalent.reference(eventID)
+		paymentID = equivalent.reference(paymentID)
+		completionVersionID = equivalent.reference(completionVersionID)
 		event := catalogActivityEvent{PaymentID: paymentID, CompletionVersionID: completionVersionID, PaidAt: paidAt,
 			RecognizedAt: recognizedAt, OccurredAt: occurredAt, Scenario: code, MembershipType: membershipType,
 			Amount: amount, OriginalAmount: originalAmount, PriorBookedRefunds: priorBookedRefunds,

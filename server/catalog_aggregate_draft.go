@@ -27,6 +27,51 @@ type catalogAggregateEventReference struct {
 	CompletionVersionID int64 `json:",omitempty"`
 }
 
+type equivalentCatalogReferences map[int64]int64
+
+func (versions equivalentCatalogReferences) reference(id int64) int64 {
+	if saved, ok := versions[id]; ok {
+		return saved
+	}
+	return id
+}
+
+// Keep an existing draft's references when the latest version carries the
+// same financial facts. Group keys and settlement checks use those references.
+func readEquivalentCatalogReferences(ctx context.Context, tx pgx.Tx, periodID int64) (equivalentCatalogReferences, error) {
+	rows, err := tx.Query(ctx, `WITH saved(id) AS (
+	 SELECT source_version_id FROM catalog_aggregate_draft_events WHERE period_id=$1
+	 UNION SELECT payment_version_id FROM catalog_aggregate_draft_events WHERE period_id=$1
+	 UNION SELECT completion_version_id FROM catalog_aggregate_draft_events WHERE period_id=$1 AND completion_version_id IS NOT NULL
+	 UNION SELECT source_version_id FROM calculation_draft_issues WHERE period_id=$1 AND source_version_id IS NOT NULL
+	)
+	SELECT current.id,min(previous.id) FROM saved JOIN source_order_versions previous USING(id)
+	JOIN LATERAL (
+	 SELECT newer.id FROM source_order_versions newer
+	 WHERE (newer.source,newer.order_id,newer.line_id,newer.record_key,newer.kind)=
+	  (previous.source,previous.order_id,previous.line_id,previous.record_key,previous.kind)
+	  AND (newer.updated_at,newer.id)>(previous.updated_at,previous.id)
+	 ORDER BY newer.updated_at DESC,newer.id DESC LIMIT 1
+	) latest ON true
+	JOIN source_order_versions current ON current.id=latest.id
+	LEFT JOIN source_order_classifications cc ON cc.source_version_id=current.id
+	LEFT JOIN source_order_classifications pc ON pc.source_version_id=previous.id
+	LEFT JOIN source_payment_companies cv ON cv.source_version_id=current.id
+	LEFT JOIN source_payment_companies pv ON pv.source_version_id=previous.id
+	WHERE NOT (`+draftFinancialFactChanged+`)
+	GROUP BY current.id HAVING count(*)=1`, periodID)
+	if err != nil {
+		return nil, err
+	}
+	versions := make(equivalentCatalogReferences)
+	var current, saved int64
+	_, err = pgx.ForEachRow(rows, []any{&current, &saved}, func() error {
+		versions[current] = saved
+		return nil
+	})
+	return versions, err
+}
+
 type catalogFrozenGroupReference struct {
 	PeriodID int64
 	Key      string

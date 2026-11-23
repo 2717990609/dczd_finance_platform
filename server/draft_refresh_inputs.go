@@ -8,6 +8,12 @@ import (
 
 const draftDisplayFactFields = `ARRAY['version','updatedAt','orderNo']`
 
+const draftFinancialFactChanged = `(current.fact-` + draftDisplayFactFields + `,current.occurred_at,
+ cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,cv.company_id,cv.recommendation_company_id,cv.recommendation_conflict,
+ current.practice_registration) IS DISTINCT FROM (previous.fact-` + draftDisplayFactFields + `,previous.occurred_at,
+ pc.entity_type,pc.business_key,pc.classifier,pc.sales_claims,pv.company_id,pv.recommendation_company_id,pv.recommendation_conflict,
+ previous.practice_registration)`
+
 const draftRefreshFacts = `WITH keys AS (
  SELECT DISTINCT source,order_id,line_id,record_key,kind FROM source_order_versions
  WHERE id=ANY($1::bigint[]) OR id=ANY($2::bigint[])
@@ -23,11 +29,8 @@ const draftRefreshFacts = `WITH keys AS (
  LEFT JOIN source_order_classifications pc ON pc.source_version_id=previous.id
  LEFT JOIN source_payment_companies cv ON cv.source_version_id=current.id
  LEFT JOIN source_payment_companies pv ON pv.source_version_id=previous.id
- WHERE current.id=ANY($2::bigint[]) OR (current.id=ANY($1::bigint[]) AND (
-  previous.id IS NULL OR (current.fact-` + draftDisplayFactFields + `,cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,
-   cv.company_id,cv.recommendation_company_id,cv.recommendation_conflict,current.practice_registration)
-  IS DISTINCT FROM (previous.fact-` + draftDisplayFactFields + `,pc.entity_type,pc.business_key,pc.classifier,pc.sales_claims,
-   pv.company_id,pv.recommendation_company_id,pv.recommendation_conflict,previous.practice_registration)))
+ WHERE current.id=ANY($2::bigint[]) OR (current.id=ANY($1::bigint[]) AND
+  (previous.id IS NULL OR (` + draftFinancialFactChanged + `)))
 ), events AS MATERIALIZED (
  SELECT v.id,v.source,v.fact,v.order_id,v.kind,v.record_key,v.occurred_at FROM changed c
  JOIN source_order_versions v ON v.id=c.current_id OR v.id=c.previous_id
