@@ -24,8 +24,11 @@ const directory = computed(() => loadedRecipients.value ?? props.recipients)
 const label = (group, key) => props.optionLabel(group, key) || key
 const roleName = key => label('orderAttributionRole', key) !== key
   ? label('orderAttributionRole', key) : label('practicePeriodSourceRole', key)
-const personName = id => directory.value?.people.find(person=>person.id===id)?.name
-  || props.people.find(person=>person.id===id)?.name || '人员 '+id
+const personName = id => {
+  const person = directory.value?.people.find(person=>person.id===id) || props.people.find(person=>person.id===id)
+  if (!person) return '人员 '+id
+  return props.classProduct ? person.name+' · '+id : person.name
+}
 const unitName = id => {
   const unit = directory.value?.units.find(unit=>unit.id===id)
   return unit?.scopeName || unit?.name || '组织 '+id

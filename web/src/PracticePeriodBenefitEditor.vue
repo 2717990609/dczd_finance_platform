@@ -126,7 +126,7 @@ const calculationMethods = computed(() => [
             <a-select :id="field('companies')" v-model:value="config.salesCompanies" :options="companies"
               mode="multiple" :max-tag-count="1" allow-clear :filter-option="byName" placeholder="不限销售公司"/>
           </a-form-item>
-          <a-form-item v-if="config.salesPeople?.length" label="销售人员" :html-for="field('sales')">
+          <a-form-item label="销售人员" :html-for="field('sales')">
             <a-select :id="field('sales')" v-model:value="config.salesPeople" :options="people"
               mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售人员"/>
           </a-form-item>
