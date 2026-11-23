@@ -418,9 +418,6 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					var target catalogPeriodGroupTarget
 					var key catalogGroupTargetKey
 					issue := decision.issue
-					if typedMembership && *event.MembershipType != "NEW" {
-						issue = "MEMBERSHIP_TYPE_PENDING"
-					}
 					if issue == "" {
 						if item.AppointmentLevel == "" {
 							target, key, issue = directory.groupTarget(item, at)
@@ -434,6 +431,9 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 								}
 							}
 						}
+					}
+					if issue == "" && typedMembership && *event.MembershipType != "NEW" {
+						issue = "MEMBERSHIP_TYPE_PENDING"
 					}
 					if issue != "" {
 						problemKey := issueKey{rule.ID, item.ItemKey, issue}

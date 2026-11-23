@@ -237,6 +237,52 @@ func TestCatalogPeriodMembershipTypeOnlyFiltersConfiguredItem(t *testing.T) {
 	}
 }
 
+func TestCatalogPeriodMembershipTypeRequiresAnApplicableAppointment(t *testing.T) {
+	const company = "10000000-0000-4000-8000-000000000701"
+	const otherCompany = "10000000-0000-4000-8000-000000000702"
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, shanghai)
+	appointmentStart := start.AddDate(0, 0, 9)
+	missing, newType := "", "NEW"
+	versions := []catalogAggregateRule{{ID: "rule", Version: 1, From: start, Definition: catalogPeriodDefinition{
+		Scenarios: []string{"VIP"}, Items: []catalogPeriodItem{
+			{ItemKey: "lead", Label: "在任负责人", TargetKind: "appointment", AppointmentLevel: "COMPANY", AppointmentRole: "TEAM_LEAD",
+				CommissionUnits: []string{company}, MembershipNewOnly: true, Tiers: []catalogPeriodTier{{Rate: 1000}}},
+			{ItemKey: "general", Label: "全期", TargetKind: "person", PersonID: 1, Tiers: []catalogPeriodTier{{Rate: 500}}},
+		},
+	}}}
+	events := []catalogActivityEvent{
+		{EventID: 1, PaymentID: 1, PaidAt: appointmentStart.Add(-time.Second), Scenario: "VIP", Amount: 10000, MembershipType: &missing},
+		{EventID: 2, PaymentID: 2, PaidAt: appointmentStart, Scenario: "VIP", Amount: 20000, MembershipType: &missing},
+		{EventID: 3, PaymentID: 3, PaidAt: appointmentStart, Scenario: "VIP", Amount: 30000, MembershipType: &newType},
+		{EventID: 4, PaymentID: 4, PaidAt: appointmentStart, Scenario: "VIP", Amount: 40000, MembershipType: &missing},
+		{EventID: 5, PaymentID: 5, PaidAt: appointmentStart, Scenario: "VIP", Amount: 50000, MembershipType: &missing},
+	}
+	performance := catalogPerformanceDirectory{
+		claims:      map[int64]vipClaim{1: {Company: "inside"}, 2: {Company: "inside"}, 3: {Company: "inside"}, 4: {Company: "outside"}},
+		claimIssues: map[int64]string{5: "SALES_COMPANY_CONFLICT"},
+		companies: [2]map[string][]vipLink{{
+			"inside":  {{Key: "inside", Value: company}},
+			"outside": {{Key: "outside", Value: otherCompany}},
+		}},
+	}
+	directory := catalogAggregateDirectory{People: map[int64]string{1: "全期收款人"},
+		AppointmentDuties: map[catalogAggregateDutyKey][]catalogAggregateDuty{
+			{company, "TEAM_LEAD"}: {{ID: 20, Name: "负责人", vipInterval: vipInterval{From: appointmentStart}}},
+		}}
+	report, err := groupCatalogPeriodEvents(events, versions, directory, nil, performance, start.AddDate(0, 1, 0))
+	if err != nil || len(report.Groups) != 2 || len(report.postingIssues) != 2 ||
+		report.postingIssues[0].FactID != 2 || report.postingIssues[0].Code != "MEMBERSHIP_TYPE_PENDING" ||
+		report.postingIssues[1].FactID != 5 || report.postingIssues[1].Code != "SALES_COMPANY_CONFLICT" {
+		t.Fatalf("flag only an applicable payment for a missing membership type, and preserve the actual claim conflict: %+v / %v", report.postingIssues, err)
+	}
+	want := map[string]int64{"general": 150000, "lead": 30000}
+	for _, group := range report.Groups {
+		if key := group.Targets[0].ItemKey; group.Receipts != want[key] {
+			t.Errorf("%s grouped receipts: got %d, want %d", key, group.Receipts, want[key])
+		}
+	}
+}
+
 func TestCatalogPeriodCarryUsesEffectiveItemSKUs(t *testing.T) {
 	def := catalogPeriodDefinition{Cycle: "MONTHLY", Scenarios: []string{"FIRST"}, Items: []catalogPeriodItem{{ItemKey: "lead"}}}
 	targets := []catalogGroupTargetKey{{Item: "lead", Person: 42}}
