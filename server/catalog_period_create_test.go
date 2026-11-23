@@ -554,4 +554,80 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		}
 	})
 
+	t.Run("shared fixed standards and cumulative refund", func(t *testing.T) {
+		if _, err := db.Exec(ctx, `INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,valid_from,observed_at)
+		 SELECT gen_random_uuid(),source,9801,'TEAM_LEAD','ORGANIZATION_UNIT','10000000-0000-4000-8000-000000000981',
+		   '2026-09-01',coalesce(appointments_at,captured_at) FROM catalog_sales_context WHERE source='DCAI'`); err != nil {
+			t.Fatal(err)
+		}
+		recordRefund := func(id, date string, amount int64) {
+			t.Helper()
+			if _, err := db.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
+			 VALUES('DCAI','101','','ai_vip_order:'||$1::text,'1','REFUND_SUCCEEDED',$2::timestamptz,
+			   jsonb_build_object('domain','VIP','sourceKey','new','refundId',$1::text,'amountMinor',$3::bigint,
+			      'refundsPayment','[{"orderId":"101","recordId":"101"}]'::jsonb),$2::timestamptz)`, id, date, amount); err != nil {
+				t.Fatal(err)
+			}
+		}
+		recordRefund("fixed-lead-101-1", "2026-10-22", 1000)
+		const body = `{"create":{"productId":980,"label":"按订单固定提成","cycle":"MONTHLY_25_TO_24"},
+		 "effectiveFrom":"2026-09-25T00:00:00+08:00","scenarioCodes":["FIRST"],"components":[
+		 {"label":"订单固定","targetKind":"appointment","appointmentLevel":"COMPANY","appointmentRole":"TEAM_LEAD","fixedMinor":100000,
+		  "salesScopeUnitIds":["10000000-0000-4000-8000-000000000981"]}]}`
+		w := submit(980, path, s.postCatalogPeriodRule, body)
+		var published catalogPublication
+		if err := json.Unmarshal(w.Body.Bytes(), &published); err != nil || w.Code != 200 {
+			t.Fatalf("publish fixed standard: %d %s %v", w.Code, w.Body, err)
+		}
+		open := func(month string, want int64, lines int) draftSummary {
+			t.Helper()
+			result, err := s.openCatalogAggregateDraft(ctx, catalogAggregatePeriodInput{RuleID: published.ID, Month: month})
+			if err != nil {
+				t.Fatal(err)
+			}
+			draft := result.(draftSummary)
+			if draft.Total != want || draft.LineCount != lines || draft.IssueCount != 0 {
+				t.Fatalf("fixed order draft for %s: %+v, want %d", month, draft, want)
+			}
+			return draft
+		}
+		original := open("2026-10", 290000, 1)
+		if _, err := db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`,
+			original.PeriodID, original.Version); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(ctx, `UPDATE catalog_sales_appointments SET person_id=9802 WHERE scope_key='10000000-0000-4000-8000-000000000981'`); err != nil {
+			t.Fatal(err)
+		}
+		later := open("2026-11", -50000, 0)
+		var person, amount int64
+		var ruleID string
+		if err := db.QueryRow(ctx, `SELECT l.person_id,r.amount_minor,l.catalog_rule_id::text
+		  FROM calculation_draft_refunds r JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1`,
+			later.PeriodID).Scan(&person, &amount, &ruleID); err != nil || person != 9801 || amount != -50000 || ruleID != published.ID {
+			t.Fatalf("refund must be applied once to the original recipient: %d %d %s %v", person, amount, ruleID, err)
+		}
+		detail := httptest.NewRecorder()
+		s.getDraft(detail, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/drafts?periodId=%d&orderQuery=101", later.PeriodID), nil))
+		var visible struct {
+			Refunds []struct {
+				ID              int64
+				AmountMinor     int64
+				OriginalOrderID string
+			}
+		}
+		if err := json.Unmarshal(detail.Body.Bytes(), &visible); err != nil || detail.Code != 200 || len(visible.Refunds) != 1 ||
+			visible.Refunds[0].OriginalOrderID != "101" || visible.Refunds[0].AmountMinor != -50000 {
+			t.Fatalf("refund must be searchable using its original order: %d %s %v", detail.Code, detail.Body, err)
+		}
+		rule := httptest.NewRecorder()
+		s.getDraftRule(rule, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/drafts/rule?periodId=%d&rowId=%d&section=refunds",
+			later.PeriodID, visible.Refunds[0].ID), nil))
+		var originalRule draftRuleDetails
+		if err := json.Unmarshal(rule.Body.Bytes(), &originalRule); err != nil || rule.Code != 200 || originalRule.Aggregate == nil ||
+			!originalRule.Aggregate.Items[0].FixedPerOrder {
+			t.Fatalf("refund must open the source version of the aggregate rule: %d %s %v", rule.Code, rule.Body, err)
+		}
+	})
+
 }

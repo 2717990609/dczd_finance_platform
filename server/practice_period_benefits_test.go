@@ -631,6 +631,12 @@ func TestPracticePeriodBenefitCanUseThePaymentOrganizationAppointment(t *testing
 	benefit.FixedMinor, benefit.FixedPerClass = &fixed, true
 	check(calculate(nil), map[int64]int64{1: 40000, 2: 60000, 3: 100000})
 	check(calculate(refund), map[int64]int64{1: 20000, 2: 60000, 3: 100000})
+	benefit.FixedPerClass, benefit.FixedPerOrder = false, true
+	if err := validateComponents([]component{rule.Components[0]}); err != nil {
+		t.Fatal(err)
+	}
+	check(calculate(nil), map[int64]int64{1: 100000, 2: 100000, 3: 100000})
+	check(calculate(refund), map[int64]int64{1: 50000, 2: 100000, 3: 100000})
 }
 
 func TestPracticeFixedSignupBenefitKeepsOriginalPaymentShares(t *testing.T) {

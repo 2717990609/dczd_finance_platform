@@ -167,6 +167,7 @@ type practicePeriodBenefit struct {
 	AppointmentKind          string                     `json:"appointmentKind,omitempty"`
 	FixedMinor               *int64                     `json:"fixedMinor,omitempty"`
 	FixedPerClass            bool                       `json:"fixedPerClass,omitempty"`
+	FixedPerOrder            bool                       `json:"fixedPerOrder,omitempty"`
 	TierOnWholeClass         bool                       `json:"tierOnWholeClass,omitempty"`
 	Tiers                    []practicePeriodRate       `json:"tiers,omitempty"`
 	Pool                     *practicePoolTarget        `json:"pool,omitempty"`
@@ -285,6 +286,9 @@ func validPracticePeriodBenefit(c component) bool {
 		if person <= 0 {
 			return false
 		}
+	}
+	if b.FixedPerOrder && (b.FixedMinor == nil || b.FixedPerClass || b.OrderAppointmentLevel == "") {
+		return false
 	}
 	if len(b.StandardRates) != 0 {
 		_, valid := indexPracticeStandardRates(b.StandardRates)
@@ -729,7 +733,7 @@ func practicePeriodComponentKey(part component, index int) string {
 	return "period:" + part.Type + ":" + strconv.Itoa(index)
 }
 
-func allocatePracticeFixedBenefit(shares []practiceBenefitShare, award int64, perClass bool) (int64, error) {
+func allocatePracticeFixedBenefit(shares []practiceBenefitShare, award int64, perClass, perOrder bool) (int64, error) {
 	if perClass {
 		if err := splitPracticeFixedClass(shares, award); err != nil {
 			return 0, err
@@ -738,7 +742,9 @@ func allocatePracticeFixedBenefit(shares []practiceBenefitShare, award int64, pe
 	var total int64
 	for i := range shares {
 		share := &shares[i]
-		if !perClass {
+		if perOrder {
+			share.fixed = [2]int64{award, award}
+		} else if !perClass {
 			share.fixed = practiceFixedSignupShares(share.payments, award)
 		}
 		for n, payment := range share.payments {
@@ -764,7 +770,7 @@ func allocatePracticeOrganizationFixedBenefit(shares []practiceBenefitShare, awa
 	var total int64
 	for _, unit := range slices.SortedFunc(maps.Keys(byUnit), func(a, b pgtype.UUID) int { return strings.Compare(a.String(), b.String()) }) {
 		rows := byUnit[unit]
-		amount, err := allocatePracticeFixedBenefit(rows, award, true)
+		amount, err := allocatePracticeFixedBenefit(rows, award, true, false)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -869,7 +875,7 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		} else if b.FixedPerClass && b.OrderAppointmentLevel != "" {
 			shares, total, err = allocatePracticeOrganizationFixedBenefit(shares, *b.FixedMinor)
 		} else if b.FixedMinor != nil {
-			total, err = allocatePracticeFixedBenefit(shares, *b.FixedMinor, b.FixedPerClass)
+			total, err = allocatePracticeFixedBenefit(shares, *b.FixedMinor, b.FixedPerClass, b.FixedPerOrder)
 		} else {
 			rate, found := b.rate(part.Value, basis)
 			if !found {

@@ -76,23 +76,38 @@ func TestCatalogPeriodPublishesSalesOrganizationAppointmentTarget(t *testing.T) 
 		directory.AppointmentDuties[catalogAggregateDutyKey{organization, "TEAM_LEAD"}] = []catalogAggregateDuty{{ID: 20, Name: "接任"}}
 	}
 	performance.claims[3], performance.claims[4] = vipClaim{Company: other}, vipClaim{Company: fullyRefunded}
+	versions[0].Definition.Items[0].CommissionUnits = []string{unit, other, fullyRefunded}
 	events = append(events, catalogActivityEvent{EventID: 3, PaymentID: 3, PaidAt: transfer, Scenario: "FIRST", Amount: 10000},
 		catalogActivityEvent{EventID: 4, PaymentID: 4, PaidAt: transfer, Scenario: "FIRST", Amount: 3000},
 		catalogActivityEvent{EventID: 5, PaymentID: 4, PaidAt: transfer, Scenario: "FIRST", Amount: 3000, Refund: true})
 	report, err = groupCatalogPeriodEvents(events, versions, directory, nil, performance, open.AddDate(0, 1, 0))
-	if err != nil || len(report.Groups) != 3 || len(report.Issues) != 0 {
+	if err != nil || len(report.Groups) != 4 || len(report.Issues) != 0 {
 		t.Fatalf("fixed organization groups: %+v / %v", report, err)
 	}
 	totals := map[string]int64{}
+	var originalFixed catalogPeriodGroup
 	for _, g := range report.Groups {
 		target := g.posting.Targets[0]
-		if target.Person != 20 {
-			t.Fatalf("fixed award belongs to the period-end holder: %+v", target)
+		totals[target.AppointmentUnit] += g.quote().Total
+		if target.Person == 10 && g.quote().Total != 100000 {
+			t.Fatalf("the first order must earn a full award for the payment-time recipient: %+v", g)
 		}
-		totals[target.AppointmentUnit] = g.quote().Total
+		if target.Person == 10 {
+			originalFixed = g
+		}
 	}
-	if totals[unit] != 100000 || totals[other] != 100000 || totals[fullyRefunded] != 0 {
-		t.Fatalf("each eligible organization receives one fixed award per period: %v", totals)
+	if totals[unit] != 200000 || totals[other] != 100000 || totals[fullyRefunded] != 0 {
+		t.Fatalf("each eligible order earns its own fixed award: %v", totals)
+	}
+	ref := catalogFrozenGroupReference{PeriodID: 7, Key: originalFixed.ID}
+	refund.OriginalAmount, refund.PriorBookedRefunds, refund.Amount = 10000, 2500, 1000
+	refund.frozenGroups = []catalogFrozenGroupReference{ref}
+	originalFixed.Receipts, originalFixed.Payments, originalFixed.orderFixedMinor = 0, 0, 0
+	originalFixed.posting.Events = nil
+	frozen = map[catalogFrozenGroupReference]catalogPeriodGroup{ref: originalFixed}
+	report, err = groupCatalogPeriodEvents([]catalogActivityEvent{refund}, nil, catalogAggregateDirectory{}, frozen, catalogPerformanceDirectory{}, time.Time{})
+	if err != nil || len(report.Groups) != 1 || report.Groups[0].posting.Targets[0].Person != 10 || report.Groups[0].quote().Total != -10000 {
+		t.Fatalf("subsequent refund recovers only the new proportion from its original recipient: %+v / %v", report, err)
 	}
 }
 

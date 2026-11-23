@@ -127,7 +127,7 @@ function formula(part) {
     if (part.periodBenefit?.standardRates?.length) return '按指定公司、销售类别默认、通用比例的顺序取值'
     if (part.periodBenefit?.fixedMinor != null) {
       const benefit = part.periodBenefit
-      const unit = benefit.fixedPerClass ? (benefit.orderAppointmentLevel ? '组织 / 班' : '班次') : '报名'
+      const unit = benefit.fixedPerOrder ? '笔' : benefit.fixedPerClass ? (benefit.orderAppointmentLevel ? '组织 / 班' : '班次') : '报名'
       return props.formatMoney(benefit.fixedMinor)+' / '+unit
     }
     return '本班适用报名净实收 × '+(part.periodBenefit?.tiers?.length ? '档位比例' : rate(part.value,10000))

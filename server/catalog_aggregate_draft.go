@@ -103,6 +103,7 @@ func readCatalogAggregateGroupsByReference(ctx context.Context, tx pgx.Tx, refs 
 		ids[i], keys[i] = ref.PeriodID, ref.Key
 	}
 	rows, err := tx.Query(ctx, `SELECT g.period_id,g.group_key,g.rule_id::text,g.targets,v.version_no,v.definition,
+	 coalesce((SELECT l.id FROM calculation_draft_lines l WHERE l.period_id=g.period_id AND l.aggregate_group_key=g.group_key LIMIT 1),0),
 	 CASE WHEN $3 THEN (
 	  SELECT jsonb_agg(jsonb_build_object('itemKey',a->>'Item','name',coalesce(person.name,u.name,''),
 	   'ownerName',coalesce(owner.name,''),'memberCount',coalesce(jsonb_array_length(nullif(a->'Members','null')),0),
@@ -124,7 +125,7 @@ func readCatalogAggregateGroupsByReference(ctx context.Context, tx pgx.Tx, refs 
 	var group catalogPeriodGroup
 	var raw json.RawMessage
 	definitions := make(map[string]catalogPeriodDefinition)
-	_, err = pgx.ForEachRow(rows, []any{&ref.PeriodID, &ref.Key, &group.RuleID, &group.posting.Targets, &group.Version, &raw, &group.Targets}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&ref.PeriodID, &ref.Key, &group.RuleID, &group.posting.Targets, &group.Version, &raw, &group.originalLineID, &group.Targets}, func() error {
 		definition, known := definitions[group.RuleID]
 		if !known {
 			var err error
@@ -144,6 +145,7 @@ func readCatalogAggregateGroupsByReference(ctx context.Context, tx pgx.Tx, refs 
 			group.items = append(group.items, definition.Items[index])
 		}
 		group.FixedOnly = len(group.items) == 1 && group.items[0].FixedMinor != nil
+		group.FixedPerOrder = len(group.items) == 1 && group.items[0].FixedPerOrder
 		for i, target := range group.Targets {
 			for _, item := range group.items {
 				if target.ItemKey == item.ItemKey && item.PoolName != "" {
@@ -313,7 +315,24 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 		if err := applied.Scan(group.RuleID); err != nil {
 			return result, nil, err
 		}
+		var refundTotal int64
+		for _, refund := range group.orderRefunds {
+			if refund.OriginalLineID == 0 {
+				return result, nil, errRefundAmount
+			}
+			refund.RefundPeriodID = summary.PeriodID
+			result.Refunds = append(result.Refunds, refund)
+			if err := addCatalogActivityAmount(refund.Amount, &refundTotal, &result.RefundTotal); err != nil {
+				return result, nil, err
+			}
+		}
 		for i, award := range quote.Awards {
+			// The group quote shows signed net commission. Persist deductions
+			// through the same refund flow used for individual-order awards.
+			award.Amount, err = addMinor(award.Amount, -refundTotal)
+			if err != nil {
+				return result, nil, err
+			}
 			if award.Amount == 0 {
 				continue
 			}
@@ -324,15 +343,24 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 					return result, nil, err
 				}
 			}
+			reportUnit := benefit.Unit
+			if group.FixedPerOrder && target.AppointmentUnit != "" {
+				if err := reportUnit.Scan(target.AppointmentUnit); err != nil {
+					return result, nil, err
+				}
+			}
 			result.Total, err = addMinor(result.Total, award.Amount)
 			if err != nil {
 				return result, nil, err
 			}
 			result.Lines = append(result.Lines, draftLine{Component: award.ItemKey, PersonID: target.Person,
 				AggregateGroup: group.ID, Catalog: benefit, Amount: award.Amount, Base: quote.Basis,
-				organization: organizations.ancestors(benefit.Unit)})
+				organization: organizations.ancestors(reportUnit)})
 		}
 	}
+	slices.SortFunc(result.Refunds, func(a, b refundLine) int {
+		return cmp.Or(cmp.Compare(a.RefundSourceVersionID, b.RefundSourceVersionID), cmp.Compare(a.OriginalLineID, b.OriginalLineID))
+	})
 	digest, err := digestDraft(0, result, nil)
 	return result, digest, err
 }
@@ -374,7 +402,7 @@ func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior, confirmed
 	byArrangement := make(map[string]carryDestination, len(groups))
 	for i, group := range groups {
 		index[group.ID] = i
-		if confirmed != 0 || group.Receipts == 0 {
+		if confirmed != 0 || group.Receipts == 0 || group.FixedPerOrder {
 			continue
 		}
 		rule := byRule[group.RuleID]
@@ -446,7 +474,7 @@ func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior, confirmed
 	for i := range groups[:firstCarryOnly] {
 		group := &groups[i]
 		if group.CarryIn != 0 {
-			quote, err := quoteCatalogPeriod(group.items, group.Receipts, group.Refunds, group.CarryIn)
+			quote, err := group.calculateQuote(group.CarryIn)
 			if err != nil {
 				return nil, err
 			}

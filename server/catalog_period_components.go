@@ -182,6 +182,15 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 			}
 			changed = true
 		}
+		fixedPerOrder := edit.FixedMinor != nil && edit.TargetKind == "appointment"
+		if fixedPerOrder != before.FixedPerOrder {
+			if fixedPerOrder {
+				fields["fixed_per_order"] = json.RawMessage("true")
+			} else {
+				delete(fields, "fixed_per_order")
+			}
+			changed = true
+		}
 		next = append(next, fields)
 	}
 	if !changed {

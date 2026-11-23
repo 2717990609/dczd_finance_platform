@@ -655,7 +655,7 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		}
 		shares := []practiceBenefitShare{share}
 		var err error
-		amount, err = allocatePracticeFixedBenefit(shares, amount, false)
+		amount, err = allocatePracticeFixedBenefit(shares, amount, false, false)
 		if err != nil {
 			return err
 		}

@@ -18,6 +18,7 @@ import (
 var errCatalogPeriodTiers = errors.New("档位须从零开始、连续衔接，最后一档无上限")
 var errCatalogPeriodStart = errors.New("请选择原规则有效范围内、晚于原版本的完整账期起点")
 var errCatalogPeriodQuoteItem = errors.New("请选择一项收款安排，并填写该安排适用订单的收退款金额")
+var errCatalogPeriodQuoteOrders = errors.New("该收款安排按订单计提固定金额，请用订单试算")
 
 const catalogPeriodRuleScope = `scope.source_system='DCAI' AND p.project_code=scope.project_code
  AND p.policy_kind='COMPONENT_RULE' AND p.scope_type='CROSS_SCENARIO_AGGREGATE'`
@@ -277,6 +278,9 @@ func quoteCatalogPeriodDefinition(raw json.RawMessage, input catalogPeriodQuoteI
 		return len(item.ScenarioCodes) != 0 || item.MembershipNewOnly
 	}) {
 		return catalogPeriodQuote{}, errCatalogPeriodQuoteItem
+	}
+	if slices.ContainsFunc(period.Items, func(item catalogPeriodItem) bool { return item.FixedPerOrder }) {
+		return catalogPeriodQuote{}, errCatalogPeriodQuoteOrders
 	}
 	return quoteCatalogPeriod(period.Items, input.Receipts, input.Refunds, input.CarryIn)
 }

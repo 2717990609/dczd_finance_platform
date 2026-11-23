@@ -445,7 +445,7 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
           : periodBenefit.orderRecipientRole ? 'order_person'
           : periodBenefit.salesCompanyRecipient ? 'sales_company' : periodBenefit.referralCompanyRecipient ? 'referral_company' : 'person',
         pool:periodBenefit.pool || {},
-        method:periodBenefit.fixedMinor != null ? (periodBenefit.fixedPerClass ? 'class_fixed' : 'fixed')
+        method:periodBenefit.fixedMinor != null ? (periodBenefit.fixedPerOrder ? 'order_fixed' : periodBenefit.fixedPerClass ? 'class_fixed' : 'fixed')
           : periodBenefit.tiers?.length ? 'tiers' : 'rate',
         fixedAmount:periodBenefit.fixedMinor == null ? undefined : periodBenefit.fixedMinor / 100,
         tiers:periodBenefit.tiers?.map(row => ({from:row.from / 100,

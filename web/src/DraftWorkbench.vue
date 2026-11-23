@@ -359,7 +359,7 @@ async function loadMore(section, cursorName) {
         {title:'本期退款',key:'refundsMinor'},{title:'上期转入退款',key:'carryInMinor'},
         {title:'转出到下期',key:'carryOutMinor'},{title:'明细',key:'events'}]">
         <template #bodyCell="{column,record}">
-          <template v-if="column.key==='ruleVersion'">v{{ record.ruleVersion }}<small v-if="record.fixedOnly" class="order-version">整期固定</small></template>
+          <template v-if="column.key==='ruleVersion'">v{{ record.ruleVersion }}<small v-if="record.fixedOnly" class="order-version">固定金额</small></template>
           <button v-else-if="column.key==='events'" type="button" class="order-link" @click="aggregateGroup=record.key">查看收退款</button>
           <span v-else class="numeric">{{ formatMoney(Math.abs(record[column.key])) }}</span>
         </template>

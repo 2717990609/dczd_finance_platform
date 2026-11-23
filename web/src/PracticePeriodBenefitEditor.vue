@@ -45,14 +45,18 @@ function setRecipient(recipient) {
   config.value.recipient = recipient
   if (recipient!=='person' && config.value.ownSales) changeScope('all')
   if (recipient==='order_appointment') props.component.sourceRole ||= props.sourceRoles[0]?.value
+  if (recipient==='order_appointment' && config.value.method==='class_fixed') config.value.method = 'order_fixed'
+  if (recipient!=='order_appointment' && config.value.method==='order_fixed') config.value.method = 'class_fixed'
 }
 const registrationCompanies = computed(() => (props.registrationCompanies ?? props.companies).filter(option=>/^[1-9]\d*$/.test(option.value)))
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 const field = name => 'practice-benefit-'+props.index+'-'+name
 const calculationMethods = computed(() => [
   {value:'rate',label:'比例'},
-  {value:'class_fixed',label:'固定金额'},
+  config.value.recipient==='order_appointment' ? {value:'order_fixed',label:'固定金额'} : {value:'class_fixed',label:'固定金额'},
   {value:'tiers',label:'阶梯'},
+  ...(config.value.recipient==='order_appointment' && config.value.method==='class_fixed'
+    ? [{value:'class_fixed',label:'按组织整班计提'}] : []),
   ...(config.value.method==='fixed' ? [{value:'fixed',label:'按报名计提固定金额'}] : []),
 ])
 </script>
@@ -95,8 +99,9 @@ const calculationMethods = computed(() => [
       <a-form-item v-if="config.method==='rate' && !usesStandardRates" label="比例（%）" :html-for="field('rate')" required>
         <a-input-number :id="field('rate')" v-model:value="component.amount" :min="0" :max="100" :precision="4"/>
       </a-form-item>
-      <a-form-item v-else-if="config.method==='fixed' || config.method==='class_fixed'"
-        :label="config.recipient==='order_appointment' && config.method==='class_fixed' ? '每个组织整班金额（元）' : '金额（元）'"
+      <a-form-item v-else-if="['fixed','class_fixed','order_fixed'].includes(config.method)"
+        :label="config.method==='order_fixed' ? '每笔符合条件的订单金额（元）'
+          : config.recipient==='order_appointment' && config.method==='class_fixed' ? '每个组织整班金额（元）' : '金额（元）'"
         :html-for="field('fixed')" required>
         <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
       </a-form-item>

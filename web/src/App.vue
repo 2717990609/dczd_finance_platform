@@ -473,7 +473,7 @@ function ruleRecipientSummary(row) {
     const amount = benefit.method==='tiers' ? '阶梯' : benefit.method==='rate'
       ? (benefit.standardRates ? practiceStandardRateSummary(benefit.standardRates,value=>value+'%') : row.amount == null ? '' : row.amount+'%')
       : (benefit.fixedAmount == null ? '' : formatMoney(minor(benefit.fixedAmount))+
-        (benefit.recipient==='order_appointment' && benefit.method==='class_fixed' ? ' / 组织 / 班' : ''))
+        (benefit.method==='order_fixed' ? ' / 笔' : benefit.recipient==='order_appointment' && benefit.method==='class_fixed' ? ' / 组织 / 班' : ''))
     return [payee,['person','order_person'].includes(benefit.recipient) ? optionLabel('organizationDuty',benefit.recipientDuty) : '',amount].filter(Boolean).join(' · ')
   }
   if (row.mode==='company_sales') {
@@ -1284,8 +1284,9 @@ function ruleComponentBody(row) {
       ...(b.recipient==='person' && b.appointmentUnitId ? {
         appointmentUnitId:b.appointmentUnitId,appointmentKind:must(b.appointmentKind,'请选择任职方式'),
       } : {}),
-      ...(b.method==='fixed' || b.method==='class_fixed' ? {fixedMinor:minor(must(b.fixedAmount,'请填写固定金额'))} : {}),
+      ...(['fixed','class_fixed','order_fixed'].includes(b.method) ? {fixedMinor:minor(must(b.fixedAmount,'请填写固定金额'))} : {}),
       ...(b.method==='class_fixed' ? {fixedPerClass:true} : {}),
+      ...(b.method==='order_fixed' ? {fixedPerOrder:true} : {}),
       ...(hasStandardRates ? {standardRates:b.standardRates.map(standard=>{
         const value = periodRate(standard.value)
         if (standard.scope==='company') {

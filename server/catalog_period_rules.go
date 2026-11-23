@@ -33,6 +33,7 @@ type catalogPeriodItem struct {
 	MemberRole        string                  `json:"memberRole,omitempty"`
 	Tiers             []catalogPeriodTier     `json:"tiers,omitempty"`
 	FixedMinor        *int64                  `json:"fixedMinor,omitempty"`
+	FixedPerOrder     bool                    `json:"fixedPerOrder,omitempty"`
 	ScenarioCodes     []string                `json:"scenarioCodes,omitempty"`
 	MembershipNewOnly bool                    `json:"membershipNewOnly,omitempty"`
 	CommissionUnits   []string                `json:"salesScopeUnitIds,omitempty"`
@@ -95,6 +96,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			Tiers             []catalogPeriodTier     `json:"tier_table"`
 			ScenarioCodes     []string                `json:"business_sku_codes"`
 			MembershipNewOnly bool                    `json:"vip_new_membership_only"`
+			FixedPerOrder     bool                    `json:"fixed_per_order"`
 			EligibilityRole   string                  `json:"eligibility_role"`
 			Appointment       *catalogPerformanceDuty `json:"recipient_appointment"`
 		} `json:"benefit_actions"`
@@ -146,11 +148,11 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		}
 		switch action.Type {
 		case "TIER_RATE":
-			if action.Fixed != nil || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" || !validCatalogPeriodTiers(action.Tiers) {
+			if action.FixedPerOrder || action.Fixed != nil || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" || !validCatalogPeriodTiers(action.Tiers) {
 				return result, errCatalogRateUnavailable
 			}
 		case "FIXED":
-			if !validCatalogPeriodFixed(action.Fixed) || action.Rate != nil || len(action.Tiers) != 0 {
+			if !validCatalogPeriodFixed(action.Fixed) || action.Rate != nil || len(action.Tiers) != 0 || action.FixedPerOrder && action.AppointmentLevel == "" {
 				return result, errCatalogRateUnavailable
 			}
 		default:
@@ -192,7 +194,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OwnerPersonID: ownerID, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
 			PoolID:     catalogPoolID(action.PoolCode),
 			MemberRole: memberRole, FixedMinor: action.Fixed, ScenarioCodes: action.ScenarioCodes, MembershipNewOnly: action.MembershipNewOnly,
-			unit: unit, OwnSales: action.OwnSales,
+			unit: unit, OwnSales: action.OwnSales, FixedPerOrder: action.FixedPerOrder,
 			CommissionUnits: action.CommissionUnits, ScopeCategories: action.ScopeCategories, RecipientDuty: action.RecipientDuty,
 			Appointment: action.Appointment, AppointmentLevel: action.AppointmentLevel, AppointmentRole: appointmentRole})
 	}

@@ -299,11 +299,21 @@ recognition_rules AS MATERIALIZED (
  SELECT *,sum(amount) FILTER(WHERE kind='REFUND_SUCCEEDED' AND issue='') OVER (PARTITION BY payment_id) AS linked_refunds
  FROM assessed
 )
-SELECT id,coalesce(sku,''),kind,coalesce(amount,0),
+SELECT capped.id,coalesce(sku,''),kind,coalesce(amount,0),
  coalesce(frozen_payment_id,payment_id,0),coalesce(completion_version_id,0),coalesce(paid_at,occurred_at),coalesce(recognized_at,occurred_at),
- coalesce(frozen_period_id,0),coalesce(origin_closed,false),membership_type,
+ coalesce(frozen_period_id,0),coalesce(origin_closed,false),membership_type,occurred_at,coalesce(original_amount,0),coalesce(booked.refunds,0),
  CASE WHEN issue='' AND kind='REFUND_SUCCEEDED' AND linked_refunds>original_amount THEN 'REFUND_EXCEEDS_PAYMENT' ELSE issue END
-FROM capped WHERE in_scope LIMIT $5`
+FROM capped
+LEFT JOIN LATERAL (
+ SELECT sum((v.fact->>'amountMinor')::bigint)::bigint AS refunds
+ FROM catalog_aggregate_draft_events saved
+ JOIN closed_windows prior ON prior.id=saved.period_id
+ JOIN source_order_versions v ON v.id=saved.source_version_id
+ WHERE capped.kind='REFUND_SUCCEEDED' AND saved.payment_version_id=capped.frozen_payment_id
+  AND saved.source_version_id<>saved.payment_version_id AND prior.ends_on<($3::timestamptz AT TIME ZONE 'Asia/Shanghai')::date
+  AND v.kind='REFUND_SUCCEEDED'
+) booked ON true
+WHERE in_scope LIMIT $5`
 
 const catalogActivityMappedSQL = `WITH routes AS (` + catalogAggregateRoutes + `)
  SELECT DISTINCT sku_code FROM routes
@@ -472,24 +482,25 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 	}
 	var kind, issue string
 	var membershipType *string
-	var amount int64
+	var amount, originalAmount, priorBookedRefunds int64
 	var originClosed bool
 	var eventID, paymentID, completionVersionID int64
-	var paidAt, recognizedAt time.Time
+	var paidAt, recognizedAt, occurredAt time.Time
 	var frozenPeriod int64
 	var events []catalogActivityEvent
 	selections := make(map[int64]*catalogAggregateMatch)
 	firstPayment := in.Window.Start
 	seen := 0
 	_, err = pgx.ForEachRow(rows, []any{&eventID, &code, &kind, &amount, &paymentID, &completionVersionID, &paidAt, &recognizedAt,
-		&frozenPeriod, &originClosed, &membershipType, &issue}, func() error {
+		&frozenPeriod, &originClosed, &membershipType, &occurredAt, &originalAmount, &priorBookedRefunds, &issue}, func() error {
 		seen++
 		if seen > maxDraftPayments {
 			return errDraftLimit
 		}
 		event := catalogActivityEvent{PaymentID: paymentID, CompletionVersionID: completionVersionID, PaidAt: paidAt,
-			RecognizedAt: recognizedAt, Scenario: code, MembershipType: membershipType,
-			Amount: amount, Refund: kind != "ORDER_PAID", frozenPeriod: frozenPeriod, originClosed: originClosed}
+			RecognizedAt: recognizedAt, OccurredAt: occurredAt, Scenario: code, MembershipType: membershipType,
+			Amount: amount, OriginalAmount: originalAmount, PriorBookedRefunds: priorBookedRefunds,
+			Refund: kind != "ORDER_PAID", frozenPeriod: frozenPeriod, originClosed: originClosed}
 		if in.DraftPeriodID != 0 {
 			event.EventID = eventID
 		}

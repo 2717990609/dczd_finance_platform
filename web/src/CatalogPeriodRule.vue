@@ -157,7 +157,7 @@ function editableRows(items) {
       appointment:item.appointment ? {...item.appointment} : undefined,
       appointmentLevel:item.appointmentLevel,appointmentRole:item.appointmentRole,
       method:item.fixedMinor!=null ? 'fixed' : tiers.length===1 ? 'rate' : 'tiers',
-      fixedAmount:item.fixedMinor==null ? undefined : item.fixedMinor/100,
+      fixedAmount:item.fixedMinor==null ? undefined : item.fixedMinor/100,fixedPerOrder:item.fixedPerOrder,
       uniformRate:tiers.length===1 ? tiers[0].rate_bps/100 : undefined,
       tiers:tiers.length===1 ? [] : tiers.map(row=>({from:(row.min_inclusive || 0)/100,rate:row.rate_bps/100}))}
   })
@@ -201,8 +201,10 @@ function setMethod(item, method) {
   item.method = method
 }
 function methodSummary(item) {
-  if (item.method==='fixed') return item.fixedAmount==null ? methodLabels.fixed :
-    props.formatMoney(Math.round(item.fixedAmount*100))+(item.targetKind==='appointment' ? ' / 组织 / 期' : ' / 期')
+  if (item.method==='fixed') {
+    const unit = item.targetKind==='appointment' ? (item.fixedPerOrder || canSave.value ? '笔' : '组织 / 期') : '期'
+    return item.fixedAmount==null ? methodLabels.fixed : props.formatMoney(Math.round(item.fixedAmount*100))+' / '+unit
+  }
   if (item.method==='tiers') return item.tiers.length+' 档阶梯'
   return item.uniformRate==null ? methodLabels.rate : '统一 '+item.uniformRate+'%'
 }
@@ -443,6 +445,7 @@ async function preview() {
   }
 }
 const scopedQuote = computed(() => rows.value.some(item=>item.salesScope!=null || item.appointment || item.appointmentLevel || item.scenarioCodes?.length || item.membershipNewOnly))
+const quoteUsesOrders = computed(() => rows.value.some(item=>item.uid===quoteItem.value && item.method==='fixed' && item.targetKind==='appointment'))
 function creationInput() {
   if (!changed.value || !effectiveDate.value) throw new Error('请填写规则名称、生效日期，并选择参与场景。')
   const selectable = new Set(sheet.value.options.scenarios.map(sku=>sku.code))
@@ -605,7 +608,7 @@ async function resumeRule() {
                   <a-input-number id="period-benefit-uniform-rate" v-model:value="item.uniformRate" :min="0" :max="100"
                     :precision="2" :disabled="saving"/>
                 </a-form-item>
-                <a-form-item v-if="item.method==='fixed'" :label="item.targetKind==='appointment' ? '每个组织整期金额（元）' : '金额（元）'"
+                <a-form-item v-if="item.method==='fixed'" :label="item.targetKind==='appointment' ? '每笔符合条件的订单金额（元）' : '金额（元）'"
                   html-for="period-benefit-fixed-amount" required>
                   <a-input-number id="period-benefit-fixed-amount" v-model:value="item.fixedAmount" :min="0" :precision="2" :disabled="saving"/>
                 </a-form-item>
@@ -742,7 +745,7 @@ async function resumeRule() {
                     <tbody>
                       <tr v-for="group in activity.grouping.groups" :key="group.id">
                         <td>{{ group.ruleId ? 'v'+group.version : '待发布' }}
-                          <small v-if="group.fixedOnly" class="order-version">整期固定</small></td>
+                          <small v-if="group.fixedOnly" class="order-version">{{ group.fixedPerOrder ? '按订单固定金额' : '整期固定' }}</small></td>
                         <td>
                           <div v-for="target in group.targets" :key="target.itemKey">
                             {{ target.name }}
@@ -755,7 +758,7 @@ async function resumeRule() {
                         <td>{{ formatMoney(group.netMinor) }}</td>
                         <td v-if="showsPriorCarry">{{ formatMoney(-(group.carryInMinor || 0)) }}</td>
                         <td>
-                          <small v-if="group.fixedOnly" class="order-version">
+                          <small v-if="group.fixedOnly && !group.fixedPerOrder" class="order-version">
                             可计提净额 {{ formatMoney((group.afterCarry || group.beforeCarry).basisMinor) }}
                           </small>
                           <div v-for="award in (group.afterCarry || group.beforeCarry).awards" :key="award.itemKey">
@@ -792,6 +795,7 @@ async function resumeRule() {
               <a-select id="period-quote-item" v-model:value="quoteItem" placeholder="选择后填写该安排的收退款"
                 :options="rows.map(item=>({value:item.uid,label:item.label || '未命名收款安排'}))"/>
             </a-form-item>
+            <template v-if="!quoteUsesOrders">
             <a-form-item label="本期实收（元）" html-for="period-quote-received">
               <a-input-number id="period-quote-received" v-model:value="amounts.receipts" :min="0" :precision="2"/>
             </a-form-item>
@@ -801,8 +805,10 @@ async function resumeRule() {
             <a-form-item label="上期未抵扣退款（元）" html-for="period-quote-carry">
               <a-input-number id="period-quote-carry" v-model:value="amounts.carry" :min="0" :precision="2"/>
             </a-form-item>
+            </template>
           </div>
-          <a-button :loading="previewing" @click="preview">演算金额</a-button>
+          <p v-if="quoteUsesOrders" class="rule-formula">按订单计提固定金额，请使用订单试算。</p>
+          <a-button v-else :loading="previewing" @click="preview">演算金额</a-button>
         </a-form>
         <a-descriptions v-if="quote" size="small" :column="1" bordered class="period-quote-result" aria-label="金额演算结果">
           <a-descriptions-item label="可计提净额">{{ formatMoney(quote.basisMinor) }}</a-descriptions-item>

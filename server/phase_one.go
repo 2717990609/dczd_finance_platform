@@ -336,7 +336,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany),
 		errors.Is(err, errPracticeServiceSeparate),
 		errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap), errors.Is(err, errRuleOrderRole),
-		errors.Is(err, errAccountingMonthRequired):
+		errors.Is(err, errAccountingMonthRequired), errors.Is(err, errCatalogPeriodQuoteOrders):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod), errors.Is(err, errCatalogPeriodResumeState), errors.Is(err, errCatalogPeriodResumeTarget),

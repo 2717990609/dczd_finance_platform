@@ -675,7 +675,10 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
    original_period.name AS "originalPeriod",refund_period.name AS "refundPeriod",posting_period.name AS "postingPeriod"
   FROM calculation_draft_refunds a
   JOIN source_order_versions rv ON rv.id=a.refund_source_version_id
-  JOIN calculation_draft_lines l ON l.id=a.original_line_id JOIN source_order_versions o ON o.id=l.source_version_id
+  JOIN calculation_draft_lines l ON l.id=a.original_line_id
+  LEFT JOIN catalog_aggregate_draft_events aggregate_refund ON l.aggregate_group_key IS NOT NULL
+   AND aggregate_refund.period_id=a.period_id AND aggregate_refund.source_version_id=a.refund_source_version_id
+  JOIN source_order_versions o ON o.id=coalesce(l.source_version_id,aggregate_refund.payment_version_id)
   LEFT JOIN people p ON p.id=l.person_id LEFT JOIN organization_units beneficiary ON beneficiary.id=l.beneficiary_unit_id
   LEFT JOIN practice_pools practice_pool ON practice_pool.id=l.practice_pool_id
   LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
@@ -811,7 +814,7 @@ func withDraftDetailPagination(raw json.RawMessage) (json.RawMessage, error) {
 const draftRuleReferenceSQL = `SELECT rule_id,catalog_rule_id::text,component_type,aggregate_group_key IS NOT NULL
  FROM calculation_draft_lines WHERE $3::text='lines' AND period_id=$1 AND id=$2
  UNION ALL
- SELECT l.rule_id,l.catalog_rule_id::text,l.component_type,false FROM calculation_draft_refunds r
+ SELECT l.rule_id,l.catalog_rule_id::text,l.component_type,l.aggregate_group_key IS NOT NULL FROM calculation_draft_refunds r
  JOIN calculation_draft_lines l ON l.id=r.original_line_id
  WHERE $3::text='refunds' AND r.period_id=$1 AND r.id=$2
  UNION ALL

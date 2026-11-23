@@ -18,9 +18,12 @@ type catalogActivityEvent struct {
 	CompletionVersionID int64
 	PaidAt              time.Time
 	RecognizedAt        time.Time
+	OccurredAt          time.Time
 	Scenario            string
 	MembershipType      *string // nil for orders outside the membership source; empty for unmarked membership orders.
 	Amount              int64
+	OriginalAmount      int64
+	PriorBookedRefunds  int64
 	Refund              bool
 	originClosed        bool
 	selection           *catalogAggregateMatch
@@ -76,20 +79,24 @@ type catalogPeriodTargetIssue struct {
 }
 
 type catalogPeriodGroup struct {
-	ID          string                     `json:"id"`
-	RuleID      string                     `json:"ruleId"`
-	Version     int                        `json:"version"`
-	Targets     []catalogPeriodGroupTarget `json:"targets"`
-	Receipts    int64                      `json:"receiptsMinor"`
-	Refunds     int64                      `json:"refundsMinor"`
-	Net         int64                      `json:"netMinor"`
-	Payments    int                        `json:"paymentCount"`
-	FixedOnly   bool                       `json:"fixedOnly,omitempty"`
-	BeforeCarry catalogPeriodQuote         `json:"beforeCarry"`
-	CarryIn     int64                      `json:"carryInMinor,omitempty"`
-	AfterCarry  *catalogPeriodQuote        `json:"afterCarry,omitempty"`
-	posting     catalogAggregateGroupInput
-	items       []catalogPeriodItem
+	ID              string                     `json:"id"`
+	RuleID          string                     `json:"ruleId"`
+	Version         int                        `json:"version"`
+	Targets         []catalogPeriodGroupTarget `json:"targets"`
+	Receipts        int64                      `json:"receiptsMinor"`
+	Refunds         int64                      `json:"refundsMinor"`
+	Net             int64                      `json:"netMinor"`
+	Payments        int                        `json:"paymentCount"`
+	FixedOnly       bool                       `json:"fixedOnly,omitempty"`
+	FixedPerOrder   bool                       `json:"fixedPerOrder,omitempty"`
+	BeforeCarry     catalogPeriodQuote         `json:"beforeCarry"`
+	CarryIn         int64                      `json:"carryInMinor,omitempty"`
+	AfterCarry      *catalogPeriodQuote        `json:"afterCarry,omitempty"`
+	posting         catalogAggregateGroupInput
+	items           []catalogPeriodItem
+	orderFixedMinor int64
+	originalLineID  int64
+	orderRefunds    []refundLine
 }
 
 func (g catalogPeriodGroup) quote() catalogPeriodQuote {
@@ -97,6 +104,15 @@ func (g catalogPeriodGroup) quote() catalogPeriodQuote {
 		return *g.AfterCarry
 	}
 	return g.BeforeCarry
+}
+
+func (g catalogPeriodGroup) calculateQuote(carry int64) (catalogPeriodQuote, error) {
+	if !g.FixedPerOrder {
+		return quoteCatalogPeriod(g.items, g.Receipts, g.Refunds, carry)
+	}
+	item := g.items[0]
+	return catalogPeriodQuote{Basis: max(g.Net, 0), Total: g.orderFixedMinor,
+		Awards: []catalogPeriodAward{{ItemKey: item.ItemKey, Label: item.Label, Fixed: true, Amount: g.orderFixedMinor}}}, nil
 }
 
 type catalogPeriodGroupTarget struct {
@@ -311,6 +327,12 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 	targetIssues := make(map[issueKey]*catalogPeriodTargetIssue)
 	byPayment := make(map[int64]assignment)
 	groups := make(map[string]*catalogPeriodGroup)
+	type fixedPayment struct {
+		original, priorRefunds, refunds int64
+		paidHere                        bool
+		refundEvents                    []catalogActivityEvent
+	}
+	fixedPayments := make(map[int64]fixedPayment)
 	for _, event := range events {
 		applied, found := byPayment[event.PaymentID]
 		if !found && event.frozenPeriod != 0 {
@@ -348,7 +370,7 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 						continue
 					}
 					at := event.PaidAt
-					if item.FixedMinor != nil && !periodEnd.IsZero() {
+					if item.FixedMinor != nil && !item.FixedPerOrder && !periodEnd.IsZero() {
 						at = periodEnd
 					}
 					var target catalogPeriodGroupTarget
@@ -396,7 +418,8 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					group := groups[id]
 					if group == nil {
 						group = &catalogPeriodGroup{ID: id, RuleID: rule.ID, Version: rule.Version, Targets: []catalogPeriodGroupTarget{target},
-							posting: catalogAggregateGroupInput{Targets: []catalogGroupTargetKey{key}}, items: []catalogPeriodItem{item}, FixedOnly: item.FixedMinor != nil}
+							posting: catalogAggregateGroupInput{Targets: []catalogGroupTargetKey{key}}, items: []catalogPeriodItem{item},
+							FixedOnly: item.FixedMinor != nil, FixedPerOrder: item.FixedPerOrder}
 						groups[id] = group
 					}
 					applied.groups = append(applied.groups, group)
@@ -438,11 +461,66 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 				return report, err
 			}
 		}
+		if slices.ContainsFunc(applied.groups, func(group *catalogPeriodGroup) bool { return group.FixedPerOrder }) {
+			payment := fixedPayments[event.PaymentID]
+			if event.Refund {
+				if payment.original == 0 {
+					payment.original = event.OriginalAmount
+				}
+				payment.priorRefunds = event.PriorBookedRefunds
+				payment.refundEvents = append(payment.refundEvents, event)
+				if err := addCatalogActivityAmount(event.Amount, &payment.refunds); err != nil {
+					return report, err
+				}
+			} else {
+				payment.original, payment.paidHere = event.Amount, true
+			}
+			fixedPayments[event.PaymentID] = payment
+		}
+	}
+	for paymentID, payment := range fixedPayments {
+		if payment.original <= 0 || !payment.paidHere && (len(payment.refundEvents) == 0 || payment.refundEvents[0].frozenPeriod == 0) {
+			continue
+		}
+		if payment.priorRefunds > payment.original || payment.refunds > payment.original-payment.priorRefunds {
+			return report, errRefundAmount
+		}
+		slices.SortFunc(payment.refundEvents, func(a, b catalogActivityEvent) int {
+			return cmp.Or(a.OccurredAt.Compare(b.OccurredAt), cmp.Compare(a.EventID, b.EventID))
+		})
+		for _, group := range byPayment[paymentID].groups {
+			if !group.FixedPerOrder {
+				continue
+			}
+			award := *group.items[0].FixedMinor
+			var amount int64
+			if payment.paidHere {
+				amount = award - prorateMinor(award, payment.refunds, payment.original)
+			} else {
+				refundPrincipal := payment.priorRefunds
+				deducted := prorateMinor(award, refundPrincipal, payment.original)
+				for _, event := range payment.refundEvents {
+					refundPrincipal += event.Amount
+					next := prorateMinor(award, refundPrincipal, payment.original)
+					delta := deducted - next
+					deducted = next
+					amount += delta
+					if delta != 0 && event.EventID != 0 {
+						origin := frozen[catalogFrozenGroupReference{PeriodID: event.frozenPeriod, Key: group.ID}]
+						group.orderRefunds = append(group.orderRefunds, refundLine{OriginalLineID: origin.originalLineID,
+							RefundSourceVersionID: event.EventID, Amount: delta, Principal: event.Amount, OccurredAt: event.OccurredAt})
+					}
+				}
+			}
+			if err := addCatalogActivityAmount(amount, &group.orderFixedMinor); err != nil {
+				return report, err
+			}
+		}
 	}
 	for _, group := range groups {
 		group.Net = group.Receipts - group.Refunds
 		var err error
-		group.BeforeCarry, err = quoteCatalogPeriod(group.items, group.Receipts, group.Refunds, 0)
+		group.BeforeCarry, err = group.calculateQuote(0)
 		if err != nil {
 			return report, err
 		}
