@@ -711,7 +711,8 @@ async function resumeRule() {
             <a-form-item>
               <a-button v-if="!creating" :disabled="!activityMonth || savingDraft || reviewingActivity"
                 :loading="reviewingActivity && activityMode==='published'" @click="readActivity()">读取已同步数据</a-button>
-              <a-button v-if="!creating && sheet.paused" :disabled="!activityMonth || reviewingActivity"
+              <a-button v-if="activity?.settlement" @click="emit('open-draft',activity.settlement)">查看结算</a-button>
+              <a-button v-else-if="!creating && sheet.paused" :disabled="!activityMonth || reviewingActivity"
                 :loading="reviewingActivity && activityMode==='paused'" @click="readActivity('paused')">试算暂停规则</a-button>
               <a-button v-else-if="!creating" :disabled="!activityMonth || reviewingActivity" :loading="savingDraft" @click="openDraft">打开整期草稿</a-button>
               <a-button v-if="canSave" :disabled="!changed || !effectiveDate || saving || savingDraft || reviewingActivity"
@@ -719,7 +720,10 @@ async function resumeRule() {
             </a-form-item>
           </a-form>
           <a-alert v-if="activityError" class="feedback" :message="activityError" type="error" show-icon/>
-          <section v-if="activity" class="period-activity-result" aria-label="已同步数据核对结果">
+          <section v-if="activity?.settlement" class="period-activity-result" aria-label="已结算账期">
+            <p class="rule-formula" role="status">本账期已结算 · 净分润 {{ formatMoney(activity.settlement.totalMinor) }}</p>
+          </section>
+          <section v-else-if="activity" class="period-activity-result" aria-label="已同步数据核对结果">
             <p v-if="activityMode==='edits'" class="rule-formula" role="status">按待发布配置试算首个生效账期。</p>
             <p class="rule-formula">{{ formatTime(activity.start) }} 至 {{ formatTime(activity.through) }}（截止时刻不含）</p>
             <div class="period-activity-source">

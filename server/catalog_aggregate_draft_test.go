@@ -528,19 +528,33 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 			t.Fatal(err)
 		}
 		freeze(october, result.Version)
-		report := activity("2026-10")
-		if len(report.Groups) != 2 {
-			t.Fatalf("booked groups: %+v", report)
+		if _, err := db.Exec(ctx, `WITH late AS (
+		 INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
+		 VALUES('DCAI','105','','vip:105','1','ORDER_PAID','2026-11-02',
+		  '{"domain":"VIP","sourceKey":"fixture","paymentId":"105","amountMinor":40000}','2026-10-06') RETURNING id
+		 ) INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier)
+		 SELECT id,'ORDER','second','VIP' FROM late`); err != nil {
+			t.Fatal(err)
 		}
-		var confirmedTotal int64
-		for _, group := range report.Groups {
-			if group.Version != 2 || group.CarryIn != -5000 {
-				t.Fatalf("booked carry: %+v", group)
-			}
-			confirmedTotal += group.quote().Total
+		closed := httptest.NewRecorder()
+		activityURL := "/api/v1/catalog-period-activity?ruleId=" + versionID + "&month=2026-10"
+		s.getCatalogPeriodActivity(closed, httptest.NewRequest(http.MethodGet, activityURL, nil))
+		var history struct {
+			Settlement *struct {
+				PeriodID, DraftVersion, TotalMinor int64
+			} `json:"settlement"`
+			Grouping *catalogPeriodGroupReport
 		}
-		if confirmedTotal != result.Total {
-			t.Fatalf("booked total %d want %d", confirmedTotal, result.Total)
+		if err := json.Unmarshal(closed.Body.Bytes(), &history); err != nil || closed.Code != http.StatusOK ||
+			history.Settlement == nil || history.Settlement.PeriodID != october || history.Settlement.DraftVersion != result.Version ||
+			history.Settlement.TotalMinor != result.Total || history.Grouping != nil {
+			t.Fatalf("closed activity should read the booked settlement despite a late source payment: %d %s %v", closed.Code, closed.Body, err)
+		}
+		var bookedCount int
+		if err := db.QueryRow(ctx, `SELECT count(*) FROM catalog_aggregate_draft_groups g
+		 JOIN product_rule_versions v ON v.source_id=g.rule_id
+		 WHERE g.period_id=$1 AND g.carry_in_minor=-5000 AND v.version_no=2`, october).Scan(&bookedCount); err != nil || bookedCount != 2 {
+			t.Fatalf("closed report retains both posted groups and carries: %d %v", bookedCount, err)
 		}
 		if err := migrate(ctx, db); err != nil {
 			t.Fatal(err)

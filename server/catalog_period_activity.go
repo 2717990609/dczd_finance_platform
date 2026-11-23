@@ -50,6 +50,12 @@ type catalogPeriodScopeExclusions struct {
 	RefundsMinor  int64 `json:"refundsMinor"`
 }
 
+type catalogPeriodSettlement struct {
+	PeriodID     int64 `json:"periodId"`
+	DraftVersion int64 `json:"draftVersion"`
+	TotalMinor   int64 `json:"totalMinor"`
+}
+
 type catalogPeriodActivity struct {
 	Start              time.Time                       `json:"start"`
 	Through            time.Time                       `json:"through"`
@@ -61,6 +67,7 @@ type catalogPeriodActivity struct {
 	PriorPeriodRefunds int64                           `json:"priorPeriodRefundsMinor"`
 	OutsideScope       *catalogPeriodScopeExclusions   `json:"outsidePerformanceScope,omitempty"`
 	Grouping           *catalogPeriodGroupReport       `json:"grouping,omitempty"`
+	Settlement         *catalogPeriodSettlement        `json:"settlement,omitempty"`
 	postingIssues      []draftIssue
 }
 
@@ -385,6 +392,23 @@ func (s workspace) getCatalogPeriodActivity(w http.ResponseWriter, r *http.Reque
 		rule.Cycle = definition.Cycle
 		window, err := catalogAggregateWindow(r.URL.Query().Get("month"), definition.Cycle)
 		if err != nil {
+			return err
+		}
+		var final catalogPeriodSettlement
+		err = tx.QueryRow(ctx, `SELECT p.id,s.draft_version,d.total_minor+d.refund_minor+d.correction_minor
+		 FROM periods p JOIN settlements s ON s.period_id=p.id
+		 JOIN calculation_drafts d ON (d.period_id,d.version)=(p.id,s.draft_version)
+		 WHERE p.aggregate_package_id=$1::uuid AND (p.starts_on,p.ends_on)=($2::date,$3::date)`,
+			rule.packageID, window.Start.Format(time.DateOnly), window.Through.AddDate(0, 0, -1).Format(time.DateOnly)).
+			Scan(&final.PeriodID, &final.DraftVersion, &final.TotalMinor)
+		if err == nil {
+			if detail.group != "" {
+				return errCatalogTrialEventsChanged
+			}
+			result = catalogPeriodActivity{Start: window.Start, Through: window.Through, Settlement: &final}
+			return nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
 		result, err = catalogPeriodActivityResult(ctx, tx, catalogPeriodActivityRequest{ProductID: rule.ProductID,
