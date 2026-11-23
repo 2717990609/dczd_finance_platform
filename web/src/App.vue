@@ -359,7 +359,7 @@ function updateAmountMode(row, mode) {
   }
   if (mode==='company_sales' && !row.companySales) {
     row.sourceRole = row.sourceRole || firstOption('practicePeriodSourceRole')
-    row.companySales = {label:'',internalCompanies:[],payee:{kind:'sales_company',pool:{}},categories:[]}
+    row.companySales = {label:'',payee:{kind:'sales_company',pool:{}},categories:[]}
   }
   if (mode === 'tiered' && !row.tierConfig) {
     row.tierConfig = {

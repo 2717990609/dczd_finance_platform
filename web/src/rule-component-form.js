@@ -478,7 +478,6 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
     }
     if (companySales) {
       form.companySales = {...companySales, label:ruleComponentLabel(component,optionLabel),
-        internalCompanies:companySales.internalCompanies || [],
         defaultRate:companySales.defaultRate == null ? undefined : companySales.defaultRate / 10000,
         payee:{kind:'sales_company',...companySales.payee,pool:companySales.payee?.pool || {}},
         categories:(companySales.categories || []).map(category => ({...companyValue(category),

@@ -240,7 +240,7 @@ watch(amounts, choices => {
         <a-form-item label="订单销售角色" :html-for="field('role')" required>
           <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles" size="small"/>
         </a-form-item>
-        <a-form-item label="按个人销售提成的公司" :html-for="field('internal')">
+        <a-form-item v-if="component.companySales.internalCompanies" label="按个人销售提成的公司" :html-for="field('internal')">
           <a-select :id="field('internal')" v-model:value="component.companySales.internalCompanies" :options="internalOptions"
             mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" size="small"/>
         </a-form-item>
