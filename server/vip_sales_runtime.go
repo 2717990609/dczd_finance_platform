@@ -214,6 +214,7 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
  'definitions',(SELECT jsonb_object_agg(source_id::text,jsonb_build_object(
   'amount_basis',definition->'amount_basis','stacking_policy',definition->'stacking_policy','rounding_policy',definition->'rounding_policy',
   'refund_policy',definition->'refund_policy','sales_attribution',definition->'sales_attribution',
+  'policy_scope',jsonb_build_object('vip_new_membership_only',definition#>'{policy_scope,vip_new_membership_only}'),
   'internal_sales_direct_split',definition->'internal_sales_direct_split',
   'benefit_actions',definition->'benefit_actions')) FROM definitions),
  'users',(SELECT jsonb_agg(to_jsonb(users)-'id') FROM users),

@@ -218,7 +218,25 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 	if repaired := get(""); repaired.MatchedCount != 3 || repaired.MatchedMinor != 1350 || repaired.UnmarkedMembershipCount != 1 {
 		t.Fatalf("the source's corrected order version must enter the same rules: %+v", repaired)
 	}
-	if _, err := db.Exec(ctx, `UPDATE product_rule_versions SET definition=definition#-'{policy_scope,vip_new_membership_only}' WHERE source_id=$1`, z(15)); err != nil {
+	if _, err := db.Exec(ctx, `UPDATE product_rule_versions
+	 SET definition=jsonb_set(definition,'{benefit_actions,0,vip_membership_new_only}','false') WHERE source_id=$1`, z(15)); err != nil {
+		t.Fatal(err)
+	}
+	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		report, err := readCatalogMatches(ctx, tx, periodID, 0, 25)
+		if err != nil {
+			return err
+		}
+		data, err := loadVIPRuntimeData(ctx, tx, periodID, report.Items, false)
+		if err == nil && !catalogNewMembershipOnly(data.Definitions[z(15)]) {
+			t.Fatal("mixed membership arrangements must receive the published SKU default in the runtime projection")
+		}
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE product_rule_versions SET definition=definition#-'{policy_scope,vip_new_membership_only}'
+	 #-'{benefit_actions,0,vip_membership_new_only}' WHERE source_id=$1`, z(15)); err != nil {
 		t.Fatal(err)
 	}
 	input.Products[0].Packages = append(input.Products[0].Packages, pack(20, 16, 16, "AFTER", "BUSINESS_SCENARIO", false))
