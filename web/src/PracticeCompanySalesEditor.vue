@@ -1,10 +1,11 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
+import RuleArrangementFields from './RuleArrangementFields.vue'
 import { practiceCompanyRatePriorityLabel } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
-  sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array})
+  sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array,duties:Array})
 const emit = defineEmits(['member-change'])
 const categories = computed(() => props.component.companySales.categories)
 const companyOnly = categories.value.every(standard=>standard.scope==='companies') &&
@@ -78,27 +79,23 @@ watch(amounts, choices => {
 </script>
 
 <template>
-  <div class="company-meta">
-    <a-form-item label="适用报名" :html-for="'rule-member-'+index">
-      <a-select :id="'rule-member-'+index" v-model:value="component.classMember" :options="memberChoices" size="small" @change="emit('member-change')"/>
-    </a-form-item>
-    <a-form-item label="收款安排名称" :html-for="field('label')" required>
-      <a-input :id="field('label')" v-model:value="component.companySales.label" size="small" :maxlength="80"/>
-    </a-form-item>
+  <RuleArrangementFields :name-id="field('label')" v-model:name="component.companySales.label"
+    :duty-id="payee.kind==='person' ? field('duty') : undefined" :duties="duties" v-model:duty="component.recipientDuty"
+    :order-type-id="'rule-member-'+index" :order-types="memberChoices" :order-type="component.classMember"
+    @update:order-type="component.classMember=$event; emit('member-change')">
     <a-form-item label="收款对象" :html-for="field('payee')" required>
-      <a-select :id="field('payee')" v-model:value="payee.kind" :options="payeeKinds" size="small"/>
+      <a-select :id="field('payee')" v-model:value="payee.kind" :options="payeeKinds"/>
     </a-form-item>
     <a-form-item v-if="payee.kind==='order_person'" label="从订单取谁" :html-for="field('payee-role')" required>
-      <a-select :id="field('payee-role')" v-model:value="payee.role" :options="payeeRoles" size="small" show-search :filter-option="byName"/>
+      <a-select :id="field('payee-role')" v-model:value="payee.role" :options="payeeRoles" show-search :filter-option="byName"/>
     </a-form-item>
     <a-form-item v-if="payee.kind==='person'" label="收款人" :html-for="field('payee-person')" required>
-      <a-select :id="field('payee-person')" v-model:value="payee.personId" :options="people" size="small" show-search :filter-option="byName"/>
+      <a-select :id="field('payee-person')" v-model:value="payee.personId" :options="people" show-search :filter-option="byName"/>
     </a-form-item>
     <a-form-item v-if="payee.kind==='company'" label="收款公司" :html-for="field('payee-company')" required>
-      <a-select :id="field('payee-company')" v-model:value="payee.companyId" :options="recipients" size="small" show-search :filter-option="byName"/>
+      <a-select :id="field('payee-company')" v-model:value="payee.companyId" :options="recipients" show-search :filter-option="byName"/>
     </a-form-item>
-    <slot name="actions"/>
-  </div>
+  </RuleArrangementFields>
   <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <div class="finance-rate-toolbar company-standard-toolbar">
@@ -206,14 +203,11 @@ watch(amounts, choices => {
 .company-standard-table.has-method {--company-method-column:minmax(0,1.25fr)}
 .company-standard-table.has-recommendation {--company-recommendation-column:minmax(0,1fr)}
 .company-category {padding:4px 8px 6px;background:#f6f8fb;border-radius:4px;margin-bottom:4px}
-.company-meta {display:flex;flex-wrap:wrap;align-items:end;gap:4px 10px;margin-bottom:6px}
-.company-meta :deep(.ant-form-item) {flex:1 1 140px;min-width:0;margin-bottom:0}
-.company-meta :deep(.rule-remove) {margin-bottom:0}
 .company-standard-fields {display:flex;flex-wrap:wrap;align-items:end;gap:4px 10px}
 .company-standard-column-labels {display:none;color:var(--muted);font-size:13px;padding:3px 8px;background:#f6f8fb;border-radius:4px 4px 0 0}
 .company-standard-fields :deep(.ant-form-item) {flex:1 1 130px;min-width:0;margin:0}
 .company-standard-fields :deep(.ant-form-item.company-scope-field) {flex:3 1 220px}
-.company-meta :deep(.ant-form-item-label),.company-standard-fields :deep(.ant-form-item-label) {padding-bottom:2px}
+.company-standard-fields :deep(.ant-form-item-label) {padding-bottom:2px}
 .company-standard-remove {margin:0 0 0 auto}
 .company-category-override {justify-self:start;grid-column:1 / -1;padding-inline:0}
 .company-advanced :deep(.ant-collapse-header) {padding:4px 0}

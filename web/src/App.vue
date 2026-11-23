@@ -12,6 +12,7 @@ import PracticePeriodBenefitEditor from './PracticePeriodBenefitEditor.vue'
 import PracticeRetrainSplitEditor from './PracticeRetrainSplitEditor.vue'
 import PracticeRetrainServiceEditor from './PracticeRetrainServiceEditor.vue'
 import PracticeCompanySalesEditor from './PracticeCompanySalesEditor.vue'
+import RuleArrangementFields from './RuleArrangementFields.vue'
 import FinanceLogin from './FinanceLogin.vue'
 import OrganizationDirectory from './OrganizationDirectory.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
@@ -409,6 +410,7 @@ function addRuleComponent(key) {
     part=>part.type===type && part.classMember===option.value)) || members[0] : members[0]
   const row = {type,classMember:member?.value,
     mode:baseModes.value[0]?.value}
+  if (classRule.value && ['sales','referral'].includes(type)) row.label = optionLabel('component',type)
   resetAmountMode(row)
   if (row.companySales) row.companySales.standardScope = standardScope
   if (row.periodBenefit && ['service','delivery'].includes(type)) row.periodBenefit.label=optionLabel('component',type)
@@ -467,9 +469,10 @@ function ruleRecipientSummary(row) {
     if (payee?.kind==='person') who = classPeopleOptions.value.find(option=>option.value===payee.personId)?.label || '指定个人'
     if (payee?.kind==='company') who = companyRecipientOptions.value.find(option=>option.value===payee.companyId)?.label || '指定公司'
     if (payee?.kind==='pool') who = practicePoolOptions.value.find(option=>option.value===payee.pool?.poolId)?.label || '团队池'
-    return who
+    return [who,payee?.kind==='person' && optionLabel('organizationDuty',row.recipientDuty)].filter(Boolean).join(' · ')
   }
-  const who = row.salesRecipientKind==='person' ? (row.salesPersonId ? practiceScopeNames.value.person(row.salesPersonId) : '待选择收款人')
+  const who = row.salesRecipientKind==='person' ? ([row.salesPersonId ? practiceScopeNames.value.person(row.salesPersonId) : '待选择收款人',
+    optionLabel('organizationDuty',row.recipientDuty)].filter(Boolean).join(' · '))
     : row.sourceRole ? optionLabel('orderAttributionRole',row.sourceRole) : '选择订单上的收款人'
   if (row===practiceRetrainSales.value && row.retrainSplits?.length) return who+' · 按公司分账'
   if (row.mode==='tiered') return who+' · 按阶梯'
@@ -1181,10 +1184,13 @@ function ruleComponentBody(row) {
   const component = {type:must(row.type),mode:must(row.mode,'请选择计提方式'),value:0,
     ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy && !['period_rate','company_sales'].includes(row.mode) ? {refundPolicy:row.refundPolicy} : {}),
     ...(row.classMember ? {classMember:row.classMember} : {})}
-  if (classRule.value && row.type==='sales') {
-    if (row.salesLabel?.trim()) component.salesLabel = row.salesLabel.trim()
-    if (row.salesRecipientKind==='person') component.salesPersonId = must(row.salesPersonId,'请选择销售提成收款人')
-    if (row.salesCompanies?.length) component.salesCompanies = row.salesCompanies
+  if (classRule.value && ['sales','referral'].includes(row.type)) {
+    component.label = must(row.label?.trim(),'请填写收款安排名称')
+    if (row.salesRecipientKind==='person') {
+      component.salesPersonId = must(row.salesPersonId,'请选择收款人')
+      if (row.recipientDuty) component.recipientDuty = row.recipientDuty
+    }
+    if (row.type==='sales' && row.salesCompanies?.length) component.salesCompanies = row.salesCompanies
   }
   if (row.mode==='company_sales') {
     must(sourceRole,'请选择业绩使用的订单销售角色')
@@ -1195,7 +1201,10 @@ function ruleComponentBody(row) {
     }
     const payee = {kind:must(sales.payee?.kind,'请选择收款对象')}
     if (payee.kind==='order_person') payee.role=must(sales.payee.role,'请选择从订单读取的收款人')
-    if (payee.kind==='person') payee.personId=must(sales.payee.personId,'请选择收款人员')
+    if (payee.kind==='person') {
+      payee.personId=must(sales.payee.personId,'请选择收款人员')
+      if (row.recipientDuty) component.recipientDuty = row.recipientDuty
+    }
     if (payee.kind==='company') payee.companyId=must(sales.payee.companyId,'请选择收款公司')
     if (payee.kind==='pool') payee.pool=practicePoolBody(sales.payee.pool)
     const value = item => {
@@ -1865,14 +1874,13 @@ async function save() {
             <small>{{ ruleSalesScope(c) ? '收款 · ' : '' }}{{ ruleRecipientSummary(c) }}</small>
           </button>
           <div v-if="i===activeRuleComponent" :id="'practice-rule-part-'+i" class="rule-block-body component-editor">
-          <div v-if="!['company_sales','period_rate'].includes(c.mode)" class="rule-item-heading">
-            <a-form-item v-if="classRule" :html-for="'rule-member-'+i" label="适用报名">
-              <a-select :id="'rule-member-'+i" v-model:value="c.classMember" :options="classMemberChoices(c)" @change="resetAmountMode(c)"/>
-            </a-form-item>
-            <template v-if="classRule && c.type==='sales'">
-              <a-form-item :html-for="'rule-sales-label-'+i" label="收款安排名称">
-                <a-input :id="'rule-sales-label-'+i" v-model:value="c.salesLabel" :maxlength="80" placeholder="销售提成"/>
-              </a-form-item>
+          <RuleArrangementFields v-if="!['company_sales','period_rate'].includes(c.mode)"
+            :name-id="classRule ? 'rule-sales-label-'+i : undefined" v-model:name="c.label"
+            :duty-id="classRule && c.salesRecipientKind==='person' ? 'rule-recipient-duty-'+i : undefined"
+            :duties="options('organizationDuty')" v-model:duty="c.recipientDuty"
+            :order-type-id="classRule ? 'rule-member-'+i : undefined" :order-types="classRule ? classMemberChoices(c) : undefined"
+            :order-type="c.classMember" @update:order-type="c.classMember=$event; resetAmountMode(c)">
+            <template v-if="classRule && ['sales','referral'].includes(c.type)">
               <a-form-item :html-for="'rule-payee-kind-'+i" label="收款对象">
                 <a-select :id="'rule-payee-kind-'+i" :value="c.salesRecipientKind || 'order_person'"
                   :options="[{value:'order_person',label:'订单上的人员'},{value:'person',label:'指定个人'}]"
@@ -1893,19 +1901,19 @@ async function save() {
               <a-select :id="'rule-sales-companies-'+i" v-model:value="c.salesCompanies" :options="options('practiceSalesCompany')"
                 mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label" placeholder="不限公司"/>
             </a-form-item>
-            <a-form-item :html-for="'rule-mode-'+i" label="计提方式">
-              <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
-            </a-form-item>
-            <a-form-item v-if="c.mode==='fixed' || c.mode==='rate'" :html-for="'rule-amount-'+i"
-              :label="c===practiceRetrainSales && c.retrainSplits?.length ?
-                (c.mode==='rate' ? '复训总提成比例（%）' : '每份复训总提成（元）') :
-                c.mode==='rate' ? '计提比例（%）' : classRule ? '每份报名（元）' : '每笔付款（元）'">
-              <a-input-number :id="'rule-amount-'+i" v-model:value="c.amount"
-                :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
-            </a-form-item>
-            <a-button v-if="draft.components.length>1" type="link" danger class="rule-remove"
-              @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
-          </div>
+            <template #calculation>
+              <a-form-item :html-for="'rule-mode-'+i" label="计提方式">
+                <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
+              </a-form-item>
+              <a-form-item v-if="c.mode==='fixed' || c.mode==='rate'" :html-for="'rule-amount-'+i"
+                :label="c===practiceRetrainSales && c.retrainSplits?.length ?
+                  (c.mode==='rate' ? '复训总提成比例（%）' : '每份复训总提成（元）') :
+                  c.mode==='rate' ? '计提比例（%）' : classRule ? '每份报名（元）' : '每笔付款（元）'">
+                <a-input-number :id="'rule-amount-'+i" v-model:value="c.amount"
+                  :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
+              </a-form-item>
+            </template>
+          </RuleArrangementFields>
           <PracticeRetrainSplitEditor v-if="c===practiceRetrainSales && c.retrainSplits?.length" :component="c" :index="i"
             :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"
             :pools="practicePoolOptions" :create-pool="createPracticePool" :format-money="formatMoney"/>
@@ -1920,20 +1928,11 @@ async function save() {
             :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')" :sales-units="salesUnitOptions"
             :pools="practicePoolOptions" :create-pool="createPracticePool" :member-choices="classMemberChoices(c)"
             :duties="options('organizationDuty')"/>
-          <div v-if="c.mode==='period_rate' && draft.components.length>1" class="form-actions">
-            <a-button type="link" size="small" danger class="rule-remove"
-              @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
-          </div>
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
             :sales-categories="options('practiceSalesCategory')" :recipients="companyRecipientOptions" :amounts="baseModes"
             :source-roles="options('practicePeriodSourceRole')" :payee-roles="componentSourceRoles(c.companySales.payee.role)"
             :people="classPeopleOptions" :units="unitOptions" :pools="practicePoolOptions" :create-pool="createPracticePool"
-            :member-choices="classMemberChoices(c)" @member-change="resetAmountMode(c)">
-            <template #actions>
-              <a-button v-if="draft.components.length>1" type="link" size="small" danger class="rule-remove"
-                @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
-            </template>
-          </PracticeCompanySalesEditor>
+            :member-choices="classMemberChoices(c)" :duties="options('organizationDuty')" @member-change="resetAmountMode(c)"/>
           <a-collapse v-if="selectedProduct && (!classRule || !['rate','period_rate','company_sales'].includes(c.mode))" ghost>
             <a-collapse-panel key="refund" header="退款处理">
               <a-form-item label="扣回方式" :extra="classRule ? '适用于确认签到名单前的固定金额。' : '按原计提规则扣回。'">
@@ -1941,6 +1940,10 @@ async function save() {
               </a-form-item>
             </a-collapse-panel>
           </a-collapse>
+          <div v-if="draft.components.length>1" class="form-actions">
+            <a-button type="link" size="small" danger class="rule-remove"
+              @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
+          </div>
           </div>
           </section>
           <section v-for="(split,i) in recordedServiceShares" :key="split.companyId" class="rule-block retrain-service-arrangement">

@@ -632,6 +632,11 @@ var draftDetailTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `
         FROM jsonb_array_elements(rv.components->(split_part(l.component_type,':',3)::int)->'retrainSplits') split
         WHERE split->>'companyId'=company.company_id)
        ELSE rv.components->(split_part(l.component_type,':',3)::int)->'periodBenefit'->>'label' END
+     WHEN e.id IS NOT NULL AND rv.id IS NOT NULL AND l.component_type IN ('sales','referral') THEN (
+       SELECT coalesce(part->>'label',part->>'salesLabel') FROM jsonb_array_elements(rv.components) part
+       WHERE part->>'type'=l.component_type AND (
+         coalesce(part->>'classMember','')='' OR part->>'classMember'=CASE e.membership_type WHEN 3 THEN 'new' WHEN 2 THEN 'retrain' END
+         OR (e.membership_type=2 AND part#>>'{tiers,includeRetrain}'='true')) LIMIT 1)
      ELSE action.definition->>'label' END AS "componentLabel",nullif(split_part(l.component_type,':',2),'') AS "componentRole",
    l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",l.aggregate_group_key AS "aggregateGroupKey",o.source,o.order_id AS "orderId",
    o.fact->>'orderNo' AS "orderNo",o.version AS "sourceVersion",o.id AS "sourceVersionId",coalesce(rv.version,cv.version_no) AS "ruleVersion",

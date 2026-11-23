@@ -46,6 +46,8 @@ const calculationMethods = computed(() => [
 
 <template>
   <RuleArrangementFields class="period-arrangement" :name="config.label" :name-id="field('name')"
+    :duty-id="config.recipient==='person' ? field('duty') : undefined" :duties="duties" v-model:duty="config.recipientDuty"
+    :order-type-id="'rule-member-'+index" :order-types="memberChoices" v-model:order-type="component.classMember"
     @update:name="config.label=$event; config.labelIsCustom=true">
     <a-form-item label="收款对象" :html-for="field('recipient')" required>
       <a-select :id="field('recipient')" :value="config.recipient" :options="recipientTypes" placeholder="选择收款对象" @change="setRecipient"/>
@@ -56,25 +58,20 @@ const calculationMethods = computed(() => [
     <a-form-item v-if="config.recipient==='person'" label="收款人员" :html-for="field('person')" required>
       <a-select :id="field('person')" v-model:value="config.personId" :options="people" show-search :filter-option="byName"/>
     </a-form-item>
-    <a-form-item v-if="config.recipient==='person'" label="收款人职责" :html-for="field('duty')">
-      <a-select :id="field('duty')" v-model:value="config.recipientDuty" :options="duties"
-        show-search :filter-option="byName" allow-clear placeholder="选填"/>
-    </a-form-item>
     <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
       :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
-    <a-form-item label="计提订单类型" :html-for="'rule-member-'+index">
-      <a-select :id="'rule-member-'+index" v-model:value="component.classMember" :options="memberChoices"/>
-    </a-form-item>
-    <a-form-item label="计提方式" :html-for="field('method')">
-      <a-select :id="field('method')" v-model:value="config.method" :options="calculationMethods"/>
-    </a-form-item>
-    <a-form-item v-if="config.method==='rate'" label="班次计提比例（%）" required>
-      <a-input-number v-model:value="component.amount" aria-label="班次计提比例（%）" :min="0" :max="100" :precision="4"/>
-    </a-form-item>
-    <a-form-item v-else-if="config.method==='fixed' || config.method==='class_fixed'"
-      :label="config.method==='class_fixed' ? '整班金额（元）' : '每份报名（元）'" :html-for="field('fixed')" required>
-      <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
-    </a-form-item>
+    <template #calculation>
+      <a-form-item label="计提方式" :html-for="field('method')">
+        <a-select :id="field('method')" v-model:value="config.method" :options="calculationMethods"/>
+      </a-form-item>
+      <a-form-item v-if="config.method==='rate'" label="班次计提比例（%）" required>
+        <a-input-number v-model:value="component.amount" aria-label="班次计提比例（%）" :min="0" :max="100" :precision="4"/>
+      </a-form-item>
+      <a-form-item v-else-if="config.method==='fixed' || config.method==='class_fixed'"
+        :label="config.method==='class_fixed' ? '整班金额（元）' : '每份报名（元）'" :html-for="field('fixed')" required>
+        <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
+      </a-form-item>
+    </template>
   </RuleArrangementFields>
   <div class="period-fields period-scope" :class="{'period-scope-all':scopeMode==='all'}">
     <RuleOrderScope :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"

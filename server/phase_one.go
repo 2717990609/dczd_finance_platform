@@ -26,19 +26,28 @@ var schema string
 const schemaLockSQL = "SELECT pg_advisory_xact_lock(637619238)"
 
 type component struct {
-	Type           string                  `json:"type"`
-	Mode           string                  `json:"mode"`
-	Value          int64                   `json:"value"`
-	SourceRole     string                  `json:"sourceRole,omitempty"`
-	RefundPolicy   string                  `json:"refundPolicy,omitempty"`
-	ClassMember    string                  `json:"classMember,omitempty"`
-	SalesLabel     string                  `json:"salesLabel,omitempty"`
-	SalesPersonID  int64                   `json:"salesPersonId,omitempty"`
-	SalesCompanies *[]string               `json:"salesCompanies,omitempty"`
-	Tiers          *practiceSalesTiers     `json:"tiers,omitempty"`
-	PeriodBenefit  *practicePeriodBenefit  `json:"periodBenefit,omitempty"`
-	CompanySales   *practiceCompanySales   `json:"companySales,omitempty"`
-	RetrainSplits  *[]practiceRetrainSplit `json:"retrainSplits,omitempty"`
+	Type             string                  `json:"type"`
+	Mode             string                  `json:"mode"`
+	Value            int64                   `json:"value"`
+	SourceRole       string                  `json:"sourceRole,omitempty"`
+	RefundPolicy     string                  `json:"refundPolicy,omitempty"`
+	ClassMember      string                  `json:"classMember,omitempty"`
+	ArrangementLabel string                  `json:"label,omitempty"`
+	SalesLabel       string                  `json:"salesLabel,omitempty"`
+	SalesPersonID    int64                   `json:"salesPersonId,omitempty"`
+	RecipientDuty    string                  `json:"recipientDuty,omitempty"`
+	SalesCompanies   *[]string               `json:"salesCompanies,omitempty"`
+	Tiers            *practiceSalesTiers     `json:"tiers,omitempty"`
+	PeriodBenefit    *practicePeriodBenefit  `json:"periodBenefit,omitempty"`
+	CompanySales     *practiceCompanySales   `json:"companySales,omitempty"`
+	RetrainSplits    *[]practiceRetrainSplit `json:"retrainSplits,omitempty"`
+}
+
+func (c component) arrangementLabel() string {
+	if c.ArrangementLabel != "" {
+		return c.ArrangementLabel
+	}
+	return c.SalesLabel
 }
 
 func (c component) salesCompanies() []string {
@@ -85,10 +94,15 @@ func validateComponents(items []component) error {
 		if c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) || !validPracticeRetrainSplits(c) {
 			return invalid
 		}
-		if c.SalesLabel != "" || c.SalesPersonID != 0 {
-			if c.Type != "sales" || c.SourceRole == "" || c.SalesLabel != "" && !textOK(c.SalesLabel, 80) || c.SalesPersonID < 0 {
+		if c.ArrangementLabel != "" || c.SalesLabel != "" || c.SalesPersonID != 0 {
+			if (c.Type != "sales" && c.Type != "referral") || c.SourceRole == "" || c.SalesPersonID < 0 ||
+				c.ArrangementLabel != "" && !textOK(c.ArrangementLabel, 80) || c.SalesLabel != "" && !textOK(c.SalesLabel, 80) {
 				return invalid
 			}
+		}
+		if c.RecipientDuty != "" && (!validSourceRole(c.RecipientDuty) || c.SalesPersonID == 0 &&
+			(c.CompanySales == nil || c.CompanySales.Payee.kind() != "person")) {
+			return invalid
 		}
 		if companies := c.salesCompanies(); len(companies) != 0 {
 			if c.Type != "sales" || c.SourceRole == "" {
@@ -707,12 +721,15 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				return errRuleOrderRole
 			}
 			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil || len(c.salesCompanies()) != 0 ||
-				c.SalesLabel != "" || c.SalesPersonID != 0) {
+				c.arrangementLabel() != "" || c.SalesPersonID != 0 || c.RecipientDuty != "") {
 				return invalid
 			}
 			companyIDs = append(companyIDs, c.salesCompanies()...)
 			if c.SalesPersonID != 0 {
 				personIDs = append(personIDs, c.SalesPersonID)
+			}
+			if c.RecipientDuty != "" {
+				recipientDuties = append(recipientDuties, c.RecipientDuty)
 			}
 			if c.CompanySales != nil {
 				companyIDs = append(companyIDs, c.CompanySales.InternalCompanies...)

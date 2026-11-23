@@ -223,7 +223,7 @@ func appendPracticeRetrainSplit(draft *paymentDraft, p practicePurchase, rule pa
 		if personal[i] > 0 {
 			sale := line
 			sale.Component, sale.PersonID, sale.IdentityID, sale.Amount = "sales", sellers[i].PersonID, sellers[i].ID, personal[i]
-			sale.practiceArrangementLabel = rule.Components[index].SalesLabel
+			sale.practiceArrangementLabel = rule.Components[index].arrangementLabel()
 			draft.Lines = append(draft.Lines, sale)
 		}
 		if share := cumulative[i] - personal[i]; share > 0 {

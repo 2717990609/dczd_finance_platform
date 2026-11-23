@@ -1,8 +1,10 @@
 <script setup>
 import { useTemplateRef } from 'vue'
 
-defineProps({nameId:String,disabled:Boolean})
+defineProps({nameId:String,dutyId:String,duties:Array,orderTypeId:String,orderTypes:Array,disabled:Boolean})
 const name = defineModel('name',{type:String})
+const duty = defineModel('duty',{type:String})
+const orderType = defineModel('orderType',{type:String})
 const input = useTemplateRef('input')
 defineExpose({focus:()=>input.value?.focus()})
 </script>
@@ -13,6 +15,14 @@ defineExpose({focus:()=>input.value?.focus()})
       <a-input :id="nameId" ref="input" v-model:value="name" :disabled="disabled" :maxlength="80"/>
     </a-form-item>
     <slot/>
+    <a-form-item v-if="dutyId" label="收款人职责" :html-for="dutyId">
+      <a-select :id="dutyId" v-model:value="duty" :options="duties" :disabled="disabled"
+        show-search allow-clear option-filter-prop="label" placeholder="选填"/>
+    </a-form-item>
+    <a-form-item v-if="orderTypeId" label="计提订单类型" :html-for="orderTypeId">
+      <a-select :id="orderTypeId" v-model:value="orderType" :options="orderTypes" :disabled="disabled"/>
+    </a-form-item>
+    <slot name="calculation"/>
   </div>
 </template>
 

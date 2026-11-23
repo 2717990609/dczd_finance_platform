@@ -15,6 +15,48 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+func TestPracticeNamedRecommendationPayee(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	product, err := s.createProduct(ctx, createProductInput{Code: "PRACTICE_REFERRAL_NAME", Name: "推荐计提样本", PeriodMode: "class"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recipient, err := s.createPerson(ctx, createPersonInput{Name: "指定收款人"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	person := recipient.(map[string]int64)["id"]
+	part := component{Type: "referral", Mode: "rate", ClassMember: "new", SourceRole: "DIRECT_REFERRER", Value: 1000,
+		ArrangementLabel: "渠道推荐服务", SalesPersonID: person, RecipientDuty: "PRACTICE_RESOURCE_RECOMMENDATION"}
+	input := publishRuleInput{ProductID: product.(map[string]int64)["id"], Label: "推荐规则", Components: []component{part}}
+	input.Components[0].RecipientDuty = "UNREGISTERED_DUTY"
+	if _, err := s.publishRule(ctx, input); !errors.Is(err, invalid) {
+		t.Fatalf("expected publication to reject an unregistered duty: %v", err)
+	}
+	input.Components[0] = part
+	if _, err := s.publishRule(ctx, input); err != nil {
+		t.Fatal(err)
+	}
+	var saved []component
+	if err := s.db.QueryRow(ctx, `SELECT components FROM rule_versions WHERE product_id=$1`, input.ProductID).Scan(&saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved[0].ArrangementLabel != part.ArrangementLabel || saved[0].RecipientDuty != part.RecipientDuty {
+		t.Fatalf("rule must persist the configured label and duty: %+v", saved[0])
+	}
+	amount := int64(10000)
+	payment := paymentInput{ID: 1, Fact: sourceFact{Source: "DCZD", OrderID: "1", PaymentID: "1", AmountMinor: &amount, ReferrerID: "seller"}}
+	member := practiceEnrollment{ID: 1, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"1"}}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{PersonID: person + 1}}}
+	draft, err := calculatePracticeDraft([]practiceEnrollment{member}, paymentRule{ID: 1, Components: saved},
+		map[string][]paymentInput{"1": {payment}}, identities, nil, practiceTierHistory{}, nil, practiceDraftRuntime{})
+	if err != nil || len(draft.Issues) != 0 || len(draft.Lines) != 1 || draft.Total != 1000 ||
+		draft.Lines[0].PersonID != person || draft.Lines[0].practiceArrangementLabel != part.ArrangementLabel {
+		t.Fatalf("configured recommendation must use the named recipient and label: %+v %v", draft, err)
+	}
+}
+
 func TestPracticeEnrollmentAmountsTreatDepositAndBalanceAsOneEntitlement(t *testing.T) {
 	at := time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC)
 	amount1, amount2 := int64(400), int64(600)

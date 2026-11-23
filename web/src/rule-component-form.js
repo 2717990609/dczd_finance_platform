@@ -91,6 +91,7 @@ export function catalogPayeeComplete(payee) {
 }
 
 export function ruleComponentLabel(component, optionLabel) {
+  if (component.label?.trim()) return component.label.trim()
   if (component.salesLabel?.trim()) return component.salesLabel.trim()
   if (component.companySales?.label != null) return component.companySales.label.trim() || '未命名收款安排'
   if (component.periodBenefit) {
@@ -337,6 +338,7 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
   return components.map(component => {
     const {tiers, periodBenefit, companySales, retrainSplits, value, ...form} = component
     if (form.salesPersonId) form.salesRecipientKind = 'person'
+    if (['sales','referral'].includes(form.type) && !form.label) form.label = ruleComponentLabel(component,optionLabel)
     form.classMember ??= ''
     form.amount = value / (form.mode === 'period_rate' ? 10000 : 100)
     if (tiers) form.tierConfig = tierForm(tiers)
