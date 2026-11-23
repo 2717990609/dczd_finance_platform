@@ -350,7 +350,7 @@ func impactTotal(draft paymentDraft) (int64, error) {
 	return addMinor(paid, draft.CorrectionTotal)
 }
 
-func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentDraft, matchedOrders bool) (ruleImpactReport, error) {
+func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentDraft, candidate ruleImpactCandidate) (ruleImpactReport, error) {
 	report := ruleImpactReport{BeforeIssueCount: before.blockingIssues(), AfterIssueCount: after.blockingIssues(),
 		IssueReasons: impactIssueReasons(before.Issues, after.Issues), Items: []ruleImpactItem{}}
 	var err error
@@ -374,6 +374,16 @@ func readRuleImpactReport(ctx context.Context, tx pgx.Tx, before, after paymentD
 	proposed, err := impactPostings(after, originals)
 	if err != nil {
 		return report, err
+	}
+	matchedOrders := candidate.matchedOrders
+	if matchedOrders && candidate.catalog != nil {
+		var ruleID pgtype.UUID
+		if err := ruleID.Scan(candidate.catalog.ruleID); err != nil {
+			return report, err
+		}
+		proposed = slices.DeleteFunc(proposed, func(posting ruleImpactPosting) bool {
+			return posting.kind != "accrual" || posting.component.catalog != ruleID
+		})
 	}
 	sources, names, err := impactLookups(ctx, tx, previous, proposed)
 	if err != nil {

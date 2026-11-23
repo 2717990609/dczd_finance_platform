@@ -65,7 +65,7 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	}
 	s := workspace{db: db, development: true, ruleAuth: catalogRuleAuth{issuer: "finance-test", key: []byte("isolated-finance-scenario-test-key")},
 		sources: map[string]sourceConfig{"DCAI": {BaseURL: "https://fixture.invalid", Token: "fixture"}}}
-	post := func(productGrant int64, preview bool) *httptest.ResponseRecorder {
+	post := func(productGrant int64, preview, matchedOrders bool) *httptest.ResponseRecorder {
 		t.Helper()
 		claims := catalogRuleClaims{RegisteredClaims: jwt.RegisteredClaims{Issuer: s.ruleAuth.issuer, Subject: "fixture",
 			Audience: jwt.ClaimStrings{"finance-platform"}, ExpiresAt: jwt.NewNumericDate(time.Now().Add(time.Minute))},
@@ -85,7 +85,7 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		path := "/api/v1/catalog-rule-rates"
 		if preview {
 			path = "/api/v1/catalog-rule-impact"
-			body = `{"periodId":951,"rule":` + body + `}`
+			body = fmt.Sprintf(`{"periodId":951,"matchedOrders":%t,"rule":%s}`, matchedOrders, body)
 		}
 		r := httptest.NewRequest(http.MethodPost, path, strings.NewReader(body))
 		r.Header.Set("Authorization", "Bearer "+token)
@@ -98,10 +98,10 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		}
 		return w
 	}
-	if denied := post(999, true); denied.Code != http.StatusForbidden {
+	if denied := post(999, true, false); denied.Code != http.StatusForbidden {
 		t.Errorf("another product's grant authorized the first-rule preview: %d %s", denied.Code, denied.Body)
 	}
-	w := post(950, true)
+	w := post(950, true, false)
 	var preview ruleImpactReport
 	if err := json.Unmarshal(w.Body.Bytes(), &preview); err != nil || w.Code != http.StatusOK ||
 		preview.CurrentRuleAvailable || preview.MatchedPaymentCount == nil || *preview.MatchedPaymentCount != 2 ||
@@ -129,18 +129,25 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 			}
 		}
 	}
+	orders := post(950, true, true)
+	var firstOrderPreview ruleImpactReport
+	if err := json.Unmarshal(orders.Body.Bytes(), &firstOrderPreview); err != nil || orders.Code != http.StatusOK ||
+		firstOrderPreview.CurrentRuleAvailable || firstOrderPreview.MatchedPaymentCount == nil ||
+		*firstOrderPreview.MatchedPaymentCount != 2 || len(firstOrderPreview.Items) != 7 {
+		t.Fatalf("a first rule can show each proposed award without an existing version: %d %s %v", orders.Code, orders.Body, err)
+	}
 	var versions, drafts, queuedDrafts int
 	if err := db.QueryRow(ctx, `SELECT (SELECT count(*) FROM product_rule_versions),
 	 (SELECT count(*) FROM calculation_drafts), (SELECT count(*) FROM draft_refresh_queue)`).Scan(&versions, &drafts, &queuedDrafts); err != nil ||
 		versions != 0 || drafts != 0 || queuedDrafts != 0 {
 		t.Fatalf("preview persisted rules, drafts or jobs: %d %d %d %v", versions, drafts, queuedDrafts, err)
 	}
-	w = post(950, false)
+	w = post(950, false, false)
 	var published catalogPublication
 	if err := json.Unmarshal(w.Body.Bytes(), &published); err != nil || w.Code != 200 || published.Version != 1 || published.ID == "" {
 		t.Fatalf("could not create first rule: %d %s %v", w.Code, w.Body.String(), err)
 	}
-	if occupied := post(950, true); occupied.Code != http.StatusConflict {
+	if occupied := post(950, true, false); occupied.Code != http.StatusConflict {
 		t.Errorf("preview must enforce the same occupied-SKU check as publication: %d %s", occupied.Code, occupied.Body)
 	}
 	var queued, supported bool
@@ -387,10 +394,10 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		debit != -500 || credit != 500 {
 		t.Fatalf("expected the original referrer's unrefunded 500 cents to move to the corrected referrer: %d %d %v", debit, credit, err)
 	}
-	if duplicate := post(950, false); duplicate.Code != 409 {
+	if duplicate := post(950, false, false); duplicate.Code != 409 {
 		t.Fatalf("duplicate rule must be rejected: %d %s", duplicate.Code, duplicate.Body)
 	}
-	if denied := post(949, false); denied.Code != 403 {
+	if denied := post(949, false, false); denied.Code != 403 {
 		t.Fatalf("publication must remain product-scoped: %d %s", denied.Code, denied.Body)
 	}
 
@@ -479,6 +486,37 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		var issues []string
 		_ = db.QueryRow(ctx, `SELECT array_agg(i.code ORDER BY i.id) FROM calculation_draft_issues i WHERE i.period_id=$1`, newPeriod).Scan(&issues)
 		t.Fatalf("the three versions must generate only their configured benefits: %+v issues=%v %v", tested, issues, err)
+	}
+	previewBody := fmt.Sprintf(`{"periodId":%d,"matchedOrders":true,"rule":{"baseId":%q,
+	 "effectiveFrom":%q,"changes":[{"itemKey":%q,"fixedMinor":1300}]}}`,
+		newPeriod, withoutSales.ID, firstAt.AddDate(0, 0, 7).Format(time.RFC3339), sheet.Components[0].ItemKey)
+	orderPreview := httptest.NewRecorder()
+	previewRequest := httptest.NewRequest(http.MethodPost, "/api/v1/catalog-rule-impact", strings.NewReader(previewBody))
+	previewRequest.Header.Set("Origin", "http://example.com")
+	previewRequest.Header.Set("Content-Type", "application/json")
+	s.postCatalogRuleImpact(orderPreview, previewRequest)
+	var matchedOrderReport ruleImpactReport
+	if err := json.Unmarshal(orderPreview.Body.Bytes(), &matchedOrderReport); err != nil || orderPreview.Code != 200 ||
+		matchedOrderReport.MatchedPaymentCount == nil || *matchedOrderReport.MatchedPaymentCount != 1 || len(matchedOrderReport.Items) != 2 {
+		t.Fatalf("the order preview must include both awards on the payment using the proposed version: %d %s %v",
+			orderPreview.Code, orderPreview.Body, err)
+	}
+	for _, item := range matchedOrderReport.Items {
+		if item.OrderID != "202" || item.Recipient == "" || item.EntryKind != "accrual" {
+			t.Fatalf("unexpected award in the order preview: %+v", item)
+		}
+	}
+	if matchedOrderReport.Items[0].AfterMinor+matchedOrderReport.Items[1].AfterMinor != 2550 ||
+		matchedOrderReport.Items[0].DeltaMinor+matchedOrderReport.Items[1].DeltaMinor != 50 ||
+		matchedOrderReport.Items[0].Arrangement == matchedOrderReport.Items[1].Arrangement {
+		t.Fatalf("both the updated and unchanged portions must be shown separately: %+v", matchedOrderReport.Items)
+	}
+	var previewVersion, publishedCount int64
+	if err := db.QueryRow(ctx, `SELECT version,(SELECT count(*) FROM product_rule_versions v
+	 JOIN product_rule_packages p ON p.source_id=v.package_id WHERE p.scope_id='OTHER')
+	 FROM calculation_drafts WHERE period_id=$1`, newPeriod).Scan(&previewVersion, &publishedCount); err != nil ||
+		previewVersion != tested.(draftSummary).Version || publishedCount != 3 {
+		t.Fatalf("order preview persisted a rule or draft revision: version=%d versions=%d %v", previewVersion, publishedCount, err)
 	}
 	if _, err := db.Exec(ctx, "INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')",
 		newPeriod, tested.(draftSummary).Version); err != nil {

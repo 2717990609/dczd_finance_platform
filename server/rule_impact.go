@@ -26,8 +26,9 @@ type componentRuleImpactInput struct {
 }
 
 type catalogRuleImpactInput struct {
-	PeriodID int64                    `json:"periodId"`
-	Rule     publishCatalogRatesInput `json:"rule"`
+	PeriodID      int64                    `json:"periodId"`
+	Rule          publishCatalogRatesInput `json:"rule"`
+	MatchedOrders bool                     `json:"matchedOrders,omitempty"`
 }
 
 func (s workspace) postComponentRuleImpact(ctx context.Context, input componentRuleImpactInput) (any, error) {
@@ -72,10 +73,10 @@ func (s workspace) postCatalogRuleImpact(w http.ResponseWriter, r *http.Request)
 		}
 		return s.compareRuleImpact(ctx, input.PeriodID, product, nil, input.Rule.Create != nil, func(tx pgx.Tx) (ruleImpactCandidate, error) {
 			version, err := writeCatalogRates(ctx, tx, input.Rule, actor.subject, false)
-			if err != nil || version.ID == input.Rule.BaseID {
+			if err != nil || version.ID == input.Rule.BaseID && !input.MatchedOrders {
 				return ruleImpactCandidate{}, err
 			}
-			return ruleImpactCandidate{catalog: &catalogRuleImpactMatch{ruleID: version.ID}}, nil
+			return ruleImpactCandidate{catalog: &catalogRuleImpactMatch{ruleID: version.ID}, matchedOrders: input.MatchedOrders}, nil
 		})
 	})(w, r)
 }
@@ -121,7 +122,7 @@ func (s workspace) compareRuleImpact(ctx context.Context, periodID, productID in
 	if err != nil {
 		return report, err
 	}
-	report, err = readRuleImpactReport(ctx, tx, before, after, candidate.matchedOrders)
+	report, err = readRuleImpactReport(ctx, tx, before, after, candidate)
 	if err != nil {
 		return report, err
 	}

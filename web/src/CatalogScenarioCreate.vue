@@ -74,8 +74,8 @@ function preview() {
     error.value = err.message
   }
 }
-function compareRule(periodId, signal) {
-  return props.api('/catalog-rule-impact',{method:'POST',body:JSON.stringify({periodId,rule:impactInput.value}),signal})
+function compareRule(periodId, signal, matchedOrders) {
+  return props.api('/catalog-rule-impact',{method:'POST',body:JSON.stringify({periodId,rule:impactInput.value,matchedOrders}),signal})
 }
 async function publish() {
   if (publishing.value || impactBusy.value || editing.value) return
@@ -123,7 +123,8 @@ async function publish() {
           :options="options" :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!structure.sales"/>
       </template>
     </a-form>
-    <RuleImpactPreview v-if="impactInput" v-model:busy="impactBusy" :periods="impactPeriods" :simulate="compareRule" :format-money="formatMoney"/>
+    <RuleImpactPreview v-if="impactInput" v-model:busy="impactBusy" :periods="impactPeriods" show-matched-orders
+      :simulate="compareRule" :format-money="formatMoney"/>
     <template #footer>
       <div class="form-actions">
         <a-button v-if="impactInput" :disabled="publishing" @click="impactInput=undefined; error=''">返回编辑</a-button>

@@ -610,8 +610,8 @@ function previewImpact() {
     error.value = err.message
   }
 }
-function compareCatalogRule(periodId, signal) {
-  return props.api('/catalog-rule-impact',{method:'POST',body:JSON.stringify({periodId,rule:impactInput.value}),signal})
+function compareCatalogRule(periodId, signal, matchedOrders) {
+  return props.api('/catalog-rule-impact',{method:'POST',body:JSON.stringify({periodId,rule:impactInput.value,matchedOrders}),signal})
 }
 async function publish() {
   if (saving.value || !sheet.value?.mayPublish) return
@@ -929,7 +929,7 @@ async function publish() {
             </a-form-item>
           </template>
         </a-form>
-        <RuleImpactPreview v-if="impactInput" v-model:busy="impactBusy" :periods="impactPeriods"
+        <RuleImpactPreview v-if="impactInput" v-model:busy="impactBusy" :periods="impactPeriods" show-matched-orders
           :simulate="compareCatalogRule" :format-money="formatMoney"/>
       </template>
     </a-spin>
