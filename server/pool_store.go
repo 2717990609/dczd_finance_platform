@@ -75,18 +75,26 @@ const poolAllocationBasisSQL = `SELECT md5(concat_ws('|',
 // In addition to organization membership, a catalog-funded share requires the
 // component's role at the original payment time. Both draft reads and close
 // review use this predicate, including allocations from earlier periods.
-const poolCatalogRoleSQL = `EXISTS (
+const poolCatalogRoleScopeSQL = `EXISTS (
  SELECT 1 FROM periods period JOIN products prod ON prod.id=period.product_id
- JOIN product_catalog_settings cfg ON cfg.product_id=prod.id
- JOIN product_rule_versions policy ON policy.source_id=l.catalog_rule_id
- CROSS JOIN LATERAL jsonb_array_elements(policy.definition->'benefit_actions') action
+ JOIN product_catalog_settings cfg ON cfg.product_id=prod.id`
+
+const poolCatalogActionFieldsSQL = `SELECT b->>'item_key' AS item_key,b->>'role' AS member_role,
+ b->>'beneficiary_mode' AS mode
+ FROM jsonb_array_elements(policy.definition->'benefit_actions') b`
+
+const poolCatalogRoleMatchSQL = `
  JOIN catalog_current_sales_appointments r ON r.person_id=m.person_id AND r.source=cfg.source_system
-  AND r.role=action->>'role' AND r.valid_from<=v.occurred_at AND (r.valid_to IS NULL OR r.valid_to>v.occurred_at)
- WHERE period.id=l.period_id AND action->>'item_key'=l.component_type AND action->>'beneficiary_mode'='TEAM_POOL' AND (
+  AND r.role=action.member_role AND r.valid_from<=v.occurred_at AND (r.valid_to IS NULL OR r.valid_to>v.occurred_at)
+ WHERE period.id=l.period_id AND action.item_key=l.component_type AND action.mode='TEAM_POOL' AND (
   (r.role='SALES' AND ((r.scope='PRODUCT' AND r.scope_key=prod.code) OR (r.scope='PROJECT' AND r.scope_key=cfg.project_code)))
   OR (r.role<>'SALES' AND r.scope='ORGANIZATION_UNIT' AND r.scope_key=l.beneficiary_unit_id::text)
  )
 )`
+
+const poolCatalogRoleSQL = poolCatalogRoleScopeSQL + `
+ JOIN product_rule_versions policy ON policy.source_id=l.catalog_rule_id
+ CROSS JOIN LATERAL (` + poolCatalogActionFieldsSQL + `) action` + poolCatalogRoleMatchSQL
 
 const poolAggregateMembersSQL = `SELECT member.id
  FROM catalog_aggregate_draft_groups g
@@ -201,13 +209,21 @@ const poolEntriesSQL = `WITH scope AS (
 SELECT unit,item,scenario,name,period_id,source_id,amount_minor,kind,practice_distribution,refunded,corrected,owner_id FROM entries
 ORDER BY seq,kind,occurred_at,sort_id,source_id`
 
-const poolEligibilitySQL = `SELECT DISTINCT l.id,m.person_id,person.name FROM unnest($1::bigint[]) source(id)
+// Expand the referenced versions once before checking lots and their members.
+const poolEligibilitySQL = `WITH catalog_actions AS MATERIALIZED (
+ SELECT policy.source_id AS version_id,action.* FROM product_rule_versions policy
+ CROSS JOIN LATERAL (` + poolCatalogActionFieldsSQL + `) action
+ WHERE policy.source_id IN (SELECT l.catalog_rule_id FROM unnest($1::bigint[]) source(id)
+  JOIN calculation_draft_lines l ON l.id=source.id WHERE l.catalog_rule_id IS NOT NULL AND l.aggregate_group_key IS NULL)
+)
+ SELECT DISTINCT l.id,m.person_id,person.name FROM unnest($1::bigint[]) source(id)
  JOIN calculation_draft_lines l ON l.id=source.id
  JOIN source_order_versions v ON v.id=l.source_version_id
  JOIN organization_assignments m ON m.unit_id=l.beneficiary_unit_id
   AND m.valid_from<=v.occurred_at AND (m.valid_to IS NULL OR m.valid_to>v.occurred_at)
  JOIN people person ON person.id=m.person_id
- WHERE l.aggregate_group_key IS NULL AND (l.practice_pool_id IS NOT NULL OR ` + poolCatalogRoleSQL + `)
+ WHERE l.aggregate_group_key IS NULL AND (l.practice_pool_id IS NOT NULL OR ` + poolCatalogRoleScopeSQL + `
+ JOIN catalog_actions action ON action.version_id=l.catalog_rule_id` + poolCatalogRoleMatchSQL + `)
  UNION
  SELECT l.id,person.id,person.name FROM unnest($1::bigint[]) source(id)
  JOIN calculation_draft_lines l ON l.id=source.id AND l.aggregate_group_key IS NOT NULL

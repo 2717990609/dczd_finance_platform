@@ -496,8 +496,32 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if _, err := s.confirmSettlement(ctx, request, "fixture"); !errors.Is(err, errSettlementStale) {
 		t.Fatalf("a different allocation must invalidate a reviewed draft even when the total is unchanged: %v", err)
 	}
+	checkRetention := func(month string, opening, income int64) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		s.departmentRetention(w, httptest.NewRequest(http.MethodGet,
+			"/api/v1/department-retention?month="+month+"&accountId="+id(18), nil))
+		var ledger struct {
+			Items   []struct{ OpeningMinor, IncomeMinor, BalanceMinor int64 }
+			Entries []struct{ PeriodID, AmountMinor int64 }
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &ledger); err != nil || w.Code != http.StatusOK {
+			t.Fatalf("retention ledger HTTP %d: %s %v", w.Code, w.Body.String(), err)
+		}
+		if opening+income == 0 {
+			if len(ledger.Items) != 0 || len(ledger.Entries) != 0 {
+				t.Fatalf("open pool plan must not enter the ledger: %+v", ledger)
+			}
+		} else if len(ledger.Items) != 1 || len(ledger.Entries) != 1 || ledger.Entries[0].PeriodID != periodID ||
+			ledger.Entries[0].AmountMinor != 182 || ledger.Items[0].OpeningMinor != opening ||
+			ledger.Items[0].IncomeMinor != income || ledger.Items[0].BalanceMinor != opening+income {
+			t.Fatalf("the only retention credit should be the confirmed August share: %+v", ledger)
+		}
+	}
+	checkRetention("2026-08", 0, 0)
 	secondReview := review(finished)
 	closed := verifySettlementHTTP(t, ctx, s, alice.ID, productID, finished, secondReview.Token)
+	checkRetention("2026-08", 0, 182)
 	if after := review(finished); after.Settlement == nil || after.Settlement.ID != closed.ID || after.Token != "" {
 		t.Fatalf("closed review should reference the existing settlement: %+v", after)
 	}
@@ -570,6 +594,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeReviewed(september, review(september).Token)
+	checkRetention("2026-09", 182, 0)
 	if got := readPools(emptyOctober); !got.Closed || len(got.Items) != 0 || got.Basis != beforeBackfill.Basis {
 		t.Fatalf("confirming an earlier refund must not rewrite October's confirmed carry: %+v", got)
 	}
