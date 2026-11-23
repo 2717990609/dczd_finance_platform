@@ -63,6 +63,7 @@ var errPracticeTierCompany = errors.New("规则引用的销售公司未配置或
 var errPracticeCountPerson = errors.New("个人累计起点引用的人员不存在")
 var errRuleEditStale = errors.New("此范围已有更新的规则版本，请打开最新版本编辑")
 var errRuleOrderRole = errors.New("请选择销售或推荐分项的订单角色")
+var errAccountingMonthRequired = errors.New("请填写结算月份。开班期次由子系统映射")
 
 var invalid = errors.New("请核对名称、范围与必填配置")
 var conflict = errors.New("记录与现有配置冲突，请重新读取")
@@ -208,7 +209,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/mappings", Handler: s.list(mappingsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/mappings", Handler: submit(s.createMapping)},
 		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.listForAuthorizedProducts(periodsSQL, true)},
-		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createPeriod)},
+		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createAccountingMonth)},
 		{Method: http.MethodPost, Path: "/api/v1/period-report-month", Handler: submit(s.setPeriodReportMonth)},
 		{Method: http.MethodPost, Path: "/api/v1/period-practice-roster", Handler: submit(s.setPeriodPracticeRoster)},
 		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.listForAuthorizedProducts(rulesSQL, false)},
@@ -334,7 +335,8 @@ func respond(w http.ResponseWriter, result any, err error) {
 	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope), errors.Is(err, errCatalogPeriodResumeDate), errors.Is(err, errCatalogPeriodQuoteItem),
 		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany),
 		errors.Is(err, errPracticeServiceSeparate),
-		errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap), errors.Is(err, errRuleOrderRole):
+		errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap), errors.Is(err, errRuleOrderRole),
+		errors.Is(err, errAccountingMonthRequired):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod), errors.Is(err, errCatalogPeriodResumeState), errors.Is(err, errCatalogPeriodResumeTarget),
@@ -547,6 +549,13 @@ func (s workspace) createMapping(ctx context.Context, p createMappingInput) (any
 	})
 	return map[string]int64{"id": id}, err
 }
+func (s workspace) createAccountingMonth(ctx context.Context, p createPeriodInput) (any, error) {
+	if p.SettlementMonth == "" {
+		return nil, errAccountingMonthRequired
+	}
+	return s.createPeriod(ctx, p)
+}
+
 func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, error) {
 	if p.ProductID < 1 || !textOK(p.Name, 80) {
 		return nil, invalid

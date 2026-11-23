@@ -309,13 +309,17 @@ function removeRetrainService(split) {
 const practiceCountArrangements = computed(() => classRule.value
   ? (draft.value.components || []).filter(part=>part.mode==='tiered' && part.tierConfig && tierFormUsesHistory(part.tierConfig))
   : [])
-const classRefundMonth = computed(() => classRule.value && draft.value.practicePeriodKind === 'refund_month')
-const calendarPeriod = computed(() => classRefundMonth.value || !classRule.value && !!selectedProduct.value?.cycleStartDay)
+const refundStartDay = computed(() => Number(options('practiceRefundCalendar')
+  .find(option=>/^(?:[1-9]|1\d|2[0-8])$/.test(option.value))?.value))
+const accountingStartDay = product => product?.cycleStartDay ?? (product?.periodMode==='class' ? refundStartDay.value : undefined)
+const accountingProductOptions = computed(() => data.value.products.filter(product=>accountingStartDay(product)>0)
+  .map(product=>({value:product.id,label:product.name})))
+const accountingPeriodTitle = product => product?.periodMode==='class' ? '新增退款账期' : '新增账期'
+const currentPeriodProduct = computed(() => data.value.products.find(product=>product.id===productScope.value))
 const calendarDates = computed(() => {
   const month = /^(\d{4})-(0[1-9]|1[0-2])$/.exec(draft.value.settlementMonth || '')
-  if (!calendarPeriod.value || !month || Number(month[1]) < 1) return
-  const defaultRefundDay = options('practiceRefundCalendar').find(option=>/^(?:[1-9]|1\d|2[0-8])$/.test(option.value))?.value
-  const day = Number(selectedProduct.value?.cycleStartDay ?? defaultRefundDay)
+  if (!month || Number(month[1]) < 1) return
+  const day = accountingStartDay(selectedProduct.value)
   if (!Number.isInteger(day) || day < 1 || day > 28) return
   const date = (monthNumber, dateNumber) => {
     const value = new Date(0)
@@ -500,7 +504,7 @@ const syncStreams = computed(() => data.value.sources
   .filter(entry => entry.configured && (!sourceFilter.value || sourceFilter.value===entry.source))
   .flatMap(entry => options(entry.source.toLowerCase()+'OrderStream')))
 const sourceLabel = key => optionLabel('source',key)?.split(' · ')[0]
-const titles = {product:'新增产品',mapping:'添加来源映射',period:'新建期次',periodRoster:'更正签到关联',
+const titles = {product:'新增产品',mapping:'添加来源映射',periodRoster:'更正签到关联',
   reportMonth:'设置报表月份',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
 const actions = computed(() => {
   if (current.value === 'products') return tab.value === 'mapping' ? 'mapping' : 'product'
@@ -524,7 +528,9 @@ function savedOpeningLabel(id) {
 
 const labels = {ORDER_PAID:'付款',ORDER_REFUNDED:'退款',REFUND_SUCCEEDED:'退款',REFUND_ADJUSTED:'退款更正',DELIVERY_COMPLETED:'已交付'}
 const catalogScopeLabels = {BUSINESS_SCENARIO:'业务场景',CROSS_SCENARIO_AGGREGATE:'跨场景汇总'}
-const canOpenAction = computed(() => current.value!=='rules' ||
+const canOpenAction = computed(() => current.value==='periods'
+  ? accountingProductOptions.value.some(product=>!productScope.value || product.value===productScope.value)
+  : current.value!=='rules' ||
   ruleProductOptions.value.some(product => !productScope.value || product.value===productScope.value))
 function catalogRuleBadge(row) {
   const now = Date.now()
@@ -948,12 +954,6 @@ async function signOut() {
 onMounted(() => { addEventListener('hashchange',changeRoute); loadSession() })
 onBeforeUnmount(() => removeEventListener('hashchange',changeRoute))
 watch(() => draft.value.productId, (next, previous) => {
-  if (drawer.value==='period' && next!==previous) {
-    if (draft.value.startsOn===draft.value.rosterStartsOn) draft.value.startsOn=undefined
-    draft.value.sourcePeriodKey=undefined
-    draft.value.pickedRosterKey=undefined
-    draft.value.rosterStartsOn=undefined
-  }
   if (drawer.value === 'rule' && next !== previous && !draft.value.copiedFrom && !draft.value.lockedPeriod) {
     draft.value.periodId = undefined
     draft.value.effectiveFrom = undefined
@@ -1069,7 +1069,7 @@ function open(kind, row, edit = false) {
   drawer.value = kind
   activeRuleComponent.value = 0
   draft.value = {
-    periodMode:firstOption('periodMode'),practicePeriodKind:firstOption('practicePeriodKind'),source:row?.source || firstOption('source'),
+    periodMode:firstOption('periodMode'),source:row?.source || firstOption('source'),
     orderId:row?.orderId || '',scope:firstOption('ruleScope'),
     productId:['mapping','period','rule'].includes(kind) ? productScope.value : undefined,
   }
@@ -1112,11 +1112,6 @@ function open(kind, row, edit = false) {
       draft.value.label = target.name+'分润规则'
     }
   }
-}
-function pickPeriodRoster(roster) {
-  if (!draft.value.startsOn || draft.value.startsOn===draft.value.rosterStartsOn) draft.value.startsOn = roster.startsOn
-  draft.value.rosterStartsOn = roster.startsOn
-  draft.value.pickedRosterKey = roster.key
 }
 function pullFromDetails(order) {
   orderDetails.value = undefined
@@ -1411,18 +1406,8 @@ function bodyFor(kind,f) {
   if (kind === 'mapping') return {productId:must(f.productId),source:f.source,domain:must(f.domain),sourceKey:must(f.sourceKey)}
   if (kind === 'period') {
     const productId = must(f.productId)
-    if (calendarPeriod.value) {
-      const settlementMonth = must(f.settlementMonth)
-      return {productId, settlementMonth, name:f.name?.trim() || settlementMonth+(classRefundMonth.value ? ' 退款账期' : ' 账期')}
-    }
-    const startsOn = must(f.startsOn)
-    const endsOn = must(f.endsOn)
-    const sourcePeriodKey = f.sourcePeriodKey?.trim()
-    if (sourcePeriodKey && sourcePeriodKey===f.pickedRosterKey && (f.rosterStartsOn < startsOn || f.rosterStartsOn > endsOn)) {
-      throw new Error('所选名单的开班日期不在期次起止日期内。')
-    }
-    return {productId,name:must(f.name),ordinal:must(f.ordinal),startsOn,endsOn,
-      ...(sourcePeriodKey ? {sourcePeriodKey} : {}), ...(classRule.value && f.reportMonth ? {reportMonth:f.reportMonth} : {})}
+    const settlementMonth = must(f.settlementMonth,'请选择结算月份')
+    return {productId, settlementMonth, name:f.name?.trim() || settlementMonth+(classRule.value ? ' 退款账期' : ' 账期')}
   }
   if (kind === 'reportMonth') return {periodId:f.periodId,month:f.reportMonth || ''}
   if (kind === 'periodRoster') return {periodId:f.periodId,sourcePeriodKey:f.sourcePeriodKey?.trim() || '',
@@ -1573,7 +1558,7 @@ async function save() {
             <a v-else-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
             <div v-if="!practiceSettingsView && actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length) && !identityAccount" class="topbar-actions">
               <a v-if="orderReturn" class="workspace-return" :href="orderReturn.href"><LeftOutlined aria-hidden="true"/>{{ orderReturn.label }}</a>
-              <a-button v-if="canOpenAction" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : titles[actions] }}</a-button>
+              <a-button v-if="canOpenAction" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : actions==='period' ? accountingPeriodTitle(currentPeriodProduct) : titles[actions] }}</a-button>
               <a-button v-if="catalogScenarioProducts.length" :type="canOpenAction ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogScenarioCreation">新增逐单规则</a-button>
               <a-button v-if="catalogPeriodProducts.length" :type="canOpenAction || catalogScenarioProducts.length ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogPeriodCreation">新增整期规则</a-button>
             </div>
@@ -1778,7 +1763,7 @@ async function save() {
                 <template v-else-if="['validFrom','validTo'].includes(column.key)">{{ formatIdentityTime(text) }}</template>
               </template>
               <template #emptyText>
-                <div class="empty"><a-empty :image="undefined" :description="(current==='orders' ? orderQuery : filter) ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter && !orderQuery && !identityAccount && configurationReady && canOpenAction" @click="open(actions)">{{ titles[actions] }}</a-button></div>
+                <div class="empty"><a-empty :image="undefined" :description="(current==='orders' ? orderQuery : filter) ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter && !orderQuery && !identityAccount && configurationReady && canOpenAction" @click="open(actions)">{{ actions==='period' ? accountingPeriodTitle(currentPeriodProduct) : titles[actions] }}</a-button></div>
               </template>
             </a-table>
           </div>
@@ -1793,6 +1778,7 @@ async function save() {
     :root-class-name="drawer==='rule' ? 'finance-rule-editor' : undefined"
     :title="rulePreview ? '预览分润规则' : drawer==='rule' && draft.editBaseId ? '编辑分润规则'
       : drawer==='rule' && draft.copiedFrom ? '复制分润规则'
+      : drawer==='period' ? accountingPeriodTitle(selectedProduct)
       : drawer==='periodRoster' && !draft.expectedSourcePeriodKey ? '关联签到名单'
       : drawer==='identity' && draft.previousOwner ? '变更来源账号归属' : titles[drawer]"
     :width="drawer==='rule' ? 'min(1260px, 100vw)' : 'min(510px, 100vw)'"
@@ -1819,7 +1805,7 @@ async function save() {
           <a-input-number v-model:value="draft.cycleStartDay" aria-label="退款账期每月开始日" :min="1" :max="28" :precision="0"/>
         </a-form-item>
       </template>
-      <a-form-item v-if="['mapping','period'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="productOptions" :disabled="Boolean(draft.lockedPeriod)"/></a-form-item>
+      <a-form-item v-if="['mapping','period'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='period' ? accountingProductOptions : productOptions" :disabled="Boolean(draft.lockedPeriod)"/></a-form-item>
       <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" :label="drawer==='pull' ? '订单来源' : '业务来源'">
         <a-select v-model:value="draft.source" :aria-label="drawer==='pull' ? '订单来源' : '业务来源'"
           :options="sources" :disabled="drawer==='pull' && draft.lockedOrder || drawer==='identity' && Boolean(draft.previousOwner)"/>
@@ -1829,27 +1815,13 @@ async function save() {
         <a-form-item label="源产品标识" required><a-input v-model:value="draft.sourceKey" aria-label="源产品标识"/></a-form-item>
       </template>
       <template v-if="drawer==='period'">
-        <a-form-item v-if="classRule" label="核算类型" html-for="practice-period-kind">
-          <a-select id="practice-period-kind" v-model:value="draft.practicePeriodKind" :options="options('practicePeriodKind')"/>
+        <a-form-item label="结算月份" required><a-input v-model:value="draft.settlementMonth" aria-label="结算月份" type="month"/></a-form-item>
+        <p v-if="calendarDates" class="period-window-preview" role="status">
+          <span>核算日期</span><strong>{{ calendarDates }}</strong>
+        </p>
+        <a-form-item :label="classRule ? '退款账期名称' : '账期名称'">
+          <a-input v-model:value="draft.name" :aria-label="classRule ? '退款账期名称' : '账期名称'" placeholder="默认使用结算月份"/>
         </a-form-item>
-        <template v-if="calendarPeriod">
-          <a-form-item label="结算月份" required><a-input v-model:value="draft.settlementMonth" aria-label="结算月份" type="month"/></a-form-item>
-          <p v-if="calendarDates" class="period-window-preview" role="status">
-            <span>核算日期</span><strong>{{ calendarDates }}</strong>
-          </p>
-          <a-form-item label="账期名称"><a-input v-model:value="draft.name" aria-label="账期名称" placeholder="默认使用结算月份"/></a-form-item>
-        </template>
-        <template v-else>
-          <a-form-item label="期次名称" required><a-input v-model:value="draft.name" aria-label="期次名称"/></a-form-item>
-          <a-form-item label="期数" required><a-input-number v-model:value="draft.ordinal" aria-label="期数" :min="1" :precision="0"/></a-form-item>
-          <a-form-item v-if="classRule">
-            <PracticeRosterSelect v-model:value="draft.sourcePeriodKey" :api="api" :format-time="formatTime" :product-id="draft.productId" @picked="pickPeriodRoster"/>
-          </a-form-item>
-          <div class="field-grid"><a-form-item label="开始日期" required><a-input v-model:value="draft.startsOn" aria-label="开始日期" type="date"/></a-form-item><a-form-item label="结束日期" required><a-input v-model:value="draft.endsOn" aria-label="结束日期" type="date"/></a-form-item></div>
-          <a-form-item v-if="classRule" label="报表月份" extra="留空按班次结束日期归月。">
-            <a-input v-model:value="draft.reportMonth" aria-label="报表月份" type="month"/>
-          </a-form-item>
-        </template>
       </template>
       <template v-if="drawer==='periodRoster'">
         <p>{{ draft.periodName }}</p>
