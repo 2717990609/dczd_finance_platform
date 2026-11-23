@@ -295,6 +295,23 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		ExpectedVersion: scoped.Version, ReviewToken: review.Token}, "fixture"); err != nil {
 		t.Fatal(err)
 	}
+	var scopeLine int64
+	if err := db.QueryRow(ctx, `SELECT min(id) FROM calculation_draft_lines WHERE period_id=$1`, scoped.PeriodID).Scan(&scopeLine); err != nil {
+		t.Fatal(err)
+	}
+	applied := httptest.NewRecorder()
+	s.getDraftRule(applied, httptest.NewRequest(http.MethodGet,
+		fmt.Sprintf("/api/v1/drafts/rule?periodId=%d&rowId=%d&section=lines", scoped.PeriodID, scopeLine), nil))
+	var historical draftRuleDetails
+	if err := json.Unmarshal(applied.Body.Bytes(), &historical); err != nil || applied.Code != 200 || historical.Aggregate == nil {
+		t.Fatalf("open applied period rule: %d %s %v", applied.Code, applied.Body, err)
+	}
+	history := historical.Aggregate
+	if !history.Performance.active() || history.ScopeLabels == nil ||
+		len(history.ScopeLabels.Units) != 3 || history.ScopeLabels.Person != "整期个人收款" ||
+		len(history.Scenarios) != 2 || history.Scenarios[0].Label != "会员" || history.MayPublish {
+		t.Fatalf("applied period rule must include shared filters and readable SKU labels: %s", applied.Body)
+	}
 	clear := fmt.Sprintf(`{"baseId":%q,"effectiveFrom":"2026-10-25T00:00:00+08:00","performanceScope":{}}`, published.ID)
 	w = submit(980, path, s.postCatalogPeriodRule, clear)
 	var later catalogPublication
@@ -625,7 +642,9 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 			later.PeriodID, visible.Refunds[0].ID), nil))
 		var originalRule draftRuleDetails
 		if err := json.Unmarshal(rule.Body.Bytes(), &originalRule); err != nil || rule.Code != 200 || originalRule.Aggregate == nil ||
-			!originalRule.Aggregate.Items[0].FixedPerOrder {
+			!originalRule.Aggregate.Items[0].FixedPerOrder || originalRule.Aggregate.ScopeLabels == nil ||
+			originalRule.Aggregate.ScopeLabels.Units["10000000-0000-4000-8000-000000000981"] != "整期公司收款" ||
+			originalRule.Aggregate.Scenarios[0].Label != "会员" {
 			t.Fatalf("refund must open the source version of the aggregate rule: %d %s %v", rule.Code, rule.Body, err)
 		}
 	})

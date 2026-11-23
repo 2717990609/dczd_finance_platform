@@ -149,7 +149,7 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 		t.Fatalf("the new SKU must reach regular trial calculation: queued=%t supported=%t err=%v", queued, supported, err)
 	}
 	sheet, err := s.catalogRuleRateSheet(ctx, published.ID)
-	if err != nil || len(sheet.Components) != 4 || len(sheet.Components[0].Rows) != 2 ||
+	if err != nil || sheet.ScopeLabel != "新报 SKU" || len(sheet.Components) != 4 || len(sheet.Components[0].Rows) != 2 ||
 		sheet.Components[0].Rows[1].Rate != 1250 || sheet.Components[3].TargetKind != "referrer" ||
 		sheet.Components[0].Rows[0].Category != "类别甲、类别乙" || sheet.Components[0].Rows[1].Company != "收款公司样本、特例乙" ||
 		len(sheet.Components[1].ScopeCategories) != 2 {

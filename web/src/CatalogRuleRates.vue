@@ -81,7 +81,7 @@ const displayLinkedTeamRate = row => linkedTeamRateChanges(row) ? splitEdits.val
 const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:item.key,label:item.label})))
 const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
 const itemRemoved = computed(() => removedItems.value.has(selected.value))
-const orderTypeText = computed(() => props.rule?.scopeLabel?.replace(sheet.value?.productName+' · ','') || sheet.value?.productName)
+const orderTypeText = computed(() => (props.rule?.scopeLabel || sheet.value?.scopeLabel)?.replace(sheet.value?.productName+' · ','') || sheet.value?.productName)
 function originalMembership(item) {
   if (item?.membershipNewOnly!=null) return item.membershipNewOnly
   if (item?.itemKey===serviceItemKey || item?.targetKind==='inherit' && !item.disabled) return originalMembership(splitItem.value)
@@ -640,8 +640,8 @@ async function publish() {
       <template v-if="sheet">
         <header class="catalog-rate-summary">
           <div>
-            <h2>{{ rule?.scopeLabel || sheet.productName }}</h2>
-            <p v-if="sheet.label!==(rule?.scopeLabel || sheet.productName)">{{ sheet.label }}</p>
+            <h2>{{ rule?.scopeLabel || sheet.scopeLabel || sheet.productName }}</h2>
+            <p v-if="sheet.label!==(rule?.scopeLabel || sheet.scopeLabel || sheet.productName)">{{ sheet.label }}</p>
           </div>
           <div class="catalog-rate-context">
             <a-tag>v{{ sheet.version }}</a-tag>

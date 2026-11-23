@@ -863,12 +863,8 @@ func (s workspace) getDraftRule(w http.ResponseWriter, r *http.Request) {
 			var policy catalogPeriodDefinition
 			policy, err = parseCatalogPeriodRule(sheet.raw)
 			sheet.MayPublish = false
-			sheet.Cycle, sheet.Items = policy.Cycle, policy.Items
 			if err == nil {
-				err = nameCatalogPeriodTargets(ctx, s.db, sheet.Items)
-			}
-			for _, code := range policy.Scenarios {
-				sheet.Scenarios = append(sheet.Scenarios, catalogPeriodSKU{Code: code, Label: code, Mapped: true})
+				err = describeCatalogPeriodRule(ctx, s.db, &sheet, policy)
 			}
 			result.Aggregate = &sheet
 		}

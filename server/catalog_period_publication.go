@@ -134,55 +134,7 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	rule.MayPublish = rule.MayPublish && actor.permits(rule.ProductID, true)
-	rule.Cycle, rule.Items = period.Cycle, period.Items
-	rule.Performance = period.Performance
-	scope := catalogPerformanceScope{}
-	if period.Performance != nil {
-		scope = *period.Performance
-		scope.UnitIDs = slices.Clone(scope.UnitIDs)
-	}
-	var categoryIDs []string
-	for _, item := range period.Items {
-		scope.UnitIDs = append(scope.UnitIDs, item.CommissionUnits...)
-		categoryIDs = append(categoryIDs, item.ScopeCategories...)
-		if item.Appointment != nil {
-			scope.UnitIDs = append(scope.UnitIDs, item.Appointment.UnitID)
-		}
-	}
-	rule.ScopeLabels, err = nameCatalogPerformanceScope(ctx, s.db, &scope)
-	if err != nil {
-		respond(w, nil, err)
-		return
-	}
-	if len(categoryIDs) != 0 {
-		if rule.ScopeLabels == nil {
-			rule.ScopeLabels = &catalogPerformanceLabels{}
-		}
-		if err := s.db.QueryRow(ctx, `SELECT coalesce(jsonb_object_agg(key,label),'{}') FROM catalog_sales_category_options
-		 WHERE key=ANY($1::text[])`, categoryIDs).Scan(&rule.ScopeLabels.Categories); err != nil {
-			respond(w, nil, err)
-			return
-		}
-	}
-	skus, err := readCatalogPeriodScenarioOptions(ctx, s.db, rule.ProductID, nil, nil)
-	if err != nil {
-		respond(w, nil, err)
-		return
-	}
-	byCode := make(map[string]catalogPeriodSKU, len(skus))
-	for _, sku := range skus {
-		byCode[sku.Code] = sku.catalogPeriodSKU
-	}
-	err = nameCatalogPeriodTargets(ctx, s.db, rule.Items)
-	for _, code := range period.Scenarios {
-		sku, mapped := byCode[code]
-		sku.Code, sku.Mapped = code, mapped
-		sku.RequiresCompletion = sku.RequiresCompletion && period.ProductRecognition
-		if !mapped {
-			sku.Label = code
-		}
-		rule.Scenarios = append(rule.Scenarios, sku)
-	}
+	err = describeCatalogPeriodRule(ctx, s.db, &rule, period)
 	if err == nil && rule.MayPublish {
 		rule.Options, err = readCatalogPeriodEditorOptions(ctx, s.db, rule.ProductID)
 		if err == nil {
@@ -204,6 +156,56 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	respond(w, rule, err)
+}
+
+func describeCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, rule *catalogPeriodVersion, period catalogPeriodDefinition) error {
+	rule.Cycle, rule.Items = period.Cycle, period.Items
+	rule.Performance = period.Performance
+	scope := catalogPerformanceScope{}
+	if period.Performance != nil {
+		scope = *period.Performance
+		scope.UnitIDs = slices.Clone(scope.UnitIDs)
+	}
+	var categoryIDs []string
+	for _, item := range period.Items {
+		scope.UnitIDs = append(scope.UnitIDs, item.CommissionUnits...)
+		categoryIDs = append(categoryIDs, item.ScopeCategories...)
+		if item.Appointment != nil {
+			scope.UnitIDs = append(scope.UnitIDs, item.Appointment.UnitID)
+		}
+	}
+	var err error
+	rule.ScopeLabels, err = nameCatalogPerformanceScope(ctx, db, &scope)
+	if err != nil {
+		return err
+	}
+	if len(categoryIDs) != 0 {
+		if rule.ScopeLabels == nil {
+			rule.ScopeLabels = &catalogPerformanceLabels{}
+		}
+		if err := db.QueryRow(ctx, `SELECT coalesce(jsonb_object_agg(key,label),'{}') FROM catalog_sales_category_options
+		 WHERE key=ANY($1::text[])`, categoryIDs).Scan(&rule.ScopeLabels.Categories); err != nil {
+			return err
+		}
+	}
+	skus, err := readCatalogPeriodScenarioOptions(ctx, db, rule.ProductID, nil, nil)
+	if err != nil {
+		return err
+	}
+	byCode := make(map[string]catalogPeriodSKU, len(skus))
+	for _, sku := range skus {
+		byCode[sku.Code] = sku.catalogPeriodSKU
+	}
+	for _, code := range period.Scenarios {
+		sku, mapped := byCode[code]
+		sku.Code, sku.Mapped = code, mapped
+		sku.RequiresCompletion = sku.RequiresCompletion && period.ProductRecognition
+		if !mapped {
+			sku.Label = code
+		}
+		rule.Scenarios = append(rule.Scenarios, sku)
+	}
+	return nameCatalogPeriodTargets(ctx, db, rule.Items)
 }
 
 func (s workspace) postCatalogPeriodQuote(w http.ResponseWriter, r *http.Request) {

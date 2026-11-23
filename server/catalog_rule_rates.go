@@ -66,6 +66,7 @@ type catalogRateRow struct {
 type catalogRateSheet struct {
 	ProductID          int64                    `json:"productId"`
 	ProductName        string                   `json:"productName"`
+	ScopeLabel         string                   `json:"scopeLabel,omitempty"`
 	Label              string                   `json:"label"`
 	Version            int                      `json:"version"`
 	EffectiveFrom      time.Time                `json:"effectiveFrom"`
@@ -281,11 +282,19 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	 SELECT p.product_id,pro.name AS product_name,p.name,v.version_no,v.effective_from,`+catalogDisplayedThrough+` AS effective_to,v.definition,
 	  coalesce((`+catalogRateVersionEligibilitySQL+`) AND `+catalogVersionVisible+`,false) AS available,
 	  `+catalogRateConfigurationSQL+` AS supported,`+catalogHealthRateRule+` AS requires_completion,
-	  scope.source_system,coalesce((SELECT bool_and(`+catalogMembershipSourceRoute+`) FROM catalog_business_routes r
-	   WHERE r.product_id=p.product_id AND r.observed_at=scope.captured_at AND r.source=scope.source_system AND r.sku_code=p.scope_id),false) AS membership_sku
+	  scope.source_system,coalesce(scenario.membership,false) AS membership_sku,coalesce(scenario.label,'') AS scope_label
 	 FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
 	 JOIN product_catalog_settings scope ON scope.product_id=p.product_id AND scope.project_code=p.project_code
 	 JOIN products pro ON pro.id=p.product_id
+	 CROSS JOIN LATERAL (
+	  SELECT bool_and(`+catalogMembershipSourceRoute+`) AS membership,
+	   CASE WHEN count(DISTINCT r.sku_label) FILTER (WHERE r.effective_from<=v.effective_from
+	    AND (r.effective_to IS NULL OR v.effective_from<r.effective_to))=1
+	   THEN min(r.sku_label) FILTER (WHERE r.effective_from<=v.effective_from
+	    AND (r.effective_to IS NULL OR v.effective_from<r.effective_to)) END AS label
+	  FROM catalog_business_routes r WHERE r.product_id=p.product_id AND r.observed_at=scope.captured_at
+	    AND r.source=scope.source_system AND r.sku_code=p.scope_id
+	 ) scenario
 	 WHERE v.source_id=$1::uuid AND p.scope_type='BUSINESS_SCENARIO' AND scope.source_system='DCAI'
 	), company_keys AS (`+catalogSalesCompanyKeysSQL+`), companies AS (
 	 SELECT a.key,min(u.name) AS name FROM company_keys a
@@ -295,7 +304,7 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	 JOIN catalog_benefit_organizations b ON b.source=c.source AND b.observed_at=c.captured_at
 	 JOIN organization_units u ON u.id=b.unit_id GROUP BY b.party_uuid HAVING count(DISTINCT u.id)=1
 	)
-	SELECT r.product_id,r.product_name,r.name,r.version_no,r.effective_from,r.effective_to,r.definition,r.available,r.supported,r.requires_completion,r.membership_sku,
+	SELECT r.product_id,r.product_name,r.scope_label,r.name,r.version_no,r.effective_from,r.effective_to,r.definition,r.available,r.supported,r.requires_completion,r.membership_sku,
 	 coalesce((SELECT jsonb_object_agg(key,name) FROM companies),'{}'),
 	 coalesce((SELECT jsonb_object_agg(key,label) FROM catalog_sales_category_options),'{}'),
 	 coalesce((SELECT jsonb_object_agg(option_key,label) FROM configuration_options WHERE group_key='catalogSalesRelationship' AND enabled),'{}'),
@@ -310,7 +319,7 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	   '$.benefit_actions[*].sales_scope_unit_ids[*]') unit_id
 	   UNION ALL SELECT unit_id#>>'{}' FROM jsonb_path_query(r.definition,
 	   '$.benefit_actions[*].appointment_organization_unit_id') unit_id)),'{}')
-	FROM rule r`, id).Scan(&sheet.ProductID, &sheet.ProductName, &sheet.Label, &sheet.Version, &sheet.EffectiveFrom, &sheet.EffectiveTo,
+	FROM rule r`, id).Scan(&sheet.ProductID, &sheet.ProductName, &sheet.ScopeLabel, &sheet.Label, &sheet.Version, &sheet.EffectiveFrom, &sheet.EffectiveTo,
 		&definition, &sheet.MayPublish, &supported, &sheet.RequiresCompletion, &sheet.MembershipSKU, &companyNames, &categoryNames, &relationshipNames,
 		&organizationNames, &groupNames, &sheet.ScopeUnitNames)
 	if err != nil {

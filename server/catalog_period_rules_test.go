@@ -66,6 +66,29 @@ func TestCatalogPeriodItemsSaveIndependentScopes(t *testing.T) {
 	}
 }
 
+func TestCatalogPeriodArrangementEditPreservesSharedScope(t *testing.T) {
+	const unit = "41000000-0000-4000-8000-000000000112"
+	raw := json.RawMessage(strings.Replace(twoTierPeriodRule, `"policy_scope":`,
+		`"performance_scope":{"unitIds":["`+unit+`"],"appointment":{"personId":64,"unitId":"`+unit+`","role":"TEAM_LEAD"}},"policy_scope":`, 1))
+	before, err := parseCatalogPeriodRule(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := before.Items[0]
+	body, err := editCatalogPeriodComponents(raw, raw, []catalogPeriodComponentEdit{
+		{ItemKey: item.ItemKey, Label: "改名后的运营池", TargetKind: item.TargetKind, OrganizationKey: item.OrganizationKey,
+			PoolName: item.PoolName, OwnerRole: item.OwnerRole, MemberRole: item.MemberRole, Tiers: item.Tiers},
+	}, catalogStructureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := parseCatalogPeriodRule(body)
+	if err != nil || !after.Performance.active() || after.Performance.UnitIDs[0] != unit ||
+		after.Performance.Appointment == nil || *after.Performance.Appointment != *before.Performance.Appointment {
+		t.Fatalf("changing an arrangement must preserve the rule-wide filters: %s / %v", body, err)
+	}
+}
+
 func TestCatalogPeriodRulesUseOrganizationDirectoryWithoutImportedAliases(t *testing.T) {
 	ctx := context.Background()
 	db := integrationDB(t)

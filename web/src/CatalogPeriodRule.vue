@@ -9,7 +9,7 @@ import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import { catalogAppointmentLevels, catalogOrderScope, emptyCatalogOrderScope } from './rule-component-form'
 
-const props = defineProps({rule:Object, applied:Object, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
+const props = defineProps({rule:Object, applied:Object, focusItemKey:String, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
 const emit = defineEmits(['close','published','open-draft','copy','open-version','resumed'])
 const creating = computed(() => Boolean(props.rule?.create))
 const copiedFrom = computed(() => props.rule?.copiedFrom)
@@ -177,16 +177,29 @@ function configuredRow(item) {
 }
 const periodScopeUnits = computed(() => sheet.value?.options?.salesUnits || [])
 const periodScopeCategories = computed(() => sheet.value?.options?.categories || [])
-const salesUnitNames = computed(() => ({...sheet.value?.scopeLabels?.units,
+const sharedScope = computed(() => copiedFrom.value?.performanceScope || sheet.value?.performanceScope)
+const sharedScopeLabels = computed(() => copiedFrom.value?.scopeLabels || sheet.value?.scopeLabels)
+const salesUnitNames = computed(() => ({...sharedScopeLabels.value?.units,
   ...Object.fromEntries(periodScopeUnits.value.map(unit=>[unit.value,unit.label]))}))
-const salesCategoryNames = computed(() => ({...sheet.value?.scopeLabels?.categories,
+const salesCategoryNames = computed(() => ({...sharedScopeLabels.value?.categories,
   ...Object.fromEntries(periodScopeCategories.value.map(category=>[category.value,category.label]))}))
+const salesUnitsText = ids => ids?.map(id=>salesUnitNames.value[id] || '组织待核').join('、')
+function appointmentText(appointment, person) {
+  if (!appointment) return ''
+  const role = props.optionLabel('catalogAppointmentRole',appointment.role) || appointment.role
+  return [person,salesUnitNames.value[appointment.unitId],role,'任职期间'].filter(Boolean).join(' · ')
+}
+const sharedScopeText = computed(() => [
+  salesUnitsText(sharedScope.value?.unitIds),
+  appointmentText(sharedScope.value?.appointment,sharedScopeLabels.value?.person),
+].filter(Boolean).join('；'))
 function orderScopeText(item) {
   const scope = item.salesScope
-  const label = scope==='own' ? '本人销售' : scope==null ? '整个适用账期' : emptyCatalogOrderScope(scope) ? '请选择销售范围' :
-    [scope.unitIds.map(id=>salesUnitNames.value[id] || '组织待核').join('、'),
+  const label = scope==='own' ? '本人销售' : scope==null ? (sharedScope.value ? '规则共同范围' : '整个适用账期') : emptyCatalogOrderScope(scope) ? '请选择销售范围' :
+    [salesUnitsText(scope.unitIds),
       scope.categoryIds.map(id=>salesCategoryNames.value[id] || '类别待核').join('、')].filter(Boolean).join(' · ')
-  return item.appointment ? label+' · 任职期间' : label
+  const appointment = appointmentText(item.appointment)
+  return appointment ? label+' · '+appointment : label
 }
 function orderScopeBody(item) {
   return {ownSales:item.salesScope==='own' || undefined,
@@ -358,7 +371,8 @@ watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,pro
     activeComponent.value = rows.value.length===1 ? rows.value[0].uid : undefined
     if (creating.value) initializeCreation(data,product)
     else effectiveDate.value = canSave.value ? defaultEffectiveDate() : ''
-    if (props.rule?.focusItemKey) void openArrangement(props.rule.focusItemKey)
+    const focus = props.focusItemKey || props.rule?.focusItemKey
+    if (focus) void openArrangement(focus)
   } catch (err) {
     if (request === versionRequest) error.value = err.message
   } finally {
@@ -444,7 +458,7 @@ async function preview() {
     if (request === quoteRequest) previewing.value = false
   }
 }
-const scopedQuote = computed(() => rows.value.some(item=>item.salesScope!=null || item.appointment || item.appointmentLevel || item.scenarioCodes?.length || item.membershipNewOnly))
+const scopedQuote = computed(() => !!sharedScope.value || rows.value.some(item=>item.salesScope!=null || item.appointment || item.appointmentLevel || item.scenarioCodes?.length || item.membershipNewOnly))
 const quoteUsesOrders = computed(() => rows.value.some(item=>item.uid===quoteItem.value && item.method==='fixed' && item.targetKind==='appointment'))
 function creationInput() {
   if (!changed.value || !effectiveDate.value) throw new Error('请填写规则名称、生效日期，并选择参与场景。')
@@ -452,6 +466,7 @@ function creationInput() {
   if (scenarioCodes.value.some(code=>!selectable.has(code))) throw new Error('请移除当前不可选的 SKU，并核对参与场景。')
   return {create:{productId:productId.value,label:ruleName.value.trim(),cycle:creationCycle.value},
     effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),scenarioCodes:scenarioCodes.value,
+    performanceScope:copiedFrom.value?.performanceScope,
     ...componentChanges()}
 }
 function versionInput() {
@@ -537,6 +552,7 @@ async function resumeRule() {
           <a-descriptions-item v-if="!creating" label="结算周期">{{ cycleLabels[sheet.cycle] }}</a-descriptions-item>
           <a-descriptions-item v-if="!creating" label="有效范围">{{ formatTime(sheet.effectiveFrom) }}<template v-if="sheet.effectiveTo"> 至 {{ formatTime(sheet.effectiveTo) }}</template></a-descriptions-item>
           <a-descriptions-item v-if="sheet.resumeFrom && !sheet.paused" label="恢复执行时间" :span="2">{{ formatTime(sheet.resumeFrom) }}</a-descriptions-item>
+          <a-descriptions-item v-if="sharedScopeText" label="规则共同范围" :span="2">{{ sharedScopeText }}</a-descriptions-item>
           <a-descriptions-item label="适用 SKU" :span="2">
             <template v-if="creating || editingScenarios">
               <a-select id="period-rule-scenarios" v-model:value="scenarioCodes" :options="scenarioOptions"

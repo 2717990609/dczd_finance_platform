@@ -59,9 +59,7 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 		positions[item.ItemKey] = i
 	}
 	next := make([]map[string]json.RawMessage, 0, len(edits))
-	_, hadSharedScope := root["performance_scope"]
-	delete(root, "performance_scope")
-	changed := len(edits) != len(actions) || hadSharedScope
+	changed := len(edits) != len(actions)
 	var err error
 	for i, edit := range edits {
 		edit.Label = strings.TrimSpace(edit.Label)

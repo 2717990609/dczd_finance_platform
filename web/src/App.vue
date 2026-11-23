@@ -2073,7 +2073,8 @@ async function save() {
     @close="rateRule=undefined; appliedRule=undefined" @published="ratePublished"/>
   <CatalogPeriodRule v-if="(periodRule || appliedRule?.aggregate) && active && !sessionError && !sessionChecking && !loginRequested"
     :key="periodRule?.create ? 'create' : periodRule?.id || 'applied'"
-    :rule="periodRule" :applied="appliedRule?.aggregate" :products="catalogPeriodProducts" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
+    :rule="periodRule" :applied="appliedRule?.aggregate" :focus-item-key="appliedRule?.component"
+    :products="catalogPeriodProducts" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
     :can-review-activity="wholeWorkspace && !appliedRule?.aggregate"
     @close="periodRule=undefined; appliedRule=undefined" @published="periodRulePublished" @open-draft="openAggregateDraft"
     @copy="copyCatalogPeriodRule" @open-version="showCatalogPeriodIssueVersion" @resumed="periodRuleResumed"/>
