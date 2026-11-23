@@ -120,13 +120,23 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 		OwnSales    bool
 		Appointment *catalogPerformanceDuty
 		Categories  []string `json:",omitempty"`
+		SKUs        []string `json:",omitempty"`
 	}
 	scopes := make([]orderScope, 0, len(targets))
+	scenarios := definition.Scenarios
 	for _, target := range targets {
 		for _, item := range definition.Items {
 			if item.ItemKey == target.Item {
-				scopes = append(scopes, orderScope{Item: item.ItemKey, Units: slices.Sorted(slices.Values(item.CommissionUnits)),
-					OwnSales: item.OwnSales, Appointment: item.Appointment, Categories: slices.Sorted(slices.Values(item.ScopeCategories))})
+				scope := orderScope{Item: item.ItemKey, Units: slices.Sorted(slices.Values(item.CommissionUnits)),
+					OwnSales: item.OwnSales, Appointment: item.Appointment, Categories: slices.Sorted(slices.Values(item.ScopeCategories))}
+				if len(item.ScenarioCodes) > 0 {
+					if len(targets) == 1 {
+						scenarios = item.ScenarioCodes
+					} else {
+						scope.SKUs = slices.Sorted(slices.Values(item.ScenarioCodes))
+					}
+				}
+				scopes = append(scopes, scope)
 				break
 			}
 		}
@@ -146,7 +156,7 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 		Shared      catalogPerformanceScope
 		Scopes      []orderScope
 		Targets     []catalogGroupTargetKey
-	}{definition.Cycle, slices.Sorted(slices.Values(definition.Scenarios)), definition.ProductRecognition, shared, scopes, canonicalTargets})
+	}{definition.Cycle, slices.Sorted(slices.Values(scenarios)), definition.ProductRecognition, shared, scopes, canonicalTargets})
 	return string(raw), err
 }
 
@@ -302,6 +312,9 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 			applied.excluded, applied.issue = selected.excluded, selected.issue
 			if rule := selected.rule; rule != nil {
 				for index, item := range rule.Definition.Items {
+					if len(item.ScenarioCodes) > 0 && !slices.Contains(item.ScenarioCodes, event.Scenario) {
+						continue
+					}
 					decision := performance.matchItem(event, item)
 					if decision.excluded {
 						continue

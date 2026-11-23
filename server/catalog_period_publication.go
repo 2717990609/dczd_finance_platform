@@ -17,6 +17,7 @@ import (
 
 var errCatalogPeriodTiers = errors.New("档位须从零开始、连续衔接，最后一档无上限")
 var errCatalogPeriodStart = errors.New("请选择原规则有效范围内、晚于原版本的完整账期起点")
+var errCatalogPeriodQuoteItem = errors.New("请选择一项收款安排，并填写该安排适用订单的收退款金额")
 
 const catalogPeriodRuleScope = `scope.source_system='DCAI' AND p.project_code=scope.project_code
  AND p.policy_kind='COMPONENT_RULE' AND p.scope_type='CROSS_SCENARIO_AGGREGATE'`
@@ -224,10 +225,20 @@ func (s workspace) postCatalogPeriodQuote(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return catalogPeriodQuote{}, err
 		}
-		if !actor.permits(rule.ProductID, len(input.Edits) != 0 || input.Components != nil || input.Performance != nil) {
+		if !actor.permits(rule.ProductID, len(input.Edits) != 0 || input.Components != nil || input.Performance != nil || input.ScenarioCodes != nil) {
 			return catalogPeriodQuote{}, errRulePermission
 		}
-		regulated, err := applyCatalogPeriodChanges(ctx, s.db, rule.ProductID, rule.raw, input.Edits, input.Components)
+		if input.ScenarioCodes != nil {
+			body, err := prepareCatalogPeriodRevision(ctx, s.db, rule, catalogPeriodPublishInput{
+				BaseID: input.BaseID, EffectiveFrom: input.EffectiveFrom, Edits: input.Edits, Components: input.Components,
+				ScenarioCodes: input.ScenarioCodes, Performance: input.Performance,
+			}, actor)
+			if err != nil {
+				return catalogPeriodQuote{}, err
+			}
+			return quoteCatalogPeriodDefinition(body, input)
+		}
+		regulated, err := applyCatalogPeriodChanges(ctx, s.db, rule.ProductID, rule.raw, rule.raw, input.Edits, input.Components)
 		if err != nil {
 			return catalogPeriodQuote{}, err
 		}
@@ -256,6 +267,8 @@ func quoteCatalogPeriodDefinition(raw json.RawMessage, input catalogPeriodQuoteI
 			return catalogPeriodQuote{}, invalid
 		}
 		period.Items = period.Items[index : index+1]
+	} else if slices.ContainsFunc(period.Items, func(item catalogPeriodItem) bool { return len(item.ScenarioCodes) != 0 }) {
+		return catalogPeriodQuote{}, errCatalogPeriodQuoteItem
 	}
 	return quoteCatalogPeriod(period.Items, input.Receipts, input.Refunds, input.CarryIn)
 }
@@ -363,15 +376,16 @@ func prepareCatalogPeriodRevision(ctx context.Context, db catalogPeriodReader, b
 	if closed {
 		return nil, errSettlementClosed
 	}
-	body, err := applyCatalogPeriodChanges(ctx, db, base.ProductID, base.raw, input.Edits, input.Components)
-	if err != nil {
-		return nil, err
-	}
+	body := base.raw
 	if input.ScenarioCodes != nil {
 		body, err = editCatalogPeriodScenarioScope(ctx, db, body, base, period.Scenarios, input.ScenarioCodes, at, actor)
 		if err != nil {
 			return nil, err
 		}
+	}
+	body, err = applyCatalogPeriodChanges(ctx, db, base.ProductID, base.raw, body, input.Edits, input.Components)
+	if err != nil {
+		return nil, err
 	}
 	return editCatalogPerformanceScope(ctx, db, body, period.Performance, input.Performance)
 }
@@ -386,7 +400,7 @@ func catalogPeriodVersionAt(ctx context.Context, db catalogPeriodReader, package
 	return active, err
 }
 
-func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, productID int64, raw json.RawMessage,
+func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, productID int64, original, raw json.RawMessage,
 	edits []catalogPeriodTierEdit, components []catalogPeriodComponentEdit) (json.RawMessage, error) {
 	if components == nil {
 		return editCatalogPeriodTiers(raw, edits)
@@ -398,7 +412,7 @@ func applyCatalogPeriodChanges(ctx context.Context, db catalogPeriodReader, prod
 	if err != nil {
 		return nil, err
 	}
-	return editCatalogPeriodComponents(raw, components, options)
+	return editCatalogPeriodComponents(original, raw, components, options)
 }
 
 func readCatalogPeriodComponentOptions(ctx context.Context, db catalogPeriodReader, productID int64, components []catalogPeriodComponentEdit) (catalogStructureOptions, error) {

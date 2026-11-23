@@ -20,8 +20,6 @@ const rows = ref([])
 const activeComponent = ref()
 const scenarioCodes = ref([])
 const editingScenarios = ref(false)
-const periodOrderTypes = computed(() => scenarioCodes.value.map(code=>
-  scenarioOptions.value.find(option=>option.value===code)?.label || code).join('、') || '待选择 SKU')
 let newComponentID = 0
 const effectiveDate = ref('')
 const resumeDate = ref('')
@@ -120,6 +118,16 @@ const scenarioOptions = computed(() => {
   }
   return [...available.values()]
 })
+const skuLabel = code => scenarioOptions.value.find(option=>option.value===code)?.label || code
+function itemOrderTypes(item) {
+  const codes = item.scenarioCodes?.length ? item.scenarioCodes : scenarioCodes.value
+  return codes.map(skuLabel).join('、') || '待选择 SKU'
+}
+function itemScenarioOptions(item) {
+  return [...new Set([...scenarioCodes.value,...item.scenarioCodes])].map(code=>({
+    value:code,label:skuLabel(code)+(scenarioCodes.value.includes(code) ? '' : '（已移出规则）'),
+  }))
+}
 
 function editableRows(items) {
   return items.map(item => {
@@ -129,7 +137,7 @@ function editableRows(items) {
       poolName:item.poolName || '',poolId:item.poolId,legacyPool:item.targetKind==='pool' && !item.poolId,
       ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
       ownerPersonId:item.ownerPersonId,ownerName:item.ownerName,
-      salesScope:catalogOrderScope(item),recipientDuty:item.recipientDuty,
+      scenarioCodes:item.scenarioCodes || [],salesScope:catalogOrderScope(item),recipientDuty:item.recipientDuty,
       appointment:item.appointment ? {...item.appointment} : undefined,
       method:item.fixedMinor!=null ? 'fixed' : tiers.length===1 ? 'rate' : 'tiers',
       fixedAmount:item.fixedMinor==null ? undefined : item.fixedMinor/100,
@@ -141,7 +149,8 @@ function componentTarget(item) {
   return {itemKey:item.itemKey,label:item.label.trim(),targetKind:item.targetKind,organizationKey:item.poolId ? undefined : item.organizationKey,
     personId:item.personId,poolId:item.poolId,poolName:item.poolId ? undefined : item.poolName,
     ownerRole:item.ownerRole,ownerPersonId:item.ownerPersonId,
-    memberRole:item.memberRole,...orderScopeBody(item)}
+    memberRole:item.memberRole,scenarioCodes:[...item.scenarioCodes].sort(),
+    ...orderScopeBody(item)}
 }
 function configuredRow(item) {
   const target = componentTarget(item)
@@ -224,7 +233,7 @@ function setTarget(row, target) {
 }
 function addComponent() {
   const uid = 'new-' + (++newComponentID)
-  rows.value.push({uid,label:'',targetKind:'company',method:'rate',tiers:[],salesScope:null})
+  rows.value.push({uid,label:'',targetKind:'company',method:'rate',tiers:[],scenarioCodes:[],salesScope:null})
   activeComponent.value = uid
 }
 function addPool(pool) {
@@ -273,6 +282,8 @@ function minor(value, message) {
   return Math.round(value*100)
 }
 function componentChanges() {
+  const outside = rows.value.find(item=>item.scenarioCodes?.some(code=>!scenarioCodes.value.includes(code)))
+  if (outside) throw new Error('请更新「'+outside.label+'」的计提订单类型，所选 SKU 已移出规则。')
   if (!canSave.value || (!creating.value && !componentsChanged.value)) return {}
   return {components:rows.value.map(item=>{
     if (!item.label.trim() || (item.targetKind==='person' ? !item.personId : !item.organizationKey && !item.poolId)) {
@@ -390,7 +401,7 @@ async function preview() {
     const index = rows.value.findIndex(item=>item.uid===quoteItem.value)
     if (scopedQuote.value && index<0) throw new Error('请选择要演算的收款安排。')
     const result = await props.api('/catalog-period-rules/preview',{method:'POST',body:JSON.stringify({
-      ...(creating.value ? creationInput() : {baseId:props.rule.id,...componentChanges()}),
+      ...(creating.value ? creationInput() : scenariosChanged.value ? versionInput() : {baseId:props.rule.id,...componentChanges()}),
       ...(scopedQuote.value ? {itemIndex:index} : {}),
       receiptsMinor:minor(amounts.value.receipts,'请输入本期实收。'),
       refundsMinor:minor(amounts.value.refunds,'请输入本期退款。'),
@@ -403,7 +414,7 @@ async function preview() {
     if (request === quoteRequest) previewing.value = false
   }
 }
-const scopedQuote = computed(() => rows.value.some(item=>item.salesScope!=null || item.appointment))
+const scopedQuote = computed(() => rows.value.some(item=>item.salesScope!=null || item.appointment || item.scenarioCodes?.length))
 function creationInput() {
   if (!changed.value || !effectiveDate.value) throw new Error('请填写规则名称、生效日期，并选择参与场景。')
   const selectable = new Set(sheet.value.options.scenarios.map(sku=>sku.code))
@@ -519,6 +530,7 @@ async function resumeRule() {
             <DownOutlined aria-hidden="true"/>
             <strong>{{ item.label || '新收款安排' }}</strong>
             <span class="rule-block-badge">{{ targetLabels[item.targetKind] }}</span>
+            <span v-if="item.scenarioCodes?.length" class="rule-block-recipient" :title="itemOrderTypes(item)">{{ itemOrderTypes(item) }}</span>
             <span class="rule-block-recipient" :title="orderScopeText(item)">{{ orderScopeText(item) }}</span>
             <small>{{ targetLabel(item) }} · {{ methodSummary(item) }}</small>
           </button>
@@ -526,7 +538,7 @@ async function resumeRule() {
           <a-form v-if="canSave" layout="vertical" size="small">
             <RuleArrangementFields name-id="period-benefit-label" v-model:name="item.label" :disabled="saving"
               :duty-id="item.targetKind==='person' ? 'period-benefit-duty' : undefined" :duties="sheet.options?.duties"
-              v-model:duty="item.recipientDuty" :order-type-text="periodOrderTypes">
+              v-model:duty="item.recipientDuty">
               <a-form-item label="收款对象" html-for="period-benefit-target" required>
                 <a-select id="period-benefit-target" :value="item.targetKind" :options="targetTypes" :disabled="saving" @change="setTarget(item,$event)"/>
               </a-form-item>
@@ -566,6 +578,14 @@ async function resumeRule() {
                   <a-input-number id="period-benefit-fixed-amount" v-model:value="item.fixedAmount" :min="0" :precision="2" :disabled="saving"/>
                 </a-form-item>
               </template>
+              <template #orderType>
+                <a-form-item v-if="scenarioCodes.length>1 || item.scenarioCodes?.length" label="计提订单类型" html-for="period-benefit-skus">
+                  <a-select id="period-benefit-skus" v-model:value="item.scenarioCodes" :options="itemScenarioOptions(item)"
+                    :disabled="saving" mode="multiple" allow-clear show-search option-filter-prop="label" :max-tag-count="1"
+                    placeholder="全部适用 SKU"/>
+                </a-form-item>
+                <a-form-item v-else label="计提订单类型">{{ itemOrderTypes(item) }}</a-form-item>
+              </template>
               <template #scope>
                 <CatalogCommissionScopeFields :prefix="'period-scope-'+item.uid" v-model="item.salesScope"
                   :options="periodScopeUnits" :unit-names="salesUnitNames" :categories="periodScopeCategories" :category-names="salesCategoryNames"
@@ -573,7 +593,7 @@ async function resumeRule() {
               </template>
             </RuleArrangementFields>
           </a-form>
-          <RuleArrangementFields v-else :order-type-text="periodOrderTypes" :calculation-text="methodSummary(item)" :scope-text="orderScopeText(item)"/>
+          <RuleArrangementFields v-else :order-type-text="itemOrderTypes(item)" :calculation-text="methodSummary(item)" :scope-text="orderScopeText(item)"/>
           <a-form v-if="canSave && item.targetKind==='person'" layout="vertical" size="small" class="rule-basics">
             <a-form-item>
               <a-checkbox :checked="!!item.appointment" :disabled="saving"

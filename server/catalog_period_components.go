@@ -25,6 +25,7 @@ type catalogPeriodComponentEdit struct {
 	MemberRole      string                  `json:"memberRole,omitempty"`
 	Tiers           []catalogPeriodTier     `json:"tiers"`
 	FixedMinor      *int64                  `json:"fixedMinor,omitempty"`
+	ScenarioCodes   []string                `json:"scenarioCodes"`
 	CommissionUnits []string                `json:"salesScopeUnitIds,omitempty"`
 	ScopeCategories []string                `json:"salesScopeCategoryIds,omitempty"`
 	OwnSales        bool                    `json:"ownSales,omitempty"`
@@ -32,8 +33,8 @@ type catalogPeriodComponentEdit struct {
 	Appointment     *catalogPerformanceDuty `json:"appointment,omitempty"`
 }
 
-func editCatalogPeriodComponents(raw json.RawMessage, edits []catalogPeriodComponentEdit, options catalogStructureOptions) (json.RawMessage, error) {
-	period, err := parseCatalogPeriodRule(raw)
+func editCatalogPeriodComponents(original, raw json.RawMessage, edits []catalogPeriodComponentEdit, options catalogStructureOptions) (json.RawMessage, error) {
+	period, err := parseCatalogPeriodRule(original)
 	if err != nil {
 		return nil, err
 	}
@@ -100,6 +101,14 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 			fields["label"], _ = json.Marshal(edit.Label)
 			changed = true
 		}
+		if edit.ScenarioCodes != nil && !slices.Equal(before.ScenarioCodes, edit.ScenarioCodes) {
+			if len(edit.ScenarioCodes) == 0 {
+				delete(fields, "business_sku_codes")
+			} else {
+				fields["business_sku_codes"], _ = json.Marshal(edit.ScenarioCodes)
+			}
+			changed = true
+		}
 		if edit.TargetKind != "person" && (edit.OwnSales || edit.RecipientDuty != "") ||
 			edit.OwnSales && len(edit.CommissionUnits)+len(edit.ScopeCategories) != 0 ||
 			!catalogScopeIDsValid(edit.CommissionUnits, before.CommissionUnits, options.SalesUnits) ||
@@ -164,7 +173,8 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 		next = append(next, fields)
 	}
 	if !changed {
-		return raw, nil
+		_, err := parseCatalogPeriodRule(raw)
+		return raw, err
 	}
 	root["benefit_actions"], err = json.Marshal(next)
 	if err != nil {

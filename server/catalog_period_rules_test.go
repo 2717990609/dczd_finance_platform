@@ -26,6 +26,8 @@ func TestCatalogPeriodRuleRejectsInvalidPerArrangementScopes(t *testing.T) {
 		`"sales_scope_unit_ids":["invalid"]`,
 		`"own_sales":true`,
 		`"leader_scope":{"orders":"all"}`,
+		`"business_sku_codes":["UNKNOWN"]`,
+		`"business_sku_codes":["FIRST","FIRST"]`,
 	} {
 		raw := strings.Replace(twoTierPeriodRule, `"tier_table":`, field+`,"tier_table":`, 1)
 		if _, err := parseCatalogPeriodRule(json.RawMessage(raw)); !errors.Is(err, errCatalogRateUnavailable) {
@@ -42,13 +44,13 @@ func TestCatalogPeriodItemsSaveIndependentScopes(t *testing.T) {
 		{Label: "本人销售", TargetKind: "person", PersonID: 64, Tiers: []catalogPeriodTier{{Rate: 1000}}},
 		{Label: "团队负责人", TargetKind: "person", PersonID: 64, Tiers: []catalogPeriodTier{{Rate: 200}}},
 	}
-	if err := json.Unmarshal([]byte(`{"ownSales":true}`), &edits[0]); err != nil {
+	if err := json.Unmarshal([]byte(`{"ownSales":true,"scenarioCodes":["FIRST"]}`), &edits[0]); err != nil {
 		t.Fatal(err)
 	}
 	if err := json.Unmarshal([]byte(`{"salesScopeUnitIds":["`+team+`"],"salesScopeCategoryIds":["`+category+`"]}`), &edits[1]); err != nil {
 		t.Fatal(err)
 	}
-	body, err := editCatalogPeriodComponents(json.RawMessage(twoTierPeriodRule), edits, options)
+	body, err := editCatalogPeriodComponents(json.RawMessage(twoTierPeriodRule), json.RawMessage(twoTierPeriodRule), edits, options)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +59,7 @@ func TestCatalogPeriodItemsSaveIndependentScopes(t *testing.T) {
 		t.Fatal(err)
 	}
 	readback, err := json.Marshal(period.Items)
-	if err != nil || !strings.Contains(string(readback), `"ownSales":true`) || !strings.Contains(string(readback), `"salesScopeUnitIds":["`+team+`"]`) ||
+	if err != nil || !strings.Contains(string(readback), `"ownSales":true`) || !strings.Contains(string(readback), `"scenarioCodes":["FIRST"]`) || !strings.Contains(string(readback), `"salesScopeUnitIds":["`+team+`"]`) ||
 		!strings.Contains(string(readback), `"salesScopeCategoryIds":["`+category+`"]`) {
 		t.Fatalf("independent scope fields missing: %s (%v)", readback, err)
 	}
@@ -79,7 +81,7 @@ func TestCatalogPeriodRulesUseOrganizationDirectoryWithoutImportedAliases(t *tes
 		{Label: "团队收款", TargetKind: "pool", OrganizationKey: "unit:" + team, PoolName: "交付池",
 			OwnerRole: "SERVICE_DELIVERY", MemberRole: "DELIVERY_TEAM", Tiers: []catalogPeriodTier{{Rate: 125}}},
 	}
-	updated, err := applyCatalogPeriodChanges(ctx, db, 0, base, nil, edits)
+	updated, err := applyCatalogPeriodChanges(ctx, db, 0, base, base, nil, edits)
 	if err != nil {
 		t.Fatalf("active organizations from the directory must be configurable: %v", err)
 	}
@@ -134,7 +136,7 @@ func TestCatalogPeriodRulesUseOrganizationDirectoryWithoutImportedAliases(t *tes
 		t.Fatal(err)
 	}
 	edits[1].OrganizationKey = "unit:" + disabled
-	if _, err := applyCatalogPeriodChanges(ctx, db, 0, base, nil, edits); !errors.Is(err, errCatalogPeriodRecipient) {
+	if _, err := applyCatalogPeriodChanges(ctx, db, 0, base, base, nil, edits); !errors.Is(err, errCatalogPeriodRecipient) {
 		t.Fatalf("accepted a disabled organization: %v", err)
 	}
 }
@@ -151,7 +153,7 @@ func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t 
 		{Label: "技术公司", TargetKind: "company", OrganizationKey: "company", Tiers: []catalogPeriodTier{{Rate: 250}}},
 		{Label: "个人分润", TargetKind: "person", PersonID: 22, Tiers: []catalogPeriodTier{{Rate: 210}}},
 	}
-	body, err := editCatalogPeriodComponents(raw, edits, choices)
+	body, err := editCatalogPeriodComponents(raw, raw, edits, choices)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +173,7 @@ func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t 
 	}
 	edits = edits[1:2]
 	edits[0].ItemKey = parsed.Items[1].ItemKey
-	body, err = editCatalogPeriodComponents(body, edits, choices)
+	body, err = editCatalogPeriodComponents(body, body, edits, choices)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +186,7 @@ func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t 
 		t.Fatalf("wrong edited award: %+v, %v", quote, err)
 	}
 	edits[0].OrganizationKey = "pool"
-	if _, err := editCatalogPeriodComponents(body, edits, choices); !errors.Is(err, errCatalogPeriodRecipient) {
+	if _, err := editCatalogPeriodComponents(body, body, edits, choices); !errors.Is(err, errCatalogPeriodRecipient) {
 		t.Fatalf("accepted non-company for company payout: %v", err)
 	}
 }
@@ -277,6 +279,9 @@ func TestCatalogPeriodPublicationIsScopedVersionedAndKeepsNextRule(t *testing.T)
 			t.Fatalf("invalid scenario selection %v accepted: %v", choices, err)
 		}
 	}
+	input.Edits = nil
+	input.Components = []catalogPeriodComponentEdit{{ItemKey: "operations", Label: "运营", TargetKind: "pool", PoolName: "运营池",
+		OrganizationKey: "party", OwnerRole: "owner", Tiers: []catalogPeriodTier{{Rate: 120}}, ScenarioCodes: []string{"NEW"}}}
 	published, err := post(actor, input)
 	if err != nil || published.Version != 3 {
 		t.Fatalf("publish result=%+v err=%v", published, err)
@@ -293,6 +298,11 @@ func TestCatalogPeriodPublicationIsScopedVersionedAndKeepsNextRule(t *testing.T)
 		expected := "SECOND"
 		if id == published.ID {
 			expected = "NEW"
+			if len(rule.Items[0].ScenarioCodes) != 1 || rule.Items[0].ScenarioCodes[0] != expected {
+				t.Fatalf("the arrangement must use the new SKU selected in the same revision: %+v", rule.Items[0])
+			}
+		} else if len(rule.Items[0].ScenarioCodes) != 0 {
+			t.Fatalf("editing one version changed another: %+v", rule.Items[0])
 		}
 		if len(rule.Scenarios) != 2 || rule.Scenarios[0] != "FIRST" || rule.Scenarios[1] != expected {
 			t.Fatalf("unexpected scenario scope for %s: %v", id, rule.Scenarios)
@@ -305,6 +315,14 @@ func TestCatalogPeriodPublicationIsScopedVersionedAndKeepsNextRule(t *testing.T)
 		EffectiveFrom: time.Date(2026, 10, 1, 0, 0, 0, 0, shanghai)}
 	if _, err := post(anchorOnly, remove); !errors.Is(err, errRulePermission) {
 		t.Fatalf("the anchor grant must not allow removing another product: %v", err)
+	}
+	if _, err := post(actor, remove); !errors.Is(err, errCatalogRateUnavailable) {
+		t.Fatalf("removing a SKU still referenced by an arrangement was accepted: %v", err)
+	}
+	remove.Components = input.Components
+	remove.Components[0].ScenarioCodes = []string{"FIRST"}
+	if revised, err := post(actor, remove); err != nil || revised.Version != 4 {
+		t.Fatalf("updating the arrangement in the same revision should allow removal: %+v / %v", revised, err)
 	}
 }
 

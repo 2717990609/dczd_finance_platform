@@ -33,6 +33,7 @@ type catalogPeriodItem struct {
 	MemberRole      string                  `json:"memberRole,omitempty"`
 	Tiers           []catalogPeriodTier     `json:"tiers,omitempty"`
 	FixedMinor      *int64                  `json:"fixedMinor,omitempty"`
+	ScenarioCodes   []string                `json:"scenarioCodes,omitempty"`
 	CommissionUnits []string                `json:"salesScopeUnitIds,omitempty"`
 	ScopeCategories []string                `json:"salesScopeCategoryIds,omitempty"`
 	OwnSales        bool                    `json:"ownSales,omitempty"`
@@ -89,6 +90,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			Metric          string                  `json:"metric_code"`
 			Unit            string                  `json:"metric_unit"`
 			Tiers           []catalogPeriodTier     `json:"tier_table"`
+			ScenarioCodes   []string                `json:"business_sku_codes"`
 			EligibilityRole string                  `json:"eligibility_role"`
 			Appointment     *catalogPerformanceDuty `json:"recipient_appointment"`
 		} `json:"benefit_actions"`
@@ -132,6 +134,11 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			!action.validTarget() {
 			return result, errCatalogRateUnavailable
 		}
+		for index, code := range action.ScenarioCodes {
+			if !slices.Contains(result.Scenarios, code) || slices.Contains(action.ScenarioCodes[:index], code) {
+				return result, errCatalogRateUnavailable
+			}
+		}
 		switch action.Type {
 		case "TIER_RATE":
 			if action.Fixed != nil || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" || !validCatalogPeriodTiers(action.Tiers) {
@@ -174,7 +181,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: action.targetKind(),
 			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OwnerPersonID: ownerID, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
 			PoolID:     catalogPoolID(action.PoolCode),
-			MemberRole: memberRole, FixedMinor: action.Fixed, unit: unit, OwnSales: action.OwnSales,
+			MemberRole: memberRole, FixedMinor: action.Fixed, ScenarioCodes: action.ScenarioCodes, unit: unit, OwnSales: action.OwnSales,
 			CommissionUnits: action.CommissionUnits, ScopeCategories: action.ScopeCategories, RecipientDuty: action.RecipientDuty, Appointment: action.Appointment})
 	}
 	return result, nil

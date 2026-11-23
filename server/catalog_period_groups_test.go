@@ -6,6 +6,88 @@ import (
 	"time"
 )
 
+func TestCatalogPeriodItemsFilterSKUAndKeepOriginalRefundScope(t *testing.T) {
+	month := time.Date(2026, 10, 1, 0, 0, 0, 0, shanghai)
+	base := json.RawMessage(twoTierPeriodRule)
+	fixed := int64(2500)
+	edits := []catalogPeriodComponentEdit{
+		{Label: "会员提成", TargetKind: "person", PersonID: 1, ScenarioCodes: []string{"FIRST"}, Tiers: []catalogPeriodTier{{Rate: 1000}}},
+		{Label: "大使补贴", TargetKind: "person", PersonID: 1, ScenarioCodes: []string{"SECOND"}, FixedMinor: &fixed},
+		{Label: "全期提成", TargetKind: "person", PersonID: 1, Tiers: []catalogPeriodTier{{Rate: 500}}},
+	}
+	body, err := editCatalogPeriodComponents(base, base, edits, catalogStructureOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, err := parseCatalogPeriodRule(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	itemKeys := make(map[string]string)
+	for _, item := range definition.Items {
+		itemKeys[item.ItemKey] = item.Label
+	}
+	versions := []catalogAggregateRule{{ID: "active", Version: 1, From: month, Definition: definition}}
+	directory := catalogAggregateDirectory{People: map[int64]string{1: "收款人"}}
+	first := catalogActivityEvent{EventID: 1, PaymentID: 11, PaidAt: month, Scenario: "FIRST", Amount: 30000}
+	second := catalogActivityEvent{EventID: 2, PaymentID: 12, PaidAt: month, Scenario: "SECOND", Amount: 20000}
+	report, err := groupCatalogPeriodEvents([]catalogActivityEvent{first, second}, versions, directory, nil, catalogPerformanceDirectory{}, month.AddDate(0, 1, 0))
+	if err != nil || len(report.Groups) != 3 || len(report.Issues) != 0 {
+		t.Fatalf("unexpected group result: %+v / %v", report, err)
+	}
+	want := map[string][2]int64{"会员提成": {30000, 3000}, "大使补贴": {20000, 2500}, "全期提成": {50000, 2500}}
+	frozen := make(map[catalogFrozenGroupReference]catalogPeriodGroup)
+	var refs []catalogFrozenGroupReference
+	for _, group := range report.Groups {
+		label := itemKeys[group.Targets[0].ItemKey]
+		if got := [2]int64{group.Receipts, group.quote().Total}; got != want[label] {
+			t.Fatalf("%s: got %v; want %v", label, got, want[label])
+		}
+		if label != "大使补贴" {
+			ref := catalogFrozenGroupReference{PeriodID: 7, Key: group.ID}
+			group.Receipts, group.Payments = 0, 0
+			frozen[ref] = group
+			refs = append(refs, ref)
+		}
+	}
+	refund := first
+	refund.EventID, refund.Amount, refund.Refund = 3, 6000, true
+	refund.frozenPeriod, refund.frozenGroups = 7, refs
+	versions[0].Definition.Items[0].ScenarioCodes = []string{"SECOND"}
+	report, err = groupCatalogPeriodEvents([]catalogActivityEvent{refund}, versions, directory, frozen, catalogPerformanceDirectory{}, month.AddDate(0, 2, 0))
+	if err != nil || len(report.Groups) != 2 || len(report.Issues) != 0 {
+		t.Fatalf("frozen refund should only use its original two receipt arrangements: %+v / %v", report, err)
+	}
+	for _, group := range report.Groups {
+		if itemKeys[group.Targets[0].ItemKey] == "大使补贴" || group.Refunds != 6000 {
+			t.Fatalf("refund left its original item scope: %+v", group)
+		}
+	}
+}
+
+func TestCatalogPeriodCarryUsesEffectiveItemSKUs(t *testing.T) {
+	def := catalogPeriodDefinition{Cycle: "MONTHLY", Scenarios: []string{"FIRST"}, Items: []catalogPeriodItem{{ItemKey: "lead"}}}
+	targets := []catalogGroupTargetKey{{Item: "lead", Person: 42}}
+	key := func() string {
+		t.Helper()
+		result, err := catalogAggregateCarryKey(def, targets)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
+	}
+	original := key()
+	def.Scenarios = []string{"FIRST", "SECOND"}
+	def.Items[0].ScenarioCodes = []string{"FIRST"}
+	if key() != original {
+		t.Fatal("adding an unrelated package SKU must preserve the same effective scope and its carry")
+	}
+	def.Items[0].ScenarioCodes = []string{"SECOND"}
+	if key() == original {
+		t.Fatal("a different applicable SKU must not receive the original item's carry")
+	}
+}
+
 func TestCatalogPeriodGroupsKeepOriginalRuleAndSplitOnPoolMembership(t *testing.T) {
 	rule, err := parseCatalogPeriodRule(json.RawMessage(`{
 	 "amount_basis":"ACTUAL_RECEIVED","recognition_trigger":"PAID","refund_policy":"PROPORTIONAL","stacking_policy":"SUM",

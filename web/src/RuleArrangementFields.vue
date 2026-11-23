@@ -22,13 +22,15 @@ defineExpose({focus:()=>input.value?.focus()})
           show-search allow-clear option-filter-prop="label" placeholder="选填"/>
       </a-form-item>
     </div>
-    <div v-if="$slots.calculation || calculationText || orderTypeId || orderTypeText || scopeText || $slots.scope" class="rule-basics rule-arrangement-terms">
+    <div v-if="$slots.calculation || calculationText || $slots.orderType || orderTypeId || orderTypeText || scopeText || $slots.scope" class="rule-basics rule-arrangement-terms">
       <slot name="calculation"/>
       <a-form-item v-if="calculationText" label="计提方式"><span class="rule-field-value">{{ calculationText }}</span></a-form-item>
-      <a-form-item v-if="orderTypeId" label="计提订单类型" :html-for="orderTypeId">
-        <a-select :id="orderTypeId" v-model:value="orderType" :options="orderTypes" :disabled="disabled"/>
-      </a-form-item>
-      <a-form-item v-else-if="orderTypeText" label="计提订单类型"><span class="rule-field-value">{{ orderTypeText }}</span></a-form-item>
+      <slot name="orderType">
+        <a-form-item v-if="orderTypeId" label="计提订单类型" :html-for="orderTypeId">
+          <a-select :id="orderTypeId" v-model:value="orderType" :options="orderTypes" :disabled="disabled"/>
+        </a-form-item>
+        <a-form-item v-else-if="orderTypeText" label="计提订单类型"><span class="rule-field-value">{{ orderTypeText }}</span></a-form-item>
+      </slot>
       <a-form-item v-if="scopeText" label="计提订单范围"><span class="rule-field-value">{{ scopeText }}</span></a-form-item>
       <slot name="scope"/>
     </div>
