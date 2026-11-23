@@ -59,11 +59,11 @@ var draftRefreshFacts = `WITH keys AS (
 ), affected_events AS (
  SELECT id FROM events UNION SELECT id FROM refund_versions
 ), mapped AS (
- SELECT v.id,m.product_id,v.occurred_at,v.kind FROM affected_events a JOIN source_order_versions v USING(id) JOIN source_mappings m
+ SELECT v.id,m.product_id,v.occurred_at,v.kind,NULL::text AS sku_code FROM affected_events a JOIN source_order_versions v USING(id) JOIN source_mappings m
   ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'
  WHERE NOT ` + catalogSourceReservedSQL + `
  UNION
- SELECT v.id,c.product_id,v.occurred_at,v.kind FROM affected_events a JOIN source_order_versions v USING(id)
+ SELECT v.id,c.product_id,v.occurred_at,v.kind,m.sku_code FROM affected_events a JOIN source_order_versions v USING(id)
  JOIN catalog_business_routes m ON ` + catalogRouteFactSQL + `
  JOIN product_catalog_settings c ON c.product_id=m.product_id AND c.captured_at=m.observed_at
 ), calendar AS (
@@ -151,11 +151,15 @@ SELECT id FROM origin WHERE kind<>'REFUND_ADJUSTED'
 UNION SELECT p.id FROM mapped events JOIN product_catalog_settings source ON source.product_id=events.product_id
  JOIN product_catalog_settings anchor ON (anchor.project_code,anchor.source_system)=(source.project_code,source.source_system)
  JOIN periods p ON p.product_id=anchor.product_id AND p.aggregate_package_id IS NOT NULL
- WHERE (events.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
+ WHERE ((events.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
   OR (events.kind IN ('REFUND_SUCCEEDED','REFUND_ADJUSTED') AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
    AND EXISTS(SELECT 1 FROM periods earlier JOIN settlements final ON final.period_id=earlier.id
     WHERE earlier.aggregate_package_id=p.aggregate_package_id
-     AND (events.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN earlier.starts_on AND earlier.ends_on))
+     AND (events.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN earlier.starts_on AND earlier.ends_on)))
+ AND (events.kind<>'ORDER_PAID' OR events.sku_code IS NULL OR EXISTS(
+  SELECT 1 FROM product_rule_versions rule WHERE rule.package_id=p.aggregate_package_id AND rule.source_status='PUBLISHED'
+   AND rule.effective_from<(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
+   AND (rule.definition#>'{policy_scope,business_sku_codes}') ? events.sku_code))
 UNION ` + healthCompletionAffectedPeriodsSQL + `
 UNION SELECT p.id FROM late l JOIN calendar p USING(product_id)
  WHERE (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on

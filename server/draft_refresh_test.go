@@ -2,11 +2,75 @@ package main
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 )
+
+func TestCatalogPaymentQueuesOnlyAggregatePackagesThatIncludeItsSKU(t *testing.T) {
+	ctx := context.Background()
+	db := integrationDB(t)
+	const anchor = 805
+	const sourceProduct = 806
+	const member = "10000000-0000-4000-8000-000000000981"
+	const health = "10000000-0000-4000-8000-000000000982"
+	fixtures := []string{
+		`INSERT INTO products(id,code,name,period_mode,cycle_start_day) OVERRIDING SYSTEM VALUE VALUES
+		 (805,'FINANCE_ANCHOR','整期规则产品','calendar',1),(806,'FINANCE_MEMBER','会员 SKU 产品','calendar',1)`,
+		`INSERT INTO product_catalog_settings(product_id,source_id,source_environment,project_code,source_system,source_key,captured_at,snapshot_digest)
+		 VALUES(805,gen_random_uuid(),'test','DCAI','DCAI','combined','2026-10-01',sha256('one'::bytea)),
+		 (806,gen_random_uuid(),'test','DCAI','DCAI','membership','2026-10-01',sha256('two'::bytea))`,
+		`INSERT INTO catalog_business_routes(source_id,product_id,source,domain,entity_type,record_table,business_key,classifier,
+		 sku_code,sku_label,mapping_version,effective_from,observed_at,source_product_code) VALUES
+		 (gen_random_uuid(),806,'DCAI','VIP','VIP_ORDER','ai_vip_order','first','fixture','MEMBER','会员',1,'2026-01-01','2026-10-01','membership')`,
+		`INSERT INTO product_rule_packages(source_id,product_id,code,name,project_code,policy_kind,scope_type,scope_id,paused) VALUES
+		 ('` + member + `',805,'membership-aggregate','会员整期','DCAI','COMPONENT_RULE','CROSS_SCENARIO_AGGREGATE','membership',false),
+		 ('` + health + `',805,'health-aggregate','大使整期','DCAI','COMPONENT_RULE','CROSS_SCENARIO_AGGREGATE','health',false)`,
+		`INSERT INTO product_rule_versions(source_id,package_id,version_no,source_status,effective_from,content_hash,definition,observed_at) VALUES
+		 (gen_random_uuid(),'` + member + `',1,'PUBLISHED','2026-09-01','member','{"policy_scope":{"business_sku_codes":["MEMBER"]}}','2026-10-01'),
+		 (gen_random_uuid(),'` + health + `',1,'PUBLISHED','2026-09-01','health','{"policy_scope":{"business_sku_codes":["HEALTH"]}}','2026-10-01')`,
+	}
+	for _, sql := range fixtures {
+		if _, err := db.Exec(ctx, sql); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var memberPeriod, healthPeriod int64
+	for _, fixture := range []struct {
+		packageID string
+		periodID  *int64
+	}{{member, &memberPeriod}, {health, &healthPeriod}} {
+		if err := db.QueryRow(ctx, `INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,report_month,aggregate_package_id)
+		 VALUES($1,'十月整期',202610,'2026-10-01','2026-10-31','2026-10-01',$2) RETURNING id`, anchor, fixture.packageID).
+			Scan(fixture.periodID); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var ordinary int64
+	if err := db.QueryRow(ctx, `INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month)
+	 VALUES($1,'十月会员',202610,'2026-10-01','2026-10-31','2026-10-01') RETURNING id`, sourceProduct).Scan(&ordinary); err != nil {
+		t.Fatal(err)
+	}
+	paid := int64(49900)
+	at := time.Date(2026, 10, 10, 12, 0, 0, 0, shanghai)
+	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{{Source: "DCAI", Domain: "VIP", SourceKey: "membership", Kind: "ORDER_PAID",
+			RecordKey: "ai_vip_order:1", OrderID: "1", PaymentID: "1", AmountMinor: &paid, Version: "1", OccurredAt: at, UpdatedAt: at}})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.Query(ctx, "SELECT period_id FROM draft_refresh_queue ORDER BY period_id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+	if err != nil || !slices.Equal(got, []int64{memberPeriod, ordinary}) {
+		t.Fatalf("membership should refresh only its ordinary period and participating package, not period %d: %v / %v", healthPeriod, got, err)
+	}
+}
 
 func TestFinancialInputChangesRefreshOnlyAffectedDrafts(t *testing.T) {
 	ctx := context.Background()
