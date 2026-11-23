@@ -667,6 +667,7 @@ INSERT INTO configuration_options(group_key,option_key,label,display_order,appli
  ('practicePeriodRecipient','order_person','订单上的人员',40,'{}'),
  ('practicePeriodRecipient','sales_company','销售所属公司',50,'{}'),
  ('practicePeriodRecipient','referral_company','推荐公司',60,'{}'),
+ ('practicePeriodRecipient','order_appointment','销售组织的在任人员',70,'{}'),
  ('practicePeriodSourceRole','DIRECT_REFERRER','推荐销售',10,'{}'),
  ('practicePeriodSourceRole','LOCK_SALES_USER','锁定销售',20,'{}'),
  ('orderAttributionRole','DIRECT_REFERRER','直接推荐人',10,'{}'),

@@ -478,6 +478,90 @@ func TestPracticeArrangementResolvesRecipientsFromPayments(t *testing.T) {
 	}
 }
 
+func TestPracticePeriodBenefitCanUseThePaymentOrganizationAppointment(t *testing.T) {
+	var benefit practicePeriodBenefit
+	if err := json.Unmarshal([]byte(`{"label":"按组织任职收款","orderAppointmentLevel":"TEAM","orderAppointmentKind":"OWNER"}`), &benefit); err != nil {
+		t.Fatal(err)
+	}
+	part := component{Type: "manager", Mode: "period_rate", Value: 100000, SourceRole: "DIRECT_REFERRER", PeriodBenefit: &benefit}
+	if err := validateComponents([]component{part}); err != nil {
+		t.Fatal(err)
+	}
+	const firstUnit = "40000000-0000-4000-8000-000000000021"
+	const secondUnit = "40000000-0000-4000-8000-000000000022"
+	paidAt := time.Date(2026, 9, 10, 9, 0, 0, 0, shanghai)
+	handover := paidAt.Add(time.Hour)
+	deposit, balance, another := int64(4000), int64(6000), int64(10000)
+	makePayment := func(id int64, amount *int64, at time.Time, user, company string) paymentInput {
+		key := strconv.FormatInt(id, 10)
+		return paymentInput{ID: id, Fact: sourceFact{Source: "DCZD", OrderID: key, PaymentID: key, AmountMinor: amount,
+			OccurredAt: at, ReferrerID: user, SalesCompanyID: company}}
+	}
+	first := makePayment(1, &deposit, paidAt, "salesA", "parent")
+	second := makePayment(2, &balance, handover, "salesB", "parent")
+	third := makePayment(3, &another, handover, "salesB", "partner")
+	orders := map[string][]paymentInput{"1": {first}, "2": {second}, "3": {third}}
+	members := []practiceEnrollment{
+		{ID: 1, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"1", "2"}, ConfirmedAt: handover.Add(time.Hour)},
+		{ID: 2, MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"3"}, ConfirmedAt: handover.Add(time.Hour)},
+	}
+	identities := map[identityKey][]identityAssignment{
+		{"DCZD", "salesA"}: {{ID: 1, PersonID: 7}},
+		{"DCZD", "salesB"}: {{ID: 2, PersonID: 8}},
+	}
+	runtime := practiceDraftRuntime{
+		salesOrganizations: practiceSalesOrganizations{
+			1: {part.SourceRole: {PersonID: 7, SourceCompany: "parent", Group: firstUnit}},
+			2: {part.SourceRole: {PersonID: 8, SourceCompany: "parent", Group: firstUnit}},
+			3: {part.SourceRole: {PersonID: 8, SourceCompany: "partner", Group: secondUnit}},
+		},
+		orderAppointments: practiceOrderAppointments{
+			firstUnit: {"OWNER": {{PersonID: 11, vipInterval: vipInterval{To: &handover}},
+				{PersonID: 12, vipInterval: vipInterval{From: handover}}}},
+			secondUnit: {"OWNER": {{PersonID: 13, vipInterval: vipInterval{From: handover}}}},
+		},
+	}
+	rule := paymentRule{ID: 1, Components: []component{part}}
+	calculate := func(refunds map[int64][]practiceRefundMatch) paymentDraft {
+		t.Helper()
+		draft, err := calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, refunds, runtime)
+		if err != nil || len(draft.Issues) != 0 {
+			t.Fatalf("calculate appointment benefits: %+v / %v", draft.Issues, err)
+		}
+		return draft
+	}
+	check := func(draft paymentDraft, amounts map[int64]int64) {
+		t.Helper()
+		if len(draft.Lines) != len(amounts) {
+			t.Fatalf("expected one posting per eligible source payment, got %+v", draft.Lines)
+		}
+		for _, line := range draft.Lines {
+			if line.Amount != amounts[line.FactID] || line.PersonID != 10+line.FactID || !line.reportUnit.Valid {
+				t.Fatalf("wrong payment-time recipient or amount: %+v", line)
+			}
+		}
+	}
+	original := calculate(nil)
+	check(original, map[int64]int64{1: 400, 2: 600, 3: 1000})
+	stored, err := json.Marshal(capturePracticeReplayInputs(rule, original, []paymentInput{first, second, third}, identities, runtime))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved practiceReplayInputs
+	if err := json.Unmarshal(stored, &saved); err != nil {
+		t.Fatal(err)
+	}
+	runtime.orderAppointments, runtime.salesOrganizations = saved.OrderAppointments, saved.SalesOrganizations
+	refunded := int64(2000)
+	refund := map[int64][]practiceRefundMatch{1: {{event: paymentInput{ID: 4, Fact: sourceFact{AmountMinor: &refunded, OccurredAt: handover}}}}}
+	check(calculate(refund), map[int64]int64{1: 200, 2: 600, 3: 1000})
+	fixed := int64(100000)
+	rule.Components[0].Value = 0
+	benefit.FixedMinor, benefit.FixedPerClass = &fixed, true
+	check(calculate(nil), map[int64]int64{1: 40000, 2: 60000, 3: 100000})
+	check(calculate(refund), map[int64]int64{1: 20000, 2: 60000, 3: 100000})
+}
+
 func TestPracticeFixedSignupBenefitKeepsOriginalPaymentShares(t *testing.T) {
 	var part component
 	if err := json.Unmarshal([]byte(`{"type":"delivery","mode":"period_rate","classMember":"new",

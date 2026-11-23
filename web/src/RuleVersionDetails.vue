@@ -2,7 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
+import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
   practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
@@ -104,6 +104,8 @@ function recipient(part) {
   if (benefit?.pool) return poolName(benefit.pool)
   if (benefit?.personId) return personWithDuty(benefit.personId,benefit.recipientDuty)
   if (benefit?.unitId) return unitName(benefit.unitId)
+  if (benefit?.orderAppointmentLevel) return [catalogAppointmentLevels.find(option=>option.value===benefit.orderAppointmentLevel)?.label,
+    label('appointmentKind',benefit.orderAppointmentKind)].filter(Boolean).join(' · ')
   if (benefit?.orderRecipientRole) return [roleName(benefit.orderRecipientRole),
     benefit.recipientDuty && label('organizationDuty',benefit.recipientDuty)].filter(Boolean).join(' · ')
   if (benefit?.salesCompanyRecipient) return '销售所属公司'
@@ -121,8 +123,11 @@ function recipient(part) {
 }
 function formula(part) {
   if (part.mode==='period_rate') {
-    if (part.periodBenefit?.fixedMinor != null) return props.formatMoney(part.periodBenefit.fixedMinor)+
-      (part.periodBenefit.fixedPerClass ? ' / 班次' : ' / 报名')
+    if (part.periodBenefit?.fixedMinor != null) {
+      const benefit = part.periodBenefit
+      const unit = benefit.fixedPerClass ? (benefit.orderAppointmentLevel ? '组织 / 班' : '班次') : '报名'
+      return props.formatMoney(benefit.fixedMinor)+' / '+unit
+    }
     return '本班适用报名净实收 × '+(part.periodBenefit?.tiers?.length ? '档位比例' : rate(part.value,10000))
   }
   if (part.companySales) return '每份报名匹配一条标准'
@@ -185,7 +190,7 @@ onMounted(async () => {
             提成范围 · {{ salesScope(part) }}
           </span>
           <span v-if="part.periodBenefit?.tiers?.length && part.periodBenefit.tierOnWholeClass" class="rule-block-badge">全班净实收选档</span>
-          <small>{{ salesScope(part) ? '收款 · ' : '' }}{{ recipient(part) }}</small>
+          <small>{{ salesScope(part) ? '收款 · ' : '' }}{{ recipient(part) }}{{ part.periodBenefit?.orderAppointmentLevel ? ' · '+formula(part) : '' }}</small>
         </button>
         <div v-if="activePart===index" :id="'rule-preview-'+index" class="rule-block-body rule-preview-part">
         <a-descriptions size="small" :column="{xs:1,sm:2}">

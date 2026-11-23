@@ -24,7 +24,7 @@ import PracticeCountStartEditor from './PracticeCountStartEditor.vue'
 import PracticeRosterSelect from './PracticeRosterSelect.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
-import { checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
+import { catalogAppointmentLevels, checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
   practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
   practiceSalesScopeText, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
 
@@ -463,10 +463,13 @@ function ruleRecipientSummary(row) {
       : benefit.recipient==='unit' ? unitOptions.value.find(option=>option.value===benefit.unitId)?.label || '指定组织'
       : benefit.recipient==='person' ? classPeopleOptions.value.find(option=>option.value===benefit.personId)?.label || '指定个人'
       : benefit.recipient==='order_person' ? orderRoleLabel(benefit.orderRecipientRole) || '订单上的人员'
+      : benefit.recipient==='order_appointment' ? [catalogAppointmentLevels.find(option=>option.value===benefit.orderAppointmentLevel)?.label,
+        optionLabel('appointmentKind',benefit.orderAppointmentKind)].filter(Boolean).join(' · ') || '待选择任职'
       : optionLabel('practicePeriodRecipient',benefit.recipient) || '选择收款对象'
     const amount = benefit.method==='tiers' ? '阶梯' : benefit.method==='rate'
       ? (row.amount == null ? '' : row.amount+'%')
-      : (benefit.fixedAmount == null ? '' : formatMoney(minor(benefit.fixedAmount)))
+      : (benefit.fixedAmount == null ? '' : formatMoney(minor(benefit.fixedAmount))+
+        (benefit.recipient==='order_appointment' && benefit.method==='class_fixed' ? ' / 组织 / 班' : ''))
     return [payee,['person','order_person'].includes(benefit.recipient) ? optionLabel('organizationDuty',benefit.recipientDuty) : '',amount].filter(Boolean).join(' · ')
   }
   if (row.mode==='company_sales') {
@@ -1267,6 +1270,10 @@ function ruleComponentBody(row) {
       ...(b.recipient==='unit' ? {unitId:must(b.unitId,'请选择收款组织')} : {}),
       ...(b.recipient==='person' ? {personId:must(b.personId,'请选择收款人员')} : {}),
       ...(b.recipient==='order_person' ? {orderRecipientRole:must(b.orderRecipientRole,'请选择从订单读取的收款人')} : {}),
+      ...(b.recipient==='order_appointment' ? {
+        orderAppointmentLevel:must(b.orderAppointmentLevel,'请选择从哪个组织取收款人'),
+        orderAppointmentKind:must(b.orderAppointmentKind,'请选择收款岗位'),
+      } : {}),
       ...(b.recipient==='sales_company' ? {salesCompanyRecipient:true} : {}),
       ...(b.recipient==='referral_company' ? {referralCompanyRecipient:true,
         ...(b.referralCompanyIds?.length ? {referralCompanyIds:b.referralCompanyIds} : {})} : {}),
@@ -1301,8 +1308,11 @@ function ruleComponentBody(row) {
         ...(companies.length ? {companies} : {}),
         ...(registration.exclusive ? {exclusive:true} : {}),
       }
-      delete component.sourceRole
-    } else if (b.ownSales || b.salesPeople?.length || b.salesUnits?.length) must(sourceRole,'请选择订单上的销售角色')
+      if (b.recipient!=='order_appointment') delete component.sourceRole
+    }
+    if (b.recipient==='order_appointment' || !registration && (b.ownSales || b.salesPeople?.length || b.salesUnits?.length)) {
+      must(sourceRole,'请选择订单上的销售角色')
+    }
     return component
   }
   if (row.mode !== 'tiered') {

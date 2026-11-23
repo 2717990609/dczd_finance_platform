@@ -378,6 +378,10 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
+	orderAppointments, err := loadPracticeOrderAppointments(ctx, tx, rule, salesOrganizations, facts)
+	if err != nil {
+		return paymentDraft{}, nil, err
+	}
 	companyOffers := practiceCompanyStandards(rule)
 	var companyClassifications, internalSalesCategories map[string]string
 	includeInternalCategories := practiceTierUsesCategories(rule) || practiceScopesUseCategories(rule)
@@ -412,7 +416,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	runtime := practiceDraftRuntime{appointments: appointments, salesOrganizations: salesOrganizations, companyOffers: companyOffers,
+	runtime := practiceDraftRuntime{appointments: appointments, orderAppointments: orderAppointments, salesOrganizations: salesOrganizations, companyOffers: companyOffers,
 		companyClassifications: companyClassifications, internalSalesCategories: internalSalesCategories,
 		companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
 	if usesPracticeRegistrations(rule) {

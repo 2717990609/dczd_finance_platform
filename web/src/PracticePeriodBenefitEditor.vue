@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
+import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
 import RuleOrderScope from './RuleOrderScope.vue'
 import { hasPracticePaymentScope } from './rule-component-form'
 
@@ -33,6 +34,7 @@ function changeScope(mode) {
 function setRecipient(recipient) {
   config.value.recipient = recipient
   if (recipient!=='person' && config.value.ownSales) changeScope('all')
+  if (recipient==='order_appointment') props.component.sourceRole ||= props.sourceRoles[0]?.value
 }
 const registrationCompanies = computed(() => (props.registrationCompanies ?? props.companies).filter(option=>/^[1-9]\d*$/.test(option.value)))
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
@@ -63,6 +65,13 @@ const calculationMethods = computed(() => [
       <a-select :id="field('payee-role')" v-model:value="config.orderRecipientRole" :options="payeeRoles"
         show-search :filter-option="byName" placeholder="选择订单角色"/>
     </a-form-item>
+    <template v-if="config.recipient==='order_appointment'">
+      <CatalogOrganizationAppointmentFields :prefix="field('recipient')" :roles="appointmentKinds"
+        v-model:level="config.orderAppointmentLevel" v-model:role="config.orderAppointmentKind"/>
+      <a-form-item label="订单上的销售角色" :html-for="field('role')" required>
+        <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
+      </a-form-item>
+    </template>
     <a-form-item v-if="config.recipient==='referral_company'" label="限定收款公司" :html-for="field('referral-companies')">
       <a-select :id="field('referral-companies')" v-model:value="config.referralCompanyIds" :options="referralCompanies"
         mode="multiple" :max-tag-count="1" allow-clear :filter-option="byName" placeholder="按推荐关系结算"/>
@@ -77,7 +86,8 @@ const calculationMethods = computed(() => [
         <a-input-number :id="field('rate')" v-model:value="component.amount" :min="0" :max="100" :precision="4"/>
       </a-form-item>
       <a-form-item v-else-if="config.method==='fixed' || config.method==='class_fixed'"
-        label="金额（元）" :html-for="field('fixed')" required>
+        :label="config.recipient==='order_appointment' && config.method==='class_fixed' ? '每个组织整班金额（元）' : '金额（元）'"
+        :html-for="field('fixed')" required>
         <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
       </a-form-item>
     </template>
@@ -103,7 +113,7 @@ const calculationMethods = computed(() => [
               mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售人员"/>
           </a-form-item>
         </template>
-        <a-form-item v-if="scopeMode==='own' || scopeMode==='team' && (config.salesPeople?.length || config.salesUnits?.length)"
+        <a-form-item v-if="config.recipient!=='order_appointment' && (scopeMode==='own' || scopeMode==='team' && (config.salesPeople?.length || config.salesUnits?.length))"
           label="订单上的销售角色" :html-for="field('role')" required>
           <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
         </a-form-item>

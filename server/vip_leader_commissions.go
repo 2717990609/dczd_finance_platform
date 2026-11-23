@@ -32,25 +32,30 @@ func validVIPSalesOrganizationLevel(level string) bool {
 }
 
 func vipSalesAppointmentOrganization(req vipSalesRequest, level string) (string, string) {
+	var org reportOrganization
+	if req.commissionSalesOrg != nil {
+		org = *req.commissionSalesOrg
+	}
+	company := req.CompanyUnit
+	if company == "" {
+		company = org.Company.String()
+	}
+	return salesAppointmentOrganization(company, org.Department.String(), org.groupID().String(), org.scopeAlternatives, level)
+}
+
+func salesAppointmentOrganization(company, department, group string, alternatives []organizationScopeCandidate, level string) (string, string) {
 	const missing = "COMMISSION_SALES_ORGANIZATION_MISSING"
-	org := req.commissionSalesOrg
 	if level == "COMPANY" {
-		if req.CompanyUnit != "" {
-			return req.CompanyUnit, ""
-		}
-		if org != nil && org.Company.Valid {
-			return org.Company.String(), ""
+		if company != "" {
+			return company, ""
 		}
 		return "", missing
 	}
-	if org == nil {
-		return "", missing
-	}
-	unit := org.Department.String()
+	unit := department
 	if level == "TEAM" {
-		unit = org.groupID().String()
+		unit = group
 	}
-	for index, candidate := range org.scopeAlternatives {
+	for index, candidate := range alternatives {
 		possible := candidate.Department
 		if level == "TEAM" {
 			possible = candidate.Group

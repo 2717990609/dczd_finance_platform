@@ -21,6 +21,7 @@ type practiceReplayInputs struct {
 	Identities              map[string][]identityAssignment      `json:"identities,omitempty"`
 	RegistrationVersions    map[int64]int64                      `json:"registrationVersions,omitempty"`
 	Appointments            map[int][]practiceAppointment        `json:"appointments,omitempty"`
+	OrderAppointments       practiceOrderAppointments            `json:"orderAppointments,omitempty"`
 	SalesOrganizations      practiceSalesOrganizations           `json:"salesOrganizations,omitempty"`
 	Companies               map[string][]companySourceAssignment `json:"companies,omitempty"`
 	CompanyClassifications  map[string]string                    `json:"companyClassifications,omitempty"`
@@ -76,6 +77,7 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 		Identities: make(map[string][]identityAssignment), Appointments: make(map[int][]practiceAppointment),
 		PaymentCompanies: make(map[string]practiceReplayCompany), Recommendations: make(map[string]pgtype.UUID),
 		Companies: runtime.companyRecipients, ReferrerCompanies: runtime.recommendations.explicit, PoolUnits: runtime.poolUnits,
+		OrderAppointments: runtime.orderAppointments,
 	}
 	if len(runtime.salesOrganizations) != 0 {
 		inputs.SalesOrganizations = make(practiceSalesOrganizations)
@@ -257,6 +259,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 	}
 	replay.runtime = practiceDraftRuntime{
 		appointments: make(map[practiceAppointmentKey][]practiceAppointment), companyOffers: practiceCompanyStandards(replay.rule),
+		orderAppointments:      values.OrderAppointments,
 		salesOrganizations:     values.SalesOrganizations,
 		companyClassifications: values.CompanyClassifications, internalSalesCategories: values.InternalSalesCategories,
 		companyRecipients: values.Companies, poolUnits: values.PoolUnits,

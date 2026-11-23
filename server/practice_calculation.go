@@ -49,6 +49,7 @@ func (p practicePurchase) salesIssue(code string, rule paymentRule, part string)
 
 type practiceDraftRuntime struct {
 	appointments                map[practiceAppointmentKey][]practiceAppointment
+	orderAppointments           practiceOrderAppointments
 	registrations               map[int64]practiceRegistrationInput
 	salesOrganizations          practiceSalesOrganizations
 	companyOffers               *practiceCompanyOffers

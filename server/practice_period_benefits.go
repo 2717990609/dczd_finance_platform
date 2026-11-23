@@ -3,12 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"maps"
 	"math/big"
 	"math/bits"
 	"net/http"
 	"slices"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -145,6 +147,8 @@ type practicePeriodBenefit struct {
 	PersonID                 int64                      `json:"personId,omitempty"`
 	RecipientDuty            string                     `json:"recipientDuty,omitempty"`
 	OrderRecipientRole       string                     `json:"orderRecipientRole,omitempty"`
+	OrderAppointmentLevel    string                     `json:"orderAppointmentLevel,omitempty"`
+	OrderAppointmentKind     string                     `json:"orderAppointmentKind,omitempty"`
 	SalesCompanyRecipient    bool                       `json:"salesCompanyRecipient,omitempty"`
 	ReferralCompanyRecipient bool                       `json:"referralCompanyRecipient,omitempty"`
 	ReferralCompanyIDs       []string                   `json:"referralCompanyIds,omitempty"`
@@ -206,6 +210,12 @@ func validPracticePeriodBenefit(c component) bool {
 	}
 	if b.OrderRecipientRole != "" {
 		if !validSourceRole(b.OrderRecipientRole) {
+			return false
+		}
+		recipients++
+	}
+	if b.OrderAppointmentLevel != "" || b.OrderAppointmentKind != "" {
+		if !validVIPSalesOrganizationLevel(b.OrderAppointmentLevel) || !validSourceRole(b.OrderAppointmentKind) || !validSourceRole(c.SourceRole) {
 			return false
 		}
 		recipients++
@@ -332,16 +342,118 @@ func loadPracticeAppointments(ctx context.Context, tx pgx.Tx, rule paymentRule) 
 	return out, err
 }
 
+type practiceOrderAppointment struct {
+	PersonID int64 `json:"personId"`
+	vipInterval
+}
+
+type practiceOrderAppointments map[string]map[string][]practiceOrderAppointment
+
+func loadPracticeOrderAppointments(ctx context.Context, tx pgx.Tx, rule paymentRule, organizations practiceSalesOrganizations, facts []paymentInput) (practiceOrderAppointments, error) {
+	levels := make(map[string]map[string]bool)
+	kinds := make(map[string]bool)
+	for _, part := range rule.Components {
+		if b := part.PeriodBenefit; b != nil && b.OrderAppointmentLevel != "" {
+			if levels[part.SourceRole] == nil {
+				levels[part.SourceRole] = make(map[string]bool)
+			}
+			levels[part.SourceRole][b.OrderAppointmentLevel], kinds[b.OrderAppointmentKind] = true, true
+		}
+	}
+	if len(levels) == 0 {
+		return nil, nil
+	}
+	units := make(map[string]bool)
+	for _, payment := range organizations {
+		for role, org := range payment {
+			for level := range levels[role] {
+				unit, issue := salesAppointmentOrganization(org.Company, org.Department, org.Group, org.ScopeAlternatives, level)
+				if issue == "" {
+					units[unit] = true
+				}
+			}
+		}
+	}
+	if len(units) == 0 {
+		return nil, nil
+	}
+	var first, last time.Time
+	for _, payment := range facts {
+		if len(organizations[payment.ID]) == 0 {
+			continue
+		}
+		at := payment.Fact.OccurredAt
+		if first.IsZero() || at.Before(first) {
+			first = at
+		}
+		if last.IsZero() || at.After(last) {
+			last = at
+		}
+	}
+	if first.IsZero() {
+		return nil, nil
+	}
+	rows, err := tx.Query(ctx, `SELECT unit_id::text,kind,person_id,valid_from,valid_to FROM organization_assignments
+	 WHERE unit_id=ANY($1::uuid[]) AND kind=ANY($2::text[]) AND valid_from<=$4 AND (valid_to IS NULL OR valid_to>$3)
+	 ORDER BY unit_id,kind,valid_from,id`, slices.Collect(maps.Keys(units)), slices.Collect(maps.Keys(kinds)), first, last)
+	if err != nil {
+		return nil, err
+	}
+	result := make(practiceOrderAppointments)
+	var unit, kind string
+	var appointment practiceOrderAppointment
+	_, err = pgx.ForEachRow(rows, []any{&unit, &kind, &appointment.PersonID, &appointment.From, &appointment.To}, func() error {
+		if result[unit] == nil {
+			result[unit] = make(map[string][]practiceOrderAppointment)
+		}
+		result[unit][kind] = append(result[unit][kind], appointment)
+		return nil
+	})
+	return result, err
+}
+
+func practiceOrderAppointmentRecipient(payment paymentInput, benefit *practicePeriodBenefit, role string,
+	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) (int64, pgtype.UUID, string) {
+	var id pgtype.UUID
+	seller, issue := paymentBeneficiary(payment.Fact, role, identities)
+	if issue != "" {
+		return 0, id, issue
+	}
+	org, ok := runtime.salesOrganizations[payment.ID][role]
+	if !ok || org.PersonID != seller.PersonID || org.SourceCompany != payment.Fact.SalesCompanyID {
+		return 0, id, "PRACTICE_SALES_ORGANIZATION_MISSING"
+	}
+	key, issue := salesAppointmentOrganization(org.Company, org.Department, org.Group, org.ScopeAlternatives, benefit.OrderAppointmentLevel)
+	if issue != "" {
+		return 0, id, issue
+	}
+	if err := id.Scan(key); err != nil || !id.Valid {
+		return 0, id, "PRACTICE_SALES_ORGANIZATION_MISSING"
+	}
+	var person int64
+	for _, appointment := range runtime.orderAppointments[key][benefit.OrderAppointmentKind] {
+		if !appointment.contains(payment.Fact.OccurredAt) {
+			continue
+		}
+		if person != 0 && person != appointment.PersonID {
+			return 0, id, "BENEFIT_APPOINTMENT_CONFLICT"
+		}
+		person = appointment.PersonID
+	}
+	return person, id, ""
+}
+
 type practiceBenefitShare struct {
-	purchase practicePurchase
-	payments []paymentInput
-	people   []identityAssignment
-	company  pgtype.UUID
-	fixed    [2]int64
-	key      string
-	net      int64
-	amount   int64
-	rem      int64
+	purchase      practicePurchase
+	payments      []paymentInput
+	people        []identityAssignment
+	organizations []pgtype.UUID
+	company       pgtype.UUID
+	fixed         [2]int64
+	key           string
+	net           int64
+	amount        int64
+	rem           int64
 }
 
 func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string, assignments []practiceAppointment,
@@ -399,7 +511,7 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 func collectPracticeBenefitShares(part component, purchases []practicePurchase, assignments []practiceAppointment,
 	identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int, runtime practiceDraftRuntime) ([]practiceBenefitShare, int64, draftIssue, error) {
 	b := part.PeriodBenefit
-	checkSalesAgreement := b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
+	checkSalesAgreement := b.OrderAppointmentLevel == "" && b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
 	checkConfiguredRole := b.usesSalesPerson() && !runtime.legacyBenefitAttribution
 	var eligible []practiceBenefitShare
 	var tierBase int64
@@ -427,7 +539,8 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		if !memberMatches {
 			continue
 		}
-		if p.noReferrer && (b.RegistrationScope != nil || b.hasSalesScope() || b.OrderRecipientRole != "" || b.SalesCompanyRecipient || b.ReferralCompanyRecipient) {
+		if p.noReferrer && (b.RegistrationScope != nil || b.hasSalesScope() || b.OrderRecipientRole != "" ||
+			b.OrderAppointmentLevel != "" || b.SalesCompanyRecipient || b.ReferralCompanyRecipient) {
 			continue
 		}
 		if scope := b.RegistrationScope; scope != nil {
@@ -459,6 +572,17 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 				return nil, 0, draftIssue{Code: issue}, nil
 			}
 			if yes {
+				if b.OrderAppointmentLevel != "" {
+					person, unit, issue := practiceOrderAppointmentRecipient(payment, b, part.SourceRole, identities, runtime)
+					if issue != "" {
+						return nil, 0, draftIssue{Code: issue, FactID: payment.ID, EnrollmentID: p.member.ID}, nil
+					}
+					if person == 0 {
+						continue
+					}
+					share.people = append(share.people, identityAssignment{PersonID: person})
+					share.organizations = append(share.organizations, unit)
+				}
 				share.payments = append(share.payments, payment)
 				share.net += p.netAmount(payment)
 			}
@@ -588,6 +712,33 @@ func allocatePracticeFixedBenefit(shares []practiceBenefitShare, award int64, pe
 	return total, nil
 }
 
+func allocatePracticeOrganizationFixedBenefit(shares []practiceBenefitShare, award int64) ([]practiceBenefitShare, int64, error) {
+	byUnit := make(map[pgtype.UUID][]practiceBenefitShare)
+	for _, share := range shares {
+		for index, unit := range share.organizations {
+			payment := share.payments[index]
+			byUnit[unit] = append(byUnit[unit], practiceBenefitShare{purchase: share.purchase, payments: share.payments[index : index+1],
+				people: share.people[index : index+1], organizations: share.organizations[index : index+1], key: payment.Fact.OrderID,
+				net: share.purchase.netAmount(payment)})
+		}
+	}
+	var result []practiceBenefitShare
+	var total int64
+	for _, unit := range slices.SortedFunc(maps.Keys(byUnit), func(a, b pgtype.UUID) int { return strings.Compare(a.String(), b.String()) }) {
+		rows := byUnit[unit]
+		amount, err := allocatePracticeFixedBenefit(rows, award, true)
+		if err != nil {
+			return nil, 0, err
+		}
+		total, err = addMinor(total, amount)
+		if err != nil {
+			return nil, 0, err
+		}
+		result = append(result, rows...)
+	}
+	return result, total, nil
+}
+
 func splitPracticeFixedClass(shares []practiceBenefitShare, award int64) error {
 	type paymentShare struct {
 		amount   *int64
@@ -676,7 +827,9 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 			continue
 		}
 		var total int64
-		if b.FixedMinor != nil {
+		if b.FixedPerClass && b.OrderAppointmentLevel != "" {
+			shares, total, err = allocatePracticeOrganizationFixedBenefit(shares, *b.FixedMinor)
+		} else if b.FixedMinor != nil {
 			total, err = allocatePracticeFixedBenefit(shares, *b.FixedMinor, b.FixedPerClass)
 		} else {
 			rate, found := b.rate(part.Value, basis)
@@ -745,6 +898,9 @@ func appendPracticePeriodShare(draft *paymentDraft, line draftLine, share practi
 		line.FactID, line.Base, line.Amount = payment.ID, net, amounts[i]
 		if share.people != nil {
 			line.PersonID, line.IdentityID = share.people[i].PersonID, share.people[i].ID
+		}
+		if share.organizations != nil {
+			line.reportUnit = share.organizations[i]
 		}
 		line.PracticeTierReference = line.practiceTierRefund && line.Amount == 0
 		draft.Lines = append(draft.Lines, line)

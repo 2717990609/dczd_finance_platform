@@ -163,7 +163,7 @@ export function practicePeriodScopeText(benefit, names, limit = 2) {
   } else if (benefit.ownSales) {
     entries.push('本人销售')
   } else {
-    list('指定团队',benefit.salesUnits,names.unit)
+    list('指定组织',benefit.salesUnits,names.unit)
     list('销售类别',benefit.salesCategoryIds,names.category)
     list('销售公司',benefit.salesCompanies,names.company)
     list('销售人员',benefit.salesPeople,names.person)
@@ -389,7 +389,8 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
     if (periodBenefit) {
       form.periodBenefit = {...periodBenefit,
         restrictPayments:hasPracticePaymentScope(periodBenefit),
-        recipient:periodBenefit.pool ? 'pool' : periodBenefit.unitId ? 'unit' : periodBenefit.orderRecipientRole ? 'order_person'
+        recipient:periodBenefit.pool ? 'pool' : periodBenefit.unitId ? 'unit' : periodBenefit.orderAppointmentLevel ? 'order_appointment'
+          : periodBenefit.orderRecipientRole ? 'order_person'
           : periodBenefit.salesCompanyRecipient ? 'sales_company' : periodBenefit.referralCompanyRecipient ? 'referral_company' : 'person',
         pool:periodBenefit.pool || {},
         method:periodBenefit.fixedMinor != null ? (periodBenefit.fixedPerClass ? 'class_fixed' : 'fixed')
