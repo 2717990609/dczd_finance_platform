@@ -214,6 +214,7 @@ onMounted(async () => {
         <a-descriptions size="small" :column="{xs:1,sm:2}">
           <a-descriptions-item label="发给谁">{{ recipient(part) }}</a-descriptions-item>
           <a-descriptions-item label="提成怎么算">{{ formula(part) }}</a-descriptions-item>
+          <a-descriptions-item v-if="part.companySales" label="计提订单范围">{{ salesScope(part,0) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.periodBenefit" label="计提订单范围">{{ practicePeriodScopeText(part.periodBenefit,practiceScopeNames,Infinity) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.salesPersonId" label="业绩归属">{{ roleName(part.sourceRole) }}</a-descriptions-item>
           <a-descriptions-item v-if="!part.companySales && salesScope(part)" label="提成范围">{{ salesScope(part) }}</a-descriptions-item>
@@ -235,10 +236,9 @@ onMounted(async () => {
             </tr>
           </tbody>
         </table>
-        <section v-if="part.companySales" class="practice-company-criteria" aria-label="计提订单范围">
+        <section v-if="part.companySales" class="practice-company-criteria" aria-label="计提标准">
           <header class="practice-company-scope-heading">
-            <h4>计提订单范围</h4>
-            <span>{{ salesScope(part,0) }}</span>
+            <h4>计提标准</h4>
             <small v-if="companyPriority" class="finance-rate-priority">匹配顺序 {{ companyPriority }}</small>
           </header>
           <section v-for="group in companyStandards" :key="group.scope" :aria-label="group.label" class="practice-company-criterion">

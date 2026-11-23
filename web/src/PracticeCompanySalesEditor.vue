@@ -120,7 +120,7 @@ watch(amounts, choices => {
 
 <template>
   <RuleArrangementFields :name-id="field('label')" v-model:name="component.companySales.label"
-    :calculation-text="calculationText"
+    :calculation-text="calculationText" :scope-text="practiceCompanyMatchText(scopes)"
     :duty-id="practiceRecipientIsPerson(payee.kind) ? field('duty') : undefined" :duties="duties" v-model:duty="component.recipientDuty"
     :order-type-id="'rule-member-'+index" :order-types="memberChoices" :order-type="component.classMember"
     @update:order-type="component.classMember=$event; emit('member-change')">
@@ -141,8 +141,7 @@ watch(amounts, choices => {
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <section class="practice-company-criteria" :aria-labelledby="field('scope-heading')">
     <header class="practice-company-scope-heading">
-      <h4 :id="field('scope-heading')">计提订单范围</h4>
-      <span>{{ practiceCompanyMatchText(scopes) }}</span>
+      <h4 :id="field('scope-heading')">计提标准</h4>
       <small v-if="priority" class="finance-rate-priority">匹配顺序 {{ priority }}</small>
     </header>
     <section v-for="group in standardGroups" :key="group.scope" :aria-label="practiceCompanyMatchLabels[group.scope]"

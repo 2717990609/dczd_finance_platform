@@ -44,9 +44,9 @@ export function catalogRatePriority(scopes) {
 export const catalogPercent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
 
 export const practiceCompanyMatchLabels = {
-  category:'销售类别默认',
+  category:'按销售类别计提',
   default:'其他外部公司默认比例',
-  companies:'指定公司',
+  companies:'按指定公司计提',
 }
 
 export function catalogRateConditionScope(row) {
