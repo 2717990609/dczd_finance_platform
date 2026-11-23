@@ -8,8 +8,8 @@ export function rateAsBasisPoints(value) {
 }
 
 export const catalogFlatMethods = [
-  {value:'rate',label:'统一比例'},
-  {value:'fixed',label:'每笔付款固定金额'},
+  {value:'rate',label:'比例'},
+  {value:'fixed',label:'固定金额'},
 ]
 export const catalogCalculationMethods = [...catalogFlatMethods,{value:'table',label:'按类别或公司设置比例'}]
 export const catalogSalesCalculationMethods = catalogCalculationMethods.filter(method=>method.value!=='fixed')
@@ -348,7 +348,7 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
       form.periodBenefit = {...periodBenefit,
         restrictPayments:hasPracticePaymentScope(periodBenefit),
         recipient:periodBenefit.pool ? 'pool' : periodBenefit.unitId ? 'unit' : periodBenefit.orderRecipientRole ? 'order_person'
-          : periodBenefit.salesCompanyRecipient ? 'sales_company' : 'person',
+          : periodBenefit.salesCompanyRecipient ? 'sales_company' : periodBenefit.referralCompanyRecipient ? 'referral_company' : 'person',
         pool:periodBenefit.pool || {},
         method:periodBenefit.fixedMinor != null ? (periodBenefit.fixedPerClass ? 'class_fixed' : 'fixed')
           : periodBenefit.tiers?.length ? 'tiers' : 'rate',

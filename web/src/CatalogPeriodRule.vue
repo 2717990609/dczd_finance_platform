@@ -3,6 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
+import RuleArrangementFields from './RuleArrangementFields.vue'
 
 const props = defineProps({rule:Object, applied:Object, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
 const emit = defineEmits(['close','published','open-draft','copy','open-version','resumed'])
@@ -14,9 +15,10 @@ const creationCycle = ref()
 const sheet = ref()
 const rows = ref([])
 const activeComponent = ref()
-const editingComponent = ref()
 const scenarioCodes = ref([])
 const editingScenarios = ref(false)
+const periodOrderTypes = computed(() => scenarioCodes.value.map(code=>
+  scenarioOptions.value.find(option=>option.value===code)?.label || code).join('、'))
 let newComponentID = 0
 const effectiveDate = ref('')
 const resumeDate = ref('')
@@ -147,7 +149,8 @@ function orderScopeBody(item) {
     salesScopeUnitIds:Array.isArray(item.salesScope) ? item.salesScope : undefined,recipientDuty:item.recipientDuty,
     appointment:item.appointment ? {...item.appointment,personId:item.personId} : undefined}
 }
-const methodLabels = {rate:'统一比例',tiers:'按净额阶梯',fixed:'整期固定金额'}
+const methodLabels = {rate:'比例',fixed:'固定金额',tiers:'阶梯'}
+const methodOptions = Object.entries(methodLabels).map(([value,label])=>({value,label}))
 function setMethod(item, method) {
   if (method==='tiers' && !item.tiers.length) item.tiers = [{from:0,rate:item.uniformRate}]
   if (method==='rate' && item.uniformRate==null && item.tiers.length===1) item.uniformRate = item.tiers[0].rate
@@ -199,7 +202,6 @@ function addComponent() {
   const uid = 'new-' + (++newComponentID)
   rows.value.push({uid,label:'',targetKind:'company',method:'rate',tiers:[],salesScope:null})
   activeComponent.value = uid
-  editingComponent.value = uid
 }
 function initializeCreation(data, product) {
   const copy = copiedFrom.value
@@ -211,7 +213,6 @@ function initializeCreation(data, product) {
       ...row,uid:'new-'+(++newComponentID),organizationName:copy.items[index].targetName,
     }))
     activeComponent.value = rows.value[0]?.uid
-    editingComponent.value = activeComponent.value
     return
   }
   const options = data.options.scenarios
@@ -223,12 +224,10 @@ function removeComponent(row) {
   const index = rows.value.indexOf(row)
   rows.value.splice(index,1)
   activeComponent.value = rows.value[Math.min(index,rows.value.length-1)].uid
-  editingComponent.value = undefined
 }
 async function openArrangement(uid) {
   if (!uid || !rows.value.some(row=>row.uid===uid)) return
   activeComponent.value = uid
-  editingComponent.value = canSave.value ? uid : undefined
   await nextTick()
   const heading = document.getElementById('period-rule-control-'+uid)
   heading?.scrollIntoView({block:'start'})
@@ -289,7 +288,6 @@ watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,pro
     scenarioCodes.value = data.scenarios.map(sku=>sku.code)
     editingScenarios.value = false
     activeComponent.value = rows.value.length===1 ? rows.value[0].uid : undefined
-    editingComponent.value = undefined
     if (creating.value) initializeCreation(data,product)
     else effectiveDate.value = canSave.value ? defaultEffectiveDate() : ''
     if (props.rule?.focusItemKey) void openArrangement(props.rule.focusItemKey)
@@ -498,51 +496,50 @@ async function resumeRule() {
             <small>{{ targetLabel(item) }} · {{ methodSummary(item) }}</small>
           </button>
           <div v-if="activeComponent===item.uid" :id="'period-rule-part-'+item.uid" class="rule-block-body">
-          <div class="period-component-heading">
-            <h4 class="rule-item-section">发给谁</h4>
-            <div v-if="canSave">
-              <a-button v-if="editingComponent!==item.uid" type="link" :disabled="saving" @click="editingComponent=item.uid">编辑收款对象</a-button>
-              <a-button v-else type="link" :disabled="saving" @click="editingComponent=undefined">收起编辑</a-button>
-              <a-button v-if="rows.length>1" type="link" danger :disabled="saving" @click="removeComponent(item)">移除此安排</a-button>
-            </div>
-          </div>
-          <a-form v-if="canSave && editingComponent===item.uid" layout="vertical" size="small" class="rule-basics">
-            <a-form-item label="收款安排名称" html-for="period-benefit-label">
-              <a-input id="period-benefit-label" v-model:value="item.label" :maxlength="80" :disabled="saving"/>
-            </a-form-item>
-            <a-form-item label="收款对象" html-for="period-benefit-target">
-              <a-select id="period-benefit-target" :value="item.targetKind" :options="targetTypes" :disabled="saving" @change="setTarget(item,$event)"/>
-            </a-form-item>
-            <a-form-item v-if="item.targetKind==='person'" label="收款人" html-for="period-benefit-person">
-              <AppointmentPersonSelect id="period-benefit-person" v-model:value="item.personId" :api="api" endpoint="/catalog-rule-people"
-                :filters="peopleFilters" :current="item.personId ? {id:item.personId,name:item.personName} : undefined"
-                :disabled="saving" @change="(_,option)=>item.personName=option.name"/>
-            </a-form-item>
-            <a-form-item v-else :label="item.targetKind==='pool' ? '归集组织' : '收款公司'" html-for="period-benefit-org"
-              :extra="copiedOrganizationUnavailable(item) ? '请重新选择当前有效的收款组织。' : undefined">
-              <a-select id="period-benefit-org" v-model:value="item.organizationKey" :options="availableOrganizations(item)"
-                :disabled="saving" show-search option-filter-prop="label"/>
-            </a-form-item>
-            <a-form-item v-if="item.targetKind==='person'" label="收款人职责" html-for="period-benefit-duty">
-              <a-select id="period-benefit-duty" v-model:value="item.recipientDuty" :options="sheet.options?.duties"
-                show-search option-filter-prop="label" allow-clear placeholder="选填" :disabled="saving"/>
-            </a-form-item>
-            <template v-if="item.targetKind==='pool'">
-              <a-form-item label="团队池名称" html-for="period-benefit-pool">
-                <a-input id="period-benefit-pool" v-model:value="item.poolName" :maxlength="80" :disabled="saving"/>
+          <a-form v-if="canSave" layout="vertical" size="small">
+            <RuleArrangementFields name-id="period-benefit-label" v-model:name="item.label" :disabled="saving"
+              :duty-id="item.targetKind==='person' ? 'period-benefit-duty' : undefined" :duties="sheet.options?.duties"
+              v-model:duty="item.recipientDuty" :order-type-text="periodOrderTypes">
+              <a-form-item label="收款对象" html-for="period-benefit-target" required>
+                <a-select id="period-benefit-target" :value="item.targetKind" :options="targetTypes" :disabled="saving" @change="setTarget(item,$event)"/>
               </a-form-item>
-              <a-form-item label="负责人职责" html-for="period-benefit-owner">
-                <a-select id="period-benefit-owner" v-model:value="item.ownerRole" :options="availableRoles(item.ownerRole)" :disabled="saving"/>
+              <a-form-item v-if="item.targetKind==='person'" label="指定收款人" html-for="period-benefit-person" required>
+                <AppointmentPersonSelect id="period-benefit-person" v-model:value="item.personId" :api="api" endpoint="/catalog-rule-people"
+                  :filters="peopleFilters" :current="item.personId ? {id:item.personId,name:item.personName} : undefined"
+                  :disabled="saving" @change="(_,option)=>item.personName=option?.name"/>
               </a-form-item>
-              <a-form-item label="成员职责" html-for="period-benefit-member">
-                <a-select id="period-benefit-member" v-model:value="item.memberRole" :options="availableRoles(item.memberRole)" :disabled="saving"/>
+              <a-form-item v-else :label="item.targetKind==='pool' ? '归集组织' : '收款公司'" html-for="period-benefit-org" required
+                :extra="copiedOrganizationUnavailable(item) ? '请重新选择当前有效的收款组织。' : undefined">
+                <a-select id="period-benefit-org" v-model:value="item.organizationKey" :options="availableOrganizations(item)"
+                  :disabled="saving" show-search option-filter-prop="label"/>
               </a-form-item>
-            </template>
+              <template v-if="item.targetKind==='pool'">
+                <a-form-item label="团队池名称" html-for="period-benefit-pool">
+                  <a-input id="period-benefit-pool" v-model:value="item.poolName" :maxlength="80" :disabled="saving"/>
+                </a-form-item>
+                <a-form-item label="负责人职责" html-for="period-benefit-owner" required>
+                  <a-select id="period-benefit-owner" v-model:value="item.ownerRole" :options="availableRoles(item.ownerRole)" :disabled="saving"/>
+                </a-form-item>
+                <a-form-item label="成员职责" html-for="period-benefit-member" required>
+                  <a-select id="period-benefit-member" v-model:value="item.memberRole" :options="availableRoles(item.memberRole)" :disabled="saving"/>
+                </a-form-item>
+              </template>
+              <template #calculation>
+                <a-form-item label="计提方式" html-for="period-benefit-method" required>
+                  <a-select id="period-benefit-method" :value="item.method" :options="methodOptions" :disabled="saving"
+                    @update:value="setMethod(item,$event)"/>
+                </a-form-item>
+                <a-form-item v-if="item.method==='rate'" label="比例（%）" html-for="period-benefit-uniform-rate" required>
+                  <a-input-number id="period-benefit-uniform-rate" v-model:value="item.uniformRate" :min="0" :max="100"
+                    :precision="2" :disabled="saving"/>
+                </a-form-item>
+                <a-form-item v-if="item.method==='fixed'" label="金额（元）" html-for="period-benefit-fixed-amount" required>
+                  <a-input-number id="period-benefit-fixed-amount" v-model:value="item.fixedAmount" :min="0" :precision="2" :disabled="saving"/>
+                </a-form-item>
+              </template>
+            </RuleArrangementFields>
           </a-form>
-          <template v-else>
-            <p class="rule-formula">{{ targetLabel(item) }}</p>
-            <p v-if="item.ownerRole" class="rule-formula">负责人 {{ optionLabel('catalogAppointmentRole',item.ownerRole) || item.ownerRole }} · 成员 {{ optionLabel('catalogAppointmentRole',item.memberRole) || item.memberRole || '未配置' }}</p>
-          </template>
+          <RuleArrangementFields v-else :order-type-text="periodOrderTypes" :calculation-text="methodSummary(item)"/>
           <CatalogCommissionScopeFields v-if="canSave" :prefix="'period-scope-'+item.uid" v-model="item.salesScope"
             :options="periodScopeUnits" :can-own="item.targetKind==='person'" :disabled="saving"/>
           <a-form v-if="canSave && item.targetKind==='person'" layout="vertical" size="small" class="rule-basics">
@@ -561,32 +558,6 @@ async function resumeRule() {
               </a-form-item>
             </template>
           </a-form>
-          <h4 class="rule-item-section">提成怎么算</h4>
-          <div class="period-method">
-            <a-radio-group v-if="canSave" :value="item.method" aria-label="计提方式" role="radiogroup" size="small" button-style="solid"
-              :disabled="saving" @update:value="setMethod(item,$event)">
-              <a-radio-button v-for="(label,key) in methodLabels" :key="key" :value="key">{{ label }}</a-radio-button>
-            </a-radio-group>
-            <a-form v-if="item.method==='rate' && canSave" layout="inline">
-              <a-form-item label="统一比例（%）" html-for="period-benefit-uniform-rate">
-                <a-input-number id="period-benefit-uniform-rate" v-model:value="item.uniformRate" size="small" :min="0" :max="100"
-                  :precision="2" :disabled="saving"/>
-              </a-form-item>
-            </a-form>
-            <span v-else-if="item.method==='rate'">{{ methodSummary(item) }}</span>
-            <span v-if="item.method==='rate'" class="period-method-formula">本组净额 × 统一比例</span>
-            <a-form v-if="item.method==='fixed' && canSave" layout="inline">
-              <a-form-item label="整期金额（元）" html-for="period-benefit-fixed-amount">
-                <a-input-number id="period-benefit-fixed-amount" v-model:value="item.fixedAmount" size="small" :min="0"
-                  :precision="2" :disabled="saving"/>
-              </a-form-item>
-            </a-form>
-            <span v-else-if="item.method==='fixed'">{{ methodSummary(item) }}</span>
-            <span v-if="item.method==='fixed'" class="period-method-formula">符合范围的净实收大于零时，整期计提一次。<template v-if="item.targetKind==='pool'"> 由账期末有效负责人承接。</template></span>
-          </div>
-          <p v-if="item.method!=='fixed' && item.targetKind==='pool'" class="rule-formula">
-            团队池按付款时的负责人和可分配成员归组。
-          </p>
           <template v-if="item.method==='tiers'">
           <p class="rule-formula">按本组净额选档，净额乘该档比例。</p>
           <div class="period-tier-grid period-tier-header" aria-hidden="true">
@@ -603,6 +574,9 @@ async function resumeRule() {
           </div>
           <a-button v-if="canSave" type="dashed" :disabled="saving" @click="item.tiers.push({from:undefined,rate:0})">新增档位</a-button>
           </template>
+          <div v-if="canSave && rows.length>1" class="form-actions">
+            <a-button type="link" danger size="small" :disabled="saving" @click="removeComponent(item)">移除此安排</a-button>
+          </div>
           </div>
         </section>
         </div>
@@ -777,9 +751,6 @@ async function resumeRule() {
 .period-scenario-select { width:min(100%,720px); }
 .period-component-heading { display:flex; justify-content:space-between; align-items:center; gap:4px 8px; flex-wrap:wrap; margin-bottom:6px; }
 .period-component-heading h2 { margin:0; font-size:16px; }
-.period-method { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; margin-bottom:6px; }
-.period-method :deep(.ant-form-item) { margin:0; }
-.period-method-formula { color:var(--muted); font-size:13px; }
 .period-tier-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:8px; align-items:center; margin-bottom:8px; }
 .period-tier-header { color:var(--muted); font-size:12px; }
 .period-tier-grid :deep(.ant-input-number),.period-quote-inputs :deep(.ant-input-number) { width:100%; }

@@ -13,16 +13,19 @@ type practiceCompanyRecommendations struct {
 }
 
 func loadPracticeCompanyRecommendations(ctx context.Context, tx pgx.Tx, offers *practiceCompanyOffers,
-	recipients map[string][]companySourceAssignment, orders map[string][]paymentInput, categories map[string]string) (practiceCompanyRecommendations, error) {
+	recipients map[string][]companySourceAssignment, orders map[string][]paymentInput, categories map[string]string,
+	includeOrderCompanies bool) (practiceCompanyRecommendations, error) {
 	var out practiceCompanyRecommendations
-	if offers == nil {
+	if offers == nil && !includeOrderCompanies {
 		return out, nil
 	}
 	companies := make(map[pgtype.UUID]bool)
-	for sourceID, award := range offers.companies["new"] {
-		if award.recommendationRate > 0 {
-			for _, assignment := range recipients[sourceID] {
-				companies[assignment.Company] = true
+	if offers != nil {
+		for sourceID, award := range offers.companies["new"] {
+			if award.recommendationRate > 0 {
+				for _, assignment := range recipients[sourceID] {
+					companies[assignment.Company] = true
+				}
 			}
 		}
 	}
@@ -31,7 +34,7 @@ func loadPracticeCompanyRecommendations(ctx context.Context, tx pgx.Tx, offers *
 		for _, payment := range matches {
 			f := payment.Fact
 			award, _ := offers.match("new", f.SalesCompanyID, categories[f.PaymentID])
-			if award.recommendationRate <= 0 {
+			if award.recommendationRate <= 0 && (!includeOrderCompanies || len(recipients[f.SalesCompanyID]) == 0) {
 				continue
 			}
 			for _, assignment := range recipients[f.SalesCompanyID] {

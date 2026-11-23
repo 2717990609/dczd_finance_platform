@@ -8,7 +8,7 @@ import { hasPracticePaymentScope } from './rule-component-form'
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array, salesCategories:Array,
   registrationCompanies:Array, registrationLoading:Boolean, registrationError:String,
-  recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array, payeeRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
+  recipientTypes:Array, referralCompanies:Array, appointmentKinds:Array, sourceRoles:Array, payeeRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
   memberChoices:Array, duties:Array,
 })
 const config = computed(() => props.component.periodBenefit)
@@ -56,12 +56,16 @@ const calculationMethods = computed(() => [
     <a-form-item v-if="config.recipient==='unit'" label="收款组织" :html-for="field('unit')" required>
       <a-select :id="field('unit')" v-model:value="config.unitId" :options="units" show-search :filter-option="byName"/>
     </a-form-item>
-    <a-form-item v-if="config.recipient==='person'" label="收款人员" :html-for="field('person')" required>
+    <a-form-item v-if="config.recipient==='person'" label="指定收款人" :html-for="field('person')" required>
       <a-select :id="field('person')" v-model:value="config.personId" :options="people" show-search :filter-option="byName"/>
     </a-form-item>
     <a-form-item v-if="config.recipient==='order_person'" label="从订单取收款人" :html-for="field('payee-role')" required>
       <a-select :id="field('payee-role')" v-model:value="config.orderRecipientRole" :options="payeeRoles"
         show-search :filter-option="byName" placeholder="选择订单角色"/>
+    </a-form-item>
+    <a-form-item v-if="config.recipient==='referral_company'" label="限定收款公司" :html-for="field('referral-companies')">
+      <a-select :id="field('referral-companies')" v-model:value="config.referralCompanyIds" :options="referralCompanies"
+        mode="multiple" :max-tag-count="1" allow-clear :filter-option="byName" placeholder="按推荐关系结算"/>
     </a-form-item>
     <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
       :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
@@ -69,11 +73,11 @@ const calculationMethods = computed(() => [
       <a-form-item label="计提方式" :html-for="field('method')">
         <a-select :id="field('method')" v-model:value="config.method" :options="calculationMethods"/>
       </a-form-item>
-      <a-form-item v-if="config.method==='rate'" label="班次计提比例（%）" required>
-        <a-input-number v-model:value="component.amount" aria-label="班次计提比例（%）" :min="0" :max="100" :precision="4"/>
+      <a-form-item v-if="config.method==='rate'" label="比例（%）" :html-for="field('rate')" required>
+        <a-input-number :id="field('rate')" v-model:value="component.amount" :min="0" :max="100" :precision="4"/>
       </a-form-item>
       <a-form-item v-else-if="config.method==='fixed' || config.method==='class_fixed'"
-        :label="config.method==='class_fixed' ? '整班金额（元）' : '每份报名（元）'" :html-for="field('fixed')" required>
+        label="金额（元）" :html-for="field('fixed')" required>
         <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
       </a-form-item>
     </template>
@@ -90,9 +94,9 @@ const calculationMethods = computed(() => [
         <a-select :id="field('sales-units')" v-model:value="config.salesUnits" :options="salesUnits"
           mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司、部门或小组"/>
       </a-form-item>
-      <a-form-item v-if="config.salesCompanies?.length" label="销售公司" :html-for="field('companies')">
+      <a-form-item v-if="companies?.length" label="销售公司" :html-for="field('companies')">
         <a-select :id="field('companies')" v-model:value="config.salesCompanies" :options="companies"
-          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售公司"/>
+          mode="multiple" :max-tag-count="1" allow-clear :filter-option="byName" placeholder="不限销售公司"/>
       </a-form-item>
       <a-form-item v-if="config.salesPeople?.length" label="销售人员" :html-for="field('sales')">
         <a-select :id="field('sales')" v-model:value="config.salesPeople" :options="people"

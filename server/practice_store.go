@@ -362,14 +362,17 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 		history.liveCategories = companyClassifications
 	}
 	var orderCompanyMembers []practiceEnrollment
-	if practiceBenefitPaysSalesCompany(rule) {
+	if practiceBenefitPaysOrderCompany(rule) {
 		orderCompanyMembers = members
 	}
 	companyRecipients, err := loadPracticeCompanyRecipients(ctx, tx, companyOffers, orders, companyClassifications, orderCompanyMembers)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	recommendations, err := loadPracticeCompanyRecommendations(ctx, tx, companyOffers, companyRecipients, orders, companyClassifications)
+	loadOrderRecommendations := slices.ContainsFunc(rule.Components, func(part component) bool {
+		return part.PeriodBenefit != nil && part.PeriodBenefit.ReferralCompanyRecipient
+	})
+	recommendations, err := loadPracticeCompanyRecommendations(ctx, tx, companyOffers, companyRecipients, orders, companyClassifications, loadOrderRecommendations)
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}

@@ -158,6 +158,19 @@ func validateComponents(items []component) error {
 	if err := checkPracticeCompanyScopes(items); err != nil {
 		return err
 	}
+	for _, member := range []string{"new", "retrain"} {
+		var separate, embedded bool
+		for _, part := range items {
+			if !part.matchesPracticeMember(member) {
+				continue
+			}
+			separate = separate || part.PeriodBenefit != nil && part.PeriodBenefit.ReferralCompanyRecipient
+			embedded = embedded || part.CompanySales != nil && len(part.CompanySales.RecommendationRecipients) != 0
+		}
+		if separate && embedded {
+			return errors.New("请移除销售公司安排中的推荐比例，再单独配置推荐公司提成")
+		}
+	}
 	return checkPracticeRegistrationScopes(items)
 }
 
@@ -765,6 +778,7 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			}
 			if benefit := c.PeriodBenefit; benefit != nil {
 				companyIDs = append(companyIDs, benefit.SalesCompanies...)
+				receivingCompanies = append(receivingCompanies, benefit.ReferralCompanyIDs...)
 				categoryIDs = append(categoryIDs, benefit.SalesCategoryIDs...)
 				if scope := benefit.RegistrationScope; scope != nil {
 					registrationCompanyIDs = append(registrationCompanyIDs, scope.Companies...)

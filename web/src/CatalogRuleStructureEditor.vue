@@ -6,7 +6,7 @@ import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import { catalogCalculationMethods, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesCalculationMethods, catalogSalesPayees, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
-const props = defineProps({options:Object, component:Object, api:Function, peopleFilters:Object, parseRate:Function,salesAvailable:Boolean})
+const props = defineProps({options:Object, component:Object, api:Function, peopleFilters:Object, parseRate:Function,salesAvailable:Boolean,orderTypeText:String})
 const emit = defineEmits(['rate-staged'])
 const draft = defineModel({type:Object,required:true})
 const editing = defineModel('editing', {type:Boolean,default:false})
@@ -161,9 +161,11 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
         <CatalogRateCondition v-model="form.row" :options="options" :scope="form.scope" :sales-payee="component?.targetKind==='seller'"/>
       </template>
       <template v-else>
-        <RuleArrangementFields ref="itemName" v-model:name="form.label" :name-id="form.kind==='item' ? 'catalog-add-label' : undefined">
+        <RuleArrangementFields ref="itemName" v-model:name="form.label" :name-id="form.kind==='item' ? 'catalog-add-label' : undefined"
+          :order-type-text="form.kind==='item' ? orderTypeText : undefined">
           <CatalogPayeeFields v-if="form.kind==='item'" :model-value="form" prefix="catalog-add" :options="options" :api="api" :people-filters="peopleFilters"
             :sales-available="!form.editingSales && form.itemIndex==null && salesAvailable" @update:model-value="changePayee"/>
+          <template #calculation>
           <a-form-item v-if="form.kind==='item'" label="计提方式" html-for="catalog-add-format">
             <a-select id="catalog-add-format" v-model:value="form.format" :options="isSales ? catalogSalesCalculationMethods : catalogCalculationMethods"/>
           </a-form-item>
@@ -174,10 +176,11 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
             <a-input-number id="catalog-add-fixed" aria-label="比例（%）" v-model:value="form.rate"
               :min="0" :max="100" :precision="2" string-mode/>
           </a-form-item>
-          <a-form-item v-else-if="form.format==='fixed'" label="金额（元/笔）" html-for="catalog-add-amount" required>
-            <a-input-number id="catalog-add-amount" aria-label="金额（元/笔）" v-model:value="form.amount"
+          <a-form-item v-else-if="form.format==='fixed'" label="金额（元）" html-for="catalog-add-amount" required>
+            <a-input-number id="catalog-add-amount" v-model:value="form.amount"
               :min="0" :precision="2" string-mode/>
           </a-form-item>
+          </template>
         </RuleArrangementFields>
         <CatalogCommissionScopeFields v-if="form.kind==='item'" prefix="catalog-add" v-model="form.orderScope"
           :options="options.salesUnits" :can-own="form.target==='person'"/>

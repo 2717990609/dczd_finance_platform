@@ -38,6 +38,7 @@ func TestPracticeNamedRecommendationPayee(t *testing.T) {
 	input := publishRuleInput{ProductID: product, PeriodID: &period, Label: "推荐规则", Components: []component{part,
 		{Type: "manager", Mode: "period_rate", Value: 100000, PeriodBenefit: &practicePeriodBenefit{Label: "订单人员提成", OrderRecipientRole: "DIRECT_REFERRER"}},
 		{Type: "manager", Mode: "period_rate", Value: 50000, PeriodBenefit: &practicePeriodBenefit{Label: "所属公司提成", SalesCompanyRecipient: true}},
+		{Type: "manager", Mode: "period_rate", Value: 40000, PeriodBenefit: &practicePeriodBenefit{Label: "推荐公司提成", ReferralCompanyRecipient: true}},
 	}}
 	input.Components[0].RecipientDuty = "UNREGISTERED_DUTY"
 	if _, err := s.publishRule(ctx, input); !errors.Is(err, invalid) {
@@ -55,6 +56,7 @@ func TestPracticeNamedRecommendationPayee(t *testing.T) {
 		t.Fatalf("rule must persist the configured label and duty: %+v", saved[0])
 	}
 	const company = "41000000-0000-4000-8000-000000000211"
+	const referrer = "41000000-0000-4000-8000-000000000212"
 	at := time.Date(2026, 8, 8, 9, 0, 0, 0, shanghai)
 	paidAt := at.Add(-time.Hour)
 	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: seller, Source: "DCZD", ExternalID: "10", ValidFrom: paidAt.Format(time.RFC3339)}))
@@ -65,11 +67,15 @@ func TestPracticeNamedRecommendationPayee(t *testing.T) {
 			OccurredAt: paidAt, UpdatedAt: paidAt, AmountMinor: amount}
 	}
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, `INSERT INTO organization_units(id,name,kind,status) VALUES($1,'样本公司','COMPANY','ACTIVE')`, company); err != nil {
+		if _, err := tx.Exec(ctx, `INSERT INTO organization_units(id,name,kind,status) VALUES
+			($1,'样本公司','COMPANY','ACTIVE'),($2,'推荐公司','COMPANY','ACTIVE')`, company, referrer); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
 			VALUES('DCZD','partner',$1,$2)`, company, paidAt); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO organization_company_recommendations(company_id,referrer_company_id) VALUES($1,$2)`, company, referrer); err != nil {
 			return err
 		}
 		if _, err := storePracticeRoster(ctx, tx, practiceRoster{Key: rosterKey, Hash: "reference", SourceVersion: 1,
@@ -83,13 +89,13 @@ func TestPracticeNamedRecommendationPayee(t *testing.T) {
 		t.Fatal(err)
 	}
 	draft, err := s.calculateCurrentDraft(ctx, period, 0)
-	if err != nil || draft.IssueCount != 0 || draft.Total != 2500 || draft.LineCount != 6 {
+	if err != nil || draft.IssueCount != 0 || draft.Total != 2900 || draft.LineCount != 8 {
 		t.Fatalf("all selected recipients should earn their separate shares: %+v %v", draft, err)
 	}
 	var recipients string
 	if err := s.db.QueryRow(ctx, `SELECT string_agg(coalesce(person_id::text,beneficiary_unit_id::text),',' ORDER BY component_type)
 	 FROM calculation_draft_lines WHERE period_id=$1 AND base_minor=4000`, period).Scan(&recipients); err != nil ||
-		recipients != fmt.Sprintf("%d,%s,%d", seller, company, person) {
+		recipients != fmt.Sprintf("%d,%s,%s,%d", seller, company, referrer, person) {
 		t.Fatalf("wrong recipients for the original deposit: %s %v", recipients, err)
 	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, draft.Version); err != nil {
@@ -110,13 +116,13 @@ func TestPracticeNamedRecommendationPayee(t *testing.T) {
 		t.Fatal(err)
 	}
 	refund, err := s.calculateCurrentDraft(ctx, refundMonth, 0)
-	if err != nil || refund.IssueCount != 0 || refund.Total != -500 {
-		t.Fatalf("the refund should debit 200, 200 and 100 against the original three recipients: %+v %v", refund, err)
+	if err != nil || refund.IssueCount != 0 || refund.Total != -580 {
+		t.Fatalf("the refund should debit against each original recipient: %+v %v", refund, err)
 	}
 	var deductions string
 	if err := s.db.QueryRow(ctx, `SELECT string_agg(coalesce(l.person_id::text,l.beneficiary_unit_id::text)||':'||r.amount_minor,',' ORDER BY l.component_type)
 	 FROM calculation_draft_refunds r JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1`, refundMonth).Scan(&deductions); err != nil ||
-		deductions != fmt.Sprintf("%d:-200,%s:-100,%d:-200", seller, company, person) {
+		deductions != fmt.Sprintf("%d:-200,%s:-100,%s:-80,%d:-200", seller, company, referrer, person) {
 		t.Fatalf("refund must refer to the original recipients and shares: %s %v", deductions, err)
 	}
 }

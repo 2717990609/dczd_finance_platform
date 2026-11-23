@@ -33,6 +33,8 @@ const payeeKinds = [
 ]
 const hasRecommendations = computed(() => props.component.classMember==='new' && categories.value.some(category=>
   category.recommendationRate>0 || category.overrides.some(override=>override.recommendationRate>0)))
+const legacyRecommendations = computed(() => props.component.classMember==='new' &&
+  (hasRecommendations.value || props.component.companySales.recommendationRecipients?.length))
 const internalOptions = computed(() => props.companies.filter(option=>!categories.value.some(c=>
   (c.scope==='companies' && c.companies.includes(option.value)) || c.overrides.some(row=>row.companyIds?.includes(option.value)))))
 const amounts = computed(() => props.amounts)
@@ -80,16 +82,17 @@ watch(amounts, choices => {
 
 <template>
   <RuleArrangementFields :name-id="field('label')" v-model:name="component.companySales.label"
+    calculation-text="按类别或公司配置" scope-text="销售类别与指定公司"
     :duty-id="payee.kind==='person' ? field('duty') : undefined" :duties="duties" v-model:duty="component.recipientDuty"
     :order-type-id="'rule-member-'+index" :order-types="memberChoices" :order-type="component.classMember"
     @update:order-type="component.classMember=$event; emit('member-change')">
     <a-form-item label="收款对象" :html-for="field('payee')" required>
       <a-select :id="field('payee')" v-model:value="payee.kind" :options="payeeKinds"/>
     </a-form-item>
-    <a-form-item v-if="payee.kind==='order_person'" label="从订单取谁" :html-for="field('payee-role')" required>
+    <a-form-item v-if="payee.kind==='order_person'" label="从订单取收款人" :html-for="field('payee-role')" required>
       <a-select :id="field('payee-role')" v-model:value="payee.role" :options="payeeRoles" show-search :filter-option="byName"/>
     </a-form-item>
-    <a-form-item v-if="payee.kind==='person'" label="收款人" :html-for="field('payee-person')" required>
+    <a-form-item v-if="payee.kind==='person'" label="指定收款人" :html-for="field('payee-person')" required>
       <a-select :id="field('payee-person')" v-model:value="payee.personId" :options="people" show-search :filter-option="byName"/>
     </a-form-item>
     <a-form-item v-if="payee.kind==='company'" label="收款公司" :html-for="field('payee-company')" required>
@@ -116,13 +119,13 @@ watch(amounts, choices => {
       size="small" :min="0" :max="100" :precision="4" placeholder="未配置"/>
   </a-form-item>
   <section :key="activeGroup.scope" :aria-label="activeGroup.label"
-    class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':component.classMember==='new'}">
+    class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations}">
     <p v-if="!standardRows(activeGroup)" class="finance-rate-empty">{{ activeGroup.scope==='category' ? '暂无类别标准' : '暂无指定公司' }}</p>
     <div v-else class="company-standard-fields company-standard-column-labels" aria-hidden="true">
       <span>{{ activeGroup.scope==='category' ? '销售类别' : '适用公司' }}</span>
       <span v-if="amounts.length>1">计算方式</span>
       <span>{{ amounts.length>1 ? '计提标准' : '按报名净实收（%）' }}</span>
-      <span v-if="component.classMember==='new'">推荐比例（%）</span>
+      <span v-if="legacyRecommendations">推荐比例（%）</span>
     </div>
     <div v-for="({standard:category,index:i}) in activeGroup.rows" :key="i" class="company-category company-standard-fields">
       <a-form-item v-if="category.scope==='category'" class="company-scope-field" label="销售类别" :html-for="field('sales-category-'+i)" required>
@@ -141,7 +144,7 @@ watch(amounts, choices => {
           :addon-after="amounts.length>1 ? (category.mode==='rate' ? '%' : '元') : undefined"
           :max="category.mode==='rate'?100:undefined" :precision="category.mode==='rate'?4:2"/>
       </a-form-item>
-      <a-form-item v-if="component.classMember==='new'" label="推荐比例（%）" :html-for="field('recommendation-'+i)">
+      <a-form-item v-if="legacyRecommendations" label="推荐比例（%）" :html-for="field('recommendation-'+i)">
         <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" size="small" :min="0" :max="100" :precision="4"/>
       </a-form-item>
       <a-button v-if="categories.length>1 || component.companySales.defaultRate != null"
@@ -166,7 +169,7 @@ watch(amounts, choices => {
             :addon-after="amounts.length>1 ? (override.mode==='rate' ? '%' : '元') : undefined"
             :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
         </a-form-item>
-        <a-form-item v-if="component.classMember==='new'" label="推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)">
+        <a-form-item v-if="legacyRecommendations" label="推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)">
           <a-input-number :id="field('override-recommendation-'+i+'-'+j)" v-model:value="override.recommendationRate"
             size="small" :min="0" :max="100" :precision="4" :placeholder="'沿用 '+(category.recommendationRate ?? 0)+'%'"/>
         </a-form-item>
@@ -181,10 +184,10 @@ watch(amounts, choices => {
   <a-collapse ghost class="company-advanced">
     <a-collapse-panel key="advanced" header="更多配置">
       <div class="rule-basics">
-        <a-form-item label="业绩归给订单里的谁" :html-for="field('role')" required>
+        <a-form-item label="订单销售角色" :html-for="field('role')" required>
           <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles" size="small"/>
         </a-form-item>
-        <a-form-item label="新报和复训共用的内部销售公司" :html-for="field('internal')" extra="这些公司沿用个人提成">
+        <a-form-item label="按个人销售提成的公司" :html-for="field('internal')">
           <a-select :id="field('internal')" v-model:value="component.companySales.internalCompanies" :options="internalOptions"
             mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" size="small"/>
         </a-form-item>

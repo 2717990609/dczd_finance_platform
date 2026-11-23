@@ -107,6 +107,8 @@ function recipient(part) {
   if (benefit?.orderRecipientRole) return [roleName(benefit.orderRecipientRole),
     benefit.recipientDuty && label('organizationDuty',benefit.recipientDuty)].filter(Boolean).join(' · ')
   if (benefit?.salesCompanyRecipient) return '销售所属公司'
+  if (benefit?.referralCompanyRecipient) return benefit.referralCompanyIds?.length
+    ? '推荐公司 · '+benefit.referralCompanyIds.map(unitName).join('、') : '推荐公司'
   if (part.companySales) {
     const payee = part.companySales.payee
     if (payee?.kind==='order_person') return roleName(payee.role)

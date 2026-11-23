@@ -586,16 +586,18 @@ async function publish() {
           <a-alert v-if="itemRemoved" type="warning" :message="teamSplit ? '成交销售及其内部团队拆分将从新版移除' : '此分项将从新版移除'" show-icon class="feedback"/>
           <template v-if="!applied && sheet.mayPublish && sheet.structureOptions && !itemRemoved">
             <RuleArrangementFields name-id="catalog-rate-label" :name="labelEdits.get(item.itemKey) ?? item.label"
+              :order-type-text="rule?.scopeLabel?.replace(sheet.productName+' · ','') || sheet.productName"
               :disabled="!editable || structureEditing" @update:name="setLabel(item,$event)">
               <CatalogPayeeFields :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
                 prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters"
                 :disabled="!editable || structureEditing" @update:model-value="setTarget(item,$event)"/>
+              <template #calculation>
               <a-form-item label="计提方式" html-for="catalog-flat-method">
                 <a-select id="catalog-flat-method" :value="calculationMethod(item)" :options="calculationMethods"
                   :disabled="!editable || structureEditing || calculationMethods.length===1" @update:value="chooseCalculation(item,$event)"/>
               </a-form-item>
-              <a-form-item v-if="targetKind!=='seller' && !selectedCalculation && !item.rows?.length && flatMethod(item)==='fixed'" label="金额（元/笔）" html-for="catalog-fixed-amount">
-                <a-input-number id="catalog-fixed-amount" aria-label="金额（元/笔）" :value="flatValue(item)" :disabled="!editable"
+              <a-form-item v-if="targetKind!=='seller' && !selectedCalculation && !item.rows?.length && flatMethod(item)==='fixed'" label="金额（元）" html-for="catalog-fixed-amount">
+                <a-input-number id="catalog-fixed-amount" :value="flatValue(item)" :disabled="!editable"
                   :min="0" :precision="2" string-mode @update:value="setFlat(item,'fixed',$event)"/>
               </a-form-item>
               <a-form-item v-else-if="targetKind!=='seller' && !selectedCalculation && !item.rows?.length" label="比例（%）" html-for="catalog-fixed-rate">
@@ -608,6 +610,7 @@ async function publish() {
                   @click="structureEditor?.editCalculation(selectedCalculation,calculationMethod(item))">编辑计算条件</a-button>
                 <a-button size="small" type="link" :disabled="!editable || structureEditing" @click="undoCalculation">撤销更换</a-button>
               </a-space>
+              </template>
             </RuleArrangementFields>
             <CatalogCommissionScopeFields prefix="catalog-edit" :model-value="commissionScope(item)"
               :options="sheet.structureOptions.salesUnits" :unit-names="commissionUnitNames" :disabled="!editable || structureEditing"
@@ -742,6 +745,7 @@ async function publish() {
             <Teleport v-if="sheet.structureOptions" defer :disabled="!component || itemRemoved"
               :to="component && !itemRemoved ? rateEditorTarget : 'body'">
               <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id"
+                :order-type-text="rule?.scopeLabel?.replace(sheet.productName+' · ','') || sheet.productName"
                 v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
                 :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!hasSales && !structure.sales"
                 @rate-staged="showRateGroup"/>

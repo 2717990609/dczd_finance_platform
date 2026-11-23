@@ -485,6 +485,9 @@ func (offers *practiceCompanyOffers) needsClassifications() bool {
 }
 
 func (offers *practiceCompanyOffers) match(member, company, category string) (practiceCompanyAward, bool) {
+	if offers == nil {
+		return practiceCompanyAward{}, false
+	}
 	if award, configured := offers.companies[member][company]; configured {
 		return award, true
 	}
