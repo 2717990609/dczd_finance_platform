@@ -1386,6 +1386,7 @@ function ruleComponentBody(row) {
     return component
   }
   const form = row.tierConfig
+  const amountMetricLabel = practiceCumulativeAmountMetrics.find(option=>option.value===form.cumulativeMetric)?.label
   must(form.metric,'请选择阶梯指标')
   const serialize = (rows, convert) => rows.map(tier => ({
     from:convert(must(tier.from,'请填写各档位下限')),
@@ -1401,7 +1402,7 @@ function ruleComponentBody(row) {
     if (form.cumulativeMetric) metric = 'performance'
     else if (form.forceCount) metric = 'count'
     if (metric!=='performance' && !schedule.count.length) throw new Error('请添加至少一档累计人数标准。')
-    if (metric!=='count' && !schedule.performance.length) throw new Error('请添加至少一档本期实付标准。')
+    if (metric!=='count' && !schedule.performance.length) throw new Error('请添加至少一档'+(amountMetricLabel || '本期实付')+'标准。')
     return {
       ...(metric!=='performance' ? {count:serialize(schedule.count,Number)} : {}),
       ...(metric!=='count' ? {performance:serialize(schedule.performance,minor)} : {}),

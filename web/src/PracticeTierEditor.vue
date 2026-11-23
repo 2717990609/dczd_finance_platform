@@ -21,9 +21,11 @@ const metricOptions = computed(() => [
 const amountLabel = computed(() => practiceCumulativeAmountMetrics.find(metric=>metric.value===props.config.cumulativeMetric)?.label)
 const metricMode = computed(() => props.config.cumulativeMetric || (props.config.forceCount ? 'count' : 'legacy'))
 function setMetric(metric) {
-  props.config.cumulativeMetric = practiceCumulativeAmountMetrics.some(option=>option.value===metric) ? metric : undefined
-  props.config.forceCount = metric==='count'
-  if (props.config.cumulativeMetric && props.config.startMode==='opening') props.config.startMode = undefined
+  const config = props.config
+  config.cumulativeMetric = practiceCumulativeAmountMetrics.some(option=>option.value===metric) ? metric : undefined
+  config.forceCount = metric==='count'
+  if (config.cumulativeMetric && config.startMode==='opening') config.startMode = undefined
+  if (!config.cumulativeMetric && !config.startMode && config.openingId) config.startMode = 'opening'
 }
 function sectionsFor(metric) {
   if (amountLabel.value) return [{key:'performance',title:amountLabel.value,unit:'元',decimals:2}]
@@ -38,6 +40,7 @@ const assignedCategories = computed(() => new Set(props.config.categories.flatMa
 const canAddCategory = computed(() => props.salesCategories.some(category=>!assignedCategories.value.has(category.value)))
 const assignedCompanies = computed(() => new Set(props.config.companies.flatMap(row=>row.companyIds || [])))
 const canAddCompany = computed(() => props.companies.some(company=>!assignedCompanies.value.has(company.value)))
+const assignedPeople = computed(() => props.config.people.filter(row=>row.personId).length)
 function eligiblePeople(rows, row) {
   return props.people.filter(person =>
     !rows.some(other => other !== row && other.personId === person.value))
@@ -77,8 +80,9 @@ function removeSchedule(schedules, index) {
         @change="setIncludeRetrain($event.target.checked)">使用原有复训档值</a-checkbox>
     </div>
     <p class="tier-note">匹配顺序　个人特例 → 公司特例 → 销售类别 → 通用档位</p>
-    <details v-if="salesCategories.length || config.categories.length" class="tier-person-starts" open>
-      <summary>销售类别默认档位</summary>
+    <details v-if="salesCategories.length || config.categories.length" class="tier-person-starts"
+      :open="config.categories.length>0 || config.onlyOverrides && !config.companies.length && !config.people.length">
+      <summary>销售类别默认档位<small v-if="assignedCategories.size"> · {{ assignedCategories.size }} 类</small></summary>
       <div v-for="(category,index) in config.categories" :key="index" class="tier-range">
         <div class="tier-values">
           <a-form-item :html-for="'tier-category-'+index" label="销售类别" required>
@@ -96,8 +100,8 @@ function removeSchedule(schedules, index) {
       <a-button v-if="canAddCategory" type="dashed" block
         @click="config.categories.push({salesCategoryIds:[],metric:config.metric,...newSchedule()})">添加类别档位</a-button>
     </details>
-    <details class="tier-person-starts">
-      <summary>公司特例</summary>
+    <details class="tier-person-starts" :open="config.companies.length>0 && !config.categories.length">
+      <summary>公司特例<small v-if="assignedCompanies.size"> · {{ assignedCompanies.size }} 家</small></summary>
       <div v-for="(company,index) in config.companies" :key="index" class="tier-range">
         <div class="tier-values">
           <a-form-item :html-for="'tier-company-'+index" label="销售公司" required>
@@ -115,8 +119,8 @@ function removeSchedule(schedules, index) {
       <a-button v-if="canAddCompany" type="dashed" block @click="config.companies.push({companyIds:[],metric:config.metric,...newSchedule()})">添加公司档位</a-button>
       <p v-else-if="!companies.length" class="tier-note">暂无可选销售公司。</p>
     </details>
-    <details class="tier-person-starts">
-      <summary>个人特例</summary>
+    <details class="tier-person-starts" :open="config.people.length>0 && !config.categories.length && !config.companies.length">
+      <summary>个人特例<small v-if="assignedPeople"> · {{ assignedPeople }} 人</small></summary>
       <div v-for="(person,index) in config.people" :key="index" class="tier-range">
         <div class="tier-values">
           <a-form-item :html-for="'tier-seller-'+index" label="销售人员" required>
