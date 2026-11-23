@@ -13,6 +13,7 @@ import PracticeRetrainSplitEditor from './PracticeRetrainSplitEditor.vue'
 import PracticeRetrainServiceEditor from './PracticeRetrainServiceEditor.vue'
 import PracticeCompanySalesEditor from './PracticeCompanySalesEditor.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
+import PracticePersonalScopeFields from './PracticePersonalScopeFields.vue'
 import FinanceLogin from './FinanceLogin.vue'
 import OrganizationDirectory from './OrganizationDirectory.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
@@ -243,7 +244,7 @@ const registrationCompaniesError = ref('')
 const classPeopleOptions = computed(() => classRuleDirectory.value?.people.map(person=>({value:person.id,label:person.name})) || peopleOptions.value)
 const unitOptions = computed(() => classRuleDirectory.value?.units.map(unit=>({value:unit.id,label:unit.scopeName || unit.name})) || [])
 const salesUnitOptions = computed(() => classRuleDirectory.value?.units.filter(unit=>['COMPANY','DEPARTMENT','TEAM'].includes(unit.kind))
-  .map(unit=>({value:unit.id,label:(unit.scopeName || unit.name)+' · '+optionLabel('organizationKind',unit.kind)})) || [])
+  .map(unit=>({value:unit.id,kind:unit.kind,label:(unit.scopeName || unit.name)+' · '+optionLabel('organizationKind',unit.kind)})) || [])
 const practiceScopeNames = computed(() => {
   const names = new Map((classRuleDirectory.value?.units || []).map(unit=>[unit.id,unit.scopeName || unit.name]))
   const personNames = new Map(classPeopleOptions.value.map(person=>[person.value,person.label]))
@@ -335,6 +336,8 @@ const amountModes = row => {
   return ruleAmountModes.value.filter(option =>
     matchesOption(option, selectedProduct.value?.periodMode, row.type, row.classMember) &&
     (expected ? option.value===expected : !['period_rate','company_sales'].includes(option.value)))
+    .map(option=>option.value==='tiered' && (row.saleScope?.ownSales || hasPracticePaymentScope(row.saleScope || {}))
+      ? {...option,disabled:true,label:'阶梯（请先清除当前范围）'} : option)
 }
 function updateAmountMode(row, mode) {
   if (row.mode !== mode && (mode === 'rate' || mode === 'fixed')) row.amount = undefined
@@ -1194,7 +1197,11 @@ function ruleComponentBody(row) {
       component.salesPersonId = must(row.salesPersonId,'请选择收款人')
       if (row.recipientDuty) component.recipientDuty = row.recipientDuty
     }
-    if (row.type==='sales' && row.salesCompanies?.length) component.salesCompanies = row.salesCompanies
+    if (row.salesCompanies?.length) component.salesCompanies = row.salesCompanies
+    if (row.saleScope?.ownSales || hasPracticePaymentScope(row.saleScope || {})) component.saleScope = row.saleScope
+    if (row.restrictSaleScope && !component.salesCompanies && !component.saleScope) {
+      throw new Error('请选择「'+component.label+'」的适用公司、类别或组织。')
+    }
   }
   if (row.mode==='company_sales') {
     must(sourceRole,'请选择业绩使用的订单销售角色')
@@ -1895,7 +1902,7 @@ async function save() {
               <a-form-item :html-for="'rule-payee-kind-'+i" label="收款对象">
                 <a-select :id="'rule-payee-kind-'+i" :value="c.salesRecipientKind || 'order_person'"
                   :options="[{value:'order_person',label:'订单上的人员'},{value:'person',label:'指定个人'}]"
-                  @update:value="c.salesRecipientKind=$event"/>
+                  @update:value="c.salesRecipientKind=$event; if ($event!=='person' && c.saleScope?.ownSales) c.saleScope=undefined"/>
               </a-form-item>
               <a-form-item v-if="c.salesRecipientKind==='person'" :html-for="'rule-sales-person-'+i" label="指定收款人" required>
                 <a-select :id="'rule-sales-person-'+i" v-model:value="c.salesPersonId" :options="classPeopleOptions"
@@ -1920,13 +1927,8 @@ async function save() {
               </a-form-item>
             </template>
             <template #scope>
-              <a-form-item v-if="classRule && c.type==='sales'" :html-for="'rule-sales-companies-'+i" label="计提订单范围">
-                <a-select :id="'rule-sales-companies-'+i" v-model:value="c.salesCompanies" :options="options('practiceSalesCompany')"
-                  mode="multiple" :max-tag-count="3" allow-clear option-filter-prop="label" placeholder="全部适用销售公司"/>
-              </a-form-item>
-              <a-form-item v-else-if="classRule && c.type==='referral'" label="计提订单范围">
-                <span class="rule-field-value">全班适用报名</span>
-              </a-form-item>
+              <PracticePersonalScopeFields v-if="classRule && ['sales','referral'].includes(c.type)" :row="c" :index="i"
+                :companies="options('practiceSalesCompany')" :categories="options('practiceSalesCategory')" :units="salesUnitOptions"/>
             </template>
           </RuleArrangementFields>
           <PracticeRetrainSplitEditor v-if="c===practiceRetrainSales && c.retrainSplits?.length" :component="c" :index="i"

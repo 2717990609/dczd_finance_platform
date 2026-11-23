@@ -176,7 +176,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		}
 	}
 	for _, purchase := range purchases {
-		member, payments, base := purchase.member, purchase.payments, purchase.base
+		member, payments := purchase.member, purchase.payments
 		if purchase.issue != "" {
 			issue := practiceIssue(purchase.issue, member, rule, "")
 			issue.FactID = purchase.issueFactID
@@ -240,6 +240,15 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				draft.Issues = append(draft.Issues, practiceIssue("UNCONFIGURED_COMPONENT", member, rule, part.Type))
 				continue
 			}
+			sale, scopeIssue := purchase.scopedSale(part, identities, runtime)
+			if scopeIssue != "" {
+				draft.Issues = append(draft.Issues, purchase.salesIssue(scopeIssue, rule, part.Type))
+				continue
+			}
+			if len(sale.payments) == 0 {
+				continue
+			}
+			payments, base := sale.payments, sale.base
 			assignments, issue := practiceBeneficiaries(payments, part.SourceRole, identities)
 			if issue != "" {
 				draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
@@ -310,7 +319,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				}
 				part.Mode, part.Value = tier.Mode, tier.Value
 			}
-			amount, issue := purchase.commissionAmount(part)
+			amount, issue := sale.commissionAmount(part)
 			if issue != "" {
 				draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
 				continue
@@ -325,14 +334,14 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 			var cumulativeBase, previousShare int64
 			for index, payment := range payments {
-				net := purchase.netAmount(payment)
+				net := sale.netAmount(payment)
 				cumulativeBase += net
 				share := prorateMinor(amount, cumulativeBase, base)
 				payee := assignments[index]
 				draft.Lines = append(draft.Lines, draftLine{
 					FactID: payment.ID, RuleID: rule.ID, EnrollmentID: member.ID, PersonID: payee.PersonID,
 					IdentityID: payee.ID, Component: part.Type, Base: net, Amount: share - previousShare,
-					practiceProportionalRefund: !isTiered && part.Mode == "rate",
+					practiceProportionalRefund: !isTiered && (part.Mode == "rate" || part.SaleScope != nil && part.RefundPolicy == "proportional"),
 					practiceTierRefund:         isTiered,
 					practiceArrangementLabel:   part.arrangementLabel(),
 				})

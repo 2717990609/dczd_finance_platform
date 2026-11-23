@@ -77,7 +77,7 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 		return nil, err
 	}
 	var people, pools []int64
-	var units []string
+	var units, categories []string
 	for _, target := range practicePoolTargets(version.Components) {
 		pools = append(pools, target.PoolID)
 		people = append(people, target.OwnerID)
@@ -85,6 +85,10 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 	for _, part := range version.Components {
 		if part.SalesPersonID != 0 {
 			people = append(people, part.SalesPersonID)
+		}
+		if scope := part.SaleScope; scope != nil {
+			units = append(units, scope.SalesUnits...)
+			categories = append(categories, scope.SalesCategoryIDs...)
 		}
 		if benefit := part.PeriodBenefit; benefit != nil {
 			people = append(people, benefit.PersonID)
@@ -114,11 +118,11 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 			units = append(units, split.ServiceSalesUnits...)
 		}
 	}
-	return s.practiceRecipientNames(ctx, people, units, pools)
+	return s.practiceRecipientNames(ctx, people, units, pools, categories)
 }
 
-func (s workspace) practiceRecipientNames(ctx context.Context, people []int64, units []string, pools []int64) (json.RawMessage, error) {
-	if len(people)+len(units)+len(pools) == 0 {
+func (s workspace) practiceRecipientNames(ctx context.Context, people []int64, units []string, pools []int64, categories []string) (json.RawMessage, error) {
+	if len(people)+len(units)+len(pools)+len(categories) == 0 {
 		return nil, nil
 	}
 	var result json.RawMessage
@@ -129,8 +133,9 @@ func (s workspace) practiceRecipientNames(ctx context.Context, people []int64, u
 	  FROM organization_units u LEFT JOIN organization_units p ON p.id=u.parent_id
 	  LEFT JOIN organization_units gp ON gp.id=p.parent_id
 	  WHERE u.id IN (SELECT nullif(ref,'')::uuid FROM unnest($2::text[]) ref)),'[]'),
-	 'pools',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name)) FROM practice_pools WHERE id=ANY($3::bigint[])),'[]'))`,
-		people, units, pools).Scan(&result)
+	 'pools',coalesce((SELECT jsonb_agg(jsonb_build_object('id',id,'name',name)) FROM practice_pools WHERE id=ANY($3::bigint[])),'[]'),
+	 'categories',coalesce((SELECT jsonb_object_agg(id,name) FROM organization_sales_categories WHERE id=ANY($4::uuid[])),'{}'))`,
+		people, units, pools, categories).Scan(&result)
 	return result, err
 }
 
@@ -169,9 +174,10 @@ func (b practicePeriodBenefit) hasSalesScope() bool {
 	return b.usesSalesPerson() || len(b.SalesCompanies)+len(b.SalesCategoryIDs) != 0
 }
 
-func practiceBenefitUsesCategories(rule paymentRule) bool {
+func practiceScopesUseCategories(rule paymentRule) bool {
 	return slices.ContainsFunc(rule.Components, func(part component) bool {
-		return part.PeriodBenefit != nil && len(part.PeriodBenefit.SalesCategoryIDs) != 0
+		return part.PeriodBenefit != nil && len(part.PeriodBenefit.SalesCategoryIDs) != 0 ||
+			part.SaleScope != nil && len(part.SaleScope.SalesCategoryIDs) != 0
 	})
 }
 

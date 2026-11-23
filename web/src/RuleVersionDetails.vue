@@ -38,7 +38,7 @@ const registrationCompanyName = key => props.registrationCompanies?.find(company
 const practiceScopeNames = computed(() => {
   const units = new Map((directory.value?.units || []).map(unit=>[unit.id,unit.scopeName || unit.name]))
   return {unit:id=>units.get(id) || '组织名称待核',person:personName,company:companyName,
-    category:id=>label('practiceSalesCategory',id),registrationCompany:registrationCompanyName}
+    category:id=>directory.value?.categories?.[id] || label('practiceSalesCategory',id),registrationCompany:registrationCompanyName}
 })
 function scheduleLabel(schedule) {
   if (schedule.personId) return '个人特例 · '+personName(schedule.personId)
@@ -134,7 +134,7 @@ function formula(part) {
 const salesScope = (part, limit) => props.classProduct ? practiceSalesScopeText(part,practiceScopeNames.value,limit) : undefined
 onMounted(async () => {
   if (props.embedded || props.recipients || !props.classProduct ||
-    !props.rule.components.some(part=>part.periodBenefit || part.retrainSplits?.length ||
+    !props.rule.components.some(part=>part.periodBenefit || part.saleScope || part.retrainSplits?.length ||
     part.salesPersonId || part.tiers?.personCountStarts?.length || part.tiers?.personSchedules?.length || part.companySales?.recommendationRecipients?.length ||
     ['person','company','pool'].includes(part.companySales?.payee?.kind))) return
   try {

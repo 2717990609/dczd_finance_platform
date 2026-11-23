@@ -231,6 +231,60 @@ func TestPracticeOwnSalesAndLeadershipPayTheSamePersonIndependently(t *testing.T
 	}
 }
 
+func TestPracticePersonalAndReferralArrangementsUseConfiguredOrderScope(t *testing.T) {
+	const category = "41000000-0000-4000-8000-000000000212"
+	const team = "41000000-0000-4000-8000-000000000213"
+	at := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	members := []practiceEnrollment{
+		{ID: 1, MembershipType: 3, CommissionEligible: true, ConfirmedAt: at, PaidOrderIDs: []string{"11", "12"}},
+		{ID: 2, MembershipType: 3, CommissionEligible: true, ConfirmedAt: at, PaidOrderIDs: []string{"22"}},
+	}
+	payment := func(id int64, order, referrer string, amount int64) []paymentInput {
+		return []paymentInput{{ID: id, Fact: sourceFact{Source: "DCZD", OrderID: order, PaymentID: order, ReferrerID: referrer,
+			SalesCompanyID: "company", AmountMinor: &amount, OccurredAt: at.Add(-time.Hour)}}}
+	}
+	orders := map[string][]paymentInput{"11": payment(11, "11", "a", 4000), "12": payment(12, "12", "a", 6000), "22": payment(22, "22", "b", 10000)}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "a"}: {{PersonID: 4}}, {"DCZD", "b"}: {{PersonID: 5}}}
+	runtime := practiceDraftRuntime{
+		companyClassifications:  map[string]string{"11": practiceInternalCompany, "12": practiceInternalCompany, "22": "another-category"},
+		internalSalesCategories: map[string]string{"11": category, "12": category},
+		salesOrganizations: practiceSalesOrganizations{
+			11: {"DIRECT_REFERRER": {PersonID: 4, SourceCompany: "company", Group: team}},
+			12: {"DIRECT_REFERRER": {PersonID: 4, SourceCompany: "company", Group: "other"}},
+			22: {"DIRECT_REFERRER": {PersonID: 5, SourceCompany: "company", Group: team}},
+		}}
+	var rule paymentRule
+	definition := `[
+	 {"type":"sales","mode":"rate","sourceRole":"DIRECT_REFERRER","value":1000,"label":"本人销售","salesPersonId":4,"saleScope":{"ownSales":true}},
+	 {"type":"referral","mode":"rate","sourceRole":"DIRECT_REFERRER","value":500,"label":"该小组推荐",
+	  "saleScope":{"salesCategoryIds":["` + category + `"],"salesUnits":["` + team + `"]}}
+	]`
+	if err := json.Unmarshal([]byte(definition), &rule.Components); err != nil || validateComponents(rule.Components) != nil {
+		t.Fatalf("invalid rule: %v %+v", err, rule)
+	}
+	draft, err := calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || len(draft.Issues) != 0 || len(draft.Lines) != 3 || draft.Total != 1200 || len(draft.Performance) != 3 {
+		t.Fatalf("scope must apply per arrangement while preserving all three sale performance records: %+v %v", draft, err)
+	}
+	for _, line := range draft.Lines {
+		if line.PersonID != 4 || line.Component == "referral" && (line.FactID != 11 || line.Amount != 200) {
+			t.Fatalf("scope paid the wrong order or beneficiary: %+v", line)
+		}
+	}
+	referral := &rule.Components[1]
+	referral.Mode, referral.Value, referral.RefundPolicy = "fixed", 1000, "proportional"
+	refund := map[int64][]practiceRefundMatch{11: {{event: payment(31, "refund", "a", 2000)[0]}}}
+	draft, err = calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, refund, runtime)
+	if err != nil || len(draft.Issues) != 0 || draft.Total != 1300 {
+		t.Fatalf("refund for a scoped payment must reduce both its personal and its fixed referral awards: %+v %v", draft, err)
+	}
+	for _, line := range draft.Lines {
+		if line.Component == "referral" && (line.FactID != 11 || line.Amount != 500 || !line.practiceProportionalRefund) {
+			t.Fatalf("wrong refundable fixed award: %+v", line)
+		}
+	}
+}
+
 func TestPracticePeriodBenefitChecksTheConfiguredPaymentRole(t *testing.T) {
 	amount := int64(5000)
 	const role = "LOCKED_SELLER"
@@ -917,6 +971,9 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 	classFixed := int64(2000)
 	scoped.Components = append(scoped.Components, component{Type: "delivery", Mode: "period_rate",
 		PeriodBenefit: &practicePeriodBenefit{Label: "整班固定交付", PersonID: manager, FixedMinor: &classFixed, FixedPerClass: true}})
+	scoped.Components = append(scoped.Components, component{Type: "referral", Mode: "rate", ClassMember: "new",
+		SourceRole: "DIRECT_REFERRER", Value: 500, ArrangementLabel: "小组推荐提成",
+		SaleScope: &practiceSaleScope{SalesCategoryIDs: []string{category}, SalesUnits: []string{group}}})
 	scoped.EditBaseID = &ruleID
 	for _, invalidUnit := range []string{"40000000-0000-4000-8000-000000000008"} {
 		benefit := scoped.Components[1].PeriodBenefit
@@ -938,7 +995,7 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 		t.Fatal(err)
 	}
 	summary = result.(draftSummary)
-	if summary.Total != 3242 || summary.LineCount != 7 || summary.IssueCount != 0 {
+	if summary.Total != 3742 || summary.LineCount != 8 || summary.IssueCount != 0 {
 		t.Fatalf("class awards use the seller's payment-time team in the order company: %+v", summary)
 	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, summary.Version); err != nil {
@@ -956,13 +1013,13 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 			return err
 		}
 		beforeRefund, err := replay.calculate()
-		if err != nil || beforeRefund.Total != 3242 {
+		if err != nil || beforeRefund.Total != 3742 {
 			t.Fatalf("replay must use original scope after organization and category changes: %d %v", beforeRefund.Total, err)
 		}
 		deposit := replay.payments["31"][0].ID
 		replay.refunds[deposit] = append(replay.refunds[deposit], practiceRefundMatch{event: paymentInput{Fact: fact("refund", 1000, at)}})
 		afterRefund, err := replay.calculate()
-		if err != nil || afterRefund.Total != 3142 {
+		if err != nil || afterRefund.Total != 3592 {
 			t.Fatalf("refund must reselect tier using the whole class and apply it to the frozen scope: %d %v", afterRefund.Total, err)
 		}
 		var tail int64

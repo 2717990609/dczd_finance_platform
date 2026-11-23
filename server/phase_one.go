@@ -37,6 +37,7 @@ type component struct {
 	SalesPersonID    int64                   `json:"salesPersonId,omitempty"`
 	RecipientDuty    string                  `json:"recipientDuty,omitempty"`
 	SalesCompanies   *[]string               `json:"salesCompanies,omitempty"`
+	SaleScope        *practiceSaleScope      `json:"saleScope,omitempty"`
 	Tiers            *practiceSalesTiers     `json:"tiers,omitempty"`
 	PeriodBenefit    *practicePeriodBenefit  `json:"periodBenefit,omitempty"`
 	CompanySales     *practiceCompanySales   `json:"companySales,omitempty"`
@@ -104,8 +105,11 @@ func validateComponents(items []component) error {
 			(c.CompanySales == nil || c.CompanySales.Payee.kind() != "person")) {
 			return invalid
 		}
+		if c.SaleScope != nil && !c.SaleScope.validFor(c) {
+			return invalid
+		}
 		if companies := c.salesCompanies(); len(companies) != 0 {
-			if c.Type != "sales" || c.SourceRole == "" {
+			if (c.Type != "sales" && c.Type != "referral") || c.SourceRole == "" {
 				return invalid
 			}
 			for i, company := range companies {
@@ -734,11 +738,15 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			if mode == "class" && (c.Type == "sales" || c.Type == "referral") && c.SourceRole == "" {
 				return errRuleOrderRole
 			}
-			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil || len(c.salesCompanies()) != 0 ||
+			if mode != "class" && (c.ClassMember != "" || c.PeriodBenefit != nil || len(c.salesCompanies()) != 0 || c.SaleScope != nil ||
 				c.arrangementLabel() != "" || c.SalesPersonID != 0 || c.RecipientDuty != "") {
 				return invalid
 			}
 			companyIDs = append(companyIDs, c.salesCompanies()...)
+			if scope := c.SaleScope; scope != nil {
+				categoryIDs = append(categoryIDs, scope.SalesCategoryIDs...)
+				salesUnitIDs = append(salesUnitIDs, scope.SalesUnits...)
+			}
 			if c.SalesPersonID != 0 {
 				personIDs = append(personIDs, c.SalesPersonID)
 			}

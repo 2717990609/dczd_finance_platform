@@ -244,8 +244,15 @@ export function practiceSalesScopeText(part, names, limit = 2) {
     if (part.companySales.defaultRate != null) entries.push('其他外部公司')
     return entries.join(' · ') || '待配置类别或公司'
   }
-  if (part.type==='referral') return '全班适用报名'
-  if (part.type!=='sales') return
+  if (part.saleScope?.ownSales) {
+    list('销售公司',part.salesCompanies || [],names.company)
+    return ['本人销售',...entries].join(' · ')
+  }
+  if (hasPracticePaymentScope(part.saleScope || {}) || part.restrictSaleScope) {
+    return practicePeriodScopeText({...part.saleScope,salesCompanies:part.salesCompanies,restrictPayments:part.restrictSaleScope},names,limit)
+  }
+  if (part.type==='referral' && !part.salesCompanies?.length) return '全班适用报名'
+  if (!['sales','referral'].includes(part.type)) return
   if (part.salesCompanies?.length) {
     list('销售公司',part.salesCompanies,names.company)
     return entries.join(' · ')

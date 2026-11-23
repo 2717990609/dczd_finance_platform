@@ -6,6 +6,47 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+type practiceSaleScope struct {
+	OwnSales         bool     `json:"ownSales,omitempty"`
+	SalesCategoryIDs []string `json:"salesCategoryIds,omitempty"`
+	SalesUnits       []string `json:"salesUnits,omitempty"`
+}
+
+func (s practiceSaleScope) validFor(part component) bool {
+	if (part.Type != "sales" && part.Type != "referral") || (part.Mode != "rate" && part.Mode != "fixed") ||
+		part.SourceRole == "" || len(part.retrainSplits()) != 0 {
+		return false
+	}
+	if s.OwnSales {
+		return part.SalesPersonID > 0 && len(s.SalesCategoryIDs)+len(s.SalesUnits) == 0
+	}
+	return len(s.SalesCategoryIDs)+len(s.SalesUnits) != 0 && validUniqueScopeIDs(s.SalesCategoryIDs) && validUniqueScopeIDs(s.SalesUnits)
+}
+
+func (p practicePurchase) scopedSale(part component, identities map[identityKey][]identityAssignment,
+	runtime practiceDraftRuntime) (practicePurchase, string) {
+	scope := part.SaleScope
+	if scope == nil {
+		return p, ""
+	}
+	filter := practicePeriodBenefit{PersonID: part.SalesPersonID, OwnSales: scope.OwnSales,
+		SalesCategoryIDs: scope.SalesCategoryIDs, SalesUnits: scope.SalesUnits}
+	selected := p
+	selected.payments, selected.base, selected.gross = nil, 0, 0
+	for _, payment := range p.payments {
+		matched, issue := filter.eligiblePayment(payment, part.SourceRole, nil, identities, runtime)
+		if issue != "" {
+			return practicePurchase{}, issue
+		}
+		if matched {
+			selected.payments = append(selected.payments, payment)
+			selected.base += p.netAmount(payment)
+			selected.gross += *payment.Fact.AmountMinor
+		}
+	}
+	return selected, ""
+}
+
 type practiceSalesOrganization struct {
 	PersonID          int64                        `json:"personId"`
 	SourceCompany     string                       `json:"sourceCompany,omitempty"`
@@ -24,6 +65,9 @@ func loadPracticeSalesOrganizations(ctx context.Context, tx pgx.Tx, rule payment
 	orders map[string][]paymentInput, identities map[identityKey][]identityAssignment) (practiceSalesOrganizations, error) {
 	roles := make(map[string]bool)
 	for _, part := range rule.Components {
+		if scope := part.SaleScope; scope != nil && len(scope.SalesUnits) != 0 {
+			roles[part.SourceRole] = true
+		}
 		if benefit := part.PeriodBenefit; benefit != nil && len(benefit.SalesUnits) != 0 {
 			roles[part.SourceRole] = true
 		}

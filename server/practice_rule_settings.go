@@ -124,7 +124,7 @@ func (s workspace) getPracticeRuleSettings(w http.ResponseWriter, r *http.Reques
 			pools = append(pools, split.Pool.PoolID)
 		}
 	}
-	directory, err := s.practiceRecipientNames(ctx, people, nil, pools)
+	directory, err := s.practiceRecipientNames(ctx, people, nil, pools, nil)
 	respond(w, struct {
 		Rules     []practiceRuleSettings `json:"rules"`
 		Directory json.RawMessage        `json:"directory,omitempty"`

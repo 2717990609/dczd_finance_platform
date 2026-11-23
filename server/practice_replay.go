@@ -54,7 +54,7 @@ type practiceReplayCompany struct {
 
 func hasPracticeReplayDependencies(rule paymentRule, members []practiceEnrollment) bool {
 	for _, part := range rule.Components {
-		if part.Tiers != nil || part.PeriodBenefit != nil || len(part.salesCompanies()) != 0 || len(part.retrainSplits()) != 0 {
+		if part.Tiers != nil || part.PeriodBenefit != nil || part.SaleScope != nil || len(part.salesCompanies()) != 0 || len(part.retrainSplits()) != 0 {
 			return true
 		}
 	}
@@ -86,7 +86,7 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 			}
 		}
 	}
-	if practiceTierUsesCategories(rule) || practiceBenefitUsesCategories(rule) || runtime.companyOffers.needsClassifications() {
+	if practiceTierUsesCategories(rule) || practiceScopesUseCategories(rule) || runtime.companyOffers.needsClassifications() {
 		inputs.CompanyClassifications = make(map[string]string)
 	}
 	if len(runtime.internalSalesCategories) != 0 {
