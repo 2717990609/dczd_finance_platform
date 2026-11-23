@@ -8,7 +8,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionScope, catalogRateIndicators, catalogRatePriority, catalogRateScopeTitles as rateScopeTitles, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, catalogRatePriority, catalogRateScopeTitles as rateScopeTitles, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule:Object, applied:Object, api:Function, formatTime:Function, formatMoney:Function,
   optionLabel:Function, periods:Array, skus:Array })
@@ -291,10 +291,12 @@ function currentRate(item,row) {
   const edit = edits.value[cellKey(item.itemKey,row.row)]
   return edit ? rateAsBasisPoints(edit.value) : row.rateBps
 }
+const activeRateRows = item => configuredRateRows(item).filter(row=>!removedRateRows.value.has(cellKey(item.itemKey,row.row)))
 const rateIndicators = computed(() => Object.fromEntries((sheet.value?.components || []).map(item=>[
-  item.itemKey,catalogRateIndicators(configuredRateRows(item).filter(row=>!removedRateRows.value.has(cellKey(item.itemKey,row.row))),
-    row=>currentRate(item,row)),
+  item.itemKey,catalogRateIndicators(activeRateRows(item),row=>currentRate(item,row)),
 ])))
+const orderScopeLabel = computed(() => hasRateTable.value
+  ? catalogRateOrderScopeLabel(activeRateRows(component.value),row=>currentRate(component.value,row)) : '本规则全部订单')
 const savedMethod = item => item.fixedMinor == null ? 'rate' : 'fixed'
 const flatMethod = item => edits.value[cellKey(item.itemKey)]?.method || savedMethod(item)
 function calculationMethod(item) {
@@ -470,14 +472,14 @@ function commissionScopeNames(item) {
   if (scope==='own') return ['本人销售']
   const rows = configuredRateRows(item)
   if (scope==null && rows?.length) {
-    const positive = rows.filter(row=>!removedRateRows.value.has(cellKey(item.itemKey,row.row)) &&
-      currentRate(item,row)>0)
+    const active = activeRateRows(item)
+    const positive = active.filter(row=>currentRate(item,row)>0)
     if (!positive.length) return ['当前无正比例']
-    if (positive.some(row=>row.scope==='general')) return ['按比例条件匹配']
+    if (positive.some(row=>row.scope==='general')) return [catalogRateOrderScopeLabel(active,row=>currentRate(item,row))]
     return [...new Set(positive.map(row=>row.scope==='external' ? '未命中指定公司或类别的外部公司' :
       [row.scope==='category' ? '' : row.company,row.category].filter(Boolean).join(' / ')))].filter(Boolean)
   }
-  if (scope==null) return ['整个适用账期']
+  if (scope==null) return ['本规则全部订单']
   if (emptyCatalogOrderScope(scope)) return ['待选择销售范围']
   return [...scope.unitIds.map(id=>commissionUnitNames.value[id] || '已选组织名称待核'),
     ...scope.categoryIds.map(id=>sheet.value.scopeCategoryNames?.[id] || '已选类别名称待核')]
@@ -749,7 +751,7 @@ async function publish() {
                 <CatalogCommissionScopeFields prefix="catalog-edit" :model-value="commissionScope(item)"
                   :options="sheet.structureOptions.salesUnits" :unit-names="commissionUnitNames" :categories="sheet.structureOptions.categories"
                   :category-names="sheet.scopeCategoryNames" :disabled="!editable || structureEditing"
-                  :can-own="targetKind==='person'" @update:model-value="setCommissionScope(item,$event)"/>
+                  :can-own="targetKind==='person'" :all-label="orderScopeLabel" @update:model-value="setCommissionScope(item,$event)"/>
               </template>
             </RuleArrangementFields>
           </template>

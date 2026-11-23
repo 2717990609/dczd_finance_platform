@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import RuleOrderScope from './RuleOrderScope.vue'
 import { catalogScopeOptions } from './rule-component-form'
 
-const props = defineProps({prefix:String,options:Array,categories:Array,unitNames:Object,categoryNames:Object,disabled:Boolean,canOwn:Boolean})
+const props = defineProps({prefix:String,options:Array,categories:Array,unitNames:Object,categoryNames:Object,disabled:Boolean,canOwn:Boolean,allLabel:String})
 const scope = defineModel({type:[Object,String],default:null})
 const mode = computed(() => scope.value==='own' ? 'own' : scope.value ? 'team' : 'all')
 const units = computed(() => catalogScopeOptions(props.options || [],scope.value?.unitIds,props.unitNames,'已选组织名称待核'))
@@ -12,6 +12,7 @@ const categories = computed(() => catalogScopeOptions(props.categories || [],sco
 
 <template>
   <RuleOrderScope :id="prefix+'-scope-type'" :model-value="mode" :disabled="disabled" :can-own="canOwn" team-label="指定销售范围"
+    :all-label="allLabel"
     @update:model-value="scope=$event==='team' ? {unitIds:[],categoryIds:[]} : $event==='own' ? 'own' : null"/>
   <div v-if="mode==='team'" class="rule-scope-filters">
       <a-form-item label="适用销售组织" :html-for="prefix+'-scope-units'">

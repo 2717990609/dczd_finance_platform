@@ -56,6 +56,23 @@ export function catalogRateConditionScope(row) {
   return row.categoryIds?.length ? 'category' : 'general'
 }
 
+export function catalogRateOrderScopeLabel(rows, getRate = row => row.rateBps) {
+  const limited = row => row.limitsRelationship ?? ((row.relationshipCode || row.relationship || 'ANY')!=='ANY')
+  const positive = rows.filter(row=>getRate(row)>0)
+  const scopes = new Set(positive.map(row=>{
+    const scope = catalogRateConditionScope(row)
+    return scope==='inherited' ? 'company' : scope
+  }))
+  if (scopes.size===1) {
+    if (scopes.has('company')) return '按指定公司匹配'
+    if (scopes.has('category')) return '按销售类别匹配'
+    if (scopes.has('external')) return '其他外部公司'
+    if (positive.every(limited)) return '按销售关系匹配'
+    if (rows.every(row=>catalogRateConditionScope(row)==='general' && !limited(row))) return '本规则全部订单'
+  }
+  return '按比例条件匹配'
+}
+
 export function catalogRateIndicators(rows, getRate = row => row.rateBps) {
   const byScope = new Map()
   for (const row of rows) {

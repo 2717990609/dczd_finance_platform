@@ -4,7 +4,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRatePriority, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, catalogRatePriority, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
   orderTypeText:String,productId:Number,membershipSku:Boolean,defaultMembershipNewOnly:Boolean,replacementItemKey:String})
@@ -17,6 +17,8 @@ const revising = computed(() => form.value?.kind==='calculation' || form.value?.
 const isSales = computed(() => form.value?.kind==='item' && form.value.target==='seller')
 const ratePriority = computed(() => catalogRatePriority((form.value?.rows || [])
   .filter(row=>props.parseRate(row.rate)!==undefined).map(row=>row.scope)))
+const orderScopeLabel = computed(() => form.value?.format==='table'
+  ? catalogRateOrderScopeLabel(form.value.rows,row=>props.parseRate(row.rate)) : '本规则全部订单')
 const stagedEntries = computed(() => [
   ...(draft.value.sales && !props.replacementItemKey ? [{item:{...draft.value.sales,target:'seller'},index:null}] : []),
   ...draft.value.items.map((item,index)=>({item,index})).filter(({item})=>item.replacesItemKey===props.replacementItemKey),
@@ -50,7 +52,7 @@ function stagedSummary(item) {
     }
   }
   const scope = item.ownSales ? '本人销售' : scopeNames.length>2 ? scopeNames.slice(0,2).join('、')+' 等 '+scopeNames.length+' 个'
-    : scopeNames.join('、') || (rows.length ? positive.length ? '按比例条件匹配' : '当前无正比例' : '本规则全部订单')
+    : scopeNames.join('、') || (rows.length ? positive.length ? catalogRateOrderScopeLabel(rows) : '当前无正比例' : '本规则全部订单')
   const orderType = props.membershipSku && catalogMembershipTypes.find(option=>option.value===(item.membershipNewOnly ? 'new' : 'all'))?.label
   const duty = item.recipientDuty && labelFor(props.options.duties,item.recipientDuty)
   return {text:[item.label,recipient,duty,standard,'提成范围 '+scope,orderType].filter(Boolean).join(' · '),
@@ -220,7 +222,7 @@ defineExpose({addRecipient,editRecipient,editCalculation,editRateScope,cancel,ad
           </template>
           <template #scope>
             <CatalogCommissionScopeFields v-if="form.kind==='item'" prefix="catalog-add" v-model="form.orderScope"
-              :options="options.salesUnits" :categories="options.categories" :can-own="form.target==='person'"/>
+              :options="options.salesUnits" :categories="options.categories" :can-own="form.target==='person'" :all-label="orderScopeLabel"/>
           </template>
         </RuleArrangementFields>
         <a-button v-if="form.kind==='item' && form.format!=='fixed'" size="small"
