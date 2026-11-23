@@ -150,7 +150,15 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	if row.Status == "COMPOUND_COMPLETION_PENDING" || row.Status == "COMPOUND_COMPLETED_IN_OTHER_PERIOD" {
 		return nil
 	}
+	var missingSourceSeller, reportedSourceSeller bool
 	issue := func(component, code string) {
+		if missingSourceSeller && code == "SALES_PERSON_MISSING" {
+			if reportedSourceSeller {
+				return
+			}
+			reportedSourceSeller = true
+			component, code = "", "SALES_ORDER_SELLER_MISSING"
+		}
 		result.Issues = append(result.Issues, draftIssue{FactID: row.SourceVersionID, Component: component, Code: code})
 	}
 	if row.PaidMinor == nil || excludedVIPPayment(row.Status) || !row.PaidInWindow && row.Status != "MATCHED" {
@@ -160,7 +168,8 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	if *row.PaidMinor == 0 {
 		return nil
 	}
-	req, _ := vipPaymentInputs(row, data)
+	req, sourceIssue := vipPaymentInputs(row, data)
+	missingSourceSeller = sourceIssue == "SALES_PERSON_MISSING"
 	person := data.PersonIDs[req.Seller]
 	org := organizations.resolve(person, row.PaidAt, identityKey{})
 	if req.CompanyUnit != "" {

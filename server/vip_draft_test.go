@@ -16,6 +16,40 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func TestVIPDraftReportsMissingSourceSellerOncePerPayment(t *testing.T) {
+	amount := int64(49900)
+	row := catalogPaymentMatch{SourceVersionID: 19, PaidMinor: &amount, PaidInWindow: true, Status: "MATCHED",
+		RuleID: "60000000-0000-4000-8000-000000000004", SalesStatus: "SALES_PERSON_MISSING",
+		BenefitParts: []vipBenefitPart{
+			{Label: "团队跟单", Status: "SALES_PERSON_MISSING"},
+			{Label: "销售本人", Status: "SALES_PERSON_MISSING"},
+			{Label: "另一个岗位", Status: "BENEFIT_APPOINTMENT_CONFLICT"},
+			{Item: "fixed", Party: "independent", Status: "CALCULATED", Amount: 500},
+		}}
+	data := vipRuntimeData{Claims: map[int64][]vipClaim{19: {}}, PersonIDs: map[string]int64{"independent": 9}}
+	var result paymentDraft
+	if err := addVIPDraftPayment(&result, row, data, reportAttribution{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Issues) != 2 || result.Issues[0].Code != "SALES_ORDER_SELLER_MISSING" ||
+		result.Issues[0].FactID != 19 || result.Issues[0].Component != "" || result.Issues[1].Code != "BENEFIT_APPOINTMENT_CONFLICT" {
+		t.Fatalf("expected one source issue and the distinct appointment issue: %+v", result.Issues)
+	}
+	if len(result.Performance) != 1 || result.Performance[0].Principal != amount ||
+		len(result.Lines) != 1 || result.Lines[0].PersonID != 9 || result.Total != 500 {
+		t.Fatalf("missing source data should retain receipts and unrelated arrangements: %+v", result)
+	}
+
+	data.Claims[19] = []vipClaim{{Role: "PID_USER", User: "unmapped"}}
+	result = paymentDraft{}
+	if err := addVIPDraftPayment(&result, row, data, reportAttribution{}); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Issues) != 4 || result.Issues[0].Code != "SALES_PERSON_MISSING" {
+		t.Fatalf("a supplied but unmapped seller must keep its distinct issue: %+v", result.Issues)
+	}
+}
+
 func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t), draftQuotes: &draftCalculationCaches{},

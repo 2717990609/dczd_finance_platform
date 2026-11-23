@@ -5,6 +5,7 @@ export const draftIssueLabels = {
   ...benefitStatus,
   INVALID_PAYMENT: '付款金额或付款编号待核',
   UNCLASSIFIED: '订单场景分类待核',
+  SALES_ORDER_SELLER_MISSING: '源订单缺少销售归属，请在大春 AI 补齐后重拉',
   MEMBERSHIP_TYPE_PENDING: '缺少新购或续费标记，请在子系统补齐后重新拉取',
   BENEFIT_APPOINTMENT_CONFLICT: '付款时存在多位在任人员，请核对任职',
   MAPPING_MISSING: '订单没有匹配的场景映射',
