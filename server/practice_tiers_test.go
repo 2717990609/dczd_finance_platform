@@ -355,6 +355,49 @@ func TestPracticeBookedRefundChangesOnlyOpenCumulativeTier(t *testing.T) {
 	}
 }
 
+func TestPracticeCumulativeTierUsesCurrentCompanyScopeForHistory(t *testing.T) {
+	start := time.Date(2026, 11, 5, 4, 0, 0, 0, time.UTC)
+	previous := start.AddDate(0, -1, 0)
+	const role = "DIRECT_REFERRER"
+	var orders = make(map[string][]paymentInput)
+	add := func(id, roster int64, company string, amount int64, at time.Time) practiceEnrollment {
+		key := fmt.Sprint(id)
+		orders[key] = []paymentInput{{ID: id, Fact: sourceFact{Source: "DCZD", OrderID: key, PaymentID: key, ReferrerID: "seller",
+			SalesCompanyID: company, AmountMinor: &amount, OccurredAt: at.Add(-time.Hour)}}}
+		return practiceEnrollment{ID: id, RosterID: roster, SourceEnrollmentID: key, MembershipType: 3,
+			CommissionEligible: true, ConfirmedAt: at.Add(time.Hour), PaidOrderIDs: []string{key}}
+	}
+	history := practiceTierHistory{current: practiceHistoryPeriod{rosterID: 22, ordinal: 2, startsAt: &start},
+		periods: []practiceHistoryPeriod{{rosterID: 11, ordinal: 1, startsAt: &previous, personalRole: role,
+			scopedTierCompanies: []string{"甲公司", "乙公司"}}},
+		members: []practiceEnrollment{add(1, 11, "甲公司", 10000, previous), add(2, 11, "乙公司", 50000, previous)}}
+	current := []practiceEnrollment{add(3, 22, "甲公司", 10000, start)}
+	identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{PersonID: 7}}}
+	for _, tc := range []struct {
+		name          string
+		companies     []string
+		prior, amount int64
+	}{
+		{"甲公司", []string{"甲公司"}, 10000, 100},
+		{"甲公司和乙公司", []string{"甲公司", "乙公司"}, 60000, 200},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			part := component{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: role, SalesCompanies: &tc.companies,
+				Tiers: &practiceSalesTiers{CumulativeMetric: "cumulative_new", CountFromOrdinal: 1,
+					Performance: []practiceTier{{Mode: "rate", Value: 100}, {From: 30000, Mode: "rate", Value: 200}}}}
+			if err := validateComponents([]component{part}); err != nil {
+				t.Fatal(err)
+			}
+			draft, err := calculatePracticeDraft(current, paymentRule{ID: 1, Components: []component{part}}, orders, identities,
+				nil, history, nil, practiceDraftRuntime{})
+			if err != nil || draft.practicePriorCounts[7] != tc.prior || draft.Total != tc.amount || len(draft.Issues) != 0 {
+				t.Fatalf("the current company scope should also filter the accumulated prior payments: prior=%v total=%d issues=%+v err=%v",
+					draft.practicePriorCounts, draft.Total, draft.Issues, err)
+			}
+		})
+	}
+}
+
 func TestPracticeScopedCumulativeTierMeasuresOnlyEligiblePayments(t *testing.T) {
 	at := time.Date(2026, 11, 5, 4, 0, 0, 0, time.UTC)
 	previous := at.AddDate(0, -1, 0)

@@ -96,6 +96,7 @@ func indexPracticePrior(history practiceTierHistory, part component, orders map[
 	for _, period := range history.periods {
 		historical[period.rosterID] = period
 	}
+	arrangementCompanies := part.salesCompanies()
 	for _, purchase := range past {
 		member := purchase.member
 		kind := classMember(member.MembershipType)
@@ -119,6 +120,9 @@ func indexPracticePrior(history practiceTierHistory, part component, orders map[
 			companies, periodRole = period.retrainCompanies, period.retrainRole
 		}
 		inScope, scopeIssue := purchase.matchesSalesCompanies(companies)
+		if inScope {
+			inScope, scopeIssue = purchase.matchesSalesCompanies(arrangementCompanies)
+		}
 		if scopeIssue != "" {
 			index.incomplete[roster] = true
 		}
