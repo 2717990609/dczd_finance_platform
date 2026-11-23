@@ -182,7 +182,9 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	result.Performance = append(result.Performance, draftPerformance{SourceVersionID: row.SourceVersionID, Principal: row.commissionBasis(),
 		PersonID: person, Organization: org, CompletionVersionID: row.CompletionVersionID, PriorRefundVersionID: row.PriorRefundVersionID})
 	if row.Status != "MATCHED" {
-		issue("", row.Status)
+		if row.Status != "MEMBERSHIP_RENEWAL_EXCLUDED" {
+			issue("", row.Status)
+		}
 		return nil
 	}
 	if row.commissionBasis() == 0 {

@@ -29,6 +29,8 @@ const statuses = {
   DUPLICATE_PAYMENT:'重复付款',
   PAYMENT_ALREADY_SETTLED:'此付款已在其他账期结算',
   UNCLASSIFIED:'分类待核',
+  MEMBERSHIP_TYPE_PENDING:'新购或续费待核',
+  MEMBERSHIP_RENEWAL_EXCLUDED:'续费不参与计提',
   MAPPING_MISSING:'未匹配场景',
   MAPPING_CONFLICT:'场景冲突',
   RULE_MISSING:'未匹配规则',
@@ -172,7 +174,7 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
           <small v-else-if="record.salesStatus==='CALCULATED'" class="order-version">销售分润 {{ formatMoney(0) }}</small>
           <small v-else-if="record.salesStatus" class="order-version">{{ salesStatus[record.salesStatus] || '销售分项待核' }}</small>
         </template>
-        <a-tag v-else-if="column.key==='status'" :color="record.status==='MATCHED'?'green':'orange'">{{ statuses[record.status] || record.status }}</a-tag>
+        <a-tag v-else-if="column.key==='status'" :color="record.status==='MATCHED' ? 'green' : record.status==='MEMBERSHIP_RENEWAL_EXCLUDED' ? undefined : 'orange'">{{ statuses[record.status] || record.status }}</a-tag>
       </template>
       <template #emptyText>本期暂无匹配订单</template>
     </a-table>

@@ -2,12 +2,13 @@
 import { computed, ref, watch } from 'vue'
 import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
-import { catalogRuleImpactPeriods, rateAsBasisPoints } from './rule-component-form'
+import { catalogMembershipTypes, catalogRuleImpactPeriods, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({products:Array,initialProduct:Number,initialSku:String,periods:Array,api:Function,formatMoney:Function})
 const emit = defineEmits(['close','published'])
 const productId = ref(props.initialProduct || (props.products.length===1 ? props.products[0].value : undefined))
 const sku = ref()
+const membershipOrders = ref('new')
 const name = ref('')
 const effectiveFrom = ref('')
 const options = ref()
@@ -22,8 +23,9 @@ const impactInput = ref()
 const impactBusy = ref(false)
 const impactPeriods = computed(() => catalogRuleImpactPeriods(props.periods,productId.value,impactInput.value?.effectiveFrom))
 const peopleFilters = computed(() => ({productId:productId.value}))
+const selectedSKU = computed(() => skus.value.find(option=>option.value===sku.value))
 const recognition = computed(() => {
-  const selected = skus.value.find(option=>option.value===sku.value)
+  const selected = selectedSKU.value
   return selected ? (selected.requiresCompletion ? '付款后，订单完成时计提' : '付款后计提') : undefined
 })
 let optionsRequest = 0
@@ -42,7 +44,7 @@ watch(productId, async id=>{
     const result = await props.api('/catalog-rule-rates?'+new URLSearchParams({productId:id}))
     if (request!==optionsRequest) return
     options.value = result.options
-    skus.value = result.skus.map(row=>({value:row.code,label:row.label,requiresCompletion:row.requiresCompletion}))
+    skus.value = result.skus.map(row=>({value:row.code,label:row.label,requiresCompletion:row.requiresCompletion,membershipSku:row.membershipSku}))
     sku.value = skus.value.some(row=>row.value===props.initialSku) && id===props.initialProduct
       ? props.initialSku : skus.value.length===1 ? skus.value[0].value : undefined
   } catch (err) {
@@ -51,6 +53,7 @@ watch(productId, async id=>{
     if (request===optionsRequest) loading.value = false
   }
 },{immediate:true})
+watch(sku,()=>{membershipOrders.value='new'})
 
 function publicationInput() {
   if (!sku.value || !name.value.trim() || !effectiveFrom.value) throw new Error('请选择业务 SKU、生效时间并填写规则名称。')
@@ -59,6 +62,7 @@ function publicationInput() {
   return {
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
     create:{productId:productId.value,sku:sku.value,label:name.value.trim(),salesRates:sales?.rows,salesLabel:sales?.label,
+      membershipNewOnly:selectedSKU.value?.membershipSku && membershipOrders.value==='new' || undefined,
       salesScopeUnitIds:sales?.salesScopeUnitIds,salesScopeCategoryIds:sales?.salesScopeCategoryIds},
     newItems:items.map(({personName,ownerName,...item})=>item),
   }
@@ -106,6 +110,9 @@ async function publish() {
         <a-form-item label="规则名称" html-for="scenario-create-name" required>
           <a-input id="scenario-create-name" v-model:value="name" :maxlength="80"/>
         </a-form-item>
+        <a-form-item v-if="selectedSKU?.membershipSku" label="计提订单类型" html-for="scenario-create-member-type">
+          <a-select id="scenario-create-member-type" v-model:value="membershipOrders" :options="catalogMembershipTypes"/>
+        </a-form-item>
         <a-form-item label="生效时间" html-for="scenario-create-date" required>
           <a-input id="scenario-create-date" v-model:value="effectiveFrom" type="datetime-local"/>
         </a-form-item>
@@ -116,7 +123,7 @@ async function publish() {
           <a-button size="small" :disabled="editing" @click="structureEditor?.addRecipient()">添加收款安排</a-button>
         </div>
         <CatalogRuleStructureEditor ref="structureEditor" v-model="structure" v-model:editing="editing" :product-id="productId"
-          :order-type-text="skus.find(option=>option.value===sku)?.label"
+          :order-type-text="selectedSKU?.membershipSku ? catalogMembershipTypes.find(option=>option.value===membershipOrders)?.label : selectedSKU?.label"
           :options="options" :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!structure.sales"/>
       </template>
     </a-form>

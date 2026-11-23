@@ -66,13 +66,17 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 		t.Fatal(err)
 	}
 	periodID := p.(map[string]int64)["id"]
-	insert := func(order, entity, version, transactionType string, at time.Time, amount int64) {
+	insert := func(order, entity, version, transactionType string, at time.Time, amount int64, revisions ...time.Time) {
 		t.Helper()
 		timestamp := at.Format(time.RFC3339)
+		updated := timestamp
+		if len(revisions) != 0 {
+			updated = revisions[0].Format(time.RFC3339)
+		}
 		payload := fmt.Sprintf(`{"fact_schema_version":"source.order-fact/1.0","fact_type":"ORDER_PAID","occurred_at":%q,
 		 "order":{"source_order_id":%q,"order_no":%q},"source_record":{"source_table":"ai_vip_order","record_id":%q,"record_version":%q,"updated_at":%q},
 		 "business":{"source_domain_code":"VIP","source_entity_type_code":%q,"source_product_code":"VIP","source_transaction_type_code":%q},
-		 "payment":{"source_payment_id":%q},"amounts":{"paid_minor":"%d"}}`, timestamp, order, order, order, version, timestamp, entity, transactionType, order, amount)
+		 "payment":{"source_payment_id":%q},"amounts":{"paid_minor":"%d"}}`, timestamp, order, order, order, version, updated, entity, transactionType, order, amount)
 		fact, err := normalizeFact("DCAI", order, json.RawMessage(payload))
 		if err != nil {
 			t.Fatal(err)
@@ -184,6 +188,38 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 		len(unspecified.Items) != 1 || unspecified.Items[0].SourceDomain != "VIP" ||
 		unspecified.Items[0].SourceTransactionType != "" {
 		t.Fatalf("missing transaction type must stay visible without being inferred: %+v", unspecified)
+	}
+	if _, err := db.Exec(ctx, `UPDATE product_rule_versions SET definition=jsonb_set(definition,'{policy_scope,vip_new_membership_only}','true') WHERE source_id=$1`, z(15)); err != nil {
+		t.Fatal(err)
+	}
+	when := boundary.Add(2 * time.Minute)
+	insert("pending-type", "VIP_ORDER", "1", "", when, 350)
+	strict := get("")
+	if strict.OrderCount != 5 || strict.MatchedCount != 2 || strict.PaidMinor != 2170 || strict.MatchedMinor != 1000 || strict.UnmarkedMembershipCount != 2 {
+		t.Fatalf("new purchases only must keep original receipts and exclude renewals and unknown types from commissions: %+v", strict)
+	}
+	states := make(map[string]string)
+	var draft paymentDraft
+	for _, item := range strict.Items {
+		states[item.OrderID] = item.Status
+		if item.OrderID == "after" || item.OrderID == "pending-type" {
+			if err := addVIPDraftPayment(&draft, item, vipRuntimeData{}, reportAttribution{}); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if states["after"] != "MEMBERSHIP_RENEWAL_EXCLUDED" || states["pending-type"] != "MEMBERSHIP_TYPE_PENDING" || states["new"] != "MATCHED" {
+		t.Fatalf("unexpected order states: %v", states)
+	}
+	if len(draft.Lines) != 0 || len(draft.Performance) != 2 || draft.blockingIssues() != 1 || draft.Issues[0].Code != "MEMBERSHIP_TYPE_PENDING" {
+		t.Fatalf("draft must keep both receipts, issue exactly one wait, and pay neither: %+v", draft)
+	}
+	insert("pending-type", "VIP_ORDER", "2", "NEW", when, 350, when.Add(time.Minute))
+	if repaired := get(""); repaired.MatchedCount != 3 || repaired.MatchedMinor != 1350 || repaired.UnmarkedMembershipCount != 1 {
+		t.Fatalf("the source's corrected order version must enter the same rules: %+v", repaired)
+	}
+	if _, err := db.Exec(ctx, `UPDATE product_rule_versions SET definition=definition#-'{policy_scope,vip_new_membership_only}' WHERE source_id=$1`, z(15)); err != nil {
+		t.Fatal(err)
 	}
 	input.Products[0].Packages = append(input.Products[0].Packages, pack(20, 16, 16, "AFTER", "BUSINESS_SCENARIO", false))
 	input.CapturedAt = input.CapturedAt.Add(time.Second)

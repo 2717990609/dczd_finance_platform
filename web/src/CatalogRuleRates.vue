@@ -8,7 +8,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogFlatMethods, catalogOrderScope, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogFlatMethods, catalogMembershipTypes, catalogOrderScope, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule:Object, applied:Object, api:Function, formatTime:Function, formatMoney:Function,
   optionLabel:Function, periods:Array, skus:Array })
@@ -17,6 +17,7 @@ const sheet = ref()
 const selected = ref()
 const filter = ref('')
 const effectiveFrom = ref('')
+const membershipOrders = ref('all')
 const edits = ref({})
 const labelEdits = ref(new Map())
 const targetEdits = ref(new Map())
@@ -79,14 +80,17 @@ const displayLinkedTeamRate = row => linkedTeamRateChanges(row) ? splitEdits.val
 const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:item.key,label:item.label})))
 const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
 const itemRemoved = computed(() => removedItems.value.has(selected.value))
-const orderTypeText = computed(() => props.rule?.scopeLabel?.replace(sheet.value?.productName+' · ','') || sheet.value?.productName)
+const orderTypeText = computed(() => sheet.value?.membershipSku
+  ? catalogMembershipTypes.find(option=>option.value===membershipOrders.value)?.label
+  : props.rule?.scopeLabel?.replace(sheet.value?.productName+' · ','') || sheet.value?.productName)
 const splitItem = computed(() => sheet.value?.components.find(item=>item.teamSplit))
 const splitRemoved = computed(() => splitItem.value && removedItems.value.has(splitItem.value.itemKey))
 const editable = computed(() => sheet.value?.mayPublish && !props.applied && !saving.value && !itemRemoved.value)
 const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKind==='seller'))
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
-const hasEdits = computed(() => copy.value || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
+const membershipChanged = computed(() => sheet.value?.membershipSku && (membershipOrders.value==='new')!==Boolean(sheet.value.membershipNewOnly))
+const hasEdits = computed(() => copy.value || membershipChanged.value || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
   Object.keys(splitEdits.value).length > 0 || labelEdits.value.size || leaderEdits.value.size || scopeEdits.value.size ||
   structure.value.items.length || structure.value.sales || structure.value.rateRows.length || structure.value.calculations.length ||
   removedItems.value.size || removedRateRows.value.size)
@@ -405,6 +409,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   if (applied) {
     const result = applied.catalog
     sheet.value = result
+    membershipOrders.value = result.membershipNewOnly ? 'new' : 'all'
     const leaderKey = applied.component.endsWith(':DCAI_GROUP_LEAD') ? 'internal-group-leader' :
       applied.component.endsWith(':DCAI_TEAM_HEAD') ? 'internal-team-leader' : applied.component
     selected.value = result.leaderArrangements?.find(item=>item.itemKey===leaderKey)?.itemKey ||
@@ -420,6 +425,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
     const result = await props.api('/catalog-rule-rates?ruleId='+encodeURIComponent(rule.id))
     if (request !== sequence) return
     sheet.value = result
+    membershipOrders.value = result.membershipNewOnly ? 'new' : 'all'
     selected.value = result.components.length===1 ? result.components[0].itemKey : undefined
     selectedTeam.value = result.teams?.[0]?.key
   } catch (err) {
@@ -496,6 +502,7 @@ function publicationInput() {
     baseId:props.rule.id,
     copy:copy.value,
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
+    membershipNewOnly:membershipChanged.value ? membershipOrders.value==='new' : undefined,
     changes,
     targetChanges:Array.from(targetEdits.value,([itemKey, {personName,ownerName,organization,...payee}])=>
       ({itemKey,...payee,organization:payee.poolId ? undefined : organization}))
@@ -567,6 +574,10 @@ async function publish() {
           </div>
         </header>
         <a-form v-show="!impactInput" id="catalog-rate-form" layout="vertical" size="small" @submit.prevent="publish">
+          <a-form-item v-if="sheet.membershipSku && sheet.mayPublish && !applied" class="catalog-rate-effective"
+            label="计提订单类型" html-for="catalog-member-type">
+            <a-select id="catalog-member-type" v-model:value="membershipOrders" :options="catalogMembershipTypes" :disabled="saving || structureEditing"/>
+          </a-form-item>
           <div class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>

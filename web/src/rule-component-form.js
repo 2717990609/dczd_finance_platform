@@ -12,6 +12,11 @@ export const catalogFlatMethods = [
   {value:'fixed',label:'固定金额'},
 ]
 
+export const catalogMembershipTypes = [
+  {value:'new',label:'仅新报'},
+  {value:'all',label:'全部会员订单'},
+]
+
 export function moneyAsMinor(value) {
   const match = /^(\d+)(?:\.(\d{1,2}))?$/.exec(String(value ?? ''))
   if (!match) return undefined

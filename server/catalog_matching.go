@@ -51,6 +51,7 @@ const catalogMatchSQL = `WITH period AS (
  SELECT v.source_id,v.effective_from,` + catalogRuleExecutionThrough + ` AS effective_to,v.version_no,v.published_at,p.name,p.scope_id,p.resume_from,
  v.definition->'policy_scope'->'sales_systems' AS sales_systems,
  v.definition->'policy_scope'->'business_sku_codes' AS skus,
+ v.definition->'policy_scope'->'vip_new_membership_only'='true'::jsonb AS new_membership_only,
  v.definition->>'recognition_plan' IS NOT NULL AS compound_recognition,
  coalesce((` + catalogHealthRecognitionPlan + `),false) AS health_recognition,
  ` + catalogRulePriority + ` AS priority
@@ -137,6 +138,9 @@ const catalogMatchSQL = `WITH period AS (
   WHEN r.compound_recognition AND NOT (r.health_recognition AND f.source='DCAI' AND f.domain='HEALTH_IDENTITY') THEN 'COMPOUND_RECOGNITION_UNSUPPORTED'
   WHEN prior.id IS NOT NULL AND NOT coalesce(prior.refund_valid AND prior.refund_minor BETWEEN 1 AND f.paid,false)
    THEN 'COMPOUND_PRIOR_REFUND_INVALID'
+  WHEN r.new_membership_only AND f.source='DCAI' AND f.domain='VIP' AND f.record_table='ai_vip_order'
+   AND coalesce(f.transaction_type,'')<>'NEW' THEN
+    CASE WHEN f.transaction_type='RENEWAL' THEN 'MEMBERSHIP_RENEWAL_EXCLUDED' ELSE 'MEMBERSHIP_TYPE_PENDING' END
   ELSE 'MATCHED' END AS status
  FROM payments f CROSS JOIN period scope
  LEFT JOIN source_order_classifications c ON c.source_version_id=f.id
@@ -154,8 +158,9 @@ const catalogMatchSQL = `WITH period AS (
  ) m ON true
  LEFT JOIN LATERAL (
   SELECT count(*) n,min(source_id::text) id,min(name) name,min(version_no) version,
-   bool_or(compound_recognition) compound_recognition,bool_or(health_recognition) health_recognition FROM (
-   SELECT r.source_id,r.name,r.version_no,r.compound_recognition,r.health_recognition FROM rules r
+   bool_or(compound_recognition) compound_recognition,bool_or(health_recognition) health_recognition,
+   bool_or(new_membership_only) new_membership_only FROM (
+   SELECT r.source_id,r.name,r.version_no,r.compound_recognition,r.health_recognition,r.new_membership_only FROM rules r
    WHERE m.n=1 AND r.scope_id=m.sku AND r.skus ? m.sku AND r.sales_systems ? f.source
     AND r.effective_from<=f.occurred_at AND (r.effective_to IS NULL OR f.occurred_at<r.effective_to)
     AND (r.resume_from IS NULL OR r.resume_from<=f.occurred_at)

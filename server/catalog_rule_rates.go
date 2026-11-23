@@ -65,6 +65,8 @@ type catalogRateSheet struct {
 	EffectiveTo        *time.Time               `json:"effectiveTo"`
 	MayPublish         bool                     `json:"mayPublish"`
 	RequiresCompletion bool                     `json:"requiresCompletion,omitempty"`
+	MembershipSKU      bool                     `json:"membershipSku,omitempty"`
+	MembershipNewOnly  bool                     `json:"membershipNewOnly,omitempty"`
 	Components         []catalogRateComponent   `json:"components"`
 	LeaderArrangements []catalogRateComponent   `json:"leaderArrangements,omitempty"`
 	Teams              []catalogRuleTeam        `json:"teams,omitempty"`
@@ -264,7 +266,8 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	 SELECT p.product_id,pro.name AS product_name,p.name,v.version_no,v.effective_from,`+catalogDisplayedThrough+` AS effective_to,v.definition,
 	  coalesce((`+catalogRateVersionEligibilitySQL+`) AND `+catalogVersionVisible+`,false) AS available,
 	  `+catalogRateConfigurationSQL+` AS supported,`+catalogHealthRateRule+` AS requires_completion,
-	  scope.source_system
+	  scope.source_system,coalesce((SELECT bool_and(`+catalogMembershipSourceRoute+`) FROM catalog_business_routes r
+	   WHERE r.product_id=p.product_id AND r.observed_at=scope.captured_at AND r.source=scope.source_system AND r.sku_code=p.scope_id),false) AS membership_sku
 	 FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
 	 JOIN product_catalog_settings scope ON scope.product_id=p.product_id AND scope.project_code=p.project_code
 	 JOIN products pro ON pro.id=p.product_id
@@ -277,7 +280,7 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	 JOIN catalog_benefit_organizations b ON b.source=c.source AND b.observed_at=c.captured_at
 	 JOIN organization_units u ON u.id=b.unit_id GROUP BY b.party_uuid HAVING count(DISTINCT u.id)=1
 	)
-	SELECT r.product_id,r.product_name,r.name,r.version_no,r.effective_from,r.effective_to,r.definition,r.available,r.supported,r.requires_completion,
+	SELECT r.product_id,r.product_name,r.name,r.version_no,r.effective_from,r.effective_to,r.definition,r.available,r.supported,r.requires_completion,r.membership_sku,
 	 coalesce((SELECT jsonb_object_agg(key,name) FROM companies),'{}'),
 	 coalesce((SELECT jsonb_object_agg(key,label) FROM catalog_sales_category_options),'{}'),
 	 coalesce((SELECT jsonb_object_agg(option_key,label) FROM configuration_options WHERE group_key='catalogSalesRelationship' AND enabled),'{}'),
@@ -291,7 +294,7 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	  WHERE u.id::text IN (SELECT unit_id#>>'{}' FROM jsonb_path_query(r.definition,
 	   '$.benefit_actions[*].sales_scope_unit_ids[*]') unit_id)),'{}')
 	FROM rule r`, id).Scan(&sheet.ProductID, &sheet.ProductName, &sheet.Label, &sheet.Version, &sheet.EffectiveFrom, &sheet.EffectiveTo,
-		&definition, &sheet.MayPublish, &supported, &sheet.RequiresCompletion, &companyNames, &categoryNames, &relationshipNames,
+		&definition, &sheet.MayPublish, &supported, &sheet.RequiresCompletion, &sheet.MembershipSKU, &companyNames, &categoryNames, &relationshipNames,
 		&organizationNames, &groupNames, &sheet.ScopeUnitNames)
 	if err != nil {
 		return sheet, err
@@ -299,6 +302,7 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	if !supported {
 		return sheet, errCatalogRateUnavailable
 	}
+	sheet.MembershipNewOnly = catalogNewMembershipOnly(definition)
 	companyNames["ANY"] = "不限公司"
 	sheet.ScopeCategoryNames = categoryNames
 	sheet.Components, err = catalogRateComponents(definition, companyNames, categoryNames, relationshipNames, organizationNames)

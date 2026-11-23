@@ -20,6 +20,7 @@ type catalogScenarioCreate struct {
 	SalesLabel         string                  `json:"salesLabel,omitempty"`
 	SalesScope         []string                `json:"salesScopeUnitIds,omitempty"`
 	SalesCategoryScope []string                `json:"salesScopeCategoryIds,omitempty"`
+	MembershipNewOnly  bool                    `json:"membershipNewOnly,omitempty"`
 }
 
 type catalogScenarioSetup struct {
@@ -31,6 +32,7 @@ type catalogScenarioSKU struct {
 	Code               string `json:"code"`
 	Label              string `json:"label"`
 	RequiresCompletion bool   `json:"requiresCompletion"`
+	MembershipSKU      bool   `json:"membershipSku,omitempty"`
 }
 
 const catalogScenarioCreationProducts = `FROM products pro JOIN product_catalog_settings c ON c.product_id=pro.id
@@ -41,6 +43,39 @@ const catalogScenarioSupportedRoute = `r.source='DCAI' AND (r.domain='VIP' OR (
  AND r.source_product_code IN ('HEALTH_CREATOR','HEALTH_AMBASSADOR')))`
 
 const catalogScenarioCompletion = `(r.domain='HEALTH_IDENTITY' AND r.source_product_code='HEALTH_CREATOR')`
+
+const catalogMembershipSourceRoute = `(r.domain='VIP' AND r.record_table='ai_vip_order')`
+
+func catalogMembershipScopeAvailable(ctx context.Context, db catalogPeriodReader, product int64, sku string, at time.Time) (bool, error) {
+	var supported bool
+	err := db.QueryRow(ctx, `SELECT coalesce(bool_and(`+catalogMembershipSourceRoute+`),false)`+catalogScenarioCreationRoutes+`
+	 AND r.sku_code=$2 AND r.effective_from<=$3 AND (r.effective_to IS NULL OR r.effective_to>$3)`, product, sku, at).Scan(&supported)
+	return supported, err
+}
+
+func catalogNewMembershipOnly(raw json.RawMessage) bool {
+	var rule struct {
+		Scope struct {
+			NewOnly bool `json:"vip_new_membership_only"`
+		} `json:"policy_scope"`
+	}
+	return json.Unmarshal(raw, &rule) == nil && rule.Scope.NewOnly
+}
+
+func editCatalogNewMembershipScope(raw json.RawMessage, enabled bool) (json.RawMessage, error) {
+	var rule map[string]json.RawMessage
+	var scope map[string]json.RawMessage
+	if json.Unmarshal(raw, &rule) != nil || json.Unmarshal(rule["policy_scope"], &scope) != nil || scope == nil {
+		return nil, errCatalogRateUnavailable
+	}
+	if enabled {
+		scope["vip_new_membership_only"] = json.RawMessage("true")
+	} else {
+		delete(scope, "vip_new_membership_only")
+	}
+	rule["policy_scope"], _ = json.Marshal(scope)
+	return json.Marshal(rule)
+}
 
 const catalogScenarioCreationRoutes = `FROM catalog_business_routes r
  JOIN product_catalog_settings c ON c.product_id=r.product_id AND c.captured_at=r.observed_at
@@ -65,8 +100,9 @@ func (s workspace) catalogScenarioOptions(ctx context.Context, raw string, actor
 		return result, err
 	}
 	err = s.db.QueryRow(ctx, `SELECT coalesce(jsonb_agg(jsonb_build_object('code',sku_code,'label',label,
-	   'requiresCompletion',requires_completion) ORDER BY label,sku_code),'[]')
-	 FROM (SELECT r.sku_code,min(r.sku_label) AS label,bool_or(`+catalogScenarioCompletion+`) AS requires_completion
+	   'requiresCompletion',requires_completion,'membershipSku',membership) ORDER BY label,sku_code),'[]')
+	 FROM (SELECT r.sku_code,min(r.sku_label) AS label,bool_or(`+catalogScenarioCompletion+`) AS requires_completion,
+	  bool_and(`+catalogMembershipSourceRoute+`) AS membership
 	   `+catalogScenarioCreationRoutes+` GROUP BY r.sku_code HAVING count(DISTINCT `+catalogScenarioCompletion+`)=1) choices`,
 		product).Scan(&result.SKUs)
 	if err != nil {
@@ -96,14 +132,15 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	if err := tx.QueryRow(ctx, `SELECT pro.cycle_start_day `+catalogScenarioCreationProducts+` FOR UPDATE OF pro`, input.ProductID).Scan(&cycleStart); err != nil {
 		return result, err
 	}
-	var mapped, compound, occupied bool
+	var mapped, compound, occupied, membership bool
 	if err := tx.QueryRow(ctx, `SELECT count(DISTINCT `+catalogScenarioCompletion+`)=1,
-	 coalesce(bool_or(`+catalogScenarioCompletion+`),false),`+catalogScenarioOccupiedSQL+` `+catalogScenarioCreationRoutes+`
+	 coalesce(bool_or(`+catalogScenarioCompletion+`),false),`+catalogScenarioOccupiedSQL+`,
+	 coalesce(bool_and(`+catalogMembershipSourceRoute+`),false) `+catalogScenarioCreationRoutes+`
 	 AND r.sku_code=$2 AND r.effective_from<=$3 AND (r.effective_to IS NULL OR r.effective_to>$3)`,
-		input.ProductID, input.SKU, at).Scan(&mapped, &compound, &occupied); err != nil {
+		input.ProductID, input.SKU, at).Scan(&mapped, &compound, &occupied, &membership); err != nil {
 		return result, err
 	}
-	if !mapped {
+	if !mapped || input.MembershipNewOnly && !membership {
 		return result, errCatalogScenarioTarget
 	}
 	if occupied {
@@ -113,7 +150,11 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	if cycleStart == 25 {
 		cycle = "MONTHLY_25_TO_24"
 	}
-	scope := map[string][]string{"sales_systems": {"DCAI"}, "business_sku_codes": {input.SKU}, "financial_event_types": {"order.paid"}}
+	events := []string{"order.paid"}
+	scope := map[string]any{"sales_systems": []string{"DCAI"}, "business_sku_codes": []string{input.SKU}}
+	if input.MembershipNewOnly {
+		scope["vip_new_membership_only"] = true
+	}
 	definition := map[string]any{
 		"schema_version": "1.1", "recognition_trigger": "PAID", "sales_attribution": "ORDER_SELLER",
 		"amount_basis": "ACTUAL_RECEIVED", "stacking_policy": "SUM", "refund_policy": "PROPORTIONAL",
@@ -125,8 +166,9 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 		definition["schema_version"] = "1.2"
 		definition["recognition_plan"] = map[string]any{"mode": "ALL_OF", "contract_version": "finance.compound-recognition/1.0",
 			"required_event_types": []string{"ORDER_PAID", "ORDER_COMPLETED"}}
-		scope["financial_event_types"] = append(scope["financial_event_types"], "order.completed")
+		events = append(events, "order.completed")
 	}
+	scope["financial_event_types"] = events
 	base, err := json.Marshal(definition)
 	if err != nil {
 		return result, err

@@ -53,6 +53,7 @@ type publishCatalogRatesInput struct {
 	CalculationChanges []catalogBenefitCalculationChange `json:"calculationChanges,omitempty"`
 	RemovedItems       []string                          `json:"removedItems"`
 	RemovedRateRows    []catalogRateRowRemoval           `json:"removedRateRows"`
+	MembershipNewOnly  *bool                             `json:"membershipNewOnly,omitempty"`
 	Copy               *catalogScenarioCopy              `json:"copy,omitempty"`
 	Create             *catalogScenarioCreate            `json:"create,omitempty"`
 }
@@ -166,7 +167,7 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 
 func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRatesInput, actor string, refreshDrafts bool) (catalogPublication, error) {
 	if input.Create != nil {
-		if input.BaseID != "" || input.Copy != nil || input.TeamSplitRates != nil || input.NewSalesLabel != "" ||
+		if input.BaseID != "" || input.Copy != nil || input.TeamSplitRates != nil || input.NewSalesLabel != "" || input.MembershipNewOnly != nil ||
 			len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges)+len(input.LeaderChanges)+len(input.ScopeChanges)+len(input.NewSalesScope)+len(input.NewSalesCategories)+
 				len(input.NewSalesRates)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges)+len(input.RemovedItems)+len(input.RemovedRateRows) != 0 {
 			return catalogPublication{}, invalid
@@ -184,7 +185,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 	scopesChanged := len(input.ScopeChanges) != 0
 	removals := len(input.RemovedItems)+len(input.RemovedRateRows) != 0
 	if !valid || from.IsZero() || input.Copy == nil && input.TeamSplitRates == nil && len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 &&
-		!structureChanged && !leadersChanged && !scopesChanged && !removals || !textOK(actor, 128) {
+		!structureChanged && !leadersChanged && !scopesChanged && !removals && input.MembershipNewOnly == nil || !textOK(actor, 128) {
 		return published, invalid
 	}
 	if len(input.CalculationChanges) != 0 && catalogCalculationConflicts(input) {
@@ -296,7 +297,27 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 				return err
 			}
 		}
-		if input.Copy == nil && !ratesChanged && !splitChanged && !recipientsChanged && !structureChanged && !leadersChanged && !scopesChanged && !removals {
+		membershipChanged := input.MembershipNewOnly != nil && *input.MembershipNewOnly != catalogNewMembershipOnly(definition)
+		if membershipChanged {
+			body, err = editCatalogNewMembershipScope(body, *input.MembershipNewOnly)
+			if err != nil {
+				return err
+			}
+		}
+		if (membershipChanged || input.Copy != nil) && catalogNewMembershipOnly(body) {
+			target := scope
+			if input.Copy != nil {
+				target = input.Copy.SKU
+			}
+			supported, err := catalogMembershipScopeAvailable(ctx, tx, product, target, from)
+			if err != nil {
+				return err
+			}
+			if !supported {
+				return errCatalogScenarioTarget
+			}
+		}
+		if input.Copy == nil && !ratesChanged && !splitChanged && !recipientsChanged && !structureChanged && !leadersChanged && !scopesChanged && !removals && !membershipChanged {
 			return nil
 		}
 		if _, _, err := catalogRateActions(body); err != nil {
