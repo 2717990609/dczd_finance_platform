@@ -278,7 +278,7 @@ func readPracticeDraftTierHistory(ctx context.Context, tx pgx.Tx, summary draftS
 	return history, rosterIDs, nil
 }
 
-func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, rule paymentRule) (paymentDraft, []byte, error) {
+func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, rule paymentRule, quotes *practiceDraftQuoteCache) (paymentDraft, []byte, error) {
 	members, err := readPracticeMembers(ctx, tx, []int64{*summary.PracticeRosterID}, false)
 	if err != nil {
 		return paymentDraft{}, nil, err
@@ -419,6 +419,16 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	runtime := practiceDraftRuntime{appointments: appointments, orderAppointments: orderAppointments, salesOrganizations: salesOrganizations, companyOffers: companyOffers,
 		companyClassifications: companyClassifications, internalSalesCategories: internalSalesCategories,
 		companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
+	if quotes != nil && practiceEnrollmentQuotesEligible(rule) {
+		var configurationRevision int64
+		if err := tx.QueryRow(ctx, "SELECT revision FROM source_write_state WHERE source='CONFIG'").Scan(&configurationRevision); err != nil {
+			return paymentDraft{}, nil, err
+		}
+		runtime.enrollmentQuotes, err = quotes.start(summary.PeriodID, rule, configurationRevision, pools)
+		if err != nil {
+			return paymentDraft{}, nil, err
+		}
+	}
 	if usesPracticeRegistrations(rule) {
 		runtime.registrations, err = readPracticeRegistrationInputs(ctx, tx, *summary.PracticeRosterID, true, nil)
 		if err != nil {

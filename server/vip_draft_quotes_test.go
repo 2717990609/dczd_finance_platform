@@ -114,16 +114,16 @@ func TestVIPDraftQuotesRecalculateOnlyChangedPayments(t *testing.T) {
 func TestVIPDraftQuotesBoundRetainedPeriodsAndRows(t *testing.T) {
 	cache := &vipDraftQuoteCache{}
 	period := vipDraftQuotePeriod{quotes: map[int64]vipDraftQuote{1: {}}, rows: 1}
-	for id := int64(1); id <= maxVIPCachedPeriods+1; id++ {
+	for id := int64(1); id <= maxDraftCachedPeriods+1; id++ {
 		period.id = id
 		cache.remember(period)
 	}
-	if cache.read(1, period.scope) != nil || cache.periods.Len() != maxVIPCachedPeriods {
+	if cache.read(1, period.scope) != nil || cache.periods.Len() != maxDraftCachedPeriods {
 		t.Fatal("least recent period must be evicted")
 	}
-	period.rows = maxVIPCachedRows
+	period.rows = maxDraftCachedRows
 	cache.remember(period)
-	if cache.rows != maxVIPCachedRows || cache.periods.Len() != 1 {
+	if cache.rows != maxDraftCachedRows || cache.periods.Len() != 1 {
 		t.Fatal("only the full-size period fits the row budget")
 	}
 	period.rows++

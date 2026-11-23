@@ -1,31 +1,17 @@
 package main
 
 import (
-	"container/list"
 	"crypto/sha256"
 	"encoding/json"
-	"sync"
-)
-
-const (
-	maxVIPCachedPeriods = 8
-	maxVIPCachedRows    = 64 * 1024 // Counts payments and their sales and benefit rows together.
 )
 
 // A small cache for the order-independent part of trial calculation only.
 // Each stored period is immutable and the cache is disposable on restart.
 type vipDraftQuoteCache struct {
-	mu      sync.Mutex
-	periods list.List
-	rows    int
+	draftQuoteCache[vipDraftQuote]
 }
 
-type vipDraftQuotePeriod struct {
-	id     int64
-	scope  [sha256.Size]byte
-	quotes map[int64]vipDraftQuote
-	rows   int
-}
+type vipDraftQuotePeriod = draftQuotePeriod[vipDraftQuote]
 
 type vipDraftQuoteInput struct {
 	request     vipSalesRequest
@@ -91,16 +77,9 @@ func (c *vipDraftQuoteCache) apply(periodID int64, items []catalogPaymentMatch, 
 				row.FixedParts = row.FixedParts[:0]
 			}
 		}
-		current.add(row.SourceVersionID, quote)
+		current.add(row.SourceVersionID, quote, 1+len(quote.sales)+len(quote.benefits))
 	}
 	c.remember(current)
-}
-
-func (p *vipDraftQuotePeriod) add(id int64, quote vipDraftQuote) {
-	p.rows += 1 + len(quote.sales) + len(quote.benefits)
-	if p.rows <= maxVIPCachedRows {
-		p.quotes[id] = quote
-	}
 }
 
 func vipDraftQuoteContext(data vipRuntimeData) ([sha256.Size]byte, map[string][sha256.Size]byte, error) {
@@ -139,36 +118,4 @@ func vipDraftQuoteContext(data vipRuntimeData) ([sha256.Size]byte, map[string][s
 		memberships[seller] = sha256.Sum256(encoded)
 	}
 	return sha256.Sum256(scope), memberships, nil
-}
-
-func (c *vipDraftQuoteCache) read(id int64, scope [sha256.Size]byte) map[int64]vipDraftQuote {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for entry := c.periods.Front(); entry != nil; entry = entry.Next() {
-		stored := entry.Value.(vipDraftQuotePeriod)
-		if stored.id == id && stored.scope == scope {
-			c.periods.MoveToFront(entry)
-			return stored.quotes
-		}
-	}
-	return nil
-}
-
-func (c *vipDraftQuoteCache) remember(period vipDraftQuotePeriod) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for entry := c.periods.Front(); entry != nil; entry = entry.Next() {
-		if entry.Value.(vipDraftQuotePeriod).id == period.id {
-			c.rows -= c.periods.Remove(entry).(vipDraftQuotePeriod).rows
-			break
-		}
-	}
-	if period.rows == 0 || period.rows > maxVIPCachedRows {
-		return
-	}
-	for c.periods.Len() >= maxVIPCachedPeriods || c.rows+period.rows > maxVIPCachedRows {
-		c.rows -= c.periods.Remove(c.periods.Back()).(vipDraftQuotePeriod).rows
-	}
-	c.periods.PushFront(period)
-	c.rows += period.rows
 }

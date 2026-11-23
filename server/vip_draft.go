@@ -51,7 +51,7 @@ func computeVIPDraft(ctx context.Context, tx pgx.Tx, periodID int64, window peri
 	if len(matches.Items) != matches.OrderCount {
 		return paymentDraft{}, nil, errDraftLimit
 	}
-	if len(matches.Items) > maxVIPCachedRows {
+	if len(matches.Items) > maxDraftCachedRows {
 		quotes = nil
 	}
 	data, err := loadVIPRuntimeData(ctx, tx, periodID, matches.Items, quotes != nil)

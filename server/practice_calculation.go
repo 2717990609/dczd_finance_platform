@@ -48,6 +48,7 @@ func (p practicePurchase) salesIssue(code string, rule paymentRule, part string)
 }
 
 type practiceDraftRuntime struct {
+	enrollmentQuotes            *practiceDraftQuoteRun
 	appointments                map[practiceAppointmentKey][]practiceAppointment
 	orderAppointments           practiceOrderAppointments
 	registrations               map[int64]practiceRegistrationInput
@@ -140,11 +141,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 		}
 	}
-	type tierResult struct {
-		awards map[int64]practiceTier
-		issues practiceTierIssues
-	}
-	var tierResults map[string]tierResult
+	var tierResults map[string]practiceTierResult
 	tierCount := 0
 	for _, part := range rule.Components {
 		if part.Tiers != nil {
@@ -152,7 +149,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		}
 	}
 	if tierCount != 0 {
-		tierResults = make(map[string]tierResult, tierCount)
+		tierResults = make(map[string]practiceTierResult, tierCount)
 	}
 	if tierCount > 1 {
 		draft.practiceFrozenTiers = make(map[string]practiceFrozenTier, tierCount)
@@ -172,7 +169,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		if err != nil {
 			return draft, err
 		}
-		tierResults[part.ClassMember] = tierResult{awards, issues}
+		tierResults[part.ClassMember] = practiceTierResult{awards, issues}
 		if tierCount == 1 {
 			draft.practicePriorCounts, draft.practiceTierAmounts = issues.priorCounts, issues.amounts
 		} else {
@@ -212,164 +209,187 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				})
 			}
 		}
-		if purchase.companyRoutingIssue != "" {
-			draft.Issues = append(draft.Issues, purchase.salesIssue(purchase.companyRoutingIssue, rule, "company_sales"))
+		if runtime.enrollmentQuotes != nil {
+			err = runtime.enrollmentQuotes.append(&draft, rule, purchase, identities, runtime)
+		} else {
+			err = appendPracticeEnrollmentAwards(&draft, rule, purchase, identities, runtime, tierResults)
 		}
-		if purchase.companyAward != nil {
-			if err := appendPracticeCompanySale(&draft, rule, purchase, runtime, identities); err != nil {
-				return paymentDraft{}, err
-			}
-		}
-		for index, part := range rule.Components {
-			if !part.matchesPracticeMember(classMember(member.MembershipType)) {
-				continue
-			}
-			if part.CompanySales != nil || part.PeriodBenefit != nil {
-				continue
-			}
-			if purchase.noReferrer && (part.Type == "sales" || part.Type == "referral") {
-				continue
-			}
-			if part.Type == "sales" && (purchase.companyAward != nil || purchase.companyRoutingIssue != "") {
-				continue
-			}
-			inScope, issue := purchase.matchesSalesCompanies(part.salesCompanies())
-			if issue != "" {
-				draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
-			}
-			if !inScope {
-				continue
-			}
-			if (part.Type != "sales" && part.Type != "referral") || part.SourceRole == "" {
-				draft.Issues = append(draft.Issues, practiceIssue("UNCONFIGURED_COMPONENT", member, rule, part.Type))
-				continue
-			}
-			sale, scopeIssue := purchase.scopedSale(part, identities, runtime)
-			if scopeIssue != "" {
-				draft.Issues = append(draft.Issues, purchase.salesIssue(scopeIssue, rule, part.Type))
-				continue
-			}
-			if len(sale.payments) == 0 {
-				continue
-			}
-			payments, base := sale.payments, sale.base
-			assignments, issue := practiceBeneficiaries(payments, part.SourceRole, identities)
-			if issue != "" {
-				draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
-				continue
-			}
-			salesOwner := assignments[0].PersonID
-			if part.SalesPersonID != 0 {
-				for i := range assignments {
-					assignments[i] = identityAssignment{PersonID: part.SalesPersonID}
-				}
-			}
-			split, issue := purchase.retrainSplit(part.retrainSplits())
-			if issue != "" {
-				draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
-				continue
-			}
-			if split != nil {
-				serviceMatches := [2]bool{true, true}
-				hasServiceAmount := split.ServiceMinor > 0 || split.ServiceRate != nil && split.ServiceRate.Value > 0
-				if hasServiceAmount && len(split.ServiceSalesPeople)+len(split.ServiceSalesUnits) != 0 {
-					scope := practicePeriodBenefit{SalesPeople: split.ServiceSalesPeople, SalesUnits: split.ServiceSalesUnits}
-					for i, payment := range payments {
-						serviceMatches[i], issue = scope.eligiblePayment(payment, part.SourceRole, nil, identities, runtime)
-						if issue != "" {
-							break
-						}
-					}
-					if issue != "" {
-						key := practicePeriodComponentKey(component{Type: "retrain_service"}, index)
-						draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, key))
-						continue
-					}
-				}
-				commission := part.Value
-				if part.Mode == "rate" {
-					commission = calculatePaymentAmount(purchase.base, part)
-				}
-				activeSplit := *split
-				if !slices.Contains(serviceMatches[:len(payments)], true) {
-					activeSplit.ServiceRate, activeSplit.ServiceMinor = nil, 0
-				}
-				amounts, valid := activeSplit.amounts(commission, purchase.base)
-				if !valid {
-					draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_RETRAIN_SPLIT_EXCEEDS_COMMISSION", member, rule, part.Type))
-					continue
-				}
-				unit := runtime.poolUnits[split.Pool.PoolID]
-				if !unit.Valid {
-					draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_POOL_MISSING", member, rule, part.Type))
-					continue
-				}
-				if err := appendPracticeRetrainSplit(&draft, purchase, rule, index, amounts, assignments, *split, unit, part.Mode == "rate", serviceMatches); err != nil {
-					return paymentDraft{}, err
-				}
-				continue
-			}
-			isTiered := part.Mode == "tiered"
-			if isTiered {
-				result := tierResults[part.ClassMember]
-				if issue := result.issues.forPurchase(salesOwner, member.ID); issue != "" {
-					draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
-					continue
-				}
-				tier, ok := result.awards[member.ID]
-				if !ok {
-					draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_TIER_NOT_MATCHED", member, rule, part.Type))
-					continue
-				}
-				part.Mode, part.Value = tier.Mode, tier.Value
-			}
-			var amount int64
-			var fixedShares [2]int64
-			fixedByPayment := isTiered && part.Mode == "fixed" && !runtime.legacyFixedTierRefund &&
-				(part.RefundPolicy == "" || part.RefundPolicy == "proportional")
-			if fixedByPayment {
-				fixedShares, issue = purchase.fixedTierPaymentShares(sale, part, identities, runtime)
-				amount = fixedShares[0] + fixedShares[1]
-			} else {
-				amount, issue = sale.commissionAmount(part)
-			}
-			if issue != "" {
-				draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
-				continue
-			}
-			if isTiered && amount > base {
-				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_TIER_EXCEEDS_PAYMENT", member, rule, part.Type))
-				continue
-			}
-			draft.Total, err = addMinor(draft.Total, amount)
-			if err != nil {
-				return paymentDraft{}, err
-			}
-			var cumulativeBase, previousShare int64
-			for index, payment := range payments {
-				net := sale.netAmount(payment)
-				paymentAmount := fixedShares[index]
-				if !fixedByPayment {
-					cumulativeBase += net
-					cumulativeShare := prorateMinor(amount, cumulativeBase, base)
-					paymentAmount = cumulativeShare - previousShare
-					previousShare = cumulativeShare
-				}
-				payee := assignments[index]
-				draft.Lines = append(draft.Lines, draftLine{
-					FactID: payment.ID, RuleID: rule.ID, EnrollmentID: member.ID, PersonID: payee.PersonID,
-					IdentityID: payee.ID, Component: part.Type, Base: net, Amount: paymentAmount,
-					practiceProportionalRefund: !isTiered && (part.Mode == "rate" || part.SaleScope != nil && part.RefundPolicy == "proportional"),
-					practiceTierRefund:         isTiered,
-					practiceArrangementLabel:   part.arrangementLabel(),
-				})
-			}
+		if err != nil {
+			return paymentDraft{}, err
 		}
 	}
 	if err := appendPracticePeriodBenefits(&draft, rule, purchases, fullyRefunded, runtime, identities, performancePayments); err != nil {
 		return paymentDraft{}, err
 	}
+	if run := runtime.enrollmentQuotes; run != nil {
+		run.cache.remember(run.current)
+	}
 	return draft, nil
+}
+
+type practiceTierResult struct {
+	awards map[int64]practiceTier
+	issues practiceTierIssues
+}
+
+func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purchase practicePurchase,
+	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime, tierResults map[string]practiceTierResult) error {
+	member := purchase.member
+	var err error
+	if purchase.companyRoutingIssue != "" {
+		draft.Issues = append(draft.Issues, purchase.salesIssue(purchase.companyRoutingIssue, rule, "company_sales"))
+	}
+	if purchase.companyAward != nil {
+		if err := appendPracticeCompanySale(draft, rule, purchase, runtime, identities); err != nil {
+			return err
+		}
+	}
+	for index, part := range rule.Components {
+		if !part.matchesPracticeMember(classMember(member.MembershipType)) {
+			continue
+		}
+		if part.CompanySales != nil || part.PeriodBenefit != nil {
+			continue
+		}
+		if purchase.noReferrer && (part.Type == "sales" || part.Type == "referral") {
+			continue
+		}
+		if part.Type == "sales" && (purchase.companyAward != nil || purchase.companyRoutingIssue != "") {
+			continue
+		}
+		inScope, issue := purchase.matchesSalesCompanies(part.salesCompanies())
+		if issue != "" {
+			draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
+		}
+		if !inScope {
+			continue
+		}
+		if (part.Type != "sales" && part.Type != "referral") || part.SourceRole == "" {
+			draft.Issues = append(draft.Issues, practiceIssue("UNCONFIGURED_COMPONENT", member, rule, part.Type))
+			continue
+		}
+		sale, scopeIssue := purchase.scopedSale(part, identities, runtime)
+		if scopeIssue != "" {
+			draft.Issues = append(draft.Issues, purchase.salesIssue(scopeIssue, rule, part.Type))
+			continue
+		}
+		if len(sale.payments) == 0 {
+			continue
+		}
+		payments, base := sale.payments, sale.base
+		assignments, issue := practiceBeneficiaries(payments, part.SourceRole, identities)
+		if issue != "" {
+			draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
+			continue
+		}
+		salesOwner := assignments[0].PersonID
+		if part.SalesPersonID != 0 {
+			for i := range assignments {
+				assignments[i] = identityAssignment{PersonID: part.SalesPersonID}
+			}
+		}
+		split, issue := purchase.retrainSplit(part.retrainSplits())
+		if issue != "" {
+			draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+			continue
+		}
+		if split != nil {
+			serviceMatches := [2]bool{true, true}
+			hasServiceAmount := split.ServiceMinor > 0 || split.ServiceRate != nil && split.ServiceRate.Value > 0
+			if hasServiceAmount && len(split.ServiceSalesPeople)+len(split.ServiceSalesUnits) != 0 {
+				scope := practicePeriodBenefit{SalesPeople: split.ServiceSalesPeople, SalesUnits: split.ServiceSalesUnits}
+				for i, payment := range payments {
+					serviceMatches[i], issue = scope.eligiblePayment(payment, part.SourceRole, nil, identities, runtime)
+					if issue != "" {
+						break
+					}
+				}
+				if issue != "" {
+					key := practicePeriodComponentKey(component{Type: "retrain_service"}, index)
+					draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, key))
+					continue
+				}
+			}
+			commission := part.Value
+			if part.Mode == "rate" {
+				commission = calculatePaymentAmount(purchase.base, part)
+			}
+			activeSplit := *split
+			if !slices.Contains(serviceMatches[:len(payments)], true) {
+				activeSplit.ServiceRate, activeSplit.ServiceMinor = nil, 0
+			}
+			amounts, valid := activeSplit.amounts(commission, purchase.base)
+			if !valid {
+				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_RETRAIN_SPLIT_EXCEEDS_COMMISSION", member, rule, part.Type))
+				continue
+			}
+			unit := runtime.poolUnits[split.Pool.PoolID]
+			if !unit.Valid {
+				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_POOL_MISSING", member, rule, part.Type))
+				continue
+			}
+			if err := appendPracticeRetrainSplit(draft, purchase, rule, index, amounts, assignments, *split, unit, part.Mode == "rate", serviceMatches); err != nil {
+				return err
+			}
+			continue
+		}
+		isTiered := part.Mode == "tiered"
+		if isTiered {
+			result := tierResults[part.ClassMember]
+			if issue := result.issues.forPurchase(salesOwner, member.ID); issue != "" {
+				draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+				continue
+			}
+			tier, ok := result.awards[member.ID]
+			if !ok {
+				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_TIER_NOT_MATCHED", member, rule, part.Type))
+				continue
+			}
+			part.Mode, part.Value = tier.Mode, tier.Value
+		}
+		var amount int64
+		var fixedShares [2]int64
+		fixedByPayment := isTiered && part.Mode == "fixed" && !runtime.legacyFixedTierRefund &&
+			(part.RefundPolicy == "" || part.RefundPolicy == "proportional")
+		if fixedByPayment {
+			fixedShares, issue = purchase.fixedTierPaymentShares(sale, part, identities, runtime)
+			amount = fixedShares[0] + fixedShares[1]
+		} else {
+			amount, issue = sale.commissionAmount(part)
+		}
+		if issue != "" {
+			draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+			continue
+		}
+		if isTiered && amount > base {
+			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_TIER_EXCEEDS_PAYMENT", member, rule, part.Type))
+			continue
+		}
+		draft.Total, err = addMinor(draft.Total, amount)
+		if err != nil {
+			return err
+		}
+		var cumulativeBase, previousShare int64
+		for index, payment := range payments {
+			net := sale.netAmount(payment)
+			paymentAmount := fixedShares[index]
+			if !fixedByPayment {
+				cumulativeBase += net
+				cumulativeShare := prorateMinor(amount, cumulativeBase, base)
+				paymentAmount = cumulativeShare - previousShare
+				previousShare = cumulativeShare
+			}
+			payee := assignments[index]
+			draft.Lines = append(draft.Lines, draftLine{
+				FactID: payment.ID, RuleID: rule.ID, EnrollmentID: member.ID, PersonID: payee.PersonID,
+				IdentityID: payee.ID, Component: part.Type, Base: net, Amount: paymentAmount,
+				practiceProportionalRefund: !isTiered && (part.Mode == "rate" || part.SaleScope != nil && part.RefundPolicy == "proportional"),
+				practiceTierRefund:         isTiered,
+				practiceArrangementLabel:   part.arrangementLabel(),
+			})
+		}
+	}
+	return nil
 }
 
 type practiceTierIssues struct {

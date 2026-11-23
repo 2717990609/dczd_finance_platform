@@ -120,7 +120,7 @@ func (s workspace) calculateCurrentDraft(ctx context.Context, periodID, wantedGe
 		if err != nil {
 			return err
 		}
-		result, digest, err := computeDraft(ctx, tx, summary, window, rules, s.vipDraftQuotes)
+		result, digest, err := computeDraft(ctx, tx, summary, window, rules, s.draftQuotes)
 		if err != nil {
 			return err
 		}
@@ -135,7 +135,7 @@ func (s workspace) calculateCurrentDraft(ctx context.Context, periodID, wantedGe
 	return summary, err
 }
 
-func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window periodWindow, rules []paymentRule, quotes *vipDraftQuoteCache) (paymentDraft, []byte, error) {
+func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window periodWindow, rules []paymentRule, quotes *draftCalculationCaches) (paymentDraft, []byte, error) {
 	if summary.AggregatePackage != nil {
 		return computeCatalogAggregateDraft(ctx, tx, summary, window)
 	}
@@ -143,10 +143,18 @@ func computeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, window p
 		return computePracticeRefundMonth(ctx, tx, summary.PeriodID, window)
 	}
 	if summary.Catalog {
-		return computeVIPDraft(ctx, tx, summary.PeriodID, window, quotes, nil)
+		var cache *vipDraftQuoteCache
+		if quotes != nil {
+			cache = &quotes.vip
+		}
+		return computeVIPDraft(ctx, tx, summary.PeriodID, window, cache, nil)
 	}
 	if summary.PracticeRosterID != nil {
-		return computePracticeDraft(ctx, tx, summary, rules[0])
+		var cache *practiceDraftQuoteCache
+		if quotes != nil {
+			cache = &quotes.practice
+		}
+		return computePracticeDraft(ctx, tx, summary, rules[0], cache)
 	}
 	facts, identities, err := readDraftInputs(ctx, tx, summary.PeriodID, window, rules)
 	if err != nil {

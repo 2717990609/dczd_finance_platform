@@ -191,7 +191,7 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 
 type workspace struct {
 	db                   *pgxpool.Pool
-	vipDraftQuotes       *vipDraftQuoteCache
+	draftQuotes          *draftCalculationCaches
 	sources              map[string]sourceConfig
 	ruleAuth             catalogRuleAuth
 	development          bool
@@ -1010,7 +1010,7 @@ func startHTTP(ctx context.Context, cfg config, db *pgxpool.Pool) error {
 	}
 	defer server.Stop()
 	health := newHandler(db.Ping)
-	api := workspace{db: db, vipDraftQuotes: &vipDraftQuoteCache{}, sources: readSources(), ruleAuth: cfg.ruleAuth, development: cfg.development,
+	api := workspace{db: db, draftQuotes: &draftCalculationCaches{}, sources: readSources(), ruleAuth: cfg.ruleAuth, development: cfg.development,
 		settlementSyncMaxAge: cfg.settlementSyncMaxAge}
 	stopSync := api.startOrderSyncWorkers(ctx, cfg.dcaiSyncInterval, cfg.dczdSyncInterval)
 	defer stopSync()

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -143,7 +144,7 @@ func TestPracticeRetrainSplitsSaleServiceAndPoolAcrossPayments(t *testing.T) {
 
 func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testing.T) {
 	ctx := context.Background()
-	s := workspace{db: integrationDB(t)}
+	s := workspace{db: integrationDB(t), draftQuotes: &draftCalculationCaches{}}
 	id := func(value any, err error) int64 {
 		t.Helper()
 		if err != nil {
@@ -235,6 +236,18 @@ func TestPracticePoolCombinesSplitsAndPeriodBenefitsAndFundsAllocations(t *testi
 	draft := result.(draftSummary)
 	if draft.Total != 10400 || draft.LineCount != 8 || draft.IssueCount != 0 {
 		t.Fatalf("unexpected normal draft: %+v", draft)
+	}
+	memo := s.draftQuotes.practice.periods.Front()
+	if memo == nil {
+		t.Fatal("the workbench must retain eligible enrollment quotes")
+	}
+	quotes := memo.Value.(draftQuotePeriod[*practiceDraftQuote]).quotes
+	if len(quotes) != 1 {
+		t.Fatalf("expected one quoted enrollment, got %d", len(quotes))
+	}
+	repeated, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+	if err != nil || !reflect.DeepEqual(repeated, result) {
+		t.Fatalf("cached enrollment shares and class allocation must preserve the trial: %+v %v", repeated, err)
 	}
 	var labeled int
 	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM jsonb_array_elements((`+draftDetailSQL+`)->'lines') line

@@ -18,7 +18,7 @@ import (
 
 func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	ctx := context.Background()
-	s := workspace{db: integrationDB(t), vipDraftQuotes: &vipDraftQuoteCache{},
+	s := workspace{db: integrationDB(t), draftQuotes: &draftCalculationCaches{},
 		sources: map[string]sourceConfig{"DCAI": {BaseURL: "https://fixture.invalid", Token: "fixture"}}}
 	id := func(n int) string { return fmt.Sprintf("60000000-0000-4000-8000-%012d", n) }
 	start := time.Date(2026, 7, 25, 0, 0, 0, 0, shanghai)
