@@ -141,7 +141,7 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 
 func (a vipBenefitAction) validTarget() bool {
 	if a.OwnSales && (a.Mode != "PARTY" || a.Designated == "" || len(a.CommissionUnits)+len(a.ScopeCategories) != 0 || a.Leader != nil) ||
-		a.RecipientDuty != "" && (a.Designated == "" || !validSourceRole(a.RecipientDuty)) {
+		a.RecipientDuty != "" && (!catalogRecipientIsPerson(a.targetKind()) || !validSourceRole(a.RecipientDuty)) {
 		return false
 	}
 	if a.AppointmentUnit != "" {

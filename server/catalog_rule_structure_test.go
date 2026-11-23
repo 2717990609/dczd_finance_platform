@@ -31,9 +31,9 @@ func TestCatalogIndependentOrderSalesTargetsResolveExplicitPayees(t *testing.T) 
 	fixed, rate := int64(800), int64(500)
 	paid := vipSalesRequest{Paid: 10000, OriginalPaid: 20000, Seller: "person:1",
 		Company: "source-company", CompanyUnit: "40000000-0000-4000-8000-000000000001", CompanyName: "销售所属公司"}
-	options := catalogStructureOptions{}
+	options := catalogStructureOptions{Duties: []catalogStructureOption{{Value: "SALES_DUTY"}}}
 	seller, err := newCatalogBenefitAction("sales-person", catalogNewBenefitItem{Label: "成交销售",
-		catalogBenefitTarget:      catalogBenefitTarget{Target: "order_seller"},
+		catalogBenefitTarget:      catalogBenefitTarget{Target: "order_seller", RecipientDuty: "SALES_DUTY"},
 		catalogBenefitCalculation: catalogBenefitCalculation{Fixed: &fixed}}, options, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -53,7 +53,8 @@ func TestCatalogIndependentOrderSalesTargetsResolveExplicitPayees(t *testing.T) 
 		t.Fatal(err)
 	}
 	cards, err := catalogRateComponents(definition, nil, nil, nil, nil)
-	if err != nil || len(cards) != 2 || cards[0].TargetKind != "order_seller" || cards[1].TargetKind != "order_sales_company" {
+	if err != nil || len(cards) != 2 || cards[0].TargetKind != "order_seller" || cards[0].RecipientDuty != "SALES_DUTY" ||
+		cards[1].TargetKind != "order_sales_company" {
 		t.Fatalf("independent dynamic recipients must be editable after saving: %+v %v", cards, err)
 	}
 	policy, ok := readVIPBenefits(definition)

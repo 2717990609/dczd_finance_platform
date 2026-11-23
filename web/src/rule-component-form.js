@@ -32,6 +32,8 @@ export function moneyAsMinor(value) {
 
 export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
 export const practiceCompanyRatePriorityLabel = '指定公司 → 销售类别 → 外部公司默认'
+export const catalogRecipientIsPerson = target => ['person','order_seller','referrer','appointment'].includes(target)
+export const practiceRecipientIsPerson = target => ['person','order_person','order_appointment'].includes(target)
 
 export function catalogOrderScope(item) {
   if (item.ownSales) return 'own'

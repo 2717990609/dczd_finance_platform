@@ -102,9 +102,15 @@ func validateComponents(items []component) error {
 				return invalid
 			}
 		}
-		if c.RecipientDuty != "" && (!validSourceRole(c.RecipientDuty) || c.SalesPersonID == 0 &&
-			(c.CompanySales == nil || c.CompanySales.Payee.kind() != "person")) {
-			return invalid
+		if c.RecipientDuty != "" {
+			personal := (c.Type == "sales" || c.Type == "referral") && c.SourceRole != ""
+			if c.CompanySales != nil {
+				kind := c.CompanySales.Payee.kind()
+				personal = kind == "person" || kind == "order_person"
+			}
+			if !personal || !validSourceRole(c.RecipientDuty) {
+				return invalid
+			}
 		}
 		if c.SaleScope != nil && !c.SaleScope.validFor(c) {
 			return invalid

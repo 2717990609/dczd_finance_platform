@@ -98,27 +98,26 @@ const range = (row, count, next) => {
   return next ? value(row.from)+' 至 '+value(next.from)+'（不含）' : value(row.from)+' 起'
 }
 function recipient(part) {
-  const personWithDuty = (personId,duty) => [personName(personId),duty && label('organizationDuty',duty)].filter(Boolean).join(' · ')
+  const withDuty = (name,duty) => [name,duty && label('organizationDuty',duty)].filter(Boolean).join(' · ')
   const benefit = part.periodBenefit
   if (benefit?.pool) return poolName(benefit.pool)
-  if (benefit?.personId) return personWithDuty(benefit.personId,benefit.recipientDuty)
+  if (benefit?.personId) return withDuty(personName(benefit.personId),benefit.recipientDuty)
   if (benefit?.unitId) return unitName(benefit.unitId)
   if (benefit?.orderAppointmentLevel) return [catalogAppointmentLevels.find(option=>option.value===benefit.orderAppointmentLevel)?.label,
-    label('appointmentKind',benefit.orderAppointmentKind)].filter(Boolean).join(' · ')
-  if (benefit?.orderRecipientRole) return [roleName(benefit.orderRecipientRole),
-    benefit.recipientDuty && label('organizationDuty',benefit.recipientDuty)].filter(Boolean).join(' · ')
+    label('appointmentKind',benefit.orderAppointmentKind),benefit.recipientDuty && label('organizationDuty',benefit.recipientDuty)].filter(Boolean).join(' · ')
+  if (benefit?.orderRecipientRole) return withDuty(roleName(benefit.orderRecipientRole),benefit.recipientDuty)
   if (benefit?.salesCompanyRecipient) return '销售所属公司'
   if (benefit?.referralCompanyRecipient) return benefit.referralCompanyIds?.length
     ? '推荐公司 · '+benefit.referralCompanyIds.map(unitName).join('、') : '推荐公司'
   if (part.companySales) {
     const payee = part.companySales.payee
-    if (payee?.kind==='order_person') return roleName(payee.role)
-    if (payee?.kind==='person') return personWithDuty(payee.personId,part.recipientDuty)
+    if (payee?.kind==='order_person') return withDuty(roleName(payee.role),part.recipientDuty)
+    if (payee?.kind==='person') return withDuty(personName(payee.personId),part.recipientDuty)
     if (payee?.kind==='company') return unitName(payee.companyId)
     if (payee?.kind==='pool') return poolName(payee.pool)
     return '销售所属公司'
   }
-  return (part.salesPersonId ? personWithDuty(part.salesPersonId,part.recipientDuty) : roleName(part.sourceRole)) || '—'
+  return withDuty(part.salesPersonId ? personName(part.salesPersonId) : roleName(part.sourceRole),part.recipientDuty) || '—'
 }
 function formula(part) {
   if (part.mode==='period_rate') {

@@ -251,7 +251,7 @@ func validPracticePeriodBenefit(c component) bool {
 		(b.AppointmentUnitID == "") != (b.AppointmentKind == "") || b.AppointmentUnitID != "" && b.PersonID == 0 ||
 		b.usesSalesPerson() && !validSourceRole(c.SourceRole) ||
 		b.OwnSales && (b.PersonID == 0 || len(b.SalesCompanies)+len(b.SalesCategoryIDs)+len(b.SalesPeople)+len(b.SalesUnits) != 0) ||
-		b.RecipientDuty != "" && (b.PersonID == 0 && b.OrderRecipientRole == "" || !validSourceRole(b.RecipientDuty)) {
+		b.RecipientDuty != "" && (b.PersonID == 0 && b.OrderRecipientRole == "" && b.OrderAppointmentLevel == "" || !validSourceRole(b.RecipientDuty)) {
 		return false
 	}
 	for _, unit := range []string{b.UnitID, b.AppointmentUnitID} {

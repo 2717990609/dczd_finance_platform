@@ -329,11 +329,14 @@ function setRate(value, base, row) {
 }
 function targetName(item) {
   const edit = targetEdits.value.get(item.itemKey)
-  const orderPayee = catalogOrderSalesPayees[edit?.target || item.targetKind]
-  if (orderPayee) return orderPayee
+  const target = edit?.target || item.targetKind
+  const duty = edit ? edit.recipientDuty : item.recipientDuty
+  const orderPayee = catalogOrderSalesPayees[target] || (target==='referrer' ? '订单直接推荐人' : '')
   const withDuty = (name,duty) => [name,duty && (props.optionLabel('organizationDuty',duty) || duty)].filter(Boolean).join(' · ')
-  if ((edit?.target || item.targetKind)==='appointment') {
-    return [appointmentLevelLabel(edit?.appointmentLevel || item.appointmentLevel),roleLabel(edit?.role || item.targetRole)].filter(Boolean).join(' · ')
+  if (orderPayee) return withDuty(orderPayee,duty)
+  if (target==='appointment') {
+    return withDuty([appointmentLevelLabel(edit?.appointmentLevel || item.appointmentLevel),roleLabel(edit?.role || item.targetRole)]
+      .filter(Boolean).join(' · '),duty)
   }
   if (!edit) {
     const name = withDuty(item.recipient?.name || item.targetLabel,item.recipientDuty)

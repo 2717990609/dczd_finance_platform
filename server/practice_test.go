@@ -134,9 +134,12 @@ func TestPracticeEnrollmentAmountsTreatDepositAndBalanceAsOneEntitlement(t *test
 		return sourceFact{Source: "DCZD", Kind: "ORDER_PAID", OrderID: id, PaymentID: id, OccurredAt: at, AmountMinor: amount, ReferrerID: "sales"}
 	}
 	rule := paymentRule{ID: 9, Components: []component{
-		{Type: "sales", Mode: "fixed", SourceRole: "DIRECT_REFERRER", Value: 501, ClassMember: "new"},
+		{Type: "sales", Mode: "fixed", SourceRole: "DIRECT_REFERRER", RecipientDuty: "SALES_DUTY", Value: 501, ClassMember: "new"},
 		{Type: "sales", Mode: "fixed", SourceRole: "DIRECT_REFERRER", Value: 99, ClassMember: "retrain"},
 	}}
+	if err := validateComponents(rule.Components); err != nil {
+		t.Fatal(err)
+	}
 	members := []practiceEnrollment{
 		{ID: 11, SourceEnrollmentID: "1", MembershipType: 3, CommissionEligible: true, PaidOrderIDs: []string{"31", "32"}},
 		{ID: 12, SourceEnrollmentID: "2", MembershipType: 2, CommissionEligible: true, PaidOrderIDs: []string{"33"}},

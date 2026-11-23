@@ -169,6 +169,7 @@ func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t 
 	choices := catalogStructureOptions{
 		Organizations: []catalogStructureOption{{Value: "company", UnitID: "company-unit", Kind: "COMPANY"}, {Value: "pool", UnitID: "pool-unit", Kind: "TEAM"}},
 		Roles:         []catalogStructureOption{{Value: "OWNER", Organization: true}, {Value: "MEMBER", Organization: true}},
+		Duties:        []catalogStructureOption{{Value: "TEAM_DUTY"}},
 	}
 	raw := json.RawMessage(twoTierPeriodRule)
 	edits := []catalogPeriodComponentEdit{
@@ -176,6 +177,8 @@ func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t 
 			OwnerRole: "OWNER", MemberRole: "MEMBER", Tiers: []catalogPeriodTier{{Rate: 125}}},
 		{Label: "技术公司", TargetKind: "company", OrganizationKey: "company", Tiers: []catalogPeriodTier{{Rate: 250}}},
 		{Label: "个人分润", TargetKind: "person", PersonID: 22, Tiers: []catalogPeriodTier{{Rate: 210}}},
+		{Label: "在任负责人", TargetKind: "appointment", AppointmentLevel: "TEAM", AppointmentRole: "OWNER",
+			RecipientDuty: "TEAM_DUTY", Tiers: []catalogPeriodTier{{Rate: 225}}},
 	}
 	body, err := editCatalogPeriodComponents(raw, raw, edits, choices)
 	if err != nil {
@@ -185,10 +188,11 @@ func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed.Items) != 3 || parsed.Items[0].ItemKey != "operations" || parsed.Items[0].unit != "pool-unit" ||
+	if len(parsed.Items) != 4 || parsed.Items[0].ItemKey != "operations" || parsed.Items[0].unit != "pool-unit" ||
 		parsed.Items[0].PoolName != "交付池" || parsed.Items[0].OwnerRole != "OWNER" || parsed.Items[0].MemberRole != "MEMBER" ||
 		parsed.Items[1].OrganizationKey != "company" || parsed.Items[1].TargetKind != "company" ||
-		parsed.Items[2].PersonID != 22 || parsed.Items[2].TargetKind != "person" {
+		parsed.Items[2].PersonID != 22 || parsed.Items[2].TargetKind != "person" ||
+		parsed.Items[3].TargetKind != "appointment" || parsed.Items[3].AppointmentRole != "OWNER" || parsed.Items[3].RecipientDuty != "TEAM_DUTY" {
 		t.Fatalf("wrong version contents: %+v", parsed.Items)
 	}
 	original, err := parseCatalogPeriodRule(raw)
@@ -212,6 +216,10 @@ func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t 
 	edits[0].OrganizationKey = "pool"
 	if _, err := editCatalogPeriodComponents(body, body, edits, choices); !errors.Is(err, errCatalogPeriodRecipient) {
 		t.Fatalf("accepted non-company for company payout: %v", err)
+	}
+	edits[0].OrganizationKey, edits[0].RecipientDuty = "company", "TEAM_DUTY"
+	if _, err := editCatalogPeriodComponents(body, body, edits, choices); err == nil {
+		t.Fatal("accepted a personal duty for a company")
 	}
 }
 

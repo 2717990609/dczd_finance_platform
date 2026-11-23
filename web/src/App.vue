@@ -26,7 +26,7 @@ import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { catalogAppointmentLevels, checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
   practiceCompanyStandardSummary, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
-  practiceSalesScopeText, practiceStandardRateSummary, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
+  practiceRecipientIsPerson, practiceSalesScopeText, practiceStandardRateSummary, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
 
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -478,7 +478,7 @@ function ruleRecipientSummary(row) {
       ? (benefit.standardRates ? practiceStandardRateSummary(benefit.standardRates,value=>value+'%') : row.amount == null ? '' : row.amount+'%')
       : (benefit.fixedAmount == null ? '' : formatMoney(minor(benefit.fixedAmount))+
         (benefit.method==='order_fixed' ? ' / 笔' : benefit.recipient==='order_appointment' && benefit.method==='class_fixed' ? ' / 组织 / 班' : ''))
-    return [payee,['person','order_person'].includes(benefit.recipient) ? optionLabel('organizationDuty',benefit.recipientDuty) : '',amount].filter(Boolean).join(' · ')
+    return [payee,practiceRecipientIsPerson(benefit.recipient) && optionLabel('organizationDuty',benefit.recipientDuty),amount].filter(Boolean).join(' · ')
   }
   if (row.mode==='company_sales') {
     const payee = row.companySales?.payee
@@ -488,11 +488,11 @@ function ruleRecipientSummary(row) {
     if (payee?.kind==='company') who = companyRecipientOptions.value.find(option=>option.value===payee.companyId)?.label || '指定公司'
     if (payee?.kind==='pool') who = practicePoolOptions.value.find(option=>option.value===payee.pool?.poolId)?.label || '团队池'
     const standard = practiceCompanyStandardSummary(row.companySales,value=>value+'%',value=>formatMoney(minor(value)))
-    return [who,payee?.kind==='person' && optionLabel('organizationDuty',row.recipientDuty),standard].filter(Boolean).join(' · ')
+    return [who,practiceRecipientIsPerson(payee?.kind) && optionLabel('organizationDuty',row.recipientDuty),standard].filter(Boolean).join(' · ')
   }
-  const who = row.salesRecipientKind==='person' ? ([row.salesPersonId ? practiceScopeNames.value.person(row.salesPersonId) : '待选择收款人',
-    optionLabel('organizationDuty',row.recipientDuty)].filter(Boolean).join(' · '))
+  const person = row.salesRecipientKind==='person' ? (row.salesPersonId ? practiceScopeNames.value.person(row.salesPersonId) : '待选择收款人')
     : row.sourceRole ? optionLabel('orderAttributionRole',row.sourceRole) : '选择订单上的收款人'
+  const who = [person,optionLabel('organizationDuty',row.recipientDuty)].filter(Boolean).join(' · ')
   if (row===practiceRetrainSales.value && row.retrainSplits?.length) return who+' · 按公司分账'
   if (row.mode==='tiered') {
     const metric = practiceCumulativeAmountMetrics.find(option=>option.value===row.tierConfig?.cumulativeMetric)?.label
@@ -1202,8 +1202,8 @@ function ruleComponentBody(row) {
     component.label = must(row.label?.trim(),'请填写收款安排名称')
     if (row.salesRecipientKind==='person') {
       component.salesPersonId = must(row.salesPersonId,'请选择收款人')
-      if (row.recipientDuty) component.recipientDuty = row.recipientDuty
     }
+    if (row.recipientDuty) component.recipientDuty = row.recipientDuty
     if (row.salesCompanies?.length) component.salesCompanies = row.salesCompanies
     if (row.saleScope?.ownSales || hasPracticePaymentScope(row.saleScope || {})) component.saleScope = row.saleScope
     if (row.restrictSaleScope && !component.salesCompanies && !component.saleScope) {
@@ -1221,8 +1221,8 @@ function ruleComponentBody(row) {
     if (payee.kind==='order_person') payee.role=must(sales.payee.role,'请选择从订单读取的收款人')
     if (payee.kind==='person') {
       payee.personId=must(sales.payee.personId,'请选择收款人员')
-      if (row.recipientDuty) component.recipientDuty = row.recipientDuty
     }
+    if (practiceRecipientIsPerson(payee.kind) && row.recipientDuty) component.recipientDuty = row.recipientDuty
     if (payee.kind==='company') payee.companyId=must(sales.payee.companyId,'请选择收款公司')
     if (payee.kind==='pool') payee.pool=practicePoolBody(sales.payee.pool)
     const value = item => {
@@ -1280,7 +1280,7 @@ function ruleComponentBody(row) {
       ...(b.recipient==='sales_company' ? {salesCompanyRecipient:true} : {}),
       ...(b.recipient==='referral_company' ? {referralCompanyRecipient:true,
         ...(b.referralCompanyIds?.length ? {referralCompanyIds:b.referralCompanyIds} : {})} : {}),
-      ...(['person','order_person'].includes(b.recipient) && b.recipientDuty ? {recipientDuty:b.recipientDuty} : {}),
+      ...(practiceRecipientIsPerson(b.recipient) && b.recipientDuty ? {recipientDuty:b.recipientDuty} : {}),
       ...(b.ownSales && b.recipient==='person' ? {ownSales:true} : {}),
       ...(!registration && b.salesCategoryIds?.length ? {salesCategoryIds:b.salesCategoryIds} : {}),
       ...(!registration && b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
@@ -1918,7 +1918,7 @@ async function save() {
           <div v-if="i===activeRuleComponent" :id="'practice-rule-part-'+i" class="rule-block-body component-editor">
           <RuleArrangementFields v-if="!['company_sales','period_rate'].includes(c.mode)"
             :name-id="classRule ? 'rule-sales-label-'+i : undefined" v-model:name="c.label"
-            :duty-id="classRule && c.salesRecipientKind==='person' ? 'rule-recipient-duty-'+i : undefined"
+            :duty-id="classRule && ['sales','referral'].includes(c.type) ? 'rule-recipient-duty-'+i : undefined"
             :duties="options('organizationDuty')" v-model:duty="c.recipientDuty"
             :order-type-id="classRule ? 'rule-member-'+i : undefined" :order-types="classRule ? classMemberChoices(c) : undefined"
             :order-type="c.classMember" @update:order-type="changeClassMember(c,$event)">

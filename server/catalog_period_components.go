@@ -119,11 +119,12 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 			}
 			changed = true
 		}
-		if edit.TargetKind != "person" && (edit.OwnSales || edit.RecipientDuty != "") ||
+		if edit.TargetKind != "person" && edit.OwnSales ||
 			edit.OwnSales && len(edit.CommissionUnits)+len(edit.ScopeCategories) != 0 ||
 			!catalogScopeIDsValid(edit.CommissionUnits, before.CommissionUnits, options.SalesUnits) ||
 			!catalogScopeIDsValid(edit.ScopeCategories, before.ScopeCategories, options.Categories) ||
-			edit.RecipientDuty != "" && catalogStructureOptionFor(options.Duties, edit.RecipientDuty).Value == "" {
+			edit.RecipientDuty != "" && (!catalogRecipientIsPerson(edit.TargetKind) ||
+				catalogStructureOptionFor(options.Duties, edit.RecipientDuty).Value == "") {
 			return nil, errCatalogCommissionScope
 		}
 		if edit.Appointment != nil && (edit.TargetKind != "person" || edit.PersonID != edit.Appointment.PersonID ||

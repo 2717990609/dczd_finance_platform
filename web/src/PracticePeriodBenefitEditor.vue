@@ -5,7 +5,7 @@ import PracticePeriodRateStandards from './PracticePeriodRateStandards.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
 import RuleOrderScope from './RuleOrderScope.vue'
-import { hasPracticePaymentScope } from './rule-component-form'
+import { hasPracticePaymentScope, practiceRecipientIsPerson } from './rule-component-form'
 
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array, salesCategories:Array,
@@ -23,7 +23,7 @@ function toggleStandardRates() {
     config.value.standardRates = props.component.amount == null ? [] : [{scope:'general',value:props.component.amount}]
   }
 }
-const personalRecipient = computed(() => ['person','order_person'].includes(config.value.recipient))
+const personalRecipient = computed(() => practiceRecipientIsPerson(config.value.recipient))
 const registration = computed(() => config.value.registrationScope)
 const registrationOption = [{value:'registration',label:'签到报名归属'}]
 const scopeMode = computed(() => registration.value ? 'registration' : config.value.ownSales ? 'own' :

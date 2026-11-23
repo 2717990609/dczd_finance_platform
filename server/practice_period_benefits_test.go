@@ -612,7 +612,7 @@ func TestPracticeArrangementResolvesRecipientsFromPayments(t *testing.T) {
 
 func TestPracticePeriodBenefitCanUseThePaymentOrganizationAppointment(t *testing.T) {
 	var benefit practicePeriodBenefit
-	if err := json.Unmarshal([]byte(`{"label":"按组织任职收款","orderAppointmentLevel":"TEAM","orderAppointmentKind":"OWNER"}`), &benefit); err != nil {
+	if err := json.Unmarshal([]byte(`{"label":"按组织任职收款","orderAppointmentLevel":"TEAM","orderAppointmentKind":"OWNER","recipientDuty":"TEAM_DUTY"}`), &benefit); err != nil {
 		t.Fatal(err)
 	}
 	part := component{Type: "manager", Mode: "period_rate", Value: 100000, SourceRole: "DIRECT_REFERRER", PeriodBenefit: &benefit}

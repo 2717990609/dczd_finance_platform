@@ -8,7 +8,7 @@ import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import DraftAggregateOrders from './DraftAggregateOrders.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogAppointmentLevels, catalogOrderScope, emptyCatalogOrderScope } from './rule-component-form'
+import { catalogAppointmentLevels, catalogOrderScope, catalogRecipientIsPerson, emptyCatalogOrderScope } from './rule-component-form'
 
 const props = defineProps({rule:Object, applied:Object, focusItemKey:String, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
 const emit = defineEmits(['close','published','open-draft','copy','open-version','resumed','show-order'])
@@ -230,10 +230,10 @@ const peopleFilters = computed(() => creating.value ? {productId:productId.value
 const unitOptions = computed(() => (sheet.value?.options?.organizations || [])
   .map(unit=>({value:unit.unitId,label:unit.label,kind:unit.kind})))
 function targetLabel(item) {
+  const duty = item.recipientDuty && props.optionLabel('organizationDuty',item.recipientDuty)
   if (item.targetKind==='appointment') return [catalogAppointmentLevels.find(option=>option.value===item.appointmentLevel)?.label,
-    item.appointmentRole && props.optionLabel('catalogAppointmentRole',item.appointmentRole)].filter(Boolean).join(' · ') || '待选择岗位'
-  if (item.targetKind==='person') return [item.personName || '待选择收款人',
-    item.recipientDuty && props.optionLabel('organizationDuty',item.recipientDuty)].filter(Boolean).join(' · ')
+    item.appointmentRole && props.optionLabel('catalogAppointmentRole',item.appointmentRole),duty].filter(Boolean).join(' · ') || '待选择岗位'
+  if (item.targetKind==='person') return [item.personName || '待选择收款人',duty].filter(Boolean).join(' · ')
   const pool = item.poolId && sheet.value.options?.teamPools?.find(pool=>pool.id===item.poolId)
   const name = pool?.unitName || availableOrganizations(item).find(org=>org.value===item.organizationKey)?.label ||
     sheet.value.items.find(old=>old.itemKey===item.itemKey)?.targetName
@@ -266,7 +266,7 @@ function setTarget(row, target) {
   row.poolName = ''
   row.poolId = undefined
   row.legacyPool = false
-  row.recipientDuty = undefined
+  if (!catalogRecipientIsPerson(target)) row.recipientDuty = undefined
   row.appointment = undefined
   row.appointmentLevel = undefined
   row.appointmentRole = undefined
@@ -600,7 +600,7 @@ async function resumeRule() {
           <div v-if="activeComponent===item.uid" :id="'period-rule-part-'+item.uid" class="rule-block-body">
           <a-form v-if="canSave" layout="vertical" size="small">
             <RuleArrangementFields name-id="period-benefit-label" v-model:name="item.label" :disabled="saving"
-              :duty-id="item.targetKind==='person' ? 'period-benefit-duty' : undefined" :duties="sheet.options?.duties"
+              :duty-id="catalogRecipientIsPerson(item.targetKind) ? 'period-benefit-duty' : undefined" :duties="sheet.options?.duties"
               v-model:duty="item.recipientDuty">
               <a-form-item label="收款对象" html-for="period-benefit-target" required>
                 <a-select id="period-benefit-target" :value="item.targetKind" :options="targetTypes" :disabled="saving" @change="setTarget(item,$event)"/>

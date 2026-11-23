@@ -36,7 +36,8 @@ function itemLabel(item) {
     ...(item.salesScopeCategoryIds || []).map(id=>labelFor(props.options.categories,id)),
   ].join('、') || '本规则全部订单'
   const orderType = props.membershipSku && catalogMembershipTypes.find(option=>option.value===(item.membershipNewOnly ? 'new' : 'all'))?.label
-  return [item.label,recipient,standard,scope,orderType].filter(Boolean).join(' · ')
+  const duty = item.recipientDuty && labelFor(props.options.duties,item.recipientDuty)
+  return [item.label,recipient,duty,standard,scope,orderType].filter(Boolean).join(' · ')
 }
 function begin(kind,scope) {
   error.value = ''

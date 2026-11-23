@@ -531,12 +531,16 @@ func configureCatalogBenefitCalculation(action *vipBenefitAction, calculation ca
 	return nil
 }
 
+func catalogRecipientIsPerson(target string) bool {
+	return target == "person" || target == "order_seller" || target == "referrer" || target == "appointment"
+}
+
 func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenefitTarget,
 	options catalogStructureOptions, people map[int64]string) error {
 	if target.Target != "pool" && (target.MemberRole != "" || target.OwnerPersonID != 0 || target.PoolID != 0) {
 		return invalid
 	}
-	if target.RecipientDuty != "" && (target.Target != "person" ||
+	if target.RecipientDuty != "" && (!catalogRecipientIsPerson(target.Target) ||
 		catalogStructureOptionFor(options.Duties, target.RecipientDuty).Value == "") {
 		return invalid
 	}

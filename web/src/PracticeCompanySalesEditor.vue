@@ -2,7 +2,7 @@
 import { computed, nextTick, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { practiceCompanyRatePriorityLabel, practiceCompanyScopes, practiceSalesScopeText } from './rule-component-form'
+import { practiceCompanyRatePriorityLabel, practiceCompanyScopes, practiceRecipientIsPerson, practiceSalesScopeText } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
   sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array,duties:Array})
@@ -94,7 +94,7 @@ watch(amounts, choices => {
 <template>
   <RuleArrangementFields :name-id="field('label')" v-model:name="component.companySales.label"
     :calculation-text="calculationText" :scope-text="scopeText"
-    :duty-id="payee.kind==='person' ? field('duty') : undefined" :duties="duties" v-model:duty="component.recipientDuty"
+    :duty-id="practiceRecipientIsPerson(payee.kind) ? field('duty') : undefined" :duties="duties" v-model:duty="component.recipientDuty"
     :order-type-id="'rule-member-'+index" :order-types="memberChoices" :order-type="component.classMember"
     @update:order-type="component.classMember=$event; emit('member-change')">
     <a-form-item label="收款对象" :html-for="field('payee')" required>
