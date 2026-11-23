@@ -117,26 +117,38 @@ const uncalculatedOrderInOrganization = `EXISTS (
    WHERE p->>'role'=r.code AND nullif(p->>'userId','') IS NOT NULL
    HAVING count(DISTINCT p->>'userId')<=1
   ) p WHERE r.code IS NOT NULL AND NOT EXISTS(SELECT 1 FROM catalog_claims WHERE sales_claims IS NOT NULL)
- ), people_at_payment AS (
-  SELECT i.person_id FROM actor x JOIN identity_mappings i ON NOT x.catalog AND i.source=latest.source AND i.external_id=x.external_id
-  WHERE i.valid_from<=latest.occurred_at AND (i.valid_to IS NULL OR i.valid_to>latest.occurred_at)
-  UNION
+ ), catalog_people_at_payment AS (
   SELECT i.person_id FROM actor x JOIN catalog_sales_context c ON x.catalog AND c.source=latest.source
   JOIN catalog_sales_people_sources i ON i.source=c.source AND i.observed_at=c.captured_at AND i.external_id=x.external_id
   WHERE i.valid_from<=latest.occurred_at AND (i.valid_to IS NULL OR i.valid_to>latest.occurred_at)
+ ), people_at_payment AS (
+  SELECT person_id FROM catalog_people_at_payment
+  UNION
+  SELECT i.person_id FROM actor x JOIN identity_mappings i ON i.source=latest.source AND i.external_id=x.external_id
+  WHERE i.valid_from<=latest.occurred_at AND (i.valid_to IS NULL OR i.valid_to>latest.occurred_at)
+   AND (NOT x.catalog OR NOT EXISTS(SELECT 1 FROM catalog_people_at_payment))
  ), organization_at_payment AS (
   SELECT a.unit_id,u.kind,a.kind='PRIMARY' AS is_primary
   FROM organization_assignments a JOIN organization_units u ON u.id=a.unit_id
   WHERE a.person_id=(SELECT min(person_id) FROM people_at_payment HAVING count(*)=1)
    AND a.valid_from<=latest.occurred_at AND (a.valid_to IS NULL OR a.valid_to>latest.occurred_at)
+ ), catalog_company_at_payment AS (
+  SELECT a.company_unit_id AS unit_id FROM actor x JOIN catalog_sales_context c ON x.catalog AND c.source=latest.source
+  JOIN catalog_sales_company_aliases a ON a.source=c.source AND a.observed_at=c.captured_at AND a.external_id=x.company_key
+  WHERE a.valid_from<=latest.occurred_at AND (a.valid_to IS NULL OR a.valid_to>latest.occurred_at)
  ), explicit_company AS (
   SELECT o.company_id AS unit_id FROM source_payment_companies c
   JOIN organization_company_sources o ON o.source=latest.source AND o.source_company_id=c.company_id
-  WHERE c.source_version_id=latest.id AND o.valid_from<=latest.occurred_at AND (o.valid_to IS NULL OR o.valid_to>latest.occurred_at)
+  WHERE c.source_version_id=latest.id AND NOT EXISTS(SELECT 1 FROM actor WHERE catalog)
+   AND o.valid_from<=latest.occurred_at AND (o.valid_to IS NULL OR o.valid_to>latest.occurred_at)
   UNION
-  SELECT a.company_unit_id FROM actor x JOIN catalog_sales_context c ON x.catalog AND c.source=latest.source
-  JOIN catalog_sales_company_aliases a ON a.source=c.source AND a.observed_at=c.captured_at AND a.external_id=x.company_key
-  WHERE a.valid_from<=latest.occurred_at AND (a.valid_to IS NULL OR a.valid_to>latest.occurred_at)
+  SELECT unit_id FROM catalog_company_at_payment
+  UNION
+  SELECT o.company_id FROM actor x JOIN organization_company_sources o
+   ON o.source=latest.source AND o.source_company_id=x.company_key
+  JOIN organization_units u ON u.id=o.company_id AND u.kind='COMPANY'
+  WHERE x.catalog AND NOT EXISTS(SELECT 1 FROM catalog_company_at_payment)
+   AND o.valid_from<=latest.occurred_at AND (o.valid_to IS NULL OR o.valid_to>latest.occurred_at)
  ), organization_ancestry(unit_id,node_id,parent_id) AS (
   SELECT a.unit_id,u.id,u.parent_id FROM organization_at_payment a JOIN organization_units u ON u.id=a.unit_id
   WHERE a.kind<>'COMPANY' AND EXISTS(SELECT 1 FROM explicit_company)

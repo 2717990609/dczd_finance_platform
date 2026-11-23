@@ -1157,6 +1157,14 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		 VALUES($1,$2,$3)`, id(60), id(29), boundary); err != nil {
 			t.Fatal(err)
 		}
+		if _, err := s.db.Exec(ctx, `INSERT INTO organization_units(id,parent_id,kind,name,status)
+		 VALUES($1,$2,'TEAM','新渠道小组','ACTIVE')`, id(65), id(60)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, `INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from)
+		 VALUES($1,$2,$3,'PRIMARY',$4)`, id(66), person, id(65), boundary); err != nil {
+			t.Fatal(err)
+		}
 		change := boundary.Add(time.Hour)
 		if _, err := s.db.Exec(ctx, `INSERT INTO catalog_sales_company_aliases(id,source,external_id,company_uuid,company_unit_id,valid_from,valid_to,observed_at)
 		 SELECT $1::uuid,source,'previous-alias',$3::uuid,$5::uuid,'2026-01-01'::timestamptz,$6::timestamptz,captured_at FROM catalog_sales_context WHERE source='DCAI'
@@ -1204,6 +1212,34 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		}); err != nil {
 			t.Fatal(err)
 		}
+		checkScope := func(unit string, count int) {
+			t.Helper()
+			w := httptest.NewRecorder()
+			s.orders(w, httptest.NewRequest(http.MethodGet, "/api/v1/orders?source=DCAI&orderId="+item.OrderID+"&unitId="+unit, nil))
+			var orders []sourceFact
+			if err := json.Unmarshal(w.Body.Bytes(), &orders); w.Code != http.StatusOK || err != nil || len(orders) != count || count > 0 && orders[0].OrderID != item.OrderID {
+				t.Fatalf("expected %d uncalculated orders under %s: %d, %s, %v", count, unit, w.Code, w.Body, err)
+			}
+		}
+		checkScope(id(60), 1)
+		checkScope(id(65), 1)
+		checkScope(id(17), 0)
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			if _, err := tx.Exec(ctx, `INSERT INTO catalog_sales_people_sources(id,source,external_id,person_id,valid_from,observed_at)
+			 SELECT $1,'DCAI','new-seller',p.id,$3,c.captured_at FROM people p CROSS JOIN catalog_sales_context c
+			 WHERE p.legacy_party_id=$2 AND c.source='DCAI'`, id(67), id(12), boundary); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, `INSERT INTO catalog_sales_company_aliases(id,source,external_id,company_uuid,company_unit_id,valid_from,observed_at)
+			 SELECT $1,'DCAI','new-company',$2,$3,$4,captured_at FROM catalog_sales_context WHERE source='DCAI'`, id(68), id(69), id(17), boundary)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+		checkScope(id(17), 1)
+		checkScope(id(18), 1)
+		checkScope(id(60), 0)
+		checkScope(id(65), 0)
 	})
 
 	t.Run("外部公司兜底按付款时的公司类型", func(t *testing.T) {
