@@ -699,17 +699,25 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			return errProductRuleUnavailable
 		}
 		if p.EditBaseID != nil {
-			err := tx.QueryRow(ctx, `SELECT b.period_id,b.from_ordinal,b.effective_from,b.activity_type FROM rule_versions b
+			var savedVersion int
+			var unchanged bool
+			err := tx.QueryRow(ctx, `SELECT b.period_id,b.from_ordinal,b.effective_from,b.activity_type,b.version,
+			   (b.label=$3 AND b.components=$4::jsonb) FROM rule_versions b
 			 WHERE b.id=$1 AND b.product_id=$2 AND NOT EXISTS (
 			  SELECT 1 FROM rule_versions n WHERE n.product_id=b.product_id AND n.version>b.version
 			   AND n.period_id IS NOT DISTINCT FROM b.period_id AND n.from_ordinal IS NOT DISTINCT FROM b.from_ordinal
-			   AND n.effective_from IS NOT DISTINCT FROM b.effective_from AND n.activity_type=b.activity_type)`, *p.EditBaseID, p.ProductID).
-				Scan(&p.PeriodID, &p.FromOrdinal, &p.EffectiveFrom, &p.ActivityType)
+			   AND n.effective_from IS NOT DISTINCT FROM b.effective_from AND n.activity_type=b.activity_type)`,
+				*p.EditBaseID, p.ProductID, strings.TrimSpace(p.Label), raw).
+				Scan(&p.PeriodID, &p.FromOrdinal, &p.EffectiveFrom, &p.ActivityType, &savedVersion, &unchanged)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return errRuleEditStale
 			}
 			if err != nil {
 				return err
+			}
+			if mode == "class" && unchanged {
+				version = savedVersion
+				return nil
 			}
 		}
 		if p.ActivityType != 0 && mode != "class" {

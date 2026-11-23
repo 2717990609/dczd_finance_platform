@@ -574,7 +574,27 @@ func TestPracticeSeparateTierStartsPersistAndReplay(t *testing.T) {
 	if len(arrangements[0].Starts) != 0 || len(arrangements[1].Starts) != 1 || arrangements[1].Starts[0].FromOrdinal != 2 {
 		t.Fatalf("the retrain restart must not change the new-enrollment ladder: %+v", arrangements)
 	}
-	original := calculate(current, 1100)
+	if err := s.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var refreshedTotal int64
+	if err := s.db.QueryRow(ctx, `SELECT total_minor FROM calculation_drafts WHERE period_id=$1`, current).
+		Scan(&refreshedTotal); err != nil || refreshedTotal != 1100 {
+		t.Fatalf("a changed cumulative start must update the open draft automatically: %d %v", refreshedTotal, err)
+	}
+	original := calculate(current, refreshedTotal)
+	setting := read()
+	repeated, err := s.savePracticeRuleSettings(ctx, savePracticeRuleSettingsInput{
+		ProductID: product, RuleID: setting.ID, CountMember: &retrain, ExistingPersonID: seller,
+		CountStart: &setting.CountArrangements[1].Starts[0],
+	})
+	if err != nil || repeated.(map[string]int)["version"] != setting.Version || read().ID != setting.ID {
+		t.Fatalf("saving an unchanged cumulative start must keep the same rule: %v %v", repeated, err)
+	}
+	var pending bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, current).Scan(&pending); err != nil || pending {
+		t.Fatalf("an unchanged cumulative start must leave the existing draft ready: pending=%t %v", pending, err)
+	}
 	var algorithm int
 	if err := s.db.QueryRow(ctx, `SELECT (practice_replay_inputs->>'version')::int FROM calculation_drafts WHERE period_id=$1`, current).Scan(&algorithm); err != nil || algorithm != practiceReplayIndependentTierMeasurement {
 		t.Fatalf("draft should save the measurement behavior for refund replay: %d %v", algorithm, err)
