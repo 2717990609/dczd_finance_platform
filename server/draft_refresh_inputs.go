@@ -34,10 +34,10 @@ var draftRefreshFacts = `WITH keys AS (
  SELECT current.id AS current_id,previous.id AS previous_id
  FROM keys k
  JOIN LATERAL (SELECT v.* FROM source_order_versions v WHERE (v.source,v.order_id,v.line_id,v.record_key,v.kind)
-  =(k.source,k.order_id,k.line_id,k.record_key,k.kind) ORDER BY v.updated_at DESC,v.id DESC LIMIT 1) current ON true
+  =(k.source,k.order_id,k.line_id,k.record_key,k.kind) ORDER BY ` + sourceOrderVersionSort("v") + ` LIMIT 1) current ON true
  LEFT JOIN LATERAL (SELECT v.* FROM source_order_versions v WHERE (v.source,v.order_id,v.line_id,v.record_key,v.kind)
   =(k.source,k.order_id,k.line_id,k.record_key,k.kind) AND NOT(v.id=ANY($1::bigint[]))
-  ORDER BY v.updated_at DESC,v.id DESC LIMIT 1) previous ON true
+  ORDER BY ` + sourceOrderVersionSort("v") + ` LIMIT 1) previous ON true
  LEFT JOIN source_order_classifications cc ON cc.source_version_id=current.id
  LEFT JOIN source_order_classifications pc ON pc.source_version_id=previous.id
  LEFT JOIN source_payment_companies cv ON cv.source_version_id=current.id

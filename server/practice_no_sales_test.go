@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -148,9 +150,9 @@ func TestPracticeNoReferrerKeepsIndependentBenefitsAndOriginalRefund(t *testing.
 		t.Fatalf("the inactive-company issue should open the exact payment version: %t %v", inactiveIssue, err)
 	}
 	store(normalize(raw))
-	lateOlder := fmt.Sprintf(strings.NewReplacer(`"registration_id":1701`, `"registration_id":1709`,
-		`"updated_at":"2026-06-07T02:00:00Z"`, `"updated_at":"2026-06-07T02:01:00Z"`).Replace(practiceNoReferrerPayment), revision)
-	store(normalize(lateOlder))
+	lateOlder := strings.NewReplacer(`"registration_id":1701`, `"registration_id":1709`,
+		`"updated_at":"2026-06-07T02:00:00Z"`, `"updated_at":"2026-06-07T02:01:00Z"`).Replace(practiceNoReferrerPayment)
+	store(normalize(fmt.Sprintf(lateOlder, revision)))
 	checked, err := s.calculateCurrentDraft(ctx, period, 0)
 	if err != nil || checked.IssueCount != 0 || checked.Total != 400 || checked.LineCount != 1 {
 		t.Fatalf("only the independent benefit should accrue on the newest matching payment: %+v %v", checked, err)
@@ -160,15 +162,43 @@ func TestPracticeNoReferrerKeepsIndependentBenefitsAndOriginalRefund(t *testing.
 	 JOIN source_order_versions v ON v.id=p.source_version_id WHERE p.period_id=$1`, period).Scan(&paid, &attributed); err != nil || paid != 40000 || attributed != 0 {
 		t.Fatalf("expected a 400 yuan payment without personal sales performance, got %d %d %v", paid, attributed, err)
 	}
+	// The latest materialized revision can change the finances without advancing the business timestamp.
+	revised := fmt.Sprintf(strings.Replace(practiceNoReferrerPayment, `"paid_minor":"40000"`, `"paid_minor":"45000"`, 1), revision+3)
+	latest := normalize(revised)
+	store(latest)
+	t.Run("来源订单显示有效的最新版本", func(t *testing.T) {
+		response := httptest.NewRecorder()
+		s.orders(response, httptest.NewRequest(http.MethodGet, "/api/v1/orders?source=DCZD&orderId=1100", nil))
+		var rows []sourceFact
+		if err := json.Unmarshal(response.Body.Bytes(), &rows); err != nil || response.Code != http.StatusOK || len(rows) != 1 {
+			t.Fatalf("expected one current payment from the source order view: %d %s %v", response.Code, response.Body, err)
+		}
+		if rows[0].Version != latest.Version || rows[0].AmountMinor == nil || *rows[0].AmountMinor != 45000 {
+			t.Fatalf("the source order view must use the effective payment revision, got %s %v", rows[0].Version, rows[0].AmountMinor)
+		}
+	})
+	if err := s.refreshPendingDrafts(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(ctx, `SELECT total_minor,version FROM calculation_drafts WHERE period_id=$1`, period).
+		Scan(&checked.Total, &checked.Version); err != nil || checked.Total != 450 {
+		t.Fatalf("the new effective payment must refresh the existing draft: %+v %v", checked, err)
+	}
+	store(normalize(fmt.Sprintf(lateOlder, revision-1)))
+	var queued bool
+	if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)`, period).
+		Scan(&queued); err != nil || queued {
+		t.Fatalf("a later arrival of an obsolete revision must not queue the draft: %t %v", queued, err)
+	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, checked.Version); err != nil {
 		t.Fatal(err)
 	}
-	half, refundDate := int64(20000), at.AddDate(0, 1, 0)
+	half, refundDate := int64(22500), at.AddDate(0, 1, 0)
 	store(sourceFact{Source: "DCZD", Kind: "REFUND_SUCCEEDED", Domain: "PRACTICE", SourceKey: "PRACTICE:2:4", OrderID: "1100",
 		RecordKey: "refund:1", Version: "1", RefundID: "1", AmountMinor: &half, OccurredAt: refundDate, UpdatedAt: refundDate,
 		RefundsPayment: []sourcePaymentReference{{OrderID: "1100", RecordID: "1100"}}})
 	result, err := s.calculateCurrentDraft(ctx, refundPeriod, 0)
-	if err != nil || result.IssueCount != 0 || result.RefundTotal != -200 {
+	if err != nil || result.IssueCount != 0 || result.RefundTotal != -225 {
 		t.Fatalf("later refunds should recover only the independent amount: %+v %v", result, err)
 	}
 }

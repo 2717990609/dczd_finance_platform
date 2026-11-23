@@ -77,9 +77,20 @@ func (n *sourcePracticeSignup) matches(member practiceEnrollment) bool {
 	return len(key) == 4 && key[2] == strconv.FormatInt(n.StrategyID, 10)
 }
 
-func practicePaymentVersionOrder(alias string) string {
+func practicePaymentRevision(alias string) string {
 	// The materialized revision can advance even when the underlying business timestamp does not.
-	return `(CASE WHEN ` + alias + `.version ~ '^practice-registration/v2/[1-9][0-9]{0,15}$'
+	return `CASE WHEN ` + alias + `.version ~ '^practice-registration/v2/[1-9][0-9]{0,15}$'
 	 THEN split_part(` + alias + `.version,'/',3)::bigint
-	 ELSE floor(extract(epoch FROM ` + alias + `.updated_at)*1000)*100+3 END,` + alias + `.updated_at,` + alias + `.id)`
+	 ELSE floor(extract(epoch FROM ` + alias + `.updated_at)*1000)*100+3 END`
+}
+
+func practicePaymentVersionOrder(alias string) string {
+	return `(` + practicePaymentRevision(alias) + `,` + alias + `.updated_at,` + alias + `.id)`
+}
+
+// These rows are compared within the same source record. Other streams keep their timestamp ordering.
+func sourceOrderVersionSort(alias string) string {
+	return `CASE WHEN ` + alias + `.source='DCZD' AND ` + alias + `.kind='ORDER_PAID'
+	 AND split_part(` + alias + `.record_key,':',1)='dc_practice_total_order_t' THEN ` + practicePaymentRevision(alias) +
+		` END DESC,` + alias + `.updated_at DESC,` + alias + `.id DESC`
 }

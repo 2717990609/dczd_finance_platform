@@ -562,13 +562,13 @@ func storeSourcePaymentCompany(ctx context.Context, tx pgx.Tx, version int64, f 
 	return false, nil
 }
 
-const ordersTemplateSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
+var ordersTemplateSQL = `SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
  SELECT v.id,v.fact || jsonb_build_object('id',v.id,'productName',p.name,'mapped',p.id IS NOT NULL) AS data
  FROM (
   SELECT * FROM (
-   SELECT DISTINCT ON(source,order_id,line_id,record_key,kind) id,source,order_id,line_id,kind,record_key,occurred_at,fact FROM source_order_versions
+   SELECT DISTINCT ON(source,order_id,line_id,record_key,kind) id,source,order_id,line_id,kind,record_key,occurred_at,fact FROM source_order_versions v
    WHERE ($1='' OR source=$1) AND ($2='' OR order_id=$2)
-   ORDER BY source,order_id,line_id,record_key,kind,updated_at DESC,id DESC
+   ORDER BY source,order_id,line_id,record_key,kind,` + sourceOrderVersionSort("v") + `
   ) latest
   WHERE ($3::bigint=0 OR latest.id<$3) /* org scope */ ORDER BY latest.id DESC LIMIT 50
  ) v
