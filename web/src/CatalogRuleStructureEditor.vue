@@ -4,7 +4,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderScope, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
   orderTypeText:String,productId:Number,membershipSku:Boolean,defaultMembershipNewOnly:Boolean,replacementItemKey:String})
@@ -24,11 +24,11 @@ const blankCondition = scope => newCatalogRateCondition(props.options,scope)
 const labelFor = (choices,value) => choices.find(option=>option.value===value)?.label || value
 const percent = basisPoints => (basisPoints/100)+'%'
 function itemLabel(item) {
-  const recipient = item.target==='referrer' ? '订单直接推荐人'
+  const recipient = catalogOrderSalesPayees[item.target] || (item.target==='referrer' ? '订单直接推荐人'
     : item.target==='person' ? item.personName
     : item.target==='pool' ? props.options.teamPools?.find(pool=>pool.id===item.poolId)?.name
     : item.target==='appointment' ? [labelFor(catalogAppointmentLevels,item.appointmentLevel),labelFor(props.options.roles,item.role)].join(' · ')
-    : labelFor(props.options.organizations,item.organization)
+    : labelFor(props.options.organizations,item.organization))
   const standard = item.rows?.length ? item.rows.length+' 条费率条件'
     : item.fixedMinor != null ? (item.fixedMinor/100).toFixed(2)+' 元/笔' : percent(item.rateBps)
   const scope = item.ownSales ? '本人销售' : [

@@ -4,7 +4,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
-import { catalogScopeOptions } from './rule-component-form'
+import { catalogOrderSalesPayees, catalogScopeOptions } from './rule-component-form'
 
 const props = defineProps({options:Object,api:Function,peopleFilters:Object,prefix:String,disabled:Boolean,salesAvailable:Boolean,
   productId:Number,savedPoolLabel:String,existingPool:Boolean,unitNames:Object})
@@ -14,6 +14,7 @@ const targets = computed(() => [
   ...(props.salesAvailable || payee.value.target==='seller' ? [seller] : []),
   ...(!props.salesAvailable && payee.value.target==='seller' ? [] : [
     {value:'person',label:'个人'},{value:'company',label:'公司'},{value:'pool',label:'团队池'},
+    ...Object.entries(catalogOrderSalesPayees).map(([value,label])=>({value,label})),
     {value:'referrer',label:'订单直接推荐人'},
     {value:'appointment',label:'销售组织的在任人员'},
   ]),

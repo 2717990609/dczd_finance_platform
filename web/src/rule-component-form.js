@@ -109,9 +109,16 @@ export const catalogSalesPayees = [
   {value:'sales_company',label:'销售所属公司'},
 ]
 
+export const catalogOrderSalesPayees = {
+  order_seller:'订单上的成交销售',
+  order_sales_company:'销售所属公司',
+}
+
 export function catalogPayeeComplete(payee, roles) {
   switch (payee.target) {
     case 'seller':
+    case 'order_seller':
+    case 'order_sales_company':
     case 'referrer': return true
     case 'person': {
       const role = roles.find(option=>option.value===payee.role)

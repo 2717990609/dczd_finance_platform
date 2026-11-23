@@ -42,6 +42,8 @@ type vipBenefitPolicy struct {
 }
 
 const vipOrderReferrerMode = "ORDER_REFERRER"
+const vipOrderSellerMode = "ORDER_SELLER"
+const vipOrderSalesCompanyMode = "ORDER_SALES_COMPANY"
 
 type vipBenefitOrganization struct {
 	Party, Unit, Name string
@@ -160,7 +162,7 @@ func (a vipBenefitAction) validTarget() bool {
 	switch a.Mode {
 	case "PARTY":
 		return !poolFields && (a.Designated == "") != (a.Company == "")
-	case vipOrderReferrerMode:
+	case vipOrderReferrerMode, vipOrderSellerMode, vipOrderSalesCompanyMode:
 		return !poolFields && a.Designated == "" && a.Company == ""
 	case "TEAM_POOL":
 		return a.Designated == "" && a.Company == "" && a.PoolParty != "" && a.PoolUnit != "" &&
@@ -229,17 +231,25 @@ func (a vipBenefitAction) eligibleSale(req vipSalesRequest, sourceIssue string, 
 		return false, sourceIssue
 	}
 	eligible, issue := vipScopedSale(a.CommissionUnits, a.ScopeCategories, req, sourceIssue, data)
-	if eligible && a.AppointmentLevel != "" && sourceIssue == "SALES_COMPANY_REVIEW" {
-		return false, sourceIssue
+	if eligible && sourceIssue != "" {
+		seller, company := a.Mode == vipOrderSellerMode, a.Mode == vipOrderSalesCompanyMode
+		if seller && req.Seller == "" || company && req.CompanyUnit == "" ||
+			sourceIssue == "SALES_COMPANY_REVIEW" && (seller || company || a.AppointmentLevel != "") {
+			return false, sourceIssue
+		}
 	}
 	return eligible, issue
 }
 
 func (a vipBenefitAction) targetKind() string {
-	if a.Mode == vipOrderReferrerMode {
+	switch a.Mode {
+	case vipOrderReferrerMode:
 		return "referrer"
-	}
-	if a.Mode == "TEAM_POOL" {
+	case vipOrderSellerMode:
+		return "order_seller"
+	case vipOrderSalesCompanyMode:
+		return "order_sales_company"
+	case "TEAM_POOL":
 		return "pool"
 	}
 	if a.Designated != "" || a.AppointmentLevel != "" {
@@ -270,6 +280,24 @@ func bindVIPBenefit(line *vipBenefitPart, a vipBenefitAction, req vipSalesReques
 	line.Status = "CALCULATED"
 	if a.AppointmentLevel != "" {
 		bindVIPSalesOrganizationAppointment(line, a, req, data)
+		return
+	}
+	switch a.Mode {
+	case vipOrderSellerMode:
+		line.Kind = "person"
+		if req.Seller == "" || data.People[req.Seller] == "" {
+			line.Status = "SALES_PERSON_MISSING"
+		} else {
+			line.Party, line.Name = req.Seller, data.People[req.Seller]
+		}
+		return
+	case vipOrderSalesCompanyMode:
+		line.Kind = "company"
+		if req.CompanyUnit == "" || req.CompanyName == "" {
+			line.Status = "SALES_COMPANY_MISSING"
+		} else {
+			line.Party, line.Unit, line.Name = req.Company, req.CompanyUnit, req.CompanyName
+		}
 		return
 	}
 	if a.Mode == vipOrderReferrerMode {

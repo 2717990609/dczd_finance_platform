@@ -559,11 +559,18 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 			return invalid
 		}
 		action.Mode, action.Role = vipOrganizationAppointmentMode, role.Value
-	case "referrer":
+	case "referrer", "order_seller", "order_sales_company":
 		if target.PersonID != 0 || target.Role != "" || target.Organization != "" {
 			return invalid
 		}
-		action.Mode, action.Role = vipOrderReferrerMode, "REFERRAL"
+		switch target.Target {
+		case "order_seller":
+			action.Mode, action.Role = vipOrderSellerMode, vipOrderSellerMode
+		case "order_sales_company":
+			action.Mode, action.Role = vipOrderSalesCompanyMode, vipOrderSalesCompanyMode
+		default:
+			action.Mode, action.Role = vipOrderReferrerMode, "REFERRAL"
+		}
 	case "person":
 		if target.Organization != "" || people[target.PersonID] == "" {
 			return invalid

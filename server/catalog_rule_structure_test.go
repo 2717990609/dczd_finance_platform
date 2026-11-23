@@ -27,6 +27,58 @@ func TestCatalogPoolOwnerAndMembersUseIndependentRoles(t *testing.T) {
 	}
 }
 
+func TestCatalogIndependentOrderSalesTargetsResolveExplicitPayees(t *testing.T) {
+	fixed, rate := int64(800), int64(500)
+	paid := vipSalesRequest{Paid: 10000, OriginalPaid: 20000, Seller: "person:1",
+		Company: "source-company", CompanyUnit: "40000000-0000-4000-8000-000000000001", CompanyName: "销售所属公司"}
+	options := catalogStructureOptions{}
+	seller, err := newCatalogBenefitAction("sales-person", catalogNewBenefitItem{Label: "成交销售",
+		catalogBenefitTarget:      catalogBenefitTarget{Target: "order_seller"},
+		catalogBenefitCalculation: catalogBenefitCalculation{Fixed: &fixed}}, options, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	company, err := newCatalogBenefitAction("sales-company", catalogNewBenefitItem{Label: "销售公司",
+		catalogBenefitTarget:      catalogBenefitTarget{Target: "order_sales_company"},
+		catalogBenefitCalculation: catalogBenefitCalculation{Rate: &rate}}, options, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	definition, err := json.Marshal(map[string]any{
+		"amount_basis": "ACTUAL_RECEIVED", "stacking_policy": "SUM", "sales_attribution": "ORDER_SELLER",
+		"rounding_policy": map[string]any{"mode": "HALF_UP", "scale": 2},
+		"benefit_actions": []map[string]json.RawMessage{seller, company},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cards, err := catalogRateComponents(definition, nil, nil, nil, nil)
+	if err != nil || len(cards) != 2 || cards[0].TargetKind != "order_seller" || cards[1].TargetKind != "order_sales_company" {
+		t.Fatalf("independent dynamic recipients must be editable after saving: %+v %v", cards, err)
+	}
+	policy, ok := readVIPBenefits(definition)
+	if !ok {
+		t.Fatal("independent sales recipients must work without the dedicated sales table")
+	}
+	data := vipRuntimeData{BenefitReady: true, vipSalesData: vipSalesData{People: map[string]string{"person:1": "成交销售"}}}
+	result := quoteVIPBenefits(paid, "", policy, data)
+	if len(result) != 2 || result[0].Status != "CALCULATED" || result[0].Kind != "person" ||
+		result[0].Party != paid.Seller || result[0].Amount != 400 || result[1].Status != "CALCULATED" ||
+		result[1].Kind != "company" || result[1].Unit != paid.CompanyUnit || result[1].Amount != 500 {
+		t.Fatalf("expected 400 cents to the seller and 500 cents to the sale company: %+v", result)
+	}
+	paid.CompanyUnit, paid.CompanyName = "", ""
+	result = quoteVIPBenefits(paid, "SALES_COMPANY_CONFLICT", policy, data)
+	if result[0].Amount != 400 || result[1].Status != "SALES_COMPANY_CONFLICT" || result[1].Amount != 0 {
+		t.Fatalf("company conflict must block that share alone: %+v", result)
+	}
+	paid.Seller = ""
+	result = quoteVIPBenefits(paid, "SALES_PERSON_CONFLICT", policy, data)
+	if result[0].Amount != 0 || result[0].Status != "SALES_PERSON_CONFLICT" {
+		t.Fatalf("conflicting seller must not receive a commission: %+v", result)
+	}
+}
+
 func TestCatalogPoolCanAssignNamedOwner(t *testing.T) {
 	options := catalogStructureOptions{
 		Organizations: []catalogStructureOption{{Value: "pool-party", UnitID: "team-unit", Kind: "DEPARTMENT"}},

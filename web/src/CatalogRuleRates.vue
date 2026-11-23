@@ -8,7 +8,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderScope, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule:Object, applied:Object, api:Function, formatTime:Function, formatMoney:Function,
   optionLabel:Function, periods:Array, skus:Array })
@@ -55,8 +55,9 @@ const hasRateTable = computed(() => !!(selectedCalculation.value || component.va
 const columns = computed(() => sheet.value?.mayPublish && !props.applied && !selectedCalculation.value
   ? [...rateColumns,{title:'操作',key:'operation',width:190}] : rateColumns)
 const targetKind = computed(() => targetEdits.value.get(selected.value)?.target || component.value?.targetKind)
-const targetKindLabels = {seller:'按下表结算',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人',appointment:'销售组织的在任人员'}
-const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人',appointment:'在任人员'}
+const targetKindLabels = {seller:'按下表结算',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人',appointment:'销售组织的在任人员',...catalogOrderSalesPayees}
+const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人',appointment:'在任人员',
+  order_seller:'成交销售',order_sales_company:'销售公司'}
 const teamSplit = computed(() => component.value?.teamSplit)
 const serviceItemKey = 'internal-service'
 const splitFields = [
@@ -328,6 +329,8 @@ function setRate(value, base, row) {
 }
 function targetName(item) {
   const edit = targetEdits.value.get(item.itemKey)
+  const orderPayee = catalogOrderSalesPayees[edit?.target || item.targetKind]
+  if (orderPayee) return orderPayee
   const withDuty = (name,duty) => [name,duty && (props.optionLabel('organizationDuty',duty) || duty)].filter(Boolean).join(' · ')
   if ((edit?.target || item.targetKind)==='appointment') {
     return [appointmentLevelLabel(edit?.appointmentLevel || item.appointmentLevel),roleLabel(edit?.role || item.targetRole)].filter(Boolean).join(' · ')
@@ -718,7 +721,7 @@ async function publish() {
             </RuleArrangementFields>
           </template>
           <template v-else-if="targetKind!=='seller' && !itemRemoved">
-            <p class="rule-formula">{{ [targetKindLabels[targetKind],targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}</p>
+            <p class="rule-formula">{{ [...new Set([targetKindLabels[targetKind],targetName(item),componentStandard(item)].filter(Boolean))].join(' · ') }}</p>
             <a-descriptions v-if="item.targetRole || item.memberRole" size="small" :column="{xs:1,sm:2}">
               <a-descriptions-item v-if="item.targetRole" :label="targetKind==='pool' ? '负责人岗位' : '收款人任职岗位'">
                 {{ roleLabel(item.targetRole) }}
