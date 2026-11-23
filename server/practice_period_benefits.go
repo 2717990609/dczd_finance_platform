@@ -690,18 +690,10 @@ func allocatePracticeFixedBenefit(shares []practiceBenefitShare, award int64, pe
 	for i := range shares {
 		share := &shares[i]
 		if !perClass {
-			var gross int64
-			for _, payment := range share.payments {
-				gross += *payment.Fact.AmountMinor
-			}
-			share.fixed = practiceGrossShares(gross, share.payments, award)
+			share.fixed = practiceFixedSignupShares(share.payments, award)
 		}
 		for n, payment := range share.payments {
-			paid := *payment.Fact.AmountMinor
-			refunded := paid - share.purchase.netAmount(payment)
-			if refunded != 0 {
-				share.fixed[n] -= prorateMinor(share.fixed[n], refunded, paid)
-			}
+			share.fixed[n] = share.purchase.remainingFixedShare(payment, share.fixed[n])
 			var err error
 			total, err = addMinor(total, share.fixed[n])
 			if err != nil {

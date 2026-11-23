@@ -61,6 +61,7 @@ type practiceDraftRuntime struct {
 	legacyGrossRateShares       bool
 	legacyBenefitSalesAgreement bool
 	legacyBenefitAttribution    bool
+	legacyFixedTierRefund       bool
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -321,7 +322,16 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				}
 				part.Mode, part.Value = tier.Mode, tier.Value
 			}
-			amount, issue := sale.commissionAmount(part)
+			var amount int64
+			var fixedShares [2]int64
+			fixedByPayment := isTiered && part.Mode == "fixed" && !runtime.legacyFixedTierRefund &&
+				(part.RefundPolicy == "" || part.RefundPolicy == "proportional")
+			if fixedByPayment {
+				fixedShares, issue = purchase.fixedTierPaymentShares(sale, part, identities, runtime)
+				amount = fixedShares[0] + fixedShares[1]
+			} else {
+				amount, issue = sale.commissionAmount(part)
+			}
 			if issue != "" {
 				draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
 				continue
@@ -337,17 +347,21 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			var cumulativeBase, previousShare int64
 			for index, payment := range payments {
 				net := sale.netAmount(payment)
-				cumulativeBase += net
-				share := prorateMinor(amount, cumulativeBase, base)
+				paymentAmount := fixedShares[index]
+				if !fixedByPayment {
+					cumulativeBase += net
+					cumulativeShare := prorateMinor(amount, cumulativeBase, base)
+					paymentAmount = cumulativeShare - previousShare
+					previousShare = cumulativeShare
+				}
 				payee := assignments[index]
 				draft.Lines = append(draft.Lines, draftLine{
 					FactID: payment.ID, RuleID: rule.ID, EnrollmentID: member.ID, PersonID: payee.PersonID,
-					IdentityID: payee.ID, Component: part.Type, Base: net, Amount: share - previousShare,
+					IdentityID: payee.ID, Component: part.Type, Base: net, Amount: paymentAmount,
 					practiceProportionalRefund: !isTiered && (part.Mode == "rate" || part.SaleScope != nil && part.RefundPolicy == "proportional"),
 					practiceTierRefund:         isTiered,
 					practiceArrangementLabel:   part.arrangementLabel(),
 				})
-				previousShare = share
 			}
 		}
 	}

@@ -56,6 +56,99 @@ func TestPracticeCumulativeAmountUsesSelectedEnrollmentTypes(t *testing.T) {
 	}
 }
 
+func TestPracticeFixedTierRefundKeepsOriginalPaymentShares(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	id := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	const sourceKey = "fixed-tier-refunds"
+	const rosterKey = "PRACTICE:1:1:1"
+	at := time.Date(2026, time.August, 8, 9, 0, 0, 0, shanghai)
+	product := id(s.createProduct(ctx, createProductInput{Code: "PRACTICE_FIXED_TIER", Name: "固定阶梯退款", PeriodMode: "class"}))
+	id(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: sourceKey}))
+	person := id(s.createPerson(ctx, createPersonInput{Name: "测试销售"}))
+	id(s.assignIdentity(ctx, assignIdentityInput{PersonID: person, Source: "DCZD", ExternalID: "seller", ValidFrom: "2026-08-01T00:00:00+08:00"}))
+	period := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "一期", Ordinal: 1, StartsOn: at.Format(time.DateOnly),
+		EndsOn: at.Format(time.DateOnly), SourcePeriodKey: rosterKey}))
+	refundPeriod := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "九月退款", SettlementMonth: "2026-09"}))
+	roster := practiceRoster{Key: rosterKey, Hash: "roster-1", SourceVersion: 1, StartsAt: at, ConfirmedAt: at.Add(time.Hour),
+		Enrollments: []practiceEnrollment{{SourceEnrollmentID: "10", ParticipantID: "10", MembershipType: 3,
+			CommissionEligible: true, ContentHash: "10", PaidOrderIDs: []string{"1", "2"}}}}
+	paid := func(order string, amount int64, paidAt time.Time) sourceFact {
+		return sourceFact{Source: "DCZD", Kind: "ORDER_PAID", Domain: "PRACTICE", SourceKey: sourceKey,
+			OrderID: order, PaymentID: order, RecordKey: "paid:" + order, Version: "1", ReferrerID: "seller",
+			AmountMinor: &amount, OccurredAt: paidAt, UpdatedAt: paidAt}
+	}
+	refund := func(order, number string, amount int64, bookedAt time.Time) sourceFact {
+		return sourceFact{Source: "DCZD", Kind: "REFUND_SUCCEEDED", Domain: "PRACTICE", SourceKey: sourceKey,
+			OrderID: order, RefundID: number, RecordKey: "refund:" + number, Version: "1", AmountMinor: &amount,
+			OccurredAt: bookedAt, UpdatedAt: bookedAt,
+			RefundsPayment: []sourcePaymentReference{{OrderID: order, RecordID: order}}}
+	}
+	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if _, err := storePracticeRoster(ctx, tx, roster); err != nil {
+			return err
+		}
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{
+			paid("1", 4000, at.Add(-3*time.Hour)),
+			paid("2", 6000, at.Add(-2*time.Hour)),
+			refund("1", "11", 2000, at.Add(-time.Hour)),
+		})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.publishRule(ctx, publishRuleInput{ProductID: product, PeriodID: &period, Label: "新报固定阶梯", Components: []component{
+		{Type: "sales", Mode: "tiered", ClassMember: "new", SourceRole: "DIRECT_REFERRER",
+			Tiers: &practiceSalesTiers{CountFromOrdinal: 1, Count: []practiceTier{{Mode: "fixed", Value: 2000}}}},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	class, err := s.calculateCurrentDraft(ctx, period, 0)
+	if err != nil || class.IssueCount != 0 || class.Total != 1600 || class.LineCount != 2 {
+		t.Fatalf("a 50%% refund of a 40-yuan deposit must leave 4 and 12 yuan in the two original shares: %+v %v", class, err)
+	}
+	verifyShares := func() {
+		t.Helper()
+		var amounts []int64
+		err := s.db.QueryRow(ctx, `SELECT array_agg(l.amount_minor ORDER BY v.order_id) FROM calculation_draft_lines l
+		 JOIN source_order_versions v ON v.id=l.source_version_id WHERE l.period_id=$1`, period).Scan(&amounts)
+		if err != nil || len(amounts) != 2 || amounts[0] != 400 || amounts[1] != 1200 {
+			t.Fatalf("the split allocation must remain tied to the original payment legs: %v %v", amounts, err)
+		}
+	}
+	verifyShares()
+	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, class.Version); err != nil {
+		t.Fatal(err)
+	}
+	post := func(events ...sourceFact) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFacts(ctx, tx, events)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	september := at.AddDate(0, 1, 0)
+	post(refund("1", "12", 2000, september))
+	booked, err := s.calculateCurrentDraft(ctx, refundPeriod, 0)
+	if err != nil || booked.IssueCount != 0 || booked.RefundTotal != -400 || booked.RefundCount != 1 {
+		t.Fatalf("the remaining deposit refund must reverse only its 4-yuan share: %+v %v", booked, err)
+	}
+	post(refund("2", "13", 3000, september.Add(time.Hour)))
+	booked, err = s.calculateCurrentDraft(ctx, refundPeriod, 0)
+	if err != nil || booked.IssueCount != 0 || booked.RefundTotal != -1000 || booked.RefundCount != 2 {
+		t.Fatalf("halving the balance must reverse 6 additional yuan: %+v %v", booked, err)
+	}
+	verifyShares()
+}
+
 func TestPracticeTierMeasuresOtherEnrollmentWithoutAPayoutSchedule(t *testing.T) {
 	at := time.Date(2026, 11, 5, 4, 0, 0, 0, time.UTC)
 	newAmount, retrainAmount := int64(10000), int64(30000)

@@ -169,6 +169,47 @@ func (p practicePurchase) netAmount(payment paymentInput) int64 {
 	return *payment.Fact.AmountMinor
 }
 
+func (p practicePurchase) fixedTierPaymentShares(sale practicePurchase, part component,
+	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) ([2]int64, string) {
+	original := sale.payments
+	if len(p.originalPayments) != 0 {
+		p.payments = p.originalPayments
+		scoped, issue := p.scopedSale(part, identities, runtime)
+		if issue != "" {
+			return [2]int64{}, issue
+		}
+		original = scoped.payments
+	}
+	amounts := practiceFixedSignupShares(original, part.Value)
+	var active [2]int64
+	for i, payment := range original {
+		for index, current := range sale.payments {
+			if current.ID == payment.ID {
+				active[index] = p.remainingFixedShare(payment, amounts[i])
+				break
+			}
+		}
+	}
+	return active, ""
+}
+
+func practiceFixedSignupShares(payments []paymentInput, award int64) [2]int64 {
+	var gross int64
+	for _, payment := range payments {
+		gross += *payment.Fact.AmountMinor
+	}
+	return practiceGrossShares(gross, payments, award)
+}
+
+func (p practicePurchase) remainingFixedShare(payment paymentInput, award int64) int64 {
+	paid := *payment.Fact.AmountMinor
+	refunded := paid - p.netAmount(payment)
+	if refunded == 0 {
+		return award
+	}
+	return award - prorateMinor(award, refunded, paid)
+}
+
 func (p practicePurchase) commissionAmount(part component) (int64, string) {
 	amount := calculatePaymentAmount(p.base, part)
 	if part.Mode == "rate" || p.gross == p.base {

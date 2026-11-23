@@ -187,6 +187,22 @@ func (t practiceSalesTiers) hasCountTiers() bool {
 	return false
 }
 
+func (part component) usesFixedTierPaymentShares() bool {
+	if part.Tiers == nil || (part.RefundPolicy != "" && part.RefundPolicy != "proportional") {
+		return false
+	}
+	hasFixed := func(rows []practiceTier) bool {
+		return slices.ContainsFunc(rows, func(row practiceTier) bool {
+			return row.Mode == "fixed" || row.Retrain != nil && row.Retrain.Mode == "fixed"
+		})
+	}
+	t := part.Tiers
+	return hasFixed(t.Count) || hasFixed(t.Performance) ||
+		slices.ContainsFunc(t.CategorySchedules, func(s practiceCategorySchedule) bool { return hasFixed(s.Count) || hasFixed(s.Performance) }) ||
+		slices.ContainsFunc(t.CompanySchedules, func(s practiceCompanySchedule) bool { return hasFixed(s.Count) || hasFixed(s.Performance) }) ||
+		slices.ContainsFunc(t.PersonSchedules, func(s practicePersonSchedule) bool { return hasFixed(s.Count) || hasFixed(s.Performance) })
+}
+
 type practiceTierPurchase struct {
 	EnrollmentID    int64
 	SequenceKey     string
