@@ -72,6 +72,7 @@ const groupingIssueLabels = {
   BENEFIT_POOL_OWNER_MISSING:'付款时缺少池负责人',
   BENEFIT_POOL_OWNER_CONFLICT:'付款时有多位池负责人',
   BENEFIT_POOL_MEMBERS_MISSING:'付款时没有可分配成员',
+  MEMBERSHIP_TYPE_PENDING:'缺少新购或续费标记，请在子系统补齐后重新拉取',
 }
 const sourceStatusLabels = {READY:'覆盖本期',NOT_CONFIGURED:'来源未配置',NOT_STARTED:'未同步',INCOMPLETE:'同步未完成',
   OUTSIDE_RANGE:'未覆盖本期',STALE:'同步已过期',SOURCE_CHANGED:'来源已变更',FAILED:'同步失败',CLOCK_GAP:'来源时钟待核',UNSUPPORTED:'来源待核'}
@@ -109,19 +110,26 @@ const changed = computed(() => creating.value ? Boolean(ruleName.value.trim() &&
   : componentsChanged.value || scenariosChanged.value)
 const scenarioOptions = computed(() => {
   const label = sku => sku.label+(sku.requiresCompletion ? ' · 完成后计提' : '')
-  const available = new Map((sheet.value?.options?.scenarios || []).map(sku=>[sku.code,{value:sku.code,label:label(sku)}]))
+  const available = new Map((sheet.value?.options?.scenarios || []).map(sku=>[sku.code,{value:sku.code,label:label(sku),membershipSku:sku.membershipSku}]))
   for (const sku of copiedFrom.value?.scenarios || sheet.value?.scenarios || []) {
     if (!available.has(sku.code) && (!copiedFrom.value || scenarioCodes.value.includes(sku.code))) {
       available.set(sku.code,{value:sku.code,label:copiedFrom.value ? sku.label+'（当前不可选）'
-        : sku.mapped ? label(sku) : sku.label+'（尚未映射）',disabled:!copiedFrom.value && sku.locked})
+        : sku.mapped ? label(sku) : sku.label+'（尚未映射）',disabled:!copiedFrom.value && sku.locked,membershipSku:sku.membershipSku})
     }
   }
   return [...available.values()]
 })
 const skuLabel = code => scenarioOptions.value.find(option=>option.value===code)?.label || code
+const membershipCodes = computed(() => new Set(scenarioOptions.value.filter(option=>option.membershipSku).map(option=>option.value)))
+const selectedSKUs = item => item.scenarioCodes?.length ? item.scenarioCodes : scenarioCodes.value
+const hasMembershipSKU = item => selectedSKUs(item).some(code=>membershipCodes.value.has(code))
 function itemOrderTypes(item) {
-  const codes = item.scenarioCodes?.length ? item.scenarioCodes : scenarioCodes.value
-  return codes.map(skuLabel).join('、') || '待选择 SKU'
+  const text = selectedSKUs(item).map(skuLabel).join('、') || '待选择 SKU'
+  return item.membershipNewOnly ? text+' · 会员仅计新报' : text
+}
+function selectItemSKUs(item,codes) {
+  item.scenarioCodes = codes
+  if (!hasMembershipSKU(item)) item.membershipNewOnly = false
 }
 function itemScenarioOptions(item) {
   return [...new Set([...scenarioCodes.value,...item.scenarioCodes])].map(code=>({
@@ -137,7 +145,8 @@ function editableRows(items) {
       poolName:item.poolName || '',poolId:item.poolId,legacyPool:item.targetKind==='pool' && !item.poolId,
       ownerRole:item.ownerRole || '',memberRole:item.memberRole || '',
       ownerPersonId:item.ownerPersonId,ownerName:item.ownerName,
-      scenarioCodes:item.scenarioCodes || [],salesScope:catalogOrderScope(item),recipientDuty:item.recipientDuty,
+      scenarioCodes:item.scenarioCodes || [],membershipNewOnly:Boolean(item.membershipNewOnly),
+      salesScope:catalogOrderScope(item),recipientDuty:item.recipientDuty,
       appointment:item.appointment ? {...item.appointment} : undefined,
       method:item.fixedMinor!=null ? 'fixed' : tiers.length===1 ? 'rate' : 'tiers',
       fixedAmount:item.fixedMinor==null ? undefined : item.fixedMinor/100,
@@ -149,7 +158,7 @@ function componentTarget(item) {
   return {itemKey:item.itemKey,label:item.label.trim(),targetKind:item.targetKind,organizationKey:item.poolId ? undefined : item.organizationKey,
     personId:item.personId,poolId:item.poolId,poolName:item.poolId ? undefined : item.poolName,
     ownerRole:item.ownerRole,ownerPersonId:item.ownerPersonId,
-    memberRole:item.memberRole,scenarioCodes:[...item.scenarioCodes].sort(),
+    memberRole:item.memberRole,scenarioCodes:[...item.scenarioCodes].sort(),membershipNewOnly:Boolean(item.membershipNewOnly),
     ...orderScopeBody(item)}
 }
 function configuredRow(item) {
@@ -284,6 +293,8 @@ function minor(value, message) {
 function componentChanges() {
   const outside = rows.value.find(item=>item.scenarioCodes?.some(code=>!scenarioCodes.value.includes(code)))
   if (outside) throw new Error('请更新「'+outside.label+'」的计提订单类型，所选 SKU 已移出规则。')
+  const missingMembership = rows.value.find(item=>item.membershipNewOnly && !hasMembershipSKU(item))
+  if (missingMembership) throw new Error('请为「'+missingMembership.label+'」选择适用的会员 SKU，或关闭会员仅计新报。')
   if (!canSave.value || (!creating.value && !componentsChanged.value)) return {}
   return {components:rows.value.map(item=>{
     if (!item.label.trim() || (item.targetKind==='person' ? !item.personId : !item.organizationKey && !item.poolId)) {
@@ -414,7 +425,7 @@ async function preview() {
     if (request === quoteRequest) previewing.value = false
   }
 }
-const scopedQuote = computed(() => rows.value.some(item=>item.salesScope!=null || item.appointment || item.scenarioCodes?.length))
+const scopedQuote = computed(() => rows.value.some(item=>item.salesScope!=null || item.appointment || item.scenarioCodes?.length || item.membershipNewOnly))
 function creationInput() {
   if (!changed.value || !effectiveDate.value) throw new Error('请填写规则名称、生效日期，并选择参与场景。')
   const selectable = new Set(sheet.value.options.scenarios.map(sku=>sku.code))
@@ -530,7 +541,7 @@ async function resumeRule() {
             <DownOutlined aria-hidden="true"/>
             <strong>{{ item.label || '新收款安排' }}</strong>
             <span class="rule-block-badge">{{ targetLabels[item.targetKind] }}</span>
-            <span v-if="item.scenarioCodes?.length" class="rule-block-recipient" :title="itemOrderTypes(item)">{{ itemOrderTypes(item) }}</span>
+            <span v-if="item.scenarioCodes?.length || item.membershipNewOnly" class="rule-block-recipient" :title="itemOrderTypes(item)">{{ itemOrderTypes(item) }}</span>
             <span class="rule-block-recipient" :title="orderScopeText(item)">{{ orderScopeText(item) }}</span>
             <small>{{ targetLabel(item) }} · {{ methodSummary(item) }}</small>
           </button>
@@ -579,12 +590,14 @@ async function resumeRule() {
                 </a-form-item>
               </template>
               <template #orderType>
-                <a-form-item v-if="scenarioCodes.length>1 || item.scenarioCodes?.length" label="计提订单类型" html-for="period-benefit-skus">
-                  <a-select id="period-benefit-skus" v-model:value="item.scenarioCodes" :options="itemScenarioOptions(item)"
-                    :disabled="saving" mode="multiple" allow-clear show-search option-filter-prop="label" :max-tag-count="1"
-                    placeholder="全部适用 SKU"/>
+                <a-form-item label="计提订单类型" :html-for="scenarioCodes.length>1 || item.scenarioCodes?.length ? 'period-benefit-skus' : undefined">
+                  <a-select v-if="scenarioCodes.length>1 || item.scenarioCodes?.length" id="period-benefit-skus"
+                    :value="item.scenarioCodes" :options="itemScenarioOptions(item)" :disabled="saving" mode="multiple" allow-clear show-search
+                    option-filter-prop="label" :max-tag-count="1" placeholder="全部适用 SKU" @update:value="selectItemSKUs(item,$event)"/>
+                  <span v-else>{{ selectedSKUs(item).map(skuLabel).join('、') || '待选择 SKU' }}</span>
+                  <a-checkbox v-if="hasMembershipSKU(item) || item.membershipNewOnly" v-model:checked="item.membershipNewOnly"
+                    class="period-membership-type" :disabled="saving">会员仅计新报</a-checkbox>
                 </a-form-item>
-                <a-form-item v-else label="计提订单类型">{{ itemOrderTypes(item) }}</a-form-item>
               </template>
               <template #scope>
                 <CatalogCommissionScopeFields :prefix="'period-scope-'+item.uid" v-model="item.salesScope"
@@ -801,6 +814,7 @@ async function resumeRule() {
 <style scoped>
 .period-component-layout { margin:8px 0 12px; }
 .period-scenario-select { width:min(100%,720px); }
+.period-membership-type { display:block; margin-top:4px; }
 .period-component-heading { display:flex; justify-content:space-between; align-items:center; gap:4px 8px; flex-wrap:wrap; margin-bottom:6px; }
 .period-component-heading h2 { margin:0; font-size:16px; }
 .period-tier-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:8px; align-items:center; margin-bottom:8px; }

@@ -49,6 +49,7 @@ type catalogPeriodSKU struct {
 	Mapped             bool   `json:"mapped"`
 	Locked             bool   `json:"locked,omitempty"`
 	RequiresCompletion bool   `json:"requiresCompletion,omitempty"`
+	MembershipSKU      bool   `json:"membershipSku,omitempty"`
 }
 
 type catalogPeriodPublishInput struct {
@@ -242,6 +243,11 @@ func (s workspace) postCatalogPeriodQuote(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			return catalogPeriodQuote{}, err
 		}
+		if input.Components != nil {
+			if err := validateCatalogPeriodMembershipScopes(ctx, s.db, rule.ProductID, regulated, &rule.From, rule.Through); err != nil {
+				return catalogPeriodQuote{}, err
+			}
+		}
 		if input.Performance != nil {
 			base, err := parseCatalogPeriodRule(rule.raw)
 			if err != nil {
@@ -267,7 +273,9 @@ func quoteCatalogPeriodDefinition(raw json.RawMessage, input catalogPeriodQuoteI
 			return catalogPeriodQuote{}, invalid
 		}
 		period.Items = period.Items[index : index+1]
-	} else if slices.ContainsFunc(period.Items, func(item catalogPeriodItem) bool { return len(item.ScenarioCodes) != 0 }) {
+	} else if slices.ContainsFunc(period.Items, func(item catalogPeriodItem) bool {
+		return len(item.ScenarioCodes) != 0 || item.MembershipNewOnly
+	}) {
 		return catalogPeriodQuote{}, errCatalogPeriodQuoteItem
 	}
 	return quoteCatalogPeriod(period.Items, input.Receipts, input.Refunds, input.CarryIn)
@@ -386,6 +394,11 @@ func prepareCatalogPeriodRevision(ctx context.Context, db catalogPeriodReader, b
 	body, err = applyCatalogPeriodChanges(ctx, db, base.ProductID, base.raw, body, input.Edits, input.Components)
 	if err != nil {
 		return nil, err
+	}
+	if input.Components != nil || input.ScenarioCodes != nil {
+		if err := validateCatalogPeriodMembershipScopes(ctx, db, base.ProductID, body, &at, base.Through); err != nil {
+			return nil, err
+		}
 	}
 	return editCatalogPerformanceScope(ctx, db, body, period.Performance, input.Performance)
 }

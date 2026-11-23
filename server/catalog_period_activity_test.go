@@ -23,9 +23,9 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 		 VALUES(901,gen_random_uuid(),'test','DCAI','DCAI','sample','2026-10-01',decode(repeat('00',32),'hex'))`,
 		`INSERT INTO catalog_business_routes(source_id,product_id,source,domain,entity_type,record_table,business_key,
 		  classifier,sku_code,sku_label,mapping_version,effective_from,observed_at,source_product_code) VALUES
-		 (gen_random_uuid(),901,'DCAI','VIP','ORDER','vip','sample','VIP','FIRST','会员',1,'2026-01-01','2026-10-01','sample'),
+		 (gen_random_uuid(),901,'DCAI','VIP','ORDER','ai_vip_order','sample','VIP','FIRST','会员',1,'2026-01-01','2026-10-01','sample'),
 		 (gen_random_uuid(),901,'DCAI','HEALTH_IDENTITY','ORDER','health','sample','HEALTH','SECOND','健康',1,'2026-01-01','2026-10-01','sample'),
-		 (gen_random_uuid(),901,'DCAI','VIP','ORDER','vip','sample','EXCLUDED','OTHER','其他',1,'2026-01-01','2026-10-01','sample')`,
+		 (gen_random_uuid(),901,'DCAI','VIP','ORDER','ai_vip_order','sample','EXCLUDED','OTHER','其他',1,'2026-01-01','2026-10-01','sample')`,
 	} {
 		if _, err := db.Exec(ctx, statement); err != nil {
 			t.Fatal(err)
@@ -61,19 +61,19 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 			OrderID: id, RefundID: refundID, RecordKey: original.RecordKey, Version: "1", OccurredAt: at, UpdatedAt: at,
 			RefundsPayment: []sourcePaymentReference{{OrderID: original.OrderID, RecordID: original.OrderID}}, AmountMinor: &amount}
 	}
-	vip := payment("10", "VIP", "vip", 10000, window.Start)
+	vip := payment("10", "VIP", "ai_vip_order", 10000, window.Start)
 	insert(vip, "VIP")
 	vip.Version, vip.UpdatedAt = "2", window.Start.Add(time.Minute)
 	newAmount := int64(12000)
 	vip.AmountMinor = &newAmount
 	insert(vip, "VIP")
-	old := payment("11", "VIP", "vip", 10000, window.Start.Add(-time.Second))
+	old := payment("11", "VIP", "ai_vip_order", 10000, window.Start.Add(-time.Second))
 	insert(old, "VIP")
 	health := payment("20", "HEALTH_IDENTITY", "health", 20000, window.Start)
 	insert(health, "HEALTH")
-	insert(payment("12", "VIP", "vip", 7000, window.Start), "EXCLUDED")
-	insert(payment("13", "VIP", "vip", 123, window.Start), "")
-	insert(payment("14", "VIP", "vip", 40000, window.Through), "VIP")
+	insert(payment("12", "VIP", "ai_vip_order", 7000, window.Start), "EXCLUDED")
+	insert(payment("13", "VIP", "ai_vip_order", 123, window.Start), "")
+	insert(payment("14", "VIP", "ai_vip_order", 40000, window.Through), "VIP")
 	insert(refund("11", "a", old, 3000), "")
 	insert(refund("refund-1", "b", vip, 1000), "")
 	insert(refund("refund-2", "b", vip, 1000), "")
@@ -82,7 +82,7 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 	insert(missing, "")
 	insert(refund("refund-3", "d", health, 12500), "")
 	insert(refund("refund-4", "e", health, 12500), "")
-	older := payment("15", "VIP", "vip", 10000, window.Start.Add(-time.Hour))
+	older := payment("15", "VIP", "ai_vip_order", 10000, window.Start.Add(-time.Hour))
 	insert(older, "VIP")
 	olderRefund := refund("15", "f", older, 9000)
 	olderRefund.OccurredAt, olderRefund.UpdatedAt = window.Start.Add(-time.Minute), window.Start.Add(-time.Minute)
@@ -210,6 +210,25 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 			t.Fatalf("an unchanged definition must keep its stored version and carry identity: %+v", group)
 		}
 	}
+	newMembersOnly := `"scenarioCodes":["FIRST"],"components":[{"itemKey":"operations","label":"运营",
+	 "targetKind":"pool","organizationKey":"` + orgID + `","poolName":"运营池","ownerRole":"owner","memberRole":"member",
+	 "membershipNewOnly":true,"tiers":[{"rate_bps":1000}]}]`
+	pending := requestTrial(ruleID, "2026-10-01", newMembersOnly)
+	if pending.Receipts != 12000 || pending.Grouping.Issues["MEMBERSHIP_TYPE_PENDING"] != 1 || len(pending.Grouping.Groups) != 1 ||
+		pending.Grouping.Groups[0].RuleID != ruleID || pending.Grouping.Groups[0].Refunds != 3000 {
+		t.Fatalf("unmarked current payment should wait while the prior refund follows its original rule: %+v", pending)
+	}
+	vip.Version, vip.TransactionType, vip.UpdatedAt = "3", "NEW", window.Start.Add(2*time.Minute)
+	insert(vip, "VIP")
+	corrected := requestTrial(ruleID, "2026-10-01", newMembersOnly)
+	if corrected.Receipts != pending.Receipts || len(corrected.Grouping.Issues) != 0 || len(corrected.Grouping.Groups) != 2 {
+		t.Fatalf("the newer original payment version should enter the existing preview: %+v", corrected)
+	}
+	for _, group := range corrected.Grouping.Groups {
+		if group.RuleID == "" && (group.Receipts != 12000 || group.quote().Total != 1200) {
+			t.Fatalf("wrong settlement basis after source classification: %+v", group)
+		}
+	}
 	const selectedCategory = "10000000-0000-4000-8000-000000000106"
 	const otherCategory = "10000000-0000-4000-8000-000000000107"
 	const sellerCompany = "10000000-0000-4000-8000-000000000108"
@@ -328,7 +347,7 @@ func TestCatalogPeriodActivityReadsLatestPaidAndOriginalRefundScenario(t *testin
 		scheduledID, packageID, scheduledAt, json.RawMessage(nextRule), nextID); err != nil {
 		t.Fatal(err)
 	}
-	insert(payment("nov-late", "VIP", "vip", 30000, scheduledAt), "VIP")
+	insert(payment("nov-late", "VIP", "ai_vip_order", 30000, scheduledAt), "VIP")
 	overlap := requestTrial(nextID, "2026-11-01", `"edits":[{"itemKey":"operations","tiers":[{"rate_bps":1000}]}]`)
 	if groups := overlap.Grouping.Groups; overlap.Receipts != 70000 || len(groups) != 2 ||
 		groups[0].RuleID != "" || groups[0].quote().Total != 4000 ||

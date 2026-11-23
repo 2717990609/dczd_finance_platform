@@ -83,6 +83,9 @@ func buildCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, create 
 	if err != nil {
 		return nil, err
 	}
+	if err := validateCatalogPeriodMembershipScopes(ctx, db, create.ProductID, body, &at, nil); err != nil {
+		return nil, err
+	}
 	return editCatalogPerformanceScope(ctx, db, body, nil, performance)
 }
 

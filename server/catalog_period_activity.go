@@ -224,6 +224,8 @@ recognition_rules AS MATERIALIZED (
  ) p ON true
 ), mapped AS MATERIALIZED (
  SELECT v.id,v.occurred_at,c.source_version_id AS classified,
+	 CASE WHEN v.source='DCAI' AND v.fact->>'domain'='VIP' AND split_part(v.record_key,':',1)='ai_vip_order'
+	  THEN coalesce(v.fact->>'transactionType','') END AS membership_type,
   CASE WHEN frozen.payment_version_id IS NOT NULL THEN 1 ELSE m.matches END AS matches,
   coalesce(frozen.sku_code,m.sku) AS sku,
   CASE WHEN jsonb_typeof(coalesce(frozen.amount,v.fact->'amountMinor'))='number'
@@ -268,7 +270,7 @@ recognition_rules AS MATERIALIZED (
  ) frozen ON true
 ), assessed AS (
  SELECT e.*,CASE WHEN p.matches=1 THEN p.sku END AS sku,p.occurred_at AS paid_at,p.amount AS original_amount,
-  p.recognized_at,p.completion_version_id,
+  p.recognized_at,p.completion_version_id,p.membership_type,
   p.payment_version_id AS frozen_payment_id,p.period_id AS frozen_period_id,
   p.payment_version_id IS NULL AND due.id IS NULL AND EXISTS(
    SELECT 1 FROM closed_windows prior
@@ -299,7 +301,7 @@ recognition_rules AS MATERIALIZED (
 )
 SELECT id,coalesce(sku,''),kind,coalesce(amount,0),
  coalesce(frozen_payment_id,payment_id,0),coalesce(completion_version_id,0),coalesce(paid_at,occurred_at),coalesce(recognized_at,occurred_at),
- coalesce(frozen_period_id,0),coalesce(origin_closed,false),
+ coalesce(frozen_period_id,0),coalesce(origin_closed,false),membership_type,
  CASE WHEN issue='' AND kind='REFUND_SUCCEEDED' AND linked_refunds>original_amount THEN 'REFUND_EXCEEDS_PAYMENT' ELSE issue END
 FROM capped WHERE in_scope LIMIT $5`
 
@@ -469,6 +471,7 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 		return result, err
 	}
 	var kind, issue string
+	var membershipType *string
 	var amount int64
 	var originClosed bool
 	var eventID, paymentID, completionVersionID int64
@@ -479,13 +482,13 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 	firstPayment := in.Window.Start
 	seen := 0
 	_, err = pgx.ForEachRow(rows, []any{&eventID, &code, &kind, &amount, &paymentID, &completionVersionID, &paidAt, &recognizedAt,
-		&frozenPeriod, &originClosed, &issue}, func() error {
+		&frozenPeriod, &originClosed, &membershipType, &issue}, func() error {
 		seen++
 		if seen > maxDraftPayments {
 			return errDraftLimit
 		}
 		event := catalogActivityEvent{PaymentID: paymentID, CompletionVersionID: completionVersionID, PaidAt: paidAt,
-			RecognizedAt: recognizedAt, Scenario: code,
+			RecognizedAt: recognizedAt, Scenario: code, MembershipType: membershipType,
 			Amount: amount, Refund: kind != "ORDER_PAID", frozenPeriod: frozenPeriod, originClosed: originClosed}
 		if in.DraftPeriodID != 0 {
 			event.EventID = eventID

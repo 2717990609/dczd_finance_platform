@@ -19,27 +19,28 @@ type catalogPeriodTierEdit struct {
 }
 
 type catalogPeriodItem struct {
-	ItemKey         string                  `json:"itemKey"`
-	Label           string                  `json:"label"`
-	TargetKind      string                  `json:"targetKind"`
-	TargetName      string                  `json:"targetName,omitempty"`
-	OrganizationKey string                  `json:"organizationKey"`
-	PersonID        int64                   `json:"personId,omitempty"`
-	PoolName        string                  `json:"poolName,omitempty"`
-	PoolID          int64                   `json:"poolId,omitempty"`
-	OwnerRole       string                  `json:"ownerRole,omitempty"`
-	OwnerPersonID   int64                   `json:"ownerPersonId,omitempty"`
-	OwnerName       string                  `json:"ownerName,omitempty"`
-	MemberRole      string                  `json:"memberRole,omitempty"`
-	Tiers           []catalogPeriodTier     `json:"tiers,omitempty"`
-	FixedMinor      *int64                  `json:"fixedMinor,omitempty"`
-	ScenarioCodes   []string                `json:"scenarioCodes,omitempty"`
-	CommissionUnits []string                `json:"salesScopeUnitIds,omitempty"`
-	ScopeCategories []string                `json:"salesScopeCategoryIds,omitempty"`
-	OwnSales        bool                    `json:"ownSales,omitempty"`
-	RecipientDuty   string                  `json:"recipientDuty,omitempty"`
-	Appointment     *catalogPerformanceDuty `json:"appointment,omitempty"`
-	unit            string
+	ItemKey           string                  `json:"itemKey"`
+	Label             string                  `json:"label"`
+	TargetKind        string                  `json:"targetKind"`
+	TargetName        string                  `json:"targetName,omitempty"`
+	OrganizationKey   string                  `json:"organizationKey"`
+	PersonID          int64                   `json:"personId,omitempty"`
+	PoolName          string                  `json:"poolName,omitempty"`
+	PoolID            int64                   `json:"poolId,omitempty"`
+	OwnerRole         string                  `json:"ownerRole,omitempty"`
+	OwnerPersonID     int64                   `json:"ownerPersonId,omitempty"`
+	OwnerName         string                  `json:"ownerName,omitempty"`
+	MemberRole        string                  `json:"memberRole,omitempty"`
+	Tiers             []catalogPeriodTier     `json:"tiers,omitempty"`
+	FixedMinor        *int64                  `json:"fixedMinor,omitempty"`
+	ScenarioCodes     []string                `json:"scenarioCodes,omitempty"`
+	MembershipNewOnly bool                    `json:"membershipNewOnly,omitempty"`
+	CommissionUnits   []string                `json:"salesScopeUnitIds,omitempty"`
+	ScopeCategories   []string                `json:"salesScopeCategoryIds,omitempty"`
+	OwnSales          bool                    `json:"ownSales,omitempty"`
+	RecipientDuty     string                  `json:"recipientDuty,omitempty"`
+	Appointment       *catalogPerformanceDuty `json:"appointment,omitempty"`
+	unit              string
 }
 
 type catalogPeriodDefinition struct {
@@ -87,12 +88,13 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		} `json:"settlement_policy"`
 		Actions []struct {
 			vipBenefitAction
-			Metric          string                  `json:"metric_code"`
-			Unit            string                  `json:"metric_unit"`
-			Tiers           []catalogPeriodTier     `json:"tier_table"`
-			ScenarioCodes   []string                `json:"business_sku_codes"`
-			EligibilityRole string                  `json:"eligibility_role"`
-			Appointment     *catalogPerformanceDuty `json:"recipient_appointment"`
+			Metric            string                  `json:"metric_code"`
+			Unit              string                  `json:"metric_unit"`
+			Tiers             []catalogPeriodTier     `json:"tier_table"`
+			ScenarioCodes     []string                `json:"business_sku_codes"`
+			MembershipNewOnly bool                    `json:"vip_new_membership_only"`
+			EligibilityRole   string                  `json:"eligibility_role"`
+			Appointment       *catalogPerformanceDuty `json:"recipient_appointment"`
 		} `json:"benefit_actions"`
 	}
 	var result catalogPeriodDefinition
@@ -181,7 +183,8 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: action.targetKind(),
 			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OwnerPersonID: ownerID, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
 			PoolID:     catalogPoolID(action.PoolCode),
-			MemberRole: memberRole, FixedMinor: action.Fixed, ScenarioCodes: action.ScenarioCodes, unit: unit, OwnSales: action.OwnSales,
+			MemberRole: memberRole, FixedMinor: action.Fixed, ScenarioCodes: action.ScenarioCodes, MembershipNewOnly: action.MembershipNewOnly,
+			unit: unit, OwnSales: action.OwnSales,
 			CommissionUnits: action.CommissionUnits, ScopeCategories: action.ScopeCategories, RecipientDuty: action.RecipientDuty, Appointment: action.Appointment})
 	}
 	return result, nil

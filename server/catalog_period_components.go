@@ -13,24 +13,25 @@ var errCatalogPeriodRecipient = errors.New("请核对分项的公司、团队池
 var errCatalogPeriodComponents = errors.New("整期规则须保留至少一个分润分项")
 
 type catalogPeriodComponentEdit struct {
-	ItemKey         string                  `json:"itemKey,omitempty"`
-	Label           string                  `json:"label"`
-	TargetKind      string                  `json:"targetKind"`
-	OrganizationKey string                  `json:"organizationKey"`
-	PersonID        int64                   `json:"personId,omitempty"`
-	PoolName        string                  `json:"poolName,omitempty"`
-	OwnerRole       string                  `json:"ownerRole,omitempty"`
-	OwnerPersonID   int64                   `json:"ownerPersonId,omitempty"`
-	PoolID          int64                   `json:"poolId,omitempty"`
-	MemberRole      string                  `json:"memberRole,omitempty"`
-	Tiers           []catalogPeriodTier     `json:"tiers"`
-	FixedMinor      *int64                  `json:"fixedMinor,omitempty"`
-	ScenarioCodes   []string                `json:"scenarioCodes"`
-	CommissionUnits []string                `json:"salesScopeUnitIds,omitempty"`
-	ScopeCategories []string                `json:"salesScopeCategoryIds,omitempty"`
-	OwnSales        bool                    `json:"ownSales,omitempty"`
-	RecipientDuty   string                  `json:"recipientDuty,omitempty"`
-	Appointment     *catalogPerformanceDuty `json:"appointment,omitempty"`
+	ItemKey           string                  `json:"itemKey,omitempty"`
+	Label             string                  `json:"label"`
+	TargetKind        string                  `json:"targetKind"`
+	OrganizationKey   string                  `json:"organizationKey"`
+	PersonID          int64                   `json:"personId,omitempty"`
+	PoolName          string                  `json:"poolName,omitempty"`
+	OwnerRole         string                  `json:"ownerRole,omitempty"`
+	OwnerPersonID     int64                   `json:"ownerPersonId,omitempty"`
+	PoolID            int64                   `json:"poolId,omitempty"`
+	MemberRole        string                  `json:"memberRole,omitempty"`
+	Tiers             []catalogPeriodTier     `json:"tiers"`
+	FixedMinor        *int64                  `json:"fixedMinor,omitempty"`
+	ScenarioCodes     []string                `json:"scenarioCodes"`
+	MembershipNewOnly *bool                   `json:"membershipNewOnly"`
+	CommissionUnits   []string                `json:"salesScopeUnitIds,omitempty"`
+	ScopeCategories   []string                `json:"salesScopeCategoryIds,omitempty"`
+	OwnSales          bool                    `json:"ownSales,omitempty"`
+	RecipientDuty     string                  `json:"recipientDuty,omitempty"`
+	Appointment       *catalogPerformanceDuty `json:"appointment,omitempty"`
 }
 
 func editCatalogPeriodComponents(original, raw json.RawMessage, edits []catalogPeriodComponentEdit, options catalogStructureOptions) (json.RawMessage, error) {
@@ -106,6 +107,14 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 				delete(fields, "business_sku_codes")
 			} else {
 				fields["business_sku_codes"], _ = json.Marshal(edit.ScenarioCodes)
+			}
+			changed = true
+		}
+		if edit.MembershipNewOnly != nil && *edit.MembershipNewOnly != before.MembershipNewOnly {
+			if *edit.MembershipNewOnly {
+				fields["vip_new_membership_only"] = json.RawMessage("true")
+			} else {
+				delete(fields, "vip_new_membership_only")
 			}
 			changed = true
 		}

@@ -19,6 +19,7 @@ type catalogActivityEvent struct {
 	PaidAt              time.Time
 	RecognizedAt        time.Time
 	Scenario            string
+	MembershipType      *string // nil for orders outside the membership source; empty for unmarked membership orders.
 	Amount              int64
 	Refund              bool
 	originClosed        bool
@@ -115,12 +116,13 @@ type catalogGroupTargetKey struct {
 // arrangements, with the resolved recipients of each payment group.
 func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []catalogGroupTargetKey) (string, error) {
 	type orderScope struct {
-		Item        string
-		Units       []string
-		OwnSales    bool
-		Appointment *catalogPerformanceDuty
-		Categories  []string `json:",omitempty"`
-		SKUs        []string `json:",omitempty"`
+		Item              string
+		Units             []string
+		OwnSales          bool
+		Appointment       *catalogPerformanceDuty
+		Categories        []string `json:",omitempty"`
+		SKUs              []string `json:",omitempty"`
+		MembershipNewOnly bool     `json:",omitempty"`
 	}
 	scopes := make([]orderScope, 0, len(targets))
 	scenarios := definition.Scenarios
@@ -128,7 +130,8 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 		for _, item := range definition.Items {
 			if item.ItemKey == target.Item {
 				scope := orderScope{Item: item.ItemKey, Units: slices.Sorted(slices.Values(item.CommissionUnits)),
-					OwnSales: item.OwnSales, Appointment: item.Appointment, Categories: slices.Sorted(slices.Values(item.ScopeCategories))}
+					OwnSales: item.OwnSales, Appointment: item.Appointment, Categories: slices.Sorted(slices.Values(item.ScopeCategories)),
+					MembershipNewOnly: item.MembershipNewOnly}
 				if len(item.ScenarioCodes) > 0 {
 					if len(targets) == 1 {
 						scenarios = item.ScenarioCodes
@@ -315,6 +318,10 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					if len(item.ScenarioCodes) > 0 && !slices.Contains(item.ScenarioCodes, event.Scenario) {
 						continue
 					}
+					typedMembership := item.MembershipNewOnly && event.MembershipType != nil
+					if typedMembership && *event.MembershipType == "RENEWAL" {
+						continue
+					}
 					decision := performance.matchItem(event, item)
 					if decision.excluded {
 						continue
@@ -323,9 +330,14 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					if item.FixedMinor != nil && !periodEnd.IsZero() {
 						at = periodEnd
 					}
-					target, key, issue := directory.groupTarget(item, at)
-					if decision.issue != "" {
-						issue = decision.issue
+					var target catalogPeriodGroupTarget
+					var key catalogGroupTargetKey
+					issue := decision.issue
+					if typedMembership && *event.MembershipType != "NEW" {
+						issue = "MEMBERSHIP_TYPE_PENDING"
+					}
+					if issue == "" {
+						target, key, issue = directory.groupTarget(item, at)
 					}
 					if issue != "" {
 						problemKey := issueKey{rule.ID, item.ItemKey, issue}

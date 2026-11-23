@@ -53,7 +53,10 @@ func TestCatalogPeriodItemsFilterSKUAndKeepOriginalRefundScope(t *testing.T) {
 	refund := first
 	refund.EventID, refund.Amount, refund.Refund = 3, 6000, true
 	refund.frozenPeriod, refund.frozenGroups = 7, refs
+	renewal := "RENEWAL"
+	refund.MembershipType = &renewal
 	versions[0].Definition.Items[0].ScenarioCodes = []string{"SECOND"}
+	versions[0].Definition.Items[0].MembershipNewOnly = true
 	report, err = groupCatalogPeriodEvents([]catalogActivityEvent{refund}, versions, directory, frozen, catalogPerformanceDirectory{}, month.AddDate(0, 2, 0))
 	if err != nil || len(report.Groups) != 2 || len(report.Issues) != 0 {
 		t.Fatalf("frozen refund should only use its original two receipt arrangements: %+v / %v", report, err)
@@ -62,6 +65,48 @@ func TestCatalogPeriodItemsFilterSKUAndKeepOriginalRefundScope(t *testing.T) {
 		if itemKeys[group.Targets[0].ItemKey] == "大使补贴" || group.Refunds != 6000 {
 			t.Fatalf("refund left its original item scope: %+v", group)
 		}
+	}
+}
+
+func TestCatalogPeriodMembershipTypeOnlyFiltersConfiguredItem(t *testing.T) {
+	start := time.Date(2026, 10, 1, 0, 0, 0, 0, shanghai)
+	newType, renewal, missing := "NEW", "RENEWAL", ""
+	rule := catalogAggregateRule{ID: "member-rule", Version: 1, From: start, Definition: catalogPeriodDefinition{
+		Cycle: "MONTHLY", Scenarios: []string{"VIP", "HEALTH"}, Items: []catalogPeriodItem{
+			{ItemKey: "strict", Label: "会员新报及健康", TargetKind: "person", PersonID: 1, MembershipNewOnly: true, Tiers: []catalogPeriodTier{{Rate: 1000}}},
+			{ItemKey: "general", Label: "全期", TargetKind: "person", PersonID: 1, Tiers: []catalogPeriodTier{{Rate: 1000}}},
+		},
+	}}
+	events := []catalogActivityEvent{
+		{EventID: 1, PaymentID: 1, Scenario: "VIP", PaidAt: start, Amount: 10000, MembershipType: &newType},
+		{EventID: 2, PaymentID: 2, Scenario: "VIP", PaidAt: start, Amount: 20000, MembershipType: &renewal},
+		{EventID: 3, PaymentID: 3, Scenario: "VIP", PaidAt: start, Amount: 35000, MembershipType: &missing},
+		{EventID: 4, PaymentID: 4, Scenario: "HEALTH", PaidAt: start, Amount: 40000},
+		{EventID: 5, PaymentID: 2, Scenario: "VIP", PaidAt: start, Amount: 1500, Refund: true, MembershipType: &renewal},
+	}
+	directory := catalogAggregateDirectory{People: map[int64]string{1: "收款人"}}
+	group := func() (catalogPeriodGroupReport, map[string][2]int64) {
+		t.Helper()
+		report, err := groupCatalogPeriodEvents(events, []catalogAggregateRule{rule}, directory, nil, catalogPerformanceDirectory{}, start.AddDate(0, 1, 0))
+		if err != nil || len(report.Groups) != 2 || len(report.events) != len(events) {
+			t.Fatalf("unexpected grouping: %+v / %v", report, err)
+		}
+		totals := make(map[string][2]int64)
+		for _, receipt := range report.Groups {
+			totals[receipt.Targets[0].ItemKey] = [2]int64{receipt.Receipts, receipt.Refunds}
+		}
+		return report, totals
+	}
+	report, totals := group()
+	if totals["strict"] != [2]int64{50000, 0} || totals["general"] != [2]int64{105000, 1500} || len(report.TargetIssues) != 1 ||
+		report.TargetIssues[0].ItemKey != "strict" || report.TargetIssues[0].Code != "MEMBERSHIP_TYPE_PENDING" || report.TargetIssues[0].Count != 1 ||
+		len(report.postingIssues) != 1 || report.postingIssues[0].FactID != 3 {
+		t.Fatalf("wrong item totals or pending membership warnings: %v / %+v", totals, report.TargetIssues)
+	}
+	events[2].MembershipType = &newType
+	report, totals = group()
+	if totals["strict"] != [2]int64{85000, 0} || len(report.postingIssues) != 0 {
+		t.Fatalf("source correction must let the new purchase into the same item: %v / %+v", totals, report.postingIssues)
 	}
 }
 
@@ -85,6 +130,11 @@ func TestCatalogPeriodCarryUsesEffectiveItemSKUs(t *testing.T) {
 	def.Items[0].ScenarioCodes = []string{"SECOND"}
 	if key() == original {
 		t.Fatal("a different applicable SKU must not receive the original item's carry")
+	}
+	def.Items[0].ScenarioCodes = []string{"FIRST"}
+	def.Items[0].MembershipNewOnly = true
+	if key() == original {
+		t.Fatal("a membership-only restriction changes the carry scope even if all SKU names match")
 	}
 }
 

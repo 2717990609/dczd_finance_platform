@@ -9,12 +9,14 @@ import (
 )
 
 var errCatalogPeriodScenarios = errors.New("请选择已有订单映射的参与场景。至少保留一个，同一场景只选一次")
+var errCatalogPeriodMembershipScope = errors.New("启用会员仅计新报的收款安排须包含会员 SKU")
 
 const catalogPeriodScenarioOptionsSQL = `WITH routes AS (` + catalogAggregateRoutes + `)
  SELECT coalesce(jsonb_agg(jsonb_build_object('code',sku_code,'label',label,'products',products,
-  'requiresCompletion',requires_completion) ORDER BY label,sku_code),'[]')
+  'requiresCompletion',requires_completion,'membershipSku',membership) ORDER BY label,sku_code),'[]')
  FROM (SELECT sku_code,min(sku_label) AS label,array_agg(DISTINCT product_id) AS products,
-   coalesce(bool_and(` + catalogScenarioCompletion + `),false) AS requires_completion FROM routes r
+   bool_and(` + catalogScenarioCompletion + `) AS requires_completion,
+   bool_and(` + catalogMembershipSourceRoute + `) AS membership FROM routes r
   WHERE (` + catalogScenarioSupportedRoute + `) AND ($2::timestamptz IS NULL OR effective_to IS NULL OR $2<effective_to)
    AND ($3::timestamptz IS NULL OR effective_from<$3)
   GROUP BY sku_code) scopes`
@@ -37,6 +39,34 @@ func readCatalogPeriodScenarioOptions(ctx context.Context, db catalogPeriodReade
 	var skus []catalogPeriodScenarioOption
 	err := db.QueryRow(ctx, catalogPeriodScenarioOptionsSQL, product, from, through).Scan(&skus)
 	return skus, err
+}
+
+func validateCatalogPeriodMembershipScopes(ctx context.Context, db catalogPeriodReader, product int64, raw json.RawMessage, from, through *time.Time) error {
+	period, err := parseCatalogPeriodRule(raw)
+	if err != nil || !slices.ContainsFunc(period.Items, func(item catalogPeriodItem) bool { return item.MembershipNewOnly }) {
+		return err
+	}
+	options, err := readCatalogPeriodScenarioOptions(ctx, db, product, from, through)
+	if err != nil {
+		return err
+	}
+	membership := make(map[string]bool, len(options))
+	for _, sku := range options {
+		membership[sku.Code] = sku.MembershipSKU
+	}
+	for _, item := range period.Items {
+		if !item.MembershipNewOnly {
+			continue
+		}
+		codes := item.ScenarioCodes
+		if len(codes) == 0 {
+			codes = period.Scenarios
+		}
+		if !slices.ContainsFunc(codes, func(code string) bool { return membership[code] }) {
+			return errCatalogPeriodMembershipScope
+		}
+	}
+	return nil
 }
 
 func editCatalogPeriodScenarioScope(ctx context.Context, db catalogPeriodReader, raw json.RawMessage,
