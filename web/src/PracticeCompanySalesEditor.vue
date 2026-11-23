@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { practiceCompanyRatePriority, practiceCompanyScopes, practiceRecipientIsPerson, practiceSalesScopeText } from './rule-component-form'
+import { practiceCompanyRatePriority, practiceCompanyScopes, practiceRecipientIsPerson } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
   sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array,duties:Array})
@@ -12,9 +12,9 @@ const categories = computed(() => sales.value.categories)
 const overrides = computed(() => categories.value.flatMap((category,index)=>
   category.overrides.map((override,position)=>({category,index,override,position}))))
 const standardGroups = [
-  {scope:'category',label:'销售类别默认计提',action:'添加销售类别'},
+  {scope:'companies',label:'按指定公司计提',action:'添加指定公司'},
+  {scope:'category',label:'按销售类别计提',action:'添加销售类别'},
   {scope:'default',label:'外部公司默认比例'},
-  {scope:'companies',label:'指定公司计提',action:'添加指定公司'},
 ]
 const standardRowsByScope = computed(() => ({
   companies:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='companies'),
@@ -35,7 +35,14 @@ const visibleStandards = computed(() => ({
 const visibleOverrides = computed(() => visibleCompanyRows.value.filter(row=>row.override))
 watch(companyPageCount, count=>{ companyPage.value=Math.min(companyPage.value,count) })
 const scopes = computed(() => practiceCompanyScopes(sales.value))
-const scopeText = computed(() => practiceSalesScopeText(props.component,undefined,0))
+const scopeText = computed(() => {
+  const {companies,categories,hasDefault} = scopes.value
+  return [
+    companies.length ? '指定公司 '+companies.length+' 家' : '指定公司未配置',
+    categories.length ? '销售类别 '+categories.length+' 类' : '销售类别未配置',
+    hasDefault && '含外部公司默认',
+  ].filter(Boolean).join(' · ')
+})
 const priority = computed(() => practiceCompanyRatePriority(scopes.value))
 const calculationText = computed(() => {
   const modes = new Set([...categories.value,...overrides.value.map(({override})=>override)].map(row=>row.mode))
@@ -166,7 +173,7 @@ watch(amounts, choices => {
       <div v-if="group.scope!=='default' && (standardRowsByScope[group.scope].length || (group.scope==='companies' && overrides.length))"
         class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations}">
         <div class="company-standard-fields company-standard-column-labels" aria-hidden="true">
-          <span>{{ group.scope==='category' ? '销售类别' : '适用公司' }}</span>
+          <span>{{ group.scope==='category' ? '销售类别' : '指定公司' }}</span>
           <span v-if="amounts.length>1">计提方式</span>
           <span>{{ amounts.length>1 ? '计提标准' : '比例（%）' }}</span>
           <span v-if="legacyRecommendations">推荐比例（%）</span>
@@ -264,6 +271,7 @@ watch(amounts, choices => {
     display:grid;align-items:center;
     grid-template-columns:minmax(0,3fr) var(--company-method-column,) minmax(0,1.25fr) var(--company-recommendation-column,) 48px;
   }
+  .company-standard-column-labels {display:grid}
   .company-category {padding-block:3px;margin-bottom:0;background:white;border-bottom:1px solid var(--line);border-radius:0}
   .company-category :deep(.ant-form-item-label) {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
 }
