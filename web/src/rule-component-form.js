@@ -106,7 +106,7 @@ export function practiceLegacyArrangementLabel(label, optionLabel) {
 }
 
 export const hasPracticePaymentScope = benefit =>
-  !!(benefit.salesCompanies?.length || benefit.salesPeople?.length || benefit.salesUnits?.length)
+  !!(benefit.salesCategoryIds?.length || benefit.salesCompanies?.length || benefit.salesPeople?.length || benefit.salesUnits?.length)
 
 export function practicePeriodScopeText(benefit, names, limit = 2) {
   const entries = []
@@ -128,6 +128,7 @@ export function practicePeriodScopeText(benefit, names, limit = 2) {
     entries.push('本人销售')
   } else {
     list('指定团队',benefit.salesUnits,names.unit)
+    list('销售类别',benefit.salesCategoryIds,names.category)
     list('销售公司',benefit.salesCompanies,names.company)
     list('销售人员',benefit.salesPeople,names.person)
     if (!entries.length) entries.push(benefit.restrictPayments ? '待选择销售范围' : '整个适用账期')

@@ -1247,7 +1247,7 @@ function ruleComponentBody(row) {
     const label = must(b.label?.trim(),'请填写收款安排名称')
     must(b.recipient,'请选择收款对象')
     if (!registration && b.restrictPayments && !hasPracticePaymentScope(b)) {
-      throw new Error('请为「'+label+'」选择团队、小组、销售公司或销售人员。')
+      throw new Error('请为「'+label+'」选择销售类别、团队、小组、销售公司或销售人员。')
     }
     component.value = b.method==='rate' ? periodRate(row.amount) : 0
     component.periodBenefit = {
@@ -1257,6 +1257,7 @@ function ruleComponentBody(row) {
         ? {unitId:must(b.unitId,'请选择收款组织')} : {personId:must(b.personId,'请选择收款人员')}),
       ...(b.recipient==='person' && b.recipientDuty ? {recipientDuty:b.recipientDuty} : {}),
       ...(b.ownSales && b.recipient==='person' ? {ownSales:true} : {}),
+      ...(!registration && b.salesCategoryIds?.length ? {salesCategoryIds:b.salesCategoryIds} : {}),
       ...(!registration && b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
       ...(!registration && b.salesPeople?.length ? {salesPeople:b.salesPeople} : {}),
       ...(!registration && b.salesUnits?.length ? {salesUnits:b.salesUnits} : {}),
@@ -1927,6 +1928,7 @@ async function save() {
             :retrain-unavailable="draft.components.some(other=>other!==c && other.type==='sales' && matchesPracticeMember(other,'retrain'))"/>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
             :registration-companies="registrationCompanies" :registration-loading="registrationCompaniesLoading" :registration-error="registrationCompaniesError"
+            :sales-categories="options('practiceSalesCategory')"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
             :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')" :sales-units="salesUnitOptions"
             :pools="practicePoolOptions" :create-pool="createPracticePool" :member-choices="classMemberChoices(c)"

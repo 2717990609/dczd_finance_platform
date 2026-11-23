@@ -237,7 +237,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 				if hasServiceAmount && len(split.ServiceSalesPeople)+len(split.ServiceSalesUnits) != 0 {
 					scope := practicePeriodBenefit{SalesPeople: split.ServiceSalesPeople, SalesUnits: split.ServiceSalesUnits}
 					for i, payment := range payments {
-						serviceMatches[i], issue = scope.eligiblePayment(payment, part.SourceRole, nil, identities, runtime.salesOrganizations)
+						serviceMatches[i], issue = scope.eligiblePayment(payment, part.SourceRole, nil, identities, runtime)
 						if issue != "" {
 							break
 						}

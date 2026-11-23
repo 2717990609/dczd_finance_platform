@@ -183,7 +183,7 @@ func TestPracticeScopeUsesSavedGroupAlternatives(t *testing.T) {
 		{[]string{"third"}, false, ""},
 	} {
 		benefit := practicePeriodBenefit{SalesUnits: tc.location}
-		eligible, issue := benefit.eligiblePayment(payment, role, nil, identities, saved.SalesOrganizations)
+		eligible, issue := benefit.eligiblePayment(payment, role, nil, identities, practiceDraftRuntime{salesOrganizations: saved.SalesOrganizations})
 		if eligible != tc.eligible || issue != tc.issue {
 			t.Fatalf("scope %v resolved to %v/%q, want %v/%q", tc.location, eligible, issue, tc.eligible, tc.issue)
 		}
@@ -302,6 +302,51 @@ func TestPracticeServiceCommissionRequiresAnExplicitArrangement(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPracticeArrangementSalesCategoryScope(t *testing.T) {
+	const category = "ee260b91-1c0a-4121-b715-5fdc144bad9b"
+	const otherCategory = "062c6927-edc4-4c43-8a9a-dcaf759ea873"
+	amount := int64(10000)
+	part := component{Type: "manager", Mode: "period_rate", ClassMember: "retrain", Value: 100000,
+		PeriodBenefit: &practicePeriodBenefit{Label: "类别内服务", PersonID: 4, SalesCategoryIDs: []string{category}}}
+	if err := validateComponents([]component{part}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC)
+	var members []practiceEnrollment
+	var facts []paymentInput
+	orders := make(map[string][]paymentInput)
+	for i := int64(1); i <= 3; i++ {
+		key := strconv.FormatInt(i, 10)
+		members = append(members, practiceEnrollment{ID: i, MembershipType: 2, CommissionEligible: true, PaidOrderIDs: []string{key}})
+		fact := paymentInput{ID: i, Fact: sourceFact{Source: "DCZD", OrderID: key, PaymentID: key,
+			AmountMinor: &amount, OccurredAt: at, SalesCompanyID: key}}
+		facts = append(facts, fact)
+		orders[key] = []paymentInput{fact}
+	}
+	rule := paymentRule{ID: 1, Components: []component{part}}
+	runtime := practiceDraftRuntime{
+		companyClassifications:  map[string]string{"1": category, "2": practiceInternalCompany, "3": otherCategory},
+		internalSalesCategories: map[string]string{"2": category},
+	}
+	draft, err := calculatePracticeDraft(members, rule, orders, nil, nil, practiceTierHistory{}, nil, runtime)
+	if err != nil || len(draft.Issues) != 0 || len(draft.Performance) != 3 || len(draft.Lines) != 2 || draft.Total != 2000 {
+		t.Fatalf("expected only the two eligible sales with full class performance: %+v %v", draft, err)
+	}
+	saved := capturePracticeReplayInputs(rule, draft, facts, nil, runtime)
+	if saved.CompanyClassifications["1"] != category || saved.InternalSalesCategories["2"] != category {
+		t.Fatalf("the confirmed payment categories must be available for refund replay: %+v", saved)
+	}
+	part.PeriodBenefit.SalesUnits = []string{"selected-department"}
+	if eligible, issue := part.PeriodBenefit.eligiblePayment(facts[2], "DIRECT_REFERRER", nil, nil, runtime); eligible || issue != "" {
+		t.Fatalf("an unrelated sales category does not require an organization match: %v %s", eligible, issue)
+	}
+	part.PeriodBenefit.SalesUnits = nil
+	part.PeriodBenefit.SalesCategoryIDs = []string{category, category}
+	if validateComponents([]component{part}) == nil {
+		t.Fatal("duplicate category IDs must be rejected")
 	}
 }
 
@@ -748,6 +793,19 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 	 VALUES('DCZD','1',$1,$2)`, company, at.Add(-time.Hour)); err != nil {
 		t.Fatal(err)
 	}
+	const category = "40000000-0000-4000-8000-000000000011"
+	const otherCategory = "40000000-0000-4000-8000-000000000012"
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_sales_categories(id,name,active) VALUES
+	 ($1,'适用类别',true),($2,'另一类别',true)`, category, otherCategory); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE organization_units SET sales_company_type='INTERNAL' WHERE id=$1", company); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from)
+	 VALUES($1,$2,$3)`, company, category, at.Add(-time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		payments := []sourceFact{fact("31", 10001, at.Add(-time.Minute)), fact("32", 20002, at)}
 		for i := range payments {
@@ -765,6 +823,7 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 	line := parts[1].(map[string]any)
 	line["sourceRole"] = "DIRECT_REFERRER"
 	line["periodBenefit"].(map[string]any)["salesUnits"] = []string{department}
+	line["periodBenefit"].(map[string]any)["salesCategoryIds"] = []string{category}
 	raw, err = json.Marshal(def)
 	if err != nil {
 		t.Fatal(err)
@@ -814,6 +873,9 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 	if _, err := s.db.Exec(ctx, "UPDATE organization_assignments SET unit_id=$2 WHERE person_id=$1 AND valid_to IS NOT NULL", seller, nextGroup); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := s.db.Exec(ctx, "UPDATE organization_sales_category_history SET category_id=$2 WHERE unit_id=$1", company, otherCategory); err != nil {
+		t.Fatal(err)
+	}
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		replay, _, err := readVerifiedPracticeReplay(ctx, tx, period)
 		if err != nil {
@@ -821,7 +883,7 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 		}
 		beforeRefund, err := replay.calculate()
 		if err != nil || beforeRefund.Total != 3242 {
-			t.Fatalf("replay must use original scope after organization change: %d %v", beforeRefund.Total, err)
+			t.Fatalf("replay must use original scope after organization and category changes: %d %v", beforeRefund.Total, err)
 		}
 		deposit := replay.payments["31"][0].ID
 		replay.refunds[deposit] = append(replay.refunds[deposit], practiceRefundMatch{event: paymentInput{Fact: fact("refund", 1000, at)}})

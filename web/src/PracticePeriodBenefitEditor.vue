@@ -6,7 +6,7 @@ import RuleOrderScope from './RuleOrderScope.vue'
 import { hasPracticePaymentScope } from './rule-component-form'
 
 const props = defineProps({
-  component:Object, index:Number, people:Array, units:Array, companies:Array,
+  component:Object, index:Number, people:Array, units:Array, companies:Array, salesCategories:Array,
   registrationCompanies:Array, registrationLoading:Boolean, registrationError:String,
   recipientTypes:Array, appointmentKinds:Array, sourceRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
   memberChoices:Array, duties:Array,
@@ -22,6 +22,7 @@ function changeScope(mode) {
   benefit.ownSales = mode==='own'
   benefit.restrictPayments = mode==='team'
   if (mode!=='team') {
+    benefit.salesCategoryIds = []
     benefit.salesCompanies = []
     benefit.salesPeople = []
     benefit.salesUnits = []
@@ -61,7 +62,7 @@ const calculationMethods = computed(() => [
     </a-form-item>
     <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
       :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
-    <a-form-item label="适用报名" :html-for="'rule-member-'+index">
+    <a-form-item label="计提订单类型" :html-for="'rule-member-'+index">
       <a-select :id="'rule-member-'+index" v-model:value="component.classMember" :options="memberChoices"/>
     </a-form-item>
     <a-form-item label="计提方式" :html-for="field('method')">
@@ -77,8 +78,12 @@ const calculationMethods = computed(() => [
   </RuleArrangementFields>
   <div class="period-fields period-scope" :class="{'period-scope-all':scopeMode==='all'}">
     <RuleOrderScope :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
-      :additional="registrationOption" @update:model-value="changeScope"/>
+      team-label="指定销售范围" :additional="registrationOption" @update:model-value="changeScope"/>
     <template v-if="scopeMode==='team'">
+      <a-form-item label="适用销售类别" :html-for="field('categories')">
+        <a-select :id="field('categories')" v-model:value="config.salesCategoryIds" :options="salesCategories"
+          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售类别"/>
+      </a-form-item>
       <a-form-item label="适用销售组织" :html-for="field('sales-units')">
         <a-select :id="field('sales-units')" v-model:value="config.salesUnits" :options="salesUnits"
           mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司、部门或小组"/>

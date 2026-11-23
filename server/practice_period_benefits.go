@@ -140,6 +140,7 @@ type practicePeriodBenefit struct {
 	RecipientDuty     string                     `json:"recipientDuty,omitempty"`
 	OwnSales          bool                       `json:"ownSales,omitempty"`
 	UnitID            string                     `json:"unitId,omitempty"`
+	SalesCategoryIDs  []string                   `json:"salesCategoryIds,omitempty"`
 	SalesCompanies    []string                   `json:"salesCompanies,omitempty"`
 	SalesPeople       []int64                    `json:"salesPeople,omitempty"`
 	SalesUnits        []string                   `json:"salesUnits,omitempty"`
@@ -160,7 +161,13 @@ type practicePeriodRate struct {
 }
 
 func (b practicePeriodBenefit) hasSalesScope() bool {
-	return b.usesSalesPerson() || len(b.SalesCompanies) != 0
+	return b.usesSalesPerson() || len(b.SalesCompanies)+len(b.SalesCategoryIDs) != 0
+}
+
+func practiceBenefitUsesCategories(rule paymentRule) bool {
+	return slices.ContainsFunc(rule.Components, func(part component) bool {
+		return part.PeriodBenefit != nil && len(part.PeriodBenefit.SalesCategoryIDs) != 0
+	})
 }
 
 func (b practicePeriodBenefit) usesSalesPerson() bool {
@@ -188,7 +195,7 @@ func validPracticePeriodBenefit(c component) bool {
 	if !textOK(b.Label, 80) || b.PersonID < 0 || recipients != 1 ||
 		(b.AppointmentUnitID == "") != (b.AppointmentKind == "") || b.AppointmentUnitID != "" && b.PersonID == 0 ||
 		b.usesSalesPerson() && !validSourceRole(c.SourceRole) ||
-		b.OwnSales && (b.PersonID == 0 || len(b.SalesCompanies)+len(b.SalesPeople)+len(b.SalesUnits) != 0) ||
+		b.OwnSales && (b.PersonID == 0 || len(b.SalesCompanies)+len(b.SalesCategoryIDs)+len(b.SalesPeople)+len(b.SalesUnits) != 0) ||
 		b.RecipientDuty != "" && (b.PersonID == 0 || !validSourceRole(b.RecipientDuty)) {
 		return false
 	}
@@ -201,6 +208,11 @@ func validPracticePeriodBenefit(c component) bool {
 	}
 	for index, unit := range b.SalesUnits {
 		if normalized, ok := canonicalSourceUUID(unit); !ok || normalized != unit || slices.Contains(b.SalesUnits[:index], unit) {
+			return false
+		}
+	}
+	for index, category := range b.SalesCategoryIDs {
+		if normalized, ok := canonicalSourceUUID(category); !ok || normalized != category || slices.Contains(b.SalesCategoryIDs[:index], category) {
 			return false
 		}
 	}
@@ -294,7 +306,7 @@ type practiceBenefitShare struct {
 }
 
 func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string, assignments []practiceAppointment,
-	identities map[identityKey][]identityAssignment, organizations practiceSalesOrganizations) (bool, string) {
+	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) (bool, string) {
 	f := payment.Fact
 	if b.AppointmentUnitID != "" && !slices.ContainsFunc(assignments, func(a practiceAppointment) bool {
 		return !f.OccurredAt.Before(a.From) && (a.To == nil || f.OccurredAt.Before(*a.To))
@@ -307,6 +319,12 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 		}
 		if !slices.Contains(b.SalesCompanies, f.SalesCompanyID) {
 			return false, ""
+		}
+	}
+	if len(b.SalesCategoryIDs) != 0 {
+		category, issue := practicePurchaseCompanyClassification([]paymentInput{payment}, runtime.companyClassifications, runtime.internalSalesCategories)
+		if issue != "" || !slices.Contains(b.SalesCategoryIDs, category) {
+			return false, issue
 		}
 	}
 	if !b.usesSalesPerson() {
@@ -325,7 +343,7 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 	if len(b.SalesUnits) == 0 {
 		return true, ""
 	}
-	organization, ok := organizations[payment.ID][role]
+	organization, ok := runtime.salesOrganizations[payment.ID][role]
 	if !ok || organization.PersonID != seller.PersonID || organization.SourceCompany != f.SalesCompanyID {
 		return false, "PRACTICE_SALES_ORGANIZATION_MISSING"
 	}
@@ -397,7 +415,7 @@ func collectPracticeBenefitShares(part component, purchases []practicePurchase, 
 		}
 		share := practiceBenefitShare{purchase: p}
 		for _, payment := range payments {
-			yes, issue := b.eligiblePayment(payment, part.SourceRole, assignments, identities, runtime.salesOrganizations)
+			yes, issue := b.eligiblePayment(payment, part.SourceRole, assignments, identities, runtime)
 			if issue != "" {
 				return nil, 0, draftIssue{Code: issue}, nil
 			}

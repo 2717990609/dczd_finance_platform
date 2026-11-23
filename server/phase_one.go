@@ -748,6 +748,7 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			}
 			if benefit := c.PeriodBenefit; benefit != nil {
 				companyIDs = append(companyIDs, benefit.SalesCompanies...)
+				categoryIDs = append(categoryIDs, benefit.SalesCategoryIDs...)
 				if scope := benefit.RegistrationScope; scope != nil {
 					registrationCompanyIDs = append(registrationCompanyIDs, scope.Companies...)
 					if scope.SellerCompanyID != "" {
