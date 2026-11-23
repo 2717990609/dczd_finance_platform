@@ -213,7 +213,8 @@ onMounted(async () => {
           <a-descriptions-item label="提成怎么算">{{ formula(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.periodBenefit" label="计提订单范围">{{ practicePeriodScopeText(part.periodBenefit,practiceScopeNames,Infinity) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.salesPersonId" label="业绩归属">{{ roleName(part.sourceRole) }}</a-descriptions-item>
-          <a-descriptions-item v-if="salesScope(part)" label="提成范围">{{ salesScope(part) }}</a-descriptions-item>
+          <a-descriptions-item v-if="part.companySales" label="计提订单范围">{{ salesScope(part,0) }}</a-descriptions-item>
+          <a-descriptions-item v-else-if="salesScope(part)" label="提成范围">{{ salesScope(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.periodBenefit?.tiers?.length" label="阶梯选档范围">
             {{ part.periodBenefit.tierOnWholeClass ? '全班净实收（新报及复训）' : '适用报名净实收' }}
           </a-descriptions-item>

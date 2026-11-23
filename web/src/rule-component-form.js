@@ -346,6 +346,16 @@ export function practiceCompanyScopes(sales = {}) {
   }
 }
 
+export function practiceCompanyMatchText({companies,categories,hasDefault}) {
+  const company = companies.length && `指定公司 ${companies.length} 家`
+  const category = categories.length && `销售类别 ${categories.length} 类`
+  const scopes = [company,category,hasDefault && '其他外部公司按默认比例'].filter(Boolean)
+  if (scopes.length>1) return scopes.join(' · ')
+  if (company) return `仅按指定公司计提（${companies.length} 家）`
+  if (category) return `仅按销售类别计提（${categories.length} 类）`
+  return hasDefault ? '仅按外部公司默认比例计提' : '待配置计提标准'
+}
+
 export function practiceSalesScopeText(part, names, limit = 2) {
   const entries = []
   const list = (label, ids, name) => {
@@ -354,14 +364,11 @@ export function practiceSalesScopeText(part, names, limit = 2) {
       (values.length>limit ? ' 等 '+values.length+' 个' : ''))
   }
   if (part.companySales) {
-    const {companies,categories,hasDefault} = practiceCompanyScopes(part.companySales)
-    if (limit) {
-      list('按指定公司',companies,names.company)
-      list('按销售类别',categories,names.category)
-    } else {
-      if (companies.length) entries.push('按指定公司 '+companies.length+' 家')
-      if (categories.length) entries.push('按销售类别 '+categories.length+' 类')
-    }
+    const scopes = practiceCompanyScopes(part.companySales)
+    if (!limit) return practiceCompanyMatchText(scopes)
+    const {companies,categories,hasDefault} = scopes
+    list('按指定公司',companies,names.company)
+    list('按销售类别',categories,names.category)
     if (hasDefault) entries.push('外部公司默认')
     return entries.join(' · ') || '待配置计提标准'
   }
