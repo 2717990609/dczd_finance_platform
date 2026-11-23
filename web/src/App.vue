@@ -33,10 +33,12 @@ const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule
 const CatalogScenarioCreate = defineAsyncComponent(() => import('./CatalogScenarioCreate.vue'))
 const PracticeRegistrationImport = defineAsyncComponent(() => import('./PracticeRegistrationImport.vue'))
 const PracticeRuleSettings = defineAsyncComponent(() => import('./PracticeRuleSettings.vue'))
+const DepartmentRetention = defineAsyncComponent(() => import('./DepartmentRetention.vue'))
 const navigation = [
   {key:'tasks', area:'work', title:'待办'},
   {key:'settlement', area:'work', title:'分润试算'},
   {key:'monthly', area:'work', title:'月度汇总'},
+  {key:'retention', area:'work', title:'部门留存金'},
   {key:'orders', area:'work', title:'来源订单'},
   {key:'products', area:'config', title:'产品目录'},
   {key:'periods', area:'config', title:'核算期次'},
@@ -87,7 +89,7 @@ const configProductScope = ref()
 const ruleBusinessScope = ref()
 const activeRuleComponent = ref(0)
 const unitScope = ref()
-const usesOrganizationScope = computed(() => ['orders','settlement','monthly'].includes(current.value))
+const usesOrganizationScope = computed(() => ['orders','settlement','monthly','retention'].includes(current.value))
 const scopeSearch = ref('')
 const configProductPages = new Set(['products','periods','rules'])
 const activeProductScope = computed(() => configProductPages.has(current.value) ? configProductScope : workProductScope)
@@ -119,15 +121,16 @@ watch(productScope,()=>{ ruleBusinessScope.value=undefined })
 const showScope = computed(() => usesProductScope.value || current.value === 'orders')
 const organization = ref()
 const monthlyReport = ref()
+const retention = ref()
 const periodTasks = ref()
 const tasksMode = ref('pending')
 const tasksReturn = ref()
 const workspaceMonth = ref(new Intl.DateTimeFormat('sv-SE', {year:'numeric',month:'2-digit',timeZone:'Asia/Shanghai'}).format(new Date()))
-const usesWorkspaceMonth = computed(() => ['tasks','settlement','monthly'].includes(current.value))
+const usesWorkspaceMonth = computed(() => ['tasks','settlement','monthly','retention'].includes(current.value))
 const monthlyView = ref()
 const monthlyDimension = ref()
 const periodOrigin = ref()
-const periodOrigins = {monthly:'月度汇总',tasks:'待办'}
+const periodOrigins = {monthly:'月度汇总',tasks:'待办',retention:'部门留存金'}
 const monthlyReturn = ref()
 const monthlyResume = ref()
 const orderSync = ref()
@@ -679,7 +682,7 @@ async function refresh(reloadOptions = false) {
   if (orderQuery.value) params.set('orderId',orderQuery.value)
   if (olderThan.value) params.set('beforeId',olderThan.value)
   if (unitScope.value) params.set('unitId',unitScope.value)
-  const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
+  const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], retention:[], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
   if (requests.identities && identityAccount.value) {
     const {source,externalId} = identityAccount.value
@@ -735,6 +738,7 @@ function refreshWorkspace() {
   periodTasks.value?.refresh()
   organization.value?.refresh()
   monthlyReport.value?.refresh()
+  retention.value?.refresh()
   orderSync.value?.reload()
 }
 function settlementLink(periodId, view, origin, rootPeriodId) {
@@ -1599,6 +1603,11 @@ async function save() {
             :api="api" :format-money="formatMoney" :product-id="productScope" :unit-id="unitScope" :unit-name="selectedUnit?.name"
             :resume="monthlyResume" :units="scopeUnits"
             :views="options('monthlyReportView')" :dimensions="options('draftReportDimension')" @select-unit="selectOrganization"/>
+        </template>
+        <template v-else-if="current==='retention'">
+          <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
+          <DepartmentRetention ref="retention" :month="workspaceMonth" :unit-id="unitScope" :api="api"
+            :units="scopeUnits" :format-money="formatMoney" :format-time="formatTime"/>
         </template>
         <template v-else-if="current==='organization'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>

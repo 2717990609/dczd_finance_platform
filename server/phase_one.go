@@ -279,6 +279,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/draft-personnel", Handler: s.draftPersonnel},
 		{Method: http.MethodGet, Path: "/api/v1/draft-report", Handler: s.draftReport},
 		{Method: http.MethodGet, Path: "/api/v1/monthly-report", Handler: s.monthlyReport},
+		{Method: http.MethodGet, Path: "/api/v1/department-retention", Handler: s.departmentRetention},
+		{Method: http.MethodPost, Path: "/api/v1/department-retention", Handler: submitJSON(32<<10, s.recordRetentionEntry)},
 		{Method: http.MethodGet, Path: "/api/v1/period-rule-matches", Handler: s.catalogMatches},
 		{Method: http.MethodGet, Path: "/api/v1/period-pool-contributions", Handler: s.periodPoolContributions},
 		{Method: http.MethodGet, Path: "/api/v1/draft-pools", Handler: s.draftPools},
@@ -357,7 +359,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errSyncOrigin), errors.Is(err, errUnverifiedSource), errors.Is(err, errBoundSourceImport),
 		errors.Is(err, errSyncInitialFrom), errors.Is(err, errSyncLaterStart), errors.Is(err, errSyncInProgress),
 		errors.Is(err, errSettlementOpen), errors.Is(err, errSettlementDisabled), errors.Is(err, errPoolStale),
-		errors.Is(err, errPoolAmount), errors.Is(err, errPoolEligibility):
+		errors.Is(err, errPoolAmount), errors.Is(err, errPoolEligibility), errors.Is(err, errRetentionDuplicate):
 		code, message = http.StatusConflict, err.Error()
 	case errors.Is(err, errCalculationOverflow):
 		code, message = http.StatusConflict, "试算金额超出范围，请核对原单和规则"

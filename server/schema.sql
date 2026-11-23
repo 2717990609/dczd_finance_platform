@@ -1511,3 +1511,32 @@ CREATE TABLE IF NOT EXISTS catalog_rule_retirements (
  recorded_by uuid REFERENCES finance_accounts(id),
  recorded_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS department_retention_entries (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ unit_id uuid NOT NULL REFERENCES organization_units(id),
+ book_month date NOT NULL CHECK (extract(day FROM book_month)=1),
+ kind text NOT NULL CHECK (kind IN ('opening','expense','correction','reversal')),
+ amount_minor bigint NOT NULL CHECK (amount_minor BETWEEN -100000000000 AND 100000000000),
+ note text NOT NULL CHECK (char_length(note)<=200),
+ reimbursement_no text CHECK (char_length(reimbursement_no) BETWEEN 1 AND 80),
+ original_id bigint REFERENCES department_retention_entries(id),
+ request_id uuid NOT NULL UNIQUE,
+ recorded_by text NOT NULL,
+ recorded_at timestamptz NOT NULL DEFAULT now(),
+ CHECK ((kind='reversal')=(original_id IS NOT NULL)),
+ CHECK ((kind='expense')=(reimbursement_no IS NOT NULL)),
+ CHECK (kind<>'expense' OR amount_minor<0),
+ CHECK (kind='opening' OR amount_minor<>0)
+);
+CREATE INDEX IF NOT EXISTS department_retention_entries_month ON department_retention_entries(unit_id,book_month,id);
+CREATE UNIQUE INDEX IF NOT EXISTS department_retention_opening ON department_retention_entries(unit_id) WHERE kind='opening';
+CREATE UNIQUE INDEX IF NOT EXISTS department_retention_reimbursement ON department_retention_entries(unit_id,reimbursement_no) WHERE reimbursement_no IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS department_retention_reversal ON department_retention_entries(original_id) WHERE original_id IS NOT NULL;
+
+CREATE OR REPLACE FUNCTION protect_department_retention_entry() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ RAISE EXCEPTION 'department retention entries can only be reversed' USING ERRCODE='55000';
+END $$;
+CREATE OR REPLACE TRIGGER protect_department_retention_entries BEFORE UPDATE OR DELETE ON department_retention_entries
+ FOR EACH ROW EXECUTE FUNCTION protect_department_retention_entry();
