@@ -1909,7 +1909,7 @@ async function save() {
               提成范围 · {{ practicePeriodScopeText(c.periodBenefit,practiceScopeNames) }}
             </span>
             <span v-else-if="ruleSalesScope(c)" class="rule-block-recipient" :title="ruleSalesScope(c,Infinity)">
-              提成范围 · {{ ruleSalesScope(c) }}
+              提成范围 · {{ ruleSalesScope(c,c.companySales ? 0 : undefined) }}
             </span>
             <span v-if="c.periodBenefit?.method==='tiers' && c.periodBenefit.tierOnWholeClass" class="rule-block-badge">全班净实收选档</span>
             <small>{{ ruleSalesScope(c) ? '收款 · ' : '' }}{{ ruleRecipientSummary(c) }}</small>

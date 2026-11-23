@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyRatePriorityLabel, practiceCompanyStandardSummary, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
@@ -17,8 +17,6 @@ const match = /^period:([^:]+):(\d+)$/.exec(props.component || '')
 const selectedPart = match ? Number(match[2]) : undefined
 const activePart = ref(match && props.rule.components[selectedPart]?.type===match[1]
   ? selectedPart : props.embedded || props.rule.components.length===1 ? 0 : undefined)
-const standardScope = ref('category')
-watch(activePart, () => { standardScope.value = 'category' })
 const directoryError = ref('')
 const directory = computed(() => loadedRecipients.value ?? props.recipients)
 const label = (group, key) => props.optionLabel(group, key) || key
@@ -78,17 +76,14 @@ const companyStandards = computed(() => {
       companies.push({row, names:exceptionCompanyIDs(row).map(companyName), inheritedRate:group.recommendationRate})
     }
   }
-  const fallback = arrangement?.defaultRate == null ? [] :
-    [{row:{mode:'rate',value:arrangement.defaultRate}, names:['未命中公司或销售类别的外部公司']}]
   return [
-    {scope:'company',label:'按公司',column:'适用公司',rows:companies},
     {scope:'category',label:'按销售类别',column:'销售类别',rows:defaults},
-    {scope:'default',label:'外部公司默认',column:'适用公司',rows:fallback},
-  ].filter(group=>group.rows.length)
+    {scope:'default',label:'外部公司默认',rate:arrangement?.defaultRate},
+    {scope:'company',label:'按公司',column:'适用公司',rows:companies},
+  ].map(group=>({...group,hasRecommendation:group.rows?.some(({row,inheritedRate})=>
+    row.recommendationRate!=null || inheritedRate!=null)}))
 })
-const activeStandard = computed(() => companyStandards.value.find(group=>group.scope===standardScope.value) || companyStandards.value[0])
-const showsRecommendation = computed(() => activeStandard.value?.rows
-  .some(({row,inheritedRate})=>row.recommendationRate!=null || inheritedRate!=null))
+const showCompanyPriority = computed(() => companyStandards.value.filter(group=>group.rows?.length || group.rate!=null).length>1)
 const countStart = rule => rule.openingId ? props.openingLabel(rule.openingId)
   : rule.countFromOrdinal ? '第 '+rule.countFromOrdinal+' 期' : rule.countFromAt && props.formatTime(rule.countFromAt)
 const countArrangements = computed(() => props.rule.components.filter(part=>part.tiers && countStart(part.tiers)))
@@ -204,7 +199,7 @@ onMounted(async () => {
             提成范围 · {{ practicePeriodScopeText(part.periodBenefit,practiceScopeNames) }}
           </span>
           <span v-else-if="salesScope(part)" class="rule-block-recipient" :title="salesScope(part,Infinity)">
-            提成范围 · {{ salesScope(part) }}
+            提成范围 · {{ salesScope(part,part.companySales ? 0 : undefined) }}
           </span>
           <span v-if="part.periodBenefit?.tiers?.length && part.periodBenefit.tierOnWholeClass" class="rule-block-badge">全班净实收选档</span>
           <small>{{ [recipient(part),standardSummary(part)].filter(Boolean).join(' · ') }}</small>
@@ -234,38 +229,35 @@ onMounted(async () => {
             </tr>
           </tbody>
         </table>
-        <template v-if="part.companySales && activeStandard">
-          <div class="finance-rate-toolbar">
-            <a-radio-group v-if="companyStandards.length>1" v-model:value="standardScope" button-style="solid" size="small"
-              role="radiogroup" aria-label="查看计提标准">
-              <a-radio-button v-for="group in companyStandards" :key="group.scope" :value="group.scope">
-                <span>{{ group.label }}</span>
-                <small class="finance-rate-count">{{ group.scope==='default' ? rate(group.rows[0].row.value,10000) : group.rows.length }}</small>
-              </a-radio-button>
-            </a-radio-group>
-            <strong v-else>{{ activeStandard.label }}</strong>
-            <small class="finance-rate-priority">匹配顺序 {{ practiceCompanyRatePriorityLabel }}</small>
-          </div>
-          <table class="rule-company-standards" aria-label="计提标准">
-            <thead>
-              <tr>
-                <th scope="col">{{ activeStandard.column }}</th>
-                <th scope="col">计提标准</th>
-                <th v-if="showsRecommendation" scope="col">推荐比例</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="({row,names,inheritedRate},rowIndex) in activeStandard.rows" :key="rowIndex">
-                <th scope="row">{{ names.join('、') }}</th>
-                <td>{{ standard(row,10000) }}{{ row.mode==='fixed' ? fixedUnit : '' }}</td>
-                <td v-if="showsRecommendation">
-                  {{ row.recommendationRate!=null ? rate(row.recommendationRate,10000) :
-                    inheritedRate!=null ? '沿用 '+rate(inheritedRate,10000) : '—' }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </template>
+        <div v-if="part.companySales" class="practice-company-criteria">
+          <small v-if="showCompanyPriority" class="finance-rate-priority">匹配顺序 {{ practiceCompanyRatePriorityLabel }}</small>
+          <section v-for="group in companyStandards" :key="group.scope" :aria-label="group.label" class="practice-company-criterion">
+            <header>
+              <strong>{{ group.label }}</strong>
+              <span v-if="group.rate!=null">{{ rate(group.rate,10000) }}</span>
+              <small v-else-if="!group.rows?.length">未配置</small>
+            </header>
+            <table v-if="group.rows?.length" class="rule-company-standards" :aria-label="group.label+'计提标准'">
+              <thead>
+                <tr>
+                  <th scope="col">{{ group.column }}</th>
+                  <th scope="col">计提标准</th>
+                  <th v-if="group.hasRecommendation" scope="col">推荐比例</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="({row,names,inheritedRate},rowIndex) in group.rows" :key="rowIndex">
+                  <th scope="row">{{ names.join('、') }}</th>
+                  <td>{{ standard(row,10000) }}{{ row.mode==='fixed' ? fixedUnit : '' }}</td>
+                  <td v-if="group.hasRecommendation">
+                    {{ row.recommendationRate!=null ? rate(row.recommendationRate,10000) :
+                      inheritedRate!=null ? '沿用 '+rate(inheritedRate,10000) : '—' }}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </section>
+        </div>
         <details v-if="part.tiers || part.periodBenefit || part.retrainSplits?.length ||
           part.companySales?.internalCompanies?.length || part.companySales?.recommendationRecipients?.length">
           <summary>查看计算条件</summary>

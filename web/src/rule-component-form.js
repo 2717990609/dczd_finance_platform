@@ -31,7 +31,7 @@ export function moneyAsMinor(value) {
 }
 
 export const catalogRatePriorityLabel = '公司特例 → 销售类别默认'
-export const practiceCompanyRatePriorityLabel = '按公司 → 按销售类别 → 外部公司默认'
+export const practiceCompanyRatePriorityLabel = '指定公司 → 销售类别 → 外部公司默认'
 
 export function catalogOrderScope(item) {
   if (item.ownSales) return 'own'
@@ -295,6 +295,15 @@ export function practiceCompanyStandardSummary(sales, formatRate, formatAmount) 
   ].filter(Boolean).join(' · ')
 }
 
+export function practiceCompanyScopes(sales) {
+  const rows = sales.categories || []
+  return {
+    companies:[...new Set(rows.flatMap(row=>[...(row.companies || []),...(row.overrides || []).flatMap(exceptionCompanyIDs)]))],
+    categories:[...new Set(rows.flatMap(standardCategoryIDs))],
+    hasDefault:Number.isFinite(sales.defaultRate),
+  }
+}
+
 export function practiceSalesScopeText(part, names, limit = 2) {
   const entries = []
   const list = (label, ids, name) => {
@@ -303,10 +312,15 @@ export function practiceSalesScopeText(part, names, limit = 2) {
       (values.length>limit ? ' 等 '+values.length+' 个' : ''))
   }
   if (part.companySales) {
-    const rows = part.companySales.categories || []
-    list('销售类别',rows.flatMap(standardCategoryIDs),names.category)
-    list('指定公司',rows.flatMap(row=>[...(row.companies || []),...(row.overrides || []).flatMap(exceptionCompanyIDs)]),names.company)
-    if (part.companySales.defaultRate != null) entries.push('其他外部公司')
+    const {companies,categories,hasDefault} = practiceCompanyScopes(part.companySales)
+    if (limit) {
+      list('指定公司',companies,names.company)
+      list('销售类别',categories,names.category)
+    } else {
+      if (companies.length) entries.push('按公司 '+companies.length+' 家')
+      if (categories.length) entries.push('按销售类别 '+categories.length+' 类')
+    }
+    if (hasDefault) entries.push('外部公司默认')
     return entries.join(' · ') || '待配置类别或公司'
   }
   if (part.saleScope?.ownSales) {

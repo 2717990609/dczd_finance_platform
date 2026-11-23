@@ -144,6 +144,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .finance-rate-count { margin-inline-start:5px;font-size:12px;font-variant-numeric:tabular-nums; }
 .finance-rate-add { margin-inline-start:auto; }
 .finance-rate-empty { margin:0; padding-block:4px; color:var(--muted); font-size:13px; }
+.practice-company-criteria { display:grid; gap:6px; margin-block:6px; }
+.practice-company-criterion { min-width:0; padding:5px 8px; border:1px solid var(--line); border-radius:5px; }
+.practice-company-criterion > header { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; min-height:28px; }
+.practice-company-criterion > header small { color:var(--muted); }
+.practice-company-criterion > header > button { margin-inline-start:auto; }
 @media (max-width:700px) { .finance-rule-editor .ant-drawer-body { padding:12px; } }
 .order-link { color: var(--accent); border: 0; background: none; cursor: pointer; padding: 0; text-align: left; overflow-wrap: anywhere; }
 .order-link:hover { text-decoration: underline; }

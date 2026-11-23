@@ -1,8 +1,8 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { practiceCompanyRatePriorityLabel } from './rule-component-form'
+import { practiceCompanyRatePriorityLabel, practiceCompanyScopes, practiceSalesScopeText } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
   sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array,duties:Array})
@@ -12,29 +12,22 @@ const categories = computed(() => sales.value.categories)
 const overrides = computed(() => categories.value.flatMap((category,index)=>
   category.overrides.map((override,position)=>({category,index,override,position}))))
 const standardGroups = [
-  {scope:'companies',label:'按公司',action:'添加公司标准'},
-  {scope:'category',label:'按销售类别',action:'添加类别标准'},
+  {scope:'category',label:'按销售类别',action:'添加销售类别'},
   {scope:'default',label:'外部公司默认'},
+  {scope:'companies',label:'按公司',action:'添加指定公司'},
 ]
 const standardRowsByScope = computed(() => ({
   companies:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='companies'),
   category:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='category'),
 }))
-const hasDefault = computed(() => Number.isFinite(sales.value.defaultRate))
-const standardScope = ref(categories.value.some(standard=>standard.scope==='category') ? 'category'
-  : categories.value.length ? 'companies' : hasDefault.value ? 'default' : props.salesCategories.length ? 'category' : 'companies')
-const activeGroup = computed(() => standardGroups.find(group=>group.scope===standardScope.value))
-const rows = computed(() => standardRowsByScope.value[standardScope.value] || [])
-const standardRows = scope => standardRowsByScope.value[scope].length + (scope==='companies' ? overrides.value.length : 0)
-const scopeText = computed(() => standardGroups.filter(group=>{
-  if (group.scope==='default') return hasDefault.value
-  if (group.scope==='category') return standardRowsByScope.value.category.some(({standard})=>standard.salesCategoryIds.length)
-  return standardRowsByScope.value.companies.some(({standard})=>standard.companies.length) ||
-    overrides.value.some(({override})=>override.companyIds?.length)
-}).map(group=>group.label).join(' · ') || '请选择公司或销售类别')
+const scopes = computed(() => practiceCompanyScopes(sales.value))
+const scopeText = computed(() => practiceSalesScopeText(props.component,undefined,0))
+const showPriority = computed(() => [
+  scopes.value.categories.length, scopes.value.companies.length, scopes.value.hasDefault,
+].filter(Boolean).length>1)
 const calculationText = computed(() => {
   const modes = new Set([...categories.value,...overrides.value.map(({override})=>override)].map(row=>row.mode))
-  if (hasDefault.value) modes.add('rate')
+  if (scopes.value.hasDefault) modes.add('rate')
   return [modes.has('rate') && '比例',modes.has('fixed') && '固定金额'].filter(Boolean).join(' / ') || '在计提标准中设置'
 })
 const payee = computed(() => props.component.companySales.payee)
@@ -74,12 +67,16 @@ function salesCategoryOptions(category) {
   return props.salesCategories.filter(option=>!categories.value.some(other=>
     other!==category && other.scope==='category' && other.salesCategoryIds.includes(option.value)))
 }
-function addStandard(scope) {
+async function addStandard(scope) {
+  const index = categories.value.length
   categories.value.push({scope,mode:amounts.value[0]?.value,companies:[],salesCategoryIds:[],overrides:[]})
+  await nextTick()
+  document.getElementById(field((scope==='category' ? 'sales-category-' : 'companies-')+index))?.focus()
 }
-function addCategoryOverride(category) {
+async function addCategoryOverride(category,i) {
   category.overrides.push({companyIds:[],mode:category.mode})
-  standardScope.value = 'companies'
+  await nextTick()
+  document.getElementById(field('override-'+i+'-'+(category.overrides.length-1)))?.focus()
 }
 function modeChanged(item, mode) {
   item.mode = mode
@@ -115,83 +112,84 @@ watch(amounts, choices => {
   </RuleArrangementFields>
   <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
-  <div class="finance-rate-toolbar company-standard-toolbar">
-    <a-radio-group v-model:value="standardScope" role="radiogroup" aria-label="查看计提标准" button-style="solid" size="small">
-      <a-radio-button v-for="group in standardGroups" :key="group.scope" :value="group.scope">
-        <span>{{ group.label }}</span>
-        <small class="finance-rate-count">{{ group.scope==='default' ? (hasDefault ? sales.defaultRate+'%' : '未配置') : standardRows(group.scope) }}</small>
-      </a-radio-button>
-    </a-radio-group>
-    <small class="finance-rate-priority">匹配顺序 {{ practiceCompanyRatePriorityLabel }}</small>
-    <a-button v-if="activeGroup.action" :disabled="activeGroup.scope==='category' && !salesCategories.length" class="finance-rate-add" size="small"
-      @click="addStandard(activeGroup.scope)">{{ activeGroup.action }}</a-button>
-  </div>
-  <a-form-item v-if="activeGroup.scope==='default'" class="company-default-rate"
-    label="外部公司默认比例（%）" :html-for="field('default-rate')">
-    <a-input-number :id="field('default-rate')" v-model:value="component.companySales.defaultRate"
-      size="small" :min="0" :max="100" :precision="4" placeholder="未配置"/>
-  </a-form-item>
-  <section v-else :key="activeGroup.scope" :aria-label="activeGroup.label"
-    class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations}">
-    <p v-if="!standardRows(activeGroup.scope)" class="finance-rate-empty">
-      {{ activeGroup.scope==='companies' ? '暂无公司标准' : salesCategories.length ? '暂无销售类别标准' : '暂无可选销售类别' }}
-    </p>
-    <div v-else class="company-standard-fields company-standard-column-labels" aria-hidden="true">
-      <span>{{ activeGroup.scope==='category' ? '销售类别' : '适用公司' }}</span>
-      <span v-if="amounts.length>1">计提方式</span>
-      <span>{{ amounts.length>1 ? '计提标准' : '比例（%）' }}</span>
-      <span v-if="legacyRecommendations">推荐比例（%）</span>
-    </div>
-    <div v-for="({standard:category,index:i}) in rows" :key="i" class="company-category company-standard-fields">
-      <a-form-item v-if="category.scope==='category'" class="company-scope-field" label="销售类别" :html-for="field('sales-category-'+i)" required>
-        <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryIds" :options="salesCategoryOptions(category)" size="small"
-          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择销售类别"/>
-      </a-form-item>
-      <a-form-item v-else class="company-scope-field" label="适用公司" :html-for="field('companies-'+i)" required>
-        <a-select :id="field('companies-'+i)" :value="category.companies" :options="availableCompanies(category)" size="small"
-          mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司" @change="selectCompanies(category,$event)"/>
-      </a-form-item>
-      <a-form-item v-if="amounts.length>1" label="计提方式" :html-for="field('method-'+i)">
-        <a-select :id="field('method-'+i)" :value="category.mode" :options="amounts" size="small" @change="modeChanged(category,$event)"/>
-      </a-form-item>
-      <a-form-item :label="category.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="field('value-'+i)" required>
-        <a-input-number :id="field('value-'+i)" v-model:value="category.value" size="small" :min="0"
-          :addon-after="amounts.length>1 ? (category.mode==='rate' ? '%' : '元') : undefined"
-          :max="category.mode==='rate'?100:undefined" :precision="category.mode==='rate'?4:2"/>
-      </a-form-item>
-      <a-form-item v-if="legacyRecommendations" label="推荐比例（%）" :html-for="field('recommendation-'+i)">
-        <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" size="small" :min="0" :max="100" :precision="4"/>
-      </a-form-item>
-      <a-button v-if="categories.length>1 || component.companySales.defaultRate != null"
-        size="small" type="link" danger class="company-standard-remove" @click="categories.splice(i,1)">移除</a-button>
-      <a-button v-if="category.scope==='category' && category.salesCategoryIds.length && overrideOptions(category).length"
-        class="company-category-override" type="link" size="small" @click="addCategoryOverride(category)">为此类别添加公司特例</a-button>
-    </div>
-    <template v-if="activeGroup.scope==='companies'">
-      <div class="company-category company-standard-fields" v-for="({category,index:i,override,position:j}) in overrides" :key="i+'-'+j">
-        <a-form-item class="company-scope-field" label="特例公司" :html-for="field('override-'+i+'-'+j)" required>
-          <a-select :id="field('override-'+i+'-'+j)" v-model:value="override.companyIds"
-            :options="overrideOptions(category,override)" size="small" mode="multiple" :max-tag-count="3" :filter-option="byName"/>
-          <small v-if="category.salesCategoryIds.length" class="order-version">
-            {{ category.salesCategoryIds.map(id=>salesCategories.find(option=>option.value===id)?.label || id).join('、') }}
-          </small>
+  <div class="practice-company-criteria">
+    <small v-if="showPriority" class="finance-rate-priority">匹配顺序 {{ practiceCompanyRatePriorityLabel }}</small>
+    <section v-for="group in standardGroups" :key="group.scope" :aria-label="group.label"
+      class="practice-company-criterion">
+      <header>
+        <strong>{{ group.label }}</strong>
+        <template v-if="group.scope!=='default'">
+          <small v-if="group.scope==='category' && scopes.categories.length">{{ scopes.categories.length }} 类</small>
+          <small v-else-if="group.scope==='companies' && scopes.companies.length">{{ scopes.companies.length }} 家</small>
+          <small v-else>未配置</small>
+          <a-button :disabled="group.scope==='category' && !salesCategories.length" size="small"
+            @click="addStandard(group.scope)">{{ group.action }}</a-button>
+        </template>
+        <a-form-item v-else class="company-default-rate" :html-for="field('default-rate')">
+          <a-input-number :id="field('default-rate')" v-model:value="component.companySales.defaultRate"
+            aria-label="外部公司默认比例（%）" addon-after="%" size="small" :min="0" :max="100" :precision="4" placeholder="未配置"/>
         </a-form-item>
-        <a-form-item v-if="amounts.length>1" label="计提方式" :html-for="field('override-method-'+i+'-'+j)">
-          <a-select :id="field('override-method-'+i+'-'+j)" :value="override.mode" :options="amounts" size="small" @change="modeChanged(override,$event)"/>
-        </a-form-item>
-        <a-form-item :label="override.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="field('override-value-'+i+'-'+j)" required>
-          <a-input-number :id="field('override-value-'+i+'-'+j)" v-model:value="override.value" size="small" :min="0"
-            :addon-after="amounts.length>1 ? (override.mode==='rate' ? '%' : '元') : undefined"
-            :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
-        </a-form-item>
-        <a-form-item v-if="legacyRecommendations" label="推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)">
-          <a-input-number :id="field('override-recommendation-'+i+'-'+j)" v-model:value="override.recommendationRate"
-            size="small" :min="0" :max="100" :precision="4" :placeholder="'沿用 '+(category.recommendationRate ?? 0)+'%'"/>
-        </a-form-item>
-        <a-button type="link" danger size="small" class="company-standard-remove" @click="category.overrides.splice(j,1)">移除</a-button>
+      </header>
+      <div v-if="group.scope!=='default' && (standardRowsByScope[group.scope].length || (group.scope==='companies' && overrides.length))"
+        class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations}">
+        <div class="company-standard-fields company-standard-column-labels" aria-hidden="true">
+          <span>{{ group.scope==='category' ? '销售类别' : '适用公司' }}</span>
+          <span v-if="amounts.length>1">计提方式</span>
+          <span>{{ amounts.length>1 ? '计提标准' : '比例（%）' }}</span>
+          <span v-if="legacyRecommendations">推荐比例（%）</span>
+        </div>
+        <div v-for="({standard:category,index:i}) in standardRowsByScope[group.scope]" :key="i" class="company-category company-standard-fields">
+          <a-form-item v-if="category.scope==='category'" class="company-scope-field" label="销售类别" :html-for="field('sales-category-'+i)" required>
+            <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryIds" :options="salesCategoryOptions(category)" size="small"
+              mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择销售类别"/>
+          </a-form-item>
+          <a-form-item v-else class="company-scope-field" label="适用公司" :html-for="field('companies-'+i)" required>
+            <a-select :id="field('companies-'+i)" :value="category.companies" :options="availableCompanies(category)" size="small"
+              mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司" @change="selectCompanies(category,$event)"/>
+          </a-form-item>
+          <a-form-item v-if="amounts.length>1" label="计提方式" :html-for="field('method-'+i)">
+            <a-select :id="field('method-'+i)" :value="category.mode" :options="amounts" size="small" @change="modeChanged(category,$event)"/>
+          </a-form-item>
+          <a-form-item :label="category.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="field('value-'+i)" required>
+            <a-input-number :id="field('value-'+i)" v-model:value="category.value" size="small" :min="0"
+              :addon-after="amounts.length>1 ? (category.mode==='rate' ? '%' : '元') : undefined"
+              :max="category.mode==='rate'?100:undefined" :precision="category.mode==='rate'?4:2"/>
+          </a-form-item>
+          <a-form-item v-if="legacyRecommendations" label="推荐比例（%）" :html-for="field('recommendation-'+i)">
+            <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" size="small" :min="0" :max="100" :precision="4"/>
+          </a-form-item>
+          <a-button v-if="categories.length>1 || component.companySales.defaultRate != null"
+            size="small" type="link" danger class="company-standard-remove" @click="categories.splice(i,1)">移除</a-button>
+          <a-button v-if="category.scope==='category' && category.salesCategoryIds.length && overrideOptions(category).length"
+            class="company-category-override" type="link" size="small" @click="addCategoryOverride(category,i)">为此类别添加公司特例</a-button>
+        </div>
+        <template v-if="group.scope==='companies'">
+          <div class="company-category company-standard-fields" v-for="({category,index:i,override,position:j}) in overrides" :key="i+'-'+j">
+            <a-form-item class="company-scope-field" label="特例公司" :html-for="field('override-'+i+'-'+j)" required>
+              <a-select :id="field('override-'+i+'-'+j)" v-model:value="override.companyIds"
+                :options="overrideOptions(category,override)" size="small" mode="multiple" :max-tag-count="3" :filter-option="byName"/>
+              <small v-if="category.salesCategoryIds.length" class="order-version">
+                {{ category.salesCategoryIds.map(id=>salesCategories.find(option=>option.value===id)?.label || id).join('、') }}
+              </small>
+            </a-form-item>
+            <a-form-item v-if="amounts.length>1" label="计提方式" :html-for="field('override-method-'+i+'-'+j)">
+              <a-select :id="field('override-method-'+i+'-'+j)" :value="override.mode" :options="amounts" size="small" @change="modeChanged(override,$event)"/>
+            </a-form-item>
+            <a-form-item :label="override.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="field('override-value-'+i+'-'+j)" required>
+              <a-input-number :id="field('override-value-'+i+'-'+j)" v-model:value="override.value" size="small" :min="0"
+                :addon-after="amounts.length>1 ? (override.mode==='rate' ? '%' : '元') : undefined"
+                :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
+            </a-form-item>
+            <a-form-item v-if="legacyRecommendations" label="推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)">
+              <a-input-number :id="field('override-recommendation-'+i+'-'+j)" v-model:value="override.recommendationRate"
+                size="small" :min="0" :max="100" :precision="4" :placeholder="'沿用 '+(category.recommendationRate ?? 0)+'%'"/>
+            </a-form-item>
+            <a-button type="link" danger size="small" class="company-standard-remove" @click="category.overrides.splice(j,1)">移除</a-button>
+          </div>
+        </template>
       </div>
-    </template>
-  </section>
+    </section>
+  </div>
   <a-form-item v-if="hasRecommendations" label="可收推荐分润的公司" :html-for="field('referral-recipients')" required>
     <a-select :id="field('referral-recipients')" v-model:value="component.companySales.recommendationRecipients"
       :options="recipients" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
@@ -212,11 +210,7 @@ watch(amounts, choices => {
 </template>
 
 <style scoped>
-.company-standard-toolbar {border-top:1px solid var(--line);padding-top:6px}
-.company-default-rate {margin:4px 0 8px}
-.company-default-rate :deep(.ant-form-item-row) {flex-direction:row;align-items:center;gap:8px}
-.company-default-rate :deep(.ant-form-item-label) {padding:0}
-.company-default-rate :deep(.ant-input-number) {width:110px}
+.practice-company-criterion .company-default-rate {margin:0 0 0 auto;width:125px}
 .company-standard-table {container-type:inline-size}
 .company-standard-table.has-method {--company-method-column:minmax(0,1.25fr)}
 .company-standard-table.has-recommendation {--company-recommendation-column:minmax(0,1fr)}
