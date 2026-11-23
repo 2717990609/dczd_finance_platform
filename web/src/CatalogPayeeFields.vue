@@ -9,7 +9,7 @@ import { catalogOrderSalesPayees, catalogRecipientIsPerson, catalogScopeOptions 
 const props = defineProps({options:Object,api:Function,peopleFilters:Object,prefix:String,disabled:Boolean,salesAvailable:Boolean,
   productId:Number,savedPoolLabel:String,existingPool:Boolean,unitNames:Object})
 const payee = defineModel({type:Object,required:true})
-const seller = {value:'seller',label:'按成交销售归属'}
+const seller = {value:'seller',label:'按销售比例表确定收款方'}
 const targets = computed(() => [
   ...(props.salesAvailable || payee.value.target==='seller' ? [seller] : []),
   ...(!props.salesAvailable && payee.value.target==='seller' ? [] : [

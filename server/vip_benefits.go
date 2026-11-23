@@ -199,12 +199,13 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 			}
 		}
 		rate, amount, issue := a.quote(req, sourceIssue)
+		usesOrderPayee := a.Mode == vipOrderReferrerMode || a.Mode == vipOrderSellerMode || a.Mode == vipOrderSalesCompanyMode
 		switch {
 		case req.Paid == 0:
 			line.Status = "ZERO"
 		case a.Mode == vipOrderReferrerMode && req.Referrer.Party == "" && req.Referrer.Issue == "":
 			line.Status = "ZERO"
-		case !data.BenefitReady && a.Mode != vipOrderReferrerMode:
+		case !data.BenefitReady && !usesOrderPayee:
 			line.Status = "BENEFIT_CONTEXT_MISSING"
 		case issue != "":
 			line.Status = issue

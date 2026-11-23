@@ -61,7 +61,8 @@ func TestCatalogIndependentOrderSalesTargetsResolveExplicitPayees(t *testing.T) 
 	if !ok {
 		t.Fatal("independent sales recipients must work without the dedicated sales table")
 	}
-	data := vipRuntimeData{BenefitReady: true, vipSalesData: vipSalesData{People: map[string]string{"person:1": "成交销售"}}}
+	// These two recipients are already resolved from the order's seller and company.
+	data := vipRuntimeData{vipSalesData: vipSalesData{People: map[string]string{"person:1": "成交销售"}}}
 	result := quoteVIPBenefits(paid, "", policy, data)
 	if len(result) != 2 || result[0].Status != "CALCULATED" || result[0].Kind != "person" ||
 		result[0].Party != paid.Seller || result[0].Amount != 400 || result[1].Status != "CALCULATED" ||

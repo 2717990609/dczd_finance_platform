@@ -56,8 +56,8 @@ const hasRateTable = computed(() => !!(selectedCalculation.value || component.va
 const columns = computed(() => sheet.value?.mayPublish && !props.applied && !selectedCalculation.value
   ? [...rateColumns,{title:'操作',key:'operation',width:190}] : rateColumns)
 const targetKind = computed(() => targetEdits.value.get(selected.value)?.target || component.value?.targetKind)
-const targetKindLabels = {seller:'按下表结算',person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人',appointment:'销售组织的在任人员',...catalogOrderSalesPayees}
-const targetShortLabels = {seller:'成交销售',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人',appointment:'在任人员',
+const targetKindLabels = {person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人',appointment:'销售组织的在任人员',...catalogOrderSalesPayees}
+const targetShortLabels = {seller:'销售比例表',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人',appointment:'在任人员',
   order_seller:'成交销售',order_sales_company:'销售公司'}
 const teamSplit = computed(() => component.value?.teamSplit)
 const serviceItemKey = 'internal-service'
