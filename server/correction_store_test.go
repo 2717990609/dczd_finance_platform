@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,123 @@ import (
 
 	"github.com/jackc/pgx/v5"
 )
+
+func TestRecommendationRefundUsesTheCorrectionBookedBeforeItsPeriod(t *testing.T) {
+	ctx := context.Background()
+	service := workspace{db: integrationDB(t), development: true}
+	at := func(month time.Month) time.Time { return time.Date(2000, month, 5, 12, 0, 0, 0, shanghai) }
+	mustID := func(result any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result.(map[string]int64)["id"]
+	}
+	day := 1
+	product := mustID(service.createProduct(ctx, createProductInput{Code: "REFERRAL_REFUNDS", Name: "推荐退款", PeriodMode: "calendar", CycleStartDay: &day}))
+	createPeriod := func(month time.Month) int64 {
+		label := at(month).Format("2006-01")
+		return mustID(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: label, SettlementMonth: label}))
+	}
+	june, july, august, september, october := createPeriod(time.June), createPeriod(time.July),
+		createPeriod(time.August), createPeriod(time.September), createPeriod(time.October)
+	mustID(service.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "DEMO", SourceKey: "REFERRAL"}))
+	people := make(map[string]int64)
+	for _, name := range []string{"old", "replacement", "next"} {
+		person := mustID(service.createPerson(ctx, createPersonInput{Name: name}))
+		people[name] = person
+		mustID(service.assignIdentity(ctx, assignIdentityInput{Source: "DCZD", ExternalID: name, PersonID: person, ValidFrom: "1999-01-01T00:00:00+08:00"}))
+	}
+	_, err := service.publishRule(ctx, publishRuleInput{ProductID: product, Label: "推荐提成", Components: []component{
+		{Type: "referral", Mode: "rate", Value: 1000, SourceRole: "DIRECT_REFERRER", RefundPolicy: "proportional"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.db.Exec(ctx, "UPDATE products SET settlement_enabled=true WHERE id=$1", product); err != nil {
+		t.Fatal(err)
+	}
+	amount := int64(1000)
+	payment := sourceFact{Source: "DCZD", Domain: "DEMO", SourceKey: "REFERRAL", Kind: "ORDER_PAID",
+		OrderID: "order", PaymentID: "payment", RecordKey: "orders:1", AmountMinor: &amount, OccurredAt: at(time.June)}
+	save := func(fact sourceFact, version string, received time.Time) {
+		t.Helper()
+		fact.Version, fact.UpdatedAt = version, received
+		if err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
+			if _, err := storeSourceFacts(ctx, tx, []sourceFact{fact}); err != nil {
+				return err
+			}
+			_, err := tx.Exec(ctx, "UPDATE source_order_versions SET received_at=$2 WHERE version=$1", version, received)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	refund := func(id string, month time.Month, value int64) {
+		save(sourceFact{Source: payment.Source, Domain: payment.Domain, SourceKey: payment.SourceKey,
+			Kind: "REFUND_SUCCEEDED", OrderID: payment.OrderID, RecordKey: "refunds:" + id, RefundID: id,
+			AmountMinor: &value, OccurredAt: at(month), RefundsPayment: []sourcePaymentReference{{OrderID: payment.OrderID, RecordID: "1"}}}, id, at(month))
+	}
+	draftAt := func(period, net int64, corrections, issues int) draftSummary {
+		t.Helper()
+		actual, err := service.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := actual.(draftSummary)
+		if got.Total != net || got.CorrectionCount != corrections || got.IssueCount != issues {
+			t.Fatalf("period %d: %+v, want net %d, %d corrections and %d issues", period, got, net, corrections, issues)
+		}
+		return got
+	}
+	close := func(draft draftSummary) {
+		t.Helper()
+		if _, err := service.confirmSettlement(ctx, confirmSettlementInput{PeriodID: draft.PeriodID, ExpectedVersion: draft.Version}, "fixture"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	payment.ReferrerID = "old"
+	save(payment, "pay", at(time.June))
+	close(draftAt(june, 100, 0, 0))
+	payment.ReferrerID = "replacement"
+	save(payment, "first-change", at(time.August))
+	refund("july-refund", time.July, 200)
+	close(draftAt(july, -20, 0, 0))
+	refund("september-refund", time.September, 300)
+	waiting := draftAt(september, -30, 0, 1)
+	if _, err := service.confirmSettlement(ctx, confirmSettlementInput{PeriodID: september, ExpectedVersion: waiting.Version}, "fixture"); !errors.Is(err, errSettlementPending) {
+		t.Fatalf("a refund must wait for the earlier correction before confirmation: %v", err)
+	}
+	var originalLine int64
+	if err := service.db.QueryRow(ctx, "SELECT id FROM calculation_draft_lines WHERE period_id=$1", june).Scan(&originalLine); err != nil {
+		t.Fatal(err)
+	}
+	for _, person := range []string{"old", "replacement"} {
+		if _, err := service.db.Exec(ctx, storeCorrectionRecoverySQL, originalLine, people[person], "recover", "fixture"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(draftAt(august, 0, 2, 0))
+	var queued bool
+	if err := service.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)", september).Scan(&queued); err != nil || !queued {
+		t.Fatalf("confirming the correction should queue the pending refund again: %t, error=%v", queued, err)
+	}
+	payment.ReferrerID = "next"
+	save(payment, "next-change", at(time.October))
+	refunded := draftAt(september, -30, 2, 0)
+	var credited, charged int64
+	if err := service.db.QueryRow(ctx, `SELECT sum(amount_minor) FILTER(WHERE person_id=$2),
+	 sum(amount_minor) FILTER(WHERE person_id=$3) FROM calculation_draft_corrections WHERE period_id=$1`,
+		september, people["old"], people["replacement"]).Scan(&credited, &charged); err != nil || credited != 30 || charged != -30 {
+		t.Fatalf("refund after the confirmed correction: restored to old=%d, debited replacement=%d, error=%v", credited, charged, err)
+	}
+	close(refunded)
+	draftAt(october, 0, 2, 0)
+	if err := service.db.QueryRow(ctx, `SELECT amount_minor FROM calculation_draft_corrections WHERE period_id=$1 AND person_id=$2`,
+		october, people["next"]).Scan(&credited); err != nil || credited != 50 {
+		t.Fatalf("the new recipient must receive the remaining commission: %d, error=%v", credited, err)
+	}
+}
 
 func TestRecommendationCorrectionKeepsOriginalSettlementAndPostsOnlyNewDeltas(t *testing.T) {
 	ctx := context.Background()

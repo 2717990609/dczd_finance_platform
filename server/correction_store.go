@@ -18,6 +18,7 @@ type correctionInput struct {
 	Original, Latest                                 sourceFact
 	Components                                       []component
 	OriginalUnit                                     pgtype.UUID
+	RefundWaiting                                    bool
 }
 
 type correctionLine struct {
@@ -51,7 +52,10 @@ const correctionOrderIdentity = `(v.source,v.order_id,v.line_id,v.record_key,v.k
 
 // The current financial revision may have several display-only versions.
 // Keep the cycle in which that revision was first observed.
-const correctionInputsSQL = `SELECT l.id,l.person_id,l.amount_minor,latest.id,original.fact,latest.fact,rule.components
+const correctionInputsSQL = `SELECT l.id,l.person_id,l.amount_minor,
+ CASE WHEN timing.received_later THEN accepted.id ELSE latest.id END,original.fact,
+ CASE WHEN timing.received_later THEN accepted.fact ELSE latest.fact END,rule.components,
+ NOT timing.received_later AND coalesce(timing.handling_starts_on<target.starts_on,false)
  FROM periods target JOIN periods origin ON origin.product_id=target.product_id AND origin.ends_on<target.starts_on
  JOIN settlements closed ON closed.period_id=origin.id
  JOIN calculation_draft_lines l ON l.period_id=origin.id AND l.component_type='referral'
@@ -72,21 +76,34 @@ const correctionInputsSQL = `SELECT l.id,l.person_id,l.amount_minor,latest.id,or
    AND (previous_change.id IS NULL OR (v.updated_at,v.id)>(previous_change.updated_at,previous_change.id))
  ) receipt ON true
  LEFT JOIN LATERAL (
-  SELECT min(active.period_id) AS period_id FROM (
-   SELECT c.period_id FROM calculation_draft_corrections c WHERE c.original_line_id=l.id
-   UNION SELECT i.period_id FROM calculation_draft_issues i WHERE i.correction_line_id=l.id
-  ) active WHERE NOT EXISTS(SELECT 1 FROM settlements st WHERE st.period_id=active.period_id)
+  SELECT p.id,p.starts_on FROM (
+   SELECT c.period_id,c.source_version_id FROM calculation_draft_corrections c WHERE c.original_line_id=l.id
+   UNION SELECT i.period_id,i.source_version_id FROM calculation_draft_issues i
+    WHERE i.correction_line_id=l.id AND i.code<>'CORRECTION_REFUND_WAITING'
+  ) active JOIN periods p ON p.id=active.period_id JOIN source_order_versions version ON version.id=active.source_version_id
+  WHERE (version.fact-` + draftDisplayFactFields + `)=(latest.fact-` + draftDisplayFactFields + `)
+   AND NOT EXISTS(SELECT 1 FROM settlements st WHERE st.period_id=active.period_id)
+  ORDER BY p.starts_on,p.id LIMIT 1
  ) reserved ON true
+ LEFT JOIN periods observed ON reserved.id IS NULL AND observed.product_id=target.product_id AND observed.aggregate_package_id IS NULL
+  AND (receipt.received_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN observed.starts_on AND observed.ends_on
+  AND NOT EXISTS(SELECT 1 FROM settlements st WHERE st.period_id=observed.id)
+ CROSS JOIN LATERAL (
+  SELECT coalesce(reserved.id,observed.id) AS handling_period,
+   coalesce(reserved.starts_on,observed.starts_on) AS handling_starts_on,
+   coalesce(coalesce(reserved.starts_on,observed.starts_on)>target.starts_on,false)
+   OR receipt.received_at >= $3 AS received_later
+ ) timing
+ LEFT JOIN LATERAL (
+  SELECT version.id,version.fact FROM calculation_draft_corrections c JOIN settlements s ON s.period_id=c.period_id
+  JOIN periods booked ON booked.id=s.period_id JOIN source_order_versions version ON version.id=c.source_version_id
+  WHERE c.original_line_id=l.id AND booked.starts_on<target.starts_on
+  ORDER BY booked.starts_on DESC,s.id DESC,c.id DESC LIMIT 1
+ ) accepted ON timing.received_later AND l.id=ANY($5::bigint[])
  WHERE target.id=$1 AND (
-  reserved.period_id=target.id OR (reserved.period_id IS NULL AND (
-   (receipt.received_at >= $2 AND receipt.received_at < $3)
-   OR l.id=ANY($5::bigint[])
-   OR ($2 <= CURRENT_TIMESTAMP AND CURRENT_TIMESTAMP < $3 AND receipt.received_at < $2
-       AND NOT EXISTS(
-        SELECT 1 FROM periods observed WHERE observed.product_id=target.product_id
-        AND (receipt.received_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN observed.starts_on AND observed.ends_on
-        AND NOT EXISTS(SELECT 1 FROM settlements st WHERE st.period_id=observed.id)
-       ))
+  (l.id=ANY($5::bigint[]) AND (NOT timing.received_later OR accepted.id IS NOT NULL))
+  OR NOT timing.received_later AND (timing.handling_period=target.id OR (
+   timing.handling_period IS NULL AND $2 <= CURRENT_TIMESTAMP AND CURRENT_TIMESTAMP < $3 AND receipt.received_at < $2
   ))
  )
  ORDER BY l.id LIMIT $4`
@@ -105,7 +122,7 @@ func addRecommendationCorrections(ctx context.Context, tx pgx.Tx, periodID int64
 	inputs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (correctionInput, error) {
 		var input correctionInput
 		err := row.Scan(&input.OriginalLineID, &input.OriginalPersonID, &input.OriginalAmount, &input.SourceVersionID,
-			&input.Original, &input.Latest, &input.Components)
+			&input.Original, &input.Latest, &input.Components, &input.RefundWaiting)
 		return input, err
 	})
 	if err != nil || len(inputs) == 0 {
@@ -304,6 +321,9 @@ func (b *correctionBalance) apply(person int64, unit pgtype.UUID, amount, princi
 
 func computeRecommendationCorrection(input correctionInput, b *correctionBalance,
 	identities map[identityKey][]identityAssignment) (correctionEvaluation, error) {
+	if input.RefundWaiting {
+		return correctionEvaluation{issue: "CORRECTION_REFUND_WAITING"}, nil
+	}
 	old, latest := input.Original, input.Latest
 	if old.PaymentID != latest.PaymentID || old.Domain != latest.Domain || old.SourceKey != latest.SourceKey ||
 		old.TransactionType != latest.TransactionType || !old.OccurredAt.Equal(latest.OccurredAt) {
