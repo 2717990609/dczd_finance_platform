@@ -130,4 +130,8 @@ func TestSettlementChecksFreshnessFreezesReferencesAndAllowsTechnicalRedo(t *tes
 	if err != nil || redo.ID == firstConfirmation.ID || redo.DraftVersion != corrected.Version {
 		t.Fatalf("recomputed confirmation=%+v, error=%v", redo, err)
 	}
+	if _, err := service.db.Exec(ctx, "DELETE FROM settlements WHERE id=$1", redo.ID); err != nil {
+		t.Fatal(err)
+	}
+	verifyLocalCalendarSettlementHTTP(t, service, draft(60))
 }

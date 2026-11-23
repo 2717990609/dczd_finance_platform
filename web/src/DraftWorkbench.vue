@@ -49,7 +49,12 @@ const needsRosterEdit = computed(() => selectedPeriod.value?.practiceRosterEdita
 const canReviewRecovery = computed(() => !draft.value?.settlement && props.recoveryOptions?.length &&
   (props.localSettlement || props.settlementProducts?.includes(selectedPeriod.value?.productId)))
 const hasMatching = computed(() => !!selectedPeriod.value?.ruleMatchingAvailable && !draft.value?.settlement)
-const hasSettlementReview = computed(() => draft.value?.settlementReviewAvailable ?? (draft.value?.catalog && draft.value?.refundsReady))
+const hasSettlementReview = computed(() => {
+  if (!draft.value) return false
+  const localCalendar = props.localSettlement && selectedPeriod.value?.periodMode==='calendar'
+    && draft.value.ruleId != null && !draft.value.aggregatePackageId
+  return localCalendar || (draft.value.settlementReviewAvailable ?? (draft.value.catalog && draft.value.refundsReady))
+})
 const matchingOnly = computed(() => hasMatching.value && !selectedPeriod.value?.catalogDraftAvailable)
 const newerDraft = computed(() => refreshStatus.value?.version > (draft.value?.version || 0))
 const componentLabel = code => {

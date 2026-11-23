@@ -106,7 +106,8 @@ func (s workspace) confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSett
 	if err != nil {
 		return settlement{}, err
 	}
-	if operator := financeUser(ctx); operator != nil {
+	operator := financeUser(ctx)
+	if operator != nil {
 		if err := lockSettlementOperator(ctx, tx, operator, scope.product); err != nil {
 			return settlement{}, err
 		}
@@ -140,7 +141,9 @@ func (s workspace) confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSett
 	if scope.IssueCount != 0 {
 		return settlement{}, errSettlementPending
 	}
-	if !scope.requiresReview() && req.ReviewToken != "" {
+	localCalendar := scope.componentCalendar && s.development && operator == nil && actor == localFinanceActor
+	requiresToken := scope.requiresReview() || localCalendar
+	if !requiresToken && req.ReviewToken != "" {
 		return settlement{}, errSettlementStale
 	}
 	if err := lockDraftInputs(ctx, tx, req.PeriodID); err != nil {
@@ -173,7 +176,7 @@ func (s workspace) confirmPeriod(ctx context.Context, tx pgx.Tx, req confirmSett
 	} else if pending {
 		return settlement{}, errDraftChanged
 	}
-	if scope.requiresReview() {
+	if requiresToken {
 		review, err := reviewPoolSettlement(ctx, tx, req.PeriodID, scope)
 		if err != nil {
 			return settlement{}, err

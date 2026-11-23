@@ -40,6 +40,7 @@ type settlementReview struct {
 	product              int64
 	lastRemoval          int64
 	catalog              bool
+	componentCalendar    bool
 	aggregate            bool
 	practiceRefundMonth  bool
 	digest               []byte
@@ -58,7 +59,8 @@ func readSettlementScope(ctx context.Context, tx pgx.Tx, periodID int64, lock bo
 	 ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')<=CURRENT_TIMESTAMP,pro.period_mode,
 	 pro.period_mode='class' AND p.calendar_month IS NOT NULL,
 	 coalesce(d.version,0),coalesce(d.input_digest,''::bytea),coalesce(d.issue_count,0),
-	 coalesce(d.rule_id IS NULL AND d.catalog_refunds_ready,false),p.aggregate_package_id IS NOT NULL,
+	 coalesce(d.rule_id IS NULL AND d.catalog_refunds_ready,false),
+	 pro.period_mode='calendar' AND d.rule_id IS NOT NULL AND p.aggregate_package_id IS NULL,p.aggregate_package_id IS NOT NULL,
 	 coalesce(d.total_minor+d.refund_minor+d.correction_minor,0),
 	 coalesce((SELECT max(r.settlement_id) FROM settlement_removals r WHERE r.period_id=p.id),0)
 	 FROM periods p JOIN products pro ON pro.id=p.product_id LEFT JOIN calculation_drafts d ON d.period_id=p.id
@@ -68,7 +70,8 @@ func readSettlementScope(ctx context.Context, tx pgx.Tx, periodID int64, lock bo
 	}
 	review := settlementReview{Pools: []settlementPoolGap{}}
 	err := tx.QueryRow(ctx, query, periodID).Scan(&review.product, &review.Enabled, &review.Ended, &review.mode,
-		&review.practiceRefundMonth, &review.Version, &review.digest, &review.IssueCount, &review.catalog, &review.aggregate, &review.Total, &review.lastRemoval)
+		&review.practiceRefundMonth, &review.Version, &review.digest, &review.IssueCount, &review.catalog, &review.componentCalendar,
+		&review.aggregate, &review.Total, &review.lastRemoval)
 	return review, err
 }
 
@@ -79,6 +82,8 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx := r.Context()
+	operator := financeUser(ctx)
+	local := operator == nil && s.development
 	var review settlementReview
 	err = pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
@@ -86,7 +91,7 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return err
 		}
-		if review.Version != version || !review.requiresReview() {
+		if review.Version != version || !(review.requiresReview() || local && review.componentCalendar) {
 			return errSettlementStale
 		}
 		settled, err := readSettlement(ctx, tx, periodID)
@@ -97,9 +102,11 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
-		review.Sources, err = s.settlementSources(ctx, tx, periodID, review)
-		if err != nil {
-			return err
+		if review.requiresReview() {
+			review.Sources, err = s.settlementSources(ctx, tx, periodID, review)
+			if err != nil {
+				return err
+			}
 		}
 		review, err = reviewPoolSettlement(ctx, tx, periodID, review)
 		if err != nil {
@@ -149,8 +156,7 @@ func (s workspace) getSettlementReview(w http.ResponseWriter, r *http.Request) {
 			review.Token = review.PracticeRoster.reviewToken(review.Token)
 		}
 	}
-	operator := financeUser(ctx)
-	review.MayConfirm = operator.permitsSettlement(review.product) || operator == nil && s.development
+	review.MayConfirm = operator.permitsSettlement(review.product) || local
 	review.CanConfirm = err == nil && review.Token != "" && review.MayConfirm
 	if operator != nil && !review.CanConfirm {
 		review.Token = ""

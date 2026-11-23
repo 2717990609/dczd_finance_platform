@@ -10,6 +10,76 @@ import (
 	"testing"
 )
 
+func verifyLocalCalendarSettlementHTTP(t *testing.T, service workspace, draft draftSummary) {
+	t.Helper()
+	call := func(server workspace, method, path, body, origin string) *httptest.ResponseRecorder {
+		t.Helper()
+		w := httptest.NewRecorder()
+		r := httptest.NewRequest(method, "http://127.0.0.1"+path, strings.NewReader(body))
+		r.Header.Set("Origin", origin)
+		r.Header.Set("Content-Type", "application/json")
+		for _, route := range server.routes() {
+			if route.Method == method && route.Path == r.URL.Path {
+				route.Handler(w, r)
+				return w
+			}
+		}
+		t.Fatalf("route not found: %s %s", method, path)
+		return w
+	}
+	path := fmt.Sprintf("/api/v1/settlement-review?periodId=%d&version=%d", draft.PeriodID, draft.Version)
+	const localOrigin = "http://127.0.0.1"
+	if w := call(service, http.MethodGet, path, "", localOrigin); w.Code != http.StatusUnauthorized {
+		t.Fatalf("managed mode allowed an anonymous review: %d %s", w.Code, w.Body)
+	}
+	managed := service
+	service.development = true
+	view := func() settlementReview {
+		t.Helper()
+		reply := call(service, http.MethodGet, path, "", localOrigin)
+		var review settlementReview
+		if err := json.Unmarshal(reply.Body.Bytes(), &review); err != nil || reply.Code != http.StatusOK {
+			t.Fatalf("read local ordinary review: %d %s %v", reply.Code, reply.Body, err)
+		}
+		return review
+	}
+	initial := view()
+	if !initial.CanConfirm || !initial.MayConfirm || initial.Token == "" || initial.Total != draft.Total {
+		t.Fatalf("ordinary local period did not return an actionable review: %+v", initial)
+	}
+	submit := func(server workspace, origin, token string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(confirmSettlementInput{PeriodID: draft.PeriodID, ExpectedVersion: draft.Version, ReviewToken: token})
+		return call(server, http.MethodPost, "/api/v1/settlements", string(body), origin)
+	}
+	if w := submit(managed, localOrigin, initial.Token); w.Code != http.StatusUnauthorized {
+		t.Fatalf("managed mode accepted an anonymous confirmation: %d %s", w.Code, w.Body)
+	}
+	if w := submit(service, "http://unrelated.example", initial.Token); w.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin local confirmation: %d %s", w.Code, w.Body)
+	}
+	for _, token := range []string{"", strings.Repeat("0", 64)} {
+		if w := submit(service, localOrigin, token); w.Code != http.StatusConflict {
+			t.Fatalf("confirmation without a matching review: %d %s", w.Code, w.Body)
+		}
+	}
+	var closed settlement
+	for attempt := 0; attempt < 2; attempt++ {
+		w := submit(service, localOrigin, initial.Token)
+		var result settlement
+		if err := json.Unmarshal(w.Body.Bytes(), &result); err != nil || w.Code != http.StatusOK ||
+			result.ID == 0 || result.ConfirmedBy != localFinanceActor || result.DraftVersion != draft.Version ||
+			attempt > 0 && result.ID != closed.ID {
+			t.Fatalf("confirmation or retry did not return the frozen local result: %d %s %v", w.Code, w.Body, err)
+		}
+		closed = result
+	}
+	if review := view(); review.Settlement == nil || review.Settlement.ID != closed.ID ||
+		review.CanConfirm || review.Token != "" || review.Total != draft.Total {
+		t.Fatalf("local review did not preserve the closed result: %+v", review)
+	}
+}
+
 func verifySettlementHTTP(t *testing.T, ctx context.Context, s workspace, personID, productID int64, draft draftSummary, token string) settlement {
 	t.Helper()
 	mux := func(server workspace) *http.ServeMux {
