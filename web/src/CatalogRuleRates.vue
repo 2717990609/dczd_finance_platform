@@ -17,7 +17,7 @@ const sheet = ref()
 const selected = ref()
 const filter = ref('')
 const effectiveFrom = ref('')
-const membershipOrders = ref('all')
+const membershipEdits = ref(new Map())
 const edits = ref({})
 const labelEdits = ref(new Map())
 const targetEdits = ref(new Map())
@@ -80,9 +80,15 @@ const displayLinkedTeamRate = row => linkedTeamRateChanges(row) ? splitEdits.val
 const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:item.key,label:item.label})))
 const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
 const itemRemoved = computed(() => removedItems.value.has(selected.value))
-const orderTypeText = computed(() => sheet.value?.membershipSku
-  ? catalogMembershipTypes.find(option=>option.value===membershipOrders.value)?.label
-  : props.rule?.scopeLabel?.replace(sheet.value?.productName+' · ','') || sheet.value?.productName)
+const orderTypeText = computed(() => props.rule?.scopeLabel?.replace(sheet.value?.productName+' · ','') || sheet.value?.productName)
+const originalMembership = item => item?.membershipNewOnly ?? Boolean(sheet.value?.membershipNewOnly)
+const memberValue = item => (membershipEdits.value.get(item?.itemKey) ?? originalMembership(item)) ? 'new' : 'all'
+const memberLabel = item => catalogMembershipTypes.find(option=>option.value===memberValue(item))?.label
+function selectMemberType(item, value) {
+  const newOnly = value==='new'
+  if (newOnly===originalMembership(item)) membershipEdits.value.delete(item.itemKey)
+  else membershipEdits.value.set(item.itemKey,newOnly)
+}
 const splitItem = computed(() => sheet.value?.components.find(item=>item.teamSplit))
 const splitRemoved = computed(() => splitItem.value && removedItems.value.has(splitItem.value.itemKey))
 const serviceVisible = computed(() => !splitRemoved.value && splitItem.value?.teamSplit.service>0 && !splitItem.value?.serviceDisabled)
@@ -95,8 +101,7 @@ const editable = computed(() => sheet.value?.mayPublish && !props.applied && !sa
 const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKind==='seller'))
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
-const membershipChanged = computed(() => sheet.value?.membershipSku && (membershipOrders.value==='new')!==Boolean(sheet.value.membershipNewOnly))
-const hasEdits = computed(() => copy.value || membershipChanged.value || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
+const hasEdits = computed(() => copy.value || membershipEdits.value.size || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
   Object.keys(splitEdits.value).length > 0 || labelEdits.value.size || leaderEdits.value.size || scopeEdits.value.size ||
   structure.value.items.length || structure.value.sales || structure.value.rateRows.length || structure.value.calculations.length ||
   removedItems.value.size || removedRateRows.value.size)
@@ -416,6 +421,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   teamEdits.value.clear()
   leaderEdits.value.clear()
   scopeEdits.value.clear()
+  membershipEdits.value.clear()
   splitEdits.value = {}
   selectedTeam.value = undefined
   filter.value = ''
@@ -427,7 +433,6 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   if (applied) {
     const result = applied.catalog
     sheet.value = result
-    membershipOrders.value = result.membershipNewOnly ? 'new' : 'all'
     const leaderKey = applied.component.endsWith(':DCAI_GROUP_LEAD') ? 'internal-group-leader' :
       applied.component.endsWith(':DCAI_TEAM_HEAD') ? 'internal-team-leader' : applied.component
     selected.value = applied.component.endsWith(':DCAI_SERVICE') && serviceVisible.value ? serviceItemKey :
@@ -444,7 +449,6 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
     const result = await props.api('/catalog-rule-rates?ruleId='+encodeURIComponent(rule.id))
     if (request !== sequence) return
     sheet.value = result
-    membershipOrders.value = result.membershipNewOnly ? 'new' : 'all'
     selected.value = result.components.length===1 ? result.components[0].itemKey : undefined
     selectedTeam.value = result.teams?.[0]?.key
   } catch (err) {
@@ -522,7 +526,9 @@ function publicationInput() {
     baseId:props.rule.id,
     copy:copy.value,
     effectiveFrom:new Date(effectiveFrom.value+'+08:00').toISOString(),
-    membershipNewOnly:membershipChanged.value ? membershipOrders.value==='new' : undefined,
+    membershipArrangements:[...membershipEdits.value]
+      .filter(([itemKey])=>!removedItems.value.has(itemKey))
+      .map(([itemKey,newOnly])=>({itemKey,newOnly})),
     changes,
     targetChanges:Array.from(targetEdits.value,([itemKey, {personName,ownerName,organization,...payee}])=>
       ({itemKey,...payee,organization:payee.poolId ? undefined : organization}))
@@ -536,6 +542,7 @@ function publicationInput() {
     newItems:structure.value.items.map(({personName,ownerName,...item})=>item),
     newSalesRates:structure.value.sales?.rows,
     newSalesLabel:structure.value.sales?.label,
+    newSalesMembership:structure.value.sales?.membershipNewOnly,
     newSalesScope:structure.value.sales?.salesScopeUnitIds,
     newSalesCategoryScope:structure.value.sales?.salesScopeCategoryIds,
     calculationChanges:structure.value.calculations.filter(({itemKey})=>!removedItems.value.has(itemKey)),
@@ -594,10 +601,6 @@ async function publish() {
           </div>
         </header>
         <a-form v-show="!impactInput" id="catalog-rate-form" layout="vertical" size="small" @submit.prevent="publish">
-          <a-form-item v-if="sheet.membershipSku && sheet.mayPublish && !applied" class="catalog-rate-effective"
-            label="计提订单类型" html-for="catalog-member-type">
-            <a-select id="catalog-member-type" v-model:value="membershipOrders" :options="catalogMembershipTypes" :disabled="saving || structureEditing"/>
-          </a-form-item>
           <div class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
@@ -625,13 +628,14 @@ async function publish() {
             <span class="rule-block-recipient" :title="commissionScopeNames(item).join('、')">
               提成范围 · {{ formatScope(commissionScopeNames(item)) }}
             </span>
-            <small>{{ [targetName(item),componentStandard(item)].filter(Boolean).join(' · ') }}</small>
+            <small>{{ [targetName(item),sheet.membershipSku && memberLabel(item),componentStandard(item)].filter(Boolean).join(' · ') }}</small>
           </button>
           <div v-if="selected===item.itemKey" :id="'catalog-rate-'+item.itemKey" class="rule-block-body">
           <a-alert v-if="itemRemoved" type="warning" :message="teamSplit ? '成交销售及其内部团队拆分将从新版移除' : '此分项将从新版移除'" show-icon class="feedback"/>
           <template v-if="!applied && sheet.mayPublish && sheet.structureOptions && !itemRemoved">
             <RuleArrangementFields name-id="catalog-rate-label" :name="labelEdits.get(item.itemKey) ?? item.label"
-              :order-type-text="orderTypeText"
+              :order-type-text="orderTypeText" :order-type-id="sheet.membershipSku ? 'catalog-member-type' : undefined"
+              :order-types="catalogMembershipTypes" :order-type="memberValue(item)" @update:order-type="selectMemberType(item,$event)"
               :calculation-text="targetKind==='seller' ? '比例' : undefined"
               :disabled="!editable || structureEditing" @update:name="setLabel(item,$event)">
               <CatalogPayeeFields :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
@@ -673,6 +677,7 @@ async function publish() {
                 {{ roleLabel(item.targetRole) }}
               </a-descriptions-item>
               <a-descriptions-item v-if="item.poolOwner" label="分配负责人">{{ item.poolOwner.name }}</a-descriptions-item>
+              <a-descriptions-item label="计提订单类型">{{ sheet.membershipSku ? memberLabel(item) : orderTypeText }}</a-descriptions-item>
               <a-descriptions-item v-if="item.memberRole" label="可参与分配的成员岗位">
                 {{ roleLabel(item.memberRole) }}
               </a-descriptions-item>
@@ -768,7 +773,8 @@ async function publish() {
             </button>
             <div v-if="selected===serviceItemKey" id="catalog-internal-service" class="rule-block-body">
               <RuleArrangementFields v-if="!serviceRemoved" name-id="catalog-service-label" :name="labelEdits.get(serviceItemKey) ?? serviceArrangement.label"
-                :disabled="!editable || structureEditing" calculation-text="比例" :order-type-text="orderTypeText" scope-text="全部已配置内部团队"
+                :disabled="!editable || structureEditing" calculation-text="比例"
+                :order-type-text="sheet.membershipSku ? memberLabel(splitItem) : orderTypeText" scope-text="全部已配置内部团队"
                 @update:name="setLabel(serviceArrangement,$event)">
                 <a-form-item label="销售公司" html-for="catalog-team-company">
                   <a-select id="catalog-team-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
@@ -800,11 +806,14 @@ async function publish() {
               <strong>{{ leaderForm(leader).label.trim() || leader.label }}</strong>
               <span v-if="removedItems.has(leader.itemKey)" class="rule-block-badge">待删除</span>
               <span class="rule-block-recipient">提成范围 · {{ leaderScopeText(leader) }}</span>
-              <small>{{ leaderSummary(leader) }}</small>
+              <small>{{ [sheet.membershipSku && memberLabel(leaderForm(leader).target==='inherit' ? splitItem : leader),leaderSummary(leader)].filter(Boolean).join(' · ') }}</small>
             </button>
             <div v-if="selected===leader.itemKey" :id="'catalog-rate-'+leader.itemKey" class="rule-block-body">
               <CatalogLeaderArrangement v-if="!removedItems.has(leader.itemKey)" :item-key="leader.itemKey" :model-value="leaderForm(leader)" :teams="sheet.teams || []"
-                :api="api" :people-filters="peopleFilters" :disabled="!editable || structureEditing" :order-type-text="orderTypeText"
+                :api="api" :people-filters="peopleFilters" :disabled="!editable || structureEditing"
+                :order-type-text="sheet.membershipSku ? memberLabel(leaderForm(leader).target==='inherit' ? splitItem : leader) : orderTypeText"
+                :membership-editable="sheet.membershipSku && leaderForm(leader).target!=='inherit'" :order-type="memberValue(leader)"
+                @update:order-type="selectMemberType(leader,$event)"
                 :sales-categories="sheet.structureOptions?.categories" :category-names="sheet.scopeCategoryNames"
                 :inherited="leader.targetKind==='inherit' && !leader.disabled ? originalLeader(leader) : undefined"
                 @update:model-value="setLeader(leader,$event)">
@@ -831,7 +840,7 @@ async function publish() {
             <Teleport v-if="sheet.structureOptions" defer :disabled="!component || itemRemoved"
               :to="component && !itemRemoved ? rateEditorTarget : 'body'">
               <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id" :product-id="sheet.productId"
-                :order-type-text="orderTypeText"
+                :order-type-text="orderTypeText" :membership-sku="sheet.membershipSku" :default-membership-new-only="sheet.membershipNewOnly"
                 v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
                 :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!hasSales && !structure.sales"
                 @rate-staged="showRateGroup"/>

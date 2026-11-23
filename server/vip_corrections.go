@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"slices"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -200,7 +201,9 @@ func loadVIPCorrectionPostings(ctx context.Context, tx pgx.Tx, payments []vipCor
 func (p vipCorrectionPayment) match(id int64) catalogPaymentMatch {
 	line := p.Frozen[0].Line
 	return catalogPaymentMatch{SourceVersionID: id, OrderID: p.Original.OrderID, PaidAt: p.Original.OccurredAt,
-		PaidMinor: p.Original.AmountMinor, RecognizedMinor: &line.Base, PaidInWindow: true, RuleID: line.Catalog.Rule.String(), Status: "MATCHED"}
+		PaidMinor: p.Original.AmountMinor, RecognizedMinor: &line.Base, PaidInWindow: true, RuleID: line.Catalog.Rule.String(), Status: "MATCHED",
+		MembershipOrder:       p.Original.Domain == "VIP" && strings.HasPrefix(p.Original.RecordKey, "ai_vip_order:"),
+		SourceTransactionType: p.Original.TransactionType}
 }
 
 func (p vipCorrectionPayment) input(posted vipCorrectionPosting) correctionInput {

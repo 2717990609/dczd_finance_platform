@@ -2,10 +2,11 @@
 import { computed } from 'vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogFlatMethods, catalogScopeOptions } from './rule-component-form'
+import { catalogFlatMethods, catalogMembershipTypes, catalogScopeOptions } from './rule-component-form'
 
 const props = defineProps({itemKey:String,teams:Array,api:Function,peopleFilters:Object,disabled:Boolean,inherited:Object,orderTypeText:String,
-  salesCategories:Array,categoryNames:Object})
+  salesCategories:Array,categoryNames:Object,membershipEditable:Boolean,orderType:String})
+const emit = defineEmits(['update:orderType'])
 const form = defineModel({type:Object,required:true})
 const field = name => props.itemKey+'-'+name
 const isGroup = computed(() => props.itemKey==='internal-group-leader')
@@ -52,6 +53,8 @@ function selectCompanies(companies) {
 
 <template>
   <RuleArrangementFields :name="form.label" :name-id="field('label')" :order-type-text="orderTypeText"
+    :order-type-id="membershipEditable ? field('member-type') : undefined" :order-type="orderType" :order-types="catalogMembershipTypes"
+    @update:order-type="emit('update:orderType',$event)"
     :disabled="disabled" @update:name="update({label:$event})">
     <a-form-item label="收款对象" :html-for="field('target')" required>
       <a-select :id="field('target')" :value="form.target" :options="targets" :disabled="disabled"

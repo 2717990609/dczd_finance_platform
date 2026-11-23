@@ -8,28 +8,29 @@ import (
 )
 
 type vipBenefitAction struct {
-	Item            string            `json:"item_key"`
-	Label           string            `json:"label"`
-	Role            string            `json:"role"`
-	Type            string            `json:"type"`
-	Mode            string            `json:"beneficiary_mode"`
-	Designated      string            `json:"designated_party_id"`
-	Company         string            `json:"company_beneficiary_party_id"`
-	PoolParty       string            `json:"pool_party_id"`
-	PoolUnit        string            `json:"pool_organization_unit_id"`
-	PoolCode        string            `json:"pool_code"`
-	PoolName        string            `json:"pool_name"`
-	OwnerRole       string            `json:"allocation_owner_role"`
-	OwnerParty      string            `json:"allocation_owner_party_id,omitempty"`
-	Rate            *int64            `json:"rate_bps"`
-	Fixed           *int64            `json:"amount_minor,omitempty"`
-	RateTable       []json.RawMessage `json:"rate_table"`
-	rates           []vipRateRow
-	Leader          *vipLeaderScope `json:"leader_scope,omitempty"`
-	CommissionUnits []string        `json:"sales_scope_unit_ids,omitempty"`
-	ScopeCategories []string        `json:"sales_scope_category_ids,omitempty"`
-	OwnSales        bool            `json:"own_sales,omitempty"`
-	RecipientDuty   string          `json:"recipient_duty,omitempty"`
+	Item              string            `json:"item_key"`
+	Label             string            `json:"label"`
+	Role              string            `json:"role"`
+	Type              string            `json:"type"`
+	Mode              string            `json:"beneficiary_mode"`
+	Designated        string            `json:"designated_party_id"`
+	Company           string            `json:"company_beneficiary_party_id"`
+	PoolParty         string            `json:"pool_party_id"`
+	PoolUnit          string            `json:"pool_organization_unit_id"`
+	PoolCode          string            `json:"pool_code"`
+	PoolName          string            `json:"pool_name"`
+	OwnerRole         string            `json:"allocation_owner_role"`
+	OwnerParty        string            `json:"allocation_owner_party_id,omitempty"`
+	Rate              *int64            `json:"rate_bps"`
+	Fixed             *int64            `json:"amount_minor,omitempty"`
+	RateTable         []json.RawMessage `json:"rate_table"`
+	rates             []vipRateRow
+	Leader            *vipLeaderScope `json:"leader_scope,omitempty"`
+	CommissionUnits   []string        `json:"sales_scope_unit_ids,omitempty"`
+	ScopeCategories   []string        `json:"sales_scope_category_ids,omitempty"`
+	OwnSales          bool            `json:"own_sales,omitempty"`
+	RecipientDuty     string          `json:"recipient_duty,omitempty"`
+	MembershipNewOnly *bool           `json:"vip_membership_new_only,omitempty"`
 }
 
 type vipBenefitPolicy struct {

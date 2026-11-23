@@ -16,11 +16,12 @@ import (
 type catalogScenarioCreate struct {
 	ProductID int64 `json:"productId"`
 	catalogScenarioCopy
-	SalesRates         []catalogConditionInput `json:"salesRates"`
-	SalesLabel         string                  `json:"salesLabel,omitempty"`
-	SalesScope         []string                `json:"salesScopeUnitIds,omitempty"`
-	SalesCategoryScope []string                `json:"salesScopeCategoryIds,omitempty"`
-	MembershipNewOnly  bool                    `json:"membershipNewOnly,omitempty"`
+	SalesRates             []catalogConditionInput `json:"salesRates"`
+	SalesLabel             string                  `json:"salesLabel,omitempty"`
+	SalesScope             []string                `json:"salesScopeUnitIds,omitempty"`
+	SalesCategoryScope     []string                `json:"salesScopeCategoryIds,omitempty"`
+	MembershipNewOnly      bool                    `json:"membershipNewOnly,omitempty"`
+	SalesMembershipNewOnly *bool                   `json:"salesMembershipNewOnly,omitempty"`
 }
 
 type catalogScenarioSetup struct {
@@ -60,6 +61,76 @@ func catalogNewMembershipOnly(raw json.RawMessage) bool {
 		} `json:"policy_scope"`
 	}
 	return json.Unmarshal(raw, &rule) == nil && rule.Scope.NewOnly
+}
+
+const catalogMembershipArrangementKey = "vip_membership_new_only"
+
+type catalogMembershipArrangementEdit struct {
+	ItemKey string `json:"itemKey"`
+	NewOnly bool   `json:"newOnly"`
+}
+
+func editCatalogMembershipArrangements(raw json.RawMessage, edits []catalogMembershipArrangementEdit) (json.RawMessage, bool, error) {
+	root, actions, err := catalogRateActions(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	byItem := make(map[string]map[string]json.RawMessage, len(actions))
+	for _, action := range actions {
+		var key string
+		if json.Unmarshal(action["item_key"], &key) != nil {
+			return nil, false, errCatalogRateUnavailable
+		}
+		byItem[key] = action
+	}
+	fallback := catalogNewMembershipOnly(raw)
+	changed := false
+	for _, edit := range edits {
+		action := byItem[edit.ItemKey]
+		if action == nil {
+			return nil, false, invalid
+		}
+		delete(byItem, edit.ItemKey)
+		prior := fallback
+		if value := action[catalogMembershipArrangementKey]; len(value) > 0 && json.Unmarshal(value, &prior) != nil {
+			return nil, false, errCatalogRateUnavailable
+		}
+		if prior == edit.NewOnly {
+			continue
+		}
+		changed = true
+		if edit.NewOnly == fallback {
+			delete(action, catalogMembershipArrangementKey)
+		} else {
+			action[catalogMembershipArrangementKey], _ = json.Marshal(edit.NewOnly)
+		}
+	}
+	if !changed {
+		return raw, false, nil
+	}
+	root["benefit_actions"], _ = json.Marshal(actions)
+	body, err := json.Marshal(root)
+	return body, true, err
+}
+
+func catalogUsesNewMembershipScope(raw json.RawMessage) bool {
+	if catalogNewMembershipOnly(raw) {
+		return true
+	}
+	var rule struct {
+		Actions []struct {
+			NewOnly bool `json:"vip_membership_new_only"`
+		} `json:"benefit_actions"`
+	}
+	if json.Unmarshal(raw, &rule) != nil {
+		return false
+	}
+	for _, action := range rule.Actions {
+		if action.NewOnly {
+			return true
+		}
+	}
+	return false
 }
 
 func editCatalogNewMembershipScope(raw json.RawMessage, enabled bool) (json.RawMessage, error) {
@@ -175,10 +246,13 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	}
 	body, err := editCatalogStructure(ctx, tx, input.ProductID, base, publishCatalogRatesInput{
 		Create: &input, NewItems: items, NewSalesRates: input.SalesRates, NewSalesLabel: input.SalesLabel, NewSalesScope: input.SalesScope,
-		NewSalesCategories: input.SalesCategoryScope,
+		NewSalesCategories: input.SalesCategoryScope, NewSalesMembership: input.SalesMembershipNewOnly,
 	})
 	if err != nil {
 		return result, err
+	}
+	if !membership && catalogUsesNewMembershipScope(body) {
+		return result, errCatalogScenarioTarget
 	}
 	if err := validateCatalogRecipientAppointments(ctx, tx, input.ProductID, at, nil, body); err != nil {
 		return result, err

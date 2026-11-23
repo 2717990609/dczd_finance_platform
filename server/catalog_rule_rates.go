@@ -10,28 +10,29 @@ import (
 )
 
 type catalogRateComponent struct {
-	ItemKey         string             `json:"itemKey"`
-	Label           string             `json:"label"`
-	Rate            *int64             `json:"rateBps,omitempty"`
-	Fixed           *int64             `json:"fixedMinor,omitempty"`
-	Rows            []catalogRateRow   `json:"rows,omitempty"`
-	Recipient       *catalogRulePerson `json:"recipient,omitempty"`
-	PoolOwner       *catalogRulePerson `json:"poolOwner,omitempty"`
-	PoolID          int64              `json:"poolId,omitempty"`
-	TargetKind      string             `json:"targetKind"`
-	TargetLabel     string             `json:"targetLabel,omitempty"`
-	TargetOrg       string             `json:"targetOrganization,omitempty"`
-	TargetRole      string             `json:"targetRole,omitempty"`
-	MemberRole      string             `json:"memberRole,omitempty"`
-	TeamSplit       *catalogSplitRates `json:"teamSplit,omitempty"`
-	LeaderScope     *vipLeaderScope    `json:"leaderScope,omitempty"`
-	CommissionUnits []string           `json:"salesScopeUnitIds,omitempty"`
-	ScopeCategories []string           `json:"salesScopeCategoryIds,omitempty"`
-	OwnSales        bool               `json:"ownSales,omitempty"`
-	RecipientDuty   string             `json:"recipientDuty,omitempty"`
-	Disabled        bool               `json:"disabled,omitempty"`
-	ServiceDisabled bool               `json:"serviceDisabled,omitempty"`
-	ServiceLabel    string             `json:"serviceLabel,omitempty"`
+	ItemKey           string             `json:"itemKey"`
+	Label             string             `json:"label"`
+	Rate              *int64             `json:"rateBps,omitempty"`
+	Fixed             *int64             `json:"fixedMinor,omitempty"`
+	Rows              []catalogRateRow   `json:"rows,omitempty"`
+	Recipient         *catalogRulePerson `json:"recipient,omitempty"`
+	PoolOwner         *catalogRulePerson `json:"poolOwner,omitempty"`
+	PoolID            int64              `json:"poolId,omitempty"`
+	TargetKind        string             `json:"targetKind"`
+	TargetLabel       string             `json:"targetLabel,omitempty"`
+	TargetOrg         string             `json:"targetOrganization,omitempty"`
+	TargetRole        string             `json:"targetRole,omitempty"`
+	MemberRole        string             `json:"memberRole,omitempty"`
+	TeamSplit         *catalogSplitRates `json:"teamSplit,omitempty"`
+	LeaderScope       *vipLeaderScope    `json:"leaderScope,omitempty"`
+	CommissionUnits   []string           `json:"salesScopeUnitIds,omitempty"`
+	ScopeCategories   []string           `json:"salesScopeCategoryIds,omitempty"`
+	OwnSales          bool               `json:"ownSales,omitempty"`
+	RecipientDuty     string             `json:"recipientDuty,omitempty"`
+	Disabled          bool               `json:"disabled,omitempty"`
+	ServiceDisabled   bool               `json:"serviceDisabled,omitempty"`
+	ServiceLabel      string             `json:"serviceLabel,omitempty"`
+	MembershipNewOnly *bool              `json:"membershipNewOnly,omitempty"`
 }
 
 type catalogSplitRates struct {
@@ -117,6 +118,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		item.CommissionUnits = action.CommissionUnits
 		item.ScopeCategories = action.ScopeCategories
 		item.OwnSales, item.RecipientDuty = action.OwnSales, action.RecipientDuty
+		item.MembershipNewOnly = action.MembershipNewOnly
 		if item.ItemKey == sales.Item {
 			item.TargetKind = "seller"
 			if split := sales.Split; split.Item != "" {

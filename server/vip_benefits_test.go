@@ -9,6 +9,27 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+func TestVIPMembershipOrderScopeIsIndependentByArrangement(t *testing.T) {
+	definition := json.RawMessage(`{"amount_basis":"ACTUAL_RECEIVED","stacking_policy":"SUM","sales_attribution":"ORDER_SELLER",
+	 "rounding_policy":{"mode":"HALF_UP","scale":2},"policy_scope":{"vip_new_membership_only":true},"benefit_actions":[
+	 {"item_key":"strict","label":"仅新报","type":"RATE","beneficiary_mode":"PARTY","designated_party_id":"a","rate_bps":1000},
+	 {"item_key":"all","label":"全部会员","type":"RATE","beneficiary_mode":"PARTY","designated_party_id":"b","rate_bps":1000,"vip_membership_new_only":false},
+	 {"item_key":"own","label":"本人销售","type":"RATE","beneficiary_mode":"PARTY","designated_party_id":"a","own_sales":true,"rate_bps":1000}]}`)
+	policies := readVIPQuotePolicies(map[string]json.RawMessage{"rule": definition})
+	data := vipRuntimeData{BenefitReady: true, vipSalesData: vipSalesData{People: map[string]string{"a": "A", "b": "B"}}}
+	for _, tc := range []struct{ typeCode, strictStatus string }{
+		{"NEW", "CALCULATED"}, {"RENEWAL", vipCommissionOutsideScope}, {"", "MEMBERSHIP_TYPE_PENDING"},
+	} {
+		row := catalogPaymentMatch{RuleID: "rule", MembershipOrder: true, SourceTransactionType: tc.typeCode}
+		policies.apply(&row, data, vipSalesRequest{Paid: 10000, Seller: "other"}, "")
+		got := row.BenefitParts
+		if len(got) != 3 || got[0].Status != tc.strictStatus || got[1].Status != "CALCULATED" || got[1].Amount != 1000 ||
+			got[2].Status != vipCommissionOutsideScope {
+			t.Fatalf("membership type %q: want strict %s and only independent all-member arrangement always payable, got %+v", tc.typeCode, tc.strictStatus, got)
+		}
+	}
+}
+
 func TestVIPCommissionScopeUsesPaymentSalesOrganization(t *testing.T) {
 	unit := func(value string) pgtype.UUID {
 		t.Helper()

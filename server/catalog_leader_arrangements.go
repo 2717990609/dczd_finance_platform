@@ -41,6 +41,7 @@ func catalogLeaderComponents(policy vipBenefitPolicy) []catalogRateComponent {
 		}
 		a := policy.actions[index]
 		row.Label, row.Rate, row.Fixed, row.LeaderScope = a.Label, a.Rate, a.Fixed, a.Leader
+		row.MembershipNewOnly = a.MembershipNewOnly
 		row.TargetKind = "appointment"
 		if a.Designated != "" {
 			row.TargetKind = "person"
@@ -125,6 +126,10 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 		action := vipBenefitAction{
 			Item: change.ItemKey, Label: label, Role: vipLeaderRole(change.ItemKey), Leader: &change.Scope,
 		}
+		index := slices.IndexFunc(prior.actions, func(item vipBenefitAction) bool { return item.Item == change.ItemKey })
+		if index >= 0 {
+			action.MembershipNewOnly = prior.actions[index].MembershipNewOnly
+		}
 		switch change.Target {
 		case "appointment":
 			if change.PersonID != 0 {
@@ -148,14 +153,14 @@ func editCatalogLeaderArrangements(ctx context.Context, tx pgx.Tx, raw json.RawM
 		if err := json.Unmarshal(body, &fields); err != nil {
 			return nil, err
 		}
-		index := slices.IndexFunc(actions, func(a map[string]json.RawMessage) bool {
+		fieldsIndex := slices.IndexFunc(actions, func(a map[string]json.RawMessage) bool {
 			var item string
 			return json.Unmarshal(a["item_key"], &item) == nil && item == change.ItemKey
 		})
-		if index < 0 {
+		if fieldsIndex < 0 {
 			actions = append(actions, fields)
 		} else {
-			actions[index] = fields
+			actions[fieldsIndex] = fields
 		}
 		if index := slices.Index(disabled, change.ItemKey); index >= 0 {
 			disabled = slices.Delete(disabled, index, index+1)

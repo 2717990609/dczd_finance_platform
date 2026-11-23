@@ -23,6 +23,7 @@ type catalogPaymentMatch struct {
 	PriorRefundVersionID  int64      `json:"priorRefundVersionId,omitempty"`
 	SourceDomain          string     `json:"sourceDomain"`
 	SourceTransactionType string     `json:"sourceTransactionType"`
+	MembershipOrder       bool       `json:"membershipOrder,omitempty"`
 	Scenario              string     `json:"scenario"`
 	ScenarioLabel         string     `json:"scenarioLabel"`
 	MappingVersion        int        `json:"mappingVersion"`
@@ -423,31 +424,58 @@ func applyVIPQuotes(items []catalogPaymentMatch, data vipRuntimeData) {
 }
 
 type vipQuotePolicies struct {
-	sales    map[string]vipSalesPolicy
-	benefits map[string]vipBenefitPolicy
+	sales                 map[string]vipSalesPolicy
+	benefits              map[string]vipBenefitPolicy
+	newMembershipDefaults map[string]bool
 }
 
 func readVIPQuotePolicies(definitions map[string]json.RawMessage) vipQuotePolicies {
 	sales := make(map[string]vipSalesPolicy, len(definitions))
+	defaults := make(map[string]bool)
 	for id, definition := range definitions {
 		if policy, ok := readVIPSalesPolicy(definition); ok {
 			sales[id] = policy
 		}
+		if catalogNewMembershipOnly(definition) {
+			defaults[id] = true
+		}
 	}
-	return vipQuotePolicies{sales: sales, benefits: readVIPBenefitPolicies(definitions)}
+	return vipQuotePolicies{sales: sales, benefits: readVIPBenefitPolicies(definitions), newMembershipDefaults: defaults}
+}
+
+func (row catalogPaymentMatch) membershipScopeStatus(newOnly bool) string {
+	if !newOnly || !row.MembershipOrder || row.SourceTransactionType == "NEW" {
+		return ""
+	}
+	if row.SourceTransactionType == "RENEWAL" {
+		return vipCommissionOutsideScope
+	}
+	return "MEMBERSHIP_TYPE_PENDING"
+}
+
+func newMembershipOnly(override *bool, fallback bool) bool {
+	if override != nil {
+		return *override
+	}
+	return fallback
 }
 
 func (p vipQuotePolicies) apply(row *catalogPaymentMatch, data vipRuntimeData, req vipSalesRequest, issue string) {
+	fallback := p.newMembershipDefaults[row.RuleID]
 	if policy, ok := p.sales[row.RuleID]; ok {
 		row.SalesItem = policy.Item
 		row.SalesParts, row.SalesStatus = nil, issue
 		if policy.Item == "" {
 			row.SalesStatus = vipSalesNotConfigured
+		} else if row.MembershipOrder && row.SourceTransactionType == "RENEWAL" && newMembershipOnly(policy.MembershipNewOnly, fallback) {
+			row.SalesStatus = vipCommissionOutsideScope
 		} else if eligible, scopeIssue := vipScopedSale(policy.CommissionUnits, policy.ScopeCategories, req, issue, data); !eligible {
 			row.SalesStatus = vipCommissionOutsideScope
 			if scopeIssue != "" {
 				row.SalesStatus = scopeIssue
 			}
+		} else if status := row.membershipScopeStatus(newMembershipOnly(policy.MembershipNewOnly, fallback)); status != "" {
+			row.SalesStatus = status
 		} else if issue == "" {
 			row.SalesParts, row.SalesStatus = calculateVIPSales(policy, req, data.vipSalesData)
 		}
@@ -455,7 +483,7 @@ func (p vipQuotePolicies) apply(row *catalogPaymentMatch, data vipRuntimeData, r
 			row.SalesStatus = "CALCULATED"
 		}
 	}
-	applyVIPBenefitQuote(row, data, p.benefits, req, issue)
+	applyVIPBenefitQuote(row, data, p.benefits, req, issue, fallback)
 }
 
 func readVIPBenefitPolicies(definitions map[string]json.RawMessage) map[string]vipBenefitPolicy {
@@ -469,20 +497,30 @@ func readVIPBenefitPolicies(definitions map[string]json.RawMessage) map[string]v
 }
 
 func applyVIPBenefitQuotes(items []catalogPaymentMatch, data vipRuntimeData) {
-	benefits := readVIPBenefitPolicies(data.Definitions)
+	policies := readVIPQuotePolicies(data.Definitions)
 	for i := range items {
 		row := &items[i]
 		if row.Status == "MATCHED" && row.PaidMinor != nil {
 			req, issue := vipPaymentInputs(*row, data)
-			applyVIPBenefitQuote(row, data, benefits, req, issue)
+			applyVIPBenefitQuote(row, data, policies.benefits, req, issue, policies.newMembershipDefaults[row.RuleID])
 		}
 	}
 }
 
-func applyVIPBenefitQuote(row *catalogPaymentMatch, data vipRuntimeData, benefits map[string]vipBenefitPolicy, req vipSalesRequest, issue string) {
+func applyVIPBenefitQuote(row *catalogPaymentMatch, data vipRuntimeData, benefits map[string]vipBenefitPolicy, req vipSalesRequest, issue string, fallback bool) {
 	if policy, ok := benefits[row.RuleID]; ok {
 		row.FixedParts = row.FixedParts[:0]
 		row.BenefitParts = quoteVIPBenefits(req, issue, policy, data)
+		for i, action := range policy.actions {
+			part := &row.BenefitParts[i]
+			switch part.Status {
+			case "ZERO", "INACTIVE", vipCommissionOutsideScope:
+				continue
+			}
+			if status := row.membershipScopeStatus(newMembershipOnly(action.MembershipNewOnly, fallback)); status != "" {
+				*part = vipBenefitPart{Item: part.Item, Label: part.Label, Role: part.Role, Kind: part.Kind, Status: status}
+			}
+		}
 	} else {
 		row.BenefitStatus = "BENEFIT_RULE_UNSUPPORTED"
 	}

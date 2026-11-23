@@ -68,10 +68,11 @@ type catalogBenefitTargetChange struct {
 }
 
 type catalogNewBenefitItem struct {
-	Label           string   `json:"label"`
-	CommissionUnits []string `json:"salesScopeUnitIds,omitempty"`
-	ScopeCategories []string `json:"salesScopeCategoryIds,omitempty"`
-	OwnSales        bool     `json:"ownSales,omitempty"`
+	Label             string   `json:"label"`
+	CommissionUnits   []string `json:"salesScopeUnitIds,omitempty"`
+	ScopeCategories   []string `json:"salesScopeCategoryIds,omitempty"`
+	OwnSales          bool     `json:"ownSales,omitempty"`
+	MembershipNewOnly *bool    `json:"membershipNewOnly,omitempty"`
 	catalogBenefitTarget
 	catalogBenefitCalculation
 }
@@ -330,6 +331,9 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, productID int64, raw j
 		if len(input.NewSalesCategories) > 0 {
 			fields[catalogCategoryScopeKey], _ = json.Marshal(input.NewSalesCategories)
 		}
+		if input.NewSalesMembership != nil {
+			fields[catalogMembershipArrangementKey], _ = json.Marshal(input.NewSalesMembership)
+		}
 		positions[key] = len(actions)
 		actions = append(actions, fields)
 	}
@@ -478,7 +482,7 @@ func newCatalogBenefitAction(key string,
 		return nil, errCatalogCommissionScope
 	}
 	action := vipBenefitAction{Item: key, Label: label, CommissionUnits: item.CommissionUnits,
-		ScopeCategories: item.ScopeCategories, OwnSales: item.OwnSales}
+		ScopeCategories: item.ScopeCategories, OwnSales: item.OwnSales, MembershipNewOnly: item.MembershipNewOnly}
 	if err := configureCatalogBenefitCalculation(&action, item.catalogBenefitCalculation, options); err != nil {
 		return nil, err
 	}

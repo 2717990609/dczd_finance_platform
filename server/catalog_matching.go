@@ -51,7 +51,8 @@ const catalogMatchSQL = `WITH period AS (
  SELECT v.source_id,v.effective_from,` + catalogRuleExecutionThrough + ` AS effective_to,v.version_no,v.published_at,p.name,p.scope_id,p.resume_from,
  v.definition->'policy_scope'->'sales_systems' AS sales_systems,
  v.definition->'policy_scope'->'business_sku_codes' AS skus,
- v.definition->'policy_scope'->'vip_new_membership_only'='true'::jsonb AS new_membership_only,
+ v.definition->'policy_scope'->'vip_new_membership_only'='true'::jsonb AND NOT jsonb_path_exists(v.definition,
+  '$.benefit_actions[*].vip_membership_new_only ? (@ == true || @ == false)') AS new_membership_only,
  v.definition->>'recognition_plan' IS NOT NULL AS compound_recognition,
  coalesce((` + catalogHealthRecognitionPlan + `),false) AS health_recognition,
  ` + catalogRulePriority + ` AS priority
@@ -112,6 +113,7 @@ const catalogMatchSQL = `WITH period AS (
 ), matches AS (
  SELECT f.id AS "sourceVersionId",f.order_id AS "orderId",f.order_no AS "orderNo",f.occurred_at AS "paidAt",
  f.domain AS "sourceDomain",f.transaction_type AS "sourceTransactionType",f.paid AS "paidMinor",f.occurred_at>=scope.after AS "paidInWindow",
+ coalesce(f.source='DCAI' AND f.domain='VIP' AND f.record_table='ai_vip_order',false) AS "membershipOrder",
  CASE WHEN r.health_recognition OR f.occurred_at<scope.after THEN completed.id END AS "completionVersionId",
  CASE WHEN r.health_recognition OR f.occurred_at<scope.after THEN completed.occurred_at END AS "completedAt",
  coalesce(f.completion_due AND completed.occurred_at<scope.after,false) AS "completionCarried",

@@ -4,10 +4,10 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
-import { catalogFlatMethods, catalogOrderScope, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
+import { catalogFlatMethods, catalogMembershipTypes, catalogOrderScope, catalogPayeeComplete, catalogRateConditionBody, catalogRatePriorityLabel, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
-  orderTypeText:String,productId:Number})
+  orderTypeText:String,productId:Number,membershipSku:Boolean,defaultMembershipNewOnly:Boolean})
 const emit = defineEmits(['rate-staged'])
 const draft = defineModel({type:Object,required:true})
 const editing = defineModel('editing', {type:Boolean,default:false})
@@ -44,8 +44,8 @@ async function addRecipient() {
 }
 async function editSales() {
   error.value = ''
-  const {label,rows,format} = draft.value.sales
-  form.value = {kind:'item',target:'seller',editingSales:true,label,...calculationForm({rows},format),
+  const {label,rows,format,membershipNewOnly} = draft.value.sales
+  form.value = {kind:'item',target:'seller',editingSales:true,label,membershipNewOnly,...calculationForm({rows},format),
     format,orderScope:catalogOrderScope(draft.value.sales),rate:format==='rate' ? String(rows[0].rateBps/100) : undefined,salesPayee:rows[0].payee}
   await nextTick()
   itemName.value?.focus()
@@ -137,14 +137,15 @@ function stage() {
       const ownSales = staged.orderScope==='own'
       if (emptyCatalogOrderScope(staged.orderScope)) throw new Error('请选择适用的销售组织或销售类别。')
       const scope = {salesScopeUnitIds:staged.orderScope?.unitIds,salesScopeCategoryIds:staged.orderScope?.categoryIds}
+      const membershipNewOnly = props.membershipSku ? staged.membershipNewOnly ?? props.defaultMembershipNewOnly : undefined
       if (isSales.value) {
         const calculation = calculationBody(staged)
         const rows = calculation.rows || [{company:'ANY',relationship:'ANY',rateBps:calculation.rateBps,payee:staged.salesPayee}]
-        draft.value.sales = {label,format:staged.format,rows,...scope}
+        draft.value.sales = {label,format:staged.format,rows,...scope,membershipNewOnly}
         cancel()
         return
       }
-      const item = {label,target:staged.target,role:staged.role,personId:staged.personId,recipientDuty:staged.recipientDuty,ownSales,
+      const item = {label,target:staged.target,role:staged.role,personId:staged.personId,recipientDuty:staged.recipientDuty,ownSales,membershipNewOnly,
         personName:staged.personName,organization:staged.poolId ? undefined : staged.organization,memberRole:staged.memberRole,poolId:staged.poolId,
         ownerPersonId:staged.ownerPersonId,ownerName:staged.ownerName,...scope,...calculationBody(staged)}
       if (staged.itemIndex==null) draft.value.items.push(item)
@@ -169,7 +170,10 @@ defineExpose({addRecipient,editCalculation,editRateScope,addRateCondition:scope=
       <template v-else>
         <RuleArrangementFields ref="itemName" v-model:name="form.label" :name-id="form.kind==='item' ? 'catalog-add-label' : undefined"
           :calculation-text="form.kind==='item' && isSales ? '比例' : undefined"
-          :order-type-text="form.kind==='item' ? orderTypeText : undefined">
+          :order-type-text="form.kind==='item' ? orderTypeText : undefined"
+          :order-type-id="form.kind==='item' && membershipSku ? 'catalog-add-member-type' : undefined"
+          :order-types="catalogMembershipTypes" :order-type="(form.membershipNewOnly ?? defaultMembershipNewOnly) ? 'new' : 'all'"
+          @update:order-type="form.membershipNewOnly=$event==='new'">
           <CatalogPayeeFields v-if="form.kind==='item'" :model-value="form" prefix="catalog-add" :options="options" :api="api"
             :product-id="productId" :people-filters="peopleFilters"
             :sales-available="!form.editingSales && form.itemIndex==null && salesAvailable" @update:model-value="changePayee"/>
