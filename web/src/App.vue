@@ -1793,7 +1793,7 @@ async function save() {
         <div v-show="!personPage" class="workspace-page-body">
         <KeepAlive>
           <OrganizationDirectory v-if="current==='organization'" ref="organization" :api="api" :option-label="optionLabel" :format-time="formatTime"
-            :panel="organizationPanel" :person-link="personLink" @update:panel="navigateOrganizationPanel"
+            :panel="organizationPanel" :person-link="personLink" @update:panel="navigateOrganizationPanel" @position-changed="refresh(true)"
             :can-write="session.user ? session.user.organizationWrite : session.development" :appointment-kinds="options('appointmentKind')"
             :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"/>
         </KeepAlive>

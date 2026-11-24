@@ -32,8 +32,8 @@ const scopeOptions = (key, activeOnly = false) => (settings.value?.options[key] 
   .map(option=>option.active ? option : {...option,label:option.label+'（已停用）'})
 const scopeLabel = key => props.scopes.find(scope=>scope.value===key)?.label || key
 const roleLabel = key => props.roles.find(role=>role.value===key)?.label || key
-const roleOptions = computed(() => props.roles.filter(role=>role.scope?.scopes===undefined ||
-  (Array.isArray(role.scope.scopes) && role.scope.scopes.includes(form.value?.scope))))
+const roleOptions = computed(() => props.roles.filter(role=>!role.disabled &&
+  (role.scope?.scopes===undefined || (Array.isArray(role.scope.scopes) && role.scope.scopes.includes(form.value?.scope)))))
 const columns = computed(() => [
   {title:'人员',dataIndex:'personName',key:'personName',width:140},
   {title:'计提角色',dataIndex:'role',key:'role',width:150},
@@ -154,7 +154,7 @@ defineExpose({refresh})
         </div>
         <div>
           <label for="catalog-appointment-role-filter">岗位</label>
-          <a-select id="catalog-appointment-role-filter" v-model:value="roleFilter" :options="roles" placeholder="全部角色" allow-clear/>
+          <a-select id="catalog-appointment-role-filter" v-model:value="roleFilter" :options="roles.map(role=>({...role,disabled:false}))" placeholder="全部角色" allow-clear/>
         </div>
         <div>
           <label for="catalog-appointment-scope-filter">适用范围</label>

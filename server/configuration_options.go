@@ -3,13 +3,15 @@ package main
 const configurationOptionsSQL = `SELECT coalesce(jsonb_object_agg(group_key,items),'{}') FROM (
  SELECT o.group_key,jsonb_agg(jsonb_build_object('value',o.option_key,'label',coalesce(CASE WHEN o.label=o.option_key THEN company.name END,o.label),
   'scope',o.applies_to || CASE WHEN company.id IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('organizationId',company.id) END)
+  || CASE WHEN o.enabled THEN '{}'::jsonb ELSE '{"disabled":true}'::jsonb END
   ORDER BY o.display_order,o.option_key) AS items
  FROM (
-  SELECT group_key,option_key,label,display_order,applies_to FROM configuration_options WHERE enabled
+  SELECT group_key,option_key,label,display_order,applies_to,enabled FROM configuration_options
+  WHERE enabled OR group_key='catalogAppointmentRole'
   UNION ALL
-  SELECT 'practiceSalesCategory',id::text,name,0,'{}'::jsonb FROM organization_sales_categories WHERE active
+  SELECT 'practiceSalesCategory',id::text,name,0,'{}'::jsonb,true FROM organization_sales_categories WHERE active
   UNION ALL
-  SELECT 'practiceSalesCompany',s.source_company_id,min(u.name),100,'{}'::jsonb
+  SELECT 'practiceSalesCompany',s.source_company_id,min(u.name),100,'{}'::jsonb,true
    FROM organization_company_sources s JOIN organization_units u ON u.id=s.company_id AND u.kind='COMPANY' AND u.status='ACTIVE'
    WHERE s.source='DCZD' AND s.valid_from<=CURRENT_TIMESTAMP AND (s.valid_to IS NULL OR CURRENT_TIMESTAMP<s.valid_to)
     AND NOT EXISTS(SELECT 1 FROM configuration_options o WHERE o.group_key='practiceSalesCompany' AND o.option_key=s.source_company_id)

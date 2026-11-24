@@ -5,12 +5,13 @@ import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
 import CatalogAppointments from './CatalogAppointments.vue'
 import OrganizationCompanies from './OrganizationCompanies.vue'
 import OrganizationDuties from './OrganizationDuties.vue'
+import OrganizationPositions from './OrganizationPositions.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
 import { organizationTree } from './organization-tree'
 
 const props = defineProps({api:Function, optionLabel:Function, formatTime:Function, canWrite:Boolean, appointmentKinds:Array,
   catalogRoles:Array,catalogScopes:Array,personLink:Function,panel:String})
-const emit = defineEmits(['update:panel'])
+const emit = defineEmits(['update:panel','position-changed'])
 const units = ref([])
 const unitId = ref()
 const name = ref('')
@@ -24,6 +25,7 @@ const entriesError = ref('')
 const loading = ref(false)
 const unitsLoading = ref(false)
 const editor = ref()
+const positionsOpen = ref(false)
 const notice = ref('')
 const catalog = ref()
 const companies = ref()
@@ -160,7 +162,10 @@ defineExpose({refresh})
             <h2>人员任职</h2>
             <span class="organization-context">{{ selectedUnit ? selectedUnit.name+' · 直接任职' : '全部组织' }}</span>
           </div>
-          <a-button v-if="canWrite" type="primary" @click="openEditor('add')">登记任职</a-button>
+          <a-space wrap>
+            <a-button @click="positionsOpen=true">岗位目录</a-button>
+            <a-button v-if="canWrite" type="primary" @click="openEditor('add')">登记任职</a-button>
+          </a-space>
         </div>
         <div class="organization-filters organization-person-filters">
           <div>
@@ -189,6 +194,8 @@ defineExpose({refresh})
       </section>
     </div>
   </div>
+  <OrganizationPositions v-if="positionsOpen && panel==='organization'" :api="api" :can-write="canWrite" :scopes="catalogScopes"
+    @close="positionsOpen=false" @changed="emit('position-changed')"/>
   <OrganizationAppointmentForm v-if="canWrite && editor" :api="api" :mode="editor.mode" :record="editor.record"
     :tree="appointmentTree" :kinds="appointmentKinds" :unit-id="selectedUnit?.status==='ACTIVE' ? unitId : undefined"
     @saved="saved" @close="editor=undefined"/>
