@@ -9,7 +9,7 @@ import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, catalogRatePriority, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, catalogRatePriority, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule:Object, applied:Object, api:Function, formatTime:Function, formatMoney:Function,
   optionLabel:Function, periods:Array, skus:Array })
@@ -49,6 +49,7 @@ const copy = ref()
 const targetSkus = computed(()=>(props.skus || []).filter(sku=>sku.code!==props.rule?.scopeId)
   .map(sku=>({value:sku.code,label:sku.label})))
 let sequence = 0
+let nextDraftKey = 0
 
 const rateColumns = [
   {title:'销售公司',key:'company',dataIndex:'company',width:190},
@@ -62,7 +63,7 @@ const calculationFor = itemKey => structure.value.calculations.find(change=>chan
 const selectedCalculation = computed(() => calculationFor(selected.value))
 const hasRateTable = computed(() => !!(selectedCalculation.value || component.value)?.rows?.length)
 const columns = computed(() => sheet.value?.mayPublish && !props.applied && !selectedCalculation.value
-  ? [...rateColumns,{title:'操作',key:'operation',width:190}] : rateColumns)
+  ? [...rateColumns,{title:'操作',key:'operation',width:133}] : rateColumns)
 const targetKind = computed(() => targetEdits.value.get(selected.value)?.target || component.value?.targetKind)
 const hasUniformRate = computed(() => {
   const item = component.value
@@ -134,17 +135,20 @@ const hasEdits = computed(() => sheet.value?.independentTeamSales || copy.value 
 const impactPeriods = computed(() => catalogRuleImpactPeriods(props.periods,sheet.value?.productId,impactInput.value?.effectiveFrom))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
 const canAddRates = computed(() => sheet.value?.mayPublish && !props.applied && !!sheet.value.structureOptions)
+const rateOptions = computed(() => Object.fromEntries(['companies','categories','relationships'].map(kind=>[
+  kind,(sheet.value?.structureOptions?.[kind] || []).filter(option=>kind!=='companies' || option.value!=='ANY'),
+])))
 const rateNames = computed(() => Object.fromEntries(['companies','categories','relationships'].map(kind=>
-  [kind,new Map((sheet.value?.structureOptions?.[kind] || []).map(option=>[option.value,option.label]))])))
-function stagedRateRow(change, original) {
-  const {companyIds,categoryIds,relationship,payee,rateBps,draftKey} = change
+  [kind,new Map(rateOptions.value[kind].map(option=>[option.value,option.label]))])))
+function stagedRateRow(condition, key, original) {
+  const {scope,companyIds,categoryIds,relationship,payee,rate} = condition
   const names = rateNames.value
-  const labelList = (ids, labels, missing) => ids?.map(id=>labels.get(id) || missing).join('、')
+  const labelList = (ids, kind, missing) => ids?.map(id=>names[kind].get(id) || missing).join('、')
   return {
-    ...original,draftKey,companyIds,categoryIds,payee,rateBps,staged:true,
-    scope:catalogRateConditionScope(change),
-    company:labelList(companyIds,names.companies,'公司名称待补'),
-    category:labelList(categoryIds,names.categories,'销售类别名称待补'),
+    ...original,...key,companyIds,categoryIds,payee,rateBps:rateAsBasisPoints(rate),staged:true,
+    condition,scope,
+    company:labelList(companyIds,'companies','公司名称待补'),
+    category:labelList(categoryIds,'categories','销售类别名称待补'),
     relationshipCode:relationship,limitsRelationship:relationship!=='ANY',
     relationship:names.relationships.get(relationship) || original?.relationship || relationship,
   }
@@ -153,14 +157,18 @@ function configuredRateRows(item) {
   if (!item) return []
   const calculation = calculationFor(item.itemKey)
   if (calculation) {
-    return (calculation.rows || []).map((row,index)=>stagedRateRow({...row,draftKey:'method-'+index}))
+    return (calculation.rows || []).map((row,index)=>stagedRateRow({
+      ...row,scope:catalogRateConditionScope(row),rate:String(row.rateBps/100),
+    },{draftKey:'method-'+index}))
   }
   const stored = item.rows || []
   const staged = structure.value.rateRows.filter(row=>row.itemKey===item.itemKey)
   if (!staged.length) return stored
-  const byRow = new Map(stored.map(row=>[row.row,row]))
-  const replaced = new Set(staged.map(row=>row.row))
-  return [...staged.map(change=>stagedRateRow(change,byRow.get(change.row))),...stored.filter(row=>!replaced.has(row.row))]
+  const replacements = new Map(staged.filter(edit=>edit.row).map(edit=>[edit.row,edit.condition]))
+  return [
+    ...staged.filter(edit=>!edit.row).map(({condition,draftKey})=>stagedRateRow(condition,{draftKey})),
+    ...stored.map(row=>replacements.has(row.row) ? stagedRateRow(replacements.get(row.row),{},row) : row),
+  ]
 }
 const rateRows = computed(() => configuredRateRows(component.value))
 const singleSalesRate = computed(() => {
@@ -189,6 +197,7 @@ const rateGroup = ref()
 const standardTabs = computed(() => rateGroups.value.map(group=>({value:group.key,count:group.activeCount})))
 const rateTableRevision = ref(0)
 const rateRowKey = row => row.draftKey || row.row
+const rateFieldId = (row,field) => 'catalog-rate-'+rateRowKey(row)+'-'+field
 const rateEditorTarget = computed(() => '#'+CSS.escape('catalog-rates-edit-'+selected.value))
 const editorInCard = computed(() => component.value || selected.value===serviceItemKey && serviceReplacement.value)
 watch([selected,rateGroups], ([item,groups],[previousItem]) => {
@@ -206,14 +215,17 @@ const ratePriority = computed(() => catalogRatePriority(rateGroups.value.filter(
 const activeRateGroup = computed(() => rateGroups.value.find(group=>group.key===rateGroup.value))
 const displayedRates = computed(() => {
   const term = filter.value.trim().toLowerCase()
-  return (activeRateGroup.value?.rows || []).filter(row => !term ||
+  return (activeRateGroup.value?.rows || []).filter(row => !term || row.staged ||
     [row.company,row.relationship,row.category].some(value => value?.toLowerCase().includes(term)))
 })
 const showRateGroups = computed(() => hasRateTable.value || hasUniformRate.value && canAddRates.value)
+const tableEditable = computed(() => canAddRates.value && !selectedCalculation.value)
 const displayedColumns = computed(() => columns.value.filter(col=>
   (col.key!=='company' || ['company','inherited'].includes(rateGroup.value)) &&
-  (col.key!=='category' || activeRateGroup.value?.rows.some(row=>row.category)) &&
-  (col.key!=='relationship' || activeRateGroup.value?.rows.some(row=>row.limitsRelationship)) &&
+  (col.key!=='category' || activeRateGroup.value?.rows.some(row=>row.category) ||
+    tableEditable.value && ['company','category'].includes(rateGroup.value) && rateOptions.value.categories.length) &&
+  (col.key!=='relationship' || activeRateGroup.value?.rows.some(row=>row.limitsRelationship) ||
+    tableEditable.value && rateGroup.value!=='external' && rateOptions.value.relationships.length>1) &&
   (col.key!=='payee' || targetKind.value==='seller')))
 const tableWidth = computed(() => displayedColumns.value.reduce((width,column)=>width+column.width,0))
 async function addRecipient() {
@@ -254,17 +266,17 @@ function restoreService() {
   structureEditor.value?.cancel()
   structure.value.items = structure.value.items.filter(item=>item.replacesItemKey!==serviceItemKey)
 }
-async function editRateScope(row) {
-  await nextTick()
-  structureEditor.value?.editRateScope(row,row.staged ? String(row.rateBps/100) : displayRate(row.rateBps,row.row))
-}
 function addStandard(item, scope) {
   if (selectedCalculation.value?.rows?.length) {
     structureEditor.value?.editCalculation(selectedCalculation.value,'table',scope)
     return
   }
   if (hasRateTable.value) {
-    structureEditor.value?.addRateCondition(scope)
+    const draftKey = 'draft-'+(++nextDraftKey)
+    structure.value.rateRows.unshift({itemKey:item.itemKey,draftKey,condition:newCatalogRateCondition(sheet.value.structureOptions,scope)})
+    filter.value = ''
+    rateTableRevision.value++
+    nextTick(()=>document.getElementById('catalog-rate-first-'+draftKey)?.focus())
     return
   }
   const rateBps = selectedCalculation.value?.rateBps ?? rateAsBasisPoints(flatValue(item))
@@ -275,6 +287,27 @@ const pendingScope = (itemKey, row) => row && structure.value.rateRows.find(edit
 const salesPayeeLabel = row => row.teamRate ? '团队岗位拆分'
   : catalogSalesPayees.find(choice=>choice.value===(row.payee || 'seller'))?.label
 const cellKey = (item, row) => JSON.stringify([item,row || 0])
+function rowOptions(kind, values) {
+  const missing = (values || []).filter(value=>value!=null && !rateNames.value[kind].has(value))
+  return missing.length ? [...rateOptions.value[kind],...missing.map(value=>({value,label:value}))] : rateOptions.value[kind]
+}
+function rowEditable(row) {
+  return tableEditable.value && !row.teamRate && !removedRateRows.value.has(cellKey(selected.value,row.row))
+}
+function setInlineCondition(row, field, value) {
+  if (row.condition) {
+    row.condition[field] = value
+    return
+  }
+  const itemKey = selected.value
+  const condition = {
+    scope:row.scope,companyIds:[...(row.companyIds || [])],categoryIds:[...(row.categoryIds || [])],
+    relationship:row.relationshipCode,payee:row.payee,rate:displayRate(row.rateBps,row.row),
+    [field]:value,
+  }
+  structure.value.rateRows.push({itemKey,row:row.row,condition})
+  delete edits.value[cellKey(itemKey,row.row)]
+}
 function removeArrangement(key) {
   if (key===serviceItemKey && serviceReplacement.value) {
     removedServiceReplacements.value = structure.value.items.filter(item=>item.replacesItemKey===key)
@@ -297,17 +330,10 @@ function toggleRowRemoval(row) {
   const key = cellKey(itemKey,row)
   if (!removedRateRows.value.delete(key)) removedRateRows.value.set(key,{itemKey,row})
 }
-function showRateGroup(scope) {
-  rateGroup.value = scope
-  filter.value = ''
-  rateTableRevision.value++
-}
 function discardStagedRate(row) {
   const index = structure.value.rateRows.findIndex(change=>change.itemKey===selected.value && rateRowKey(change)===rateRowKey(row))
   if (index<0) return
   structure.value.rateRows.splice(index,1)
-  const original = component.value.rows.find(entry=>entry.row===row.row)
-  if (original && original.scope!==row.scope) showRateGroup(original.scope)
 }
 function undoRateChange(row) {
   if (row.staged) discardStagedRate(row)
@@ -671,7 +697,10 @@ function publicationInput() {
     calculationChanges:structure.value.calculations.filter(({itemKey})=>!removedItems.value.has(itemKey)),
     newRateRows:structure.value.rateRows.filter(({itemKey,row})=>!removedItems.value.has(itemKey) &&
       !removedRateRows.value.has(cellKey(itemKey,row)) && !calculationFor(itemKey))
-      .map(({draftKey,...row})=>row),
+      .map(({itemKey,row,condition})=>({
+        itemKey,row,...catalogRateConditionBody(condition,condition.scope,
+          (targetEdits.value.get(itemKey)?.target || sheet.value.components.find(item=>item.itemKey===itemKey)?.targetKind)==='seller'),
+      })),
     removedItems:[...removed],
     removedRateRows:[...removedRateRows.value.values()].filter(row=>!removedItems.value.has(row.itemKey) && !calculationFor(row.itemKey)),
   }
@@ -840,28 +869,59 @@ async function publish() {
               :scroll="{x:tableWidth}" :pagination="{pageSize:8,showSizeChanger:false,hideOnSinglePage:true}">
               <template #bodyCell="{ column, record }">
                 <template v-if="column.key==='company'">
-                  {{ record.company }}
+                  <template v-if="rowEditable(record)">
+                    <label class="sr-only" :for="rateFieldId(record,'company')">销售公司</label>
+                    <a-select :id="rateFieldId(record,'company')" mode="multiple" size="small"
+                    :value="record.companyIds || []" :options="rowOptions('companies',record.companyIds)"
+                    :max-tag-count="1" :max-tag-text-length="12" :disabled="!editable || structureEditing" option-filter-prop="label"
+                    placeholder="选择公司" @update:value="setInlineCondition(record,'companyIds',$event)"/>
+                  </template>
+                  <span v-else>{{ record.company }}</span>
                 </template>
-                <template v-if="column.key==='category'">{{ record.category || '不限' }}</template>
+                <template v-if="column.key==='category'">
+                  <template v-if="rowEditable(record) && ['company','category'].includes(record.scope)">
+                    <label class="sr-only" :for="rateFieldId(record,'category')">销售类别</label>
+                    <a-select :id="rateFieldId(record,'category')" mode="multiple" size="small" :value="record.categoryIds || []"
+                      :options="rowOptions('categories',record.categoryIds)" :max-tag-count="1"
+                      :disabled="!editable || structureEditing" option-filter-prop="label"
+                      :placeholder="record.scope==='category' ? '选择销售类别' : '不限'" @update:value="setInlineCondition(record,'categoryIds',$event)"/>
+                  </template>
+                  <span v-else>{{ record.category || '不限' }}</span>
+                </template>
+                <template v-if="column.key==='relationship'">
+                  <template v-if="rowEditable(record) && record.scope!=='external'">
+                    <label class="sr-only" :for="rateFieldId(record,'relationship')">销售关系</label>
+                    <a-select :id="rateFieldId(record,'relationship')" size="small"
+                      :value="record.relationshipCode" :options="rowOptions('relationships',[record.relationshipCode])"
+                      :disabled="!editable || structureEditing" @update:value="setInlineCondition(record,'relationship',$event)"/>
+                  </template>
+                  <span v-else>{{ record.relationship }}</span>
+                </template>
                 <template v-if="column.key==='rate'">
-                  <a-input-number v-if="!applied && !record.staged" :aria-label="'第 '+record.row+' 行比例'" size="small"
-                    :value="displayRate(record.rateBps,record.row)"
-                    :disabled="!editable || record.teamRate || removedRateRows.has(cellKey(selected,record.row))"
-                    :min="0" :max="100" :precision="2" string-mode @update:value="setRate($event,record.rateBps,record.row)"/>
+                  <a-input-number v-if="rowEditable(record)" size="small" :aria-label="record.row ? '第 '+record.row+' 行比例' : '新增比例'"
+                    :id="record.draftKey ? 'catalog-rate-first-'+record.draftKey : undefined"
+                    :value="record.condition ? record.condition.rate : displayRate(record.rateBps,record.row)"
+                    :disabled="!editable || structureEditing"
+                    :min="0" :max="100" :precision="2" string-mode
+                    @update:value="record.condition ? setInlineCondition(record,'rate',$event) : setRate($event,record.rateBps,record.row)"/>
                   <span v-else>{{ applied ? displayRate(record.rateBps,record.row)+'%' : percent(record.rateBps) }}</span>
                   <small v-if="record.staged || Object.hasOwn(edits,cellKey(selected,record.row))"
                     class="order-version">未保存</small>
                   <small v-if="record.teamRate" class="order-version">内部团队拆分</small>
                 </template>
-                <span v-else-if="column.key==='payee'">{{ salesPayeeLabel(record) }}</span>
+                <template v-if="column.key==='payee'">
+                  <template v-if="rowEditable(record) && record.scope!=='external'">
+                    <label class="sr-only" :for="rateFieldId(record,'payee')">收款方</label>
+                    <a-select :id="rateFieldId(record,'payee')" size="small"
+                      :value="record.payee || 'seller'" :options="catalogSalesPayees" :disabled="!editable || structureEditing"
+                      @update:value="setInlineCondition(record,'payee',$event)"/>
+                  </template>
+                  <span v-else>{{ salesPayeeLabel(record) }}</span>
+                </template>
                 <template v-if="column.key==='operation'">
                   <a-button v-if="removedRateRows.has(cellKey(selected,record.row))" type="link" size="small"
                     :disabled="saving || structureEditing" @click="toggleRowRemoval(record.row)">撤销删除</a-button>
                   <template v-else>
-                    <a-button v-if="!record.teamRate"
-                      type="link" size="small" :disabled="saving || structureEditing" @click="editRateScope(record)">
-                      {{ record.scope==='external' ? '修改比例' : '编辑范围' }}
-                    </a-button>
                     <a-button v-if="record.row && (record.staged || Object.hasOwn(edits,cellKey(selected,record.row)))"
                       type="link" size="small" :disabled="saving || structureEditing" @click="undoRateChange(record)">撤销修改</a-button>
                     <a-button type="link" danger size="small" :disabled="saving || structureEditing || record.teamRate"
@@ -974,8 +1034,7 @@ async function publish() {
                 :order-type-text="orderTypeText" :membership-sku="sheet.membershipSku" :default-membership-new-only="sheet.membershipNewOnly"
                 :replacement-item-key="selected===serviceItemKey && serviceReplacement ? serviceItemKey : undefined"
                 v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="editedComponent"
-                :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!hasSales && !structure.sales"
-                @rate-staged="showRateGroup"/>
+                :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!hasSales && !structure.sales"/>
             </Teleport>
             <div v-if="copy" class="catalog-copy">
               <h3>复制到其他 SKU</h3>
@@ -1025,6 +1084,7 @@ async function publish() {
 .catalog-pending-removals > div { display:flex; align-items:center; gap:2px }
 .catalog-rate-filter {width:min(100%,190px)}
 .catalog-rate-table :deep(.ant-table.ant-table-small .ant-table-cell) {padding-block:4px}
+.catalog-rate-table :deep(.ant-select) {width:100%}
 .catalog-rate-table :deep(.ant-table-pagination) {margin-block:6px}
 .catalog-rate-summary {display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;padding-bottom:6px;margin-bottom:6px;border-bottom:1px solid var(--line)}
 .catalog-rate-summary h2 {font-size:16px;margin:0 0 2px}

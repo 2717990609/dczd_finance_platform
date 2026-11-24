@@ -25,7 +25,6 @@ const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetai
 const CatalogRuleRates = defineAsyncComponent(() => import('./CatalogRuleRates.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
 const CatalogScenarioCreate = defineAsyncComponent(() => import('./CatalogScenarioCreate.vue'))
-const PracticeRegistrationImport = defineAsyncComponent(() => import('./PracticeRegistrationImport.vue'))
 const PracticeRuleSettings = defineAsyncComponent(() => import('./PracticeRuleSettings.vue'))
 const PracticePeriodBenefitEditor = defineAsyncComponent(() => import('./PracticePeriodBenefitEditor.vue'))
 const PracticeRetrainSplitEditor = defineAsyncComponent(() => import('./PracticeRetrainSplitEditor.vue'))
@@ -440,39 +439,6 @@ function addRuleComponent(key) {
   if (row.periodBenefit && recipient) Object.assign(row.periodBenefit,{recipient,label})
   draft.value.components.push(row)
   activeRuleComponent.value = draft.value.components.length-1
-}
-function addPracticeRegistrationImport(preview) {
-  formError.value = ''
-  const form = draft.value
-  const imported = copiedRuleComponents(preview.components,optionLabel)
-  const conflict = form.components.find(part=>{
-    const current = part.periodBenefit?.registrationScope
-    if (!current?.exclusive) return false
-    return imported.some(candidate=>{
-      const {sellerId,sellerCompanyId,companies=[]} = candidate.periodBenefit.registrationScope
-      return sellerId===current.sellerId && sellerCompanyId===current.sellerCompanyId ||
-        companies.includes(current.sellerCompanyId) || current.companies?.includes(sellerCompanyId) ||
-        companies.some(company=>current.companies?.includes(company))
-    })
-  })
-  if (conflict) {
-    showFormError(new Error('总监归属与「'+conflict.periodBenefit.label+'」重叠。请核对归属关系。'))
-    return
-  }
-  if (form.scope!=='period') {
-    const startsAt = Date.parse(preview.startsAt)
-    const effectiveAt = Date.parse(form.editBaseId ? form.effectiveFrom : form.effectiveFrom ? form.effectiveFrom+'+08:00' : '')
-    if (form.editBaseId && (!Number.isFinite(effectiveAt) || effectiveAt<startsAt)) {
-      showFormError(new Error('请选择适用于关系起始时间的规则，或复制为新配置。'))
-      return
-    }
-    if (!Number.isFinite(effectiveAt) || effectiveAt<startsAt) {
-      form.effectiveFrom = new Date(startsAt+8*3600000).toISOString().slice(0,19)
-    }
-  }
-  const first = form.components.length
-  form.components.push(...imported)
-  activeRuleComponent.value = first
 }
 function ruleRecipientSummary(row) {
   if (row.periodBenefit) {
@@ -1946,10 +1912,6 @@ async function save() {
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
             <a-space wrap :size="6">
-              <PracticeRegistrationImport v-if="classRule" :key="draft.productId" :api="api"
-                :product-id="draft.productId" :period-id="draft.scope==='period' ? draft.periodId : undefined"
-                :blocked="draft.scope==='period' && !draft.periodId" :people="classPeopleOptions" :units="unitOptions"
-                :format-time="formatTime" @add="addPracticeRegistrationImport"/>
               <a-dropdown v-if="recipientChoices.length" :trigger="['click']">
                 <a-button size="small">添加收款安排 <DownOutlined aria-hidden="true"/></a-button>
                 <template #overlay>
