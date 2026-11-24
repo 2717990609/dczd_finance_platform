@@ -286,7 +286,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .tier-values { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
 .tier-values .ant-form-item { margin-bottom: 0; }
 .tier-values .ant-input-number { width: 100%; }
-.tier-row-values { grid-template-columns: repeat(auto-fit,minmax(min(100%,128px),1fr)); }
 .tier-settings { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; margin-bottom: 8px; }
 .tier-settings .ant-form-item { flex: 1 1 210px; max-width: 330px; margin-bottom: 0; }
 .tier-settings .ant-checkbox-wrapper { padding-block: 5px; }
