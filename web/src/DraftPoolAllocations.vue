@@ -1,7 +1,8 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { teamPoolKey } from './team-pool-key'
 
-const props = defineProps({ draft:Object, api:Function, formatMoney:Function })
+const props = defineProps({ draft:Object, api:Function, formatMoney:Function, requestedPool:String })
 const report = ref()
 const selected = ref()
 const rows = ref([])
@@ -12,12 +13,23 @@ const loading = ref(false)
 const saving = ref(false)
 let sequence = 0
 
-const key = row => [row.unitId,row.scenario,row.itemKey].join('/')
 const options = computed(() => (report.value?.items || []).map(pool => ({
-  value:key(pool),label:[pool.name,pool.unitName].filter(Boolean).join(' · '),
+  value:teamPoolKey(pool),label:[pool.name,pool.unitName].filter(Boolean).join(' · '),
 })))
-const pool = computed(() => report.value?.items.find(item => key(item)===selected.value))
+const pool = computed(() => report.value?.items.find(item => teamPoolKey(item)===selected.value))
 const membersById = computed(() => new Map((pool.value?.members || []).map(member=>[member.personId,member])))
+const confirmedRows = computed(() => (pool.value?.shares || []).map(share => ({
+  ...share,name:share.personId ? membersById.value.get(share.personId)?.name || '人员 '+share.personId : '组织留存',
+})))
+const confirmedColumns = [
+  {title:'分配对象',dataIndex:'name',width:200},
+  {title:'确认金额',dataIndex:'amountMinor',key:'amount',align:'right',width:140},
+]
+const missingRequestedPool = computed(() => Boolean(report.value && props.requestedPool &&
+  !options.value.some(option=>option.value===props.requestedPool)))
+function choosePool(preferred = selected.value || props.requestedPool) {
+  selected.value = options.value.some(option=>option.value===preferred) ? preferred : options.value[0]?.value
+}
 const memberOptions = computed(() => (pool.value?.members || []).map(member => ({
   value:member.personId,
   label:[member.name,member.personId,report.value.closed ? '' : member.availableMinor>0
@@ -47,7 +59,7 @@ async function load() {
     const result = await props.api('/draft-pools?'+params)
     if (request!==sequence) return
     report.value = result
-    if (!options.value.some(option => option.value===selected.value)) selected.value=options.value[0]?.value
+    choosePool()
   } catch (err) {
     if (request===sequence) {
       report.value=undefined
@@ -57,6 +69,7 @@ async function load() {
     if (request===sequence) loading.value=false
   }
 }
+watch(() => props.requestedPool, value => choosePool(value))
 watch(pool, item => {
   const shares = item?.shares || []
   rows.value = shares.filter(row=>row.personId>0).map(row=>({personId:row.personId,amount:moneyInput(row.amountMinor)}))
@@ -108,6 +121,7 @@ async function save() {
     <div class="pool-form">
       <a-alert v-if="error" type="error" :message="error" show-icon/>
       <a-alert v-if="notice" type="success" :message="notice" show-icon/>
+      <a-alert v-if="missingRequestedPool" type="warning" message="本期未找到指定团队池，请核对池名称。" show-icon/>
       <a-empty v-if="!loading && !error && !pool" description="本期没有团队池余额或流水"/>
       <template v-if="pool">
         <div class="pool-control">
@@ -128,33 +142,44 @@ async function save() {
             {{ owner.name || ('人员 '+owner.personId) }}<template v-if="pool.owners.length>1"> · {{ formatMoney(owner.incomeMinor) }}</template>
           </span>
         </div>
-        <a-alert v-if="pool.revision && !pool.planCurrent" type="warning" show-icon
+        <a-alert v-if="!report.closed && pool.revision && !pool.planCurrent" type="warning" show-icon
           message="试算已变化，请核对已填金额后重新保存。"/>
         <p v-if="pool.balanceMinor<0" class="draft-report-note">后续归集优先弥补负余额。</p>
-        <div v-for="(row,index) in rows" :key="index" class="pool-share">
-          <label class="sr-only" :for="'pool-member-'+index">分配人员 {{ index+1 }}</label>
-          <a-select :id="'pool-member-'+index" v-model:value="row.personId" :options="memberOptions"
-            show-search option-filter-prop="label" placeholder="选择成员" :disabled="!editable"/>
-          <label class="sr-only" :for="'pool-amount-'+index">分配金额 {{ index+1 }}</label>
-          <a-input-number :id="'pool-amount-'+index" v-model:value="row.amount" string-mode :min="0" :precision="2"
-            placeholder="金额（元）" :status="!report.closed && memberOverLimit(row) ? 'error' : undefined" :disabled="!editable"/>
-          <a-button v-if="!report.closed" type="text" :disabled="!editable" @click="rows.splice(index,1)">移除</a-button>
-        </div>
-        <a-button v-if="!report.closed && memberOptions.some(item=>!item.disabled)" :disabled="!editable" @click="rows.push({})">添加成员</a-button>
-        <div class="pool-control">
-          <label for="pool-retention">留存金额</label>
-          <a-input-number id="pool-retention" v-model:value="retained" string-mode :min="0" :precision="2"
-            placeholder="金额（元）" :disabled="!editable"/>
-        </div>
-        <div v-if="!report.closed" class="form-actions">
-          <span>拟分配 {{ formatMoney(memberTotal) }}</span>
-          <span>拟留存 {{ formatMoney(toMinor(retained)) }}</span>
-          <strong v-if="!Number.isNaN(remaining)" :class="{'pool-over-limit':remaining<0}" aria-live="polite">
-            {{ remaining<0 ? '超出池余额' : '待分配' }} {{ formatMoney(Math.abs(remaining)) }}
-          </strong>
-          <span v-if="overMemberLimit" role="alert" class="pool-over-limit">有成员超过可分配金额</span>
-          <a-button type="primary" :loading="saving" :disabled="!editable || remaining<0 || overMemberLimit" @click="save">保存分配草稿</a-button>
-        </div>
+        <section v-if="report.closed" aria-label="已确认分配">
+          <a-table :data-source="confirmedRows" :columns="confirmedColumns" row-key="personId" size="small"
+            :pagination="{pageSize:15,showSizeChanger:false,hideOnSinglePage:true}">
+            <template #bodyCell="{column,record}">
+              <span v-if="column.key==='amount'" class="numeric">{{ formatMoney(record.amountMinor) }}</span>
+            </template>
+            <template #emptyText>本期无确认分配</template>
+          </a-table>
+        </section>
+        <template v-else>
+          <div v-for="(row,index) in rows" :key="index" class="pool-share">
+            <label class="sr-only" :for="'pool-member-'+index">分配人员 {{ index+1 }}</label>
+            <a-select :id="'pool-member-'+index" v-model:value="row.personId" :options="memberOptions"
+              show-search option-filter-prop="label" placeholder="选择成员" :disabled="!editable"/>
+            <label class="sr-only" :for="'pool-amount-'+index">分配金额 {{ index+1 }}</label>
+            <a-input-number :id="'pool-amount-'+index" v-model:value="row.amount" string-mode :min="0" :precision="2"
+              placeholder="金额（元）" :status="memberOverLimit(row) ? 'error' : undefined" :disabled="!editable"/>
+            <a-button type="text" :disabled="!editable" @click="rows.splice(index,1)">移除</a-button>
+          </div>
+          <a-button v-if="memberOptions.some(item=>!item.disabled)" :disabled="!editable" @click="rows.push({})">添加成员</a-button>
+          <div class="pool-control">
+            <label for="pool-retention">留存金额</label>
+            <a-input-number id="pool-retention" v-model:value="retained" string-mode :min="0" :precision="2"
+              placeholder="金额（元）" :disabled="!editable"/>
+          </div>
+          <div class="form-actions">
+            <span>拟分配 {{ formatMoney(memberTotal) }}</span>
+            <span>拟留存 {{ formatMoney(toMinor(retained)) }}</span>
+            <strong v-if="!Number.isNaN(remaining)" :class="{'pool-over-limit':remaining<0}" aria-live="polite">
+              {{ remaining<0 ? '超出池余额' : '待分配' }} {{ formatMoney(Math.abs(remaining)) }}
+            </strong>
+            <span v-if="overMemberLimit" role="alert" class="pool-over-limit">有成员超过可分配金额</span>
+            <a-button type="primary" :loading="saving" :disabled="!editable || remaining<0 || overMemberLimit" @click="save">保存分配草稿</a-button>
+          </div>
+        </template>
       </template>
     </div>
   </section>

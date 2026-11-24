@@ -245,6 +245,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/practice-rule-settings", Handler: submit(s.savePracticeRuleSettings)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-registration-companies", Handler: s.practiceRegistrationCompanyOptions},
 		{Method: http.MethodPost, Path: "/api/v1/practice-registration-import/preview", Handler: submitJSON(896<<10, s.previewPracticeRegistrationImport)},
+		{Method: http.MethodGet, Path: "/api/v1/practice-pools", Handler: s.listPracticePools},
 		{Method: http.MethodPost, Path: "/api/v1/practice-pools", Handler: submit(s.createPracticePool)},
 		{Method: http.MethodPost, Path: "/api/v1/team-pools", Handler: submit(s.createCatalogTeamPool)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
@@ -439,21 +440,24 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
  (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL) AS "practiceRosterEditable",
  (pro.period_mode='class' AND p.calendar_month IS NOT NULL) AS "practiceRefundMonth",
  (final.period_id IS NOT NULL) AS settled,
+ CASE WHEN draft.rule_id IS NULL AND draft.catalog_refunds_ready OR p.aggregate_package_id IS NOT NULL
+  OR draft.practice_roster_id IS NOT NULL OR pro.period_mode='class' AND p.calendar_month IS NOT NULL
+ THEN draft.version END AS "poolDraftVersion",
  p.source_period_key AS "sourcePeriodKey",roster.starts_at AS "classStartsAt",
  roster.source_version AS "practiceRosterVersion",roster.attendance_count AS "practiceRosterAttendance",
  coalesce(NOT roster.in_period,false) AS "classStartOutsidePeriod",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
  FROM periods p JOIN products pro ON pro.id=p.product_id
  LEFT JOIN settlements final ON final.period_id=p.id
- LEFT JOIN calculation_drafts frozen ON frozen.period_id=final.period_id
+ LEFT JOIN calculation_drafts draft ON draft.period_id=p.id
  LEFT JOIN LATERAL (
   SELECT r.starts_at,r.source_version,r.attendance_count,(r.starts_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on AS in_period
-  FROM practice_rosters r WHERE r.period_key=p.source_period_key AND (final.period_id IS NULL OR r.id=frozen.practice_roster_id)
+  FROM practice_rosters r WHERE r.period_key=p.source_period_key AND (final.period_id IS NULL OR r.id=draft.practice_roster_id)
   ORDER BY r.source_version DESC LIMIT 1
  ) roster ON pro.period_mode='class'
  LEFT JOIN LATERAL (
   SELECT rv.version,rv.label FROM rule_versions rv
   CROSS JOIN LATERAL (SELECT ` + componentRuleRetiredAtSQL + ` AS at) stopped WHERE ` + matchingRuleScope + `
-  AND CASE WHEN final.period_id IS NOT NULL THEN rv.id=frozen.rule_id
+  AND CASE WHEN final.period_id IS NOT NULL THEN rv.id=draft.rule_id
     WHEN pro.period_mode='class' THEN roster.in_period AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
       AND (stopped.at IS NULL OR roster.starts_at<stopped.at)
     ELSE (rv.effective_from IS NULL OR rv.effective_from < ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'))

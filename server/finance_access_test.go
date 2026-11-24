@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -24,6 +25,15 @@ func TestFinanceAccountLoginScopesRulesAndRevokesSession(t *testing.T) {
 		return result.(map[string]int64)["id"]
 	}
 	allowed, denied := newProduct("ALLOWED"), newProduct("DENIED")
+	if _, err := s.db.Exec(ctx, `INSERT INTO organization_units(id,kind,name,status)
+	 VALUES ('44444444-0000-4000-8000-000000000001','DEPARTMENT','池配置部门','ACTIVE'),
+	 ('44444444-0000-4000-8000-000000000002','DEPARTMENT','已停用部门','INACTIVE')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, `INSERT INTO practice_pools(product_id,unit_id,name)
+	 VALUES ($1,'44444444-0000-4000-8000-000000000002','历史团队池')`, allowed); err != nil {
+		t.Fatal(err)
+	}
 	grant := financeAccountConfig{Login: "rule.operator", PersonID: person.(map[string]int64)["id"], Enabled: true,
 		Rules: []financeRuleGrant{{ProductID: allowed, Publish: true}}}
 	const password = "isolated-fixture-pass!42"
@@ -65,6 +75,16 @@ func TestFinanceAccountLoginScopesRulesAndRevokesSession(t *testing.T) {
 	if w := call(http.MethodGet, "/api/v1/orders", "", cookie); w.Code != http.StatusForbidden {
 		t.Fatalf("scoped rules account saw unrelated order data: %d", w.Code)
 	}
+	poolDirectory := func(product int64) *httptest.ResponseRecorder {
+		return call(http.MethodGet, "/api/v1/practice-pools?productId="+strconv.FormatInt(product, 10), "", cookie)
+	}
+	if w := poolDirectory(allowed); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "历史团队池") ||
+		!strings.Contains(w.Body.String(), "池配置部门") {
+		t.Fatalf("publisher did not receive historical pools and active unit choices: %d %s", w.Code, w.Body)
+	}
+	if w := poolDirectory(denied); w.Code != http.StatusForbidden {
+		t.Fatalf("directory outside product scope: %d %s", w.Code, w.Body)
+	}
 	postRule := func(product int64) *httptest.ResponseRecorder {
 		payload, _ := json.Marshal(publishRuleInput{ProductID: product, Label: "样本", Components: []component{
 			{Type: "sales", ClassMember: "new", Mode: "rate", Value: 250, SourceRole: "DIRECT_REFERRER"},
@@ -94,6 +114,10 @@ func TestFinanceAccountLoginScopesRulesAndRevokesSession(t *testing.T) {
 		t.Fatalf("relogin: %d", w.Code)
 	}
 	cookie = w.Result().Cookies()[0]
+	if w := poolDirectory(allowed); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "历史团队池") ||
+		!strings.Contains(w.Body.String(), `"units":[]`) {
+		t.Fatalf("reader should see history without write choices: %d %s", w.Code, w.Body)
+	}
 	if w := postRule(allowed); w.Code != http.StatusForbidden {
 		t.Fatalf("read-only role published a rule: %d", w.Code)
 	}

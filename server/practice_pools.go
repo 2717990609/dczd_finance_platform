@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
 	"slices"
 	"strconv"
 	"strings"
@@ -62,6 +64,34 @@ func readCatalogTeamPools(ctx context.Context, db catalogPeriodReader, productID
 	 FROM practice_pools p JOIN organization_units u ON u.id=p.unit_id
 	 LEFT JOIN organization_units parent ON parent.id=u.parent_id WHERE p.product_id=$1 AND u.status='ACTIVE'`, productID).Scan(&pools)
 	return pools, err
+}
+
+func (s workspace) listPracticePools(w http.ResponseWriter, r *http.Request) {
+	product, err := strconv.ParseInt(r.URL.Query().Get("productId"), 10, 64)
+	if err != nil || product <= 0 {
+		respond(w, nil, invalid)
+		return
+	}
+	actor := financeUser(r.Context())
+	if actor != nil && !actor.permitsRule(product, false) {
+		respond(w, nil, errFinanceForbidden)
+		return
+	}
+	var result json.RawMessage
+	err = s.db.QueryRow(r.Context(), `SELECT jsonb_build_object(
+	 'items',coalesce((SELECT jsonb_agg(jsonb_build_object('id',p.id,'name',p.name,
+	  'unitName',concat_ws(' / ',parent.name,u.name),'unitStatus',u.status) ORDER BY parent.name,u.name,p.name,p.id)
+	  FROM practice_pools p JOIN organization_units u ON u.id=p.unit_id
+	  LEFT JOIN organization_units parent ON parent.id=u.parent_id WHERE p.product_id=$1),'[]'),
+	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',u.id,'name',concat_ws(' / ',parent.name,u.name)) ORDER BY parent.name,u.name,u.id)
+	  FROM organization_units u LEFT JOIN organization_units parent ON parent.id=u.parent_id
+	  WHERE u.status='ACTIVE' AND $2),'[]'))
+	 FROM products WHERE id=$1 AND period_mode='class'`, product,
+		actor == nil || actor.permitsRule(product, true)).Scan(&result)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = invalid
+	}
+	respond(w, result, err)
 }
 
 func (s workspace) createPracticePool(ctx context.Context, input createPracticePoolInput) (any, error) {

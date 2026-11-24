@@ -12,6 +12,7 @@ import FinanceLogin from './FinanceLogin.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
+import { teamPoolKey } from './team-pool-key'
 import { catalogAppointmentLevels, checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
   practiceCompanyStandardIndicators, practiceCountStartBody, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
   practiceRecipientIsPerson, practiceSalesScopeText, practiceStandardRateSummary, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
@@ -34,15 +35,19 @@ const PracticeCompanySalesEditor = defineAsyncComponent(() => import('./Practice
 const PracticeTierEditor = defineAsyncComponent(() => import('./PracticeTierEditor.vue'))
 const PracticeRosterSelect = defineAsyncComponent(() => import('./PracticeRosterSelect.vue'))
 const DepartmentRetention = defineAsyncComponent(() => import('./DepartmentRetention.vue'))
+const TeamPools = defineAsyncComponent(() => import('./TeamPools.vue'))
+const PoolDirectory = defineAsyncComponent(() => import('./PoolDirectory.vue'))
 const navigation = [
   {key:'tasks', area:'work', title:'待办'},
   {key:'settlement', area:'work', title:'分润试算'},
   {key:'monthly', area:'work', title:'月度汇总'},
+  {key:'pools', area:'work', title:'团队池'},
   {key:'retention', area:'work', title:'部门留存金'},
   {key:'orders', area:'work', title:'来源订单'},
   {key:'products', area:'config', title:'产品目录'},
   {key:'periods', area:'config', title:'核算期次'},
   {key:'rules', area:'config', title:'产品规则'},
+  {key:'pool-config', area:'config', title:'团队池配置'},
   {key:'organization', area:'data', title:'组织与人员'},
   {key:'people', area:'data', title:'人员映射'},
 ]
@@ -78,7 +83,7 @@ const sessionBusy = ref(false)
 const sessionChecking = ref(false)
 const wholeWorkspace = computed(() => session.value?.user ? session.value.user.workspace : session.value?.development)
 const visibleNavigation = computed(() => wholeWorkspace.value ? navigation : session.value?.user?.rules.length
-  ? navigation.filter(entry => entry.key==='rules') : [])
+  ? navigation.filter(entry => ['rules','pool-config'].includes(entry.key)) : [])
 const getRoute = key => {
   if (visibleNavigation.value.some(entry => entry.key === key)) return key
   return visibleNavigation.value[0]?.key
@@ -114,13 +119,13 @@ const activeRuleComponent = ref(0)
 const unitScope = ref()
 const usesOrganizationScope = computed(() => ['orders','settlement','monthly','retention'].includes(current.value))
 const scopeSearch = ref('')
-const configProductPages = new Set(['products','periods','rules'])
+const configProductPages = new Set(['products','periods','rules','pool-config'])
 const activeProductScope = computed(() => configProductPages.has(current.value) ? configProductScope : workProductScope)
 const productScope = computed({
   get: () => activeProductScope.value.value,
   set: value => { activeProductScope.value.value = value },
 })
-const productScopedPages = new Set([...configProductPages,'tasks','settlement','monthly'])
+const productScopedPages = new Set(['products','periods','rules','tasks','settlement','monthly','pools'])
 const usesProductScope = computed(() => productScopedPages.has(current.value))
 const ruleBusinessOptions = computed(() => {
   const products = data.value.products.filter(product=>!productScope.value || product.id===productScope.value)
@@ -144,19 +149,25 @@ watch(productScope,()=>{
   ruleBusinessScope.value=undefined
   loadingRule.value=undefined
 })
-const showScope = computed(() => usesProductScope.value || current.value === 'orders')
+const showScope = computed(() => usesProductScope.value || usesOrganizationScope.value)
 const organization = ref()
 const monthlyReport = ref()
 const retention = ref()
+const poolDirectory = ref()
+const poolConfigProduct = ref()
+const teamPoolPeriod = ref()
+const requestedPoolPeriod = ref()
+const poolContext = ref(new URLSearchParams())
+const retentionResume = ref()
 const periodTasks = ref()
 const tasksMode = ref('pending')
 const tasksReturn = ref()
 const workspaceMonth = ref(new Intl.DateTimeFormat('sv-SE', {year:'numeric',month:'2-digit',timeZone:'Asia/Shanghai'}).format(new Date()))
-const usesWorkspaceMonth = computed(() => ['tasks','settlement','monthly','retention'].includes(current.value))
+const usesWorkspaceMonth = computed(() => ['tasks','settlement','monthly','pools','retention'].includes(current.value))
 const monthlyView = ref()
 const monthlyDimension = ref()
 const periodOrigin = ref()
-const periodOrigins = {monthly:'月度汇总',tasks:'待办',retention:'部门留存金',person:'个人业绩与分润'}
+const periodOrigins = {monthly:'月度汇总',tasks:'待办',retention:'部门留存金',pools:'团队池',periods:'核算期次',person:'个人业绩与分润'}
 const personReportOrigin = ref()
 const monthlyReturn = ref()
 const monthlyResume = ref()
@@ -225,6 +236,7 @@ function matchesOption(option, periodMode, type, member) {
 const productOptions = computed(() => data.value.products.map(p => ({value:p.id,label:p.name})))
 const canReadRules = productId => session.value?.user
   ? session.value.user.rules.some(rule=>rule.productId===productId) : session.value?.development
+const poolProducts = computed(() => data.value.products.filter(product=>product.periodMode==='class' && canReadRules(product.id)))
 const scopedProducts = computed(() => data.value.products.filter(p => current.value !== 'rules' || canReadRules(p.id)))
 const scopeProductOptions = computed(() => scopedProducts.value.map(p=>({value:p.id,label:p.name})))
 const canPublishRule = productId => session.value?.user
@@ -247,6 +259,7 @@ function classRuleSetupLink(period, fromWorkbench = false) {
     if (fromWorkbench) params.set('from','settlement')
     if (fromWorkbench && periodOrigin.value) params.set('returnFrom',periodOrigin.value)
     if (fromWorkbench && periodOrigin.value==='person') params.set('fromPerson',personReportOrigin.value)
+    if (fromWorkbench && periodOrigin.value==='pools') copyPoolContext(poolContext.value,params)
     if (fromWorkbench && reviewRootPeriod.value) params.set('reviewRootPeriodId',reviewRootPeriod.value)
     return '#rules?'+params
   }
@@ -324,8 +337,11 @@ const issueRuleLink = computed(() => {
   const period = selectedWorkbenchPeriod.value
   if (period && canReadRules(period.productId)) return workbenchPageLink('rules',{productId:period.productId})
 })
-watch(() => data.value.periods.find(period => period.id === requestedPeriod.value)?.reportMonth, month => {
+watch(() => data.value.periods.find(period => period.id === (requestedPeriod.value || requestedPoolPeriod.value))?.reportMonth, month => {
   if (month) workspaceMonth.value = month
+})
+watch(() => data.value.periods.find(period=>period.id===requestedPoolPeriod.value)?.productId, id => {
+  if (current.value==='pools' && id && productScope.value && productScope.value!==id) productScope.value = undefined
 })
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
 const practiceRetrainSales = computed(() => classRule.value
@@ -649,7 +665,7 @@ const columns = computed(() => {
     product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['业务 SKU / 报名类型','businessSkus',290],['操作','productAction',160]],
     mapping:[['产品名称','productName'],['业务来源','source'],['业务域','domain'],['来源标识','sourceKey']],
     period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],
-      ['报表月份','reportMonth',115],['签到名单','practiceRoster',150],['适用规则','ruleVersion',200]],
+      ['报表月份','reportMonth',115],['来源期次','sourcePeriodKey',148],['签到名单','practiceRoster',150],['适用规则','ruleVersion',200]],
     rule:[['规则名称','label',210],['所属产品','productName',128],['版本','version',68],
       ['适用订单','scope',188],['生效时间','effectiveFrom',165],['状态','components',112],['操作','ruleAction',240]],
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
@@ -683,7 +699,7 @@ async function refresh(reloadOptions = false) {
   if (orderQuery.value) params.set('orderId',orderQuery.value)
   if (olderThan.value) params.set('beforeId',olderThan.value)
   if (unitScope.value) params.set('unitId',unitScope.value)
-  const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], retention:[], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
+  const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], pools:['products','periods'], retention:[], 'pool-config':['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
   if (requests.identities && identityAccount.value) {
     const {source,externalId} = identityAccount.value
@@ -742,6 +758,7 @@ function refreshWorkspace() {
   else organization.value?.refresh()
   monthlyReport.value?.refresh()
   retention.value?.refresh()
+  poolDirectory.value?.refresh()
   orderSync.value?.reload()
 }
 function settlementLink(periodId, view, origin, rootPeriodId, fromPerson = personReportOrigin.value) {
@@ -749,6 +766,7 @@ function settlementLink(periodId, view, origin, rootPeriodId, fromPerson = perso
   if (view) params.set('view',view)
   if (origin) params.set('from',origin)
   if (origin==='person' && fromPerson) params.set('fromPerson',fromPerson)
+  if (origin==='pools') copyPoolContext(poolContext.value,params)
   if (rootPeriodId && rootPeriodId!==periodId) params.set('reviewRootPeriodId',rootPeriodId)
   return '#settlement?'+params
 }
@@ -759,6 +777,7 @@ function workbenchPageLink(page, values) {
     params.set('returnView',workbenchView.value)
     if (periodOrigin.value) params.set('returnFrom',periodOrigin.value)
     if (periodOrigin.value==='person') params.set('fromPerson',personReportOrigin.value)
+    if (periodOrigin.value==='pools') copyPoolContext(poolContext.value,params)
     if (reviewRootPeriod.value) params.set('reviewRootPeriodId',reviewRootPeriod.value)
   }
   return '#'+page+'?'+params
@@ -772,6 +791,48 @@ function relatedPeriodLink(periodId) {
   if (periodId) return settlementLink(periodId,'review',periodOrigin.value,reviewRootPeriod.value || workbenchPeriod.value)
   return workbenchPageLink('periods',selectedWorkbenchPeriod.value ? {productId:selectedWorkbenchPeriod.value.productId} : {})
 }
+const poolContextFields = ['pool','poolMonth','retentionMonth','retentionUnit','retentionAccount','retentionPage']
+function copyPoolContext(from,to) {
+  for (const field of poolContextFields) {
+    const value = from.get(field)
+    if (value && value.length<=500) to.set(field,value)
+  }
+}
+function poolPageHref(id, context) {
+  const params = new URLSearchParams({periodId:id})
+  copyPoolContext(context,params)
+  return '#pools?'+params
+}
+function retentionPoolLink(row, accountId, page) {
+  const context = new URLSearchParams({pool:teamPoolKey(row),poolMonth:row.month,
+    retentionMonth:workspaceMonth.value,retentionAccount:accountId,retentionPage:page})
+  if (unitScope.value) context.set('retentionUnit',unitScope.value)
+  return poolPageHref(row.periodId,context)
+}
+const retentionPoolReturn = computed(() => {
+  const month = routeMonth(poolContext.value.get('retentionMonth'))
+  if (current.value!=='pools' || !month) return
+  const params = new URLSearchParams({month})
+  for (const [from,to] of [['retentionUnit','unitId'],['retentionAccount','accountId'],['retentionPage','page']]) {
+    const value = poolContext.value.get(from)
+    if (value) params.set(to,value)
+  }
+  return '#retention?'+params
+})
+const periodOriginLink = computed(() => {
+  if (periodOrigin.value==='person') return personReportOrigin.value
+  if (periodOrigin.value==='pools') return poolPageHref(requestedPeriod.value,poolContext.value)
+  if (periodOrigin.value==='periods' && selectedWorkbenchPeriod.value) {
+    return '#periods?productId='+selectedWorkbenchPeriod.value.productId
+  }
+  return '#'+periodOrigin.value
+})
+function routeMonth(value) {
+  return /^\d{4}-(0[1-9]|1[0-2])$/.test(value || '') ? value : undefined
+}
+function routeUnit(value) {
+  return /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(value || '') ? value : undefined
+}
 function routeId(value) {
   const id = Number(value)
   return Number.isSafeInteger(id) && id > 0 ? id : undefined
@@ -780,7 +841,7 @@ function personReportFilters(params) {
   const month = params.get('month')
   const reportView = params.get('reportView')
   return {
-    month:/^\d{4}-(0[1-9]|1[0-2])$/.test(month || '') ? month : undefined,
+    month:routeMonth(month),
     view:['current','settled'].includes(reportView) ? reportView : undefined,
   }
 }
@@ -843,6 +904,23 @@ function changeRoute() {
     productScope.value = productID
   }
   const periodID = routeId(params.get('periodId'))
+  const isPoolPage = current.value==='pools' && key==='pools'
+  const context = new URLSearchParams()
+  copyPoolContext(params,context)
+  poolContext.value = context
+  requestedPoolPeriod.value = isPoolPage ? periodID : undefined
+  if (requestedPoolPeriod.value) {
+    const month = routeMonth(context.get('poolMonth'))
+    if (month) workspaceMonth.value = month
+    const product = data.value.periods.find(row=>row.id===periodID)?.productId
+    if (product && productScope.value && productScope.value!==product) productScope.value = undefined
+  }
+  retentionResume.value = undefined
+  if (current.value==='retention' && key==='retention' && routeMonth(params.get('month'))) {
+    workspaceMonth.value = params.get('month')
+    unitScope.value = routeUnit(params.get('unitId'))
+    retentionResume.value = {accountId:routeUnit(params.get('accountId')),page:Math.min(routeId(params.get('page')) || 1,100000)}
+  }
   requestedRulePeriod.value = key==='rules' && current.value===key ? periodID : undefined
   const practiceConfig = params.get('practiceConfig')
   requestedPracticeSettings.value = key==='rules' && current.value===key && practiceRuleTabs.some(tab=>tab.key===practiceConfig)
@@ -953,6 +1031,11 @@ function clearWorkspace() {
   workbenchQuery.value = {}
   periodOrigin.value = undefined
   personReportOrigin.value = undefined
+  requestedPoolPeriod.value = undefined
+  teamPoolPeriod.value = undefined
+  poolConfigProduct.value = undefined
+  poolContext.value = new URLSearchParams()
+  retentionResume.value = undefined
   tasksMode.value = 'pending'
   tasksReturn.value = undefined
   monthlyReturn.value = undefined
@@ -1660,7 +1743,7 @@ async function save() {
             <a-select id="scope-product" :value="productScope" placeholder="全部产品" :options="scopeProductOptions" allow-clear @change="selectProduct"/>
           </div>
         </template>
-        <template v-else>
+        <template v-else-if="current==='orders'">
           <span class="desktop-scope scope-title">订单来源</span>
           <div class="desktop-scope scope-options" aria-label="订单来源">
             <button type="button" :aria-pressed="!sourceFilter" @click="selectSource('')">全部来源</button>
@@ -1677,7 +1760,8 @@ async function save() {
           <div class="workspace-page-title">
             <h1>{{ active.area==='data' ? '组织与人员' : active.title }}</h1>
             <a v-if="reviewRootPeriod" class="workspace-return" :href="settlementLink(reviewRootPeriod,'review',periodOrigin)"><LeftOutlined aria-hidden="true"/>返回原期核对</a>
-            <a v-else-if="periodOrigin" class="workspace-return" :href="periodOrigin==='person' ? personReportOrigin : '#'+periodOrigin"><LeftOutlined aria-hidden="true"/>返回{{ periodOrigins[periodOrigin] }}</a>
+            <a v-else-if="periodOrigin" class="workspace-return" :href="periodOriginLink"><LeftOutlined aria-hidden="true"/>返回{{ periodOrigins[periodOrigin] }}</a>
+            <a v-if="retentionPoolReturn" class="workspace-return" :href="retentionPoolReturn"><LeftOutlined aria-hidden="true"/>返回部门留存金</a>
             <a v-if="configurationReturn" class="workspace-return" :href="configurationReturn.href"><LeftOutlined aria-hidden="true"/>{{ configurationReturn.label }}</a>
             <a v-else-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
             <div v-if="!practiceSettingsView && actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length) && !identityAccount" class="topbar-actions">
@@ -1741,10 +1825,20 @@ async function save() {
             :resume="monthlyResume" :units="scopeUnits"
             :views="options('monthlyReportView')" :dimensions="options('draftReportDimension')" @select-unit="selectOrganization"/>
         </template>
+        <template v-else-if="current==='pools'">
+          <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
+          <TeamPools v-model="teamPoolPeriod" :periods="calculationPeriods" :requested-period="requestedPoolPeriod"
+            :requested-pool="poolContext.get('pool')" :loading="loading" :api="api" :format-money="formatMoney"
+            :can-configure="poolProducts.length>0" :period-link="id=>settlementLink(id,'detail','pools')"/>
+        </template>
+        <template v-else-if="current==='pool-config'">
+          <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
+          <PoolDirectory ref="poolDirectory" v-model="poolConfigProduct" :products="poolProducts" :api="api" :can-publish="canPublishRule"/>
+        </template>
         <template v-else-if="current==='retention'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <DepartmentRetention ref="retention" :month="workspaceMonth" :unit-id="unitScope" :api="api"
-            :units="scopeUnits" :format-money="formatMoney" :format-time="formatTime"/>
+            :units="scopeUnits" :format-money="formatMoney" :format-time="formatTime" :resume="retentionResume" :pool-link="retentionPoolLink"/>
         </template>
         <template v-else-if="current==='organization'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
@@ -1821,7 +1915,7 @@ async function save() {
                   <span v-else-if="record.periodMode==='class'">{{ options('classMember').filter(item=>item.value).map(item=>item.label).join(' · ') }}</span>
                   <span v-else>—</span>
                 </template>
-                <a v-else-if="column.key==='name' && current==='periods'" :href="'#settlement?periodId='+record.id">{{ text }}</a>
+                <a v-else-if="column.key==='name' && current==='periods'" :href="settlementLink(record.id,undefined,'periods')">{{ text }}</a>
                 <a v-else-if="current==='people' && column.key==='name'" :href="personLink(record.id)" class="person-name-link">{{ text }}</a>
                 <a v-else-if="current==='people' && column.key==='personName'" :href="personLink(record.personId,'accounts')" class="person-name-link">{{ text }}</a>
                 <template v-else-if="column.key==='name'||column.key==='label'">
@@ -1842,6 +1936,11 @@ async function save() {
                 <template v-else-if="column.key==='reportMonth'">
                   <a-button v-if="record.reportMonthEditable" type="link" size="small" :title="'设置 '+record.name+' 的报表月份'" @click="open('reportMonth',record)">{{ text }}</a-button>
                   <span v-else>{{ text }}</span>
+                </template>
+                <template v-else-if="column.key==='sourcePeriodKey'">
+                  <span v-if="text" class="numeric">{{ text }}</span>
+                  <a-tag v-else-if="record.periodMode==='class' && !record.practiceRefundMonth" color="orange">待关联来源期次</a-tag>
+                  <span v-else>—</span>
                 </template>
                 <template v-else-if="column.key==='practiceRoster'">
                   <template v-if="record.periodMode==='class' && !record.practiceRefundMonth">

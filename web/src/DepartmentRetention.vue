@@ -2,10 +2,10 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { moneyAsMinor } from './rule-component-form'
 
-const props = defineProps({ api:Function, month:String, unitId:String, units:Array, formatMoney:Function, formatTime:Function })
+const props = defineProps({ api:Function, month:String, unitId:String, units:Array, formatMoney:Function, formatTime:Function, poolLink:Function, resume:Object })
 const report = ref()
-const accountId = ref()
-const page = ref(1)
+const accountId = ref(props.resume?.accountId)
+const page = ref(props.resume?.page || 1)
 const loading = ref(false)
 const error = ref('')
 const entryForm = ref()
@@ -145,7 +145,7 @@ defineExpose({refresh:load})
         <span v-if="column.key==='kind'">{{ kindLabels[text] }}</span>
         <template v-else-if="column.key==='details'">
           <template v-if="record.periodId">
-            <a class="order-link" :href="'#settlement?periodId='+record.periodId+'&view=pools&from=retention'">{{ record.periodName }}</a>
+            <a class="order-link" :href="poolLink(record,accountId,page)">{{ record.periodName }}</a>
             <small class="order-version">{{ record.productName }}</small>
           </template>
           <span v-else>{{ [record.reimbursementNo,record.note].filter(Boolean).join(' · ') || '—' }}</span>

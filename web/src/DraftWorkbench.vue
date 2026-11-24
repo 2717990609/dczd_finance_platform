@@ -314,6 +314,7 @@ async function loadMore(section, cursorName) {
             show-search option-filter-prop="label" :disabled="calculating || pullingRoster || savingRecovery" />
         </div>
         <div v-if="selected" class="workbench-actions">
+          <a-button v-if="needsRosterEdit" :href="relatedPeriodLink()">查看期次映射</a-button>
           <a-button v-if="needsRosterEdit" :disabled="!rosterEditReady || loading || pullingRoster || calculating"
             @click="emit('show-roster',selectedPeriod)">{{ selectedPeriod.sourcePeriodKey ? '更正签到关联' : '关联签到名单' }}</a-button>
           <a-button v-if="canPullRoster && (view!=='review' || !draft)" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>

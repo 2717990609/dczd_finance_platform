@@ -24,7 +24,7 @@ manual AS MATERIALIZED (
  WHERE entry.book_month<=$1::date AND ({{unit}} IS NULL OR entry.unit_id IN (SELECT id FROM organization_scope))
 ), credits AS (
  SELECT share.id,a.unit_id,share.amount_minor,p.id AS period_id,p.name AS period_name,
-  product.name AS product_name,settlement.confirmed_at,`+periodReportMonthSQL+` AS book_month
+  product.name AS product_name,a.item_key,a.scenario_key,settlement.confirmed_at,`+periodReportMonthSQL+` AS book_month
  FROM monthly_pool_allocation_shares share JOIN monthly_pool_allocations a ON a.id=share.allocation_id
  JOIN settlements settlement ON (settlement.period_id,settlement.draft_version)=(a.period_id,a.draft_version)
  JOIN periods p ON p.id=a.period_id JOIN products product ON product.id=p.product_id
@@ -34,12 +34,12 @@ manual AS MATERIALIZED (
   AND ({{unit}} IS NULL OR a.unit_id IN (SELECT id FROM organization_scope))
 ), entries AS MATERIALIZED (
  SELECT 'credit-'||id AS key,unit_id,amount_minor,'income' AS kind,'income' AS category,
-  period_id,period_name,product_name,confirmed_at AS recorded_at,book_month,NULL::bigint AS manual_id,
+  period_id,period_name,product_name,item_key,scenario_key,confirmed_at AS recorded_at,book_month,NULL::bigint AS manual_id,
   '' AS note,NULL::text AS reimbursement_no,false AS reversible
  FROM credits
  UNION ALL
  SELECT 'record-'||id,unit_id,amount_minor,kind,coalesce(original_kind,kind),
-  NULL,NULL,NULL,recorded_at,book_month,id,note,reimbursement_no,
+  NULL,NULL,NULL,NULL,NULL,recorded_at,book_month,id,note,reimbursement_no,
   kind IN ('expense','correction') AND NOT EXISTS(SELECT 1 FROM department_retention_entries r WHERE r.original_id=manual.id)
  FROM manual
 ), accounts AS (
@@ -51,6 +51,7 @@ manual AS MATERIALIZED (
  FROM entries GROUP BY unit_id
 ), statement AS (
  SELECT key AS id,period_id AS "periodId",period_name AS "periodName",product_name AS "productName",
+  unit_id AS "unitId",item_key AS "itemKey",scenario_key AS scenario,
   amount_minor AS "amountMinor",recorded_at AS "confirmedAt",to_char(book_month,'YYYY-MM') AS month,
   kind,manual_id AS "manualId",note,reimbursement_no AS "reimbursementNo",reversible
  FROM entries WHERE unit_id=$3::uuid

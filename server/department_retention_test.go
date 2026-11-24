@@ -50,8 +50,8 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 		OpeningMinor, IncomeMinor, BalanceMinor int64
 	}
 	type entry struct {
-		PeriodID, AmountMinor int64
-		ProductName, Month    string
+		PeriodID, AmountMinor                         int64
+		ProductName, Month, UnitID, ItemKey, Scenario string
 	}
 	read := func(query string) struct {
 		Items   []account
@@ -76,8 +76,8 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 	if len(report.Items) != 1 || report.Items[0] != (account{department, "共有业务部", 5000, 12000, 17000}) {
 		t.Fatalf("expected one cross-product account for the selected company: %+v", report.Items)
 	}
-	if len(report.Entries) != 2 || report.Entries[0] != (entry{2, 12000, "实战班", "2026-08"}) ||
-		report.Entries[1] != (entry{1, 5000, "大春 AI", "2026-07"}) {
+	if len(report.Entries) != 2 || report.Entries[0] != (entry{2, 12000, "实战班", "2026-08", department, "pool2", "class"}) ||
+		report.Entries[1] != (entry{1, 5000, "大春 AI", "2026-07", department, "pool1", "ai"}) {
 		t.Fatalf("expected the actual confirmed retained entries and business months: %+v", report.Entries)
 	}
 	if other := read("month=2026-08&unitId=" + otherCompany + "&accountId=" + department); len(other.Items) != 0 || len(other.Entries) != 0 {
