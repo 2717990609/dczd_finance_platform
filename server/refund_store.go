@@ -31,7 +31,6 @@ type refundObligation struct {
 	ID, PaymentVersion, Base, Accrued int64
 	ComponentType                     string
 	Policy                            component
-	SplitRole                         string
 }
 
 type refundLineKey struct {
@@ -159,7 +158,6 @@ type refundReference struct {
 func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, requests []refundReference, practiceMonth bool) (map[int64][]refundObligation, error) {
 	rows, err := tx.Query(ctx, `SELECT q.id,l.id,p.id,l.base_minor,l.amount_minor,l.component_type,r.components,
   l.catalog_rule_id IS NOT NULL,coalesce(l.applied_rate_bps,-1),coalesce(cv.definition->>'refund_policy',''),
-  coalesce(cv.definition->'internal_sales_direct_split'->>'sales_item_key',''),
   coalesce(cardinality(enrollment.paid_order_ids),0),coalesce(enrollment.membership_type,0),coalesce(company.company_id,''),
   coalesce(d.practice_replay_inputs->'companyClassifications'->>(p.fact->>'paymentId'),'')
  FROM jsonb_to_recordset($1::jsonb) AS q(id bigint,source text,order_id text,line_id text,record_id text)
@@ -192,7 +190,7 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
 		var legs, membership int
 		var company, category string
 		if err = rows.Scan(&id, &line.ID, &line.PaymentVersion, &line.Base, &line.Accrued, &line.ComponentType,
-			&components, &catalog, &rate, &terms.Mode, &terms.SplitItem, &legs, &membership, &company, &category); err != nil {
+			&components, &catalog, &rate, &terms.Mode, &legs, &membership, &company, &category); err != nil {
 			return nil, err
 		}
 		line.Policy = refundComponent(components, line.ComponentType)
@@ -210,6 +208,7 @@ func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, reque
 func refundComponent(components []component, key string) component {
 	for _, c := range components {
 		if c.Type == key {
+			c.RefundPolicy = "proportional"
 			return c
 		}
 	}
@@ -448,23 +447,12 @@ func applyHistoricalRefund(draft *paymentDraft, event refundInput, originals []r
 		}
 		active = append(active, original)
 	}
-	var order string
-	if len(f.RefundsPayment) == 1 {
-		order = f.Source + ":" + f.RefundsPayment[0].OrderID
-	}
-	group, err := vipRefundGroupDeltas(order, principal, active, history)
-	if err != nil {
-		return refundProblem(err)
-	}
 	var pending []refundLine
 	for _, original := range active {
 		h := history[original.key()]
-		delta, split := group[original.key()]
-		if !split {
-			delta, err = refundDelta(original.Policy, original.Base, original.Accrued, h.principal+principal, h.deducted)
-			if err != nil {
-				return refundProblem(err)
-			}
+		delta, err := refundDelta(original.Policy, original.Base, original.Accrued, h.principal+principal, h.deducted)
+		if err != nil {
+			return refundProblem(err)
 		}
 		line := refundLine{
 			OriginalLineID: original.ID, RefundPeriodID: event.RefundPeriodID, RefundSourceVersionID: event.ID,

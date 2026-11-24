@@ -343,7 +343,7 @@ func computeRecommendationCorrection(input correctionInput, b *correctionBalance
 		expected = calculatePaymentAmount(base, part)
 	}
 	if b.refunded > 0 {
-		negative, err := refundDelta(part, base, expected, b.refunded, 0)
+		negative, err := refundDelta(component{RefundPolicy: "proportional"}, base, expected, b.refunded, 0)
 		if err != nil {
 			return correctionEvaluation{issue: "CORRECTION_REFUND_CONFLICT"}, nil
 		}

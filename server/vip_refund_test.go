@@ -5,17 +5,17 @@ import (
 	"time"
 )
 
-func TestVIPRefundRoundsOnceForTheSplitAndCapsEachPriorBalance(t *testing.T) {
+func TestVIPRefundRoundsByOriginalRecipientAndCapsEachPriorBalance(t *testing.T) {
 	// 29 cents originally paid at 70%. The rounded distribution is 20 cents.
-	// After a 3-cent refund, the group retains 18 cents, allocated using the
-	// original 8:4:4:4 stored amounts, without changing a prior recipient.
+	// Allocate the refund against each original 8:4:4:4 posted share.
+	// A small refund must not be moved from one recipient to another.
 	parts := []refundObligation{
 		{ID: 1, PaymentVersion: 10, Base: 29, Accrued: 8, ComponentType: "sales:SALES"},
 		{ID: 2, PaymentVersion: 10, Base: 29, Accrued: 4, ComponentType: "sales:DCAI_GROUP_LEAD"},
 		{ID: 3, PaymentVersion: 10, Base: 29, Accrued: 4, ComponentType: "sales:DCAI_SERVICE"},
 		{ID: 4, PaymentVersion: 10, Base: 29, Accrued: 4, ComponentType: "sales:DCAI_TEAM_HEAD"},
 	}
-	terms := vipRefundTerms{Mode: "PROPORTIONAL", SplitItem: "sales"}
+	terms := vipRefundTerms{Mode: "PROPORTIONAL"}
 	for i := range parts {
 		terms.apply(&parts[i], 7000)
 	}
@@ -39,7 +39,7 @@ func TestVIPRefundRoundsOnceForTheSplitAndCapsEachPriorBalance(t *testing.T) {
 		}
 	}
 	refund("part-one", 3, false)
-	if draft.RefundTotal != -2 || len(draft.Refunds) != 4 {
+	if draft.RefundTotal != -1 || len(draft.Refunds) != 4 {
 		t.Fatalf("first refund = %+v", draft.Refunds)
 	}
 	refund("part-two", 19, false)
@@ -59,18 +59,11 @@ func TestVIPRefundRoundsOnceForTheSplitAndCapsEachPriorBalance(t *testing.T) {
 	}
 	draft = paymentDraft{}
 	refund("renewal-partial", 3, false)
-	if draft.RefundTotal != -2 || history[unposted] != nil {
+	if draft.RefundTotal != -1 || history[unposted] != nil {
 		t.Fatalf("partial refund of the actual postings = %+v", draft.Refunds)
 	}
 	refund("renewal-rest", 26, true)
 	if draft.RefundTotal != -16 {
 		t.Fatalf("full refund must return only the 16 cents originally posted, got %d", draft.RefundTotal)
-	}
-	// A very asymmetric cap still produces the correct balance without iterating cents.
-	shares := []vipRefundShare{
-		{role: "a", original: 999999999, cap: 0}, {role: "b", original: 1000, cap: 1000}, {role: "c", original: 1000, cap: 1000},
-	}
-	if err := allocateVIPRefundRemaining("large", 1800, shares); err != nil || shares[1].remaining != 900 || shares[2].remaining != 900 {
-		t.Fatalf("capped balances = %+v, %v", shares, err)
 	}
 }

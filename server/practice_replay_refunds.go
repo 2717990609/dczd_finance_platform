@@ -70,6 +70,7 @@ func replayPracticeRefunds(ctx context.Context, tx pgx.Tx, classID int64, events
 	if err != nil {
 		return nil, err
 	}
+	replay.runtime.legacyFixedRefundPolicy = false
 	if err := replay.loadSettledRefunds(ctx, tx, classID); err != nil {
 		return nil, err
 	}

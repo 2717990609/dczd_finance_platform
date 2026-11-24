@@ -2,8 +2,8 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { practiceCompanyCalculationText, practiceCompanyMatchLabels, practiceCompanyMatchText, practiceCompanyRatePriority, practiceCompanyRefundMode,
-  practiceCompanyRefundOptions, practiceCompanyScopes, practiceRecipientIsPerson } from './rule-component-form'
+import { practiceCompanyCalculationText, practiceCompanyMatchLabels, practiceCompanyMatchText, practiceCompanyRatePriority,
+  practiceCompanyScopes, practiceRecipientIsPerson } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
   sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array,duties:Array})
@@ -24,10 +24,6 @@ const standardRowsByScope = computed(() => ({
 const companyPageSize = 8
 const companyPage = ref(1)
 const companyRows = computed(() => [...standardRowsByScope.value.companies,...overrides.value])
-const refundColumns = computed(() => ({
-  category:standardRowsByScope.value.category.some(({standard})=>standard.mode==='fixed'),
-  companies:companyRows.value.some(row=>(row.standard || row.override).mode==='fixed'),
-}))
 const companyPageCount = computed(() => Math.max(1,Math.ceil(companyRows.value.length/companyPageSize)))
 const visibleCompanyRows = computed(() => {
   const start = (companyPage.value-1)*companyPageSize
@@ -89,7 +85,7 @@ function salesCategoryOptions(category) {
   return props.salesCategories.filter(option=>!categories.value.some(other=>
     other!==category && other.scope==='category' && other.salesCategoryIds.includes(option.value)))
 }
-const standardMethod = mode => ({mode,refundPolicy:mode==='fixed' ? 'proportional' : undefined})
+const standardMethod = mode => ({mode})
 async function addStandard(scope) {
   const index = categories.value.length
   categories.value.push({scope,...standardMethod(amounts.value[0]?.value),companies:[],salesCategoryIds:[],overrides:[]})
@@ -169,12 +165,11 @@ watch(amounts, choices => {
         </template>
       </header>
       <div v-if="group.scope!=='default' && (standardRowsByScope[group.scope].length || (group.scope==='companies' && overrides.length))"
-        class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations,'has-refund':refundColumns[group.scope]}">
+        class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations}">
         <div class="company-standard-fields company-standard-column-labels" aria-hidden="true">
           <span>{{ group.scope==='category' ? '适用销售类别' : '适用销售公司' }}</span>
           <span v-if="amounts.length>1">计提方式</span>
           <span>{{ amounts.length>1 ? '计提标准' : '比例（%）' }}</span>
-          <span v-if="refundColumns[group.scope]">退款扣回方式</span>
           <span v-if="legacyRecommendations">推荐比例（%）</span>
         </div>
         <div v-for="({standard:category,index:i}) in visibleStandards[group.scope]" :key="i" class="company-category company-standard-fields">
@@ -194,12 +189,6 @@ watch(amounts, choices => {
               :addon-after="amounts.length>1 ? (category.mode==='rate' ? '%' : '元') : undefined"
               :max="category.mode==='rate'?100:undefined" :precision="category.mode==='rate'?4:2"/>
           </a-form-item>
-          <a-form-item v-if="category.mode==='fixed'" label="退款扣回方式" :html-for="field('refund-'+i)">
-            <a-select :id="field('refund-'+i)" :value="practiceCompanyRefundMode(category,component.classMember)"
-              :options="practiceCompanyRefundOptions" :disabled="component.classMember==='new'" size="small"
-              @update:value="category.refundPolicy=$event==='proportional' ? $event : undefined"/>
-          </a-form-item>
-          <span v-else-if="refundColumns[group.scope]" aria-hidden="true"></span>
           <a-form-item v-if="legacyRecommendations" label="推荐比例（%）" :html-for="field('recommendation-'+i)">
             <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" size="small" :min="0" :max="100" :precision="4"/>
           </a-form-item>
@@ -225,12 +214,6 @@ watch(amounts, choices => {
                 :addon-after="amounts.length>1 ? (override.mode==='rate' ? '%' : '元') : undefined"
                 :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
             </a-form-item>
-            <a-form-item v-if="override.mode==='fixed'" label="退款扣回方式" :html-for="field('override-refund-'+i+'-'+j)">
-              <a-select :id="field('override-refund-'+i+'-'+j)" :value="practiceCompanyRefundMode(override,component.classMember)"
-                :options="practiceCompanyRefundOptions" :disabled="component.classMember==='new'" size="small"
-                @update:value="override.refundPolicy=$event==='proportional' ? $event : undefined"/>
-            </a-form-item>
-            <span v-else-if="refundColumns[group.scope]" aria-hidden="true"></span>
             <a-form-item v-if="legacyRecommendations" label="推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)">
               <a-input-number :id="field('override-recommendation-'+i+'-'+j)" v-model:value="override.recommendationRate"
                 size="small" :min="0" :max="100" :precision="4" :placeholder="'沿用 '+(category.recommendationRate ?? 0)+'%'"/>

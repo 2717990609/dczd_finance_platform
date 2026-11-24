@@ -261,12 +261,8 @@ func (p practicePurchase) retrainSplit(splits []practiceRetrainSplit) (*practice
 }
 
 func appendPracticeRetrainSplit(draft *paymentDraft, p practicePurchase, rule paymentRule, index int, amounts practiceRetrainAmounts,
-	sellers []identityAssignment, split practiceRetrainSplit, unit pgtype.UUID, proportional bool, serviceMatches [2]bool) error {
-	var err error
-	draft.Total, err = addMinor(draft.Total, amounts.commission)
-	if err != nil {
-		return err
-	}
+	sellers []identityAssignment, split practiceRetrainSplit, unit pgtype.UUID, proportional, reduceFixedShares bool, serviceMatches [2]bool) error {
+	var totalAccrued int64
 	total := p.benefitShares(p.payments, amounts.commission, proportional)
 	personal := p.benefitShares(p.payments, amounts.sales, proportional)
 	cumulative := p.benefitShares(p.payments, amounts.sales+amounts.service, proportional)
@@ -274,25 +270,34 @@ func appendPracticeRetrainSplit(draft *paymentDraft, p practicePurchase, rule pa
 		if !serviceMatches[i] {
 			cumulative[i] = personal[i]
 		}
-		line := draftLine{FactID: payment.ID, RuleID: rule.ID, EnrollmentID: p.member.ID, Base: p.netAmount(payment)}
-		if personal[i] > 0 {
+		sales, service, pool := personal[i], cumulative[i]-personal[i], total[i]-cumulative[i]
+		if reduceFixedShares {
+			sales = p.remainingFixedShare(payment, sales)
+			service = p.remainingFixedShare(payment, service)
+			pool = p.remainingFixedShare(payment, pool)
+		}
+		totalAccrued += sales + service + pool
+		line := draftLine{FactID: payment.ID, RuleID: rule.ID, EnrollmentID: p.member.ID, Base: p.netAmount(payment), practiceProportionalRefund: true}
+		if sales > 0 {
 			sale := line
-			sale.Component, sale.PersonID, sale.IdentityID, sale.Amount = "sales", sellers[i].PersonID, sellers[i].ID, personal[i]
+			sale.Component, sale.PersonID, sale.IdentityID, sale.Amount = "sales", sellers[i].PersonID, sellers[i].ID, sales
 			sale.practiceArrangementLabel = rule.Components[index].arrangementLabel()
 			draft.Lines = append(draft.Lines, sale)
 		}
-		if share := cumulative[i] - personal[i]; share > 0 {
-			service := line
-			service.Component = practicePeriodComponentKey(component{Type: "retrain_service"}, index)
-			service.PersonID, service.Amount = split.ServicePersonID, share
-			service.practiceArrangementLabel = split.ServiceLabel
-			draft.Lines = append(draft.Lines, service)
+		if service > 0 {
+			serviceLine := line
+			serviceLine.Component = practicePeriodComponentKey(component{Type: "retrain_service"}, index)
+			serviceLine.PersonID, serviceLine.Amount = split.ServicePersonID, service
+			serviceLine.practiceArrangementLabel = split.ServiceLabel
+			draft.Lines = append(draft.Lines, serviceLine)
 		}
-		if share := total[i] - cumulative[i]; share > 0 {
+		if pool > 0 {
 			line.Component = practicePeriodComponentKey(component{Type: "retrain_pool"}, index)
-			line.PracticePool, line.BeneficiaryUnit, line.Amount = &split.Pool, &unit, share
+			line.PracticePool, line.BeneficiaryUnit, line.Amount = &split.Pool, &unit, pool
 			draft.Lines = append(draft.Lines, line)
 		}
 	}
-	return nil
+	var err error
+	draft.Total, err = addMinor(draft.Total, totalAccrued)
+	return err
 }

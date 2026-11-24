@@ -614,9 +614,10 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		draft.Issues = append(draft.Issues, practiceIssue(issue, p.member, rule, award.key))
 		return nil
 	}
-	proportionalFixed := award.proratesFixedRefunds(classMember(p.member.MembershipType))
+	proportionalFixed := award.Mode == "fixed" && (!runtime.legacyFixedRefundPolicy ||
+		award.proratesFixedRefunds(classMember(p.member.MembershipType)))
 	line := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: award.key,
-		practiceProportionalRefund: award.Mode == "rate" || proportionalFixed}
+		practiceProportionalRefund: true}
 	var salesCompany pgtype.UUID
 	var companyIssue string
 	kind := award.payee.kind()

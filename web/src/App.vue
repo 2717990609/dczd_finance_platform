@@ -2023,14 +2023,6 @@ async function save() {
             :source-roles="options('practicePeriodSourceRole')" :payee-roles="componentSourceRoles(c.companySales.payee.role)"
             :people="classPeopleOptions" :units="unitOptions" :pools="practicePoolOptions" :create-pool="createPracticePool"
             :member-choices="classMemberChoices(c)" :duties="options('organizationDuty')" @member-change="resetAmountMode(c)"/>
-          <a-collapse v-if="selectedProduct && (!classRule || c.mode==='fixed' || c.mode==='tiered' && c.refundPolicy)" ghost>
-            <a-collapse-panel key="refund" header="退款处理">
-              <a-form-item label="扣回方式">
-                <a-select v-model:value="c.refundPolicy" :options="options('refundPolicy')" allow-clear
-                  :placeholder="classRule && c.mode==='fixed' && !c.retrainSplits?.length ? '默认按实际退款比例扣回' : '选择扣回方式'"/>
-              </a-form-item>
-            </a-collapse-panel>
-          </a-collapse>
           <div v-if="draft.components.length>1" class="form-actions">
             <a-button type="link" size="small" danger class="rule-remove"
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>

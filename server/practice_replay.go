@@ -39,6 +39,7 @@ const practiceReplayIndependentTierMeasurement = 5
 const practiceReplayFixedTierPaymentShares = 6
 const practiceReplayFixedPersonalPaymentShares = 7
 const practiceReplayDefaultFixedPaymentShares = 8
+const practiceReplayProportionalFixedRefunds = 9
 
 const practiceRefundReplaySQL = `(d.practice_replay_inputs IS NOT NULL
  AND d.practice_replay_inputs->'independentRefunds' IS DISTINCT FROM 'true'::jsonb)`
@@ -134,6 +135,11 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 		}
 	}
 	for index, part := range rule.Components {
+		if part.CompanySales != nil && part.matchesPracticeMember("retrain") ||
+			(part.Mode == "fixed" || part.Mode == "tiered") &&
+				(len(part.retrainSplits()) != 0 || part.RefundPolicy != "" && part.RefundPolicy != "proportional") {
+			inputs.Version = max(inputs.Version, practiceReplayProportionalFixedRefunds)
+		}
 		if part.Tiers != nil && slices.ContainsFunc([]string{"new", "retrain"}, func(member string) bool {
 			return !part.matchesPracticeMember(member) && part.Tiers.measuresUnpaidMember(member)
 		}) {
@@ -196,7 +202,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 	if err != nil {
 		return replay, err
 	}
-	if saved != nil && (saved.Version < 1 || saved.Version > practiceReplayDefaultFixedPaymentShares) {
+	if saved != nil && (saved.Version < 1 || saved.Version > practiceReplayProportionalFixedRefunds) {
 		return replay, errPracticeRefundReplay
 	}
 	replay.members, err = readPracticeMembers(ctx, tx, []int64{rosterID}, false)
@@ -286,6 +292,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 		legacyFixedTierRefund:       values.Version < practiceReplayFixedTierPaymentShares,
 		legacyFixedPersonalRefund:   values.Version < practiceReplayFixedPersonalPaymentShares,
 		legacyImplicitFixedRefund:   values.Version < practiceReplayDefaultFixedPaymentShares,
+		legacyFixedRefundPolicy:     values.Version < practiceReplayProportionalFixedRefunds,
 	}
 	if usesPracticeRegistrations(replay.rule) {
 		replay.runtime.registrations, err = readPracticeRegistrationInputs(ctx, tx, rosterID, false, values.RegistrationVersions)

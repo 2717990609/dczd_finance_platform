@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
 	"time"
 
@@ -139,8 +140,8 @@ func TestDraftReportSeparatesOrderPerformanceAndRecipientOrganization(t *testing
 		RefundsPayment: []sourcePaymentReference{{OrderID: "order", RecordID: "1"}}}
 	save(refundFact)
 	refund := draftAt(july)
-	if rows := get(refund, "company"); len(rows) != 1 || rows[0] != (reportRow{"甲公司", -debit, 0}) {
-		t.Fatalf("refund should follow original order company without commission debit: %+v", rows)
+	if rows := get(refund, "company"); !slices.Equal(rows, []reportRow{{"乙公司", 0, -125}, {"甲公司", -debit, -250}}) {
+		t.Fatalf("refund must debit each recipient proportionally while performance follows the original company: %+v", rows)
 	}
 	refundFact.Version, refundFact.OrderNo = "two", "展示更新"
 	refundFact.UpdatedAt = refundTime.Add(time.Minute)

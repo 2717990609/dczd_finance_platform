@@ -97,14 +97,14 @@ func TestPracticeRetrainSplitsSaleServiceAndPoolAcrossPayments(t *testing.T) {
 		t.Fatalf("an explicit zero share does not need the service's team attribution: %+v %v", result, err)
 	}
 	rule.Components[0] = pooledSales
-	// The approved fixed entitlement is based on a valid enrollment despite a partial refund.
-	// A partial refund may apply across both payments. Re-test with one valid payment.
+	// A 90% refund on one payment reduces all three original shares by 90%.
 	members[0].PaidOrderIDs = []string{"32"}
 	paid2 = 50000
 	refunds := map[int64][]practiceRefundMatch{2: {{event: paymentInput{ID: 3, Fact: sourceFact{OccurredAt: at.Add(time.Minute), AmountMinor: &refundAmount}}}}}
 	result, err = calculatePracticeDraft(members, rule, orders, identities, nil, practiceTierHistory{}, refunds, runtime)
-	if err != nil || len(result.Issues) != 0 || len(result.Lines) != 3 || result.Total != 9900 || result.Lines[0].Base != 5000 {
-		t.Fatalf("fixed commission changed after partial refund: %+v %v", result, err)
+	if err != nil || len(result.Issues) != 0 || len(result.Lines) != 3 || result.Total != 990 || result.Lines[0].Base != 5000 ||
+		result.Lines[0].Amount != 500 || result.Lines[1].Amount != 60 || result.Lines[2].Amount != 430 {
+		t.Fatalf("each original share must be reduced at the same refund rate: %+v %v", result, err)
 	}
 	rule.Components[0].Mode, rule.Components[0].Value = "rate", 2000
 	rule.Components[0].RetrainSplits = &[]practiceRetrainSplit{{

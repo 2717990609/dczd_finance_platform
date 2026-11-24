@@ -198,8 +198,8 @@ func TestPracticeCompanySalesSeparatesSellerPerformanceAndCompanyProceeds(t *tes
 		t.Fatal(err)
 	}
 	got = raw.(draftSummary)
-	if got.Total != 6001 || got.IssueCount != 1 {
-		t.Fatalf("external-category fixed amount exceeding net payment must be held for review: %+v", got)
+	if got.Total != 15801 || got.IssueCount != 0 {
+		t.Fatalf("fixed company commission should reduce with the actual partial refund: %+v", got)
 	}
 	later := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "下期", Ordinal: 2,
 		StartsOn: "2026-09-08", EndsOn: "2026-09-09", SourcePeriodKey: "PRACTICE:1:1:2"}))
@@ -508,12 +508,14 @@ func TestPracticeNewFixedCompanyAwardProratesRefundBeforeConfirmation(t *testing
 	}
 }
 
-func TestPracticeFixedCompanyRetrainingRefundUsesSelectedPolicy(t *testing.T) {
+func TestPracticeFixedCompanyRetrainingRefundIsProportional(t *testing.T) {
 	for _, tc := range []struct {
 		name, policy  string
+		legacy        bool
 		deposit, tail int64
 	}{
-		{name: "original policy", deposit: 4000, tail: 6000},
+		{name: "default policy", deposit: 2000, tail: 6000},
+		{name: "frozen original allocation", legacy: true, deposit: 4000, tail: 6000},
 		{name: "proportional policy", policy: "proportional", deposit: 2000, tail: 6000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -538,16 +540,13 @@ func TestPracticeFixedCompanyRetrainingRefundUsesSelectedPolicy(t *testing.T) {
 				payments: payments, gross: 100000, base: 80000, netPayments: map[int64]int64{1: 20000}}
 			identities := map[identityKey][]identityAssignment{{"DCZD", "seller"}: {{PersonID: 1}}}
 			var draft paymentDraft
-			if err := appendPracticeCompanySale(&draft, rule, purchase, practiceDraftRuntime{}, identities); err != nil ||
+			if err := appendPracticeCompanySale(&draft, rule, purchase, practiceDraftRuntime{legacyFixedRefundPolicy: tc.legacy}, identities); err != nil ||
 				len(draft.Issues) != 0 || len(draft.Lines) != 2 || draft.Lines[0].Amount != tc.deposit || draft.Lines[1].Amount != tc.tail {
 				t.Fatalf("wrong refund on the original shares: %+v %v", draft, err)
 			}
 			line := refundObligation{Base: 100000, Accrued: 10000, ComponentType: award.key}
 			terms := practiceMonthlyRefundPolicy(rule.Components, line, 1, 2, "partner", "")
-			want := int64(0)
-			if tc.policy != "" {
-				want = -5000
-			}
+			want := int64(-5000)
 			if got, err := refundDelta(terms, line.Base, line.Accrued, 50000, 0); err != nil || got != want {
 				t.Fatalf("refunding half the frozen payment: got %d, want %d: %v", got, want, err)
 			}

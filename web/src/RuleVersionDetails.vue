@@ -2,8 +2,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
-import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyCalculationText, practiceCompanyMatchLabels, practiceCompanyRatePriority, practiceCompanyRefundMode,
-  practiceCompanyRefundOptions, practiceCompanyScopes, practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
+import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyCalculationText, practiceCompanyMatchLabels, practiceCompanyRatePriority,
+  practiceCompanyScopes, practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
   practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, practiceStandardRateGroups, practiceStandardRateSummary,
   ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
@@ -98,7 +98,7 @@ const companyStandards = computed(() => {
     hasFixed:group.rows?.some(({row})=>row.mode==='fixed'),
     hasRecommendation:group.rows?.some(({row,inheritedRate})=>row.recommendationRate!=null || inheritedRate!=null)}))
 })
-const companyRefundLabel = (row, member) => practiceCompanyRefundOptions.find(option=>option.value===practiceCompanyRefundMode(row,member)).label
+const companyRefundLabel = () => '按实际退款比例扣回'
 const companyPriority = computed(() =>
   practiceCompanyRatePriority(practiceCompanyScopes(props.rule.components[activePart.value]?.companySales)))
 const countStart = rule => rule.openingId ? props.openingLabel(rule.openingId)
@@ -178,7 +178,7 @@ function calculationText(part) {
   return (part.mode==='fixed' || part.periodBenefit?.fixedMinor != null ? '固定金额' : '比例')+' · '+value
 }
 function refundPolicyLabel(part) {
-  if (part.refundPolicy) return label('refundPolicy',part.refundPolicy)
+  if (part.refundPolicy) return '按实际退款比例扣回'
   if (props.classProduct && part.mode==='fixed' && ['sales','referral'].includes(part.type) && !part.retrainSplits?.length) {
     return label('refundPolicy','proportional')
   }

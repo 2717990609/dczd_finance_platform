@@ -65,6 +65,7 @@ type practiceDraftRuntime struct {
 	legacyFixedTierRefund       bool
 	legacyFixedPersonalRefund   bool
 	legacyImplicitFixedRefund   bool
+	legacyFixedRefundPolicy     bool
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -312,15 +313,20 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 					continue
 				}
 			}
+			reduceFixedShares := part.Mode == "fixed" && !runtime.legacyFixedRefundPolicy
+			base := purchase.base
+			if reduceFixedShares {
+				base = purchase.gross
+			}
 			commission := part.Value
 			if part.Mode == "rate" {
-				commission = calculatePaymentAmount(purchase.base, part)
+				commission = calculatePaymentAmount(base, part)
 			}
 			activeSplit := *split
 			if !slices.Contains(serviceMatches[:len(payments)], true) {
 				activeSplit.ServiceRate, activeSplit.ServiceMinor = nil, 0
 			}
-			amounts, valid := activeSplit.amounts(commission, purchase.base)
+			amounts, valid := activeSplit.amounts(commission, base)
 			if !valid {
 				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_RETRAIN_SPLIT_EXCEEDS_COMMISSION", member, rule, part.Type))
 				continue
@@ -330,7 +336,7 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_POOL_MISSING", member, rule, part.Type))
 				continue
 			}
-			if err := appendPracticeRetrainSplit(draft, purchase, rule, index, amounts, assignments, *split, unit, part.Mode == "rate", serviceMatches); err != nil {
+			if err := appendPracticeRetrainSplit(draft, purchase, rule, index, amounts, assignments, *split, unit, part.Mode == "rate", reduceFixedShares, serviceMatches); err != nil {
 				return err
 			}
 			continue
@@ -351,6 +357,9 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		}
 		var amount int64
 		var fixedShares [2]int64
+		if !runtime.legacyFixedRefundPolicy && (part.Mode == "fixed" || isTiered) && part.RefundPolicy != "" {
+			part.RefundPolicy = "proportional"
+		}
 		proportionalFixed := !isTiered && part.usesFixedPersonalPaymentShares()
 		fixedTierByPayment := isTiered && part.Mode == "fixed" && !runtime.legacyFixedTierRefund &&
 			(part.RefundPolicy == "" || part.RefundPolicy == "proportional")
@@ -391,7 +400,7 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 			draft.Lines = append(draft.Lines, draftLine{
 				FactID: payment.ID, RuleID: rule.ID, EnrollmentID: member.ID, PersonID: payee.PersonID,
 				IdentityID: payee.ID, Component: part.Type, Base: net, Amount: paymentAmount,
-				practiceProportionalRefund: !isTiered && (part.Mode == "rate" || proportionalFixed),
+				practiceProportionalRefund: !isTiered && (part.Mode == "rate" || part.Mode == "fixed"),
 				practiceTierRefund:         isTiered,
 				practiceArrangementLabel:   part.arrangementLabel(),
 			})

@@ -282,6 +282,10 @@ func (r practiceReplay) calculateCorrectionLines(ctx context.Context, tx pgx.Tx,
 			}
 		}
 	}
+	legacyFixedRefundPolicy := r.runtime.legacyFixedRefundPolicy
+	if len(r.lateRefunded) != 0 {
+		r.runtime.legacyFixedRefundPolicy = false
+	}
 	revised, err := r.calculate()
 	if err != nil || len(r.lateRefunded) == 0 {
 		return revised.Lines, err
@@ -290,6 +294,7 @@ func (r practiceReplay) calculateCorrectionLines(ctx context.Context, tx pgx.Tx,
 	// Price the revised recipients before post-settlement refunds for shares
 	// that are refunded proportionally. Linked tiers use the replayed balance.
 	r.refunds = classRefunds
+	r.runtime.legacyFixedRefundPolicy = legacyFixedRefundPolicy
 	baseline, err := r.calculate()
 	if err != nil {
 		return nil, err

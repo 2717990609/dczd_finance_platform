@@ -28,13 +28,6 @@ func refundDelta(policy component, base, accrued, principal, alreadyDeducted int
 	switch {
 	case policy.Mode == "practice_replay":
 		return 0, errPracticeRefundReplay
-	case policy.Mode == "practice_company_fixed":
-		if principal < base {
-			if base-principal < accrued {
-				return 0, errPracticeRefundReplay
-			}
-			remaining = accrued
-		}
 	case policy.RefundPolicy == "non_refundable":
 		remaining = accrued
 	case policy.RefundPolicy == "full_reversal":
