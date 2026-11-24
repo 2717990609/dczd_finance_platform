@@ -293,7 +293,9 @@ onMounted(async () => {
         <section v-if="part.companySales" class="practice-company-criteria" aria-label="计提标准">
           <header class="practice-company-scope-heading">
             <h4>计提标准</h4>
-            <small v-if="companyPriority" class="finance-rate-priority">匹配顺序 {{ companyPriority }}</small>
+            <small v-if="companyPriority.length>1" class="finance-rate-priority">
+              匹配顺序 {{ companyPriority.map(item=>item.label).join(' → ') }}
+            </small>
           </header>
           <section v-for="group in companyStandards" :key="group.scope" :aria-label="group.label" class="practice-company-criterion">
             <header>

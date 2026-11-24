@@ -3,7 +3,7 @@ import { computed, nextTick, ref, watch } from 'vue'
 import RuleScopeSelect from './RuleScopeSelect.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import RuleEditableTable from './RuleEditableTable.vue'
-import { practiceStandardRateGroups } from './rule-component-form'
+import { commissionRatePriority, practiceStandardRateGroups } from './rule-component-form'
 
 const props = defineProps({prefix:String,uniformId:String,companies:Array,organizations:Array,categories:Array,scopeGroup:String})
 const emit = defineEmits(['start-table'])
@@ -24,10 +24,7 @@ const uniform = computed(() => selected.value.scope===baseGroup.value && !rows.v
 watch(baseGroup,(next,previous)=>{
   if (!rows.value && active.value===previous) active.value = next
 })
-const priority = computed(() => {
-  const configured = groups.value.filter(group=>group.items.length)
-  return configured.length>1 ? configured.map(group=>group.label).join(' → ') : ''
-})
+const priority = computed(() => commissionRatePriority(tabs.value.filter(tab=>tab.count).map(tab=>tab.value)))
 const newStandard = {
   company:{label:'添加指定组织',field:'salesUnits'},
   category:{label:'添加销售类别',field:'salesCategoryIds'},

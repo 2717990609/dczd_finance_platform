@@ -37,9 +37,9 @@ export const catalogRateScopeTitles = {
   external:'已保存的兜底比例',
   general:'通用比例',
 }
-export function catalogRatePriority(scopes) {
-  const titles = Object.entries(catalogRateScopeTitles).filter(([scope])=>scopes.includes(scope)).map(([,title])=>title)
-  return titles.length>1 ? titles.join(' → ') : ''
+export function commissionRatePriority(scopes) {
+  const labels = {...catalogRateScopeTitles,company:'组织特例',general:'通用标准'}
+  return Object.entries(labels).filter(([scope])=>scopes.includes(scope)).map(([scope,label])=>({scope,label}))
 }
 export const catalogPercent = rateBps => (rateBps/100).toLocaleString('zh-CN',{maximumFractionDigits:2})+'%'
 
@@ -103,13 +103,12 @@ export function catalogRateIndicators(rows, getRate = row => row.rateBps) {
 }
 
 export function practiceCompanyRatePriority({companies,units,categories,hasDefault,hasGeneral}) {
-  const configured = [
-    (companies.length || units.length) && '指定组织',
-    categories.length && '销售类别默认',
-    hasDefault && '既有兜底比例',
-    hasGeneral && '通用标准',
-  ].filter(Boolean)
-  return configured.length>1 ? configured.join(' → ') : ''
+  return commissionRatePriority([
+    (companies.length || units.length) && 'company',
+    categories.length && 'category',
+    hasDefault && 'external',
+    hasGeneral && 'general',
+  ])
 }
 export const catalogRecipientIsPerson = target => ['person','order_seller','referrer','appointment'].includes(target)
 export const practiceRecipientIsPerson = target => ['person','order_person','order_appointment'].includes(target)

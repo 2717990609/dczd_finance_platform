@@ -10,7 +10,7 @@ import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import RuleEditableTable from './RuleEditableTable.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, catalogRatePriority, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition, rateAsBasisPoints } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, commissionRatePriority, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule:Object, applied:Object, api:Function, formatTime:Function, formatMoney:Function,
   optionLabel:Function, periods:Array, skus:Array })
@@ -212,7 +212,7 @@ watch([selected,rateGroups], ([item,groups],[previousItem]) => {
       groups.find(group=>group.key==='general') || groups[0])?.key
   }
 })
-const ratePriority = computed(() => catalogRatePriority(rateGroups.value.filter(group=>group.activeCount).map(group=>group.key)))
+const ratePriority = computed(() => commissionRatePriority(rateGroups.value.filter(group=>group.activeCount).map(group=>group.key)))
 const activeRateGroup = computed(() => rateGroups.value.find(group=>group.key===rateGroup.value))
 const displayedRates = computed(() => {
   const term = filter.value.trim().toLowerCase()
@@ -860,7 +860,6 @@ async function publish() {
             <a-input-number :id="flatMethod(item)==='fixed' ? 'catalog-fixed-amount' : 'catalog-fixed-rate'" :value="flatValue(item)" :disabled="!editable"
               :min="0" :max="flatMethod(item)==='rate' ? 100 : undefined" :precision="2" string-mode @update:value="setFlat(item,flatMethod(item),$event)"/>
           </a-form-item>
-          <div v-if="sheet.mayPublish && !applied" :id="'catalog-rates-edit-'+item.itemKey"/>
           <p v-if="showRateGroups && !hasRateTable && rateGroup!=='general' && !structureEditing" class="finance-rate-empty">未配置</p>
           <template v-if="hasRateTable">
             <p v-if="!displayedRates.length" class="finance-rate-empty">{{ filter ? '未找到匹配的计提标准' : '未配置' }}</p>
@@ -931,7 +930,7 @@ async function publish() {
             </RuleEditableTable>
           </template>
           </RuleCommissionStandards>
-          <div v-else-if="sheet.mayPublish && !applied" :id="'catalog-rates-edit-'+item.itemKey"/>
+          <div v-if="sheet.mayPublish && !applied" :id="'catalog-rates-edit-'+item.itemKey"/>
           <div v-if="sheet.mayPublish && !applied" class="form-actions">
             <a-button size="small" type="link" danger :disabled="structureEditing || saving"
               @click="removeArrangement(item.itemKey)">移除此安排</a-button>
@@ -1081,7 +1080,7 @@ async function publish() {
 <style scoped>
 .catalog-pending-removals { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; padding:4px 8px; border:1px solid var(--line); border-radius:5px }
 .catalog-pending-removals > div { display:flex; align-items:center; gap:2px }
-.catalog-rate-filter {width:min(100%,190px)}
+.catalog-rate-filter {width:190px;max-width:100%}
 .catalog-rate-table :deep(.ant-select) {width:100%}
 .catalog-rate-summary {display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;padding-bottom:6px;margin-bottom:6px;border-bottom:1px solid var(--line)}
 .catalog-rate-summary h2 {font-size:16px;margin:0 0 2px}

@@ -5,7 +5,7 @@ import CatalogRateCondition from './CatalogRateCondition.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, catalogRatePriority, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, commissionRatePriority, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
   orderTypeText:String,productId:Number,membershipSku:Boolean,defaultMembershipNewOnly:Boolean,replacementItemKey:String})
@@ -16,7 +16,7 @@ const conditionGroup = ref('general')
 const revising = computed(() => form.value?.kind==='calculation' || form.value?.itemIndex!=null ||
   form.value?.editingSales)
 const isSales = computed(() => form.value?.kind==='item' && form.value.target==='seller')
-const ratePriority = computed(() => catalogRatePriority((form.value?.rows || [])
+const ratePriority = computed(() => commissionRatePriority((form.value?.rows || [])
   .filter(row=>props.parseRate(row.rate)!==undefined).map(row=>row.scope)))
 const conditionRows = computed(() => form.value?.format==='table' ? form.value.rows : [])
 const conditionTabs = computed(() => ['category','company','general','inherited','external'].flatMap(value=>{
