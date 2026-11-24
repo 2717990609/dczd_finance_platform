@@ -48,7 +48,7 @@ const navigation = [
 ]
 const workspaces = [{key:'work',title:'工作台'}, {key:'config',title:'配置'}, {key:'data',title:'系统与数据'}]
 const organizationPages = [
-  {page:'organization',tab:'organization',label:'组织任职'},
+  {page:'organization',tab:'organization',label:'人员归属'},
   {page:'people',tab:'main',label:'人员档案'},
   {page:'organization',tab:'duties',label:'业务职责'},
   {page:'organization',tab:'catalog',label:'分润岗位'},
