@@ -2,11 +2,13 @@
 import { computed, onMounted, ref } from 'vue'
 import { Popconfirm } from 'ant-design-vue'
 import PracticePersonCountFields from './PracticePersonCountFields.vue'
-import { practiceCountStartForm } from './rule-component-form'
+import PracticeCountStartEditor from './PracticeCountStartEditor.vue'
+import { practiceCountStartBody, practiceCountStartForm } from './rule-component-form'
 
 const props = defineProps({
-  productId:Number, canEdit:Boolean, api:Function, formatTime:Function, optionLabel:Function, startModes:Array,
+  productId:Number, canEdit:Boolean, api:Function, formatTime:Function, optionLabel:Function, startModes:Array, openings:Array,
 })
+const emit = defineEmits(['saved'])
 const loading = ref(false)
 const saving = ref(false)
 const error = ref('')
@@ -34,6 +36,8 @@ const ruleOptions = computed(() => arrangements.value.map(({id,rule,label})=>({
 const currentArrangement = computed(() => arrangementsByID.value.get(form.value?.arrangementId))
 const personalStartModes = computed(() => props.startModes.filter(option=>
   !option.scope?.countScopes || option.scope.countScopes.includes('person')))
+const defaultStartModes = computed(() => props.startModes.filter(option=>
+  option.value!=='opening' || currentArrangement.value?.part.canUseOpening))
 const people = computed(() => (directory.value?.people || []).map(person=>({value:person.id,label:person.name+' · '+person.id})))
 const eligiblePeople = computed(() => people.value.filter(person=>person.value===form.value?.existing?.personId ||
   !currentArrangement.value?.part.personCountStarts?.some(start=>start.personId===person.value)))
@@ -45,12 +49,18 @@ const rows = computed(() => {
   })).filter(row=>!term || (row.name+' '+row.key).toLocaleLowerCase().includes(term))
     .sort((a,b)=>a.name.localeCompare(b.name,'zh-CN') || b.rule.version-a.rule.version)
 })
-const columns = computed(() => [
-  {title:'人员',key:'name',width:160},
-  {title:'累计起点',key:'start',width:190},
-  {title:'适用规则',key:'scope',width:235},
-  ...(props.canEdit ? [{title:'操作',key:'action',width:80}] : []),
-])
+const scopeColumn = {title:'适用规则',key:'scope',width:235}
+const startColumn = {title:'累计起点',key:'start',width:190}
+const actions = computed(() => props.canEdit ? [{title:'操作',key:'action',width:80}] : [])
+const columns = computed(() => [{title:'人员',key:'name',width:160},startColumn,scopeColumn,...actions.value])
+const defaultColumns = computed(() => [scopeColumn,startColumn,...actions.value])
+const selectedRuleLabel = computed(() => ruleOptions.value.find(option=>option.value===form.value?.arrangementId)?.label)
+
+function startLabel(start) {
+  if (!start) return '—'
+  if (start.openingId) return props.openings.find(option=>option.value===start.openingId)?.label || '冻结期初 '+start.openingId
+  return start.countFromOrdinal ? '第 '+start.countFromOrdinal+' 期' : props.formatTime(start.countFromAt)
+}
 
 async function load() {
   loading.value = true
@@ -70,6 +80,11 @@ function newEntry() {
 function selectRule() {
   form.value.entry = newEntry()
 }
+function openDefault(arrangement) {
+  editError.value = ''
+  notice.value = ''
+  form.value = {isDefault:true,arrangementId:arrangement.id,entry:practiceCountStartForm(arrangement.part.defaultStart)}
+}
 async function open(row) {
   editError.value = ''
   notice.value = ''
@@ -83,30 +98,26 @@ async function open(row) {
     if (form.value===editing) editError.value = err.message
   }
 }
-function countPayload(entry) {
-  if (!entry.personId) throw new Error('请选择人员')
-  if (entry.startMode==='ordinal') {
-    if (!Number.isInteger(entry.countFromOrdinal) || entry.countFromOrdinal<1) throw new Error('请填写起始期数')
-    return {personId:entry.personId,countFromOrdinal:entry.countFromOrdinal}
-  }
-  const at = Date.parse(entry.countFromAt+'+08:00')
-  if (!Number.isFinite(at)) throw new Error('请填写起始开班时间')
-  return {personId:entry.personId,countFromAt:new Date(at).toISOString()}
-}
 async function save(remove = false) {
   if (saving.value) return
   editError.value = ''
-  const {entry,existing} = form.value
+  const {entry,existing,isDefault} = form.value
   saving.value = true
   try {
     const arrangement = currentArrangement.value
     if (!arrangement) throw new Error('请选择适用规则')
-    const body = {productId:props.productId,ruleId:arrangement.rule.id,countMember:arrangement.part.member,
-      countStart:remove ? undefined : countPayload(entry),existingPersonId:existing?.personId}
+    const body = {productId:props.productId,ruleId:arrangement.rule.id,countMember:arrangement.part.member}
+    if (isDefault) body.defaultStart = practiceCountStartBody(entry)
+    else {
+      if (!remove && !entry.personId) throw new Error('请选择人员')
+      if (!remove) body.countStart = {personId:entry.personId,...practiceCountStartBody(entry)}
+      body.existingPersonId = existing?.personId
+    }
     const {version} = await props.api('/practice-rule-settings',{method:'POST',body:JSON.stringify(body)})
     form.value = undefined
     notice.value = '已保存规则 v'+version
-    if (!existing) search.value = ''
+    if (!isDefault && !existing) search.value = ''
+    emit('saved')
     await load()
   } catch (err) {
     editError.value = err.message
@@ -117,6 +128,27 @@ async function save(remove = false) {
 </script>
 
 <template>
+  <a-alert v-if="notice" type="success" :message="notice" show-icon/>
+  <a-alert v-if="error" type="error" :message="error" show-icon>
+    <template #action><a-button size="small" @click="load">重新读取</a-button></template>
+  </a-alert>
+  <section class="records" aria-label="默认累计起点">
+    <div class="records-head"><h2>默认累计起点</h2></div>
+    <div class="table-container">
+      <a-table :columns="defaultColumns" :data-source="arrangements" :loading="loading" row-key="id" size="middle"
+        :pagination="{pageSize:10,hideOnSinglePage:true,showSizeChanger:false}" :scroll="{x:520}">
+        <template #bodyCell="{column,record}">
+          <template v-if="column.key==='scope'">
+            {{ record.rule.label }}<template v-if="record.label"> · {{ record.label }}</template> · v{{ record.rule.version }}
+            <small class="order-version">{{ scope(record.rule) }}</small>
+          </template>
+          <template v-else-if="column.key==='start'">{{ startLabel(record.part.defaultStart) }}</template>
+          <a-button v-else-if="column.key==='action'" type="link" :disabled="!record.part.defaultStart" @click="openDefault(record)">编辑</a-button>
+        </template>
+        <template #emptyText>{{ loading ? '正在加载' : error ? '读取失败' : '暂无使用累计指标的规则' }}</template>
+      </a-table>
+    </div>
+  </section>
   <section class="records" aria-label="人员累计起点">
     <div class="records-head">
       <h2>人员累计起点</h2>
@@ -125,10 +157,6 @@ async function save(remove = false) {
         <a-button v-if="canEdit" type="primary" :disabled="loading || !arrangements.length" @click="open()">新增人员起点</a-button>
       </div>
     </div>
-    <a-alert v-if="notice" type="success" :message="notice" show-icon/>
-    <a-alert v-if="error" type="error" :message="error" show-icon>
-      <template #action><a-button size="small" @click="load">重新读取</a-button></template>
-    </a-alert>
     <div class="table-container">
       <a-table :columns="columns" :data-source="rows" :loading="loading" row-key="id" size="middle"
         :pagination="{pageSize:15,hideOnSinglePage:true,showSizeChanger:false}" :scroll="{x:630}">
@@ -137,7 +165,7 @@ async function save(remove = false) {
             <strong>{{ record.name }}</strong><small class="order-version">人员 ID {{ record.key }}</small>
           </template>
           <template v-else-if="column.key==='start'">
-            {{ record.item.countFromOrdinal ? '第 '+record.item.countFromOrdinal+' 期' : formatTime(record.item.countFromAt) }}
+            {{ startLabel(record.item) }}
           </template>
           <template v-else-if="column.key==='scope'">
             {{ record.rule.label }}<template v-if="record.arrangement.label"> · {{ record.arrangement.label }}</template> · v{{ record.rule.version }}
@@ -152,16 +180,19 @@ async function save(remove = false) {
       </a-table>
     </div>
   </section>
-  <a-modal v-if="form" :open="true" :title="(form.existing ? '编辑' : '新增')+'人员累计起点'"
-    :width="520" ok-text="保存并生效" :confirm-loading="saving" :ok-button-props="{disabled:!directory}"
+  <a-modal v-if="form" :open="true" :title="form.isDefault ? '编辑默认累计起点' : (form.existing ? '编辑' : '新增')+'人员累计起点'"
+    :width="520" ok-text="保存并生效" :confirm-loading="saving" :ok-button-props="{disabled:!form.isDefault && !directory}"
     :mask-closable="!saving" :closable="!saving" :keyboard="!saving" @ok="save()" @cancel="!saving && (form=undefined)">
     <a-alert v-if="editError" class="feedback" :message="editError" type="error" show-icon/>
     <a-form layout="vertical">
       <a-form-item label="适用规则" html-for="practice-settings-rule" required>
-        <a-select id="practice-settings-rule" v-model:value="form.arrangementId" :options="ruleOptions" :disabled="!!form.existing"
+        <span v-if="form.isDefault">{{ selectedRuleLabel }}</span>
+        <a-select v-else id="practice-settings-rule" v-model:value="form.arrangementId" :options="ruleOptions" :disabled="!!form.existing"
           show-search option-filter-prop="label" @change="selectRule"/>
       </a-form-item>
-      <template v-if="currentArrangement && directory">
+      <PracticeCountStartEditor v-if="form.isDefault" :config="form.entry" :start-modes="defaultStartModes"
+        :openings="openings" prefix="practice-default"/>
+      <template v-else-if="currentArrangement && directory">
         <a-form-item label="人员" html-for="practice-settings-person" required>
           <a-select id="practice-settings-person" v-model:value="form.entry.personId" :options="eligiblePeople"
             :disabled="!!form.existing" show-search option-filter-prop="label"/>

@@ -33,9 +33,16 @@ type practiceRuleSettings struct {
 }
 
 type practiceCountArrangement struct {
-	Member string                     `json:"member"`
-	Label  string                     `json:"label,omitempty"`
-	Starts []practicePersonCountStart `json:"personCountStarts,omitempty"`
+	Member        string                     `json:"member"`
+	Label         string                     `json:"label,omitempty"`
+	Starts        []practicePersonCountStart `json:"personCountStarts,omitempty"`
+	DefaultStart  practiceDefaultCountStart  `json:"defaultStart"`
+	CanUseOpening bool                       `json:"canUseOpening"`
+}
+
+type practiceDefaultCountStart struct {
+	practiceCountStart
+	OpeningID int64 `json:"openingId,omitempty"`
 }
 
 func hasPracticeCountSettings(part component) bool {
@@ -74,7 +81,12 @@ func readPracticeRuleSettings(ctx context.Context, db *pgxpool.Pool, productID i
 			switch {
 			case hasPracticeCountSettings(part):
 				setting.CountArrangements = append(setting.CountArrangements,
-					practiceCountArrangement{Member: part.ClassMember, Label: part.arrangementLabel(), Starts: part.Tiers.PersonCountStarts})
+					practiceCountArrangement{
+						Member: part.ClassMember, Label: part.arrangementLabel(), Starts: part.Tiers.PersonCountStarts,
+						DefaultStart: practiceDefaultCountStart{practiceCountStart: part.Tiers.defaultCountStart(), OpeningID: part.Tiers.OpeningID},
+						CanUseOpening: part.Tiers.CumulativeMetric == "" && (part.SaleScope == nil ||
+							len(part.SaleScope.SalesCategoryIDs)+len(part.SaleScope.SalesUnits) == 0),
+					})
 			case isPracticeRetrainWithSplits(part):
 				setting.HasRetrain = true
 				if part.Mode == "rate" {
@@ -134,6 +146,7 @@ func (s workspace) getPracticeRuleSettings(w http.ResponseWriter, r *http.Reques
 type savePracticeRuleSettingsInput struct {
 	ProductID         int64
 	RuleID            int64
+	DefaultStart      *practiceDefaultCountStart
 	CountStart        *practicePersonCountStart
 	CountMember       *string
 	ExistingPersonID  int64
@@ -144,9 +157,11 @@ type savePracticeRuleSettingsInput struct {
 var errPracticeServiceSeparate = errors.New("请在分润规则中单独配置服务提成")
 
 func (s workspace) savePracticeRuleSettings(ctx context.Context, input savePracticeRuleSettingsInput) (any, error) {
-	countChange := input.CountStart != nil || input.ExistingPersonID > 0
+	personalChange := input.CountStart != nil || input.ExistingPersonID > 0
+	countChange := personalChange || input.DefaultStart != nil
 	splitChange := input.RetrainSplit != nil || input.ExistingCompanyID != ""
-	if input.ProductID < 1 || input.RuleID < 1 || input.ExistingPersonID < 0 || countChange == splitChange {
+	if input.ProductID < 1 || input.RuleID < 1 || input.ExistingPersonID < 0 || countChange == splitChange ||
+		personalChange && input.DefaultStart != nil {
 		return nil, invalid
 	}
 	actor := financeUser(ctx)
@@ -220,6 +235,10 @@ func editPracticeRuleSettings(pub *publishRuleInput, input savePracticeRuleSetti
 		}
 		if tiers == nil {
 			return invalid
+		}
+		if start := input.DefaultStart; start != nil {
+			tiers.CountFromOrdinal, tiers.CountFromAt, tiers.OpeningID = start.FromOrdinal, start.FromAt, start.OpeningID
+			return nil
 		}
 		person := input.ExistingPersonID
 		editing := person != 0

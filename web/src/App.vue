@@ -13,7 +13,7 @@ import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { catalogAppointmentLevels, checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
-  practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
+  practiceCompanyStandardIndicators, practiceCountStartBody, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
   practiceRecipientIsPerson, practiceSalesScopeText, practiceStandardRateSummary, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
 
 const DraftWorkbench = defineAsyncComponent(() => import('./DraftWorkbench.vue'))
@@ -31,7 +31,6 @@ const PracticeRetrainSplitEditor = defineAsyncComponent(() => import('./Practice
 const PracticeRetrainServiceEditor = defineAsyncComponent(() => import('./PracticeRetrainServiceEditor.vue'))
 const PracticeCompanySalesEditor = defineAsyncComponent(() => import('./PracticeCompanySalesEditor.vue'))
 const PracticeTierEditor = defineAsyncComponent(() => import('./PracticeTierEditor.vue'))
-const PracticeCountStartEditor = defineAsyncComponent(() => import('./PracticeCountStartEditor.vue'))
 const PracticeRosterSelect = defineAsyncComponent(() => import('./PracticeRosterSelect.vue'))
 const DepartmentRetention = defineAsyncComponent(() => import('./DepartmentRetention.vue'))
 const navigation = [
@@ -315,9 +314,6 @@ function removeRetrainService(split) {
   split.serviceScopeMode = 'all'
   activeRuleComponent.value = undefined
 }
-const practiceCountArrangements = computed(() => classRule.value
-  ? (draft.value.components || []).filter(part=>part.mode==='tiered' && part.tierConfig && tierFormUsesHistory(part.tierConfig))
-  : [])
 const refundStartDay = computed(() => Number(options('practiceRefundCalendar')
   .find(option=>/^(?:[1-9]|1\d|2[0-8])$/.test(option.value))?.value))
 const accountingStartDay = product => product?.cycleStartDay ?? (product?.periodMode==='class' ? refundStartDay.value : undefined)
@@ -499,7 +495,7 @@ const identityTimeFormat = new Intl.DateTimeFormat('zh-CN',{dateStyle:'short',ti
 const formatIdentityTime = value => value ? identityTimeFormat.format(new Date(value)) : '—'
 const formatMoney = minor => minor == null ? '—' : new Intl.NumberFormat('zh-CN',{style:'currency',currency:'CNY'}).format(minor/100)
 const practiceOpeningOptions = computed(() => data.value.practiceCountOpenings
-  .filter(row => row.productId===draft.value.productId)
+  .filter(row => row.productId===practiceRulesProduct.value?.id)
   .map(row => ({value:row.id,label:openingLabel(row)})))
 function openingLabel(row) {
   return '冻结结算 '+row.sourceSettlementId.slice(0,8)+' · 截至 '+formatTime(row.throughAt)+' · '+row.personCount+' 人'
@@ -1186,11 +1182,19 @@ const periodRate = value => Math.round(Number(must(value,'请填写班次计提�
 function practicePoolBody(pool) {
   return {poolId:must(pool.poolId,'请选择资金池'),ownerId:must(pool.ownerId,'请选择分配负责人')}
 }
-function countStartBody(form) {
-  must(form.startMode,'请选择累计起点')
-  if (form.startMode === 'ordinal') return {countFromOrdinal:must(form.countFromOrdinal,'请填写累计起始期数')}
-  const at = must(form.countFromAt,'请填写累计起始时间')
-  return {countFromAt:new Date(at+'+08:00').toISOString()}
+function initialPracticeCountStart() {
+  const {scope,periodId,fromOrdinal,effectiveFrom,editBaseId,productId,activityType} = draft.value
+  if (scope==='ordinal' && fromOrdinal>0) return {countFromOrdinal:fromOrdinal}
+  if (scope==='period') {
+    const period = data.value.periods.find(period=>period.id===periodId)
+    if (period?.ordinal>0) return {countFromOrdinal:period.ordinal}
+    if (period?.classStartsAt) return {countFromAt:period.classStartsAt}
+  }
+  if (effectiveFrom) return {countFromAt:editBaseId ? effectiveFrom : new Date(effectiveFrom+'+08:00').toISOString()}
+  const ordinals = data.value.periods.filter(period=>period.productId===productId && period.ordinal>0 &&
+    !period.practiceRefundMonth && (!activityType || Number(period.sourcePeriodKey?.split(':')[1])===activityType))
+    .map(period=>period.ordinal)
+  return {countFromOrdinal:ordinals.length ? Math.min(...ordinals) : 1}
 }
 function ruleComponentBody(row) {
   const sourceRole = row.sourceRole?.trim().toUpperCase()
@@ -1397,15 +1401,17 @@ function ruleComponentBody(row) {
   if (form.includeRetrain) component.tiers.includeRetrain = true
   if (form.cumulativeMetric) component.tiers.cumulativeMetric = form.cumulativeMetric
   if (tierFormUsesHistory(form)) {
-    if (form.startMode==='opening' && hasPracticePaymentScope(row.saleScope || {})) {
-      throw new Error('按类别或组织限定累计范围时，请选择起始期数或开班时间。')
+    const useOpening = form.startMode==='opening'
+    const openingAllowed = !form.cumulativeMetric && !hasPracticePaymentScope(row.saleScope || {})
+    if (useOpening && !openingAllowed && draft.value.editBaseId) {
+      throw new Error('请先在「累计起点」把该规则的冻结期初改为起始期数或开班时间。')
     }
-    if (form.startMode === 'opening' && !form.cumulativeMetric) component.tiers.openingId = must(form.openingId,'请选择冻结期初')
-    else if (form.startMode === 'opening') throw new Error('请为累计金额选择起始期数或开班时间。')
-    else Object.assign(component.tiers,countStartBody(form))
+    const configured = form.openingId || form.countFromOrdinal || form.countFromAt
+    Object.assign(component.tiers,configured && (!useOpening || openingAllowed)
+      ? practiceCountStartBody(form) : initialPracticeCountStart())
     if (form.personCountStarts.length) component.tiers.personCountStarts = form.personCountStarts.map(item => ({
       personId:must(item.personId,'请选择设置累计起点的人员'),
-      ...countStartBody(item),
+      ...practiceCountStartBody(item),
     }))
   }
   if (form.onlyOverrides && !form.categories.length && !form.companies.length && !form.people.length) throw new Error('请添加销售类别、公司或个人档位')
@@ -1646,7 +1652,8 @@ async function save() {
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <PracticeRuleSettings :key="practiceRulesProduct.id"
             :product-id="practiceRulesProduct.id" :can-edit="canPublishRule(practiceRulesProduct.id)" :api="api"
-            :start-modes="options('tierStartMode')" :option-label="optionLabel" :format-time="formatTime"/>
+            :start-modes="options('tierStartMode')" :openings="practiceOpeningOptions"
+            :option-label="optionLabel" :format-time="formatTime" @saved="refresh()"/>
         </template>
         <template v-else>
         <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
@@ -1830,7 +1837,7 @@ async function save() {
     <div v-if="rulePreview" ref="previewPane" class="rule-draft-preview" tabindex="-1" aria-label="发布前预览">
       <RuleVersionDetails :rule="rulePreview" embedded :class-product="classRule" :recipients="classRuleDirectory"
         :registration-companies="registrationCompanies"
-        :option-label="optionLabel" :people="data.people" :opening-label="savedOpeningLabel"
+        :option-label="optionLabel" :people="data.people"
         :format-time="formatTime" :format-money="formatMoney"/>
       <RuleImpactPreview v-model:busy="ruleImpactBusy" :periods="previewPeriods" :period-id="rulePreview.periodId"
         :simulate="compareComponentRule" :format-money="formatMoney" :format-time="formatTime" show-matched-orders/>
@@ -1902,12 +1909,6 @@ async function save() {
           <a-input v-else v-model:value="draft.effectiveFrom" aria-label="规则生效时间" type="datetime-local" step="1"/>
         </a-form-item>
         </div>
-        <PracticeCountStartEditor v-for="(part,i) in practiceCountArrangements" :key="part.classMember" :config="part.tierConfig"
-          :prefix="i===0 ? 'tier' : 'tier-'+i"
-          :label="practiceCountArrangements.length>1 ? ruleComponentLabel(part,optionLabel) : undefined"
-          :start-modes="options('tierStartMode').map(mode=>mode.value==='opening' &&
-            (part.tierConfig.cumulativeMetric || hasPracticePaymentScope(part.saleScope || {})) ? {...mode,disabled:true} : mode)"
-          :openings="practiceOpeningOptions"/>
         <div v-if="selectedProduct" class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
@@ -2127,6 +2128,7 @@ async function save() {
       !viewedRule.retiredFrom && ruleEditVersionIDs.has(viewedRule.id))"
     :title="appliedRule?.rule ? (appliedRule.fromIssue ? '试算使用的规则' : '计提使用的规则') : undefined"
     :component="appliedRule?.rule ? appliedRule.component : undefined"
+    :show-count-starts="Boolean(appliedRule?.rule)"
     :membership-type="appliedRule?.rule ? appliedRule.membershipType : undefined"
     :recipients="appliedRule?.directory" :registration-companies="registrationCompanies"
     :class-product="data.products.find(product => product.id===viewedRule.productId)?.periodMode==='class'"

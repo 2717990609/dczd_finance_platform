@@ -68,6 +68,17 @@ func TestPracticeRuleSettingsSaveOnlyTheSelectedConfiguration(t *testing.T) {
 	if _, err := s.savePracticeRuleSettings(ctx, input); err != nil {
 		t.Fatal(err)
 	}
+	defaultInput := savePracticeRuleSettingsInput{
+		ProductID: productID, RuleID: publishedID(),
+		DefaultStart: &practiceDefaultCountStart{practiceCountStart: practiceCountStart{FromOrdinal: 156}},
+	}
+	if _, err := s.savePracticeRuleSettings(ctx, defaultInput); err != nil {
+		t.Fatal(err)
+	}
+	if list := read(); list[0].CountArrangements[0].DefaultStart.FromOrdinal != 156 ||
+		list[0].PersonCountStarts[0] != start || list[1].CountArrangements[0].DefaultStart.FromOrdinal != 1 {
+		t.Fatalf("editing the default must preserve personal starts and other rule scopes: %+v", list)
+	}
 	input.RuleID, input.ExistingPersonID = publishedID(), 0
 	if _, err := s.savePracticeRuleSettings(ctx, input); !errors.Is(err, conflict) {
 		t.Fatalf("add must not replace an existing person's start: %v", err)

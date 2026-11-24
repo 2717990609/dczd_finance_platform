@@ -280,7 +280,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .tier-values .ant-form-item { margin-bottom: 0; }
 .tier-values .ant-input-number { width: 100%; }
 .practice-count-starts { padding: 12px; margin-bottom: 14px; }
-.practice-count-default { grid-template-columns: repeat(auto-fit,minmax(min(100%,150px),1fr)); margin-bottom: 12px; }
 .practice-count-starts .rule-item-section { margin: 0; }
 .practice-count-row {
   grid-template-columns: repeat(3,minmax(0,1fr)) auto;
@@ -294,7 +293,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .practice-count-row > .ant-btn { justify-self: end; }
 }
 @media (max-width: 480px) {
-  .practice-count-default { grid-template-columns: minmax(0,1fr); }
 }
 
 .rule-count-review summary { cursor: pointer; color: var(--accent); }

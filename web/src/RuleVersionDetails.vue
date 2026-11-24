@@ -10,7 +10,7 @@ import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyCalculati
 const props = defineProps({
   rule: Object, canCopy: Boolean, canEditService: Boolean, classProduct: Boolean, api: Function, optionLabel: Function,
   formatTime: Function, formatMoney: Function, people: Array, openingLabel: Function, title: String, recipients: Object,
-  embedded: Boolean, component: String, membershipType:Number, registrationCompanies: Array,
+  embedded: Boolean, component: String, membershipType:Number, registrationCompanies: Array, showCountStarts:Boolean,
 })
 const emit = defineEmits(['close','copy','edit-service'])
 const loadedRecipients = ref()
@@ -106,7 +106,8 @@ const companyPriority = computed(() =>
   practiceCompanyRatePriority(practiceCompanyScopes(props.rule.components[activePart.value]?.companySales)))
 const countStart = rule => rule.openingId ? props.openingLabel(rule.openingId)
   : rule.countFromOrdinal ? '第 '+rule.countFromOrdinal+' 期' : rule.countFromAt && props.formatTime(rule.countFromAt)
-const countArrangements = computed(() => props.rule.components.filter(part=>part.tiers && countStart(part.tiers)))
+const countArrangements = computed(() => props.showCountStarts
+  ? props.rule.components.filter(part=>part.tiers && countStart(part.tiers)) : [])
 const cumulativeMetricLabel = tiers => practiceCumulativeAmountMetrics.find(metric=>metric.value===tiers?.cumulativeMetric)?.label
 const scope = computed(() => [
   props.rule.periodName || (props.rule.fromOrdinal ? '从第 '+props.rule.fromOrdinal+' 期起' : '产品默认'),

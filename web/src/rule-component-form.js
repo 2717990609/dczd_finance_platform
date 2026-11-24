@@ -309,6 +309,20 @@ export function practiceCountStartForm(start) {
   }
 }
 
+export function practiceCountStartBody(start) {
+  if (start.startMode==='opening') {
+    if (!Number.isInteger(start.openingId) || start.openingId<1) throw new Error('请选择冻结期初')
+    return {openingId:start.openingId}
+  }
+  if (start.startMode==='ordinal') {
+    if (!Number.isInteger(start.countFromOrdinal) || start.countFromOrdinal<1) throw new Error('请填写起始期数')
+    return {countFromOrdinal:start.countFromOrdinal}
+  }
+  const at = start.startMode==='time' && Date.parse(start.countFromAt+'+08:00')
+  if (at===false || !Number.isFinite(at)) throw new Error('请填写起始开班时间')
+  return {countFromAt:new Date(at).toISOString()}
+}
+
 function tierMetric(schedule) {
   return schedule.count?.length ? (schedule.performance?.length ? 'fallback' : 'count') : 'performance'
 }
