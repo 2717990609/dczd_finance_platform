@@ -4,13 +4,17 @@ import RuleScopeSelect from './RuleScopeSelect.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import { practiceStandardRateGroups } from './rule-component-form'
 
-defineProps({prefix:String,companies:Array,organizations:Array,categories:Array})
-const rows = defineModel({type:Array,required:true})
-const groups = computed(() => practiceStandardRateGroups(rows.value).filter(group=>group.scope!=='external' || group.items.length))
+defineProps({prefix:String,uniformId:String,companies:Array,organizations:Array,categories:Array})
+const rows = defineModel({type:Array})
+const rate = defineModel('rate',{type:Number})
+const groups = computed(() => practiceStandardRateGroups(rows.value || []).filter(group=>group.scope!=='external' || group.items.length))
 const tabs = computed(() => ['category','company','general','external'].flatMap(scope=>
-  groups.value.filter(group=>group.scope===scope).map(group=>({value:scope,count:group.items.length}))))
-const active = ref(groups.value.find(group=>group.items.length)?.scope || 'category')
+  groups.value.filter(group=>group.scope===scope).map(group=>({
+    value:scope,count:scope==='general' && !rows.value ? Number(rate.value!=null) : group.items.length,
+  }))))
+const active = ref(groups.value.find(group=>group.items.length)?.scope || 'general')
 const selected = computed(() => groups.value.find(group=>group.scope===active.value) || groups.value.find(group=>group.scope==='general'))
+const uniform = computed(() => selected.value.scope==='general' && !rows.value)
 const priority = computed(() => {
   const configured = groups.value.filter(group=>group.items.length)
   return configured.length>1 ? configured.map(group=>group.label).join(' → ') : ''
@@ -23,7 +27,12 @@ const newStandard = {
 }
 function add(scope) {
   const field = newStandard[scope].field
-  rows.value.push(field ? {scope,[field]:[]} : {scope})
+  const row = field ? {scope,[field]:[]} : {scope}
+  if (!rows.value) {
+    rows.value = rate.value==null ? [row] : [{scope:'general',value:rate.value},row]
+    return
+  }
+  rows.value.push(row)
 }
 function remove(index) {
   rows.value.splice(index,1)
@@ -33,12 +42,14 @@ function remove(index) {
 
 <template>
   <RuleCommissionStandards v-model="active" :groups="tabs" :priority="priority">
-    <template #actions><slot name="actions"/></template>
     <template #tools>
-      <a-button v-if="newStandard[selected.scope].label && (newStandard[selected.scope].field || !selected.items.length)"
+      <a-button v-if="!uniform && newStandard[selected.scope].label && (newStandard[selected.scope].field || !selected.items.length)"
         :disabled="selected.scope==='category' && !categories.length" size="small" @click="add(selected.scope)">{{ newStandard[selected.scope].label }}</a-button>
     </template>
-    <section :aria-label="selected.label" class="practice-company-criterion">
+    <a-form-item v-if="uniform" class="commission-uniform-rate" label="比例（%）" :html-for="uniformId" required>
+      <a-input-number :id="uniformId" v-model:value="rate" :min="0" :max="100" :precision="4"/>
+    </a-form-item>
+    <section v-else :aria-label="selected.label" class="practice-company-criterion">
       <p v-if="!selected.items.length" class="finance-rate-empty">未配置</p>
       <div v-for="({row,index:i}) in selected.items" :key="i" class="practice-standard-row" :class="{'fallback-rate':!newStandard[selected.scope].field}">
         <RuleScopeSelect v-if="selected.scope==='category'" :id="prefix+'-category-'+i" label="适用销售类别"

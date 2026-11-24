@@ -44,7 +44,7 @@ function changeScope(next) {
       <a-select :id="'catalog-add-relationship'+suffix" v-model:value="value.relationship" :options="options.relationships" size="small"/>
     </div>
     <div>
-      <label :for="'catalog-add-rate'+suffix">实收比例（%）</label>
+      <label :for="'catalog-add-rate'+suffix">比例（%）</label>
       <a-input-number :id="'catalog-add-rate'+suffix" v-model:value="value.rate" :min="0" :max="100" :precision="2" size="small" string-mode/>
     </div>
     <div v-if="salesPayee && scope!=='external'">

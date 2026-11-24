@@ -18,14 +18,6 @@ const props = defineProps({
 })
 const config = computed(() => props.component.periodBenefit)
 const usesStandardRates = computed(() => config.value.method==='rate' && Array.isArray(config.value.standardRates))
-function toggleStandardRates() {
-  if (usesStandardRates.value) {
-    props.component.amount = config.value.standardRates.find(row=>row.scope==='general')?.value
-    config.value.standardRates = undefined
-  } else {
-    config.value.standardRates = props.component.amount == null ? [] : [{scope:'general',value:props.component.amount}]
-  }
-}
 const usesOrganizationRates = computed(() => usesStandardRates.value && config.value.standardRates.some(row=>row.salesUnits?.length))
 watch(usesOrganizationRates, uses => {
   if (uses) props.component.sourceRole ||= props.sourceRoles[0]?.value
@@ -140,16 +132,8 @@ const calculationMethods = computed(() => [
   <a-form-item v-if="registration">
     <a-checkbox v-model:checked="registration.exclusive">与其他已标记互斥的报名安排不重复匹配</a-checkbox>
   </a-form-item>
-  <PracticePeriodRateStandards v-if="usesStandardRates" v-model="config.standardRates" :prefix="field('standards')"
-    :companies="companies" :organizations="salesUnits" :categories="salesCategories">
-    <template #actions><a-button size="small" @click="toggleStandardRates">改用统一比例</a-button></template>
-  </PracticePeriodRateStandards>
-  <RuleCommissionStandards v-else-if="config.method==='rate'">
-    <template #actions><a-button size="small" @click="toggleStandardRates">按组织或销售类别设比例</a-button></template>
-    <a-form-item class="commission-uniform-rate" label="比例（%）" :html-for="field('rate')" required>
-      <a-input-number :id="field('rate')" v-model:value="component.amount" :min="0" :max="100" :precision="4"/>
-    </a-form-item>
-  </RuleCommissionStandards>
+  <PracticePeriodRateStandards v-if="config.method==='rate'" v-model="config.standardRates" v-model:rate="component.amount"
+    :prefix="field('standards')" :uniform-id="field('rate')" :companies="companies" :organizations="salesUnits" :categories="salesCategories"/>
   <RuleCommissionStandards v-else-if="['fixed','class_fixed','order_fixed'].includes(config.method)">
     <a-form-item class="commission-uniform-rate" :label="config.method==='order_fixed' ? '每笔符合条件的订单金额（元）'
       : config.recipient==='order_appointment' && config.method==='class_fixed' ? '每个组织整班金额（元）' : '金额（元）'"

@@ -9,7 +9,7 @@ import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, catalogRatePriority, catalogRateScopeTitles as rateScopeTitles, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
+import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, catalogRatePriority, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
 const props = defineProps({ rule:Object, applied:Object, api:Function, formatTime:Function, formatMoney:Function,
   optionLabel:Function, periods:Array, skus:Array })
@@ -53,7 +53,7 @@ const rateColumns = [
   {title:'销售公司',key:'company',dataIndex:'company',width:190},
   {title:'销售类别',key:'category',dataIndex:'category',width:170},
   {title:'销售关系',key:'relationship',dataIndex:'relationship',width:110},
-  {title:'实收比例（%）',key:'rate',width:126},
+  {title:'比例（%）',key:'rate',width:126},
   {title:'收款方',key:'payee',width:128},
 ]
 const component = computed(() => sheet.value?.components.find(item => item.itemKey === selected.value))
@@ -63,6 +63,11 @@ const hasRateTable = computed(() => !!(selectedCalculation.value || component.va
 const columns = computed(() => sheet.value?.mayPublish && !props.applied && !selectedCalculation.value
   ? [...rateColumns,{title:'操作',key:'operation',width:190}] : rateColumns)
 const targetKind = computed(() => targetEdits.value.get(selected.value)?.target || component.value?.targetKind)
+const hasUniformRate = computed(() => {
+  const item = component.value
+  if (!item || hasRateTable.value || targetKind.value==='seller') return false
+  return selectedCalculation.value ? selectedCalculation.value.fixedMinor == null : flatMethod(item)==='rate'
+})
 const targetKindLabels = {person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人',appointment:'销售组织的在任人员',...catalogOrderSalesPayees}
 const targetShortLabels = {seller:'销售比例表',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人',appointment:'在任人员',
   order_seller:'成交销售',order_sales_company:'销售公司'}
@@ -129,7 +134,7 @@ const hasEdits = computed(() => sheet.value?.independentTeamSales || copy.value 
 const impactPeriods = computed(() => catalogRuleImpactPeriods(props.periods,sheet.value?.productId,impactInput.value?.effectiveFrom))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
 const canAddRates = computed(() => sheet.value?.mayPublish && !props.applied && !!sheet.value.structureOptions &&
-  !itemRemoved.value && !selectedCalculation.value)
+  !itemRemoved.value)
 const rateNames = computed(() => Object.fromEntries(['companies','categories','relationships'].map(kind=>
   [kind,new Map((sheet.value?.structureOptions?.[kind] || []).map(option=>[option.value,option.label]))])))
 function stagedRateRow(change, original) {
@@ -166,18 +171,20 @@ const singleSalesRate = computed(() => {
 const rateGroups = computed(() => {
   const mayAdd = canAddRates.value
   return [
-    {key:'category',add:mayAdd && sheet.value.structureOptions.categories.length && '添加类别默认比例'},
-    {key:'company',add:mayAdd && '添加公司特例'},
+    {key:'category',add:mayAdd && sheet.value.structureOptions.categories.length && '添加销售类别'},
+    {key:'company',add:mayAdd && '添加指定公司'},
     {key:'inherited'},
     {key:'external'},
-    {key:'general',add:mayAdd && '添加通用比例'},
+    {key:'general',add:mayAdd && !hasUniformRate.value && '添加通用比例'},
   ]
     .map(group=>{
       const rows = rateRows.value.filter(row=>row.scope===group.key)
-      const activeCount = rows.filter(row=>!removedRateRows.value.has(cellKey(selected.value,row.row))).length
-      return {...group,title:rateScopeTitles[group.key],rows,activeCount}
+      const activeCount = group.key==='general' && hasUniformRate.value
+        ? Number((selectedCalculation.value?.rateBps ?? rateAsBasisPoints(flatValue(component.value)))!==undefined)
+        : rows.filter(row=>!removedRateRows.value.has(cellKey(selected.value,row.row))).length
+      return {...group,rows,activeCount}
     })
-    .filter(group=>group.add || group.rows.length)
+    .filter(group=>group.add || group.rows.length || group.key==='general' && hasUniformRate.value)
 })
 const rateGroup = ref()
 const standardTabs = computed(() => rateGroups.value.map(group=>({value:group.key,count:group.activeCount})))
@@ -192,7 +199,8 @@ watch([selected,rateGroups], ([item,groups],[previousItem]) => {
     const positive = populated.filter(group=>group.rows.some(row=>row.rateBps>0))
     const candidates = positive.length ? positive : populated
     rateGroup.value = (candidates.find(group=>group.key==='category') ||
-      candidates.find(group=>group.key==='general') || candidates[0] || groups[0])?.key
+      candidates.find(group=>group.key==='general') || candidates[0] ||
+      groups.find(group=>group.key==='general') || groups[0])?.key
   }
 })
 const ratePriority = computed(() => catalogRatePriority(rateGroups.value.filter(group=>group.activeCount).map(group=>group.key)))
@@ -202,6 +210,7 @@ const displayedRates = computed(() => {
   return (activeRateGroup.value?.rows || []).filter(row => !term ||
     [row.company,row.relationship,row.category].some(value => value?.toLowerCase().includes(term)))
 })
+const showRateGroups = computed(() => hasRateTable.value || hasUniformRate.value && canAddRates.value)
 const displayedColumns = computed(() => columns.value.filter(col=>
   (col.key!=='company' || ['company','inherited'].includes(rateGroup.value)) &&
   (col.key!=='category' || activeRateGroup.value?.rows.some(row=>row.category)) &&
@@ -250,6 +259,19 @@ async function editRateScope(row) {
   await nextTick()
   structureEditor.value?.editRateScope(row,row.staged ? String(row.rateBps/100) : displayRate(row.rateBps,row.row))
 }
+function addStandard(item, scope) {
+  if (selectedCalculation.value?.rows?.length) {
+    structureEditor.value?.editCalculation(selectedCalculation.value,'table',scope)
+    return
+  }
+  if (hasRateTable.value) {
+    structureEditor.value?.addRateCondition(scope)
+    return
+  }
+  const rateBps = selectedCalculation.value?.rateBps ?? rateAsBasisPoints(flatValue(item))
+  const rows = rateBps===undefined ? [] : [{company:'ANY',relationship:'ANY',rateBps}]
+  structureEditor.value?.editCalculation({rows},'table',scope)
+}
 const pendingScope = (itemKey, row) => row && structure.value.rateRows.find(edit=>edit.itemKey===itemKey && edit.row===row)
 const salesPayeeLabel = row => row.teamRate ? '团队岗位拆分'
   : catalogSalesPayees.find(choice=>choice.value===(row.payee || 'seller'))?.label
@@ -294,7 +316,9 @@ const rateIndicators = computed(() => Object.fromEntries((sheet.value?.component
   item.itemKey,catalogRateIndicators(activeRateRows(item),row=>currentRate(item,row)),
 ])))
 const savedMethod = item => item.fixedMinor == null ? 'rate' : 'fixed'
-const flatMethod = item => edits.value[cellKey(item.itemKey)]?.method || savedMethod(item)
+function flatMethod(item) {
+  return edits.value[cellKey(item.itemKey)]?.method || savedMethod(item)
+}
 function calculationMethod(item) {
   if (targetKind.value==='seller') return singleSalesRate.value ? 'rate' : 'table'
   const staged = calculationFor(item.itemKey)
@@ -309,7 +333,7 @@ function chooseCalculation(item, method) {
     structureEditor.value?.editCalculation(undefined,method)
   }
 }
-const flatValue = item => {
+function flatValue(item) {
   const edit = edits.value[cellKey(item.itemKey)]
   return edit ? edit.value : ((item.fixedMinor ?? item.rateBps)/100).toFixed(2)
 }
@@ -714,7 +738,6 @@ async function publish() {
             <RuleArrangementFields name-id="catalog-rate-label" :name="labelEdits.get(item.itemKey) ?? item.label"
               :order-type-text="orderTypeText" :order-type-id="sheet.membershipSku ? 'catalog-member-type' : undefined"
               :order-types="catalogMembershipTypes" :order-type="memberValue(item)" @update:order-type="selectMemberType(item,$event)"
-              :calculation-text="targetKind==='seller' ? '比例' : undefined"
               :disabled="!editable || structureEditing" @update:name="setLabel(item,$event)">
               <CatalogPayeeFields :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
                 prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters" :product-id="sheet.productId"
@@ -722,16 +745,11 @@ async function publish() {
                 :saved-pool-label="item.targetLabel" :existing-pool="item.targetKind==='pool' && !item.poolId"
                 :disabled="!editable || structureEditing" @update:model-value="setTarget(item,$event)"/>
               <template #calculation>
-              <a-form-item v-if="targetKind!=='seller'" label="计提方式" html-for="catalog-flat-method">
-                <a-select id="catalog-flat-method" :value="calculationMethod(item)==='table' ? 'rate' : calculationMethod(item)" :options="catalogFlatMethods"
-                  :disabled="!editable || structureEditing" @update:value="chooseCalculation(item,$event)"/>
-              </a-form-item>
-              <a-space v-if="selectedCalculation" wrap :size="4">
-                <span v-if="!hasRateTable">{{ componentStandard(item) }}</span>
-                <a-button size="small" type="link" :disabled="!editable || structureEditing"
-                  @click="structureEditor?.editCalculation(selectedCalculation,calculationMethod(item))">编辑计算条件</a-button>
-                <a-button size="small" type="link" :disabled="!editable || structureEditing" @click="undoCalculation">撤销更换</a-button>
-              </a-space>
+                <a-form-item label="计提方式" html-for="catalog-flat-method">
+                  <a-input v-if="targetKind==='seller'" id="catalog-flat-method" value="比例" readonly/>
+                  <a-select v-else id="catalog-flat-method" :value="calculationMethod(item)==='table' ? 'rate' : calculationMethod(item)"
+                    :options="catalogFlatMethods" :disabled="!editable || structureEditing" @update:value="chooseCalculation(item,$event)"/>
+                </a-form-item>
               </template>
               <template #scope>
                 <CatalogCommissionScopeFields prefix="catalog-edit" :model-value="commissionScope(item)"
@@ -762,28 +780,29 @@ async function publish() {
             </a-descriptions>
           </template>
           <RuleCommissionStandards v-if="hasRateTable || !itemRemoved && !applied && sheet.mayPublish && sheet.structureOptions"
-            v-model="rateGroup" :groups="hasRateTable ? standardTabs : undefined" :priority="hasRateTable ? ratePriority : undefined" :disabled="structureEditing">
-            <template #actions>
-              <a-button v-if="editable && !structureEditing && !selectedCalculation && targetKind!=='seller' && calculationMethod(item)!=='fixed'"
-                size="small" @click="chooseCalculation(item,hasRateTable ? 'rate' : 'table')">
-                {{ hasRateTable ? '改用统一比例' : '按组织或销售类别设比例' }}
-              </a-button>
-            </template>
+            v-model="rateGroup" :groups="showRateGroups ? standardTabs : undefined" :priority="hasRateTable ? ratePriority : undefined" :disabled="structureEditing">
             <template #tools>
               <a-button v-if="activeRateGroup?.add" size="small" :disabled="!editable || structureEditing"
-                @click="structureEditor?.addRateCondition(activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
-            <a-input v-if="activeRateGroup?.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
-              class="catalog-rate-filter" placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
+                @click="addStandard(item,activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
+              <a-input v-if="activeRateGroup?.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
+                class="catalog-rate-filter" placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
             </template>
-          <a-form-item v-if="!hasRateTable && targetKind!=='seller' && !selectedCalculation" class="commission-uniform-rate"
+          <a-space v-if="selectedCalculation" wrap :size="4">
+            <span v-if="!hasRateTable">{{ componentStandard(item) }}</span>
+            <a-button size="small" type="link" :disabled="!editable || structureEditing"
+              @click="structureEditor?.editCalculation(selectedCalculation,calculationMethod(item))">编辑计算条件</a-button>
+            <a-button size="small" type="link" :disabled="!editable || structureEditing" @click="undoCalculation">撤销更换</a-button>
+          </a-space>
+          <a-form-item v-if="!hasRateTable && targetKind!=='seller' && !selectedCalculation && (!showRateGroups || rateGroup==='general')" class="commission-uniform-rate"
             :label="flatMethod(item)==='fixed' ? '金额（元）' : '比例（%）'"
             :html-for="flatMethod(item)==='fixed' ? 'catalog-fixed-amount' : 'catalog-fixed-rate'">
             <a-input-number :id="flatMethod(item)==='fixed' ? 'catalog-fixed-amount' : 'catalog-fixed-rate'" :value="flatValue(item)" :disabled="!editable"
               :min="0" :max="flatMethod(item)==='rate' ? 100 : undefined" :precision="2" string-mode @update:value="setFlat(item,flatMethod(item),$event)"/>
           </a-form-item>
           <div v-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
+          <p v-if="showRateGroups && !hasRateTable && rateGroup!=='general' && !structureEditing" class="finance-rate-empty">未配置</p>
           <template v-if="hasRateTable">
-            <p v-if="!activeRateGroup?.rows.length" class="finance-rate-empty">暂无{{ activeRateGroup?.title }}</p>
+            <p v-if="!activeRateGroup?.rows.length" class="finance-rate-empty">未配置</p>
             <a-table v-else :key="selected + filter + rateGroup + rateTableRevision" class="catalog-rate-table"
               :columns="displayedColumns" :data-source="displayedRates" :row-key="rateRowKey" size="small"
               :scroll="{x:tableWidth}" :pagination="{pageSize:8,showSizeChanger:false,hideOnSinglePage:true}">

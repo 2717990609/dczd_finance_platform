@@ -46,6 +46,9 @@ defineExpose({focus:()=>input.value?.focus()})
   grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));
   gap:0 10px;
 }
+@media (min-width:800px) {
+  .rule-arrangement-terms:has(> .rule-order-scope) { grid-template-columns:repeat(3,minmax(0,1fr)) }
+}
 .rule-basics :deep(.ant-form-item) { min-width:0 }
 .rule-basics :deep(.ant-input-number) { width:100% }
 .rule-field-value { display:block; padding:4px 0; overflow-wrap:anywhere }
