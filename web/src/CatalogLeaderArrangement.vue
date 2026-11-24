@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
+import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import { catalogFlatMethods, catalogMembershipTypes, catalogScopeOptions } from './rule-component-form'
 
 const props = defineProps({itemKey:String,teams:Array,api:Function,peopleFilters:Object,disabled:Boolean,inherited:Boolean,orderTypeText:String,
@@ -65,13 +66,9 @@ function selectCompanies(companies) {
         <a-select :id="field('method')" :value="form.method" :options="catalogFlatMethods" :disabled="disabled"
           @change="update({method:$event,amount:undefined})"/>
       </a-form-item>
-      <a-form-item :label="form.method==='fixed' ? '金额（元）' : '比例（%）'" :html-for="field('amount')" required>
-        <a-input-number :id="field('amount')" :value="form.amount" :disabled="disabled"
-          :min="0" :max="form.method==='rate' ? 100 : undefined" :precision="2" string-mode @update:value="update({amount:$event})"/>
-      </a-form-item>
     </template>
     <template #scope>
-      <a-form-item label="计提订单范围" :html-for="field('orders')">
+      <a-form-item label="适用成交人员" :html-for="field('orders')">
         <a-select :id="field('orders')" :value="form.scope.orders" :options="orderScopes" :disabled="disabled"
           @change="updateScope({orders:$event})"/>
       </a-form-item>
@@ -94,5 +91,11 @@ function selectCompanies(companies) {
       </div>
     </template>
   </RuleArrangementFields>
+  <RuleCommissionStandards>
+    <a-form-item class="commission-uniform-rate" :label="form.method==='fixed' ? '金额（元）' : '比例（%）'" :html-for="field('amount')" required>
+      <a-input-number :id="field('amount')" :value="form.amount" :disabled="disabled"
+        :min="0" :max="form.method==='rate' ? 100 : undefined" :precision="2" string-mode @update:value="update({amount:$event})"/>
+    </a-form-item>
+  </RuleCommissionStandards>
   <slot/>
 </template>

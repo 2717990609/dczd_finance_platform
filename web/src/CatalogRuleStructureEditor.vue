@@ -4,6 +4,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogRateCondition from './CatalogRateCondition.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
+import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, catalogRatePriority, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
@@ -17,8 +18,6 @@ const revising = computed(() => form.value?.kind==='calculation' || form.value?.
 const isSales = computed(() => form.value?.kind==='item' && form.value.target==='seller')
 const ratePriority = computed(() => catalogRatePriority((form.value?.rows || [])
   .filter(row=>props.parseRate(row.rate)!==undefined).map(row=>row.scope)))
-const orderScopeLabel = computed(() => form.value?.format==='table'
-  ? catalogRateOrderScopeLabel(form.value.rows,row=>props.parseRate(row.rate)) : '本规则全部订单')
 const stagedEntries = computed(() => [
   ...(draft.value.sales && !props.replacementItemKey ? [{item:{...draft.value.sales,target:'seller'},index:null}] : []),
   ...draft.value.items.map((item,index)=>({item,index})).filter(({item})=>item.replacesItemKey===props.replacementItemKey),
@@ -211,33 +210,34 @@ defineExpose({addRecipient,editRecipient,editCalculation,editRateScope,cancel,ad
           <a-form-item v-if="isSales && form.format==='rate'" label="比例收款方" html-for="catalog-add-sales-payee">
             <a-select id="catalog-add-sales-payee" :value="form.salesPayee || 'seller'" :options="catalogSalesPayees" @change="form.salesPayee=$event"/>
           </a-form-item>
-          <a-form-item v-if="form.format==='rate'" label="比例（%）" html-for="catalog-add-fixed" required>
-            <a-input-number id="catalog-add-fixed" aria-label="比例（%）" v-model:value="form.rate"
-              :min="0" :max="100" :precision="2" string-mode/>
-          </a-form-item>
-          <a-form-item v-else-if="form.format==='fixed'" label="金额（元）" html-for="catalog-add-amount" required>
-            <a-input-number id="catalog-add-amount" v-model:value="form.amount"
-              :min="0" :precision="2" string-mode/>
-          </a-form-item>
           </template>
           <template #scope>
             <CatalogCommissionScopeFields v-if="form.kind==='item'" prefix="catalog-add" v-model="form.orderScope"
-              :options="options.salesUnits" :categories="options.categories" :can-own="form.target==='person'" :all-label="orderScopeLabel"/>
+              :options="options.salesUnits" :categories="options.categories" :can-own="form.target==='person'"/>
           </template>
         </RuleArrangementFields>
-        <a-button v-if="form.kind==='item' && form.format!=='fixed'" size="small"
-          @click="form.format=form.format==='table' ? 'rate' : 'table'">
-          {{ form.format==='table' ? '改用统一比例' : '按类别或公司设比例' }}
-        </a-button>
-        <template v-if="form.format==='table'">
-          <small v-if="ratePriority" class="finance-rate-priority">匹配顺序 {{ ratePriority }}</small>
-          <div v-for="(_,index) in form.rows" :key="index" class="catalog-add-condition">
-            <CatalogRateCondition v-model="form.rows[index]" :options="options" :suffix="'-'+index" :sales-payee="isSales">
-              <a-button v-if="form.rows.length>1" type="link" danger size="small" @click="form.rows.splice(index,1)">移除</a-button>
-            </CatalogRateCondition>
-          </div>
-          <a-button type="dashed" @click="form.rows.push(blankCondition())">再添一个条件</a-button>
-        </template>
+        <RuleCommissionStandards :priority="form.format==='table' ? ratePriority : undefined">
+          <template v-if="form.kind==='item' && form.format!=='fixed'" #actions>
+            <a-button size="small" @click="form.format=form.format==='table' ? 'rate' : 'table'">
+              {{ form.format==='table' ? '改用统一比例' : '按组织或销售类别设比例' }}
+            </a-button>
+          </template>
+          <a-form-item v-if="form.format==='rate'" class="commission-uniform-rate" label="比例（%）" html-for="catalog-add-fixed" required>
+            <a-input-number id="catalog-add-fixed" aria-label="比例（%）" v-model:value="form.rate"
+              :min="0" :max="100" :precision="2" string-mode/>
+          </a-form-item>
+          <a-form-item v-else-if="form.format==='fixed'" class="commission-uniform-rate" label="金额（元）" html-for="catalog-add-amount" required>
+            <a-input-number id="catalog-add-amount" v-model:value="form.amount" :min="0" :precision="2" string-mode/>
+          </a-form-item>
+          <template v-else-if="form.format==='table'">
+            <div v-for="(_,index) in form.rows" :key="index" class="catalog-add-condition">
+              <CatalogRateCondition v-model="form.rows[index]" :options="options" :suffix="'-'+index" :sales-payee="isSales">
+                <a-button v-if="form.rows.length>1" type="link" danger size="small" @click="form.rows.splice(index,1)">移除</a-button>
+              </CatalogRateCondition>
+            </div>
+            <div><a-button size="small" type="dashed" @click="form.rows.push(blankCondition())">再添一个条件</a-button></div>
+          </template>
+        </RuleCommissionStandards>
       </template>
       <div class="form-actions">
         <a-button :size="form.kind==='row' ? 'small' : undefined" @click="cancel">{{ revising ? '取消编辑' : '取消添加' }}</a-button>

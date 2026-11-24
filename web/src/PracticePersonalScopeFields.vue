@@ -66,7 +66,7 @@ function exceptionOptions(group, current) {
 
 <template>
   <RuleOrderScope :id="field('scope')" :model-value="mode" :can-own="flexibleScope && row.salesRecipientKind==='person'"
-    team-label="指定销售范围" all-label="全班" @update:model-value="changeScope"/>
+    @update:model-value="changeScope"/>
   <div v-if="mode==='team' || mode==='own' && row.salesCompanies?.length" class="practice-scope-filters">
     <a-form-item v-if="mode==='team' && flexibleScope" class="practice-match-kind" label="按什么筛选订单">
       <a-radio-group :value="matchKind" role="radiogroup" aria-label="按什么筛选订单" @update:value="changeMatchKind">

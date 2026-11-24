@@ -9,6 +9,7 @@ import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import DraftAggregateOrders from './DraftAggregateOrders.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import RuleTierTable from './RuleTierTable.vue'
+import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import { catalogAppointmentLevels, catalogOrderScope, catalogRecipientIsPerson, emptyCatalogOrderScope } from './rule-component-form'
 
 const props = defineProps({rule:Object, applied:Object, focusItemKey:String, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
@@ -639,14 +640,6 @@ async function resumeRule() {
                   <a-select id="period-benefit-method" :value="item.method" :options="methodOptions" :disabled="saving"
                     @update:value="setMethod(item,$event)"/>
                 </a-form-item>
-                <a-form-item v-if="item.method==='rate'" label="比例（%）" html-for="period-benefit-uniform-rate" required>
-                  <a-input-number id="period-benefit-uniform-rate" v-model:value="item.uniformRate" :min="0" :max="100"
-                    :precision="2" :disabled="saving"/>
-                </a-form-item>
-                <a-form-item v-if="item.method==='fixed'" :label="item.targetKind==='appointment' ? '每笔符合条件的订单金额（元）' : '金额（元）'"
-                  html-for="period-benefit-fixed-amount" required>
-                  <a-input-number id="period-benefit-fixed-amount" v-model:value="item.fixedAmount" :min="0" :precision="2" :disabled="saving"/>
-                </a-form-item>
               </template>
               <template #orderType>
                 <a-form-item label="计提订单类型" :html-for="scenarioCodes.length>1 || item.scenarioCodes?.length ? 'period-benefit-skus' : undefined">
@@ -668,6 +661,18 @@ async function resumeRule() {
           <RuleArrangementFields v-else :order-type-text="itemOrderTypes(item)" :calculation-text="methodSummary(item)" :scope-text="orderScopeText(item)">
             <a-form-item label="收款对象"><span class="rule-field-value">{{ targetLabel(item) }}</span></a-form-item>
           </RuleArrangementFields>
+          <RuleCommissionStandards v-if="canSave && item.method!=='tiers'">
+            <a-form layout="vertical" size="small" class="commission-uniform-rate">
+              <a-form-item v-if="item.method==='rate'" label="比例（%）" html-for="period-benefit-uniform-rate" required>
+                <a-input-number id="period-benefit-uniform-rate" v-model:value="item.uniformRate" :min="0" :max="100"
+                  :precision="2" :disabled="saving"/>
+              </a-form-item>
+              <a-form-item v-else :label="item.targetKind==='appointment' ? '每笔符合条件的订单金额（元）' : '金额（元）'"
+                html-for="period-benefit-fixed-amount" required>
+                <a-input-number id="period-benefit-fixed-amount" v-model:value="item.fixedAmount" :min="0" :precision="2" :disabled="saving"/>
+              </a-form-item>
+            </a-form>
+          </RuleCommissionStandards>
           <a-form v-if="canSave && item.targetKind==='person'" layout="vertical" size="small" class="rule-basics">
             <a-form-item>
               <a-checkbox :checked="!!item.appointment" :disabled="saving"

@@ -6,6 +6,7 @@ import {
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import PeriodTasks from './PeriodTasks.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
+import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import PracticePersonalScopeFields from './PracticePersonalScopeFields.vue'
 import FinanceLogin from './FinanceLogin.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
@@ -2009,13 +2010,6 @@ async function save() {
               <a-form-item :html-for="'rule-mode-'+i" label="计提方式">
                 <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
               </a-form-item>
-              <a-form-item v-if="c.mode==='fixed' || c.mode==='rate'" :html-for="'rule-amount-'+i"
-                :label="c===practiceRetrainSales && c.retrainSplits?.length ?
-                  (c.mode==='rate' ? '复训总提成比例（%）' : '每份复训总提成（元）') :
-                  c.mode==='rate' ? '比例（%）' : '金额（元）'">
-                <a-input-number :id="'rule-amount-'+i" v-model:value="c.amount"
-                  :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
-              </a-form-item>
             </template>
             <template #scope>
               <PracticePersonalScopeFields v-if="classRule && ['sales','referral'].includes(c.type)" :row="c" :index="i"
@@ -2023,6 +2017,15 @@ async function save() {
                 :people="classPeopleOptions"/>
             </template>
           </RuleArrangementFields>
+          <RuleCommissionStandards v-if="c.mode==='fixed' || c.mode==='rate'">
+            <a-form-item class="commission-uniform-rate" :html-for="'rule-amount-'+i"
+              :label="c===practiceRetrainSales && c.retrainSplits?.length ?
+                (c.mode==='rate' ? '复训总提成比例（%）' : '每份复训总提成（元）') :
+                c.mode==='rate' ? '比例（%）' : '金额（元）'">
+              <a-input-number :id="'rule-amount-'+i" v-model:value="c.amount"
+                :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
+            </a-form-item>
+          </RuleCommissionStandards>
           <PracticeRetrainSplitEditor v-if="c===practiceRetrainSales && c.retrainSplits?.length" :component="c" :index="i"
             :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"
             :pools="practicePoolOptions" :create-pool="createPracticePool" :format-money="formatMoney"/>

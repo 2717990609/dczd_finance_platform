@@ -4,6 +4,7 @@ import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import RuleScopeSelect from './RuleScopeSelect.vue'
 import RuleOrderScope from './RuleOrderScope.vue'
+import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import { practiceCompanyMatchLabels, practiceCompanyRatePriority,
   practiceCompanyScopes, practiceRecipientIsPerson } from './rule-component-form'
 
@@ -36,11 +37,9 @@ const scopes = computed(() => practiceCompanyScopes(sales.value))
 const scopeMode = computed(() => sales.value.scopeMode || (sales.value.ownSales ? 'own' : sales.value.general ? 'all' : 'team'))
 const organizationCount = computed(() => scopes.value.companies.length + scopes.value.units.length)
 const scopeOptions = computed(() => [
-  {value:'category',label:practiceCompanyMatchLabels.category +
-    (scopes.value.categories.length ? '（'+scopes.value.categories.length+' 类）' : '')},
-  {value:'companies',label:practiceCompanyMatchLabels.companies +
-    (organizationCount.value ? '（'+organizationCount.value+' 个）' : '')},
-  ...(scopeMode.value==='team' ? [] : [{value:'general',label:'通用标准'}]),
+  {value:'category',count:scopes.value.categories.length},
+  {value:'companies',count:organizationCount.value},
+  ...(scopeMode.value==='team' ? [] : [{value:'general'}]),
 ])
 const scope = ref(scopeMode.value!=='team' ? 'general' : scopes.value.categories.length ? 'category' :
   organizationCount.value ? 'companies' : 'category')
@@ -80,7 +79,7 @@ const activeStandards = computed(() => scope.value==='general' ? [sales.value.ge
   ? companyRows.value.map(row=>row.standard || row.override)
   : standardRowsByScope.value.category.map(row=>row.standard))
 const activeMethod = computed(() => {
-  if (!activeStandards.value.length) return defaultMethods.value[scope.value]
+  if (!activeStandards.value.length) return defaultMethods.value[scope.value] ?? amounts.value[0]?.value
   const modes = new Set(activeStandards.value.map(row=>row.mode))
   return modes.size===1 ? activeStandards.value[0].mode : undefined
 })
@@ -179,19 +178,22 @@ watch(amounts, choices => {
     </template>
     <template #scope>
       <RuleOrderScope :id="field('scope')" :model-value="scopeMode" :can-own="payee.kind==='person'"
-        team-label="指定销售范围" all-label="全班" @update:model-value="setScopeMode"/>
+        @update:model-value="setScopeMode"/>
     </template>
   </RuleArrangementFields>
   <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
-  <section class="practice-company-criteria" :aria-labelledby="field('scope-heading')">
-    <header class="practice-company-scope-heading">
-      <h4 :id="field('scope-heading')">计提标准</h4>
-      <small v-if="priority" class="finance-rate-priority">匹配顺序 {{ priority }}</small>
-    </header>
-    <a-radio-group v-model:value="scope" role="radiogroup" aria-label="查看计提标准" class="company-standard-selector">
-      <a-radio v-for="option in scopeOptions" :key="option.value" :value="option.value">{{ option.label }}</a-radio>
-    </a-radio-group>
+  <RuleCommissionStandards v-model="scope" :groups="scopeOptions" :priority="priority">
+    <template v-if="scope!=='general'" #tools>
+      <div v-if="scope==='companies' && companyPageCount>1" class="company-standard-pages" role="group" aria-label="组织标准分页">
+        <a-button size="small" type="text" :disabled="companyPage===1" @click="companyPage--">上一页</a-button>
+        <small role="status">{{ companyPage }} / {{ companyPageCount }}</small>
+        <a-button size="small" type="text" :disabled="companyPage===companyPageCount" @click="companyPage++">下一页</a-button>
+      </div>
+      <a-button :disabled="scope==='category' && !salesCategories.length" size="small" @click="addStandard(scope)">
+        {{ standardAction }}
+      </a-button>
+    </template>
     <div v-if="scope==='general'" class="practice-company-criterion saved-standard">
       <a-form-item :label="sales.general.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="field('general')" required>
         <a-input-number :id="field('general')" v-model:value="sales.general.value" :min="0"
@@ -199,20 +201,6 @@ watch(amounts, choices => {
       </a-form-item>
     </div>
     <section v-else :key="scope" :aria-label="practiceCompanyMatchLabels[scope]" class="practice-company-criterion">
-      <header>
-        <strong>{{ practiceCompanyMatchLabels[scope] }}</strong>
-        <small v-if="scope==='category' && scopes.categories.length">{{ scopes.categories.length }} 类</small>
-        <small v-else-if="scope==='companies' && organizationCount">{{ organizationCount }} 个</small>
-        <small v-else>未配置</small>
-        <div v-if="scope==='companies' && companyPageCount>1" class="company-standard-pages" role="group" aria-label="组织标准分页">
-          <a-button size="small" type="text" :disabled="companyPage===1" @click="companyPage--">上一页</a-button>
-          <small role="status">{{ companyPage }} / {{ companyPageCount }}</small>
-          <a-button size="small" type="text" :disabled="companyPage===companyPageCount" @click="companyPage++">下一页</a-button>
-        </div>
-        <a-button :disabled="scope==='category' && !salesCategories.length" size="small" @click="addStandard(scope)">
-          {{ standardAction }}
-        </a-button>
-      </header>
       <div v-if="standardRowsByScope[scope].length || (scope==='companies' && overrides.length)"
         class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations}">
         <div class="company-standard-fields company-standard-column-labels" aria-hidden="true">
@@ -269,12 +257,13 @@ watch(amounts, choices => {
           </div>
         </template>
       </div>
+      <p v-else class="finance-rate-empty">未配置</p>
     </section>
     <div v-if="scopes.hasDefault" class="saved-standard">
       <span>{{ practiceCompanyMatchLabels.default }} · {{ sales.defaultRate }}%</span>
       <a-button type="link" danger size="small" @click="sales.defaultRate=undefined">移除</a-button>
     </div>
-  </section>
+  </RuleCommissionStandards>
   <a-form-item v-if="hasRecommendations" label="可收推荐分润的公司" :html-for="field('referral-recipients')" required>
     <a-select :id="field('referral-recipients')" v-model:value="component.companySales.recommendationRecipients"
       :options="recipients" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
@@ -282,7 +271,7 @@ watch(amounts, choices => {
   <a-collapse ghost class="company-advanced">
     <a-collapse-panel key="advanced" header="订单归属设置">
       <div class="rule-basics">
-        <a-form-item label="订单销售角色" :html-for="field('role')" required>
+        <a-form-item label="订单上的销售角色" :html-for="field('role')" required>
           <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles" size="small"/>
         </a-form-item>
         <a-form-item v-if="component.companySales.internalCompanies?.length" label="已配置的个人提成组织" :html-for="field('internal')">
@@ -295,7 +284,7 @@ watch(amounts, choices => {
 </template>
 
 <style scoped>
-.company-standard-selector {margin:0 0 6px}.saved-standard {display:flex;align-items:center;gap:8px;margin-top:6px}
+.saved-standard {display:flex;align-items:center;gap:8px;margin-top:6px}
 .company-standard-pages {display:flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums}
 .company-standard-table {container-type:inline-size}
 .company-standard-table.has-method {--company-method-column:minmax(0,1.25fr)}

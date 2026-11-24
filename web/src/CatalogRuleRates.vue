@@ -7,6 +7,7 @@ import CatalogRuleStructureEditor from './CatalogRuleStructureEditor.vue'
 import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
+import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, catalogRatePriority, catalogRateScopeTitles as rateScopeTitles, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, rateAsBasisPoints } from './rule-component-form'
 
@@ -179,6 +180,7 @@ const rateGroups = computed(() => {
     .filter(group=>group.add || group.rows.length)
 })
 const rateGroup = ref()
+const standardTabs = computed(() => rateGroups.value.map(group=>({value:group.key,count:group.activeCount})))
 const rateTableRevision = ref(0)
 const rateRowKey = row => row.draftKey || row.row
 const rateEditorTarget = computed(() => '#'+CSS.escape('catalog-rates-edit-'+selected.value))
@@ -291,8 +293,6 @@ const activeRateRows = item => configuredRateRows(item).filter(row=>!removedRate
 const rateIndicators = computed(() => Object.fromEntries((sheet.value?.components || []).map(item=>[
   item.itemKey,catalogRateIndicators(activeRateRows(item),row=>currentRate(item,row)),
 ])))
-const orderScopeLabel = computed(() => hasRateTable.value
-  ? catalogRateOrderScopeLabel(activeRateRows(component.value),row=>currentRate(component.value,row)) : '本规则全部订单')
 const savedMethod = item => item.fixedMinor == null ? 'rate' : 'fixed'
 const flatMethod = item => edits.value[cellKey(item.itemKey)]?.method || savedMethod(item)
 function calculationMethod(item) {
@@ -726,14 +726,6 @@ async function publish() {
                 <a-select id="catalog-flat-method" :value="calculationMethod(item)==='table' ? 'rate' : calculationMethod(item)" :options="catalogFlatMethods"
                   :disabled="!editable || structureEditing" @update:value="chooseCalculation(item,$event)"/>
               </a-form-item>
-              <a-form-item v-if="targetKind!=='seller' && !selectedCalculation && !item.rows?.length && flatMethod(item)==='fixed'" label="金额（元）" html-for="catalog-fixed-amount">
-                <a-input-number id="catalog-fixed-amount" :value="flatValue(item)" :disabled="!editable"
-                  :min="0" :precision="2" string-mode @update:value="setFlat(item,'fixed',$event)"/>
-              </a-form-item>
-              <a-form-item v-else-if="targetKind!=='seller' && !selectedCalculation && !item.rows?.length" label="比例（%）" html-for="catalog-fixed-rate">
-                <a-input-number id="catalog-fixed-rate" :value="flatValue(item)" :disabled="!editable"
-                  :min="0" :max="100" :precision="2" string-mode @update:value="setFlat(item,'rate',$event)"/>
-              </a-form-item>
               <a-space v-if="selectedCalculation" wrap :size="4">
                 <span v-if="!hasRateTable">{{ componentStandard(item) }}</span>
                 <a-button size="small" type="link" :disabled="!editable || structureEditing"
@@ -745,7 +737,7 @@ async function publish() {
                 <CatalogCommissionScopeFields prefix="catalog-edit" :model-value="commissionScope(item)"
                   :options="sheet.structureOptions.salesUnits" :unit-names="commissionUnitNames" :categories="sheet.structureOptions.categories"
                   :category-names="sheet.scopeCategoryNames" :disabled="!editable || structureEditing"
-                  :can-own="targetKind==='person'" :all-label="orderScopeLabel" @update:model-value="setCommissionScope(item,$event)"/>
+                  :can-own="targetKind==='person'" @update:model-value="setCommissionScope(item,$event)"/>
               </template>
             </RuleArrangementFields>
           </template>
@@ -769,26 +761,26 @@ async function publish() {
               </a-descriptions-item>
             </a-descriptions>
           </template>
-          <a-button v-if="editable && !structureEditing && !selectedCalculation && targetKind!=='seller' && calculationMethod(item)!=='fixed'"
-            size="small" @click="chooseCalculation(item,hasRateTable ? 'rate' : 'table')">
-            {{ hasRateTable ? '改用统一比例' : '按类别或公司设比例' }}
-          </a-button>
-          <div v-if="hasRateTable" class="finance-rate-toolbar catalog-rate-toolbar">
-            <div class="catalog-rate-controls">
-              <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" size="small"
-                :disabled="structureEditing" role="radiogroup" aria-label="查看比例">
-                <a-radio v-for="group in rateGroups" :key="group.key" :value="group.key">
-                  <span>{{ group.title }}</span><small class="finance-rate-count">{{ group.activeCount }}</small>
-                </a-radio>
-              </a-radio-group>
-              <strong v-else-if="activeRateGroup">{{ activeRateGroup.title }}</strong>
+          <RuleCommissionStandards v-if="hasRateTable || !itemRemoved && !applied && sheet.mayPublish && sheet.structureOptions"
+            v-model="rateGroup" :groups="hasRateTable ? standardTabs : undefined" :priority="hasRateTable ? ratePriority : undefined" :disabled="structureEditing">
+            <template #actions>
+              <a-button v-if="editable && !structureEditing && !selectedCalculation && targetKind!=='seller' && calculationMethod(item)!=='fixed'"
+                size="small" @click="chooseCalculation(item,hasRateTable ? 'rate' : 'table')">
+                {{ hasRateTable ? '改用统一比例' : '按组织或销售类别设比例' }}
+              </a-button>
+            </template>
+            <template #tools>
               <a-button v-if="activeRateGroup?.add" size="small" :disabled="!editable || structureEditing"
                 @click="structureEditor?.addRateCondition(activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
-            </div>
-            <small v-if="ratePriority" class="finance-rate-priority">匹配顺序 {{ ratePriority }}</small>
             <a-input v-if="activeRateGroup?.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
-              placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
-          </div>
+              class="catalog-rate-filter" placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
+            </template>
+          <a-form-item v-if="!hasRateTable && targetKind!=='seller' && !selectedCalculation" class="commission-uniform-rate"
+            :label="flatMethod(item)==='fixed' ? '金额（元）' : '比例（%）'"
+            :html-for="flatMethod(item)==='fixed' ? 'catalog-fixed-amount' : 'catalog-fixed-rate'">
+            <a-input-number :id="flatMethod(item)==='fixed' ? 'catalog-fixed-amount' : 'catalog-fixed-rate'" :value="flatValue(item)" :disabled="!editable"
+              :min="0" :max="flatMethod(item)==='rate' ? 100 : undefined" :precision="2" string-mode @update:value="setFlat(item,flatMethod(item),$event)"/>
+          </a-form-item>
           <div v-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
           <template v-if="hasRateTable">
             <p v-if="!activeRateGroup?.rows.length" class="finance-rate-empty">暂无{{ activeRateGroup?.title }}</p>
@@ -828,6 +820,8 @@ async function publish() {
               </template>
             </a-table>
           </template>
+          </RuleCommissionStandards>
+          <div v-else-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
           <div v-if="sheet.mayPublish && !applied" class="form-actions">
             <a-button size="small" type="link" :danger="!itemRemoved" :disabled="structureEditing || saving"
               @click="toggleItemRemoval">{{ itemRemoved ? '撤销移除' : '移除此安排' }}</a-button>
@@ -862,14 +856,14 @@ async function publish() {
                     @change="(id,option)=>setTeamPerson('service',id,option)"/>
                   <span v-else>{{ team.service?.name }}</span>
                 </a-form-item>
-                <template #scope>
-                  <a-form-item label="比例（%）" html-for="catalog-split-service">
-                    <a-input-number v-if="!salesPayeeRemoved" id="catalog-split-service" :value="splitValue('service')" :disabled="!editable || structureEditing"
-                      :min="0" :max="100" :precision="2" string-mode @update:value="setSplitRate('service',$event)"/>
-                    <span v-else>{{ splitValue('service') }}%</span>
-                  </a-form-item>
-                </template>
               </RuleArrangementFields>
+              <RuleCommissionStandards v-if="!serviceRemoved">
+                <a-form-item class="commission-uniform-rate" label="比例（%）" html-for="catalog-split-service">
+                  <a-input-number v-if="!salesPayeeRemoved" id="catalog-split-service" :value="splitValue('service')" :disabled="!editable || structureEditing"
+                    :min="0" :max="100" :precision="2" string-mode @update:value="setSplitRate('service',$event)"/>
+                  <span v-else>{{ splitValue('service') }}%</span>
+                </a-form-item>
+              </RuleCommissionStandards>
               <template v-if="serviceReplacement">
                 <small class="order-version">切换后按独立安排计提，可预览差额。</small>
                 <div id="catalog-rates-edit-internal-service"></div>
@@ -976,8 +970,7 @@ async function publish() {
 </template>
 
 <style scoped>
-.catalog-rate-controls {display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;min-width:0}
-.catalog-rate-toolbar :deep(.ant-input-affix-wrapper) {width:min(100%,190px)}
+.catalog-rate-filter {width:min(100%,190px)}
 .catalog-rate-table :deep(.ant-table.ant-table-small .ant-table-cell) {padding-block:4px}
 .catalog-rate-table :deep(.ant-table-pagination) {margin-block:6px}
 .catalog-rate-summary {display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;padding-bottom:6px;margin-bottom:6px;border-bottom:1px solid var(--line)}
