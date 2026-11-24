@@ -1,5 +1,5 @@
 <script setup>
-import RuleTierTable from './RuleTierTable.vue'
+import RuleEditableTable from './RuleEditableTable.vue'
 
 const props = defineProps({ config:Object, sections:Array, amounts:Array, includeRetrain:Boolean, prefix:{type:String,default:''} })
 function columns(unit) {
@@ -21,7 +21,7 @@ function setMode(row, mode) {
 <template>
     <fieldset v-for="section in sections" :key="section.key" class="tier-ranges">
       <legend>{{ section.title }}</legend>
-      <RuleTierTable :label="section.title" :columns="columns(section.unit)" :rows="config[section.key]">
+      <RuleEditableTable :label="section.title" :columns="columns(section.unit)" :rows="config[section.key]">
         <template #cells="{row,index}">
             <td>
               <a-form-item :html-for="prefix+'tier-from-'+section.key+index" :label="'下限（'+section.unit+'）'" required>
@@ -65,7 +65,7 @@ function setMode(row, mode) {
           <a-button v-if="config[section.key].length>1" type="link" danger size="small"
             @click="config[section.key].splice(index,1)">移除档位</a-button>
         </template>
-      </RuleTierTable>
+      </RuleEditableTable>
       <a-button type="dashed" size="small" @click="addRow(section.key)">添加{{ section.title }}</a-button>
     </fieldset>
 </template>

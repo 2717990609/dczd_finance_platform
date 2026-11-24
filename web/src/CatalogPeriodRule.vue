@@ -8,7 +8,7 @@ import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import DraftAggregateOrders from './DraftAggregateOrders.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import RuleTierTable from './RuleTierTable.vue'
+import RuleEditableTable from './RuleEditableTable.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import { catalogAppointmentLevels, catalogOrderScope, catalogRecipientIsPerson, emptyCatalogOrderScope } from './rule-component-form'
 
@@ -691,7 +691,7 @@ async function resumeRule() {
           </a-form>
           <a-form v-if="item.method==='tiers'" layout="vertical" size="small">
             <p class="rule-formula">按本组净额选档，净额乘该档比例。</p>
-            <RuleTierTable label="整期净额阶梯" :columns="tierColumns" :rows="item.tiers">
+            <RuleEditableTable label="整期净额阶梯" :columns="tierColumns" :rows="item.tiers">
               <template #cells="{row,index}">
                 <td>
                   <a-form-item :label="tierColumns[0]" :html-for="'catalog-tier-from-'+index">
@@ -715,7 +715,7 @@ async function resumeRule() {
                 <a-button danger type="link" size="small" :disabled="saving || item.tiers.length===1"
                   @click="removeTier(item.tiers,index)">删除</a-button>
               </template>
-            </RuleTierTable>
+            </RuleEditableTable>
             <a-button v-if="canSave" type="dashed" size="small" :disabled="saving" @click="item.tiers.push({from:undefined,rate:0})">新增档位</a-button>
           </a-form>
           <div v-if="canSave && rows.length>1" class="form-actions">

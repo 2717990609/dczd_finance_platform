@@ -5,6 +5,7 @@ import RuleArrangementFields from './RuleArrangementFields.vue'
 import RuleScopeSelect from './RuleScopeSelect.vue'
 import RuleOrderScope from './RuleOrderScope.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
+import RuleEditableTable from './RuleEditableTable.vue'
 import { practiceCompanyMatchLabels, practiceCompanyRatePriority,
   practiceCompanyScopes, practiceRecipientIsPerson } from './rule-component-form'
 
@@ -19,20 +20,9 @@ const standardRowsByScope = computed(() => ({
   companies:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='companies'),
   category:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='category'),
 }))
-const companyPageSize = 8
-const companyPage = ref(1)
+const pageSize = 8
+const page = ref(1)
 const companyRows = computed(() => [...standardRowsByScope.value.companies,...overrides.value])
-const companyPageCount = computed(() => Math.max(1,Math.ceil(companyRows.value.length/companyPageSize)))
-const visibleCompanyRows = computed(() => {
-  const start = (companyPage.value-1)*companyPageSize
-  return companyRows.value.slice(start,start+companyPageSize)
-})
-const visibleStandards = computed(() => ({
-  category:standardRowsByScope.value.category,
-  companies:visibleCompanyRows.value.filter(row=>row.standard),
-}))
-const visibleOverrides = computed(() => visibleCompanyRows.value.filter(row=>row.override))
-watch(companyPageCount, count=>{ companyPage.value=Math.min(companyPage.value,count) })
 const scopes = computed(() => practiceCompanyScopes(sales.value))
 const scopeMode = computed(() => sales.value.scopeMode || (sales.value.ownSales ? 'own' : sales.value.general ? 'all' : 'team'))
 const organizationCount = computed(() => scopes.value.companies.length + scopes.value.units.length)
@@ -43,6 +33,7 @@ const scopeOptions = computed(() => [
 ])
 const scope = ref(scopeMode.value!=='team' ? 'general' : scopes.value.categories.length ? 'category' :
   organizationCount.value ? 'companies' : 'category')
+watch(scope,()=>{ page.value=1 },{flush:'sync'})
 const standardAction = computed(() => scope.value==='category' ? '添加销售类别' : '添加指定组织')
 const priority = computed(() => practiceCompanyRatePriority(scopes.value))
 const payee = computed(() => props.component.companySales.payee)
@@ -74,6 +65,15 @@ const companyAssignments = computed(() => {
 const internalCompanies = computed(() => new Set(sales.value.internalCompanies))
 const internalOptions = computed(() => props.companies.filter(option=>!companyAssignments.value.has(option.value)))
 const amounts = computed(() => props.amounts)
+const tableRows = computed(() => {
+  const entries = scope.value==='companies' ? companyRows.value : standardRowsByScope.value.category
+  return entries.map(entry=>({...entry,term:entry.override || entry.standard,category:entry.category || entry.standard}))
+})
+const tableColumns = computed(() => [
+  scope.value==='category' ? '适用销售类别' : '适用销售组织',
+  ...(amounts.value.length>1 ? ['计提方式','计提标准'] : ['比例（%）']),
+  ...(legacyRecommendations.value ? ['推荐比例（%）'] : []),
+])
 const defaultMethods = ref({})
 const activeStandards = computed(() => scope.value==='general' ? [sales.value.general] : scope.value==='companies'
   ? companyRows.value.map(row=>row.standard || row.override)
@@ -84,6 +84,7 @@ const activeMethod = computed(() => {
   return modes.size===1 ? activeStandards.value[0].mode : undefined
 })
 const field = name => 'practice-company-'+props.index+'-'+name
+const termField = (entry, name) => field(entry.override ? 'override-'+name+'-'+entry.index+'-'+entry.position : name+'-'+entry.index)
 const sourceOrganizations = computed(() => new Map(props.companies.map(option=>[option.value,option.scope?.organizationId])))
 function unitIDs(ids, legacy) {
   return [...(ids || []),...(legacy || []).map(id=>sourceOrganizations.value.get(id)).filter(Boolean)]
@@ -118,9 +119,8 @@ const standardMethod = mode => ({mode})
 async function addStandard(scope) {
   const index = categories.value.length
   categories.value.push({scope,...standardMethod(activeMethod.value || defaultMethods.value[scope] || amounts.value[0]?.value),companies:[],salesCategoryIds:[],overrides:[]})
-  if (scope==='companies') {
-    companyPage.value = Math.ceil(standardRowsByScope.value.companies.length/companyPageSize)
-  }
+  const rowIndex = tableRows.value.findIndex(entry=>entry.index===index && entry.standard)
+  page.value = Math.floor(rowIndex/pageSize)+1
   await nextTick()
   document.getElementById(field((scope==='category' ? 'sales-category-' : 'companies-')+index))?.focus()
 }
@@ -128,7 +128,7 @@ async function addCategoryOverride(category,i) {
   category.overrides.push({companyIds:[],...standardMethod(category.mode)})
   scope.value = 'companies'
   const rowIndex = companyRows.value.findIndex(row=>row.override===category.overrides.at(-1))
-  companyPage.value = Math.floor(rowIndex/companyPageSize)+1
+  page.value = Math.floor(rowIndex/pageSize)+1
   await nextTick()
   document.getElementById(field('override-'+i+'-'+(category.overrides.length-1)))?.focus()
 }
@@ -185,11 +185,6 @@ watch(amounts, choices => {
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
   <RuleCommissionStandards v-model="scope" :groups="scopeOptions" :priority="priority">
     <template v-if="scope!=='general'" #tools>
-      <div v-if="scope==='companies' && companyPageCount>1" class="company-standard-pages" role="group" aria-label="组织标准分页">
-        <a-button size="small" type="text" :disabled="companyPage===1" @click="companyPage--">上一页</a-button>
-        <small role="status">{{ companyPage }} / {{ companyPageCount }}</small>
-        <a-button size="small" type="text" :disabled="companyPage===companyPageCount" @click="companyPage++">下一页</a-button>
-      </div>
       <a-button :disabled="scope==='category' && !salesCategories.length" size="small" @click="addStandard(scope)">
         {{ standardAction }}
       </a-button>
@@ -200,63 +195,51 @@ watch(amounts, choices => {
           :max="sales.general.mode==='rate' ? 100 : undefined" :precision="sales.general.mode==='rate' ? 4 : 2"/>
       </a-form-item>
     </div>
-    <section v-else :key="scope" :aria-label="practiceCompanyMatchLabels[scope]" class="practice-company-criterion">
-      <div v-if="standardRowsByScope[scope].length || (scope==='companies' && overrides.length)"
-        class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations}">
-        <div class="company-standard-fields company-standard-column-labels" aria-hidden="true">
-          <span>{{ scope==='category' ? '适用销售类别' : '适用销售组织' }}</span>
-          <span v-if="amounts.length>1">计提方式</span>
-          <span>{{ amounts.length>1 ? '计提标准' : '比例（%）' }}</span>
-          <span v-if="legacyRecommendations">推荐比例（%）</span>
-        </div>
-        <div v-for="({standard:category,index:i}) in visibleStandards[scope]" :key="i" class="company-category company-standard-fields">
-          <RuleScopeSelect v-if="category.scope==='category'" class="company-scope-field" label="销售类别" :id="field('sales-category-'+i)"
-            v-model="category.salesCategoryIds" :options="salesCategoryOptions(category)" placeholder="选择销售类别" required/>
-          <RuleScopeSelect v-else class="company-scope-field" label="适用销售组织" :id="field('companies-'+i)"
-            v-model="category.salesUnits" v-model:legacy-values="category.companies" :options="organizationOptions(category)"
-            :legacy-options="companies" placeholder="选择公司、部门或小组" required @change="selectOrganizations(category)"/>
-          <a-form-item v-if="amounts.length>1" label="计提方式" :html-for="field('method-'+i)">
-            <a-select :id="field('method-'+i)" :value="category.mode" :options="amounts" size="small" @change="modeChanged(category,$event)"/>
-          </a-form-item>
-          <a-form-item :label="category.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="field('value-'+i)" required>
-            <a-input-number :id="field('value-'+i)" v-model:value="category.value" size="small" :min="0"
-              :addon-after="amounts.length>1 ? (category.mode==='rate' ? '%' : '元') : undefined"
-              :max="category.mode==='rate'?100:undefined" :precision="category.mode==='rate'?4:2"/>
-          </a-form-item>
-          <a-form-item v-if="legacyRecommendations" label="推荐比例（%）" :html-for="field('recommendation-'+i)">
-            <a-input-number :id="field('recommendation-'+i)" v-model:value="category.recommendationRate" size="small" :min="0" :max="100" :precision="4"/>
-          </a-form-item>
-          <a-button v-if="categories.length>1 || component.companySales.defaultRate != null"
-            size="small" type="link" danger class="company-standard-remove" @click="categories.splice(i,1)">移除</a-button>
-          <a-button v-if="category.scope==='category' && category.salesCategoryIds.length && organizationOptions(category).length"
-            class="company-category-override" type="link" size="small" @click="addCategoryOverride(category,i)">为此类别添加组织特例</a-button>
-        </div>
-        <template v-if="scope==='companies'">
-          <div class="company-category company-standard-fields" v-for="({category,index:i,override,position:j}) in visibleOverrides" :key="i+'-'+j">
-            <div class="company-scope-field">
-              <RuleScopeSelect label="特例销售组织" :id="field('override-'+i+'-'+j)" v-model="override.salesUnits"
-                v-model:legacy-values="override.companyIds" :options="organizationOptions(category,override)"
-                :legacy-options="companies" placeholder="选择公司、部门或小组" required/>
-              <small v-if="category.salesCategoryIds.length" class="order-version">
-                来源类别 · {{ category.salesCategoryIds.map(id=>salesCategories.find(option=>option.value===id)?.label || id).join('、') }}
-              </small>
-            </div>
-            <a-form-item v-if="amounts.length>1" label="计提方式" :html-for="field('override-method-'+i+'-'+j)">
-              <a-select :id="field('override-method-'+i+'-'+j)" :value="override.mode" :options="amounts" size="small" @change="modeChanged(override,$event)"/>
+    <section v-else :aria-label="practiceCompanyMatchLabels[scope]">
+      <RuleEditableTable v-if="tableRows.length" :key="scope" :label="practiceCompanyMatchLabels[scope]"
+        :columns="tableColumns" :rows="tableRows" :page-size="pageSize" v-model:page="page" wide-first-column>
+        <template #cells="{row:entry}">
+          <td>
+            <RuleScopeSelect v-if="scope==='category'" :id="field('sales-category-'+entry.index)" label="适用销售类别"
+              v-model="entry.term.salesCategoryIds" :options="salesCategoryOptions(entry.category)" placeholder="选择销售类别" required/>
+            <RuleScopeSelect v-else-if="entry.override" :id="field('override-'+entry.index+'-'+entry.position)" label="特例销售组织"
+              v-model="entry.term.salesUnits" v-model:legacy-values="entry.term.companyIds"
+              :options="organizationOptions(entry.category,entry.override)" :legacy-options="companies" placeholder="选择公司、部门或小组" required/>
+            <RuleScopeSelect v-else :id="field('companies-'+entry.index)" label="适用销售组织"
+              v-model="entry.term.salesUnits" v-model:legacy-values="entry.term.companies" :options="organizationOptions(entry.category)"
+              :legacy-options="companies" placeholder="选择公司、部门或小组" required @change="selectOrganizations(entry.category)"/>
+            <small v-if="entry.override && entry.category.salesCategoryIds.length" class="order-version">
+              来源类别 · {{ entry.category.salesCategoryIds.map(id=>salesCategories.find(option=>option.value===id)?.label || id).join('、') }}
+            </small>
+            <a-button v-if="scope==='category' && entry.term.salesCategoryIds.length && organizationOptions(entry.category).length"
+              class="company-category-override" type="link" size="small" @click="addCategoryOverride(entry.category,entry.index)">为此类别添加组织特例</a-button>
+          </td>
+          <td v-if="amounts.length>1">
+            <a-form-item label="计提方式" :html-for="termField(entry,'method')">
+              <a-select :id="termField(entry,'method')" :value="entry.term.mode" :options="amounts" size="small"
+                @change="modeChanged(entry.term,$event)"/>
             </a-form-item>
-            <a-form-item :label="override.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="field('override-value-'+i+'-'+j)" required>
-              <a-input-number :id="field('override-value-'+i+'-'+j)" v-model:value="override.value" size="small" :min="0"
-                :addon-after="amounts.length>1 ? (override.mode==='rate' ? '%' : '元') : undefined"
-                :max="override.mode==='rate'?100:undefined" :precision="override.mode==='rate'?4:2"/>
+          </td>
+          <td>
+            <a-form-item :label="entry.term.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="termField(entry,'value')" required>
+              <a-input-number :id="termField(entry,'value')" v-model:value="entry.term.value" size="small" :min="0"
+                :addon-after="amounts.length>1 ? (entry.term.mode==='rate' ? '%' : '元') : undefined"
+                :max="entry.term.mode==='rate'?100:undefined" :precision="entry.term.mode==='rate'?4:2"/>
             </a-form-item>
-            <a-form-item v-if="legacyRecommendations" label="推荐比例（%）" :html-for="field('override-recommendation-'+i+'-'+j)">
-              <a-input-number :id="field('override-recommendation-'+i+'-'+j)" v-model:value="override.recommendationRate"
-                size="small" :min="0" :max="100" :precision="4" :placeholder="'沿用 '+(category.recommendationRate ?? 0)+'%'"/>
+          </td>
+          <td v-if="legacyRecommendations">
+            <a-form-item label="推荐比例（%）" :html-for="termField(entry,'recommendation')">
+              <a-input-number :id="termField(entry,'recommendation')" v-model:value="entry.term.recommendationRate" size="small"
+                :min="0" :max="100" :precision="4" :placeholder="entry.override ? '沿用 '+(entry.category.recommendationRate ?? 0)+'%' : undefined"/>
             </a-form-item>
-            <a-button type="link" danger size="small" class="company-standard-remove" @click="category.overrides.splice(j,1)">移除</a-button>
-          </div>
+          </td>
         </template>
-      </div>
+        <template #actions="{row:entry}">
+          <a-button v-if="entry.override" type="link" danger size="small" @click="entry.category.overrides.splice(entry.position,1)">移除</a-button>
+          <a-button v-else-if="categories.length>1 || component.companySales.defaultRate != null"
+            type="link" danger size="small" @click="categories.splice(entry.index,1)">移除</a-button>
+        </template>
+      </RuleEditableTable>
       <p v-else class="finance-rate-empty">未配置</p>
     </section>
     <div v-if="scopes.hasDefault" class="saved-standard">
@@ -285,28 +268,7 @@ watch(amounts, choices => {
 
 <style scoped>
 .saved-standard {display:flex;align-items:center;gap:8px;margin-top:6px}
-.company-standard-pages {display:flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums}
-.company-standard-table {container-type:inline-size}
-.company-standard-table.has-method {--company-method-column:minmax(0,1.25fr)}
-.company-standard-table.has-recommendation {--company-recommendation-column:minmax(0,1fr)}
-.company-category {padding:4px 8px 6px;background:#f6f8fb;border-radius:4px;margin-bottom:4px}
-.company-standard-fields {display:flex;flex-wrap:wrap;align-items:end;gap:4px 10px}
-.company-standard-column-labels {display:none;color:var(--muted);font-size:13px;padding:3px 8px;background:#f6f8fb;border-radius:4px 4px 0 0}
-.company-standard-fields :deep(.ant-form-item) {flex:1 1 130px;min-width:0;margin:0}
-.company-standard-fields :deep(.company-scope-field) {flex:3 1 220px}
-.company-standard-fields :deep(.ant-form-item-label) {padding-bottom:2px}
-.company-standard-remove {margin:0 0 0 auto}
-.company-category-override {justify-self:start;grid-column:1 / -1;padding-inline:0}
+.company-category-override {padding-inline:0}
 .company-advanced :deep(.ant-collapse-header) {padding:4px 0}
 .company-advanced :deep(.ant-collapse-content-box) {padding:4px 0}
-.company-standard-fields :deep(.ant-input-number),.company-standard-fields :deep(.ant-input-number-group-wrapper) {width:100%}
-@container (min-width:760px) {
-  .company-standard-fields {
-    display:grid;align-items:center;
-    grid-template-columns:minmax(0,3fr) var(--company-method-column,) minmax(0,1.25fr) var(--company-recommendation-column,) 48px;
-  }
-  .company-standard-column-labels {display:grid}
-  .company-category {padding-block:3px;margin-bottom:0;background:white;border-bottom:1px solid var(--line);border-radius:0}
-  .company-category :deep(.ant-form-item-label) {position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
-}
 </style>

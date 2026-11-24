@@ -6,7 +6,7 @@ import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
 import RuleOrderScope from './RuleOrderScope.vue'
 import RuleSalesScopeFields from './RuleSalesScopeFields.vue'
-import RuleTierTable from './RuleTierTable.vue'
+import RuleEditableTable from './RuleEditableTable.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import { hasPracticePaymentScope, practiceStandardRateScope, practiceTierSelectionLabels } from './rule-component-form'
 
@@ -260,7 +260,7 @@ const calculationMethods = computed(() => [
         <a-radio :value="true">{{ practiceTierSelectionLabels.true }}</a-radio>
       </a-radio-group>
     </a-form-item>
-    <RuleTierTable label="净实收阶梯" :columns="tierColumns" :rows="config.tiers">
+    <RuleEditableTable label="净实收阶梯" :columns="tierColumns" :rows="config.tiers">
       <template #cells="{row,index}">
         <td>
           <a-form-item :label="tierColumns[0]" :html-for="field('tier-from-'+index)" required>
@@ -283,7 +283,7 @@ const calculationMethods = computed(() => [
       <template #actions="{index}">
         <a-button v-if="config.tiers.length>1" type="link" danger size="small" @click="config.tiers.splice(index,1)">移除档位</a-button>
       </template>
-    </RuleTierTable>
+    </RuleEditableTable>
     <a-button type="dashed" size="small" @click="config.tiers.push({})">添加档位</a-button>
   </section>
 </template>

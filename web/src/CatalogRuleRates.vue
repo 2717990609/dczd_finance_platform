@@ -8,6 +8,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
+import RuleEditableTable from './RuleEditableTable.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, catalogRatePriority, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition, rateAsBasisPoints } from './rule-component-form'
 
@@ -227,7 +228,6 @@ const displayedColumns = computed(() => columns.value.filter(col=>
   (col.key!=='relationship' || activeRateGroup.value?.rows.some(row=>row.limitsRelationship) ||
     tableEditable.value && rateGroup.value!=='external' && rateOptions.value.relationships.length>1) &&
   (col.key!=='payee' || targetKind.value==='seller')))
-const tableWidth = computed(() => displayedColumns.value.reduce((width,column)=>width+column.width,0))
 async function addRecipient() {
   selected.value = undefined
   await nextTick()
@@ -863,11 +863,10 @@ async function publish() {
           <div v-if="sheet.mayPublish && !applied" :id="'catalog-rates-edit-'+item.itemKey"/>
           <p v-if="showRateGroups && !hasRateTable && rateGroup!=='general' && !structureEditing" class="finance-rate-empty">未配置</p>
           <template v-if="hasRateTable">
-            <p v-if="!activeRateGroup?.rows.length" class="finance-rate-empty">未配置</p>
-            <a-table v-else :key="selected + filter + rateGroup + rateTableRevision" class="catalog-rate-table"
-              :columns="displayedColumns" :data-source="displayedRates" :row-key="rateRowKey" size="small"
-              :scroll="{x:tableWidth}" :pagination="{pageSize:8,showSizeChanger:false,hideOnSinglePage:true}">
-              <template #bodyCell="{ column, record }">
+            <p v-if="!displayedRates.length" class="finance-rate-empty">{{ filter ? '未找到匹配的计提标准' : '未配置' }}</p>
+            <RuleEditableTable v-else :key="selected + filter + rateGroup + rateTableRevision" class="catalog-rate-table"
+              label="计提标准明细" :columns="displayedColumns" :rows="displayedRates" :row-key="rateRowKey" :page-size="8" wide-first-column>
+              <template #cell="{ column, record }">
                 <template v-if="column.key==='company'">
                   <template v-if="rowEditable(record)">
                     <label class="sr-only" :for="rateFieldId(record,'company')">销售公司</label>
@@ -929,7 +928,7 @@ async function publish() {
                   </template>
                 </template>
               </template>
-            </a-table>
+            </RuleEditableTable>
           </template>
           </RuleCommissionStandards>
           <div v-else-if="sheet.mayPublish && !applied" :id="'catalog-rates-edit-'+item.itemKey"/>
@@ -1083,9 +1082,7 @@ async function publish() {
 .catalog-pending-removals { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; padding:4px 8px; border:1px solid var(--line); border-radius:5px }
 .catalog-pending-removals > div { display:flex; align-items:center; gap:2px }
 .catalog-rate-filter {width:min(100%,190px)}
-.catalog-rate-table :deep(.ant-table.ant-table-small .ant-table-cell) {padding-block:4px}
 .catalog-rate-table :deep(.ant-select) {width:100%}
-.catalog-rate-table :deep(.ant-table-pagination) {margin-block:6px}
 .catalog-rate-summary {display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:2px 12px;padding-bottom:6px;margin-bottom:6px;border-bottom:1px solid var(--line)}
 .catalog-rate-summary h2 {font-size:16px;margin:0 0 2px}
 .catalog-rate-summary p {margin:0;color:var(--muted);line-height:1.45}
