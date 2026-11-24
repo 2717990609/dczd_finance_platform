@@ -6,6 +6,7 @@ import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
 import RuleOrderScope from './RuleOrderScope.vue'
 import RuleScopeSelect from './RuleScopeSelect.vue'
+import RuleTierTable from './RuleTierTable.vue'
 import { hasPracticePaymentScope, practiceRecipientIsPerson } from './rule-component-form'
 
 const props = defineProps({
@@ -57,6 +58,7 @@ function setRecipient(recipient) {
 const registrationCompanies = computed(() => (props.registrationCompanies ?? props.companies).filter(option=>/^[1-9]\d*$/.test(option.value)))
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 const field = name => 'practice-benefit-'+props.index+'-'+name
+const tierColumns = ['净实收下限（元）','净实收上限（元）','比例（%）']
 const calculationMethods = computed(() => [
   {value:'rate',label:'比例'},
   config.value.recipient==='order_appointment' ? {value:'order_fixed',label:'固定金额'} : {value:'class_fixed',label:'固定金额'},
@@ -156,24 +158,36 @@ const calculationMethods = computed(() => [
   </a-form-item>
   <PracticePeriodRateStandards v-if="usesStandardRates" v-model="config.standardRates" :prefix="field('standards')"
     :companies="companies" :organizations="salesUnits" :categories="salesCategories"/>
-  <template v-if="config.method==='tiers'">
-    <a-form-item>
+  <section v-if="config.method==='tiers'" class="period-tier-editor">
+    <div class="period-tier-option">
       <a-checkbox v-model:checked="config.tierOnWholeClass">用全班净实收选档（含新报和复训）</a-checkbox>
-    </a-form-item>
-    <div v-for="(tier,i) in config.tiers" :key="i" class="period-fields period-tier">
-      <a-form-item label="净实收下限（元）" required>
-        <a-input-number v-model:value="tier.from" :aria-label="'净实收下限 '+(i+1)" :min="0" :precision="2"/>
-      </a-form-item>
-      <a-form-item label="净实收上限（元）">
-        <a-input-number v-model:value="tier.through" :aria-label="'净实收上限 '+(i+1)" :min="0" :precision="2" placeholder="不限"/>
-      </a-form-item>
-      <a-form-item label="比例（%）" required>
-        <a-input-number v-model:value="tier.value" :aria-label="'档位比例 '+(i+1)" :min="0" :max="100" :precision="4"/>
-      </a-form-item>
-      <a-button v-if="config.tiers.length>1" type="link" danger @click="config.tiers.splice(i,1)">移除档位</a-button>
     </div>
-    <a-button type="dashed" block @click="config.tiers.push({})">添加档位</a-button>
-  </template>
+    <RuleTierTable label="净实收阶梯" :columns="tierColumns" :rows="config.tiers">
+      <template #cells="{row,index}">
+        <td>
+          <a-form-item :label="tierColumns[0]" :html-for="field('tier-from-'+index)" required>
+            <a-input-number :id="field('tier-from-'+index)" v-model:value="row.from" :aria-label="'净实收下限 '+(index+1)" :min="0" :precision="2"/>
+          </a-form-item>
+        </td>
+        <td>
+          <a-form-item :label="tierColumns[1]" :html-for="field('tier-through-'+index)" :required="index<config.tiers.length-1">
+            <a-input-number :id="field('tier-through-'+index)" v-model:value="row.through" :aria-label="'净实收上限 '+(index+1)"
+              :min="0" :precision="2" :placeholder="index===config.tiers.length-1 ? '不限' : undefined"/>
+          </a-form-item>
+        </td>
+        <td>
+          <a-form-item :label="tierColumns[2]" :html-for="field('tier-rate-'+index)" required>
+            <a-input-number :id="field('tier-rate-'+index)" v-model:value="row.value" :aria-label="'档位比例 '+(index+1)"
+              :min="0" :max="100" :precision="4"/>
+          </a-form-item>
+        </td>
+      </template>
+      <template #actions="{index}">
+        <a-button v-if="config.tiers.length>1" type="link" danger size="small" @click="config.tiers.splice(index,1)">移除档位</a-button>
+      </template>
+    </RuleTierTable>
+    <a-button type="dashed" size="small" @click="config.tiers.push({})">添加档位</a-button>
+  </section>
   <a-collapse v-if="config.recipient==='person'" ghost class="period-appointment">
     <a-collapse-panel key="scope" header="收款人任职条件">
       <div class="period-fields">
@@ -193,8 +207,7 @@ const calculationMethods = computed(() => [
 .period-arrangement :deep(.pool-create) {grid-column:1 / -1}
 .practice-toggle-rate-table {align-self:end;justify-self:start;margin-bottom:4px}
 .period-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:0 10px;align-items:start}
-.period-tier {grid-template-columns:repeat(3,minmax(0,1fr));align-items:end}
-.period-fields :deep(.ant-input-number) {width:100%}
+.period-tier-editor {margin-top:4px}
+.period-tier-option {margin-bottom:4px}
 .period-appointment :deep(.ant-collapse-header),.period-appointment :deep(.ant-collapse-content-box) {padding:4px 0}
-@media (max-width:480px) { .period-tier {grid-template-columns:repeat(2,minmax(0,1fr))} }
 </style>

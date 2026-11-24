@@ -8,6 +8,7 @@ import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import DraftAggregateOrders from './DraftAggregateOrders.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
+import RuleTierTable from './RuleTierTable.vue'
 import { catalogAppointmentLevels, catalogOrderScope, catalogRecipientIsPerson, emptyCatalogOrderScope } from './rule-component-form'
 
 const props = defineProps({rule:Object, applied:Object, focusItemKey:String, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
@@ -53,6 +54,7 @@ let activityRequest = 0
 
 const cycleLabels = {MONTHLY:'自然月',MONTHLY_25_TO_24:'每月 25 日至次月 24 日'}
 const cycleOptions = Object.entries(cycleLabels).map(([value,label])=>({value,label}))
+const tierColumns = ['净额起点（元，含）','净额止点（元，不含）','计提比例（%）']
 const activityIssueLabels = {
   AGGREGATE_REFUND_MONTH_MISSING:'请按该整期规则打开退款发生月的草稿',
   REFUND_ADJUSTMENT:'退款更正待核对', INVALID_EVENT:'交易编号或金额缺失', DUPLICATE_EVENT:'交易编号重复',
@@ -682,22 +684,35 @@ async function resumeRule() {
               </a-form-item>
             </template>
           </a-form>
-          <template v-if="item.method==='tiers'">
-          <p class="rule-formula">按本组净额选档，净额乘该档比例。</p>
-          <div class="period-tier-grid period-tier-header" aria-hidden="true">
-            <span>净额起点（元，含）</span><span>净额止点（元，不含）</span><span>计提比例（%）</span><span v-if="canSave">操作</span>
-          </div>
-          <div v-for="(tier,i) in item.tiers" :key="i" class="period-tier-grid">
-            <a-input-number v-model:value="tier.from" :aria-label="'第 '+(i+1)+' 档净额起点'"
-              :min="0" :precision="2" :disabled="!canSave || saving || i===0"/>
-            <span>{{ item.tiers[i+1]?.from == null ? (i===item.tiers.length-1 ? '不限' : '待填写') : formatMoney(Math.round(item.tiers[i+1].from*100)) }}</span>
-            <a-input-number v-model:value="tier.rate" :aria-label="'第 '+(i+1)+' 档计提比例'"
-              :min="0" :max="100" :precision="2" :disabled="!canSave || saving"/>
-            <a-button v-if="canSave" danger type="link" size="small" :disabled="saving || item.tiers.length===1"
-              @click="removeTier(item.tiers,i)">删除</a-button>
-          </div>
-          <a-button v-if="canSave" type="dashed" :disabled="saving" @click="item.tiers.push({from:undefined,rate:0})">新增档位</a-button>
-          </template>
+          <a-form v-if="item.method==='tiers'" layout="vertical" size="small">
+            <p class="rule-formula">按本组净额选档，净额乘该档比例。</p>
+            <RuleTierTable label="整期净额阶梯" :columns="tierColumns" :rows="item.tiers">
+              <template #cells="{row,index}">
+                <td>
+                  <a-form-item :label="tierColumns[0]" :html-for="'catalog-tier-from-'+index">
+                    <a-input-number :id="'catalog-tier-from-'+index" v-model:value="row.from" :aria-label="'第 '+(index+1)+' 档净额起点'"
+                      :min="0" :precision="2" :disabled="!canSave || saving || index===0"/>
+                  </a-form-item>
+                </td>
+                <td>
+                  <a-form-item :label="tierColumns[1]">
+                    {{ item.tiers[index+1]?.from == null ? (index===item.tiers.length-1 ? '不限' : '待填写') : formatMoney(Math.round(item.tiers[index+1].from*100)) }}
+                  </a-form-item>
+                </td>
+                <td>
+                  <a-form-item :label="tierColumns[2]" :html-for="'catalog-tier-rate-'+index">
+                    <a-input-number :id="'catalog-tier-rate-'+index" v-model:value="row.rate" :aria-label="'第 '+(index+1)+' 档计提比例'"
+                      :min="0" :max="100" :precision="2" :disabled="!canSave || saving"/>
+                  </a-form-item>
+                </td>
+              </template>
+              <template v-if="canSave" #actions="{index}">
+                <a-button danger type="link" size="small" :disabled="saving || item.tiers.length===1"
+                  @click="removeTier(item.tiers,index)">删除</a-button>
+              </template>
+            </RuleTierTable>
+            <a-button v-if="canSave" type="dashed" size="small" :disabled="saving" @click="item.tiers.push({from:undefined,rate:0})">新增档位</a-button>
+          </a-form>
           <div v-if="canSave && rows.length>1" class="form-actions">
             <a-button type="link" danger size="small" :disabled="saving" @click="removeComponent(item)">移除此安排</a-button>
           </div>
@@ -890,9 +905,7 @@ async function resumeRule() {
 .period-membership-type { display:block; margin-top:4px; }
 .period-component-heading { display:flex; justify-content:space-between; align-items:center; gap:4px 8px; flex-wrap:wrap; margin-bottom:6px; }
 .period-component-heading h2 { margin:0; font-size:16px; }
-.period-tier-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)) auto; gap:8px; align-items:center; margin-bottom:8px; }
-.period-tier-header { color:var(--muted); font-size:12px; }
-.period-tier-grid :deep(.ant-input-number),.period-quote-inputs :deep(.ant-input-number) { width:100%; }
+.period-quote-inputs :deep(.ant-input-number) { width:100%; }
 .period-appointment-caption { max-width:100%; white-space:normal; vertical-align:middle; }
 .period-quote-inputs { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; }
 .period-quote-result { margin-top:12px; }

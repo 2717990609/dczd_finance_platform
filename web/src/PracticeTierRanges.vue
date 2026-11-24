@@ -1,5 +1,13 @@
 <script setup>
+import RuleTierTable from './RuleTierTable.vue'
+
 const props = defineProps({ config:Object, sections:Array, amounts:Array, includeRetrain:Boolean, prefix:{type:String,default:''} })
+function columns(unit) {
+  const bounds = ['下限（'+unit+'）','上限（'+unit+'）']
+  return props.includeRetrain
+    ? [...bounds,'新报计提方式','新报计提标准','复训计提方式','复训计提标准']
+    : [...bounds,'计提方式','计提标准']
+}
 function addRow(section) {
   const mode = props.amounts[0]?.value
   props.config[section].push(props.includeRetrain ? {mode,retrain:{mode}} : {mode})
@@ -13,20 +21,8 @@ function setMode(row, mode) {
 <template>
     <fieldset v-for="section in sections" :key="section.key" class="tier-ranges">
       <legend>{{ section.title }}</legend>
-      <table class="tier-range-table" :aria-label="section.title">
-        <thead>
-          <tr>
-            <th scope="col">下限（{{ section.unit }}）</th>
-            <th scope="col">上限（{{ section.unit }}）</th>
-            <th scope="col">{{ includeRetrain ? '新报计提方式' : '计提方式' }}</th>
-            <th scope="col">{{ includeRetrain ? '新报计提标准' : '计提标准' }}</th>
-            <th v-if="includeRetrain" scope="col">复训计提方式</th>
-            <th v-if="includeRetrain" scope="col">复训计提标准</th>
-            <th scope="col" class="tier-actions">操作</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="(row, index) in config[section.key]" :key="index">
+      <RuleTierTable :label="section.title" :columns="columns(section.unit)" :rows="config[section.key]">
+        <template #cells="{row,index}">
             <td>
               <a-form-item :html-for="prefix+'tier-from-'+section.key+index" :label="'下限（'+section.unit+'）'" required>
                 <a-input-number :id="prefix+'tier-from-'+section.key+index" v-model:value="row.from" :min="0" :precision="section.decimals"/>
@@ -64,39 +60,18 @@ function setMode(row, mode) {
                 </a-form-item>
               </td>
             </template>
-            <td class="tier-actions">
-              <a-button v-if="config[section.key].length>1" type="link" danger size="small"
-                @click="config[section.key].splice(index,1)">移除档位</a-button>
-            </td>
-          </tr>
-        </tbody>
-      </table>
+        </template>
+        <template #actions="{index}">
+          <a-button v-if="config[section.key].length>1" type="link" danger size="small"
+            @click="config[section.key].splice(index,1)">移除档位</a-button>
+        </template>
+      </RuleTierTable>
       <a-button type="dashed" size="small" @click="addRow(section.key)">添加{{ section.title }}</a-button>
     </fieldset>
 </template>
 
 <style scoped>
-.tier-ranges { min-width:0; padding:0; margin:0 0 6px; border:0; container-type:inline-size }
+.tier-ranges { min-width:0; padding:0; margin:0 0 6px; border:0 }
 .tier-ranges:last-child { margin-bottom:0 }
 .tier-ranges legend { font-weight:600; margin-bottom:2px }
-.tier-range-table { width:100%; table-layout:fixed; border-collapse:collapse; margin-bottom:6px; background:white }
-.tier-range-table th,.tier-range-table td { padding:3px 6px; text-align:left; border-bottom:1px solid var(--line) }
-.tier-range-table th { background:#f3f6fa; font-weight:600; white-space:nowrap }
-.tier-range-table .tier-actions { width:72px; text-align:right; white-space:nowrap }
-.tier-range-table .tier-actions :deep(.ant-btn) { padding-inline:0 }
-.tier-range-table :deep(.ant-form-item) { margin:0; min-width:0 }
-.tier-range-table :deep(.ant-form-item-label) {
-  position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap;
-}
-.tier-range-table :deep(.ant-input-number),.tier-range-table :deep(.ant-input-number-group-wrapper) { width:100% }
-
-@container (max-width:699px) {
-  .tier-range-table,.tier-range-table tbody { display:block }
-  .tier-range-table thead { display:none }
-  .tier-range-table tbody tr { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); border-bottom:1px solid var(--line) }
-  .tier-range-table td { display:block; border-bottom:0 }
-  .tier-range-table :deep(.ant-form-item-label) {
-    position:static; width:auto; height:auto; overflow:visible; clip-path:none; white-space:normal;
-  }
-}
 </style>
