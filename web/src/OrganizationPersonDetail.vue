@@ -2,13 +2,15 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { LeftOutlined, UserOutlined } from '@ant-design/icons-vue'
 import MonthlyReport from './MonthlyReport.vue'
+import OrganizationDuties from './OrganizationDuties.vue'
 
 const props = defineProps({
   api:Function, personId:Number, section:String, back:String, personLink:Function,
   optionLabel:Function, formatTime:Function, formatIdentityTime:Function, formatMoney:Function,
-  month:String, reportViews:Array, reportDimensions:Array,
+  month:String, reportViews:Array, reportDimensions:Array, reportFilters:Object, periodLink:Function, canWrite:Boolean,
 })
 
+const emit = defineEmits(['report-filters'])
 const dateColumns = [
   {title:'生效时间',dataIndex:'validFrom',key:'validFrom',width:154},
   {title:'结束时间',dataIndex:'validTo',key:'validTo',width:154},
@@ -19,9 +21,7 @@ const sections = [
     {title:'组织',dataIndex:'unitName',width:185},
     {title:'任职',key:'kind',width:168}, statusColumn, ...dateColumns,
   ]},
-  {key:'duties', label:'业务职责', path:'/organization-business-duties', empty:'暂无业务职责记录', columns:[
-    {title:'职责',key:'duty',width:168}, {title:'适用范围',dataIndex:'scopeName',width:185}, statusColumn, ...dateColumns,
-  ]},
+  {key:'duties', label:'业务职责'},
   {key:'positions', label:'分润岗位', path:'/catalog-appointments', empty:'暂无分润岗位记录', columns:[
     {title:'岗位',key:'role',width:168}, {title:'适用范围',key:'scope',width:185}, statusColumn, ...dateColumns,
   ]},
@@ -41,8 +41,10 @@ const listPage = ref(1)
 const listError = ref('')
 const listLoading = ref(false)
 const report = ref()
-const reportMonth = ref(props.month)
-const reportView = ref()
+const duties = ref()
+const dutySubject = computed(() => person.value ? {personId:props.personId,name:person.value.name} : undefined)
+const reportMonth = ref(props.reportFilters.month || props.month)
+const reportView = ref(props.reportFilters.view)
 const reportDimension = ref('person')
 const personDimensions = computed(() => props.reportDimensions.filter(item=>item.value==='person'))
 const account = ref()
@@ -133,9 +135,17 @@ function closeAccountHistory() {
 function refresh() {
   loadPerson()
   if (selected.value.key==='finance') report.value?.refresh()
+  else if (selected.value.key==='duties') duties.value?.refresh()
   else loadRows()
 }
-watch(() => selected.value.key, () => { listPage.value = 1; loadRows() }, {immediate:true})
+watch(() => selected.value.key, key => {
+  if (key!=='accounts') closeAccountHistory()
+  listPage.value = 1
+  loadRows()
+}, {immediate:true})
+watch([reportMonth,reportView], ([month,view]) => {
+  if (selected.value.key==='finance') emit('report-filters',{month,view})
+})
 loadPerson(true)
 onBeforeUnmount(() => { profileRequest++; rowsRequest++; accountRequest++ })
 defineExpose({refresh})
@@ -172,9 +182,14 @@ defineExpose({refresh})
             <a-input id="person-report-month" v-model:value="reportMonth" type="month"/>
           </section>
           <MonthlyReport ref="report" :person-id="personId" :api="api" :format-money="formatMoney" :month="reportMonth"
-            v-model:view="reportView" v-model:dimension="reportDimension" :views="reportViews" :dimensions="personDimensions"/>
+            v-model:view="reportView" v-model:dimension="reportDimension" :views="reportViews" :dimensions="personDimensions"
+            :period-link="periodLink"/>
         </template>
-        <template v-else>
+        <KeepAlive v-if="selected.key==='duties'">
+          <OrganizationDuties ref="duties" profile :api="api" :format-time="formatTime" :subject="dutySubject"
+            :can-write="canWrite" :person-link="personLink"/>
+        </KeepAlive>
+        <template v-else-if="selected.key!=='finance'">
           <section v-if="selected.key==='accounts' && financeStatus[person.accountStatus]" class="records person-finance-account">
             <h2>财务登录账号</h2>
             <a-tag :color="financeStatus[person.accountStatus].color">{{ financeStatus[person.accountStatus].label }}</a-tag>
@@ -197,7 +212,6 @@ defineExpose({refresh})
                   <a-tag v-if="record.appointmentType && record.appointmentType!==record.kind">{{ optionLabel('appointmentKind',record.appointmentType) }}</a-tag>
                   <small v-if="record.position" class="order-version">{{ record.position }}</small>
                 </template>
-                <span v-else-if="column.key==='duty'">{{ optionLabel('organizationDuty',record.role) }}</span>
                 <span v-else-if="column.key==='role'">{{ optionLabel('catalogAppointmentRole',record.role) }}</span>
                 <template v-else-if="column.key==='scope'">
                   {{ record.scopeName }}<small class="order-version">{{ optionLabel('catalogAppointmentScope',record.scope) }}</small>

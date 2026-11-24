@@ -156,7 +156,8 @@ const usesWorkspaceMonth = computed(() => ['tasks','settlement','monthly','reten
 const monthlyView = ref()
 const monthlyDimension = ref()
 const periodOrigin = ref()
-const periodOrigins = {monthly:'月度汇总',tasks:'待办',retention:'部门留存金'}
+const periodOrigins = {monthly:'月度汇总',tasks:'待办',retention:'部门留存金',person:'个人业绩与分润'}
+const personReportOrigin = ref()
 const monthlyReturn = ref()
 const monthlyResume = ref()
 const orderSync = ref()
@@ -245,6 +246,7 @@ function classRuleSetupLink(period, fromWorkbench = false) {
     const params = new URLSearchParams({productId:period.productId,periodId:period.id})
     if (fromWorkbench) params.set('from','settlement')
     if (fromWorkbench && periodOrigin.value) params.set('returnFrom',periodOrigin.value)
+    if (fromWorkbench && periodOrigin.value==='person') params.set('fromPerson',personReportOrigin.value)
     if (fromWorkbench && reviewRootPeriod.value) params.set('reviewRootPeriodId',reviewRootPeriod.value)
     return '#rules?'+params
   }
@@ -742,10 +744,11 @@ function refreshWorkspace() {
   retention.value?.refresh()
   orderSync.value?.reload()
 }
-function settlementLink(periodId, view, origin, rootPeriodId) {
+function settlementLink(periodId, view, origin, rootPeriodId, fromPerson = personReportOrigin.value) {
   const params = new URLSearchParams({periodId})
   if (view) params.set('view',view)
   if (origin) params.set('from',origin)
+  if (origin==='person' && fromPerson) params.set('fromPerson',fromPerson)
   if (rootPeriodId && rootPeriodId!==periodId) params.set('reviewRootPeriodId',rootPeriodId)
   return '#settlement?'+params
 }
@@ -755,6 +758,7 @@ function workbenchPageLink(page, values) {
     params.set('returnPeriodId',workbenchPeriod.value)
     params.set('returnView',workbenchView.value)
     if (periodOrigin.value) params.set('returnFrom',periodOrigin.value)
+    if (periodOrigin.value==='person') params.set('fromPerson',personReportOrigin.value)
     if (reviewRootPeriod.value) params.set('reviewRootPeriodId',reviewRootPeriod.value)
   }
   return '#'+page+'?'+params
@@ -772,6 +776,42 @@ function routeId(value) {
   const id = Number(value)
   return Number.isSafeInteger(id) && id > 0 ? id : undefined
 }
+function personReportFilters(params) {
+  const month = params.get('month')
+  const reportView = params.get('reportView')
+  return {
+    month:/^\d{4}-(0[1-9]|1[0-2])$/.test(month || '') ? month : undefined,
+    view:['current','settled'].includes(reportView) ? reportView : undefined,
+  }
+}
+function personalReportHref(base, id, settings) {
+  const [key,query] = base.split('?')
+  const params = new URLSearchParams(query)
+  params.set('personId',id)
+  params.set('section','finance')
+  if (settings.month) params.set('month',settings.month)
+  if (settings.view) params.set('reportView',settings.view)
+  return key+'?'+params
+}
+function readPersonReportOrigin(value) {
+  const [route,query] = (value || '').split('?',2)
+  const page = route?.slice(1)
+  if (route!=='#organization' && route!=='#people') return
+  const params = new URLSearchParams(query)
+  const id = routeId(params.get('personId'))
+  if (!id) return
+  const tab = organizationPages.find(entry=>entry.page===page && entry.tab===params.get('tab'))?.tab
+  return personalReportHref(organizationHref(page,tab || (page==='people' ? 'main' : 'organization')),id,personReportFilters(params))
+}
+function rememberPersonReport(settings) {
+  if (!personPage.value) return
+  const href = personalReportHref(personPage.value.back,personPage.value.id,settings)
+  if (location.hash!==href) history.replaceState(history.state,'',href)
+}
+function personReportPeriodLink(periodId, month, view) {
+  const {back,id} = personPage.value
+  return settlementLink(periodId,undefined,'person',undefined,personalReportHref(back,id,{month,view}))
+}
 function changeRoute() {
   const previous = current.value
   const previousOrigin = periodOrigin.value
@@ -784,7 +824,9 @@ function changeRoute() {
   const isOrganizationPage = current.value===key && (key==='organization' || key==='people')
   const requestedTab = organizationPages.find(entry=>entry.page===key && entry.tab===params.get('tab'))?.tab
   const personId = isOrganizationPage ? routeId(params.get('personId')) : undefined
-  personPage.value = personId ? {id:personId,section:params.get('section'),back:organizationHref(key,requestedTab || (key==='people' ? 'main' : 'organization'))} : undefined
+  personPage.value = personId ? {id:personId,section:params.get('section'),
+    back:organizationHref(key,requestedTab || (key==='people' ? 'main' : 'organization')),
+    reportFilters:personReportFilters(params)} : undefined
   if (key==='organization' && isOrganizationPage) {
     organizationPanel.value = requestedTab || 'organization'
   }
@@ -811,7 +853,9 @@ function changeRoute() {
   const view = params.get('view')
   requestedView.value = requestedPeriod.value && Object.hasOwn(draftViews,view) ? view : undefined
   const origin = params.get('from')
-  periodOrigin.value = requestedPeriod.value && Object.hasOwn(periodOrigins,origin) ? origin : undefined
+  personReportOrigin.value = readPersonReportOrigin(params.get('fromPerson'))
+  periodOrigin.value = requestedPeriod.value && Object.hasOwn(periodOrigins,origin) &&
+    (origin!=='person' || personReportOrigin.value) ? origin : undefined
   monthlyResume.value = undefined
   if (periodOrigin.value==='monthly' && previous === 'monthly') {
     monthlyReturn.value = {month:workspaceMonth.value,view:monthlyView.value,dimension:monthlyDimension.value,
@@ -838,7 +882,8 @@ function changeRoute() {
     tasksReturn.value = undefined
   }
   const returnFrom = params.get('returnFrom')
-  const returnOrigin = Object.hasOwn(periodOrigins,returnFrom) ? returnFrom : previous==='settlement' ? previousOrigin : undefined
+  const candidateOrigin = Object.hasOwn(periodOrigins,returnFrom) ? returnFrom : previous==='settlement' ? previousOrigin : undefined
+  const returnOrigin = candidateOrigin==='person' && !personReportOrigin.value ? undefined : candidateOrigin
   const returnRootPeriod = rootPeriodId || (previous==='settlement' ? previousReviewRoot : undefined)
   ruleReturn.value = wholeWorkspace.value && requestedRulePeriod.value && params.get('from')==='settlement'
     ? settlementLink(requestedRulePeriod.value,undefined,returnOrigin,returnRootPeriod) : undefined
@@ -907,6 +952,7 @@ function clearWorkspace() {
   workbenchView.value = 'detail'
   workbenchQuery.value = {}
   periodOrigin.value = undefined
+  personReportOrigin.value = undefined
   tasksMode.value = 'pending'
   tasksReturn.value = undefined
   monthlyReturn.value = undefined
@@ -1631,7 +1677,7 @@ async function save() {
           <div class="workspace-page-title">
             <h1>{{ active.area==='data' ? '组织与人员' : active.title }}</h1>
             <a v-if="reviewRootPeriod" class="workspace-return" :href="settlementLink(reviewRootPeriod,'review',periodOrigin)"><LeftOutlined aria-hidden="true"/>返回原期核对</a>
-            <a v-else-if="periodOrigin" class="workspace-return" :href="'#'+periodOrigin"><LeftOutlined aria-hidden="true"/>返回{{ periodOrigins[periodOrigin] }}</a>
+            <a v-else-if="periodOrigin" class="workspace-return" :href="periodOrigin==='person' ? personReportOrigin : '#'+periodOrigin"><LeftOutlined aria-hidden="true"/>返回{{ periodOrigins[periodOrigin] }}</a>
             <a v-if="configurationReturn" class="workspace-return" :href="configurationReturn.href"><LeftOutlined aria-hidden="true"/>{{ configurationReturn.label }}</a>
             <a v-else-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
             <div v-if="!practiceSettingsView && actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length) && !identityAccount" class="topbar-actions">
@@ -1656,8 +1702,16 @@ async function save() {
         <OrganizationPersonDetail v-if="personPage" :key="personPage.id" ref="personDetail"
           :person-id="personPage.id" :section="personPage.section" :back="personPage.back" :person-link="personLink"
           :api="api" :option-label="optionLabel" :format-time="formatTime" :format-identity-time="formatIdentityTime" :format-money="formatMoney" :month="workspaceMonth"
-          :report-views="options('monthlyReportView')" :report-dimensions="options('draftReportDimension')"/>
+          :report-views="options('monthlyReportView')" :report-dimensions="options('draftReportDimension')"
+          :report-filters="personPage.reportFilters" :period-link="personReportPeriodLink" @report-filters="rememberPersonReport"
+          :can-write="session.user ? session.user.organizationWrite : session.development"/>
         <div v-show="!personPage" class="workspace-page-body">
+        <KeepAlive>
+          <OrganizationDirectory v-if="current==='organization'" ref="organization" :api="api" :option-label="optionLabel" :format-time="formatTime"
+            :panel="organizationPanel" :person-link="personLink" @update:panel="navigateOrganizationPanel"
+            :can-write="session.user ? session.user.organizationWrite : session.development" :appointment-kinds="options('appointmentKind')"
+            :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"/>
+        </KeepAlive>
         <template v-if="current==='tasks'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <PeriodTasks ref="periodTasks" v-model="tasksMode" :api="api" :month="workspaceMonth" :product-id="productScope"
@@ -1694,10 +1748,7 @@ async function save() {
         </template>
         <template v-else-if="current==='organization'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
-          <OrganizationDirectory ref="organization" :api="api" :option-label="optionLabel" :format-time="formatTime"
-            :panel="organizationPanel" :person-link="personLink" @update:panel="navigateOrganizationPanel"
-            :can-write="session.user ? session.user.organizationWrite : session.development" :appointment-kinds="options('appointmentKind')"
-            :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"/>
+
         </template>
         <template v-else-if="practiceSettingsView">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>

@@ -64,14 +64,15 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 		AllocationMinor              int64
 	}
 	type report struct {
-		Snapshot               string
-		PerformanceReady       bool
-		PerformanceMinor       *int64
-		CommissionMinor        int64
-		DuplicateFacts         int
-		ConflictingPerformance bool
-		Items                  []monthlyRow
-		Periods                []struct {
+		Snapshot                 string
+		PerformanceReady         bool
+		PerformanceMinor         *int64
+		CommissionMinor          int64
+		DuplicateFacts           int
+		ConflictingPerformance   bool
+		PersonPerformancePending bool
+		Items                    []monthlyRow
+		Periods                  []struct {
 			ID         int64
 			Status     string
 			IssueCount int
@@ -105,6 +106,24 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 	}
 	get("view=current&dimension=person&personId=2&snapshot="+personal.Snapshot, http.StatusConflict)
 	get("view=current&dimension=company&personId=1", http.StatusBadRequest)
+	if _, err := s.db.Exec(ctx, "INSERT INTO people(name) VALUES('仅有业绩')"); err != nil {
+		t.Fatal(err)
+	}
+	updateCoverage := func(personID int, ready bool) {
+		t.Helper()
+		if _, err := s.db.Exec(ctx, "UPDATE calculation_draft_performance SET person_id=$1 WHERE source_version_id=3", personID); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.db.Exec(ctx, "UPDATE calculation_drafts SET performance_ready=$1 WHERE period_id=4", ready); err != nil {
+			t.Fatal(err)
+		}
+	}
+	updateCoverage(3, false)
+	pending := get("view=current&dimension=person&personId=3", http.StatusOK)
+	if !pending.PersonPerformancePending || pending.PerformanceMinor != nil || len(pending.Periods) != 0 || len(pending.Items) != 0 {
+		t.Fatalf("withheld personal performance should still surface incomplete coverage: %+v", pending)
+	}
+	updateCoverage(1, true)
 	confirmed := get("view=settled&dimension=company", http.StatusOK)
 	if len(confirmed.Periods) != 1 || confirmed.Periods[0].ID != 1 || confirmed.Periods[0].Status != "SETTLED" || confirmed.CommissionMinor != 1000 {
 		t.Fatalf("settled scope: %+v", confirmed)

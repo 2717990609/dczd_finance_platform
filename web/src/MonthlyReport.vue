@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RadioGroup } from 'ant-design-vue'
 
 const props = defineProps({ api:Function, formatMoney:Function, productId:Number, views:Array, dimensions:Array,
-  unitId:String, unitName:String, month:String, resume:Object, units:Array, personId:Number })
+  unitId:String, unitName:String, month:String, resume:Object, units:Array, personId:Number, periodLink:Function })
 const emit = defineEmits(['select-unit'])
 const month = computed(() => props.month)
 const view = defineModel('view', {type:String})
@@ -141,7 +141,7 @@ defineExpose({refresh,browseState})
       message="同一付款或退款在多个核算期的金额或人员归属不同，净业绩待核对。" show-icon/>
     <a-alert v-else-if="report.duplicateFacts" class="feedback" type="info"
       :message="report.duplicateFacts+' 笔重复的付款或退款已按来源主键只计一次业绩。'" show-icon/>
-    <a-alert v-if="includedCount && !report.performanceReady && !report.conflictingPerformance" class="feedback"
+    <a-alert v-if="(includedCount || report.personPerformancePending) && !report.performanceReady && !report.conflictingPerformance" class="feedback"
       type="info" message="部分结果缺少完整的净业绩数据。" show-icon/>
     <div class="records workbench-totals">
       <div><small>净业绩</small><strong>{{ formatMoney(report.performanceMinor) }}</strong></div>
@@ -162,14 +162,14 @@ defineExpose({refresh,browseState})
           <strong v-else-if="column.key==='totalMinor'" class="numeric">{{ formatMoney(text) }}</strong>
           <span v-else class="numeric">{{ formatMoney(text) }}</span>
         </template>
-        <template #emptyText>本月暂无汇总记录</template>
+        <template #emptyText>{{ report.personPerformancePending ? '个人净业绩待核对' : '本月暂无汇总记录' }}</template>
       </a-table>
     </section>
     <details v-if="report.periods.length" :open="periodsOpen" class="records monthly-periods" @toggle="periodsOpen=$event.currentTarget.open">
       <summary>核算范围（{{ report.periods.length }} 期）</summary>
       <a-table :columns="periodColumns" :data-source="report.periods" row-key="id" :pagination="{pageSize:10,showSizeChanger:false}" :scroll="{x:785}">
         <template #bodyCell="{column,record,text}">
-          <template v-if="column.key==='name'"><a :href="'#settlement?periodId='+record.id+'&from=monthly'">{{ text }}</a><small class="order-version">{{ periodKinds[record.kind] }}</small></template>
+          <template v-if="column.key==='name'"><a :href="periodLink ? periodLink(record.id,month,view) : '#settlement?periodId='+record.id+'&from=monthly'">{{ text }}</a><small class="order-version">{{ periodKinds[record.kind] }}</small></template>
           <span v-else-if="column.key==='dates'">{{ record.startsOn }} 至 {{ record.endsOn }}</span>
           <template v-else-if="column.key==='status'">
             <a-tag :color="statuses[record.status].color">{{ statuses[record.status].label }}</a-tag>

@@ -1,14 +1,17 @@
 <script setup>
-import { computed, onActivated, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onActivated, onBeforeUnmount, ref, useId, watch } from 'vue'
 import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
-const props = defineProps({api:Function, formatTime:Function, canWrite:Boolean, units:Array, subject:Object, personLink:Function})
+const props = defineProps({api:Function, formatTime:Function, canWrite:Boolean, units:Array, subject:Object, personLink:Function, profile:Boolean})
 const emit = defineEmits(['clear-subject'])
 const base = '/organization-business-duties'
+const roleFilterID = useId()
+const scopeFilterID = useId()
 const settings = ref({roles:[],scopes:[]})
 const entries = ref({items:[],total:0})
 const loading = ref(false)
+const profileUnits = ref([])
 const listError = ref('')
 const settingsError = ref('')
 const saving = ref(false)
@@ -20,7 +23,7 @@ const scopeFilter = ref()
 const nameInput = ref('')
 const name = ref('')
 const on = ref('')
-const dateMode = ref('current')
+const dateMode = ref(props.profile ? 'history' : 'current')
 const page = ref(1)
 let listRequest = 0
 let settingsRequest = 0
@@ -35,7 +38,7 @@ const roleLabel = role => settings.value.roles.find(option=>option.value===role)
 const selectedRole = computed(() => settings.value.roles.find(role=>role.value===(form.value?.record?.role || form.value?.role)))
 const allowedSubjects = computed(() => subjects.filter(subject=>selectedRole.value?.subjects?.includes(subject.value)))
 const allowedScopes = computed(() => scopeOptions.value.filter(scope=>scope.active && selectedRole.value?.scopes?.includes(scope.kind)))
-const unitOptions = computed(() => props.units.filter(unit=>unit.status==='ACTIVE').map(unit=>({value:unit.id,label:unit.name})))
+const unitOptions = computed(() => (props.units || profileUnits.value).filter(unit=>unit.status==='ACTIVE').map(unit=>({value:unit.id,label:unit.name})))
 const person = computed(() => props.subject?.personId ? {id:props.subject.personId,name:props.subject.name} : undefined)
 const fields = [
   {title:'任职主体',key:'subject',width:160},
@@ -51,8 +54,14 @@ async function loadSettings() {
   const seq = ++settingsRequest
   settingsError.value = ''
   try {
-    const result = await props.api('/organization-duty-scopes')
-    if (seq===settingsRequest) settings.value = result
+    const [result,units] = await Promise.all([
+      props.api('/organization-duty-scopes'),
+      props.profile && props.canWrite && !profileUnits.value.length ? props.api('/organization-units') : undefined,
+    ])
+    if (seq===settingsRequest) {
+      settings.value = result
+      if (units) profileUnits.value = units
+    }
   } catch (err) {
     if (seq===settingsRequest) settingsError.value = err.message
   }
@@ -150,21 +159,21 @@ defineExpose({refresh})
       <a-button v-if="canWrite" type="primary" :disabled="!settings.scopes.some(scope=>scope.active)" @click="open('add')">登记业务职责</a-button>
     </div>
     <div class="organization-filters duty-filters">
-      <div v-if="subject" class="topbar-actions">
+      <div v-if="subject && !profile" class="topbar-actions">
         <a-tag closable @close.prevent="emit('clear-subject')">{{ subject.name }}</a-tag>
       </div>
-      <div v-else>
+      <div v-else-if="!profile">
         <label for="duty-name">人员或组织</label>
         <a-input-search id="duty-name" v-model:value="nameInput" placeholder="搜索名称" allow-clear
           @search="name=$event.trim()" @change="!nameInput && (name='')"/>
       </div>
       <div>
-        <label for="duty-role-filter">职责</label>
-        <a-select id="duty-role-filter" v-model:value="roleFilter" :options="settings.roles" allow-clear placeholder="全部职责"/>
+        <label :for="roleFilterID">职责</label>
+        <a-select :id="roleFilterID" v-model:value="roleFilter" :options="settings.roles" allow-clear placeholder="全部职责"/>
       </div>
       <div>
-        <label for="duty-scope-filter">适用范围</label>
-        <a-select id="duty-scope-filter" v-model:value="scopeFilter" :options="scopeOptions" allow-clear show-search option-filter-prop="label" placeholder="全部范围"/>
+        <label :for="scopeFilterID">适用范围</label>
+        <a-select :id="scopeFilterID" v-model:value="scopeFilter" :options="scopeOptions" allow-clear show-search option-filter-prop="label" placeholder="全部范围"/>
       </div>
       <AppointmentDateFilter v-model:mode="dateMode" v-model:date="on"/>
     </div>
@@ -173,7 +182,7 @@ defineExpose({refresh})
         :scroll="{x:canWrite?912:810}" @change="changePage">
         <template #bodyCell="{column,record,text}">
           <template v-if="column.key==='subject'">
-            <a v-if="record.personId" :href="personLink(record.personId,'duties')" class="person-name-link">{{ record.subjectName }}</a>
+            <a v-if="record.personId && !profile" :href="personLink(record.personId,'duties')" class="person-name-link">{{ record.subjectName }}</a>
             <span v-else>{{ record.subjectName }}</span><small class="order-version">{{ record.personId ? '人员' : '组织' }}</small>
           </template>
           <span v-else-if="column.key==='role'">{{ roleLabel(record.role) }}</span>

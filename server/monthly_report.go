@@ -108,6 +108,8 @@ SELECT jsonb_build_object('snapshot',stamp.snapshot,'total',(SELECT count(*) FRO
  'performanceMinor',CASE WHEN coverage.performance_ready THEN (SELECT coalesce(sum(performance_minor),0) FROM totals) END,
  'commissionMinor',(SELECT coalesce(sum(net_minor),0) FROM totals),'duplicateFacts',coverage.duplicate_facts,
  'conflictingPerformance',coverage.conflicting_performance,
+ 'personPerformancePending',$8::bigint IS NOT NULL AND NOT coverage.performance_ready
+  AND EXISTS(SELECT 1 FROM performance_events WHERE person_id=$8),
  'periods',coalesce((SELECT jsonb_agg(jsonb_build_object('id',period_id,'productName',product_name,
   'name',name,'startsOn',starts_on,'endsOn',ends_on,'kind',kind,'version',version,'commissionMinor',CASE WHEN {{unit}} IS NULL AND $8::bigint IS NULL THEN scopes.commission ELSE period_amounts.commission END,'issueCount',issue_count,
   'status',CASE WHEN settlement_id IS NOT NULL THEN 'SETTLED' WHEN version IS NULL THEN 'NOT_CALCULATED'
