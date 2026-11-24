@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import PracticeTierRanges from './PracticeTierRanges.vue'
 import { practiceCumulativeAmountMetrics } from './rule-component-form'
 
@@ -16,7 +16,7 @@ const props = defineProps({
 const metricOptions = computed(() => [
   {value:'count',label:'累计新报人数'},
   ...practiceCumulativeAmountMetrics,
-  ...(props.config.hasLegacyMetrics ? [{value:'legacy',label:'现有档位指标'}] : []),
+  ...(props.config.hasLegacyMetrics ? [{value:'legacy',label:'沿用各组档位指标'}] : []),
 ])
 const amountLabel = computed(() => practiceCumulativeAmountMetrics.find(metric=>metric.value===props.config.cumulativeMetric)?.label)
 const metricMode = computed(() => props.config.cumulativeMetric || (props.config.forceCount ? 'count' : 'legacy'))
@@ -41,6 +41,8 @@ const canAddCategory = computed(() => props.salesCategories.some(category=>!assi
 const assignedCompanies = computed(() => new Set(props.config.companies.flatMap(row=>row.companyIds || [])))
 const canAddCompany = computed(() => props.companies.some(company=>!assignedCompanies.value.has(company.value)))
 const assignedPeople = computed(() => props.config.people.filter(row=>row.personId).length)
+const activeGroup = ref(props.config.categories.length ? 'category' : props.config.companies.length ? 'company' :
+  props.config.people.length ? 'person' : 'default')
 function eligiblePeople(rows, row) {
   return props.people.filter(person =>
     !rows.some(other => other !== row && other.personId === person.value))
@@ -72,17 +74,26 @@ function removeSchedule(schedules, index) {
 
 <template>
   <div class="tier-editor">
-    <div class="tier-settings">
-      <a-form-item label="阶梯指标" html-for="tier-amount-metric">
-        <a-select id="tier-amount-metric" :value="metricMode" :options="metricOptions" @change="setMetric"/>
-      </a-form-item>
-      <a-checkbox v-if="showLegacyRetrain" :checked="config.includeRetrain" :disabled="retrainUnavailable && !config.includeRetrain"
-        @change="setIncludeRetrain($event.target.checked)">使用原有复训档值</a-checkbox>
+    <div class="tier-toolbar">
+      <div class="tier-settings">
+        <a-form-item label="阶梯指标" html-for="tier-amount-metric">
+          <a-select id="tier-amount-metric" :value="metricMode" :options="metricOptions" @change="setMetric"/>
+        </a-form-item>
+        <a-checkbox v-if="showLegacyRetrain" :checked="config.includeRetrain" :disabled="retrainUnavailable && !config.includeRetrain"
+          @change="setIncludeRetrain($event.target.checked)">使用原有复训档值</a-checkbox>
+      </div>
+      <div class="tier-navigation">
+        <a-radio-group v-model:value="activeGroup" button-style="solid" size="small" role="radiogroup" aria-label="档位分组">
+          <a-radio-button value="person">个人特例<small v-if="assignedPeople"> · {{ assignedPeople }} 人</small></a-radio-button>
+          <a-radio-button value="company">公司特例<small v-if="assignedCompanies.size"> · {{ assignedCompanies.size }} 家</small></a-radio-button>
+          <a-radio-button value="category">销售类别默认<small v-if="assignedCategories.size"> · {{ assignedCategories.size }} 类</small></a-radio-button>
+          <a-radio-button value="default">通用档位</a-radio-button>
+        </a-radio-group>
+        <small class="tier-note">依上方顺序，取首个匹配的档位组</small>
+      </div>
     </div>
-    <p class="tier-note">匹配顺序　个人特例 → 公司特例 → 销售类别 → 通用档位</p>
-    <details v-if="salesCategories.length || config.categories.length" class="tier-person-starts"
-      :open="config.categories.length>0 || config.onlyOverrides && !config.companies.length && !config.people.length">
-      <summary>销售类别默认档位<small v-if="assignedCategories.size"> · {{ assignedCategories.size }} 类</small></summary>
+    <p class="tier-note tier-bounds">上下限均含本值，上限留空至下一档前，最后一档可留空表示不限。</p>
+    <section v-if="activeGroup==='category'" class="tier-group" aria-label="销售类别默认">
       <div v-for="(category,index) in config.categories" :key="index" class="tier-range">
         <div class="tier-values">
           <a-form-item :html-for="'tier-category-'+index" label="销售类别" required>
@@ -95,13 +106,13 @@ function removeSchedule(schedules, index) {
         </div>
         <PracticeTierRanges :config="category" :sections="sectionsFor(category.metric)" :amounts="amounts"
           :include-retrain="config.includeRetrain" :prefix="'category-'+index+'-'"/>
-        <a-button type="link" danger @click="removeSchedule(config.categories,index)">移除类别档位</a-button>
+        <a-button type="link" danger size="small" @click="removeSchedule(config.categories,index)">移除类别档位</a-button>
       </div>
-      <a-button v-if="canAddCategory" type="dashed" block
+      <a-button v-if="canAddCategory" type="dashed" size="small"
         @click="config.categories.push({salesCategoryIds:[],metric:config.metric,...newSchedule()})">添加类别档位</a-button>
-    </details>
-    <details class="tier-person-starts" :open="config.companies.length>0 && !config.categories.length">
-      <summary>公司特例<small v-if="assignedCompanies.size"> · {{ assignedCompanies.size }} 家</small></summary>
+      <p v-else-if="!salesCategories.length && !config.categories.length" class="tier-note">暂无可选销售类别。</p>
+    </section>
+    <section v-else-if="activeGroup==='company'" class="tier-group" aria-label="公司特例">
       <div v-for="(company,index) in config.companies" :key="index" class="tier-range">
         <div class="tier-values">
           <a-form-item :html-for="'tier-company-'+index" label="销售公司" required>
@@ -114,13 +125,12 @@ function removeSchedule(schedules, index) {
         </div>
         <PracticeTierRanges :config="company" :sections="sectionsFor(company.metric)" :amounts="amounts"
           :include-retrain="config.includeRetrain" :prefix="'company-'+index+'-'"/>
-        <a-button type="link" danger @click="removeSchedule(config.companies,index)">移除公司档位</a-button>
+        <a-button type="link" danger size="small" @click="removeSchedule(config.companies,index)">移除公司档位</a-button>
       </div>
-      <a-button v-if="canAddCompany" type="dashed" block @click="config.companies.push({companyIds:[],metric:config.metric,...newSchedule()})">添加公司档位</a-button>
+      <a-button v-if="canAddCompany" type="dashed" size="small" @click="config.companies.push({companyIds:[],metric:config.metric,...newSchedule()})">添加公司档位</a-button>
       <p v-else-if="!companies.length" class="tier-note">暂无可选销售公司。</p>
-    </details>
-    <details class="tier-person-starts" :open="config.people.length>0 && !config.categories.length && !config.companies.length">
-      <summary>个人特例<small v-if="assignedPeople"> · {{ assignedPeople }} 人</small></summary>
+    </section>
+    <section v-else-if="activeGroup==='person'" class="tier-group" aria-label="个人特例">
       <div v-for="(person,index) in config.people" :key="index" class="tier-range">
         <div class="tier-values">
           <a-form-item :html-for="'tier-seller-'+index" label="销售人员" required>
@@ -133,19 +143,42 @@ function removeSchedule(schedules, index) {
         </div>
         <PracticeTierRanges :config="person" :sections="sectionsFor(person.metric)" :amounts="amounts"
           :include-retrain="config.includeRetrain" :prefix="'seller-'+index+'-'"/>
-        <a-button type="link" danger @click="removeSchedule(config.people,index)">移除个人档位</a-button>
+        <a-button type="link" danger size="small" @click="removeSchedule(config.people,index)">移除个人档位</a-button>
       </div>
-      <a-button v-if="config.people.length<people.length" type="dashed" block
+      <a-button v-if="config.people.length<people.length" type="dashed" size="small"
         @click="config.people.push({metric:config.metric,...newSchedule()})">添加个人档位</a-button>
       <p v-else-if="!people.length" class="tier-note">暂无可选销售人员。</p>
-    </details>
-    <details class="tier-person-starts" :open="!config.onlyOverrides">
-      <summary>通用档位</summary>
-      <a-checkbox :checked="!config.onlyOverrides" @change="config.onlyOverrides = !$event.target.checked">未命中特例或类别时使用</a-checkbox>
-      <a-form-item v-if="!config.onlyOverrides && metricMode==='legacy'" html-for="tier-metric" label="通用阶梯指标">
-        <a-select id="tier-metric" v-model:value="config.metric" :options="metrics"/>
-      </a-form-item>
+    </section>
+    <section v-else class="tier-group" aria-label="通用档位">
+      <div class="tier-settings">
+        <a-checkbox :checked="!config.onlyOverrides" @change="config.onlyOverrides = !$event.target.checked">未命中特例或类别时使用</a-checkbox>
+        <a-form-item v-if="!config.onlyOverrides && metricMode==='legacy'" html-for="tier-metric" label="通用阶梯指标">
+          <a-select id="tier-metric" v-model:value="config.metric" :options="metrics"/>
+        </a-form-item>
+      </div>
       <PracticeTierRanges v-if="!config.onlyOverrides" :config="config" :sections="sections" :amounts="amounts" :include-retrain="config.includeRetrain"/>
-    </details>
+    </section>
   </div>
 </template>
+
+<style scoped>
+.tier-editor { padding:8px 10px; margin:4px 0 8px; background:#f3f6fa; border:1px solid var(--line); border-radius:6px }
+.tier-toolbar,.tier-settings { display:flex; flex-wrap:wrap; align-items:end; gap:4px 12px }
+.tier-toolbar,.tier-group > .tier-settings { margin-bottom:6px }
+.tier-navigation { display:grid; min-width:0; gap:2px }
+.tier-navigation :deep(.ant-radio-group) { display:flex; flex-wrap:wrap }
+.tier-navigation :deep(.ant-radio-button-wrapper) { padding-inline:8px }
+.tier-settings :deep(.ant-form-item) { width:min(100%,230px); margin:0 }
+.tier-settings :deep(.ant-checkbox-wrapper) { margin-block:3px }
+.tier-navigation .tier-note,.tier-group > .tier-note { margin:0 }
+.tier-bounds { margin-bottom:5px }
+.tier-range { padding:6px 8px; margin-bottom:6px; background:white; border:1px solid var(--line); border-radius:5px }
+.tier-values { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,235px),1fr)); gap:0 8px }
+.tier-values :deep(.ant-form-item) { min-width:0 }
+.tier-range > .ant-btn { margin-top:4px; padding-inline:0 }
+@media (max-width:480px) {
+  .tier-navigation :deep(.ant-radio-group) { gap:4px }
+  .tier-navigation :deep(.ant-radio-button-wrapper) { border-radius:4px; border-inline-start-width:1px }
+  .tier-navigation :deep(.ant-radio-button-wrapper::before) { display:none }
+}
+</style>

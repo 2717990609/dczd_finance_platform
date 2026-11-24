@@ -67,14 +67,14 @@ function exceptionOptions(group, current) {
 <template>
   <RuleOrderScope :id="field('scope')" :model-value="mode" :can-own="flexibleScope && row.salesRecipientKind==='person'"
     team-label="指定销售范围" all-label="全班" @update:model-value="changeScope"/>
-  <div v-if="mode==='team' || mode==='own' && row.salesCompanies?.length" class="rule-scope-filters">
+  <div v-if="mode==='team' || mode==='own' && row.salesCompanies?.length" class="practice-scope-filters">
     <a-form-item v-if="mode==='team' && flexibleScope" class="practice-match-kind" label="按什么筛选订单">
       <a-radio-group :value="matchKind" role="radiogroup" aria-label="按什么筛选订单" @update:value="changeMatchKind">
         <a-radio value="organization">销售组织</a-radio>
         <a-radio value="category">销售类别</a-radio>
       </a-radio-group>
     </a-form-item>
-    <a-form-item v-if="matchKind==='legacy'" class="practice-match-kind" label="已保存的组合范围">
+    <a-form-item v-if="matchKind==='legacy'" class="practice-legacy-scope" label="已保存的组合范围">
       <span>保留当前配置。重新选择后，按一种范围筛选订单。</span>
     </a-form-item>
     <RuleScopeSelect v-if="mode==='team' && matchKind==='organization' || mode==='own' || !flexibleScope"
@@ -119,7 +119,11 @@ function exceptionOptions(group, current) {
 </template>
 
 <style scoped>
-.practice-match-kind,.practice-scope-exceptions { grid-column:1 / -1 }
+.practice-scope-filters { grid-column:1 / -1; display:flex; flex-wrap:wrap; align-items:end; gap:0 10px; min-width:0 }
+.practice-scope-filters > :deep(.ant-form-item) { flex:1 1 min(100%,260px); min-width:0 }
+.practice-scope-filters > .practice-match-kind { flex:0 0 auto }
+.practice-scope-filters > .practice-legacy-scope,.practice-scope-exceptions { flex:0 0 100% }
+.practice-match-kind :deep(.ant-radio-group) { min-height:24px; display:flex; align-items:center; flex-wrap:wrap }
 .practice-exception-heading { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:4px 10px }
 .practice-exception-row { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,152px),1fr)); align-items:end; gap:4px 10px }
 .practice-exception-row :deep(.ant-form-item) { margin:4px 0; min-width:0 }

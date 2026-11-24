@@ -277,18 +277,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
-.tier-editor { padding: 12px; margin: 4px 0 14px; background: #f3f6fa; border: 1px solid var(--line); border-radius: 6px; }
-.tier-ranges { min-width: 0; padding: 0; margin: 0 0 12px; border: 0; }
-.tier-ranges:last-child { margin-bottom: 0; }
-.tier-ranges legend { font-weight: 600; margin-bottom: 4px; }
 .tier-note { color: #56647a; font-size: 12px; margin: 0 0 8px; }
-.tier-range { padding: 8px; margin: 0 0 8px; background: white; border-radius: 6px; }
 .tier-values { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
 .tier-values .ant-form-item { margin-bottom: 0; }
 .tier-values .ant-input-number { width: 100%; }
-.tier-settings { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; margin-bottom: 8px; }
-.tier-settings .ant-form-item { flex: 1 1 210px; max-width: 330px; margin-bottom: 0; }
-.tier-settings .ant-checkbox-wrapper { padding-block: 5px; }
 .practice-count-starts { padding: 12px; margin-bottom: 14px; }
 .practice-count-default { grid-template-columns: repeat(auto-fit,minmax(min(100%,150px),1fr)); margin-bottom: 12px; }
 .practice-count-starts .rule-item-section { margin: 0; }
@@ -307,10 +299,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .practice-count-default { grid-template-columns: minmax(0,1fr); }
 }
 
-.tier-person-starts { margin-bottom: 6px; }
-.tier-person-starts:last-child { margin-bottom: 0; }
-.tier-person-starts summary, .rule-count-review summary { cursor: pointer; color: var(--accent); }
-.tier-person-starts[open] summary { margin-bottom: 8px; }
+.rule-count-review summary { cursor: pointer; color: var(--accent); }
 .rule-count-review { margin-top: 4px; font-size: 12px; }
 .rule-count-review ul { margin-block: 4px 0; padding-inline-start: 18px; }
 

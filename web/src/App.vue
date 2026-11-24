@@ -1944,20 +1944,22 @@ async function save() {
         <div v-if="selectedProduct" class="rule-blocks" aria-label="收款安排">
           <div class="rule-blocks-heading">
             <h3 class="form-subhead">收款安排</h3>
-            <a-dropdown v-if="recipientChoices.length" :trigger="['click']">
-              <a-button size="small">添加收款安排 <DownOutlined aria-hidden="true"/></a-button>
-              <template #overlay>
-                <a-menu @click="({key})=>addRuleComponent(key)">
-                  <a-menu-item v-for="choice in recipientChoices" :key="choice.key" :disabled="choice.disabled">
-                    {{ choice.label }}<small v-if="choice.disabled">（已配置）</small>
-                  </a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
-            <PracticeRegistrationImport v-if="classRule && selectedProduct" :key="draft.productId" :api="api"
-              :product-id="draft.productId" :period-id="draft.scope==='period' ? draft.periodId : undefined"
-              :blocked="draft.scope==='period' && !draft.periodId" :people="classPeopleOptions" :units="unitOptions"
-              :format-time="formatTime" @add="addPracticeRegistrationImport"/>
+            <a-space wrap :size="6">
+              <PracticeRegistrationImport v-if="classRule" :key="draft.productId" :api="api"
+                :product-id="draft.productId" :period-id="draft.scope==='period' ? draft.periodId : undefined"
+                :blocked="draft.scope==='period' && !draft.periodId" :people="classPeopleOptions" :units="unitOptions"
+                :format-time="formatTime" @add="addPracticeRegistrationImport"/>
+              <a-dropdown v-if="recipientChoices.length" :trigger="['click']">
+                <a-button size="small">添加收款安排 <DownOutlined aria-hidden="true"/></a-button>
+                <template #overlay>
+                  <a-menu @click="({key})=>addRuleComponent(key)">
+                    <a-menu-item v-for="choice in recipientChoices" :key="choice.key" :disabled="choice.disabled">
+                      {{ choice.label }}<small v-if="choice.disabled">（已配置）</small>
+                    </a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </a-space>
           </div>
           <section v-for="(c,i) in draft.components" :key="i" class="rule-block">
           <button type="button" class="rule-block-header" :aria-expanded="activeRuleComponent===i"

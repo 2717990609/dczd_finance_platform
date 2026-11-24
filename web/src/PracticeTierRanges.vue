@@ -13,7 +13,6 @@ function setMode(row, mode) {
 <template>
     <fieldset v-for="section in sections" :key="section.key" class="tier-ranges">
       <legend>{{ section.title }}</legend>
-      <p class="tier-note">上下限均含当前值。上限留空时，延续至下一档的起点之前。</p>
       <table class="tier-range-table" :aria-label="section.title">
         <thead>
           <tr>
@@ -77,7 +76,9 @@ function setMode(row, mode) {
 </template>
 
 <style scoped>
-.tier-ranges { container-type:inline-size }
+.tier-ranges { min-width:0; padding:0; margin:0 0 6px; border:0; container-type:inline-size }
+.tier-ranges:last-child { margin-bottom:0 }
+.tier-ranges legend { font-weight:600; margin-bottom:2px }
 .tier-range-table { width:100%; table-layout:fixed; border-collapse:collapse; margin-bottom:6px; background:white }
 .tier-range-table th,.tier-range-table td { padding:3px 6px; text-align:left; border-bottom:1px solid var(--line) }
 .tier-range-table th { background:#f3f6fa; font-weight:600; white-space:nowrap }
