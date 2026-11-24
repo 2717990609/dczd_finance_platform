@@ -34,7 +34,7 @@ var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, sco
  SELECT period_id,version,performance_ready FROM scopes WHERE version IS NOT NULL
 ), current_pool_allocations AS MATERIALIZED (` + currentReportPoolAllocationsSQL + `
 ), stamp AS (
- SELECT md5(jsonb_build_array($1::date,$2::bigint,$3::text,{{unit}},
+ SELECT md5(jsonb_build_array($1::date,$2::bigint,$3::text,{{unit}},$8::bigint,
   (SELECT array_agg(id ORDER BY id) FROM organization_scope),
   (SELECT jsonb_agg(jsonb_build_array(period_id,product_name,name,starts_on,ends_on,version,calculated_at,issue_count,settlement_id,generation)
    ORDER BY period_id) FROM scopes),
@@ -69,7 +69,7 @@ var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, sco
  SELECT period_id,person_id,company_id,department_id,group_id,performance,0,0,0,0,'person'
  FROM performance_groups CROSS JOIN coverage WHERE coverage.performance_ready
 ), scoped_postings AS (
- SELECT * FROM postings WHERE ` + reportInOrganization + `
+ SELECT * FROM postings WHERE (` + reportInOrganization + `) AND ($8::bigint IS NULL OR person_id=$8)
 ), period_amounts AS (
  SELECT period_id,sum(amount_minor+refund+correction+allocation) AS commission FROM scoped_postings GROUP BY period_id
 ), matching AS (
@@ -109,11 +109,11 @@ SELECT jsonb_build_object('snapshot',stamp.snapshot,'total',(SELECT count(*) FRO
  'commissionMinor',(SELECT coalesce(sum(net_minor),0) FROM totals),'duplicateFacts',coverage.duplicate_facts,
  'conflictingPerformance',coverage.conflicting_performance,
  'periods',coalesce((SELECT jsonb_agg(jsonb_build_object('id',period_id,'productName',product_name,
-  'name',name,'startsOn',starts_on,'endsOn',ends_on,'kind',kind,'version',version,'commissionMinor',CASE WHEN {{unit}} IS NULL THEN scopes.commission ELSE period_amounts.commission END,'issueCount',issue_count,
+  'name',name,'startsOn',starts_on,'endsOn',ends_on,'kind',kind,'version',version,'commissionMinor',CASE WHEN {{unit}} IS NULL AND $8::bigint IS NULL THEN scopes.commission ELSE period_amounts.commission END,'issueCount',issue_count,
   'status',CASE WHEN settlement_id IS NOT NULL THEN 'SETTLED' WHEN version IS NULL THEN 'NOT_CALCULATED'
    WHEN generation IS NOT NULL THEN 'PENDING' WHEN issue_count>0 THEN 'NEEDS_REVIEW' ELSE 'DRAFT' END)
   ORDER BY product_name,ends_on,period_id) FROM scopes LEFT JOIN period_amounts USING(period_id)
-  WHERE {{unit}} IS NULL OR period_amounts.period_id IS NOT NULL),'[]'),
+  WHERE ({{unit}} IS NULL AND $8::bigint IS NULL) OR period_amounts.period_id IS NOT NULL),'[]'),
  'items',coalesce((SELECT jsonb_agg(to_jsonb(labeled) ORDER BY "performanceMinor" DESC,"totalMinor" DESC,id) FROM labeled),'[]'))
 FROM stamp CROSS JOIN coverage WHERE $6='' OR stamp.snapshot=$6`
 
@@ -201,8 +201,13 @@ func (s workspace) monthlyReport(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
+	personID, err := optionalPersonID(query.Get("personId"))
+	if err != nil || personID != nil && dimension != "person" {
+		respond(w, nil, invalid)
+		return
+	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), scopedMonthlyReportSQL, month, product, view, dimension, offset, snapshot, unit).Scan(&result)
+	err = s.db.QueryRow(r.Context(), scopedMonthlyReportSQL, month, product, view, dimension, offset, snapshot, unit, personID).Scan(&result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = conflict
 	}

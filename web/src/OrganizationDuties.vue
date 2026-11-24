@@ -3,7 +3,7 @@ import { computed, onActivated, onBeforeUnmount, ref, watch } from 'vue'
 import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
-const props = defineProps({api:Function, formatTime:Function, canWrite:Boolean, units:Array, subject:Object})
+const props = defineProps({api:Function, formatTime:Function, canWrite:Boolean, units:Array, subject:Object, personLink:Function})
 const emit = defineEmits(['clear-subject'])
 const base = '/organization-business-duties'
 const settings = ref({roles:[],scopes:[]})
@@ -173,7 +173,8 @@ defineExpose({refresh})
         :scroll="{x:canWrite?912:810}" @change="changePage">
         <template #bodyCell="{column,record,text}">
           <template v-if="column.key==='subject'">
-            {{ record.subjectName }}<small class="order-version">{{ record.personId ? '人员' : '组织' }}</small>
+            <a v-if="record.personId" :href="personLink(record.personId,'duties')" class="person-name-link">{{ record.subjectName }}</a>
+            <span v-else>{{ record.subjectName }}</span><small class="order-version">{{ record.personId ? '人员' : '组织' }}</small>
           </template>
           <span v-else-if="column.key==='role'">{{ roleLabel(record.role) }}</span>
           <span v-else-if="column.key==='scope'">{{ record.scopeName }}<small class="order-version">{{ kinds[record.scopeKind] }}</small></span>

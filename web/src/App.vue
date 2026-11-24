@@ -19,6 +19,7 @@ import { catalogAppointmentLevels, checkPracticeCompanyArrangementScopes, copied
 const DraftWorkbench = defineAsyncComponent(() => import('./DraftWorkbench.vue'))
 const MonthlyReport = defineAsyncComponent(() => import('./MonthlyReport.vue'))
 const OrganizationDirectory = defineAsyncComponent(() => import('./OrganizationDirectory.vue'))
+const OrganizationPersonDetail = defineAsyncComponent(() => import('./OrganizationPersonDetail.vue'))
 const OrderDetails = defineAsyncComponent(() => import('./OrderDetails.vue'))
 const OrderSyncPanel = defineAsyncComponent(() => import('./OrderSyncPanel.vue'))
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
@@ -46,6 +47,29 @@ const navigation = [
   {key:'people', area:'data', title:'人员映射'},
 ]
 const workspaces = [{key:'work',title:'工作台'}, {key:'config',title:'配置'}, {key:'data',title:'系统与数据'}]
+const organizationPages = [
+  {page:'organization',tab:'organization',label:'组织任职'},
+  {page:'people',tab:'main',label:'人员档案'},
+  {page:'organization',tab:'duties',label:'业务职责'},
+  {page:'organization',tab:'catalog',label:'分润岗位'},
+  {page:'people',tab:'identity',label:'来源账号'},
+  {page:'organization',tab:'companies',label:'销售公司与类别'},
+]
+const organizationPanel = ref('organization')
+const personPage = ref()
+const personDetail = ref()
+let personListScroll = 0
+const organizationHref = (page, tab) => '#'+page+(['main','organization'].includes(tab) ? '' : '?tab='+tab)
+function personLink(id, section) {
+  const base = organizationHref(current.value, current.value==='people' ? tab.value : organizationPanel.value)
+  const params = new URLSearchParams(base.split('?')[1])
+  params.set('personId',id)
+  if (section) params.set('section',section)
+  return '#'+current.value+'?'+params
+}
+function navigateOrganizationPanel(panel) {
+  location.hash = organizationHref('organization',panel)
+}
 const lastWorkspacePages = ref({})
 const session = ref()
 const sessionError = ref('')
@@ -712,7 +736,8 @@ function changeListTab() {
 function refreshWorkspace() {
   refresh(true)
   periodTasks.value?.refresh()
-  organization.value?.refresh()
+  if (personPage.value) personDetail.value?.refresh()
+  else organization.value?.refresh()
   monthlyReport.value?.refresh()
   retention.value?.refresh()
   orderSync.value?.reload()
@@ -753,8 +778,24 @@ function changeRoute() {
   const previousReviewRoot = reviewRootPeriod.value
   const [key, query] = location.hash.slice(1).split('?', 2)
   current.value = getRoute(key)
-  if (active.value) lastWorkspacePages.value[active.value.area] = current.value
+  if (active.value) lastWorkspacePages.value[active.value.area] = active.value.area==='data' ? 'organization' : current.value
   const params = new URLSearchParams(query)
+  const previousPerson = personPage.value
+  const isOrganizationPage = current.value===key && (key==='organization' || key==='people')
+  const requestedTab = organizationPages.find(entry=>entry.page===key && entry.tab===params.get('tab'))?.tab
+  const personId = isOrganizationPage ? routeId(params.get('personId')) : undefined
+  personPage.value = personId ? {id:personId,section:params.get('section'),back:organizationHref(key,requestedTab || (key==='people' ? 'main' : 'organization'))} : undefined
+  if (key==='organization' && isOrganizationPage) {
+    organizationPanel.value = requestedTab || 'organization'
+  }
+  if (personPage.value && !previousPerson) personListScroll = previous===current.value ? window.scrollY : 0
+  if (personPage.value?.id!==previousPerson?.id) {
+    const returnScroll = !personPage.value && previous===current.value ? personListScroll : 0
+    nextTick(() => window.scrollTo(0,returnScroll))
+  }
+  // Keep the list and its filters mounted while navigating within a person profile.
+  if (previous===current.value && isOrganizationPage &&
+      (key==='organization' || (previousPerson || personPage.value) && tab.value===(requestedTab || 'main'))) return
   const productID = routeId(params.get('productId'))
   if (current.value === key && configProductPages.has(key) && productID) {
     productScope.value = productID
@@ -827,7 +868,7 @@ function changeRoute() {
   if (current.value==='rules' && session.value?.user && !session.value.user.rules.some(rule=>rule.productId===productScope.value)) {
     productScope.value=undefined
   }
-  tab.value = 'main'
+  tab.value = key==='people' && isOrganizationPage ? requestedTab || 'main' : 'main'
   ruleBusinessScope.value = undefined
   identityAccount.value = undefined
   orderQuery.value = isOrders ? (params.get('orderId') || '').trim() : ''
@@ -851,6 +892,8 @@ function clearWorkspace() {
   scopeUnits.value = undefined
   lastWorkspacePages.value = {}
   current.value = undefined
+  personPage.value = undefined
+  organizationPanel.value = 'organization'
   requestedPeriod.value = undefined
   requestedView.value = undefined
   requestedRulePeriod.value = undefined
@@ -1531,7 +1574,7 @@ async function save() {
   </main>
   <div v-else-if="active" class="layout">
     <header class="topbar">
-      <div class="path" aria-label="当前位置"><BankOutlined aria-hidden="true"/><span>财务平台</span><RightOutlined aria-hidden="true"/><b>{{ active.title }}</b></div>
+      <div class="path" aria-label="当前位置"><BankOutlined aria-hidden="true"/><span>财务平台</span><RightOutlined aria-hidden="true"/><b>{{ personPage ? '人员详情' : active.area==='data' ? '组织与人员' : active.title }}</b></div>
       <div class="topbar-actions">
         <span v-if="session.user" class="finance-account-name">{{ session.user.name }}</span>
         <a-button v-if="session.user" type="text" size="small" :loading="sessionBusy" @click="signOut">退出登录</a-button>
@@ -1584,9 +1627,9 @@ async function save() {
         </template>
       </aside>
       <main class="workspace-content">
-        <section class="workspace-page-head">
+        <section v-show="!personPage" class="workspace-page-head">
           <div class="workspace-page-title">
-            <h1>{{ active.title }}</h1>
+            <h1>{{ active.area==='data' ? '组织与人员' : active.title }}</h1>
             <a v-if="reviewRootPeriod" class="workspace-return" :href="settlementLink(reviewRootPeriod,'review',periodOrigin)"><LeftOutlined aria-hidden="true"/>返回原期核对</a>
             <a v-else-if="periodOrigin" class="workspace-return" :href="'#'+periodOrigin"><LeftOutlined aria-hidden="true"/>返回{{ periodOrigins[periodOrigin] }}</a>
             <a v-if="configurationReturn" class="workspace-return" :href="configurationReturn.href"><LeftOutlined aria-hidden="true"/>{{ configurationReturn.label }}</a>
@@ -1598,7 +1641,11 @@ async function save() {
               <a-button v-if="catalogPeriodProducts.length" :type="canOpenAction || catalogScenarioProducts.length ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogPeriodCreation">新增整期规则</a-button>
             </div>
           </div>
-          <nav v-if="workspacePages.length>1" class="workspace-nav" :aria-label="activeWorkspace?.title+'导航'">
+          <nav v-if="active.area==='data'" class="workspace-nav organization-nav" aria-label="组织与人员导航">
+            <a v-for="entry in organizationPages" :key="entry.tab" :href="organizationHref(entry.page,entry.tab)"
+              :aria-current="current===entry.page && (current==='people' ? tab : organizationPanel)===entry.tab ? 'page' : undefined">{{ entry.label }}</a>
+          </nav>
+          <nav v-else-if="workspacePages.length>1" class="workspace-nav" :aria-label="activeWorkspace?.title+'导航'">
             <a v-for="entry in workspacePages" :key="entry.key" :href="'#'+entry.key" :aria-current="current===entry.key ? 'page' : undefined">{{ entry.title }}</a>
           </nav>
           <nav v-if="practiceRulesProduct" class="workspace-nav practice-rules-nav" aria-label="实战班配置">
@@ -1606,7 +1653,11 @@ async function save() {
               :aria-current="(practiceSettingsView || '')===entry.key ? 'page' : undefined">{{ entry.label }}</a>
           </nav>
         </section>
-        <div class="workspace-page-body">
+        <OrganizationPersonDetail v-if="personPage" :key="personPage.id" ref="personDetail"
+          :person-id="personPage.id" :section="personPage.section" :back="personPage.back" :person-link="personLink"
+          :api="api" :option-label="optionLabel" :format-time="formatTime" :format-identity-time="formatIdentityTime" :format-money="formatMoney" :month="workspaceMonth"
+          :report-views="options('monthlyReportView')" :report-dimensions="options('draftReportDimension')"/>
+        <div v-show="!personPage" class="workspace-page-body">
         <template v-if="current==='tasks'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <PeriodTasks ref="periodTasks" v-model="tasksMode" :api="api" :month="workspaceMonth" :product-id="productScope"
@@ -1644,6 +1695,7 @@ async function save() {
         <template v-else-if="current==='organization'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <OrganizationDirectory ref="organization" :api="api" :option-label="optionLabel" :format-time="formatTime"
+            :panel="organizationPanel" :person-link="personLink" @update:panel="navigateOrganizationPanel"
             :can-write="session.user ? session.user.organizationWrite : session.development" :appointment-kinds="options('appointmentKind')"
             :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"/>
         </template>
@@ -1668,9 +1720,9 @@ async function save() {
           ref="orderSync" :api="api" :streams="syncStreams" :format-time="formatTime" :target="orderSyncTarget" @updated="refresh()"/>
         <section class="records">
           <div class="records-head">
-            <a-tabs v-if="current==='products'||current==='people'" v-model:active-key="tab" @change="changeListTab">
-              <a-tab-pane key="main" :tab="current==='products'?'产品列表':'人员列表'"/>
-              <a-tab-pane :key="current==='products'?'mapping':'identity'" :tab="current==='products'?'来源映射':'映射历史'"/>
+            <a-tabs v-if="current==='products'" v-model:active-key="tab" @change="changeListTab">
+              <a-tab-pane key="main" tab="产品列表"/>
+              <a-tab-pane key="mapping" tab="来源映射"/>
             </a-tabs>
             <h2 v-else>{{ {periods:'期次列表',rules:'规则列表',orders:'订单业务记录'}[current] }}</h2>
             <div class="search">
@@ -1719,6 +1771,8 @@ async function save() {
                   <span v-else>—</span>
                 </template>
                 <a v-else-if="column.key==='name' && current==='periods'" :href="'#settlement?periodId='+record.id">{{ text }}</a>
+                <a v-else-if="current==='people' && column.key==='name'" :href="personLink(record.id)" class="person-name-link">{{ text }}</a>
+                <a v-else-if="current==='people' && column.key==='personName'" :href="personLink(record.personId,'accounts')" class="person-name-link">{{ text }}</a>
                 <template v-else-if="column.key==='name'||column.key==='label'">
                   <strong class="primary-cell">{{ text }}</strong>
                 </template>

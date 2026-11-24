@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RadioGroup } from 'ant-design-vue'
 
 const props = defineProps({ api:Function, formatMoney:Function, productId:Number, views:Array, dimensions:Array,
-  unitId:String, unitName:String, month:String, resume:Object, units:Array })
+  unitId:String, unitName:String, month:String, resume:Object, units:Array, personId:Number })
 const emit = defineEmits(['select-unit'])
 const month = computed(() => props.month)
 const view = defineModel('view', {type:String})
@@ -56,6 +56,7 @@ async function load() {
   const params = new URLSearchParams({month:month.value,view:view.value,dimension:dimension.value,page:page.value})
   if (props.productId) params.set('productId',props.productId)
   if (props.unitId) params.set('unitId',props.unitId)
+  if (props.personId) params.set('personId',props.personId)
   if (snapshot.value) params.set('snapshot',snapshot.value)
   try {
     const result = await props.api('/monthly-report?'+params)
@@ -117,7 +118,7 @@ defineExpose({refresh,browseState})
     <div class="draft-toolbar monthly-filters">
       <label for="monthly-report-view">结果范围</label>
       <a-select id="monthly-report-view" v-model:value="view" :options="views"/>
-      <div class="monthly-dimensions">
+      <div v-if="!personId" class="monthly-dimensions">
         <span id="monthly-dimension-label">汇总维度</span>
         <RadioGroup v-model:value="dimension" :options="dimensions" option-type="button" button-style="solid"
           role="radiogroup" aria-labelledby="monthly-dimension-label"/>

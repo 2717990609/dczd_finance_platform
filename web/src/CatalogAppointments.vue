@@ -3,7 +3,7 @@ import { computed, onActivated, onBeforeUnmount, ref, watch } from 'vue'
 import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
-const props = defineProps({api:Function, canWrite:Boolean, roles:Array, scopes:Array, formatTime:Function})
+const props = defineProps({api:Function, canWrite:Boolean, roles:Array, scopes:Array, formatTime:Function, personLink:Function})
 const base = '/catalog-appointments'
 const settings = ref()
 const entries = ref({total:0,items:[]})
@@ -170,6 +170,7 @@ defineExpose({refresh})
       <a-table size="middle" :columns="columns" :data-source="entries.items" :loading="loading" row-key="id" :pagination="pagination"
         :scroll="{x:canWrite?923:795}" @change="pageChanged">
         <template #bodyCell="{column,record,text}">
+          <a v-if="column.key==='personName'" :href="personLink(record.personId,'positions')" class="person-name-link">{{ text }}</a>
           <template v-if="column.key==='role'">{{ roleLabel(text) }}</template>
           <template v-if="column.key==='scope'">{{ text }}<small class="order-version">{{ scopeLabel(record.scope) }}</small></template>
           <span v-if="column.key==='validFrom'||column.key==='validTo'" class="numeric">{{ formatTime(text) }}</span>

@@ -275,6 +275,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/catalog-appointments/end", Handler: submitJSON(32<<10, s.endCatalogAppointment)},
 		{Method: http.MethodPost, Path: "/api/v1/catalog-appointments/transfer", Handler: submitJSON(32<<10, s.transferCatalogAppointment)},
 		{Method: http.MethodGet, Path: "/api/v1/people", Handler: s.list(peopleSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/person-detail", Handler: s.personDetail},
+		{Method: http.MethodGet, Path: "/api/v1/person-source-accounts", Handler: s.personSourceAccounts},
 		{Method: http.MethodPost, Path: "/api/v1/people", Handler: submit(s.createPerson)},
 		{Method: http.MethodGet, Path: "/api/v1/identities", Handler: s.identities},
 		{Method: http.MethodPost, Path: "/api/v1/identities", Handler: submit(s.assignIdentity)},
@@ -475,7 +477,7 @@ const rulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]'
 const peopleSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT id,name FROM people) p`
 const identitiesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
- (SELECT i.id,i.source,i.external_id AS "externalId",p.name AS "personName",
+ (SELECT i.id,i.source,i.external_id AS "externalId",p.name AS "personName",p.id AS "personId",
  i.valid_from AS "validFrom",i.valid_to AS "validTo"
  FROM identity_mappings i JOIN people p ON p.id=i.person_id
  WHERE $1='' OR (i.source=$1 AND i.external_id=$2)

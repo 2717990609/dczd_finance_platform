@@ -98,6 +98,13 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 			t.Fatalf("%s did not retain the refund's original organization: %+v", dimension, got.Items)
 		}
 	}
+	personal := get("view=current&dimension=person&personId=1", http.StatusOK)
+	if personal.CommissionMinor != 4000 || len(personal.Items) != 1 || personal.Items[0].ID != "1" ||
+		personal.PerformanceMinor == nil || *personal.PerformanceMinor != 40000 || len(personal.Periods) != 2 {
+		t.Fatalf("personal report mixed same-name participants or period totals: %+v", personal)
+	}
+	get("view=current&dimension=person&personId=2&snapshot="+personal.Snapshot, http.StatusConflict)
+	get("view=current&dimension=company&personId=1", http.StatusBadRequest)
 	confirmed := get("view=settled&dimension=company", http.StatusOK)
 	if len(confirmed.Periods) != 1 || confirmed.Periods[0].ID != 1 || confirmed.Periods[0].Status != "SETTLED" || confirmed.CommissionMinor != 1000 {
 		t.Fatalf("settled scope: %+v", confirmed)

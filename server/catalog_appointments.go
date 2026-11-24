@@ -36,6 +36,7 @@ const catalogAppointmentListSQL = `WITH targets AS (` + catalogAppointmentTarget
   AND ($1::timestamptz IS NULL OR (a.valid_from<=$1 AND (a.valid_to IS NULL OR a.valid_to>$1)))
   AND ($2='' OR strpos(lower(p.name),lower($2))>0)
   AND ($3='' OR a.role=$3) AND ($4='' OR a.scope=$4) AND ($5='' OR a.scope_key=$5)
+  AND ($7::bigint IS NULL OR a.person_id=$7)
  ), page AS (
  SELECT * FROM matching ORDER BY "personName","validFrom" DESC,id LIMIT 25 OFFSET $6
  ) SELECT jsonb_build_object('total',(SELECT count(*) FROM matching),
@@ -48,9 +49,14 @@ func (s workspace) catalogAppointments(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
+	personID, err := optionalPersonID(params.Get("personId"))
+	if err != nil {
+		respond(w, nil, err)
+		return
+	}
 	var result json.RawMessage
 	err = s.db.QueryRow(r.Context(), catalogAppointmentListSQL, at, name, params.Get("role"), params.Get("scope"),
-		params.Get("scopeKey"), offset).Scan(&result)
+		params.Get("scopeKey"), offset, personID).Scan(&result)
 	respond(w, result, err)
 }
 
