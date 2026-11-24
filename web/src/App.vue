@@ -1274,6 +1274,7 @@ function ruleComponentBody(row) {
       }
       return {
         companies,
+        ...(category.label ? {label:category.label} : {}),
         ...(byCategory ? {salesCategoryIds:category.salesCategoryIds} : {}),
         ...value(category),
         ...(category.overrides.length ? {overrides:category.overrides.map(override=>{

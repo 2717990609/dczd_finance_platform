@@ -2,7 +2,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import { practiceCompanyCalculationText, practiceCompanyMatchLabels, practiceCompanyMatchText, practiceCompanyRatePriority,
+import { practiceCompanyMatchLabels, practiceCompanyRatePriority,
   practiceCompanyScopes, practiceRecipientIsPerson } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,salesCategories:Array,recipients:Array,amounts:Array,
@@ -12,11 +12,6 @@ const sales = computed(() => props.component.companySales)
 const categories = computed(() => sales.value.categories)
 const overrides = computed(() => categories.value.flatMap((category,index)=>
   category.overrides.map((override,position)=>({category,index,override,position}))))
-const standardGroups = [
-  {scope:'category',action:'添加销售类别'},
-  {scope:'companies',action:'添加指定公司'},
-  {scope:'default'},
-]
 const standardRowsByScope = computed(() => ({
   companies:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='companies'),
   category:categories.value.map((standard,index)=>({standard,index})).filter(({standard})=>standard.scope==='category'),
@@ -36,6 +31,16 @@ const visibleStandards = computed(() => ({
 const visibleOverrides = computed(() => visibleCompanyRows.value.filter(row=>row.override))
 watch(companyPageCount, count=>{ companyPage.value=Math.min(companyPage.value,count) })
 const scopes = computed(() => practiceCompanyScopes(sales.value))
+const scopeOptions = computed(() => [
+  {value:'category',label:practiceCompanyMatchLabels.category +
+    (scopes.value.categories.length ? '（'+scopes.value.categories.length+' 类）' : '')},
+  {value:'companies',label:practiceCompanyMatchLabels.companies +
+    (scopes.value.companies.length ? '（'+scopes.value.companies.length+' 家）' : '')},
+  {value:'default',label:practiceCompanyMatchLabels.default},
+])
+const scope = ref(scopes.value.categories.length ? 'category' :
+  scopes.value.companies.length ? 'companies' : scopes.value.hasDefault ? 'default' : 'category')
+const standardAction = computed(() => scope.value==='category' ? '添加销售类别' : '添加指定公司')
 const priority = computed(() => practiceCompanyRatePriority(scopes.value))
 const payee = computed(() => props.component.companySales.payee)
 const payeeKinds = [
@@ -63,6 +68,15 @@ const companyAssignments = computed(() => {
 const internalCompanies = computed(() => new Set(sales.value.internalCompanies))
 const internalOptions = computed(() => props.companies.filter(option=>!companyAssignments.value.has(option.value)))
 const amounts = computed(() => props.amounts)
+const defaultMethods = ref({})
+const activeStandards = computed(() => scope.value==='companies'
+  ? companyRows.value.map(row=>row.standard || row.override)
+  : standardRowsByScope.value.category.map(row=>row.standard))
+const activeMethod = computed(() => {
+  if (!activeStandards.value.length) return defaultMethods.value[scope.value]
+  const modes = new Set(activeStandards.value.map(row=>row.mode))
+  return modes.size===1 ? activeStandards.value[0].mode : undefined
+})
 const field = name => 'practice-company-'+props.index+'-'+name
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 
@@ -88,7 +102,7 @@ function salesCategoryOptions(category) {
 const standardMethod = mode => ({mode})
 async function addStandard(scope) {
   const index = categories.value.length
-  categories.value.push({scope,...standardMethod(amounts.value[0]?.value),companies:[],salesCategoryIds:[],overrides:[]})
+  categories.value.push({scope,...standardMethod(activeMethod.value || defaultMethods.value[scope] || amounts.value[0]?.value),companies:[],salesCategoryIds:[],overrides:[]})
   if (scope==='companies') {
     companyPage.value = Math.ceil(standardRowsByScope.value.companies.length/companyPageSize)
   }
@@ -97,13 +111,18 @@ async function addStandard(scope) {
 }
 async function addCategoryOverride(category,i) {
   category.overrides.push({companyIds:[],...standardMethod(category.mode)})
+  scope.value = 'companies'
   const rowIndex = companyRows.value.findIndex(row=>row.override===category.overrides.at(-1))
   companyPage.value = Math.floor(rowIndex/companyPageSize)+1
   await nextTick()
   document.getElementById(field('override-'+i+'-'+(category.overrides.length-1)))?.focus()
 }
 function modeChanged(item, mode) {
-  Object.assign(item,standardMethod(mode),{value:undefined})
+  if (item.mode!==mode) Object.assign(item,standardMethod(mode),{value:undefined})
+}
+function selectMethod(mode) {
+  defaultMethods.value[scope.value] = mode
+  for (const row of activeStandards.value) modeChanged(row,mode)
 }
 watch(amounts, choices => {
   for (const category of categories.value) {
@@ -116,7 +135,7 @@ watch(amounts, choices => {
 
 <template>
   <RuleArrangementFields :name-id="field('label')" v-model:name="component.companySales.label"
-    :calculation-text="practiceCompanyCalculationText(sales)" :scope-text="practiceCompanyMatchText(scopes)"
+    :calculation-text="scope==='default' ? '比例' : undefined"
     :duty-id="practiceRecipientIsPerson(payee.kind) ? field('duty') : undefined" :duties="duties" v-model:duty="component.recipientDuty"
     :order-type-id="'rule-member-'+index" :order-types="memberChoices" :order-type="component.classMember"
     @update:order-type="component.classMember=$event; emit('member-change')">
@@ -132,6 +151,17 @@ watch(amounts, choices => {
     <a-form-item v-if="payee.kind==='company'" label="收款公司" :html-for="field('payee-company')" required>
       <a-select :id="field('payee-company')" v-model:value="payee.companyId" :options="recipients" show-search :filter-option="byName"/>
     </a-form-item>
+    <template #calculation>
+      <a-form-item v-if="scope!=='default'" label="计提方式" :html-for="field('method')">
+        <a-select :id="field('method')" :value="activeMethod" :options="amounts"
+          :placeholder="activeStandards.length ? '按各标准设置' : '选择计提方式'" @change="selectMethod"/>
+      </a-form-item>
+    </template>
+    <template #scope>
+      <a-form-item label="计提订单范围" :html-for="field('scope')">
+        <a-select :id="field('scope')" v-model:value="scope" :options="scopeOptions"/>
+      </a-form-item>
+    </template>
   </RuleArrangementFields>
   <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
     :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
@@ -140,21 +170,20 @@ watch(amounts, choices => {
       <h4 :id="field('scope-heading')">计提标准</h4>
       <small v-if="priority" class="finance-rate-priority">匹配顺序 {{ priority }}</small>
     </header>
-    <section v-for="group in standardGroups" :key="group.scope" :aria-label="practiceCompanyMatchLabels[group.scope]"
-      class="practice-company-criterion">
+    <section :key="scope" :aria-label="practiceCompanyMatchLabels[scope]" class="practice-company-criterion">
       <header>
-        <strong>{{ practiceCompanyMatchLabels[group.scope] }}</strong>
-        <template v-if="group.scope!=='default'">
-          <small v-if="group.scope==='category' && scopes.categories.length">{{ scopes.categories.length }} 类</small>
-          <small v-else-if="group.scope==='companies' && scopes.companies.length">{{ scopes.companies.length }} 家</small>
+        <strong>{{ practiceCompanyMatchLabels[scope] }}</strong>
+        <template v-if="scope!=='default'">
+          <small v-if="scope==='category' && scopes.categories.length">{{ scopes.categories.length }} 类</small>
+          <small v-else-if="scope==='companies' && scopes.companies.length">{{ scopes.companies.length }} 家</small>
           <small v-else>未配置</small>
-          <div v-if="group.scope==='companies' && companyPageCount>1" class="company-standard-pages" role="group" aria-label="指定公司标准分页">
+          <div v-if="scope==='companies' && companyPageCount>1" class="company-standard-pages" role="group" aria-label="指定公司标准分页">
             <a-button size="small" type="text" :disabled="companyPage===1" @click="companyPage--">上一页</a-button>
             <small role="status">{{ companyPage }} / {{ companyPageCount }}</small>
             <a-button size="small" type="text" :disabled="companyPage===companyPageCount" @click="companyPage++">下一页</a-button>
           </div>
-          <a-button :disabled="group.scope==='category' && !salesCategories.length" size="small"
-            @click="addStandard(group.scope)">{{ group.action }}</a-button>
+          <a-button :disabled="scope==='category' && !salesCategories.length" size="small"
+            @click="addStandard(scope)">{{ standardAction }}</a-button>
         </template>
         <template v-else>
           <small v-if="!scopes.hasDefault">未配置</small>
@@ -164,15 +193,15 @@ watch(amounts, choices => {
           </a-form-item>
         </template>
       </header>
-      <div v-if="group.scope!=='default' && (standardRowsByScope[group.scope].length || (group.scope==='companies' && overrides.length))"
+      <div v-if="scope!=='default' && (standardRowsByScope[scope].length || (scope==='companies' && overrides.length))"
         class="company-standard-table" :class="{'has-method':amounts.length>1,'has-recommendation':legacyRecommendations}">
         <div class="company-standard-fields company-standard-column-labels" aria-hidden="true">
-          <span>{{ group.scope==='category' ? '适用销售类别' : '适用销售公司' }}</span>
+          <span>{{ scope==='category' ? '适用销售类别' : '适用销售公司' }}</span>
           <span v-if="amounts.length>1">计提方式</span>
           <span>{{ amounts.length>1 ? '计提标准' : '比例（%）' }}</span>
           <span v-if="legacyRecommendations">推荐比例（%）</span>
         </div>
-        <div v-for="({standard:category,index:i}) in visibleStandards[group.scope]" :key="i" class="company-category company-standard-fields">
+        <div v-for="({standard:category,index:i}) in visibleStandards[scope]" :key="i" class="company-category company-standard-fields">
           <a-form-item v-if="category.scope==='category'" class="company-scope-field" label="销售类别" :html-for="field('sales-category-'+i)" required>
             <a-select :id="field('sales-category-'+i)" v-model:value="category.salesCategoryIds" :options="salesCategoryOptions(category)" size="small"
               mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择销售类别"/>
@@ -197,7 +226,7 @@ watch(amounts, choices => {
           <a-button v-if="category.scope==='category' && category.salesCategoryIds.length && overrideOptions(category).length"
             class="company-category-override" type="link" size="small" @click="addCategoryOverride(category,i)">为此类别添加公司特例</a-button>
         </div>
-        <template v-if="group.scope==='companies'">
+        <template v-if="scope==='companies'">
           <div class="company-category company-standard-fields" v-for="({category,index:i,override,position:j}) in visibleOverrides" :key="i+'-'+j">
             <a-form-item class="company-scope-field" label="特例公司" :html-for="field('override-'+i+'-'+j)" required>
               <a-select :id="field('override-'+i+'-'+j)" v-model:value="override.companyIds"
@@ -248,7 +277,6 @@ watch(amounts, choices => {
 .company-standard-pages {display:flex;align-items:center;gap:4px;font-variant-numeric:tabular-nums}
 .company-standard-table {container-type:inline-size}
 .company-standard-table.has-method {--company-method-column:minmax(0,1.25fr)}
-.company-standard-table.has-refund {--company-refund-column:minmax(148px,1.55fr)}
 .company-standard-table.has-recommendation {--company-recommendation-column:minmax(0,1fr)}
 .company-category {padding:4px 8px 6px;background:#f6f8fb;border-radius:4px;margin-bottom:4px}
 .company-standard-fields {display:flex;flex-wrap:wrap;align-items:end;gap:4px 10px}
@@ -264,7 +292,7 @@ watch(amounts, choices => {
 @container (min-width:760px) {
   .company-standard-fields {
     display:grid;align-items:center;
-    grid-template-columns:minmax(0,3fr) var(--company-method-column,) minmax(0,1.25fr) var(--company-refund-column,) var(--company-recommendation-column,) 48px;
+    grid-template-columns:minmax(0,3fr) var(--company-method-column,) minmax(0,1.25fr) var(--company-recommendation-column,) 48px;
   }
   .company-standard-column-labels {display:grid}
   .company-category {padding-block:3px;margin-bottom:0;background:white;border-bottom:1px solid var(--line);border-radius:0}
