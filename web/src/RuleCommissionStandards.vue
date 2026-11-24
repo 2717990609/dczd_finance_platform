@@ -21,6 +21,7 @@ const labels = {
       </a-radio-group>
       <slot name="tools"/>
     </div>
+    <div v-if="$slots.scope" class="commission-standard-scope"><slot name="scope"/></div>
     <slot/>
   </section>
 </template>
@@ -32,5 +33,8 @@ const labels = {
 }
 .commission-standards-header h4 { margin:0; font:inherit; font-weight:600 }
 .commission-standards-toolbar :deep(.ant-radio-group) { display:flex; flex-wrap:wrap; gap:3px }
+.commission-standard-scope { display:grid; gap:0 10px; grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr)); }
+.commission-standard-scope :deep(.rule-scope-filters) { display:grid; grid-column:1 / -1; gap:0 10px; grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr)) }
+.commission-standard-scope :deep(.rule-order-scope) { width:min(100%,380px) }
 .commission-standards :slotted(.commission-uniform-rate) { width:min(100%,200px); margin-bottom:0 }
 </style>

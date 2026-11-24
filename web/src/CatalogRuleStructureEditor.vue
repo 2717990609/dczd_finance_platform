@@ -240,10 +240,6 @@ defineExpose({addRecipient,editRecipient,editCalculation,editRateScope,cancel,ad
             <a-select id="catalog-add-sales-payee" :value="form.salesPayee || 'seller'" :options="catalogSalesPayees" @change="form.salesPayee=$event"/>
           </a-form-item>
           </template>
-          <template #scope>
-            <CatalogCommissionScopeFields v-if="form.kind==='item'" prefix="catalog-add" v-model="form.orderScope"
-              :options="options.salesUnits" :categories="options.categories" :can-own="form.target==='person'"/>
-          </template>
         </RuleArrangementFields>
         <RuleCommissionStandards v-model="conditionGroup" :groups="form.format==='fixed' ? undefined : conditionTabs"
           :priority="form.format==='table' ? ratePriority : undefined" :embedded="form.kind==='calculation'">
@@ -252,6 +248,10 @@ defineExpose({addRecipient,editRecipient,editCalculation,editRateScope,cancel,ad
               size="small" :disabled="conditionGroup==='category' && !options.categories.length" @click="addCondition">
               {{ conditionActions[conditionGroup] }}
             </a-button>
+          </template>
+          <template v-if="form.kind==='item' && (form.format==='fixed' || conditionGroup==='general')" #scope>
+            <CatalogCommissionScopeFields prefix="catalog-add" v-model="form.orderScope" :options="options.salesUnits"
+              :categories="options.categories" :can-own="form.target==='person'"/>
           </template>
           <a-form-item v-if="form.format==='rate' && conditionGroup==='general'" class="commission-uniform-rate" label="比例（%）" html-for="catalog-add-fixed" required>
             <a-input-number id="catalog-add-fixed" aria-label="比例（%）" v-model:value="form.rate"

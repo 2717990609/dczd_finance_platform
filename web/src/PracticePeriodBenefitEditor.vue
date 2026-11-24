@@ -8,7 +8,7 @@ import RuleOrderScope from './RuleOrderScope.vue'
 import RuleSalesScopeFields from './RuleSalesScopeFields.vue'
 import RuleTierTable from './RuleTierTable.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
-import { hasPracticePaymentScope, practiceRecipientIsPerson } from './rule-component-form'
+import { hasPracticePaymentScope, practiceRecipientIsPerson, practiceStandardRateScope } from './rule-component-form'
 
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array, salesCategories:Array,
@@ -27,6 +27,37 @@ const registration = computed(() => config.value.registrationScope)
 const registrationOption = [{value:'registration',label:'签到报名归属'}]
 const scopeMode = computed(() => registration.value ? 'registration' : config.value.ownSales ? 'own' :
   config.value.restrictPayments || hasPracticePaymentScope(config.value) ? 'team' : 'all')
+const rateScopeGroup = computed(() => {
+  const scope = config.value
+  if (scopeMode.value!=='team') return 'general'
+  if (scope.salesCompanies?.length || scope.salesUnits?.length) return 'company'
+  return scope.salesCategoryIds?.length ? 'category' : 'general'
+})
+const showRateScopeMode = computed(() => usesStandardRates.value
+  ? scopeMode.value!=='all' || config.value.standardRates.some(row=>practiceStandardRateScope(row)==='general')
+  : rateScopeGroup.value==='general')
+function startStandardTable(row) {
+  const scope = config.value
+  const value = props.component.amount
+  let standard = {scope:'general',value}
+  // A single organization or category condition can move into the rate row.
+  // Keep existing combined conditions as conditions shared by all standards.
+  if (value!=null && rateScopeGroup.value==='company' && !scope.salesCategoryIds?.length &&
+      (!scope.salesCompanies?.length || !scope.salesUnits?.length || scope.joinSalesOrganizations)) {
+    standard = {scope:'company',value,salesCompanies:scope.salesCompanies,salesUnits:scope.salesUnits}
+    scope.salesCompanies = []
+    scope.salesUnits = []
+    scope.joinSalesOrganizations = false
+  } else if (value!=null && rateScopeGroup.value==='category') {
+    standard = {scope:'category',value,salesCategoryIds:scope.salesCategoryIds}
+    scope.salesCategoryIds = []
+  }
+  scope.restrictPayments = hasPracticePaymentScope(scope)
+  scope.standardRates = value==null ? [row] : [standard,row]
+}
+function setOrganizationMapping({ids,legacyValues}) {
+  config.value.joinSalesOrganizations = Boolean(ids.length && legacyValues.length)
+}
 function changeScope(mode) {
   const benefit = config.value
   benefit.registrationScope = mode==='registration' ? (benefit.registrationScope || {}) : undefined
@@ -99,14 +130,14 @@ const calculationMethods = computed(() => [
       </a-form-item>
     </template>
     <template #scope>
-      <RuleOrderScope :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
+      <RuleOrderScope v-if="config.method!=='rate'" :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
         :additional="registrationOption" @update:model-value="changeScope"/>
       <div v-if="scopeMode!=='all' || usesOrganizationRates" class="rule-scope-filters">
-        <RuleSalesScopeFields v-if="scopeMode==='team'" :organization-id="field('sales-units')" :category-id="field('categories')" :person-id="field('sales')"
+        <RuleSalesScopeFields v-if="scopeMode==='team' && config.method!=='rate'" :organization-id="field('sales-units')" :category-id="field('categories')" :person-id="field('sales')"
           v-model:organization-ids="config.salesUnits" v-model:source-company-ids="config.salesCompanies"
           v-model:category-ids="config.salesCategoryIds" v-model:person-ids="config.salesPeople"
           :organizations="salesUnits" :source-companies="companies" :categories="salesCategories" :people="people"
-          @organizations-change="({ids,legacyValues})=>config.joinSalesOrganizations=!!(ids.length && legacyValues.length)"/>
+          @organizations-change="setOrganizationMapping"/>
         <a-form-item v-if="config.recipient!=='order_appointment' && (usesOrganizationRates || scopeMode==='own' || scopeMode==='team' && (config.salesPeople?.length || config.salesUnits?.length))"
           label="订单上的销售角色" :html-for="field('role')" required>
           <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
@@ -133,7 +164,23 @@ const calculationMethods = computed(() => [
     <a-checkbox v-model:checked="registration.exclusive">与其他已标记互斥的报名安排不重复匹配</a-checkbox>
   </a-form-item>
   <PracticePeriodRateStandards v-if="config.method==='rate'" v-model="config.standardRates" v-model:rate="component.amount"
-    :prefix="field('standards')" :uniform-id="field('rate')" :companies="companies" :organizations="salesUnits" :categories="salesCategories"/>
+    :prefix="field('standards')" :uniform-id="field('rate')" :companies="companies" :organizations="salesUnits" :categories="salesCategories"
+    :scope-group="rateScopeGroup" @start-table="startStandardTable">
+    <template #scope>
+      <div class="period-fields">
+        <RuleOrderScope v-if="showRateScopeMode" :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
+          :additional="registrationOption" @update:model-value="changeScope"/>
+        <RuleSalesScopeFields v-if="scopeMode==='team'"
+          :organization-id="(!usesStandardRates && rateScopeGroup!=='category') || config.salesCompanies?.length || config.salesUnits?.length ? field('sales-units') : undefined"
+          :category-id="(!usesStandardRates && rateScopeGroup!=='company') || config.salesCategoryIds?.length ? field('categories') : undefined"
+          :person-id="rateScopeGroup==='general' || config.salesPeople?.length ? field('sales') : undefined"
+          v-model:organization-ids="config.salesUnits" v-model:source-company-ids="config.salesCompanies"
+          v-model:category-ids="config.salesCategoryIds" v-model:person-ids="config.salesPeople"
+          :organizations="salesUnits" :source-companies="companies" :categories="salesCategories" :people="people"
+          @organizations-change="setOrganizationMapping"/>
+      </div>
+    </template>
+  </PracticePeriodRateStandards>
   <RuleCommissionStandards v-else-if="['fixed','class_fixed','order_fixed'].includes(config.method)">
     <a-form-item class="commission-uniform-rate" :label="config.method==='order_fixed' ? '每笔符合条件的订单金额（元）'
       : config.recipient==='order_appointment' && config.method==='class_fixed' ? '每个组织整班金额（元）' : '金额（元）'"

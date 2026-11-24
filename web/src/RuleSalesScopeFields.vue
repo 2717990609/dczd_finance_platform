@@ -14,7 +14,7 @@ defineEmits(['organizations-change'])
 </script>
 
 <template>
-  <RuleScopeSelect :id="organizationId" v-model="organizationIds" v-model:legacy-values="sourceCompanyIds"
+  <RuleScopeSelect v-if="organizationId" :id="organizationId" v-model="organizationIds" v-model:legacy-values="sourceCompanyIds"
     label="适用销售组织" :options="organizations" :legacy-options="sourceCompanies" :disabled="disabled"
     :placeholder="organizationPlaceholder" @change="$emit('organizations-change',$event)"/>
   <RuleScopeSelect v-if="categoryId" :id="categoryId" v-model="categoryIds" label="适用销售类别"

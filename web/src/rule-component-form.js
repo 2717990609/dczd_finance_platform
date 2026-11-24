@@ -278,10 +278,15 @@ export function practicePeriodScopeText(benefit, names, limit = 2) {
     if (!entries.length && benefit.restrictPayments) entries.push('待选择销售范围')
   }
   const standards = benefit.method==null || benefit.method==='rate' ? benefit.standardRates : undefined
-  if (standards?.length && !standards.some(row=>practiceStandardRateScope(row)==='general')) {
-    list('比例适用公司',standards.flatMap(row=>row.salesCompanies || []),names.company)
-    list('比例适用类别',standards.flatMap(row=>row.salesCategoryIds || []),names.category)
-    if (standards.some(row=>practiceStandardRateScope(row)==='external')) entries.push('其他外部公司')
+  if (standards?.length && !standards.some(row=>practiceStandardRateScope(row)==='general' && row.value>0)) {
+    const active = standards.filter(row=>row.value>0)
+    const ids = field => [...new Set(active.flatMap(row=>row[field] || []))]
+    list('指定组织',ids('salesUnits'),names.unit)
+    list('销售公司',ids('salesCompanies'),names.company)
+    list('销售类别',ids('salesCategoryIds'),names.category)
+    if (active.some(row=>practiceStandardRateScope(row)==='external')) entries.push('其他匹配公司')
+    if (!active.length) entries.push('未设置有效比例')
+    else if (!entries.length) entries.push('待选择销售范围')
   }
   if (!entries.length) entries.push('全班')
   if (benefit.appointmentUnitId && (benefit.recipient == null || benefit.recipient==='person')) {

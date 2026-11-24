@@ -43,6 +43,7 @@ const structure = ref({items:[],rateRows:[],calculations:[]})
 const structureEditing = ref(false)
 const structureEditor = ref()
 const removedItems = ref(new Set())
+const removedServiceReplacements = ref([])
 const removedRateRows = ref(new Map())
 const copy = ref()
 const targetSkus = computed(()=>(props.skus || []).filter(sku=>sku.code!==props.rule?.scopeId)
@@ -80,7 +81,6 @@ function setSplitRate(field,value) {
 }
 const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:item.key,label:item.label})))
 const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
-const itemRemoved = computed(() => removedItems.value.has(selected.value))
 const orderTypeText = computed(() => (props.rule?.scopeLabel || sheet.value?.scopeLabel)?.replace(sheet.value?.productName+' · ','') || sheet.value?.productName)
 function originalMembership(item) {
   if (item?.membershipNewOnly!=null) return item.membershipNewOnly
@@ -117,12 +117,12 @@ function setSplitDuty(item, value) {
 }
 const leaderArrangements = computed(() => sheet.value?.leaderArrangements || [])
 const availableLeaders = computed(() => leaderArrangements.value.filter(leader=>leader.disabled && !leaderEdits.value.has(leader.itemKey)))
-const visibleLeaders = computed(() => leaderArrangements.value.filter(leader=>!leader.disabled || leaderEdits.value.has(leader.itemKey)))
+const visibleLeaders = computed(() => leaderArrangements.value.filter(leader=>!removedItems.value.has(leader.itemKey) &&
+  (!leader.disabled || leaderEdits.value.has(leader.itemKey))))
 const splitRemoved = computed(() => salesPayeeRemoved.value && serviceRemoved.value &&
-  !visibleLeaders.value.some(leader=>!removedItems.value.has(leader.itemKey) &&
-    (leaderEdits.value.has(leader.itemKey) || leader.targetKind!=='inherit' || leader.rateBps>0)))
-const visibleComponents = computed(() => sheet.value?.components.filter(item=>!item.disabled) || [])
-const editable = computed(() => sheet.value?.mayPublish && !props.applied && !saving.value && !itemRemoved.value)
+  !visibleLeaders.value.some(leader=>leaderEdits.value.has(leader.itemKey) || leader.targetKind!=='inherit' || leader.rateBps>0))
+const visibleComponents = computed(() => sheet.value?.components.filter(item=>!item.disabled && !removedItems.value.has(item.itemKey)) || [])
+const editable = computed(() => sheet.value?.mayPublish && !props.applied && !saving.value)
 const editedComponent = computed(() => component.value && {...component.value,targetKind:targetKind.value})
 const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKind==='seller' || item.teamSplit))
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
@@ -133,8 +133,7 @@ const hasEdits = computed(() => sheet.value?.independentTeamSales || copy.value 
   removedItems.value.size || removedRateRows.value.size)
 const impactPeriods = computed(() => catalogRuleImpactPeriods(props.periods,sheet.value?.productId,impactInput.value?.effectiveFrom))
 const dateInput = value => value ? new Date(Date.parse(value)+8*60*60*1000).toISOString().slice(0,16) : undefined
-const canAddRates = computed(() => sheet.value?.mayPublish && !props.applied && !!sheet.value.structureOptions &&
-  !itemRemoved.value)
+const canAddRates = computed(() => sheet.value?.mayPublish && !props.applied && !!sheet.value.structureOptions)
 const rateNames = computed(() => Object.fromEntries(['companies','categories','relationships'].map(kind=>
   [kind,new Map((sheet.value?.structureOptions?.[kind] || []).map(option=>[option.value,option.label]))])))
 function stagedRateRow(change, original) {
@@ -191,7 +190,7 @@ const standardTabs = computed(() => rateGroups.value.map(group=>({value:group.ke
 const rateTableRevision = ref(0)
 const rateRowKey = row => row.draftKey || row.row
 const rateEditorTarget = computed(() => '#'+CSS.escape('catalog-rates-edit-'+selected.value))
-const editorInCard = computed(() => component.value && !itemRemoved.value || selected.value===serviceItemKey && serviceReplacement.value)
+const editorInCard = computed(() => component.value || selected.value===serviceItemKey && serviceReplacement.value)
 watch([selected,rateGroups], ([item,groups],[previousItem]) => {
   const changedItem = item!==previousItem
   if (changedItem || !groups.some(group=>group.key===rateGroup.value)) {
@@ -276,10 +275,22 @@ const pendingScope = (itemKey, row) => row && structure.value.rateRows.find(edit
 const salesPayeeLabel = row => row.teamRate ? '团队岗位拆分'
   : catalogSalesPayees.find(choice=>choice.value===(row.payee || 'seller'))?.label
 const cellKey = (item, row) => JSON.stringify([item,row || 0])
-function toggleItemRemoval() {
-  const key = selected.value
-  if (removedItems.value.delete(key)) return
+function removeArrangement(key) {
+  if (key===serviceItemKey && serviceReplacement.value) {
+    removedServiceReplacements.value = structure.value.items.filter(item=>item.replacesItemKey===key)
+    structure.value.items = structure.value.items.filter(item=>item.replacesItemKey!==key)
+  }
   removedItems.value.add(key)
+  selected.value = undefined
+  nextTick(()=>document.getElementById('catalog-undo-'+key)?.focus())
+}
+function undoArrangementRemoval(key) {
+  removedItems.value.delete(key)
+  if (key===serviceItemKey && removedServiceReplacements.value.length) {
+    structure.value.items.push(...removedServiceReplacements.value)
+    removedServiceReplacements.value = []
+  }
+  selected.value = key
 }
 function toggleRowRemoval(row) {
   const itemKey = selected.value
@@ -437,13 +448,19 @@ function originalLeader(item) {
   }
 }
 const leaderForm = item => leaderEdits.value.get(item.itemKey) || originalLeader(item)
+const pendingRemovals = computed(() => [...removedItems.value].map(key=>{
+  if (key===serviceItemKey) return {key,label:labelEdits.value.get(key)?.trim() || serviceArrangement.value.label}
+  const leader = leaderArrangements.value.find(item=>item.itemKey===key)
+  if (leader) return {key,label:leaderForm(leader).label.trim() || leader.label}
+  return {key,label:labelEdits.value.get(key)?.trim() || sheet.value.components.find(item=>item.itemKey===key)?.label}
+}))
 function addLeader(item) {
   leaderEdits.value.set(item.itemKey,{...originalLeader(item),target:'appointment',amount:undefined})
   selected.value = item.itemKey
 }
 function removeLeader(item) {
   if (!item.disabled) {
-    toggleItemRemoval()
+    removeArrangement(item.itemKey)
     return
   }
   leaderEdits.value.delete(item.itemKey)
@@ -520,6 +537,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   edits.value = {}
   labelEdits.value.clear()
   removedItems.value.clear()
+  removedServiceReplacements.value = []
   removedRateRows.value.clear()
   targetEdits.value.clear()
   teamEdits.value.clear()
@@ -724,13 +742,21 @@ async function publish() {
               <a-button v-else size="small" :disabled="saving || structureEditing" @click="addRecipient">添加收款安排</a-button>
             </a-space>
           </div>
+          <section v-if="pendingRemovals.length" aria-label="待移除的收款安排" class="catalog-pending-removals">
+            <strong>已移除，保存后生效</strong>
+            <div v-for="{key,label} in pendingRemovals" :key="key">
+              <span>{{ label }}</span>
+              <a-button :id="'catalog-undo-'+key" type="link" size="small" :disabled="saving || structureEditing"
+                :aria-label="'撤销移除 '+label" @click="undoArrangementRemoval(key)">撤销</a-button>
+            </div>
+          </section>
           <section v-for="item in visibleComponents" :key="item.itemKey" class="rule-block">
           <button type="button" class="rule-block-header" :disabled="saving || structureEditing"
             :aria-expanded="selected===item.itemKey" :aria-controls="'catalog-rate-'+item.itemKey"
             @click="selected=selected===item.itemKey ? undefined : item.itemKey">
             <DownOutlined aria-hidden="true"/>
             <strong>{{ labelEdits.get(item.itemKey)?.trim() || item.label }}</strong>
-            <span class="rule-block-badge">{{ removedItems.has(item.itemKey) ? '待删除' : targetShortLabels[targetEdits.get(item.itemKey)?.target || item.targetKind] }}</span>
+            <span class="rule-block-badge">{{ targetShortLabels[targetEdits.get(item.itemKey)?.target || item.targetKind] }}</span>
             <span class="rule-block-recipient" :title="commissionScopeNames(item).join('、')">
               提成范围 · {{ formatScope(commissionScopeNames(item)) }}
             </span>
@@ -740,9 +766,7 @@ async function publish() {
             <small>{{ [targetName(item),sheet.membershipSku && memberLabel(item),!rateIndicators[item.itemKey]?.length && componentStandard(item)].filter(Boolean).join(' · ') }}</small>
           </button>
           <div v-if="selected===item.itemKey" :id="'catalog-rate-'+item.itemKey" class="rule-block-body">
-          <a-alert v-if="itemRemoved" type="warning" :message="teamSplit && !splitRemoved
-            ? '新版将移除销售收款，保留已配置的服务和负责人安排' : '此分项将从新版移除'" show-icon class="feedback"/>
-          <template v-if="!applied && sheet.mayPublish && sheet.structureOptions && !itemRemoved">
+          <template v-if="!applied && sheet.mayPublish && sheet.structureOptions">
             <RuleArrangementFields name-id="catalog-rate-label" :name="labelEdits.get(item.itemKey) ?? item.label"
               :order-type-text="orderTypeText" :order-type-id="sheet.membershipSku ? 'catalog-member-type' : undefined"
               :order-types="catalogMembershipTypes" :order-type="memberValue(item)" @update:order-type="selectMemberType(item,$event)"
@@ -759,15 +783,9 @@ async function publish() {
                     :options="catalogFlatMethods" :disabled="!editable || structureEditing" @update:value="chooseCalculation(item,$event)"/>
                 </a-form-item>
               </template>
-              <template #scope>
-                <CatalogCommissionScopeFields prefix="catalog-edit" :model-value="commissionScope(item)"
-                  :options="sheet.structureOptions.salesUnits" :unit-names="commissionUnitNames" :categories="sheet.structureOptions.categories"
-                  :category-names="sheet.scopeCategoryNames" :disabled="!editable || structureEditing"
-                  :can-own="targetKind==='person'" @update:model-value="setCommissionScope(item,$event)"/>
-              </template>
             </RuleArrangementFields>
           </template>
-          <template v-else-if="!itemRemoved">
+          <template v-else>
             <a-descriptions size="small" :column="{xs:1,sm:2}">
               <a-descriptions-item label="收款对象">{{ targetKind==='seller' ? '按销售比例表确定收款方' : targetName(item) || targetKindLabels[targetKind] }}</a-descriptions-item>
               <a-descriptions-item label="计提方式">{{ readOnlyCalculation(item) }}</a-descriptions-item>
@@ -787,13 +805,19 @@ async function publish() {
               </a-descriptions-item>
             </a-descriptions>
           </template>
-          <RuleCommissionStandards v-if="hasRateTable || !itemRemoved && !applied && sheet.mayPublish && sheet.structureOptions"
+          <RuleCommissionStandards v-if="hasRateTable || !applied && sheet.mayPublish && sheet.structureOptions"
             v-model="rateGroup" :groups="showRateGroups ? standardTabs : undefined" :priority="hasRateTable ? ratePriority : undefined" :disabled="structureEditing">
             <template #tools>
               <a-button v-if="activeRateGroup?.add" size="small" :disabled="!editable || structureEditing"
                 @click="addStandard(item,activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
               <a-input v-if="activeRateGroup?.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
                 class="catalog-rate-filter" placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
+            </template>
+            <template v-if="!applied && sheet.mayPublish && sheet.structureOptions && (!showRateGroups || rateGroup==='general')" #scope>
+              <CatalogCommissionScopeFields prefix="catalog-edit" :model-value="commissionScope(item)"
+                :options="sheet.structureOptions.salesUnits" :unit-names="commissionUnitNames" :categories="sheet.structureOptions.categories"
+                :category-names="sheet.scopeCategoryNames" :disabled="!editable || structureEditing"
+                :can-own="targetKind==='person'" @update:model-value="setCommissionScope(item,$event)"/>
             </template>
           <a-space v-if="selectedCalculation" wrap :size="4">
             <span v-if="!hasRateTable">{{ componentStandard(item) }}</span>
@@ -807,7 +831,7 @@ async function publish() {
             <a-input-number :id="flatMethod(item)==='fixed' ? 'catalog-fixed-amount' : 'catalog-fixed-rate'" :value="flatValue(item)" :disabled="!editable"
               :min="0" :max="flatMethod(item)==='rate' ? 100 : undefined" :precision="2" string-mode @update:value="setFlat(item,flatMethod(item),$event)"/>
           </a-form-item>
-          <div v-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
+          <div v-if="sheet.mayPublish && !applied" :id="'catalog-rates-edit-'+item.itemKey"/>
           <p v-if="showRateGroups && !hasRateTable && rateGroup!=='general' && !structureEditing" class="finance-rate-empty">未配置</p>
           <template v-if="hasRateTable">
             <p v-if="!activeRateGroup?.rows.length" class="finance-rate-empty">未配置</p>
@@ -830,7 +854,7 @@ async function publish() {
                   <small v-if="record.teamRate" class="order-version">内部团队拆分</small>
                 </template>
                 <span v-else-if="column.key==='payee'">{{ salesPayeeLabel(record) }}</span>
-                <template v-if="column.key==='operation' && !itemRemoved">
+                <template v-if="column.key==='operation'">
                   <a-button v-if="removedRateRows.has(cellKey(selected,record.row))" type="link" size="small"
                     :disabled="saving || structureEditing" @click="toggleRowRemoval(record.row)">撤销删除</a-button>
                   <template v-else>
@@ -848,20 +872,19 @@ async function publish() {
             </a-table>
           </template>
           </RuleCommissionStandards>
-          <div v-else-if="sheet.mayPublish && !applied && !itemRemoved" :id="'catalog-rates-edit-'+item.itemKey"/>
+          <div v-else-if="sheet.mayPublish && !applied" :id="'catalog-rates-edit-'+item.itemKey"/>
           <div v-if="sheet.mayPublish && !applied" class="form-actions">
-            <a-button size="small" type="link" :danger="!itemRemoved" :disabled="structureEditing || saving"
-              @click="toggleItemRemoval">{{ itemRemoved ? '撤销移除' : '移除此安排' }}</a-button>
+            <a-button size="small" type="link" danger :disabled="structureEditing || saving"
+              @click="removeArrangement(item.itemKey)">移除此安排</a-button>
           </div>
           </div>
           </section>
-          <section v-if="serviceVisible" class="rule-block">
+          <section v-if="serviceVisible && !removedItems.has(serviceItemKey)" class="rule-block">
             <button type="button" class="rule-block-header" :disabled="saving || structureEditing" :aria-expanded="selected===serviceItemKey"
               aria-controls="catalog-internal-service" @click="selected=selected===serviceItemKey ? undefined : serviceItemKey">
               <DownOutlined aria-hidden="true"/>
               <strong>{{ labelEdits.get(serviceItemKey)?.trim() || serviceArrangement.label }}</strong>
               <span v-if="serviceReplacement" class="rule-block-badge">待替换</span>
-              <span v-else-if="serviceRemoved" class="rule-block-badge">待删除</span>
               <span v-if="!serviceReplacement" class="rule-block-recipient" :title="teamOptions.map(option=>option.label).join('、')">提成范围 · {{ serviceScope }}</span>
               <small v-if="!serviceReplacement" :title="serviceRecipients.join('、')">{{ [formatScope(serviceRecipients),sheet.membershipSku && memberLabel(serviceArrangement),splitDutyLabel(serviceArrangement),splitValue('service')+'%'].filter(Boolean).join(' · ') }}</small>
             </button>
@@ -899,8 +922,8 @@ async function publish() {
                 <a-button v-if="serviceReplacement" size="small" type="link" @click="restoreService">恢复原安排</a-button>
                 <a-button v-else-if="!serviceRemoved && sheet.structureOptions" size="small" :disabled="structureEditing || saving"
                   @click="makeServiceIndependent">改为独立配置</a-button>
-                <a-button size="small" type="link" :danger="!serviceRemoved" :disabled="structureEditing || saving"
-                  v-if="!serviceReplacement" @click="toggleItemRemoval">{{ serviceRemoved ? '撤销移除' : '移除此安排' }}</a-button>
+                <a-button size="small" type="link" danger :disabled="structureEditing || saving"
+                  @click="removeArrangement(serviceItemKey)">移除此安排</a-button>
               </div>
             </div>
           </section>
@@ -910,12 +933,11 @@ async function publish() {
               @click="selected=selected===leader.itemKey ? undefined : leader.itemKey">
               <DownOutlined aria-hidden="true"/>
               <strong>{{ leaderForm(leader).label.trim() || leader.label }}</strong>
-              <span v-if="removedItems.has(leader.itemKey)" class="rule-block-badge">待删除</span>
               <span class="rule-block-recipient">提成范围 · {{ leaderScopeText(leader) }}</span>
               <small>{{ [sheet.membershipSku && memberLabel(leader),leaderSummary(leader)].filter(Boolean).join(' · ') }}</small>
             </button>
             <div v-if="selected===leader.itemKey" :id="'catalog-rate-'+leader.itemKey" class="rule-block-body">
-              <CatalogLeaderArrangement v-if="!removedItems.has(leader.itemKey)" :item-key="leader.itemKey" :model-value="leaderForm(leader)" :teams="sheet.teams || []"
+              <CatalogLeaderArrangement :item-key="leader.itemKey" :model-value="leaderForm(leader)" :teams="sheet.teams || []"
                 :api="api" :people-filters="peopleFilters" :disabled="!editable || structureEditing"
                 :order-type-text="orderTypeText"
                 :membership-editable="sheet.membershipSku" :order-type="memberValue(leader)"
@@ -939,8 +961,8 @@ async function publish() {
                 </template>
               </CatalogLeaderArrangement>
               <div v-if="sheet.mayPublish && !applied" class="form-actions">
-                <a-button size="small" type="link" :danger="!removedItems.has(leader.itemKey)" :disabled="structureEditing || saving"
-                  @click="removeLeader(leader)">{{ removedItems.has(leader.itemKey) ? '撤销移除' : '移除此安排' }}</a-button>
+                <a-button size="small" type="link" danger :disabled="structureEditing || saving"
+                  @click="removeLeader(leader)">移除此安排</a-button>
               </div>
             </div>
           </section>
@@ -951,7 +973,7 @@ async function publish() {
               <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id" :product-id="sheet.productId"
                 :order-type-text="orderTypeText" :membership-sku="sheet.membershipSku" :default-membership-new-only="sheet.membershipNewOnly"
                 :replacement-item-key="selected===serviceItemKey && serviceReplacement ? serviceItemKey : undefined"
-                v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : editedComponent"
+                v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="editedComponent"
                 :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!hasSales && !structure.sales"
                 @rate-staged="showRateGroup"/>
             </Teleport>
@@ -999,6 +1021,8 @@ async function publish() {
 </template>
 
 <style scoped>
+.catalog-pending-removals { display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; padding:4px 8px; border:1px solid var(--line); border-radius:5px }
+.catalog-pending-removals > div { display:flex; align-items:center; gap:2px }
 .catalog-rate-filter {width:min(100%,190px)}
 .catalog-rate-table :deep(.ant-table.ant-table-small .ant-table-cell) {padding-block:4px}
 .catalog-rate-table :deep(.ant-table-pagination) {margin-block:6px}
