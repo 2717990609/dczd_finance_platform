@@ -1973,13 +1973,18 @@ async function save() {
                 <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
               </a-form-item>
             </template>
-            <template #scope>
+            <template v-if="!['fixed','rate'].includes(c.mode)" #scope>
               <PracticePersonalScopeFields v-if="classRule && ['sales','referral'].includes(c.type)" :row="c" :index="i"
                 :companies="options('practiceSalesCompany')" :categories="options('practiceSalesCategory')" :units="salesUnitOptions"
                 :people="classPeopleOptions"/>
             </template>
           </RuleArrangementFields>
           <RuleCommissionStandards v-if="c.mode==='fixed' || c.mode==='rate'">
+            <template v-if="classRule && ['sales','referral'].includes(c.type)" #scope>
+              <PracticePersonalScopeFields :row="c" :index="i"
+                :companies="options('practiceSalesCompany')" :categories="options('practiceSalesCategory')" :units="salesUnitOptions"
+                :people="classPeopleOptions"/>
+            </template>
             <a-form-item class="commission-uniform-rate" :html-for="'rule-amount-'+i"
               :label="c===practiceRetrainSales && c.retrainSplits?.length ?
                 (c.mode==='rate' ? '复训总提成比例（%）' : '每份复训总提成（元）') :

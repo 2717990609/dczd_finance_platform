@@ -1,5 +1,5 @@
 <script setup>
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import PracticePeriodRateStandards from './PracticePeriodRateStandards.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
@@ -8,7 +8,7 @@ import RuleOrderScope from './RuleOrderScope.vue'
 import RuleSalesScopeFields from './RuleSalesScopeFields.vue'
 import RuleTierTable from './RuleTierTable.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
-import { hasPracticePaymentScope, practiceStandardRateScope } from './rule-component-form'
+import { hasPracticePaymentScope, practiceStandardRateScope, practiceTierSelectionLabels } from './rule-component-form'
 
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array, salesCategories:Array,
@@ -26,6 +26,30 @@ const registration = computed(() => config.value.registrationScope)
 const registrationOption = [{value:'registration',label:'签到报名归属'}]
 const scopeMode = computed(() => registration.value ? 'registration' : config.value.ownSales ? 'own' :
   config.value.restrictPayments || hasPracticePaymentScope(config.value) ? 'team' : 'all')
+const fixedMethod = computed(() => ['fixed','class_fixed','order_fixed'].includes(config.value.method))
+const fixedScopeChoice = ref('organization')
+const fixedScopeDimensions = computed(() => {
+  const scope = config.value
+  return [
+    (scope.salesCompanies?.length || scope.salesUnits?.length) && 'organization',
+    scope.salesCategoryIds?.length && 'category',
+    scope.salesPeople?.length && 'people',
+  ].filter(Boolean)
+})
+const fixedScopeMode = computed(() => scopeMode.value!=='team' ? scopeMode.value :
+  fixedScopeDimensions.value.length>1 ? 'team' : fixedScopeDimensions.value[0] || fixedScopeChoice.value)
+const fixedScopeOptions = [
+  {value:'organization',label:'指定销售组织'},
+  {value:'category',label:'指定销售类别'},
+  {value:'people',label:'指定销售人员'},
+]
+const fixedTeamOptions = computed(() => fixedScopeDimensions.value.length>1
+  ? [...fixedScopeOptions,{value:'team',label:'已配置的组合范围'}] : fixedScopeOptions)
+const fixedScopeUses = dimension => fixedScopeMode.value===dimension ||
+  (fixedScopeMode.value==='team' && fixedScopeDimensions.value.includes(dimension))
+const showSalesRole = computed(() => config.value.recipient!=='order_appointment' &&
+  (usesOrganizationRates.value || scopeMode.value==='own' ||
+    scopeMode.value==='team' && (config.value.salesPeople?.length || config.value.salesUnits?.length)))
 const rateScopeGroup = computed(() => {
   const scope = config.value
   if (scopeMode.value!=='team') return 'general'
@@ -70,6 +94,22 @@ function changeScope(mode) {
     benefit.joinSalesOrganizations = false
   }
   if (mode==='own' || mode==='team') props.component.sourceRole ||= props.sourceRoles[0]?.value
+}
+function changeFixedScope(mode) {
+  if (!fixedScopeOptions.some(option=>option.value===mode)) {
+    changeScope(mode)
+    return
+  }
+  fixedScopeChoice.value = mode
+  changeScope('team')
+  const scope = config.value
+  if (mode!=='organization') {
+    scope.salesCompanies = []
+    scope.salesUnits = []
+    scope.joinSalesOrganizations = false
+  }
+  if (mode!=='category') scope.salesCategoryIds = []
+  if (mode!=='people') scope.salesPeople = []
 }
 function setRecipient(recipient) {
   config.value.recipient = recipient
@@ -137,15 +177,15 @@ const calculationMethods = computed(() => [
       </a-form-item>
     </template>
     <template #scope>
-      <RuleOrderScope v-if="config.method!=='rate'" :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
+      <RuleOrderScope v-if="config.method==='tiers'" :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
         :additional="registrationOption" @update:model-value="changeScope"/>
-      <div v-if="scopeMode!=='all' || usesOrganizationRates" class="rule-scope-filters">
-        <RuleSalesScopeFields v-if="scopeMode==='team' && config.method!=='rate'" :organization-id="field('sales-units')" :category-id="field('categories')" :person-id="field('sales')"
+      <div v-if="registration || (!fixedMethod && showSalesRole) || config.method==='tiers' && scopeMode==='team'" class="rule-scope-filters">
+        <RuleSalesScopeFields v-if="scopeMode==='team' && config.method==='tiers'" :organization-id="field('sales-units')" :category-id="field('categories')" :person-id="field('sales')"
           v-model:organization-ids="config.salesUnits" v-model:source-company-ids="config.salesCompanies"
           v-model:category-ids="config.salesCategoryIds" v-model:person-ids="config.salesPeople"
           :organizations="salesUnits" :source-companies="companies" :categories="salesCategories" :people="people"
           @organizations-change="setOrganizationMapping"/>
-        <a-form-item v-if="config.recipient!=='order_appointment' && (usesOrganizationRates || scopeMode==='own' || scopeMode==='team' && (config.salesPeople?.length || config.salesUnits?.length))"
+        <a-form-item v-if="!fixedMethod && showSalesRole"
           label="订单上的销售角色" :html-for="field('role')" required>
           <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
         </a-form-item>
@@ -188,17 +228,38 @@ const calculationMethods = computed(() => [
       </div>
     </template>
   </PracticePeriodRateStandards>
-  <RuleCommissionStandards v-else-if="['fixed','class_fixed','order_fixed'].includes(config.method)">
-    <a-form-item class="commission-uniform-rate" :label="config.method==='order_fixed' ? '每笔符合条件的订单金额（元）'
-      : config.recipient==='order_appointment' && config.method==='class_fixed' ? '每个组织整班金额（元）' : '金额（元）'"
-      :html-for="field('fixed')" required>
-      <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
-    </a-form-item>
+  <RuleCommissionStandards v-else-if="fixedMethod">
+    <div class="period-fixed-standard">
+      <RuleOrderScope :id="field('sales-source')" :model-value="fixedScopeMode" :can-own="config.recipient==='person'"
+        :additional="registrationOption" :team-options="fixedTeamOptions" @update:model-value="changeFixedScope"/>
+      <div v-if="scopeMode==='team'" class="period-fields">
+        <RuleSalesScopeFields
+          :organization-id="fixedScopeUses('organization') ? field('sales-units') : undefined"
+          :category-id="fixedScopeUses('category') ? field('categories') : undefined"
+          :person-id="fixedScopeUses('people') ? field('sales') : undefined"
+          v-model:organization-ids="config.salesUnits" v-model:source-company-ids="config.salesCompanies"
+          v-model:category-ids="config.salesCategoryIds" v-model:person-ids="config.salesPeople"
+          :organizations="salesUnits" :source-companies="companies" :categories="salesCategories" :people="people"
+          @organizations-change="setOrganizationMapping"/>
+      </div>
+      <a-form-item v-if="showSalesRole" class="period-fixed-role" label="订单上的销售角色" :html-for="field('role')" required>
+        <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
+      </a-form-item>
+      <a-form-item class="period-fixed-amount" :label="config.method==='order_fixed' ? '每笔符合条件的订单金额（元）'
+        : config.recipient==='order_appointment' && config.method==='class_fixed' ? '每个组织整班金额（元）' : '金额（元）'"
+        :html-for="field('fixed')" required>
+        <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
+      </a-form-item>
+    </div>
   </RuleCommissionStandards>
   <section v-if="config.method==='tiers'" class="period-tier-editor">
-    <div class="period-tier-option">
-      <a-checkbox v-model:checked="config.tierOnWholeClass">用全班净实收选档（含新报和复训）</a-checkbox>
-    </div>
+    <a-form-item class="period-tier-option" label="阶梯选档范围">
+      <a-radio-group :value="Boolean(config.tierOnWholeClass)" role="radiogroup" aria-label="阶梯选档范围"
+        @update:value="config.tierOnWholeClass=$event">
+        <a-radio :value="false">{{ practiceTierSelectionLabels.false }}</a-radio>
+        <a-radio :value="true">{{ practiceTierSelectionLabels.true }}</a-radio>
+      </a-radio-group>
+    </a-form-item>
     <RuleTierTable label="净实收阶梯" :columns="tierColumns" :rows="config.tiers">
       <template #cells="{row,index}">
         <td>
@@ -230,6 +291,12 @@ const calculationMethods = computed(() => [
 <style scoped>
 .period-arrangement :deep(.pool-create) {grid-column:1 / -1}
 .period-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:0 10px;align-items:start}
+.period-fixed-standard {display:flex;flex-wrap:wrap;gap:4px 8px;align-items:end}
+.period-fixed-standard > :deep(.rule-order-scope), .period-fixed-role {flex:0 1 min(100%,220px)}
+.period-fixed-standard > .period-fields {flex:1 1 min(100%,240px)}
+.period-fixed-amount {flex:0 1 auto;min-width:115px}
+.period-fixed-standard :deep(.ant-form-item) {margin:0;min-width:0}
 .period-tier-editor {margin-top:4px}
 .period-tier-option {margin-bottom:4px}
+.period-tier-option :deep(.ant-radio-group) {display:flex;flex-wrap:wrap;gap:3px}
 </style>

@@ -4,7 +4,7 @@ import { Drawer } from 'ant-design-vue'
 import { DownOutlined } from '@ant-design/icons-vue'
 import { catalogAppointmentLevels, exceptionCompanyIDs, practiceCompanyCalculationText, practiceCompanyMatchLabels, practiceCompanyRatePriority,
   practiceCompanyScopes, practiceCompanyStandardIndicators, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainPoolRemainder,
-  practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, practiceStandardRateGroups, practiceStandardRateSummary,
+  practiceRetrainServiceScopeText, practiceRetrainShareText, practiceSalesScopeText, practiceStandardRateGroups, practiceStandardRateSummary, practiceTierSelectionLabels,
   ruleComponentLabel, standardCategoryIDs } from './rule-component-form'
 
 const props = defineProps({
@@ -257,7 +257,7 @@ onMounted(async () => {
           <a-descriptions-item v-if="fullOrderScope(part)" label="计提订单范围">{{ fullOrderScope(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.salesPersonId" label="业绩归属">{{ roleName(part.sourceRole) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.periodBenefit?.tiers?.length" label="阶梯选档范围">
-            {{ part.periodBenefit.tierOnWholeClass ? '全班净实收（新报及复训）' : '适用报名净实收' }}
+            {{ practiceTierSelectionLabels[Boolean(part.periodBenefit.tierOnWholeClass)] }}
           </a-descriptions-item>
           <a-descriptions-item v-if="refundPolicyLabel(part)" label="退款处理">{{ refundPolicyLabel(part) }}</a-descriptions-item>
         </a-descriptions>

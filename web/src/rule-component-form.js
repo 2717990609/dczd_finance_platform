@@ -49,6 +49,11 @@ export const practiceCompanyMatchLabels = {
   default:'已保存的兜底比例',
 }
 
+export const practiceTierSelectionLabels = {
+  false:'本安排的净实收',
+  true:'全班净实收（新报＋复训）',
+}
+
 export function catalogRateConditionScope(row) {
   if (row.scope) return row.scope
   if (row.externalCompanyDefault) return 'external'
