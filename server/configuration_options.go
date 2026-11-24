@@ -1,7 +1,8 @@
 package main
 
 const configurationOptionsSQL = `SELECT coalesce(jsonb_object_agg(group_key,items),'{}') FROM (
- SELECT o.group_key,jsonb_agg(jsonb_build_object('value',o.option_key,'label',coalesce(company.name,o.label),'scope',o.applies_to)
+ SELECT o.group_key,jsonb_agg(jsonb_build_object('value',o.option_key,'label',coalesce(CASE WHEN o.label=o.option_key THEN company.name END,o.label),
+  'scope',o.applies_to || CASE WHEN company.id IS NULL THEN '{}'::jsonb ELSE jsonb_build_object('organizationId',company.id) END)
   ORDER BY o.display_order,o.option_key) AS items
  FROM (
   SELECT group_key,option_key,label,display_order,applies_to FROM configuration_options WHERE enabled
@@ -14,8 +15,8 @@ const configurationOptionsSQL = `SELECT coalesce(jsonb_object_agg(group_key,item
     AND NOT EXISTS(SELECT 1 FROM configuration_options o WHERE o.group_key='practiceSalesCompany' AND o.option_key=s.source_company_id)
    GROUP BY s.source_company_id HAVING count(DISTINCT s.company_id)=1
  ) o LEFT JOIN LATERAL (
-  SELECT min(u.name) AS name FROM organization_company_sources c JOIN organization_units u ON u.id=c.company_id
-  WHERE o.group_key='practiceSalesCompany' AND o.label=o.option_key AND c.source='DCZD'
+  SELECT min(u.name) AS name,min(u.id::text) AS id FROM organization_company_sources c JOIN organization_units u ON u.id=c.company_id
+  WHERE o.group_key='practiceSalesCompany' AND c.source='DCZD' AND u.status='ACTIVE'
    AND c.source_company_id=o.option_key AND c.valid_from<=CURRENT_TIMESTAMP
    AND (c.valid_to IS NULL OR CURRENT_TIMESTAMP<c.valid_to)
   HAVING count(DISTINCT c.company_id)=1

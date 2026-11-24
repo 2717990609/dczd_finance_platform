@@ -10,7 +10,7 @@ const scopes = computed(() => [
   ...(props.options.categories.length || value.value.categoryIds?.length ? [{value:'category',label:'销售类别默认'}] : []),
   {value:'company',label:'指定公司'},
   ...(value.value.scope==='inherited' ? [{value:'inherited',label:'公司补充比例'}] : []),
-  {value:'external',label:'外部公司默认比例'},
+  ...(value.value.scope==='external' ? [{value:'external',label:'已保存的兜底比例'}] : []),
   {value:'general',label:'不限公司和类别'},
 ])
 

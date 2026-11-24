@@ -126,7 +126,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 	}
 	for i := range purchases {
 		if !purchases[i].noReferrer {
-			purchases[i].classifyCompany(runtime.companyOffers, runtime.companyClassifications)
+			purchases[i].classifyCompanyWithOrganizations(runtime.companyOffers, runtime.companyClassifications, identities, runtime)
 		}
 	}
 	performancePayments := make(map[paymentKey]int)
@@ -260,7 +260,7 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		if part.Type == "sales" && (purchase.companyAward != nil || purchase.companyRoutingIssue != "") {
 			continue
 		}
-		inScope, issue := purchase.matchesSalesCompanies(part.salesCompanies())
+		inScope, issue := purchase.matchesSalesCompanies(part.legacySalesCompanyFilter())
 		if issue != "" {
 			draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
 		}
@@ -491,7 +491,7 @@ func practiceTierAwards(part component, current []practicePurchase, orders map[s
 			issues.people[practicePurchaseOwner(purchase, part.SourceRole, identities)] = "PRACTICE_TIER_GROUP_INCOMPLETE"
 			continue
 		}
-		if inScope, scopeIssue := purchase.matchesSalesCompanies(part.salesCompanies()); !inScope {
+		if inScope, scopeIssue := purchase.matchesSalesCompanies(part.legacySalesCompanyFilter()); !inScope {
 			if scopeIssue != "" && (!retrain || measures) {
 				issues.people[practicePurchaseOwner(purchase, part.SourceRole, identities)] = "PRACTICE_TIER_GROUP_INCOMPLETE"
 			}

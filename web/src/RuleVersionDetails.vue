@@ -83,18 +83,21 @@ const companyStandards = computed(() => {
       defaults.push({row:group, names:categories.map(categoryName)})
     } else {
       const overridden = new Set(overrides.flatMap(exceptionCompanyIDs))
+      const overriddenUnits = new Set(overrides.flatMap(row=>row.salesUnits || []))
       const names = group.companies.filter(id=>!overridden.has(id)).map(companyName)
+        .concat((group.salesUnits || []).filter(id=>!overriddenUnits.has(id)).map(unitName))
       if (names.length) companies.push({row:group,names})
     }
     for (const row of overrides) {
-      companies.push({row, names:exceptionCompanyIDs(row).map(companyName), inheritedRate:group.recommendationRate})
+      companies.push({row, names:exceptionCompanyIDs(row).map(companyName).concat((row.salesUnits || []).map(unitName)), inheritedRate:group.recommendationRate})
     }
   }
   return [
     {scope:'category',column:'适用销售类别',rows:defaults},
-    {scope:'companies',column:'适用销售公司',rows:companies},
-    {scope:'default',rate:arrangement?.defaultRate},
-  ].map(group=>({...group,label:practiceCompanyMatchLabels[group.scope],
+    {scope:'companies',column:'适用销售组织',rows:companies},
+    ...(arrangement?.defaultRate==null ? [] : [{scope:'default',rate:arrangement.defaultRate}]),
+    ...(arrangement?.general ? [{scope:'general',standard:arrangement.general,caption:'通用标准'}] : []),
+  ].map(group=>({...group,label:group.caption || practiceCompanyMatchLabels[group.scope],
     hasFixed:group.rows?.some(({row})=>row.mode==='fixed'),
     hasRecommendation:group.rows?.some(({row,inheritedRate})=>row.recommendationRate!=null || inheritedRate!=null)}))
 })
@@ -278,7 +281,7 @@ onMounted(async () => {
               <tr v-for="({row:standard,index}) in items" :key="index">
                 <th scope="row">
                   {{ label }}
-                  <template v-if="scope==='company'"> · {{ standard.salesCompanies.map(companyName).join('、') }}</template>
+                  <template v-if="scope==='company'"> · {{ (standard.salesCompanies || []).map(companyName).concat((standard.salesUnits || []).map(unitName)).join('、') }}</template>
                   <template v-else-if="scope==='category'"> · {{ standard.salesCategoryIds.map(practiceScopeNames.category).join('、') }}</template>
                 </th>
                 <td>{{ rate(standard.value,10000) }}</td>
@@ -295,6 +298,7 @@ onMounted(async () => {
             <header>
               <strong>{{ group.label }}</strong>
               <span v-if="group.rate!=null">{{ rate(group.rate,10000) }}</span>
+              <span v-else-if="group.standard">{{ standard(group.standard,10000) }}</span>
               <small v-else-if="!group.rows?.length">未配置</small>
             </header>
             <table v-if="group.rows?.length" class="rule-company-standards" :aria-label="group.column+'计提标准'">

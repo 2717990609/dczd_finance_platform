@@ -58,7 +58,7 @@ func (s practiceSaleScope) validFor(part component) bool {
 			return false
 		}
 	case "organization":
-		if units == 0 || companies+categories != 0 {
+		if units == 0 || categories != 0 {
 			return false
 		}
 	case "":
@@ -146,6 +146,9 @@ func (p practicePurchase) scopedSale(part component, identities map[identityKey]
 	}
 	filter := practicePeriodBenefit{PersonID: part.SalesPersonID, OwnSales: scope.OwnSales,
 		SalesCategoryIDs: scope.SalesCategoryIDs, SalesUnits: scope.SalesUnits}
+	if scope.Kind == "organization" && len(part.salesCompanies()) != 0 {
+		filter.SalesCompanies, filter.JoinSalesOrganizations = part.salesCompanies(), true
+	}
 	selected := p
 	selected.payments, selected.base, selected.gross = nil, 0, 0
 	for _, payment := range p.payments {
@@ -181,16 +184,29 @@ func loadPracticeSalesOrganizations(ctx context.Context, tx pgx.Tx, rule payment
 	roles := make(map[string]bool)
 	loadPrior := false
 	for _, part := range rule.Components {
+		if part.CompanySales.usesOrganizationStandards() {
+			roles[part.SourceRole] = true
+		}
 		if scope := part.SaleScope; scope != nil && len(scope.SalesUnits) != 0 {
 			roles[part.SourceRole] = true
 			loadPrior = loadPrior || part.Tiers != nil && part.Tiers.usesPriorTiers()
 		}
-		if benefit := part.PeriodBenefit; benefit != nil && (len(benefit.SalesUnits) != 0 || benefit.OrderAppointmentLevel != "") {
+		if benefit := part.PeriodBenefit; benefit != nil && (len(benefit.SalesUnits) != 0 || benefit.hasOrganizationRates() || benefit.OrderAppointmentLevel != "") {
 			roles[part.SourceRole] = true
 		}
 		for _, split := range part.retrainSplits() {
 			if len(split.ServiceSalesUnits) != 0 {
 				roles[part.SourceRole] = true
+			}
+		}
+	}
+	for _, period := range history.periods {
+		if period.companyOffers != nil {
+			for _, byRole := range period.companyOffers.organizationStandards {
+				for role := range byRole {
+					roles[role] = true
+					loadPrior = true
+				}
 			}
 		}
 	}
@@ -266,4 +282,36 @@ func loadPracticeSalesOrganizations(ctx context.Context, tx pgx.Tx, rule payment
 		}
 	}
 	return candidates, nil
+}
+
+func validPracticeOrganizationAt(organization practiceSalesOrganization, payment paymentInput, seller int64) bool {
+	return organization.PersonID == seller && organization.SourceCompany == payment.Fact.SalesCompanyID
+}
+
+// Prefer the closest configured organization. Ambiguous affiliations are
+// usable only when every candidate would select the same standard.
+func matchPracticeOrganizationStandard[T comparable](standards map[string]T, org practiceSalesOrganization) (T, int, bool) {
+	match := func(department, group string) (T, int) {
+		for i, id := range [...]string{group, department, org.Company} {
+			if value, found := standards[id]; found {
+				return value, 3 - i
+			}
+		}
+		var unmatched T
+		return unmatched, 0
+	}
+	if len(org.ScopeAlternatives) == 0 {
+		value, rank := match(org.Department, org.Group)
+		return value, rank, false
+	}
+	first := org.ScopeAlternatives[0]
+	value, rank := match(first.Department, first.Group)
+	for _, alternative := range org.ScopeAlternatives[1:] {
+		next, otherRank := match(alternative.Department, alternative.Group)
+		if (rank == 0) != (otherRank == 0) || next != value {
+			return value, 0, true
+		}
+		rank = min(rank, otherRank)
+	}
+	return value, rank, false
 }

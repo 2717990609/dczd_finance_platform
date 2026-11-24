@@ -9,11 +9,13 @@ import (
 type practicePeriodStandardRate struct {
 	SalesCategoryIDs       []string `json:"salesCategoryIds,omitempty"`
 	SalesCompanies         []string `json:"salesCompanies,omitempty"`
+	SalesUnits             []string `json:"salesUnits,omitempty"`
 	ExternalCompanyDefault bool     `json:"externalCompanyDefault,omitempty"`
 	Value                  int64    `json:"value"`
 }
 
 type practicePeriodStandardRates struct {
+	organizations   map[string]int64
 	companies       map[string]int64
 	categories      map[string]int64
 	externalDefault *int64
@@ -28,15 +30,21 @@ func practiceStandardRatesUseExternalDefault(rule paymentRule) bool {
 	})
 }
 
+func (b practicePeriodBenefit) hasOrganizationRates() bool {
+	return slices.ContainsFunc(b.StandardRates, func(rate practicePeriodStandardRate) bool { return len(rate.SalesUnits) != 0 })
+}
+
 func indexPracticeStandardRates(rows []practicePeriodStandardRate) (practicePeriodStandardRates, bool) {
-	index := practicePeriodStandardRates{companies: make(map[string]int64), categories: make(map[string]int64)}
+	index := practicePeriodStandardRates{
+		organizations: make(map[string]int64), companies: make(map[string]int64), categories: make(map[string]int64),
+	}
 	for _, row := range rows {
-		if row.Value < 0 || row.Value > periodRateScale || len(row.SalesCategoryIDs) != 0 && len(row.SalesCompanies) != 0 {
+		if row.Value < 0 || row.Value > periodRateScale || len(row.SalesCategoryIDs) != 0 && len(row.SalesCompanies)+len(row.SalesUnits) != 0 {
 			return index, false
 		}
 		switch {
 		case row.ExternalCompanyDefault:
-			if index.externalDefault != nil || len(row.SalesCompanies)+len(row.SalesCategoryIDs) != 0 {
+			if index.externalDefault != nil || len(row.SalesCompanies)+len(row.SalesCategoryIDs)+len(row.SalesUnits) != 0 {
 				return index, false
 			}
 			index.externalDefault = &row.Value
@@ -50,7 +58,16 @@ func indexPracticeStandardRates(rows []practicePeriodStandardRate) (practicePeri
 				}
 				index.categories[category] = row.Value
 			}
-		case len(row.SalesCompanies) != 0:
+		case len(row.SalesCompanies)+len(row.SalesUnits) != 0:
+			if !validUniqueScopeIDs(row.SalesUnits) {
+				return index, false
+			}
+			for _, unit := range row.SalesUnits {
+				if _, exists := index.organizations[unit]; exists {
+					return index, false
+				}
+				index.organizations[unit] = row.Value
+			}
 			for _, company := range row.SalesCompanies {
 				if _, exists := index.companies[company]; exists || !textOK(company, 128) {
 					return index, false
@@ -67,8 +84,26 @@ func indexPracticeStandardRates(rows []practicePeriodStandardRate) (practicePeri
 	return index, true
 }
 
-func (s practicePeriodStandardRates) match(payment paymentInput, noSales bool, runtime practiceDraftRuntime) (int64, string) {
+func (s practicePeriodStandardRates) match(payment paymentInput, noSales bool, runtime practiceDraftRuntime, role string,
+	identities map[identityKey][]identityAssignment) (int64, string) {
 	if !noSales {
+		if len(s.organizations) != 0 {
+			seller, issue := paymentBeneficiary(payment.Fact, role, identities)
+			if issue != "" {
+				return 0, issue
+			}
+			org := runtime.salesOrganizations[payment.ID][role]
+			if !validPracticeOrganizationAt(org, payment, seller.PersonID) {
+				return 0, "PRACTICE_SALES_ORGANIZATION_MISSING"
+			}
+			rate, rank, conflict := matchPracticeOrganizationStandard(s.organizations, org)
+			if conflict {
+				return 0, "SALES_ORGANIZATION_SCOPE_CONFLICT"
+			}
+			if rank != 0 {
+				return rate, ""
+			}
+		}
 		company := payment.Fact.SalesCompanyID
 		if company == "" && (len(s.companies) != 0 || s.externalDefault != nil) {
 			return 0, "PRACTICE_TIER_COMPANY_MISSING"

@@ -1,10 +1,10 @@
 <script setup>
 import { computed } from 'vue'
 import RuleOrderScope from './RuleOrderScope.vue'
+import RuleScopeSelect from './RuleScopeSelect.vue'
 
 const props = defineProps({row:Object,index:Number,companies:Array,categories:Array,units:Array,people:Array})
 const flexibleScope = computed(() => !props.row.retrainSplits?.length)
-const organizationOptions = computed(() => props.units.filter(unit=>unit.kind!=='COMPANY' || props.row.saleScope?.salesUnits?.includes(unit.value)))
 const field = name => 'practice-personal-'+props.index+'-'+name
 const mode = computed(() => {
   const row = props.row
@@ -13,13 +13,11 @@ const mode = computed(() => {
 })
 const matchKind = computed(() => {
   const {row} = props
-  if (row.saleScope?.kind) return row.saleScope.kind
-  const configured = [
-    row.salesCompanies?.length && 'company',
-    row.saleScope?.salesCategoryIds?.length && 'category',
-    row.saleScope?.salesUnits?.length && 'organization',
-  ].filter(Boolean)
-  return configured.length>1 ? 'legacy' : configured[0] || 'company'
+  const hasOrganization = row.salesCompanies?.length || row.saleScope?.salesUnits?.length
+  const hasCategory = row.saleScope?.salesCategoryIds?.length
+  if (row.saleScope?.kind) return row.saleScope.kind==='company' ? 'organization' : row.saleScope.kind
+  if (hasOrganization && hasCategory) return 'legacy'
+  return hasCategory ? 'category' : 'organization'
 })
 const exceptionGroups = [
   {key:'personExceptions',id:'personId',label:'个人特例',optionLabel:'销售人员',options:'people'},
@@ -30,7 +28,7 @@ const exceptionMethods = [{value:'rate',label:'比例'},{value:'fixed',label:'�
 function changeScope(next) {
   const row = props.row
   row.restrictSaleScope = next==='team'
-  row.saleScope = next==='own' ? {ownSales:true} : next==='team' && flexibleScope.value ? {kind:'company'} : undefined
+  row.saleScope = next==='own' ? {ownSales:true} : next==='team' && flexibleScope.value ? {kind:'organization'} : undefined
   if (next!=='team') row.salesCompanies = []
 }
 
@@ -39,13 +37,15 @@ function changeMatchKind(kind) {
   props.row.saleScope = {kind}
 }
 
-function selectCompanies(companies) {
-  props.row.salesCompanies = companies
-  if (mode.value==='team' && flexibleScope.value) props.row.saleScope = {kind:'company'}
+function selectOrganizations({ids,legacyValues}) {
+  const row = props.row
+  row.salesCompanies = legacyValues
+  if (mode.value==='own' || !flexibleScope.value) return
+  row.saleScope = {kind:ids.length || !legacyValues.length ? 'organization' : 'company',salesUnits:ids}
 }
 
-function updateFilter(key, value) {
-  props.row.saleScope = {...props.row.saleScope,kind:matchKind.value,[key]:value}
+function selectCategories(ids) {
+  props.row.saleScope = {...props.row.saleScope,kind:'category',salesCategoryIds:ids}
 }
 
 function addException(key) {
@@ -70,26 +70,20 @@ function exceptionOptions(group, current) {
   <div v-if="mode==='team' || mode==='own' && row.salesCompanies?.length" class="rule-scope-filters">
     <a-form-item v-if="mode==='team' && flexibleScope" class="practice-match-kind" label="按什么筛选订单">
       <a-radio-group :value="matchKind" role="radiogroup" aria-label="按什么筛选订单" @update:value="changeMatchKind">
-        <a-radio value="company">销售公司</a-radio>
-        <a-radio value="category">销售类别</a-radio>
         <a-radio value="organization">销售组织</a-radio>
+        <a-radio value="category">销售类别</a-radio>
       </a-radio-group>
     </a-form-item>
     <a-form-item v-if="matchKind==='legacy'" class="practice-match-kind" label="已保存的组合范围">
       <span>保留当前配置。重新选择后，按一种范围筛选订单。</span>
     </a-form-item>
-    <a-form-item v-if="mode==='own' || matchKind==='company' || !flexibleScope" label="适用销售公司" :html-for="field('companies')">
-      <a-select :id="field('companies')" :value="row.salesCompanies" :options="companies" mode="multiple"
-        :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="选择公司" @change="selectCompanies"/>
-    </a-form-item>
-    <a-form-item v-if="matchKind==='category'" label="适用销售类别" :html-for="field('categories')">
-      <a-select :id="field('categories')" :value="row.saleScope?.salesCategoryIds" :options="categories" mode="multiple"
-        :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="选择类别" @change="updateFilter('salesCategoryIds',$event)"/>
-    </a-form-item>
-    <a-form-item v-if="matchKind==='organization'" label="适用销售组织" :html-for="field('units')">
-      <a-select :id="field('units')" :value="row.saleScope?.salesUnits" :options="organizationOptions" mode="multiple"
-        :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="选择部门或小组" @change="updateFilter('salesUnits',$event)"/>
-    </a-form-item>
+    <RuleScopeSelect v-if="mode==='team' && matchKind==='organization' || mode==='own' || !flexibleScope"
+      :id="field('units')" label="适用销售组织" :model-value="row.saleScope?.salesUnits || []" :legacy-values="row.salesCompanies"
+      :options="flexibleScope && mode!=='own' ? units : []" :legacy-options="companies"
+      placeholder="选择公司、部门或小组" @change="selectOrganizations"/>
+    <RuleScopeSelect v-if="matchKind==='category'" :id="field('categories')" label="适用销售类别"
+      :model-value="row.saleScope?.salesCategoryIds" :options="categories" placeholder="选择类别"
+      @update:model-value="selectCategories"/>
     <section v-if="matchKind==='category' && row.saleScope?.salesCategoryIds?.length && ['rate','fixed'].includes(row.mode)"
       class="practice-scope-exceptions" :aria-labelledby="field('exceptions-title')">
       <div class="practice-exception-heading">

@@ -104,7 +104,7 @@ func indexPracticePrior(history practiceTierHistory, part component, orders map[
 	for _, period := range history.periods {
 		historical[period.rosterID] = period
 	}
-	arrangementCompanies := part.salesCompanies()
+	arrangementCompanies := part.legacySalesCompanyFilter()
 	for _, purchase := range past {
 		member := purchase.member
 		kind := classMember(member.MembershipType)
@@ -119,7 +119,7 @@ func indexPracticePrior(history practiceTierHistory, part component, orders map[
 		if !period.settled {
 			categories = history.liveCategories
 		}
-		purchase.classifyCompany(period.companyOffers, categories)
+		purchase.classifyCompanyWithOrganizations(period.companyOffers, categories, identities, runtime)
 		if purchase.companyAward != nil {
 			continue
 		}

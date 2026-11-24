@@ -34,7 +34,7 @@ export const catalogRateScopeTitles = {
   company:'公司特例',
   category:'销售类别默认',
   inherited:'公司补充比例',
-  external:'外部公司默认比例',
+  external:'已保存的兜底比例',
   general:'通用比例',
 }
 export function catalogRatePriority(scopes) {
@@ -45,8 +45,8 @@ export const catalogPercent = rateBps => (rateBps/100).toLocaleString('zh-CN',{m
 
 export const practiceCompanyMatchLabels = {
   category:'按销售类别计提',
-  companies:'按指定公司计提',
-  default:'其他外部公司默认比例',
+  companies:'按组织计提',
+  default:'已保存的兜底比例',
 }
 
 export function catalogRateConditionScope(row) {
@@ -97,11 +97,12 @@ export function catalogRateIndicators(rows, getRate = row => row.rateBps) {
   })
 }
 
-export function practiceCompanyRatePriority({companies,categories,hasDefault}) {
+export function practiceCompanyRatePriority({companies,units,categories,hasDefault,hasGeneral}) {
   const configured = [
-    companies.length && '指定公司',
+    (companies.length || units.length) && '指定组织',
     categories.length && '销售类别默认',
-    hasDefault && '外部公司默认',
+    hasDefault && '既有兜底比例',
+    hasGeneral && '通用标准',
   ].filter(Boolean)
   return configured.length>1 ? configured.join(' → ') : ''
 }
@@ -139,13 +140,16 @@ export function checkPracticeCompanyArrangementScopes(components) {
     if (!arrangement) continue
     for (const member of classMember ? [classMember] : ['new','retrain']) {
       if (arrangement.defaultRate != null) {
-        register(member,'外部公司默认比例',['default'],arrangement)
+        register(member,'既有兜底比例',['default'],arrangement)
       }
+      if (arrangement.general) register(member,'通用标准',['general'],arrangement)
       for (const standard of arrangement.categories) {
         register(member,'销售类别',standard.salesCategoryIds || [],arrangement)
+        register(member,'指定组织',standard.salesUnits || [],arrangement)
         register(member,'指定公司',standard.companies,arrangement)
         for (const override of standard.overrides || []) {
-          register(member,'指定公司',override.companyIds,arrangement)
+          register(member,'指定组织',override.salesUnits || [],arrangement)
+          register(member,'指定公司',override.companyIds || [],arrangement)
         }
       }
     }
@@ -229,12 +233,12 @@ export const hasPracticePaymentScope = benefit =>
 
 export function practiceStandardRateScope(row) {
   return row.scope || (row.externalCompanyDefault ? 'external' :
-    row.salesCompanies?.length ? 'company' : row.salesCategoryIds?.length ? 'category' : 'general')
+    row.salesCompanies?.length || row.salesUnits?.length ? 'company' : row.salesCategoryIds?.length ? 'category' : 'general')
 }
 
 export function practiceStandardRateGroups(rows = []) {
   const indexed = rows.map((row,index)=>({row,index}))
-  return Object.entries({company:'指定公司',category:'销售类别默认',external:'其他外部公司默认比例',general:'通用比例'}).map(([scope,label])=>({
+  return Object.entries({company:'指定组织',category:'销售类别默认',external:'已保存的兜底比例',general:'通用比例'}).map(([scope,label])=>({
     scope,label,items:indexed.filter(({row})=>practiceStandardRateScope(row)===scope),
   }))
 }
@@ -363,9 +367,10 @@ export function practiceCompanyStandardIndicators(sales, formatRate, formatAmoun
       categories.push(row)
     } else {
       const overridden = new Set(overrides.flatMap(exceptionCompanyIDs))
-      if (row.companies?.some(id=>!overridden.has(id))) companies.push(row)
+      const overriddenUnits = new Set(overrides.flatMap(row=>row.salesUnits || []))
+      if (row.companies?.some(id=>!overridden.has(id)) || row.salesUnits?.some(id=>!overriddenUnits.has(id))) companies.push(row)
     }
-    companies.push(...overrides.filter(row=>exceptionCompanyIDs(row).length))
+    companies.push(...overrides.filter(row=>exceptionCompanyIDs(row).length || row.salesUnits?.length))
   }
   const summary = rows => ['rate','fixed'].map(mode => {
     const values = rows.filter(row=>row.mode===mode && Number.isFinite(row.value)).map(row=>row.value)
@@ -375,12 +380,14 @@ export function practiceCompanyStandardIndicators(sales, formatRate, formatAmoun
     return minimum===maximum ? format(minimum) : format(minimum)+'–'+format(maximum)
   }).filter(Boolean).join(' / ')
   const scopes = practiceCompanyScopes(sales)
-  const only = [scopes.companies.length>0,scopes.categories.length>0,scopes.hasDefault].filter(Boolean).length===1 ? '仅' : ''
+  const orgCount = scopes.companies.length + scopes.units.length
+  const only = [orgCount>0,scopes.categories.length>0,scopes.hasDefault,scopes.hasGeneral].filter(Boolean).length===1 ? '仅' : ''
   const withStandard = (scope, rows) => [scope,summary(rows)].filter(Boolean).join(' · ')
   return [
-    scopes.companies.length && withStandard(only+'按指定公司 · '+scopes.companies.length+' 家',companies),
+    orgCount && withStandard(only+'按组织 · '+orgCount+' 个',companies),
     scopes.categories.length && withStandard(only+'按销售类别 · '+scopes.categories.length+' 类',categories),
-    scopes.hasDefault && '外部公司默认 · '+formatRate(sales.defaultRate),
+    scopes.hasDefault && '既有兜底比例 · '+formatRate(sales.defaultRate),
+    scopes.hasGeneral && withStandard('通用标准',[sales.general]),
   ].filter(Boolean)
 }
 
@@ -388,27 +395,31 @@ export function practiceCompanyScopes(sales = {}) {
   const rows = sales.categories || []
   return {
     companies:[...new Set(rows.flatMap(row=>[...(row.companies || []),...(row.overrides || []).flatMap(exceptionCompanyIDs)]))],
+    units:[...new Set(rows.flatMap(row=>[...(row.salesUnits || []),...(row.overrides || []).flatMap(x=>x.salesUnits || [])]))],
     categories:[...new Set(rows.flatMap(standardCategoryIDs))],
     hasDefault:Number.isFinite(sales.defaultRate),
+    hasGeneral:sales.scopeMode!=='team' && sales.general?.value!=null,
   }
 }
 
 export function practiceCompanyCalculationText(sales) {
   const modes = new Set((sales.categories || []).flatMap(row=>[row,...(row.overrides || [])]).map(row=>row.mode))
   if (Number.isFinite(sales.defaultRate)) modes.add('rate')
+  if (sales.scopeMode!=='team' && sales.general?.mode) modes.add(sales.general.mode)
   return [modes.has('rate') && '比例',modes.has('fixed') && '固定金额'].filter(Boolean).join(' / ') || '在计提标准中设置'
 }
 
-export function practiceCompanyMatchText({companies,categories,hasDefault}) {
+export function practiceCompanyMatchText({companies,units,categories,hasDefault}) {
+  const orgCount = companies.length + units.length
   const scopes = [
-    companies.length && `按指定公司（${companies.length} 家）`,
+    orgCount && `按组织（${orgCount} 个）`,
     categories.length && `按销售类别（${categories.length} 类）`,
-    hasDefault && '其他外部公司用默认比例',
+    hasDefault && '既有兜底比例',
   ].filter(Boolean)
   if (scopes.length>1) return scopes.join('、')
-  if (companies.length) return `仅按指定公司计提（${companies.length} 家）`
+  if (orgCount) return `仅按组织计提（${orgCount} 个）`
   if (categories.length) return `仅按销售类别计提（${categories.length} 类）`
-  return hasDefault ? '仅按外部公司默认比例计提' : '待配置计提标准'
+  return hasDefault ? '按已保存的兜底比例计提' : '待配置计提标准'
 }
 
 export function practiceSalesScopeText(part, names, limit = 2) {
@@ -420,11 +431,13 @@ export function practiceSalesScopeText(part, names, limit = 2) {
   }
   if (part.companySales) {
     const scopes = practiceCompanyScopes(part.companySales)
+    if (part.companySales.ownSales || part.companySales.scopeMode==='own') return '本人销售'
+    if (scopes.hasGeneral || part.companySales.scopeMode==='all') return '全班'
     if (!limit) return practiceCompanyMatchText(scopes)
-    const {companies,categories,hasDefault} = scopes
-    list('按指定公司',companies,names.company)
+    const {companies,units,categories,hasDefault} = scopes
+    list('按组织',companies.map(names.company).concat(units.map(names.unit)),name=>name)
     list('按销售类别',categories,names.category)
-    if (hasDefault) entries.push('外部公司默认')
+    if (hasDefault) entries.push('既有兜底比例')
     return entries.join(' · ') || '待配置计提标准'
   }
   if (part.saleScope?.ownSales) {
@@ -576,6 +589,7 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
     if (companySales) {
       form.companySales = {...companySales, label:ruleComponentLabel(component,optionLabel),
         defaultRate:companySales.defaultRate == null ? undefined : companySales.defaultRate / 10000,
+        general:companySales.general ? companyValue(companySales.general) : undefined,
         payee:{kind:'sales_company',...companySales.payee,pool:companySales.payee?.pool || {}},
         categories:(companySales.categories || []).map(category => ({...companyValue(category),
           salesCategoryIds:standardCategoryIDs(category),

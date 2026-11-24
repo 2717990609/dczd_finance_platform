@@ -1,14 +1,15 @@
 <script setup>
 import { computed } from 'vue'
+import RuleScopeSelect from './RuleScopeSelect.vue'
 import { practiceStandardRateGroups } from './rule-component-form'
 
-defineProps({prefix:String,companies:Array,categories:Array})
+defineProps({prefix:String,companies:Array,organizations:Array,categories:Array})
 const rows = defineModel({type:Array,required:true})
-const groups = computed(() => practiceStandardRateGroups(rows.value))
+const groups = computed(() => practiceStandardRateGroups(rows.value).filter(group=>group.scope!=='external' || group.items.length))
 const newStandard = {
-  company:{label:'添加公司特例',field:'salesCompanies'},
+  company:{label:'添加组织特例',field:'salesUnits'},
   category:{label:'添加类别默认比例',field:'salesCategoryIds'},
-  external:{label:'设置外部公司默认比例'},
+  external:{},
   general:{label:'添加通用比例'},
 }
 function add(scope) {
@@ -28,17 +29,14 @@ function add(scope) {
       <header>
         <strong>{{ label }}</strong>
         <small v-if="!items.length">未配置</small>
-        <a-button v-if="newStandard[scope].field || !items.length" size="small" @click="add(scope)">{{ newStandard[scope].label }}</a-button>
+        <a-button v-if="newStandard[scope].label && (newStandard[scope].field || !items.length)" size="small" @click="add(scope)">{{ newStandard[scope].label }}</a-button>
       </header>
       <div v-for="({row,index:i}) in items" :key="i" class="practice-standard-row" :class="{'fallback-rate':!newStandard[scope].field}">
-        <a-form-item v-if="scope==='category'" label="销售类别" :html-for="prefix+'-category-'+i" required>
-          <a-select :id="prefix+'-category-'+i" v-model:value="row.salesCategoryIds" :options="categories" mode="multiple"
-            :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="选择适用类别"/>
-        </a-form-item>
-        <a-form-item v-else-if="scope==='company'" label="适用公司" :html-for="prefix+'-company-'+i" required>
-          <a-select :id="prefix+'-company-'+i" v-model:value="row.salesCompanies" :options="companies" mode="multiple"
-            :max-tag-count="2" allow-clear option-filter-prop="label" placeholder="选择有例外的公司"/>
-        </a-form-item>
+        <RuleScopeSelect v-if="scope==='category'" :id="prefix+'-category-'+i" label="销售类别"
+          v-model="row.salesCategoryIds" :options="categories" placeholder="选择适用类别" required/>
+        <RuleScopeSelect v-else-if="scope==='company'" :id="prefix+'-company-'+i" label="适用销售组织"
+          v-model="row.salesUnits" v-model:legacy-values="row.salesCompanies" :options="organizations"
+          :legacy-options="companies" placeholder="选择公司、部门或小组" required/>
         <a-form-item :label="newStandard[scope].field ? '比例（%）' : undefined" :html-for="prefix+'-rate-'+i" required>
           <a-input-number :id="prefix+'-rate-'+i" v-model:value="row.value" :min="0" :max="100" :precision="4"
             :aria-label="newStandard[scope].field ? undefined : '比例（%）'" :addon-after="newStandard[scope].field ? undefined : '%'"/>

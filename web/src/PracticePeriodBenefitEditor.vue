@@ -1,10 +1,11 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, watch } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import PracticePeriodRateStandards from './PracticePeriodRateStandards.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
 import RuleOrderScope from './RuleOrderScope.vue'
+import RuleScopeSelect from './RuleScopeSelect.vue'
 import { hasPracticePaymentScope, practiceRecipientIsPerson } from './rule-component-form'
 
 const props = defineProps({
@@ -23,6 +24,10 @@ function toggleStandardRates() {
     config.value.standardRates = props.component.amount == null ? [] : [{scope:'general',value:props.component.amount}]
   }
 }
+const usesOrganizationRates = computed(() => usesStandardRates.value && config.value.standardRates.some(row=>row.salesUnits?.length))
+watch(usesOrganizationRates, uses => {
+  if (uses) props.component.sourceRole ||= props.sourceRoles[0]?.value
+})
 const personalRecipient = computed(() => practiceRecipientIsPerson(config.value.recipient))
 const registration = computed(() => config.value.registrationScope)
 const registrationOption = [{value:'registration',label:'签到报名归属'}]
@@ -38,6 +43,7 @@ function changeScope(mode) {
     benefit.salesCompanies = []
     benefit.salesPeople = []
     benefit.salesUnits = []
+    benefit.joinSalesOrganizations = false
   }
   if (mode==='own' || mode==='team') props.component.sourceRole ||= props.sourceRoles[0]?.value
 }
@@ -106,32 +112,24 @@ const calculationMethods = computed(() => [
         <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
       </a-form-item>
       <a-button v-if="config.method==='rate'" class="practice-toggle-rate-table" size="small" @click="toggleStandardRates">
-        {{ usesStandardRates ? '改用统一比例' : '按类别或公司设比例' }}
+        {{ usesStandardRates ? '改用统一比例' : '按组织或类别设比例' }}
       </a-button>
     </template>
     <template #scope>
       <RuleOrderScope :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
         team-label="指定销售范围" all-label="全班" :additional="registrationOption" @update:model-value="changeScope"/>
-      <div v-if="scopeMode!=='all'" class="rule-scope-filters">
+      <div v-if="scopeMode!=='all' || usesOrganizationRates" class="rule-scope-filters">
         <template v-if="scopeMode==='team'">
-          <a-form-item label="适用销售类别" :html-for="field('categories')">
-            <a-select :id="field('categories')" v-model:value="config.salesCategoryIds" :options="salesCategories"
-              mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售类别"/>
-          </a-form-item>
-          <a-form-item label="适用销售组织" :html-for="field('sales-units')">
-            <a-select :id="field('sales-units')" v-model:value="config.salesUnits" :options="salesUnits"
-              mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="选择公司、部门或小组"/>
-          </a-form-item>
-          <a-form-item v-if="companies?.length" label="销售公司" :html-for="field('companies')">
-            <a-select :id="field('companies')" v-model:value="config.salesCompanies" :options="companies"
-              mode="multiple" :max-tag-count="1" allow-clear :filter-option="byName" placeholder="不限销售公司"/>
-          </a-form-item>
-          <a-form-item label="销售人员" :html-for="field('sales')">
-            <a-select :id="field('sales')" v-model:value="config.salesPeople" :options="people"
-              mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" placeholder="不限销售人员"/>
-          </a-form-item>
+          <RuleScopeSelect :id="field('sales-units')" label="适用销售组织"
+            v-model="config.salesUnits" v-model:legacy-values="config.salesCompanies"
+            :options="salesUnits" :legacy-options="companies" placeholder="选择公司、部门或小组"
+            @change="({ids,legacyValues})=>config.joinSalesOrganizations=!!(ids.length && legacyValues.length)"/>
+          <RuleScopeSelect :id="field('categories')" label="适用销售类别" v-model="config.salesCategoryIds"
+            :options="salesCategories" :max-tag-count="3" placeholder="不限销售类别"/>
+          <RuleScopeSelect :id="field('sales')" label="销售人员" v-model="config.salesPeople"
+            :options="people" :max-tag-count="3" placeholder="不限销售人员"/>
         </template>
-        <a-form-item v-if="config.recipient!=='order_appointment' && (scopeMode==='own' || scopeMode==='team' && (config.salesPeople?.length || config.salesUnits?.length))"
+        <a-form-item v-if="config.recipient!=='order_appointment' && (usesOrganizationRates || scopeMode==='own' || scopeMode==='team' && (config.salesPeople?.length || config.salesUnits?.length))"
           label="订单上的销售角色" :html-for="field('role')" required>
           <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
         </a-form-item>
@@ -157,7 +155,7 @@ const calculationMethods = computed(() => [
     <a-checkbox v-model:checked="registration.exclusive">与其他已标记互斥的报名安排不重复匹配</a-checkbox>
   </a-form-item>
   <PracticePeriodRateStandards v-if="usesStandardRates" v-model="config.standardRates" :prefix="field('standards')"
-    :companies="companies" :categories="salesCategories"/>
+    :companies="companies" :organizations="salesUnits" :categories="salesCategories"/>
   <template v-if="config.method==='tiers'">
     <a-form-item>
       <a-checkbox v-model:checked="config.tierOnWholeClass">用全班净实收选档（含新报和复训）</a-checkbox>

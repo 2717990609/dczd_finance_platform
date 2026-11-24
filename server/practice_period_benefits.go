@@ -104,6 +104,7 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 			categories = append(categories, benefit.SalesCategoryIDs...)
 			for _, standard := range benefit.StandardRates {
 				categories = append(categories, standard.SalesCategoryIDs...)
+				units = append(units, standard.SalesUnits...)
 			}
 		}
 		if part.Tiers != nil {
@@ -120,6 +121,10 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 		if part.CompanySales != nil {
 			for _, row := range part.CompanySales.Categories {
 				categories = append(categories, row.categoryIDs()...)
+				units = append(units, row.SalesUnits...)
+				for _, override := range row.Overrides {
+					units = append(units, override.SalesUnits...)
+				}
 			}
 			units = append(units, part.CompanySales.RecommendationRecipients...)
 			if payee := part.CompanySales.Payee; payee != nil {
@@ -171,6 +176,7 @@ type practicePeriodBenefit struct {
 	SalesCompanies           []string                   `json:"salesCompanies,omitempty"`
 	SalesPeople              []int64                    `json:"salesPeople,omitempty"`
 	SalesUnits               []string                   `json:"salesUnits,omitempty"`
+	JoinSalesOrganizations   bool                       `json:"joinSalesOrganizations,omitempty"`
 	RegistrationScope        *practiceRegistrationScope `json:"registrationScope,omitempty"`
 	AppointmentUnitID        string                     `json:"appointmentUnitId,omitempty"`
 	AppointmentKind          string                     `json:"appointmentKind,omitempty"`
@@ -258,7 +264,8 @@ func validPracticePeriodBenefit(c component) bool {
 	}
 	if !textOK(b.Label, 80) || b.PersonID < 0 || recipients != 1 ||
 		(b.AppointmentUnitID == "") != (b.AppointmentKind == "") || b.AppointmentUnitID != "" && b.PersonID == 0 ||
-		b.usesSalesPerson() && !validSourceRole(c.SourceRole) ||
+		(b.usesSalesPerson() || b.hasOrganizationRates()) && !validSourceRole(c.SourceRole) ||
+		b.JoinSalesOrganizations && (len(b.SalesCompanies) == 0 || len(b.SalesUnits) == 0) ||
 		b.OwnSales && (b.PersonID == 0 || len(b.SalesCompanies)+len(b.SalesCategoryIDs)+len(b.SalesPeople)+len(b.SalesUnits) != 0) ||
 		b.RecipientDuty != "" && (b.PersonID == 0 && b.OrderRecipientRole == "" && b.OrderAppointmentLevel == "" || !validSourceRole(b.RecipientDuty)) {
 		return false
@@ -502,11 +509,12 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 	}) {
 		return false, ""
 	}
-	if len(b.SalesCompanies) != 0 {
+	companyInScope := slices.Contains(b.SalesCompanies, f.SalesCompanyID)
+	if len(b.SalesCompanies) != 0 && !b.JoinSalesOrganizations {
 		if f.SalesCompanyID == "" {
 			return false, "PRACTICE_TIER_COMPANY_MISSING"
 		}
-		if !slices.Contains(b.SalesCompanies, f.SalesCompanyID) {
+		if !companyInScope {
 			return false, ""
 		}
 	}
@@ -516,7 +524,8 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 			return false, issue
 		}
 	}
-	if !b.usesSalesPerson() {
+	matchesSourceCompany := b.JoinSalesOrganizations && companyInScope
+	if !b.usesSalesPerson() || matchesSourceCompany && len(b.SalesPeople) == 0 {
 		return true, ""
 	}
 	seller, issue := paymentBeneficiary(f, role, identities)
@@ -529,11 +538,11 @@ func (b practicePeriodBenefit) eligiblePayment(payment paymentInput, role string
 	if len(b.SalesPeople) != 0 && !slices.Contains(b.SalesPeople, seller.PersonID) {
 		return false, ""
 	}
-	if len(b.SalesUnits) == 0 {
+	if len(b.SalesUnits) == 0 || matchesSourceCompany {
 		return true, ""
 	}
-	organization, ok := runtime.salesOrganizations[payment.ID][role]
-	if !ok || organization.PersonID != seller.PersonID || organization.SourceCompany != f.SalesCompanyID {
+	organization := runtime.salesOrganizations[payment.ID][role]
+	if !validPracticeOrganizationAt(organization, payment, seller.PersonID) {
 		return false, "PRACTICE_SALES_ORGANIZATION_MISSING"
 	}
 	if slices.Contains(b.SalesUnits, organization.Company) {
@@ -657,7 +666,7 @@ func scopePracticeBenefitPurchase(part component, p practicePurchase, assignment
 		if yes {
 			var rate int64
 			if len(b.StandardRates) != 0 {
-				rate, issue = standards.match(payment, p.noReferrer, runtime)
+				rate, issue = standards.match(payment, p.noReferrer, runtime, part.SourceRole, identities)
 				if issue != "" {
 					issues = append(issues, draftIssue{Code: issue, FactID: payment.ID, EnrollmentID: p.member.ID})
 					continue

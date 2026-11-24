@@ -1257,8 +1257,9 @@ function ruleComponentBody(row) {
     must(sourceRole,'请选择业绩使用的订单销售角色')
     const sales = row.companySales
     must(sales.label?.trim(),'请填写收款安排名称')
-    if (!sales.categories.length && sales.defaultRate == null) {
-      throw new Error('请给「'+sales.label.trim()+'」配置销售类别或公司比例。')
+    const scopeMode = sales.scopeMode || (sales.ownSales ? 'own' : sales.general ? 'all' : 'team')
+    if (scopeMode==='team' && !sales.categories.length && sales.defaultRate == null) {
+      throw new Error('请给「'+sales.label.trim()+'」配置销售组织或销售类别的计提标准。')
     }
     const payee = {kind:must(sales.payee?.kind,'请选择收款对象')}
     if (payee.kind==='order_person') payee.role=must(sales.payee.role,'请选择从订单读取的收款人')
@@ -1276,20 +1277,23 @@ function ruleComponentBody(row) {
     }
     component.companySales = {label:sales.label.trim(),payee,
       ...(sales.defaultRate == null ? {} : {defaultRate:periodRate(sales.defaultRate)}),
+      ...(scopeMode==='team' ? {} : {general:value(sales.general)}),
+      ...(scopeMode==='own' ? {ownSales:true} : {}),
       internalCompanies:sales.internalCompanies,categories:sales.categories.map(category=>{
       const byCategory = category.scope==='category'
       const companies = byCategory ? [] : category.companies
-      if (byCategory ? !category.salesCategoryIds.length : !companies.length) {
-        throw new Error(byCategory ? '请选择销售类别' : '请选择指定公司')
+      if (byCategory ? !category.salesCategoryIds.length : !companies.length && !category.salesUnits?.length) {
+        throw new Error(byCategory ? '请选择销售类别' : '请选择指定组织')
       }
       return {
         companies,
         ...(category.label ? {label:category.label} : {}),
+        ...(!byCategory && category.salesUnits?.length ? {salesUnits:category.salesUnits} : {}),
         ...(byCategory ? {salesCategoryIds:category.salesCategoryIds} : {}),
         ...value(category),
         ...(category.overrides.length ? {overrides:category.overrides.map(override=>{
-          if (!override.companyIds?.length) throw new Error('请选择采用单独标准的公司')
-          return {companyIds:override.companyIds,...value(override)}
+          if (!override.companyIds?.length && !override.salesUnits?.length) throw new Error('请选择采用单独标准的销售组织')
+          return {companyIds:override.companyIds,salesUnits:override.salesUnits,...value(override)}
         })} : {}),
       }
     })}
@@ -1331,6 +1335,7 @@ function ruleComponentBody(row) {
       ...(!registration && b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
       ...(!registration && b.salesPeople?.length ? {salesPeople:b.salesPeople} : {}),
       ...(!registration && b.salesUnits?.length ? {salesUnits:b.salesUnits} : {}),
+      ...(!registration && b.joinSalesOrganizations ? {joinSalesOrganizations:true} : {}),
       ...(b.recipient==='person' && b.appointmentUnitId ? {
         appointmentUnitId:b.appointmentUnitId,appointmentKind:must(b.appointmentKind,'请选择任职方式'),
       } : {}),
@@ -1340,8 +1345,8 @@ function ruleComponentBody(row) {
       ...(hasStandardRates ? {standardRates:b.standardRates.map(standard=>{
         const value = periodRate(standard.value)
         if (standard.scope==='company') {
-          if (!standard.salesCompanies?.length) throw new Error('请选择使用特例比例的公司。')
-          return {salesCompanies:standard.salesCompanies,value}
+          if (!standard.salesUnits?.length && !standard.salesCompanies?.length) throw new Error('请选择使用特例比例的销售组织。')
+          return {salesUnits:standard.salesUnits,salesCompanies:standard.salesCompanies,value}
         }
         if (standard.scope==='category') {
           if (!standard.salesCategoryIds?.length) throw new Error('请选择使用默认比例的销售类别。')
@@ -1360,8 +1365,9 @@ function ruleComponentBody(row) {
       const standards = component.periodBenefit.standardRates
       const companies = standards.flatMap(standard=>standard.salesCompanies || [])
       const categories = standards.flatMap(standard=>standard.salesCategoryIds || [])
-      if (companies.length!==new Set(companies).size || categories.length!==new Set(categories).size) {
-        throw new Error('「'+label+'」的同一公司或销售类别只需设置一条比例。')
+      const units = standards.flatMap(standard=>standard.salesUnits || [])
+      if (companies.length!==new Set(companies).size || units.length!==new Set(units).size || categories.length!==new Set(categories).size) {
+        throw new Error('「'+label+'」的同一销售组织或销售类别只需设置一条比例。')
       }
     }
     if (registration) {
@@ -1378,9 +1384,10 @@ function ruleComponentBody(row) {
         ...(companies.length ? {companies} : {}),
         ...(registration.exclusive ? {exclusive:true} : {}),
       }
-      if (b.recipient!=='order_appointment') delete component.sourceRole
+      if (b.recipient!=='order_appointment' && !component.periodBenefit.standardRates?.some(standard=>standard.salesUnits?.length)) delete component.sourceRole
     }
-    if (b.recipient==='order_appointment' || !registration && (b.ownSales || b.salesPeople?.length || b.salesUnits?.length)) {
+    if (b.recipient==='order_appointment' || !registration && (b.ownSales || b.salesPeople?.length || b.salesUnits?.length) ||
+        component.periodBenefit.standardRates?.some(standard=>standard.salesUnits?.length)) {
       must(sourceRole,'请选择订单上的销售角色')
     }
     return component
@@ -2031,6 +2038,7 @@ async function save() {
             :pools="practicePoolOptions" :create-pool="createPracticePool" :member-choices="classMemberChoices(c)"
             :duties="options('organizationDuty')"/>
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
+            :organizations="salesUnitOptions"
             :sales-categories="options('practiceSalesCategory')" :recipients="companyRecipientOptions" :amounts="baseModes"
             :source-roles="options('practicePeriodSourceRole')" :payee-roles="componentSourceRoles(c.companySales.payee.role)"
             :people="classPeopleOptions" :units="unitOptions" :pools="practicePoolOptions" :create-pool="createPracticePool"

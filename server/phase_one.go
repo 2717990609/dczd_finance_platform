@@ -58,6 +58,13 @@ func (c component) salesCompanies() []string {
 	return *c.SalesCompanies
 }
 
+func (c component) legacySalesCompanyFilter() []string {
+	if c.SaleScope != nil && c.SaleScope.Kind == "organization" {
+		return nil
+	}
+	return c.salesCompanies()
+}
+
 var errPracticeTierCompany = errors.New("规则引用的销售公司未配置或已停用")
 
 var errPracticeCountPerson = errors.New("个人累计起点引用的人员不存在")
@@ -799,11 +806,11 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				}
 				for _, category := range c.CompanySales.Categories {
 					companyIDs = append(companyIDs, category.Companies...)
-					if ids := category.categoryIDs(); len(ids) != 0 {
-						categoryIDs = append(categoryIDs, ids...)
-						for _, override := range category.Overrides {
-							companyIDs = append(companyIDs, override.companyIDs()...)
-						}
+					categoryIDs = append(categoryIDs, category.categoryIDs()...)
+					salesUnitIDs = append(salesUnitIDs, category.SalesUnits...)
+					for _, override := range category.Overrides {
+						companyIDs = append(companyIDs, override.companyIDs()...)
+						salesUnitIDs = append(salesUnitIDs, override.SalesUnits...)
 					}
 				}
 			}
@@ -823,6 +830,7 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				for _, standard := range benefit.StandardRates {
 					companyIDs = append(companyIDs, standard.SalesCompanies...)
 					categoryIDs = append(categoryIDs, standard.SalesCategoryIDs...)
+					salesUnitIDs = append(salesUnitIDs, standard.SalesUnits...)
 				}
 				receivingCompanies = append(receivingCompanies, benefit.ReferralCompanyIDs...)
 				categoryIDs = append(categoryIDs, benefit.SalesCategoryIDs...)

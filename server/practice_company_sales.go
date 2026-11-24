@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -19,6 +20,8 @@ type practiceCompanySales struct {
 	Payee                    *practiceCompanyPayee     `json:"payee,omitempty"`
 	Categories               []practiceCompanyCategory `json:"categories"`
 	DefaultRate              *int64                    `json:"defaultRate,omitempty"`
+	General                  *practiceCompanyValue     `json:"general,omitempty"`
+	OwnSales                 bool                      `json:"ownSales,omitempty"`
 	InternalCompanies        []string                  `json:"internalCompanies,omitempty"`
 	RecommendationRecipients []string                  `json:"recommendationRecipients,omitempty"`
 }
@@ -74,6 +77,7 @@ type practiceCompanyCategory struct {
 	SalesCategoryID    string                    `json:"salesCategoryId,omitempty"`
 	SalesCategoryIDs   []string                  `json:"salesCategoryIds,omitempty"`
 	Companies          []string                  `json:"companies"`
+	SalesUnits         []string                  `json:"salesUnits,omitempty"`
 	Overrides          []practiceCompanyOverride `json:"overrides,omitempty"`
 	RecommendationRate *int64                    `json:"recommendationRate,omitempty"`
 	practiceCompanyValue
@@ -82,6 +86,7 @@ type practiceCompanyCategory struct {
 type practiceCompanyOverride struct {
 	CompanyID          string   `json:"companyId,omitempty"`
 	CompanyIDs         []string `json:"companyIds,omitempty"`
+	SalesUnits         []string `json:"salesUnits,omitempty"`
 	RecommendationRate *int64   `json:"recommendationRate,omitempty"`
 	practiceCompanyValue
 }
@@ -126,8 +131,11 @@ func validPracticeCompanySales(c component) bool {
 		return false
 	}
 	defaultRate := c.CompanySales.DefaultRate
-	if defaultRate == nil && len(c.CompanySales.Categories) == 0 ||
-		defaultRate != nil && (*defaultRate < 0 || *defaultRate > periodRateScale) {
+	general := c.CompanySales.General
+	if defaultRate == nil && general == nil && len(c.CompanySales.Categories) == 0 ||
+		defaultRate != nil && (*defaultRate < 0 || *defaultRate > periodRateScale) ||
+		general != nil && !general.valid() ||
+		c.CompanySales.OwnSales && (c.CompanySales.Payee.kind() != "person" || general == nil) {
 		return false
 	}
 	seen := make(map[string]bool)
@@ -143,13 +151,15 @@ func validPracticeCompanySales(c component) bool {
 	}
 	clear(seen)
 	seenCategories := make(map[string]bool)
+	seenUnits := make(map[string]bool)
 	validRate := func(rate *int64) bool {
 		return validCompanyRecommendation(c.ClassMember, rate) &&
 			(rate == nil || *rate == 0 || len(c.CompanySales.RecommendationRecipients) != 0)
 	}
 	for _, category := range c.CompanySales.Categories {
 		categoryIDs := category.categoryIDs()
-		if (len(categoryIDs) == 0) == (len(category.Companies) == 0) ||
+		if (len(categoryIDs) == 0) == (len(category.Companies)+len(category.SalesUnits) == 0) ||
+			!validUniqueScopeIDs(category.SalesUnits) ||
 			category.SalesCategoryID != "" && len(category.SalesCategoryIDs) != 0 || category.Label != "" && !textOK(category.Label, 80) ||
 			!category.practiceCompanyValue.valid() || !validRate(category.RecommendationRate) {
 			return false
@@ -161,6 +171,13 @@ func validPracticeCompanySales(c component) bool {
 			}
 			seenCategories[id] = true
 		}
+		for _, unit := range category.SalesUnits {
+			if seenUnits[unit] {
+				return false
+			}
+			seenUnits[unit] = true
+		}
+		remainingUnits := slices.Clone(category.SalesUnits)
 		member := make(map[string]bool)
 		for _, company := range category.Companies {
 			if !textOK(company, 128) || seen[company] {
@@ -170,9 +187,17 @@ func validPracticeCompanySales(c component) bool {
 		}
 		for _, override := range category.Overrides {
 			companyIDs := override.companyIDs()
-			if len(companyIDs) == 0 || override.CompanyID != "" && len(override.CompanyIDs) != 0 ||
+			if len(companyIDs)+len(override.SalesUnits) == 0 || !validUniqueScopeIDs(override.SalesUnits) || override.CompanyID != "" && len(override.CompanyIDs) != 0 ||
 				!override.practiceCompanyValue.valid() || !validRate(override.RecommendationRate) {
 				return false
+			}
+			for _, unit := range override.SalesUnits {
+				if i := slices.Index(remainingUnits, unit); i >= 0 {
+					remainingUnits = slices.Delete(remainingUnits, i, i+1)
+				} else if len(categoryIDs) == 0 || seenUnits[unit] {
+					return false
+				}
+				seenUnits[unit] = true
 			}
 			for _, id := range companyIDs {
 				if !(member[id] || len(categoryIDs) != 0 && textOK(id, 128) && !seen[id]) {
@@ -188,8 +213,8 @@ func validPracticeCompanySales(c component) bool {
 
 func checkPracticeCompanyScopes(items []component) error {
 	type scope struct{ member, id string }
-	categoryBlocks, companyBlocks := make(map[scope]int), make(map[scope]int)
-	defaults := make(map[string]bool)
+	categoryBlocks, companyBlocks, organizationBlocks := make(map[scope]int), make(map[scope]int), make(map[scope]int)
+	defaults, general := make(map[string]bool), make(map[string]bool)
 	allNamedCompanies := make(map[string]bool)
 	var internal []string
 	register := func(blocks map[scope]int, member string, ids []string, index int) bool {
@@ -215,6 +240,12 @@ func checkPracticeCompanyScopes(items []component) error {
 			if !part.matchesPracticeMember(member) {
 				continue
 			}
+			if arrangement.General != nil {
+				if general[member] {
+					return errPracticeCompanyScopeOverlap
+				}
+				general[member] = true
+			}
 			if arrangement.DefaultRate != nil {
 				if defaults[member] {
 					return errPracticeCompanyScopeOverlap
@@ -223,11 +254,11 @@ func checkPracticeCompanyScopes(items []component) error {
 			}
 			for _, category := range arrangement.Categories {
 				if !register(categoryBlocks, member, category.categoryIDs(), index) ||
-					!register(companyBlocks, member, category.Companies, index) {
+					!register(companyBlocks, member, category.Companies, index) || !register(organizationBlocks, member, category.SalesUnits, index) {
 					return errPracticeCompanyScopeOverlap
 				}
 				for _, override := range category.Overrides {
-					if !register(companyBlocks, member, override.companyIDs(), index) {
+					if !register(companyBlocks, member, override.companyIDs(), index) || !register(organizationBlocks, member, override.SalesUnits, index) {
 						return errPracticeCompanyScopeOverlap
 					}
 				}
@@ -259,6 +290,7 @@ type practiceCompanyAward struct {
 	practiceCompanyValue
 	role, key                string
 	internal                 bool
+	ownSales                 bool
 	componentIndex           int
 	payee                    *practiceCompanyPayee
 	recommendationRate       int64
@@ -266,12 +298,15 @@ type practiceCompanyAward struct {
 }
 
 type practiceCompanyOffers struct {
-	companies      map[string]map[string]practiceCompanyAward
-	categories     map[string]map[string]practiceCompanyAward
-	defaults       map[string]practiceCompanyAward
-	companyMembers map[string]bool
-	personal       map[string]bool
-	personalScope  map[string]bool
+	companies             map[string]map[string]practiceCompanyAward
+	categories            map[string]map[string]practiceCompanyAward
+	defaults              map[string]practiceCompanyAward
+	general               map[string]practiceCompanyAward
+	companyMembers        map[string]bool
+	personal              map[string]bool
+	personalScope         map[string]bool
+	organizationStandards map[string]map[string]map[string]int
+	organizationAwards    []practiceCompanyAward
 }
 
 func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
@@ -282,12 +317,14 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 		}
 		if offers == nil {
 			offers = &practiceCompanyOffers{
-				companies:      map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
-				categories:     map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
-				defaults:       make(map[string]practiceCompanyAward),
-				companyMembers: make(map[string]bool),
-				personal:       make(map[string]bool),
-				personalScope:  make(map[string]bool),
+				companies:             map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
+				categories:            map[string]map[string]practiceCompanyAward{"new": {}, "retrain": {}},
+				defaults:              make(map[string]practiceCompanyAward),
+				general:               make(map[string]practiceCompanyAward),
+				companyMembers:        make(map[string]bool),
+				personal:              make(map[string]bool),
+				personalScope:         make(map[string]bool),
+				organizationStandards: make(map[string]map[string]map[string]int),
 			}
 		}
 		for _, company := range part.CompanySales.InternalCompanies {
@@ -297,12 +334,18 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 		}
 		key := practicePeriodComponentKey(part, i)
 		awardBase := practiceCompanyAward{role: part.SourceRole, key: key, componentIndex: i,
-			payee: part.CompanySales.Payee, recommendationRecipients: part.CompanySales.RecommendationRecipients}
+			payee: part.CompanySales.Payee, ownSales: part.CompanySales.OwnSales,
+			recommendationRecipients: part.CompanySales.RecommendationRecipients}
 		for member, standards := range offers.companies {
 			if !part.matchesPracticeMember(member) {
 				continue
 			}
 			offers.companyMembers[member] = true
+			if value := part.CompanySales.General; value != nil {
+				award := awardBase
+				award.practiceCompanyValue = *value
+				offers.general[member] = award
+			}
 			if rate := part.CompanySales.DefaultRate; rate != nil {
 				award := awardBase
 				award.practiceCompanyValue = practiceCompanyValue{Mode: "rate", Value: *rate}
@@ -317,6 +360,7 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 				for _, id := range category.categoryIDs() {
 					offers.categories[member][id] = award
 				}
+				offers.addOrganizationStandard(member, award, category.SalesUnits)
 				for _, company := range category.Companies {
 					standards[company] = award
 				}
@@ -326,6 +370,7 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 					if override.RecommendationRate != nil {
 						custom.recommendationRate = *override.RecommendationRate
 					}
+					offers.addOrganizationStandard(member, custom, override.SalesUnits)
 					for _, id := range override.companyIDs() {
 						standards[id] = custom
 					}
@@ -358,12 +403,105 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 	return offers
 }
 
+func (offers *practiceCompanyOffers) addOrganizationStandard(member string, award practiceCompanyAward, units []string) {
+	if len(units) == 0 {
+		return
+	}
+	if offers.organizationStandards[member] == nil {
+		offers.organizationStandards[member] = make(map[string]map[string]int)
+	}
+	byRole := offers.organizationStandards[member]
+	if byRole[award.role] == nil {
+		byRole[award.role] = make(map[string]int)
+	}
+	index := len(offers.organizationAwards)
+	offers.organizationAwards = append(offers.organizationAwards, award)
+	for _, unit := range units {
+		byRole[award.role][unit] = index
+	}
+}
+
+func (sales *practiceCompanySales) usesOrganizationStandards() bool {
+	return sales != nil && slices.ContainsFunc(sales.Categories, func(row practiceCompanyCategory) bool {
+		return len(row.SalesUnits) != 0 || slices.ContainsFunc(row.Overrides, func(o practiceCompanyOverride) bool { return len(o.SalesUnits) != 0 })
+	})
+}
+
+func (p *practicePurchase) classifyCompanyWithOrganizations(offers *practiceCompanyOffers, categories map[string]string,
+	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) {
+	if p.issue != "" || offers == nil {
+		return
+	}
+	byRole := offers.organizationStandards[classMember(p.member.MembershipType)]
+	if len(byRole) == 0 {
+		p.classifyCompany(offers, categories)
+		p.filterCompanyOwnSales(identities)
+		return
+	}
+	chosen := -1
+	roles := slices.Sorted(maps.Keys(byRole))
+	for i, payment := range p.payments {
+		best, bestRank, tied := -1, 0, false
+		for _, role := range roles {
+			seller, issue := paymentBeneficiary(payment.Fact, role, identities)
+			if issue != "" {
+				p.companyRoutingIssue = issue
+				return
+			}
+			organization := runtime.salesOrganizations[payment.ID][role]
+			if !validPracticeOrganizationAt(organization, payment, seller.PersonID) {
+				p.companyRoutingIssue = "PRACTICE_SALES_ORGANIZATION_MISSING"
+				return
+			}
+			index, rank, conflict := matchPracticeOrganizationStandard(byRole[role], organization)
+			if conflict {
+				p.companyRoutingIssue = "SALES_ORGANIZATION_SCOPE_CONFLICT"
+				return
+			}
+			if rank > bestRank {
+				best, bestRank, tied = index, rank, false
+			} else if rank != 0 && rank == bestRank && index != best {
+				tied = true
+			}
+		}
+		if tied {
+			p.companyRoutingIssue = "SALES_ORGANIZATION_SCOPE_CONFLICT"
+			return
+		}
+		if i != 0 && best != chosen {
+			p.companyRoutingIssue = "PRACTICE_SALE_STANDARD_CONFLICT"
+			return
+		}
+		chosen = best
+	}
+	if chosen >= 0 {
+		p.companyAward = &offers.organizationAwards[chosen]
+	} else {
+		p.classifyCompany(offers, categories)
+	}
+	p.filterCompanyOwnSales(identities)
+}
+
+func (p *practicePurchase) filterCompanyOwnSales(identities map[identityKey][]identityAssignment) {
+	if award := p.companyAward; award != nil && award.ownSales {
+		people, issue := practiceBeneficiaries(p.payments, award.role, identities)
+		if issue != "" || len(people) == 0 || people[0].PersonID != award.payee.PersonID {
+			p.companyRoutingIssue, p.companyAward = issue, nil
+		}
+	}
+}
+
 func (p *practicePurchase) classifyCompany(offers *practiceCompanyOffers, categories map[string]string) {
 	if p.issue != "" || offers == nil {
 		return
 	}
 	member := classMember(p.member.MembershipType)
 	standards := offers.companies[member]
+	general, hasGeneral := offers.general[member]
+	if hasGeneral && len(standards) == 0 && len(offers.categories[member]) == 0 && offers.defaults[member].key == "" {
+		p.companyAward = &general
+		return
+	}
 	if !offers.companyMembers[member] && !offers.personal[member] {
 		return
 	}
@@ -390,9 +528,12 @@ func (p *practicePurchase) classifyCompany(offers *practiceCompanyOffers, catego
 			terms, exists = fallback, true
 		}
 	}
+	if !exists && hasGeneral {
+		terms, exists = general, true
+	}
 	if !exists {
 		// An explicit personal scope can qualify orders without a separate company award.
-		if !offers.personalScope[member] {
+		if !offers.personalScope[member] && len(offers.organizationStandards[member]) == 0 {
 			p.companyRoutingIssue = "PRACTICE_COMPANY_SCOPE_MISSING"
 		}
 	} else if !terms.internal {
@@ -511,10 +652,12 @@ func (offers *practiceCompanyOffers) match(member, company, category string) (pr
 		return award, true
 	}
 	if externalCompanyDefaultEligible(category) {
-		award, configured := offers.defaults[member]
-		return award, configured
+		if award, configured := offers.defaults[member]; configured {
+			return award, configured
+		}
 	}
-	return practiceCompanyAward{}, false
+	award, configured := offers.general[member]
+	return award, configured
 }
 
 func loadPracticeCompanyRecipients(ctx context.Context, tx pgx.Tx, offers *practiceCompanyOffers,
@@ -545,11 +688,15 @@ func loadPracticeCompanyRecipients(ctx context.Context, tx pgx.Tx, offers *pract
 			}
 		}
 	}
-	if offers.needsClassifications() {
+	if offers.needsClassifications() || offers != nil && len(offers.organizationAwards)+len(offers.general) != 0 {
 		for _, matches := range orders {
 			for _, payment := range matches {
 				f := payment.Fact
 				if f.SalesCompanyID == "" || selected[f.SalesCompanyID] {
+					continue
+				}
+				if len(offers.organizationAwards) != 0 {
+					selected[f.SalesCompanyID] = true
 					continue
 				}
 				for _, member := range []string{"new", "retrain"} {
