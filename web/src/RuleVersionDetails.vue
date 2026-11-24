@@ -257,6 +257,20 @@ onMounted(async () => {
           </a-descriptions-item>
           <a-descriptions-item v-if="refundPolicyLabel(part)" label="退款处理">{{ refundPolicyLabel(part) }}</a-descriptions-item>
         </a-descriptions>
+        <table v-if="part.saleScope?.personExceptions?.length || part.saleScope?.companyExceptions?.length"
+          class="rule-company-standards" aria-label="类别内特例">
+          <thead><tr><th scope="col">类别内特例</th><th scope="col">计提标准</th></tr></thead>
+          <tbody>
+            <tr v-for="entry in part.saleScope.personExceptions" :key="'person-'+entry.personId">
+              <th scope="row">个人 · {{ personName(entry.personId) }}</th>
+              <td>{{ entry.mode==='rate' ? rate(entry.value,100) : formatMoney(entry.value) }}</td>
+            </tr>
+            <tr v-for="entry in part.saleScope.companyExceptions" :key="'company-'+entry.companyId">
+              <th scope="row">公司 · {{ companyName(entry.companyId) }}</th>
+              <td>{{ entry.mode==='rate' ? rate(entry.value,100) : formatMoney(entry.value) }}</td>
+            </tr>
+          </tbody>
+        </table>
         <table v-if="part.periodBenefit?.standardRates?.length" class="rule-company-standards" aria-label="比例标准">
           <thead><tr><th scope="col">匹配条件</th><th scope="col">比例</th></tr></thead>
           <tbody>

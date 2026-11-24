@@ -286,6 +286,14 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 			continue
 		}
 		salesOwner := assignments[0].PersonID
+		if part.SaleScope.hasExceptions() {
+			terms, issue := purchase.saleTerms(sale, part, salesOwner, identities, runtime)
+			if issue != "" {
+				draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
+				continue
+			}
+			part.Mode, part.Value = terms.Mode, terms.Value
+		}
 		if part.SalesPersonID != 0 {
 			for i := range assignments {
 				assignments[i] = identityAssignment{PersonID: part.SalesPersonID}

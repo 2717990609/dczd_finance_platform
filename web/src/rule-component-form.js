@@ -554,6 +554,9 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
     if (['sales','referral'].includes(form.type) && !form.label) form.label = ruleComponentLabel(component,optionLabel)
     form.classMember ??= ''
     form.amount = value / (form.mode === 'period_rate' ? 10000 : 100)
+    for (const key of ['companyExceptions','personExceptions']) {
+      if (form.saleScope?.[key]) form.saleScope[key] = form.saleScope[key].map(row=>({...row,amount:row.value/100}))
+    }
     if (tiers) form.tierConfig = tierForm(tiers)
     if (periodBenefit) {
       form.periodBenefit = {...periodBenefit,

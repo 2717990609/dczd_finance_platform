@@ -1238,8 +1238,18 @@ function ruleComponentBody(row) {
     }
     if (row.recipientDuty) component.recipientDuty = row.recipientDuty
     if (row.salesCompanies?.length) component.salesCompanies = row.salesCompanies
-    if (row.saleScope?.ownSales || hasPracticePaymentScope(row.saleScope || {})) component.saleScope = row.saleScope
-    if (row.restrictSaleScope && !component.salesCompanies && !component.saleScope) {
+    const {kind,companyExceptions,personExceptions,...scope} = row.saleScope || {}
+    if (scope.ownSales || hasPracticePaymentScope(scope) || kind==='company' && component.salesCompanies) {
+      component.saleScope = {...scope,...(kind ? {kind} : {})}
+      if (kind==='category' && ['rate','fixed'].includes(row.mode)) {
+        const standard = entry => ({mode:entry.mode,value:minor(must(entry.amount,'请填写特例的计提金额或比例。'))})
+        if (companyExceptions?.length) component.saleScope.companyExceptions = companyExceptions.map(entry=>
+          ({companyId:must(entry.companyId,'请选择有特例的销售公司。'),...standard(entry)}))
+        if (personExceptions?.length) component.saleScope.personExceptions = personExceptions.map(entry=>
+          ({personId:must(entry.personId,'请选择有特例的销售人员。'),...standard(entry)}))
+      }
+    }
+    if ((row.restrictSaleScope || kind) && !component.salesCompanies && !component.saleScope) {
       throw new Error('请选择「'+component.label+'」的适用公司、类别或组织。')
     }
   }
@@ -2000,7 +2010,8 @@ async function save() {
             </template>
             <template #scope>
               <PracticePersonalScopeFields v-if="classRule && ['sales','referral'].includes(c.type)" :row="c" :index="i"
-                :companies="options('practiceSalesCompany')" :categories="options('practiceSalesCategory')" :units="salesUnitOptions"/>
+                :companies="options('practiceSalesCompany')" :categories="options('practiceSalesCategory')" :units="salesUnitOptions"
+                :people="classPeopleOptions"/>
             </template>
           </RuleArrangementFields>
           <PracticeRetrainSplitEditor v-if="c===practiceRetrainSales && c.retrainSplits?.length" :component="c" :index="i"

@@ -7,22 +7,135 @@ import (
 )
 
 type practiceSaleScope struct {
-	OwnSales         bool     `json:"ownSales,omitempty"`
-	SalesCategoryIDs []string `json:"salesCategoryIds,omitempty"`
-	SalesUnits       []string `json:"salesUnits,omitempty"`
+	Kind              string                         `json:"kind,omitempty"`
+	OwnSales          bool                           `json:"ownSales,omitempty"`
+	SalesCategoryIDs  []string                       `json:"salesCategoryIds,omitempty"`
+	SalesUnits        []string                       `json:"salesUnits,omitempty"`
+	CompanyExceptions []practiceSaleCompanyException `json:"companyExceptions,omitempty"`
+	PersonExceptions  []practiceSalePersonException  `json:"personExceptions,omitempty"`
+}
+
+type practiceSaleTerms struct {
+	Mode  string `json:"mode"`
+	Value int64  `json:"value"`
+}
+
+func (t practiceSaleTerms) valid() bool {
+	return t.Value >= 0 && (t.Mode == "rate" && t.Value <= 10000 || t.Mode == "fixed" && t.Value <= 100000000000)
+}
+
+type practiceSaleCompanyException struct {
+	CompanyID string `json:"companyId"`
+	practiceSaleTerms
+}
+
+type practiceSalePersonException struct {
+	PersonID int64 `json:"personId"`
+	practiceSaleTerms
+}
+
+func (s *practiceSaleScope) hasExceptions() bool {
+	return s != nil && len(s.CompanyExceptions)+len(s.PersonExceptions) != 0
 }
 
 func (s practiceSaleScope) validFor(part component) bool {
 	tiered := part.Mode == "tiered" && part.Tiers != nil
 	if (part.Type != "sales" && part.Type != "referral") || (part.Mode != "rate" && part.Mode != "fixed" && !tiered) ||
-		part.SourceRole == "" || len(part.retrainSplits()) != 0 {
+		part.SourceRole == "" || len(part.retrainSplits()) != 0 ||
+		s.hasExceptions() && (s.Kind != "category" || tiered) {
 		return false
 	}
+	categories, units := len(s.SalesCategoryIDs), len(s.SalesUnits)
 	if s.OwnSales {
-		return part.SalesPersonID > 0 && len(s.SalesCategoryIDs)+len(s.SalesUnits) == 0
+		return s.Kind == "" && part.SalesPersonID > 0 && categories+units == 0
 	}
-	return (!tiered || part.Tiers.OpeningID == 0) && len(s.SalesCategoryIDs)+len(s.SalesUnits) != 0 &&
-		validUniqueScopeIDs(s.SalesCategoryIDs) && validUniqueScopeIDs(s.SalesUnits)
+	companies := len(part.salesCompanies())
+	switch s.Kind {
+	case "company":
+		return companies > 0 && categories+units == 0
+	case "category":
+		if categories == 0 || companies+units != 0 {
+			return false
+		}
+	case "organization":
+		if units == 0 || companies+categories != 0 {
+			return false
+		}
+	case "":
+		// Legacy versions may contain an intersection of several filters.
+	default:
+		return false
+	}
+	if tiered && part.Tiers.OpeningID != 0 || categories+units == 0 ||
+		!validUniqueScopeIDs(s.SalesCategoryIDs) || !validUniqueScopeIDs(s.SalesUnits) {
+		return false
+	}
+	seenCompanies := make(map[string]bool, len(s.CompanyExceptions))
+	for _, exception := range s.CompanyExceptions {
+		if !textOK(exception.CompanyID, 128) || seenCompanies[exception.CompanyID] || !exception.valid() {
+			return false
+		}
+		seenCompanies[exception.CompanyID] = true
+	}
+	seenPeople := make(map[int64]bool, len(s.PersonExceptions))
+	for _, exception := range s.PersonExceptions {
+		if exception.PersonID <= 0 || seenPeople[exception.PersonID] || !exception.valid() {
+			return false
+		}
+		seenPeople[exception.PersonID] = true
+	}
+	return true
+}
+
+func (s practiceSaleScope) termsFor(part component, person int64, payment paymentInput) (practiceSaleTerms, string) {
+	for _, exception := range s.PersonExceptions {
+		if exception.PersonID == person {
+			return exception.practiceSaleTerms, ""
+		}
+	}
+	if len(s.CompanyExceptions) != 0 && payment.Fact.SalesCompanyID == "" {
+		return practiceSaleTerms{}, "PRACTICE_TIER_COMPANY_MISSING"
+	}
+	for _, exception := range s.CompanyExceptions {
+		if exception.CompanyID == payment.Fact.SalesCompanyID {
+			return exception.practiceSaleTerms, ""
+		}
+	}
+	return practiceSaleTerms{Mode: part.Mode, Value: part.Value}, ""
+}
+
+func (p practicePurchase) saleTerms(sale practicePurchase, part component, seller int64, identities map[identityKey][]identityAssignment,
+	runtime practiceDraftRuntime) (practiceSaleTerms, string) {
+	if len(p.originalPayments) != 0 {
+		p.payments = p.originalPayments
+		original, issue := p.scopedSale(part, identities, runtime)
+		if issue != "" {
+			return practiceSaleTerms{}, issue
+		}
+		sale = original
+		// Replay can drop a fully refunded payment. Its attribution still
+		// determines the original standard for the enrollment.
+		assignments, issue := practiceBeneficiaries(sale.payments, part.SourceRole, identities)
+		if issue != "" {
+			return practiceSaleTerms{}, issue
+		}
+		seller = assignments[0].PersonID
+	}
+	scope := part.SaleScope
+	terms, issue := scope.termsFor(part, seller, sale.payments[0])
+	if issue != "" {
+		return practiceSaleTerms{}, issue
+	}
+	for _, payment := range sale.payments[1:] {
+		other, issue := scope.termsFor(part, seller, payment)
+		if issue != "" {
+			return practiceSaleTerms{}, issue
+		}
+		if other != terms {
+			return practiceSaleTerms{}, "PRACTICE_SALE_STANDARD_CONFLICT"
+		}
+	}
+	return terms, ""
 }
 
 func (p practicePurchase) scopedSale(part component, identities map[identityKey][]identityAssignment,

@@ -91,6 +91,9 @@ func (s workspace) appliedRuleRecipients(ctx context.Context, rule json.RawMessa
 		if scope := part.SaleScope; scope != nil {
 			units = append(units, scope.SalesUnits...)
 			categories = append(categories, scope.SalesCategoryIDs...)
+			for _, exception := range scope.PersonExceptions {
+				people = append(people, exception.PersonID)
+			}
 		}
 		if benefit := part.PeriodBenefit; benefit != nil {
 			people = append(people, benefit.PersonID)

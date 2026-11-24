@@ -773,6 +773,12 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			if scope := c.SaleScope; scope != nil {
 				categoryIDs = append(categoryIDs, scope.SalesCategoryIDs...)
 				salesUnitIDs = append(salesUnitIDs, scope.SalesUnits...)
+				for _, exception := range scope.CompanyExceptions {
+					companyIDs = append(companyIDs, exception.CompanyID)
+				}
+				for _, exception := range scope.PersonExceptions {
+					personIDs = append(personIDs, exception.PersonID)
+				}
 			}
 			if c.SalesPersonID != 0 {
 				personIDs = append(personIDs, c.SalesPersonID)

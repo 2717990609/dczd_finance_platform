@@ -271,6 +271,7 @@ type practiceCompanyOffers struct {
 	defaults       map[string]practiceCompanyAward
 	companyMembers map[string]bool
 	personal       map[string]bool
+	personalScope  map[string]bool
 }
 
 func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
@@ -286,6 +287,7 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 				defaults:       make(map[string]practiceCompanyAward),
 				companyMembers: make(map[string]bool),
 				personal:       make(map[string]bool),
+				personalScope:  make(map[string]bool),
 			}
 		}
 		for _, company := range part.CompanySales.InternalCompanies {
@@ -337,6 +339,9 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 				for _, member := range []string{"new", "retrain"} {
 					if part.matchesPracticeMember(member) {
 						offers.personal[member] = true
+						if part.SaleScope != nil && part.SaleScope.Kind != "" {
+							offers.personalScope[member] = true
+						}
 						for _, company := range part.salesCompanies() {
 							offers.companies[member][company] = practiceCompanyAward{internal: true}
 						}
@@ -386,7 +391,10 @@ func (p *practicePurchase) classifyCompany(offers *practiceCompanyOffers, catego
 		}
 	}
 	if !exists {
-		p.companyRoutingIssue = "PRACTICE_COMPANY_SCOPE_MISSING"
+		// An explicit personal scope can qualify orders without a separate company award.
+		if !offers.personalScope[member] {
+			p.companyRoutingIssue = "PRACTICE_COMPANY_SCOPE_MISSING"
+		}
 	} else if !terms.internal {
 		p.companyAward = &terms
 	}
