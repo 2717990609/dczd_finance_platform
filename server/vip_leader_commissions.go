@@ -149,15 +149,21 @@ func quoteVIPLeader(a vipBenefitAction, req vipSalesRequest, sourceIssue string,
 		line.Status = "SALES_COMPANY_MISSING"
 		return line
 	}
-	standard, issue := req.rateRow(policy.leaderSales, "INTERNAL")
-	if issue != "" {
-		line.Status = issue
-		return line
+	if !policy.split.Independent {
+		standard, issue := req.rateRow(policy.leaderSales, "INTERNAL")
+		if issue != "" {
+			line.Status = issue
+			return line
+		}
+		if standard.Rate == 0 {
+			return line
+		}
+		if standard.Rate != policy.split.Total || standard.Payee == vipPayeeSalesCompany {
+			line.Status = "SALES_TEAM_PENDING"
+			return line
+		}
 	}
-	if standard.Rate == 0 {
-		return line
-	}
-	if !data.BenefitReady || standard.Rate != policy.split.Total || standard.Payee == vipPayeeSalesCompany {
+	if !data.BenefitReady {
 		line.Status = "SALES_TEAM_PENDING"
 		return line
 	}
@@ -214,4 +220,64 @@ func quoteVIPLeader(a vipBenefitAction, req vipSalesRequest, sourceIssue string,
 	line.Rate, line.Amount, _ = a.quote(req, "")
 	line.Status, line.Party, line.Name = "CALCULATED", holder, data.People[holder]
 	return line
+}
+
+func quoteVIPIndependentTeamShares(req vipSalesRequest, sourceIssue string, policy vipBenefitPolicy, data vipRuntimeData) []vipBenefitPart {
+	split := policy.split
+	var parts []vipBenefitPart
+	for _, share := range []struct {
+		key, label, orders string
+		rate               int64
+	}{
+		{vipGroupLeaderItem, "小组负责人提成", "members", split.Group},
+		{vipTeamLeaderItem, "团队负责人提成", "all", split.TeamHead},
+	} {
+		if !split.hasPositiveShare(share.key) {
+			continue
+		}
+		label := split.LeaderLabels[share.key]
+		if label == "" {
+			label = share.label
+		}
+		mode := vipOrganizationAppointmentMode
+		if share.key == vipTeamLeaderItem {
+			mode = vipRegisteredTeamLeaderMode
+		}
+		action := vipBenefitAction{Item: share.key, Label: label, Role: vipLeaderRole(share.key),
+			Mode: mode, Rate: &share.rate, Leader: &vipLeaderScope{Orders: share.orders}}
+		part := quoteVIPLeader(action, req, sourceIssue, policy, data)
+		if part.Status != "ZERO" && part.Status != "INACTIVE" {
+			parts = append(parts, part)
+		}
+	}
+	if !split.hasPositiveShare(vipInternalServiceItem) || req.Paid == 0 {
+		return parts
+	}
+	index := slices.IndexFunc(split.Teams, func(team vipInternalTeam) bool { return team.Company == req.Company })
+	if index < 0 && req.Company != "" {
+		return parts
+	}
+	label := split.ServiceLabel
+	if label == "" {
+		label = "内部团队服务提成"
+	}
+	part := vipBenefitPart{Item: vipInternalServiceItem, Label: label, Role: "DCAI_SERVICE", Kind: "person"}
+	switch {
+	case sourceIssue != "":
+		part.Status = sourceIssue
+	case index < 0:
+		part.Status = "SALES_COMPANY_MISSING"
+	case !data.hasSalesAppointment(req):
+		return parts
+	default:
+		part.Party = split.Teams[index].ServiceParty
+		part.Name = data.People[part.Party]
+		part.Status = "SALES_TEAM_PENDING"
+		if part.Name != "" {
+			part.Status = "CALCULATED"
+			part.Rate = split.Service
+			part.Amount = calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: split.Service})
+		}
+	}
+	return append(parts, part)
 }

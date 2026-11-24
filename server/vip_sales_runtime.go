@@ -463,7 +463,7 @@ func newMembershipOnly(override *bool, fallback bool) bool {
 }
 
 func (row catalogPaymentMatch) splitMembershipStatuses(policy vipSalesPolicy, req vipSalesRequest, primary bool) map[string]string {
-	if !row.MembershipOrder || row.SourceTransactionType == "NEW" || len(policy.Split.MembershipScopes) == 0 ||
+	if policy.Split.Independent || !row.MembershipOrder || row.SourceTransactionType == "NEW" || len(policy.Split.MembershipScopes) == 0 ||
 		!slices.ContainsFunc(policy.Split.Teams, func(team vipInternalTeam) bool { return team.Company == req.Company }) {
 		return nil
 	}
@@ -486,7 +486,7 @@ func (p vipQuotePolicies) apply(row *catalogPaymentMatch, data vipRuntimeData, r
 		newOnly := newMembershipOnly(policy.MembershipNewOnly, fallback)
 		splitStatuses := row.splitMembershipStatuses(policy, req, newOnly)
 		membershipStatus := row.membershipScopeStatus(newOnly)
-		if policy.Item == "" || !policy.Split.usesSalesTable(req.Company) {
+		if policy.Item == "" || policy.ConfiguredPayee || policy.Split.Independent && policy.Split.salesPayeeDisabled() || !policy.Split.usesSalesTable(req.Company) {
 			row.SalesStatus = vipSalesNotConfigured
 		} else if splitStatuses == nil && membershipStatus == vipCommissionOutsideScope {
 			row.SalesStatus = vipCommissionOutsideScope
@@ -540,6 +540,15 @@ func applyVIPBenefitQuote(row *catalogPaymentMatch, data vipRuntimeData, benefit
 			}
 			if status := row.membershipScopeStatus(newMembershipOnly(action.MembershipNewOnly, fallback)); status != "" {
 				*part = vipBenefitPart{Item: part.Item, Label: part.Label, Role: part.Role, Kind: part.Kind, Status: status}
+			}
+		}
+		if policy.split.Independent {
+			base := newMembershipOnly(policy.salesMembership, fallback)
+			for _, part := range quoteVIPIndependentTeamShares(req, issue, policy, data) {
+				if status := row.membershipScopeStatus(newMembershipOnly(policy.split.membershipOverride(part.Item), base)); status != "" {
+					part = vipBenefitPart{Item: part.Item, Label: part.Label, Role: part.Role, Kind: part.Kind, Status: status}
+				}
+				row.BenefitParts = append(row.BenefitParts, part)
 			}
 		}
 	} else {

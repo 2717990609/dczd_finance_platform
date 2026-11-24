@@ -88,6 +88,7 @@ type vipInternalTeam struct {
 }
 
 type vipInternalSplit struct {
+	Independent                       bool              `json:"independent_arrangements,omitempty"`
 	Mode                              string            `json:"mode"`
 	Item                              string            `json:"sales_item_key"`
 	Total                             int64             `json:"total_rate_bps"`
@@ -111,6 +112,7 @@ type vipInternalSplit struct {
 }
 
 type vipSalesPolicy struct {
+	ConfiguredPayee   bool
 	Item              string
 	Sales             []vipRateRow
 	Split             vipInternalSplit
@@ -175,7 +177,8 @@ func readVIPSalesPolicy(raw json.RawMessage) (vipSalesPolicy, bool) {
 			}
 			continue
 		}
-		if policy.Item != "" || action.Type != "RATE_TABLE" || action.Mode != "PARTY" || action.Role != "SALES" || action.Designated != "" {
+		native := action.Type == "RATE_TABLE" && action.Mode == "PARTY" && action.Role == "SALES" && action.Designated == ""
+		if policy.Item != "" || !native && !def.Split.Independent {
 			return vipSalesPolicy{}, false
 		}
 		if !validUniqueScopeIDs(action.CommissionUnits) || !validUniqueScopeIDs(action.ScopeCategories) {
@@ -184,9 +187,12 @@ func readVIPSalesPolicy(raw json.RawMessage) (vipSalesPolicy, bool) {
 		policy.Item, policy.CommissionUnits = action.Item, action.CommissionUnits
 		policy.ScopeCategories = action.ScopeCategories
 		policy.MembershipNewOnly = action.MembershipNewOnly
-		policy.Sales, ok = parseVIPSellerRateTable(action.RateTable)
-		if !ok {
-			return vipSalesPolicy{}, false
+		policy.ConfiguredPayee = !native
+		if native {
+			policy.Sales, ok = parseVIPSellerRateTable(action.RateTable)
+			if !ok {
+				return vipSalesPolicy{}, false
+			}
 		}
 	}
 	return policy, policy.Item != ""
@@ -519,7 +525,7 @@ func calculateVIPSalesWithMembership(policy vipSalesPolicy, req vipSalesRequest,
 	if req.Order == "" || req.Paid < 0 {
 		return nil, "INVALID_PAYMENT"
 	}
-	if !policy.Split.usesSalesTable(req.Company) {
+	if policy.ConfiguredPayee || policy.Split.Independent && policy.Split.salesPayeeDisabled() || !policy.Split.usesSalesTable(req.Company) {
 		return nil, vipSalesNotConfigured
 	}
 	for _, review := range policy.Split.Reviews {
@@ -553,7 +559,7 @@ func calculateVIPSalesWithMembership(policy vipSalesPolicy, req vipSalesRequest,
 	parts := []vipSalesPart{{Role: "SALES", Person: req.Seller, Name: sellerName, Rate: rate, Amount: amount}}
 	teamIdx := slices.IndexFunc(policy.Split.Teams, func(t vipInternalTeam) bool { return t.Company == req.Company })
 	if standard.Payee == vipPayeeSalesCompany {
-		if teamIdx >= 0 {
+		if teamIdx >= 0 && !policy.Split.Independent {
 			return nil, "SALES_TEAM_PENDING"
 		}
 		if req.CompanyUnit == "" || req.CompanyName == "" {
@@ -561,7 +567,7 @@ func calculateVIPSalesWithMembership(policy vipSalesPolicy, req vipSalesRequest,
 		}
 		parts[0].CompanyUnit, parts[0].CompanyName = req.CompanyUnit, req.CompanyName
 	}
-	if teamIdx < 0 {
+	if teamIdx < 0 || policy.Split.Independent {
 		return parts, ""
 	}
 	p, team := policy.Split, policy.Split.Teams[teamIdx]

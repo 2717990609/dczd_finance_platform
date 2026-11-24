@@ -36,9 +36,10 @@ type vipBenefitAction struct {
 }
 
 type vipBenefitPolicy struct {
-	split       vipInternalSplit
-	actions     []vipBenefitAction
-	leaderSales []vipRateRow
+	split           vipInternalSplit
+	actions         []vipBenefitAction
+	leaderSales     []vipRateRow
+	salesMembership *bool
 }
 
 const vipOrderReferrerMode = "ORDER_REFERRER"
@@ -75,6 +76,17 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 	if def.Split != nil {
 		policy.split = *def.Split
 		salesItem = def.Split.Item
+		if def.Split.Independent {
+			sales, valid := readVIPSalesPolicy(raw)
+			if !valid {
+				return vipBenefitPolicy{}, false
+			}
+			policy.split = sales.Split
+			policy.salesMembership = sales.MembershipNewOnly
+			if sales.ConfiguredPayee && !def.Split.salesPayeeDisabled() {
+				salesItem = ""
+			}
+		}
 	} else {
 		sales, valid := def.directSalesPolicy()
 		if !valid {
@@ -105,7 +117,7 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 			if !action.Leader.validFor(policy.split.Teams) || action.Type == "RATE_TABLE" || len(action.CommissionUnits)+len(action.ScopeCategories) != 0 {
 				return vipBenefitPolicy{}, false
 			}
-			if policy.leaderSales == nil {
+			if policy.leaderSales == nil && !policy.split.Independent {
 				sales, valid := readVIPSalesPolicy(raw)
 				if !valid || len(sales.Sales) == 0 {
 					return vipBenefitPolicy{}, false
@@ -128,7 +140,8 @@ func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
 		case "RATE_TABLE":
 			var ok bool
 			action.rates, ok = parseVIPRateTable(action.RateTable)
-			if !ok || action.Rate != nil || slices.ContainsFunc(action.rates, func(row vipRateRow) bool { return row.Payee != "" }) {
+			usesRowPayees := policy.split.Independent && action.Item == policy.split.Item
+			if !ok || action.Rate != nil || !usesRowPayees && slices.ContainsFunc(action.rates, func(row vipRateRow) bool { return row.Payee != "" }) {
 				return vipBenefitPolicy{}, false
 			}
 		default:

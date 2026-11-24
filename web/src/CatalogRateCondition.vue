@@ -9,6 +9,7 @@ const scope = computed(() => props.scope ?? value.value.scope)
 const scopes = computed(() => [
   ...(props.options.categories.length || value.value.categoryIds?.length ? [{value:'category',label:'销售类别默认'}] : []),
   {value:'company',label:'指定公司'},
+  ...(value.value.scope==='inherited' ? [{value:'inherited',label:'公司补充比例'}] : []),
   {value:'external',label:'外部公司默认比例'},
   {value:'general',label:'不限公司和类别'},
 ])
@@ -27,11 +28,11 @@ function changeScope(next) {
       <label :for="'catalog-add-scope'+suffix">比例匹配方式</label>
       <a-select :id="'catalog-add-scope'+suffix" :value="scope" :options="scopes" size="small" @update:value="changeScope"/>
     </div>
-    <div v-if="scope==='company'" class="catalog-rate-selector">
+    <div v-if="scope==='company' || scope==='inherited'" class="catalog-rate-selector">
       <label :for="'catalog-add-company'+suffix">特例公司</label>
       <a-select :id="'catalog-add-company'+suffix" v-model:value="value.companyIds"
         :options="companies" mode="multiple" :max-tag-count="2" allow-clear option-filter-prop="label" size="small"
-        :placeholder="scope==='company' ? '选择公司' : '不限公司'"/>
+        placeholder="选择公司"/>
     </div>
     <div v-if="['company','category'].includes(scope) && (options.categories.length || value.categoryIds?.length)" class="catalog-rate-selector">
       <label :for="'catalog-add-category'+suffix">{{ scope==='company' ? '限销售类别（可选）' : '销售类别' }}</label>

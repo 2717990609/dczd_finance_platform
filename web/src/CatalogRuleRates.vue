@@ -67,24 +67,11 @@ const targetShortLabels = {seller:'销售比例表',person:'个人',company:'公
   order_seller:'成交销售',order_sales_company:'销售公司'}
 const teamSplit = computed(() => component.value?.teamSplit)
 const serviceItemKey = 'internal-service'
-const splitFields = [
-  {key:'total',label:'销售分项总比例'},
-  {key:'sales',label:'普通成交销售'},
-  {key:'headSales',label:'负责人亲自成交'},
-]
-const splitRows = computed(() => {
-  const split = teamSplit.value
-  return split ? splitFields.map(field=>({...field,rate:split[field.key]})) : []
-})
 const splitValue = field => Object.hasOwn(splitEdits.value,field) ? splitEdits.value[field] : (splitItem.value.teamSplit[field]/100).toFixed(2)
 function setSplitRate(field,value) {
   if (rateAsBasisPoints(value)===splitItem.value.teamSplit[field]) delete splitEdits.value[field]
   else splitEdits.value[field] = value
 }
-const teamCompanyIDs = computed(() => new Set((sheet.value?.teams || []).map(team=>team.key)))
-const linkedTeamRateChanges = (row,item=component.value) => row.teamRate && Object.hasOwn(splitEdits.value,'total') &&
-  row.rateBps===item?.teamSplit?.total && row.companyIds?.every(id=>teamCompanyIDs.value.has(id))
-const displayLinkedTeamRate = row => linkedTeamRateChanges(row) ? splitEdits.value.total : displayRate(row.rateBps,row.row)
 const teamOptions = computed(() => (sheet.value?.teams || []).map(item=>({value:item.key,label:item.label})))
 const team = computed(() => sheet.value?.teams?.find(item=>item.key===selectedTeam.value))
 const itemRemoved = computed(() => removedItems.value.has(selected.value))
@@ -130,10 +117,11 @@ const splitRemoved = computed(() => salesPayeeRemoved.value && serviceRemoved.va
     (leaderEdits.value.has(leader.itemKey) || leader.targetKind!=='inherit' || leader.rateBps>0)))
 const visibleComponents = computed(() => sheet.value?.components.filter(item=>!item.disabled) || [])
 const editable = computed(() => sheet.value?.mayPublish && !props.applied && !saving.value && !itemRemoved.value)
-const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKind==='seller'))
+const editedComponent = computed(() => component.value && {...component.value,targetKind:targetKind.value})
+const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKind==='seller' || item.teamSplit))
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
-const hasEdits = computed(() => copy.value || membershipEdits.value.size || splitDutyEdits.value.size || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
+const hasEdits = computed(() => sheet.value?.independentTeamSales || copy.value || membershipEdits.value.size || splitDutyEdits.value.size || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
   Object.keys(splitEdits.value).length > 0 || labelEdits.value.size || leaderEdits.value.size || scopeEdits.value.size ||
   structure.value.items.length || structure.value.sales || structure.value.rateRows.length || structure.value.calculations.length ||
   removedItems.value.size || removedRateRows.value.size)
@@ -217,7 +205,7 @@ const displayedColumns = computed(() => columns.value.filter(col=>
   (col.key!=='company' || ['company','inherited'].includes(rateGroup.value)) &&
   (col.key!=='category' || activeRateGroup.value?.rows.some(row=>row.category)) &&
   (col.key!=='relationship' || activeRateGroup.value?.rows.some(row=>row.limitsRelationship)) &&
-  (col.key!=='payee' || component.value?.targetKind==='seller')))
+  (col.key!=='payee' || targetKind.value==='seller')))
 const tableWidth = computed(() => displayedColumns.value.reduce((width,column)=>width+column.width,0))
 async function addRecipient() {
   selected.value = undefined
@@ -297,7 +285,6 @@ const displayRate = (rate, row, item=selected.value) => {
 }
 function currentRate(item,row) {
   if (row.staged) return row.rateBps
-  if (linkedTeamRateChanges(row,item)) return rateAsBasisPoints(splitEdits.value.total)
   const edit = edits.value[cellKey(item.itemKey,row.row)]
   return edit ? rateAsBasisPoints(edit.value) : row.rateBps
 }
@@ -537,7 +524,7 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   if (!rule) return
   loading.value = true
   try {
-    const result = await props.api('/catalog-rule-rates?ruleId='+encodeURIComponent(rule.id))
+    const result = await props.api('/catalog-rule-rates?ruleId='+encodeURIComponent(rule.id)+'&edit=true')
     if (request !== sequence) return
     sheet.value = result
     selected.value = result.components.length===1 ? result.components[0].itemKey : undefined
@@ -564,19 +551,10 @@ function publicationInput() {
   if (!effectiveFrom.value) throw new Error('请选择生效时间。')
   if (copy.value && (!copy.value.sku || !copy.value.label?.trim())) throw new Error('请选择目标 SKU，并填写规则名称。')
   let teamSplitRates
-  if (!splitRemoved.value && Object.keys(splitEdits.value).some(field=>field!=='service' || !serviceRemoved.value)) {
-    const item = splitItem.value
-    const original = item.teamSplit
-    teamSplitRates = {...original}
-    for (const {key} of splitFields) {
-      teamSplitRates[key] = Object.hasOwn(splitEdits.value,key) ? rateAsBasisPoints(splitEdits.value[key]) : original[key]
-    }
-    if (!serviceRemoved.value && Object.hasOwn(splitEdits.value,'service')) teamSplitRates.service = rateAsBasisPoints(splitEdits.value.service)
-    const {total,sales,headSales,groupLead,service,teamLead} = teamSplitRates
-    if (sales+groupLead+service+teamLead!==total || headSales+service+teamLead!==total) {
-      selected.value = item.itemKey
-      throw new Error('普通销售成交和团队负责人亲自成交的岗位比例合计，都须等于销售总比例。')
-    }
+  if (!splitRemoved.value && !serviceRemoved.value && Object.hasOwn(splitEdits.value,'service')) {
+    const service = rateAsBasisPoints(splitEdits.value.service)
+    if (service===undefined) throw new Error('请填写 0 至 100 之间的服务比例。')
+    teamSplitRates = {...splitItem.value.teamSplit,service}
   }
   const changes = Object.values(edits.value)
     .filter(({itemKey,row})=>!removedItems.value.has(itemKey) && !removedRateRows.value.has(cellKey(itemKey,row)) &&
@@ -630,6 +608,7 @@ function publicationInput() {
     teamChanges:splitRemoved.value ? [] : Array.from(teamEdits.value,([teamKey,changes])=>({
       teamKey,headPersonId:changes.head?.id,servicePersonId:serviceRemoved.value ? undefined : changes.service?.id,
     })).filter(change=>change.headPersonId || change.servicePersonId),
+    independentTeamSales:sheet.value.independentTeamSales,
     teamSplitRates,
     leaderChanges,
     splitRecipientDuties:splitRemoved.value ? undefined : Object.fromEntries([...splitDutyEdits.value].filter(([key])=>!removed.has(key))),
@@ -692,6 +671,7 @@ async function publish() {
           <div class="catalog-rate-context">
             <a-tag>v{{ sheet.version }}</a-tag>
             <span>{{ formatTime(sheet.effectiveFrom) }} 生效<template v-if="sheet.effectiveTo"> · 截至 {{ formatTime(sheet.effectiveTo) }}</template></span>
+            <a-tag v-if="sheet.independentTeamSales" color="blue">待发布 · 普通销售比例</a-tag>
             <span v-if="sheet.requiresCompletion">订单确认完成后计提</span>
           </div>
         </header>
@@ -739,7 +719,7 @@ async function publish() {
               :disabled="!editable || structureEditing" @update:name="setLabel(item,$event)">
               <CatalogPayeeFields :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
                 prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters" :product-id="sheet.productId"
-                :unit-names="sheet.scopeUnitNames"
+                :unit-names="sheet.scopeUnitNames" :sales-available="item.canChooseSalesTable && (!selectedCalculation || !!selectedCalculation.rows?.length)"
                 :saved-pool-label="item.targetLabel" :existing-pool="item.targetKind==='pool' && !item.poolId"
                 :disabled="!editable || structureEditing" @update:model-value="setTarget(item,$event)"/>
               <template #calculation>
@@ -796,11 +776,11 @@ async function publish() {
           </a-button>
           <div v-if="hasRateTable" class="finance-rate-toolbar catalog-rate-toolbar">
             <div class="catalog-rate-controls">
-              <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" button-style="solid" size="small"
+              <a-radio-group v-if="rateGroups.length>1" v-model:value="rateGroup" size="small"
                 :disabled="structureEditing" role="radiogroup" aria-label="查看比例">
-                <a-radio-button v-for="group in rateGroups" :key="group.key" :value="group.key">
+                <a-radio v-for="group in rateGroups" :key="group.key" :value="group.key">
                   <span>{{ group.title }}</span><small class="finance-rate-count">{{ group.activeCount }}</small>
-                </a-radio-button>
+                </a-radio>
               </a-radio-group>
               <strong v-else-if="activeRateGroup">{{ activeRateGroup.title }}</strong>
               <a-button v-if="activeRateGroup?.add" size="small" :disabled="!editable || structureEditing"
@@ -823,11 +803,11 @@ async function publish() {
                 <template v-if="column.key==='category'">{{ record.category || '不限' }}</template>
                 <template v-if="column.key==='rate'">
                   <a-input-number v-if="!applied && !record.staged" :aria-label="'第 '+record.row+' 行比例'" size="small"
-                    :value="displayLinkedTeamRate(record)"
+                    :value="displayRate(record.rateBps,record.row)"
                     :disabled="!editable || record.teamRate || removedRateRows.has(cellKey(selected,record.row))"
                     :min="0" :max="100" :precision="2" string-mode @update:value="setRate($event,record.rateBps,record.row)"/>
                   <span v-else>{{ applied ? displayRate(record.rateBps,record.row)+'%' : percent(record.rateBps) }}</span>
-                  <small v-if="record.staged || Object.hasOwn(edits,cellKey(selected,record.row)) || linkedTeamRateChanges(record)"
+                  <small v-if="record.staged || Object.hasOwn(edits,cellKey(selected,record.row))"
                     class="order-version">未保存</small>
                   <small v-if="record.teamRate" class="order-version">内部团队拆分</small>
                 </template>
@@ -836,7 +816,7 @@ async function publish() {
                   <a-button v-if="removedRateRows.has(cellKey(selected,record.row))" type="link" size="small"
                     :disabled="saving || structureEditing" @click="toggleRowRemoval(record.row)">撤销删除</a-button>
                   <template v-else>
-                    <a-button v-if="!record.teamRate && !record.companyFallback && (record.scope!=='external' || record.staged)"
+                    <a-button v-if="!record.teamRate"
                       type="link" size="small" :disabled="saving || structureEditing" @click="editRateScope(record)">
                       {{ record.scope==='external' ? '修改比例' : '编辑范围' }}
                     </a-button>
@@ -849,20 +829,6 @@ async function publish() {
               </template>
             </a-table>
           </template>
-          <a-collapse v-if="teamSplit" ghost class="catalog-more">
-            <a-collapse-panel key="team" header="内部团队成交比例">
-              <div v-if="!applied && sheet.mayPublish" class="catalog-rule-fields">
-                <a-form-item v-for="row in splitRows" :key="row.key" :label="row.label+'（%）'" :html-for="'catalog-split-'+row.key">
-                  <a-input-number :id="'catalog-split-'+row.key" :value="splitValue(row.key)"
-                    :disabled="!editable || structureEditing" :min="0" :max="100" :precision="2" string-mode
-                    @update:value="setSplitRate(row.key,$event)"/>
-                </a-form-item>
-              </div>
-              <a-descriptions v-else size="small" bordered :column="1">
-                <a-descriptions-item v-for="row in splitRows" :key="row.key" :label="row.label">{{ percent(row.rate) }}</a-descriptions-item>
-              </a-descriptions>
-            </a-collapse-panel>
-          </a-collapse>
           <div v-if="sheet.mayPublish && !applied" class="form-actions">
             <a-button size="small" type="link" :danger="!itemRemoved" :disabled="structureEditing || saving"
               @click="toggleItemRemoval">{{ itemRemoved ? '撤销移除' : '移除此安排' }}</a-button>
@@ -963,7 +929,7 @@ async function publish() {
               <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id" :product-id="sheet.productId"
                 :order-type-text="orderTypeText" :membership-sku="sheet.membershipSku" :default-membership-new-only="sheet.membershipNewOnly"
                 :replacement-item-key="selected===serviceItemKey && serviceReplacement ? serviceItemKey : undefined"
-                v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : component"
+                v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="itemRemoved ? undefined : editedComponent"
                 :api="api" :people-filters="peopleFilters" :parse-rate="rateAsBasisPoints" :sales-available="!hasSales && !structure.sales"
                 @rate-staged="showRateGroup"/>
             </Teleport>

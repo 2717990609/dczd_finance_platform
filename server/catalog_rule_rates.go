@@ -25,6 +25,7 @@ type catalogRateComponent struct {
 	AppointmentUnit          string             `json:"appointmentUnitId,omitempty"`
 	AppointmentLevel         string             `json:"appointmentLevel,omitempty"`
 	MemberRole               string             `json:"memberRole,omitempty"`
+	CanChooseSalesTable      bool               `json:"canChooseSalesTable,omitempty"`
 	TeamSplit                *catalogSplitRates `json:"teamSplit,omitempty"`
 	LeaderScope              *vipLeaderScope    `json:"leaderScope,omitempty"`
 	CommissionUnits          []string           `json:"salesScopeUnitIds,omitempty"`
@@ -65,23 +66,24 @@ type catalogRateRow struct {
 }
 
 type catalogRateSheet struct {
-	ProductID          int64                    `json:"productId"`
-	ProductName        string                   `json:"productName"`
-	ScopeLabel         string                   `json:"scopeLabel,omitempty"`
-	Label              string                   `json:"label"`
-	Version            int                      `json:"version"`
-	EffectiveFrom      time.Time                `json:"effectiveFrom"`
-	EffectiveTo        *time.Time               `json:"effectiveTo"`
-	MayPublish         bool                     `json:"mayPublish"`
-	RequiresCompletion bool                     `json:"requiresCompletion,omitempty"`
-	MembershipSKU      bool                     `json:"membershipSku,omitempty"`
-	MembershipNewOnly  bool                     `json:"membershipNewOnly,omitempty"`
-	Components         []catalogRateComponent   `json:"components"`
-	LeaderArrangements []catalogRateComponent   `json:"leaderArrangements,omitempty"`
-	Teams              []catalogRuleTeam        `json:"teams,omitempty"`
-	StructureOptions   *catalogStructureOptions `json:"structureOptions,omitempty"`
-	ScopeUnitNames     map[string]string        `json:"scopeUnitNames,omitempty"`
-	ScopeCategoryNames map[string]string        `json:"scopeCategoryNames,omitempty"`
+	ProductID            int64                    `json:"productId"`
+	ProductName          string                   `json:"productName"`
+	ScopeLabel           string                   `json:"scopeLabel,omitempty"`
+	Label                string                   `json:"label"`
+	Version              int                      `json:"version"`
+	EffectiveFrom        time.Time                `json:"effectiveFrom"`
+	EffectiveTo          *time.Time               `json:"effectiveTo"`
+	MayPublish           bool                     `json:"mayPublish"`
+	IndependentTeamSales bool                     `json:"independentTeamSales,omitempty"`
+	RequiresCompletion   bool                     `json:"requiresCompletion,omitempty"`
+	MembershipSKU        bool                     `json:"membershipSku,omitempty"`
+	MembershipNewOnly    bool                     `json:"membershipNewOnly,omitempty"`
+	Components           []catalogRateComponent   `json:"components"`
+	LeaderArrangements   []catalogRateComponent   `json:"leaderArrangements,omitempty"`
+	Teams                []catalogRuleTeam        `json:"teams,omitempty"`
+	StructureOptions     *catalogStructureOptions `json:"structureOptions,omitempty"`
+	ScopeUnitNames       map[string]string        `json:"scopeUnitNames,omitempty"`
+	ScopeCategoryNames   map[string]string        `json:"scopeCategoryNames,omitempty"`
 }
 
 func catalogRateComponents(raw json.RawMessage, companies, categories, relationships, organizations map[string]string) ([]catalogRateComponent, error) {
@@ -125,7 +127,10 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 		item.OwnSales, item.RecipientDuty = action.OwnSales, action.RecipientDuty
 		item.MembershipNewOnly = action.MembershipNewOnly
 		if item.ItemKey == sales.Item {
-			item.TargetKind = "seller"
+			item.CanChooseSalesTable = len(action.RateTable) > 0
+			if !sales.ConfiguredPayee {
+				item.TargetKind = "seller"
+			}
 			if split := sales.Split; split.Item != "" {
 				item.Disabled = split.salesPayeeDisabled()
 				item.ServiceDisabled = slices.Contains(split.DisabledShares, vipInternalServiceItem)
@@ -194,7 +199,7 @@ func catalogRateComponents(raw json.RawMessage, companies, categories, relations
 					Relationship:     caption(relationships, entry.Relationship, "销售关系待核"),
 					RelationshipCode: entry.Relationship, CompanyIDs: companyIDs, CategoryIDs: categoryIDs,
 					LimitsRelationship: entry.Relationship != "ANY", Rate: entry.Rate, Payee: entry.Payee, Scope: scope,
-					TeamRate: item.ItemKey == sales.Split.Item && slices.ContainsFunc(sales.Split.Teams, func(team vipInternalTeam) bool {
+					TeamRate: !sales.Split.Independent && item.ItemKey == sales.Split.Item && slices.ContainsFunc(sales.Split.Teams, func(team vipInternalTeam) bool {
 						return entry.namesCompany(team.Company)
 					}),
 					Fallback: entry.SnapshotDefault,
@@ -240,7 +245,7 @@ func (s workspace) getCatalogRuleRates(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, errRulePermission)
 		return
 	}
-	sheet, err := s.catalogRuleRateSheet(r.Context(), id)
+	sheet, err := s.readCatalogRuleRateSheet(r.Context(), id, r.URL.Query().Get("edit") == "true" && actor.permits(product, true))
 	sheet.MayPublish = sheet.MayPublish && actor.permits(product, true)
 	if err == nil && sheet.MayPublish {
 		options, optionsErr := readCatalogStructureOptions(r.Context(), s.db, product)
@@ -277,6 +282,10 @@ func (s workspace) postCatalogRuleRates(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalogRateSheet, error) {
+	return s.readCatalogRuleRateSheet(ctx, id, false)
+}
+
+func (s workspace) readCatalogRuleRateSheet(ctx context.Context, id string, edit bool) (catalogRateSheet, error) {
 	var sheet catalogRateSheet
 	var definition json.RawMessage
 	var companyNames, categoryNames, relationshipNames, organizationNames, groupNames map[string]string
@@ -330,6 +339,12 @@ func (s workspace) catalogRuleRateSheet(ctx context.Context, id string) (catalog
 	}
 	if !supported {
 		return sheet, errCatalogRateUnavailable
+	}
+	if edit && sheet.MayPublish {
+		definition, sheet.IndependentTeamSales, err = useIndependentCatalogTeamSales(definition)
+		if err != nil {
+			return sheet, err
+		}
 	}
 	sheet.MembershipNewOnly = catalogNewMembershipOnly(definition)
 	companyNames["ANY"] = "不限公司"

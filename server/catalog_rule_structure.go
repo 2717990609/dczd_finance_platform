@@ -43,6 +43,7 @@ type catalogConditionInput struct {
 	Rate            *int64   `json:"rateBps"`
 	Payee           string   `json:"payee,omitempty"`
 	ExternalDefault bool     `json:"externalCompanyDefault,omitempty"`
+	CompanyFallback bool     `json:"companyFallback,omitempty"`
 }
 
 type catalogNewRateRow struct {
@@ -153,12 +154,12 @@ func catalogStructureOptionFor(choices []catalogStructureOption, value string) c
 
 func (o catalogStructureOptions) condition(row catalogConditionInput) (json.RawMessage, error) {
 	rate := vipRateRow{Company: row.Company, CompanyIDs: row.CompanyIDs, Relationship: row.Relationship,
-		Category: row.Category, CategoryIDs: row.CategoryIDs, ExternalDefault: row.ExternalDefault}
+		Category: row.Category, CategoryIDs: row.CategoryIDs, ExternalDefault: row.ExternalDefault, SnapshotDefault: row.CompanyFallback}
 	if row.Payee == vipPayeeSalesCompany {
 		rate.Payee = row.Payee
 	}
 	if row.Rate == nil || *row.Rate < 0 || *row.Rate > 10000 || !rate.validScope() ||
-		!rate.validExternalDefault() ||
+		!rate.validExternalDefault() || row.CompanyFallback && (rate.Company == "ANY" || rate.hasCategory()) ||
 		row.Payee != "" && row.Payee != "seller" && row.Payee != vipPayeeSalesCompany ||
 		catalogStructureOptionFor(o.Relationships, row.Relationship).Value == "" {
 		return nil, invalid
@@ -236,7 +237,10 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, productID int64, raw j
 	}
 	for _, change := range input.CalculationChanges {
 		index, found := positions[change.ItemKey]
-		if !found || change.ItemKey == before.Item {
+		if !found || change.ItemKey == before.Item && !before.ConfiguredPayee &&
+			!slices.ContainsFunc(input.TargetChanges, func(target catalogBenefitTargetChange) bool {
+				return target.ItemKey == change.ItemKey && target.Target != "seller"
+			}) {
 			return nil, invalid
 		}
 		var calculation vipBenefitAction
@@ -281,7 +285,16 @@ func editCatalogStructure(ctx context.Context, tx pgx.Tx, productID int64, raw j
 	if err != nil {
 		return nil, err
 	}
-	if err := changeCatalogBenefitTargets(actions, before.Item, input.TargetChanges, options, keys); err != nil {
+	restricted := before.Item
+	if before.Split.Independent || len(before.Split.Teams) == 0 {
+		restricted = ""
+	}
+	for _, target := range input.TargetChanges {
+		if target.Target == "seller" && target.ItemKey != before.Item {
+			return nil, invalid
+		}
+	}
+	if err := changeCatalogBenefitTargets(actions, restricted, input.TargetChanges, options, keys); err != nil {
 		return nil, err
 	}
 	if len(input.NewSalesRates) != 0 {
@@ -392,8 +405,7 @@ func changeCatalogRateRows(existing []json.RawMessage, edits []catalogNewRateRow
 			}
 			var prior map[string]json.RawMessage
 			var replacement map[string]json.RawMessage
-			if json.Unmarshal(existing[edit.Row-1], &prior) != nil || json.Unmarshal(value, &replacement) != nil ||
-				string(prior["sales_category_snapshot_default"]) == "true" {
+			if json.Unmarshal(existing[edit.Row-1], &prior) != nil || json.Unmarshal(value, &replacement) != nil {
 				return nil, invalid
 			}
 			if id := prior["id"]; len(id) != 0 {
@@ -558,6 +570,11 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 	org := catalogStructureOptionFor(options.Organizations, target.Organization)
 	role := catalogStructureOptionFor(options.Roles, target.Role)
 	switch target.Target {
+	case "seller":
+		if action.Type != "RATE_TABLE" || target.PersonID != 0 || target.Role != "" || target.Organization != "" {
+			return invalid
+		}
+		action.Role = "SALES"
 	case "appointment":
 		if target.PersonID != 0 || target.Organization != "" || !role.Organization || !validVIPSalesOrganizationLevel(target.AppointmentLevel) {
 			return invalid

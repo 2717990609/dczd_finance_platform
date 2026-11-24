@@ -40,6 +40,7 @@ type publishCatalogRatesInput struct {
 	Changes                []catalogRateChange                `json:"changes"`
 	RecipientChanges       []catalogRuleRecipientChange       `json:"recipientChanges"`
 	TeamChanges            []catalogTeamRecipientChange       `json:"teamChanges"`
+	IndependentTeamSales   bool                               `json:"independentTeamSales,omitempty"`
 	TeamSplitRates         *catalogSplitRates                 `json:"teamSplitRates,omitempty"`
 	LeaderChanges          []catalogLeaderChange              `json:"leaderChanges,omitempty"`
 	SplitRecipientDuties   map[string]string                  `json:"splitRecipientDuties,omitempty"`
@@ -170,7 +171,7 @@ func (s workspace) publishCatalogRates(ctx context.Context, input publishCatalog
 
 func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRatesInput, actor string, refreshDrafts bool) (catalogPublication, error) {
 	if input.Create != nil {
-		if input.BaseID != "" || input.Copy != nil || input.TeamSplitRates != nil || input.NewSalesLabel != "" || input.MembershipNewOnly != nil ||
+		if input.BaseID != "" || input.Copy != nil || input.IndependentTeamSales || input.TeamSplitRates != nil || input.NewSalesLabel != "" || input.MembershipNewOnly != nil ||
 			len(input.MembershipArrangements)+len(input.SplitRecipientDuties) != 0 || input.NewSalesMembership != nil ||
 			len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges)+len(input.LeaderChanges)+len(input.ScopeChanges)+len(input.NewSalesScope)+len(input.NewSalesCategories)+
 				len(input.NewSalesRates)+len(input.NewRateRows)+len(input.TargetChanges)+len(input.CalculationChanges)+len(input.RemovedItems)+len(input.RemovedRateRows) != 0 {
@@ -188,7 +189,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 	leadersChanged := len(input.LeaderChanges) != 0
 	scopesChanged := len(input.ScopeChanges) != 0
 	removals := len(input.RemovedItems)+len(input.RemovedRateRows) != 0
-	if !valid || from.IsZero() || input.Copy == nil && input.TeamSplitRates == nil && len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 &&
+	if !valid || from.IsZero() || input.Copy == nil && !input.IndependentTeamSales && input.TeamSplitRates == nil && len(input.Changes)+len(input.RecipientChanges)+len(input.TeamChanges) == 0 &&
 		!structureChanged && !leadersChanged && !scopesChanged && !removals && input.MembershipNewOnly == nil && len(input.MembershipArrangements)+len(input.SplitRecipientDuties) == 0 || !textOK(actor, 128) {
 		return published, invalid
 	}
@@ -244,7 +245,13 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 			}
 		}
 		body := definition
-		var ratesChanged, splitChanged, recipientsChanged bool
+		var ratesChanged, splitChanged, recipientsChanged, independentChanged bool
+		if input.IndependentTeamSales {
+			body, independentChanged, err = useIndependentCatalogTeamSales(body)
+			if err != nil {
+				return err
+			}
+		}
 		if len(input.Changes) != 0 {
 			body, ratesChanged, err = editCatalogRates(body, input.Changes)
 			if err != nil {
@@ -341,7 +348,7 @@ func writeCatalogRates(ctx context.Context, tx pgx.Tx, input publishCatalogRates
 				return errCatalogScenarioTarget
 			}
 		}
-		if input.Copy == nil && !ratesChanged && !splitChanged && !recipientsChanged && !structureChanged && !leadersChanged && !scopesChanged && !removals && !membershipChanged && !splitDutiesChanged {
+		if input.Copy == nil && !independentChanged && !ratesChanged && !splitChanged && !recipientsChanged && !structureChanged && !leadersChanged && !scopesChanged && !removals && !membershipChanged && !splitDutiesChanged {
 			return nil
 		}
 		if _, _, err := catalogRateActions(body); err != nil {
@@ -588,6 +595,9 @@ func editCatalogRates(raw json.RawMessage, changes []catalogRateChange) (json.Ra
 }
 
 func internalTeamRatesChanged(before, after vipSalesPolicy) bool {
+	if before.Split.Independent {
+		return false
+	}
 	// Valid category IDs are UUIDs. Also check no history, unclassified, and unmatched.
 	categories := map[string]bool{"": true, "unmatched": true}
 	for _, policy := range []vipSalesPolicy{before, after} {
@@ -631,7 +641,7 @@ func editCatalogTeamSplitRates(raw json.RawMessage, rates catalogSplitRates) (js
 		}
 	}
 	common := rates.Service + rates.TeamLead
-	if rates.Sales+rates.GroupLead+common != rates.Total || rates.HeadSales+common != rates.Total {
+	if !split.Independent && (rates.Sales+rates.GroupLead+common != rates.Total || rates.HeadSales+common != rates.Total) {
 		return nil, false, errCatalogTeamSplitTotal
 	}
 	if rates.Total == split.Total && rates.Sales == split.Assistant && rates.HeadSales == split.HeadSeller &&
@@ -654,7 +664,7 @@ func editCatalogTeamSplitRates(raw json.RawMessage, rates catalogSplitRates) (js
 		fields[key], _ = json.Marshal(value)
 	}
 	root["internal_sales_direct_split"], _ = json.Marshal(fields)
-	if rates.Total != split.Total {
+	if !split.Independent && rates.Total != split.Total {
 		if err := changeCatalogTeamStandards(actions, policy, rates.Total); err != nil {
 			return nil, false, err
 		}
@@ -667,7 +677,7 @@ func editCatalogTeamSplitRates(raw json.RawMessage, rates catalogSplitRates) (js
 	if err != nil {
 		return nil, false, err
 	}
-	if rates.Total != split.Total {
+	if !split.Independent && rates.Total != split.Total {
 		revised, ok := readVIPSalesPolicy(body)
 		if !ok || internalTeamRatesChanged(policy, revised) {
 			return nil, false, errCatalogTeamSplitStandard
@@ -721,4 +731,50 @@ func changeCatalogTeamStandards(actions []map[string]json.RawMessage, policy vip
 		return err
 	}
 	return errCatalogRateUnavailable
+}
+
+// A new editable version uses its ordinary seller rate for every seller.
+// Keep the source version intact for payments already using it.
+func useIndependentCatalogTeamSales(raw json.RawMessage) (json.RawMessage, bool, error) {
+	policy, ok := readVIPSalesPolicy(raw)
+	if !ok || len(policy.Split.Teams) == 0 || policy.Split.Independent {
+		return raw, false, nil
+	}
+	root, actions, err := catalogRateActions(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	if policy.Split.Assistant != policy.Split.Total {
+		if err := changeCatalogTeamStandards(actions, policy, policy.Split.Assistant); err != nil {
+			return nil, false, err
+		}
+	}
+	var split map[string]json.RawMessage
+	if json.Unmarshal(root["internal_sales_direct_split"], &split) != nil || split == nil {
+		return nil, false, errCatalogRateUnavailable
+	}
+	membership := policy.Split.MembershipScopes
+	if membership == nil {
+		membership = make(map[string]bool, len(vipSplitRoles))
+	}
+	for _, share := range vipSplitRoles {
+		if _, exists := membership[share.item]; !exists && policy.Split.hasShare(share.item) {
+			membership[share.item] = newMembershipOnly(policy.MembershipNewOnly, catalogNewMembershipOnly(raw))
+		}
+	}
+	split["vip_membership_scopes"], _ = json.Marshal(membership)
+	split["independent_arrangements"] = json.RawMessage("true")
+	root["internal_sales_direct_split"], _ = json.Marshal(split)
+	root["benefit_actions"], err = json.Marshal(actions)
+	if err != nil {
+		return nil, false, err
+	}
+	body, err := json.Marshal(root)
+	if err != nil {
+		return nil, false, err
+	}
+	if _, _, err := catalogRateActions(body); err != nil {
+		return nil, false, err
+	}
+	return body, true, nil
 }

@@ -49,17 +49,10 @@ export const practiceCompanyMatchLabels = {
   default:'其他外部公司默认比例',
 }
 
-export const practiceCompanyRefundOptions = [
-  {value:'proportional',label:'按退款比例扣回'},
-  {value:'retain_fixed',label:'部分退款保留固定提成'},
-]
-export function practiceCompanyRefundMode(row, member) {
-  return row.refundPolicy === 'proportional' || member === 'new' ? 'proportional' : 'retain_fixed'
-}
-
 export function catalogRateConditionScope(row) {
   if (row.scope) return row.scope
   if (row.externalCompanyDefault) return 'external'
+  if (row.companyFallback) return 'inherited'
   if (row.companyIds?.length) return 'company'
   return row.categoryIds?.length ? 'category' : 'general'
 }
@@ -179,8 +172,9 @@ export function catalogRateConditionBody(row, scope = row.scope, salesPayee = fa
   }
   if (!row.relationship) throw new Error('请选择销售关系。')
   if (scope==='category' && !row.categoryIds.length) throw new Error('请选择销售类别。')
-  if (scope==='company' && !row.companyIds.length) throw new Error('请选择特例公司。')
+  if (['company','inherited'].includes(scope) && !row.companyIds.length) throw new Error('请选择特例公司。')
   return {relationship:row.relationship,rateBps,
+    ...(scope==='inherited' ? {companyFallback:true} : {}),
     ...(salesPayee && row.payee ? {payee:row.payee} : {}),
     ...(scope!=='category' && scope!=='general' && row.companyIds?.length ? {companyIds:row.companyIds} : {company:'ANY'}),
     ...(scope!=='general' && row.categoryIds?.length ? {categoryIds:row.categoryIds} : {})}

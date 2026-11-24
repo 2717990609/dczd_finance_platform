@@ -143,6 +143,35 @@ func TestVIPInternalAllocationUsesHistoricalHoldersAndConservesCents(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
+	independent, changed, err := useIndependentCatalogTeamSales(base)
+	if err != nil || !changed {
+		t.Fatalf("enable independent arrangements: %v, %v", changed, err)
+	}
+	independentPolicies := readVIPQuotePolicies(map[string]json.RawMessage{"new": independent})
+	ordinary := calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: rule.Split.Assistant})
+	for _, seller := range []string{"seller", "head"} {
+		request := req
+		request.Seller = seller
+		row := catalogPaymentMatch{RuleID: "new"}
+		independentPolicies.apply(&row, vipRuntimeData{BenefitReady: true, vipSalesData: data}, request, "")
+		if row.SalesStatus != "CALCULATED" || len(row.SalesParts) != 1 ||
+			row.SalesParts[0].Person != seller || row.SalesParts[0].Amount != ordinary {
+			t.Fatalf("all sellers, including the head, must receive the ordinary amount: %+v", row.SalesParts)
+		}
+		teamPayout := false
+		for _, part := range row.BenefitParts {
+			if part.Item == vipGroupLeaderItem && seller == "head" {
+				t.Fatal("the head's own order should use ordinary sales plus the team-leader arrangement")
+			}
+			if part.Item == vipTeamLeaderItem {
+				teamPayout = part.Party == "head" && part.Status == "CALCULATED" &&
+					part.Amount == calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: rule.Split.TeamHead})
+			}
+		}
+		if !teamPayout {
+			t.Fatalf("expected independent leadership payment: %+v", row.BenefitParts)
+		}
+	}
 	withoutSeller, err := removeCatalogEntries(base, []string{"sales"}, nil)
 	if err != nil {
 		t.Fatalf("removing sales must keep the configured service and leadership arrangements: %v", err)
