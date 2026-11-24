@@ -450,7 +450,7 @@ function ruleRecipientSummary(row) {
       ? (benefit.standardRates ? practiceStandardRateSummary(benefit.standardRates,value=>value+'%') : row.amount == null ? '' : row.amount+'%')
       : (benefit.fixedAmount == null ? '' : formatMoney(minor(benefit.fixedAmount))+
         (benefit.method==='order_fixed' ? ' / 笔' : benefit.recipient==='order_appointment' && benefit.method==='class_fixed' ? ' / 组织 / 班' : ''))
-    return [payee,practiceRecipientIsPerson(benefit.recipient) && optionLabel('organizationDuty',benefit.recipientDuty),amount].filter(Boolean).join(' · ')
+    return [payee,amount].filter(Boolean).join(' · ')
   }
   if (row.mode==='company_sales') {
     const payee = row.companySales?.payee
@@ -1300,7 +1300,6 @@ function ruleComponentBody(row) {
       ...(b.recipient==='sales_company' ? {salesCompanyRecipient:true} : {}),
       ...(b.recipient==='referral_company' ? {referralCompanyRecipient:true,
         ...(b.referralCompanyIds?.length ? {referralCompanyIds:b.referralCompanyIds} : {})} : {}),
-      ...(practiceRecipientIsPerson(b.recipient) && b.recipientDuty ? {recipientDuty:b.recipientDuty} : {}),
       ...(b.ownSales && b.recipient==='person' ? {ownSales:true} : {}),
       ...(!registration && b.salesCategoryIds?.length ? {salesCategoryIds:b.salesCategoryIds} : {}),
       ...(!registration && b.salesCompanies?.length ? {salesCompanies:b.salesCompanies} : {}),
@@ -2003,8 +2002,7 @@ async function save() {
             :referral-companies="companyRecipientOptions"
             :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')" :sales-units="salesUnitOptions"
             :payee-roles="componentSourceRoles(c.periodBenefit.orderRecipientRole)"
-            :pools="practicePoolOptions" :create-pool="createPracticePool" :member-choices="classMemberChoices(c)"
-            :duties="options('organizationDuty')"/>
+            :pools="practicePoolOptions" :create-pool="createPracticePool" :member-choices="classMemberChoices(c)"/>
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
             :organizations="salesUnitOptions"
             :sales-categories="options('practiceSalesCategory')" :recipients="companyRecipientOptions" :amounts="baseModes"

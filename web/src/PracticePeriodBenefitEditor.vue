@@ -8,13 +8,13 @@ import RuleOrderScope from './RuleOrderScope.vue'
 import RuleSalesScopeFields from './RuleSalesScopeFields.vue'
 import RuleTierTable from './RuleTierTable.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
-import { hasPracticePaymentScope, practiceRecipientIsPerson, practiceStandardRateScope } from './rule-component-form'
+import { hasPracticePaymentScope, practiceStandardRateScope } from './rule-component-form'
 
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array, salesCategories:Array,
   registrationCompanies:Array, registrationLoading:Boolean, registrationError:String,
   recipientTypes:Array, referralCompanies:Array, appointmentKinds:Array, sourceRoles:Array, payeeRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
-  memberChoices:Array, duties:Array,
+  memberChoices:Array,
 })
 const config = computed(() => props.component.periodBenefit)
 const usesStandardRates = computed(() => config.value.method==='rate' && Array.isArray(config.value.standardRates))
@@ -22,7 +22,6 @@ const usesOrganizationRates = computed(() => usesStandardRates.value && config.v
 watch(usesOrganizationRates, uses => {
   if (uses) props.component.sourceRole ||= props.sourceRoles[0]?.value
 })
-const personalRecipient = computed(() => practiceRecipientIsPerson(config.value.recipient))
 const registration = computed(() => config.value.registrationScope)
 const registrationOption = [{value:'registration',label:'签到报名归属'}]
 const scopeMode = computed(() => registration.value ? 'registration' : config.value.ownSales ? 'own' :
@@ -95,7 +94,6 @@ const calculationMethods = computed(() => [
 
 <template>
   <RuleArrangementFields class="period-arrangement" :name="config.label" :name-id="field('name')"
-    :duty-id="personalRecipient ? field('duty') : undefined" :duties="duties" v-model:duty="config.recipientDuty"
     :order-type-id="'rule-member-'+index" :order-types="memberChoices" v-model:order-type="component.classMember"
     @update:name="config.label=$event; config.labelIsCustom=true">
     <a-form-item label="收款对象" :html-for="field('recipient')" required>
@@ -104,9 +102,18 @@ const calculationMethods = computed(() => [
     <a-form-item v-if="config.recipient==='unit'" label="收款组织" :html-for="field('unit')" required>
       <a-select :id="field('unit')" v-model:value="config.unitId" :options="units" show-search :filter-option="byName"/>
     </a-form-item>
-    <a-form-item v-if="config.recipient==='person'" label="指定收款人" :html-for="field('person')" required>
-      <a-select :id="field('person')" v-model:value="config.personId" :options="people" show-search :filter-option="byName"/>
-    </a-form-item>
+    <template v-if="config.recipient==='person'">
+      <a-form-item label="指定收款人" :html-for="field('person')" required>
+        <a-select :id="field('person')" v-model:value="config.personId" :options="people" show-search :filter-option="byName"/>
+      </a-form-item>
+      <a-form-item label="任职组织" :html-for="field('appointment')">
+        <a-select :id="field('appointment')" v-model:value="config.appointmentUnitId" :options="units"
+          placeholder="选填，留空不限任职" show-search allow-clear :filter-option="byName"/>
+      </a-form-item>
+      <a-form-item v-if="config.appointmentUnitId" label="任职方式" :html-for="field('kind')" required>
+        <a-select :id="field('kind')" v-model:value="config.appointmentKind" :options="appointmentKinds"/>
+      </a-form-item>
+    </template>
     <a-form-item v-if="config.recipient==='order_person'" label="从订单取收款人" :html-for="field('payee-role')" required>
       <a-select :id="field('payee-role')" v-model:value="config.orderRecipientRole" :options="payeeRoles"
         show-search :filter-option="byName" placeholder="选择订单角色"/>
@@ -218,19 +225,6 @@ const calculationMethods = computed(() => [
     </RuleTierTable>
     <a-button type="dashed" size="small" @click="config.tiers.push({})">添加档位</a-button>
   </section>
-  <a-collapse v-if="config.recipient==='person'" ghost class="rule-appointment-details">
-    <a-collapse-panel key="scope" header="收款人任职条件">
-      <div class="period-fields">
-        <a-form-item label="任职组织" :html-for="field('appointment')" extra="填写后，仅计提任职有效期间的付款。">
-          <a-select :id="field('appointment')" v-model:value="config.appointmentUnitId" :options="units"
-            show-search allow-clear :filter-option="byName"/>
-        </a-form-item>
-        <a-form-item v-if="config.appointmentUnitId" label="任职方式" :html-for="field('kind')" required>
-          <a-select :id="field('kind')" v-model:value="config.appointmentKind" :options="appointmentKinds"/>
-        </a-form-item>
-      </div>
-    </a-collapse-panel>
-  </a-collapse>
 </template>
 
 <style scoped>
