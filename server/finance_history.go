@@ -29,14 +29,16 @@ var (
 const financeHistoryActor = "历史结算承接"
 
 type financeHistoryInput struct {
-	Database       string                `json:"database"`
-	Schema         string                `json:"schema"`
-	ProductCode    string                `json:"productCode"`
-	PeriodID       int64                 `json:"periodId"`
-	ConfirmedAt    time.Time             `json:"confirmedAt"`
-	Expected       *financeHistoryTotals `json:"expected"`
-	PostingsSHA256 string                `json:"postingsSha256,omitempty"`
-	Token          string                `json:"reviewToken,omitempty"`
+	Database        string                `json:"database"`
+	Schema          string                `json:"schema"`
+	ProductCode     string                `json:"productCode"`
+	PeriodID        int64                 `json:"periodId"`
+	ConfirmedAt     time.Time             `json:"confirmedAt"`
+	Expected        *financeHistoryTotals `json:"expected"`
+	PostingsSHA256  string                `json:"postingsSha256,omitempty"`
+	Token           string                `json:"reviewToken,omitempty"`
+	PoolFunding     []financeHistoryPool  `json:"poolFunding,omitempty"`
+	poolFundingJSON json.RawMessage
 }
 
 type financeHistoryTotals struct {
@@ -62,7 +64,7 @@ type financeHistoryReview struct {
 
 func adoptFinanceHistoryFromFile(ctx context.Context, cfg config, filename, mode string) error {
 	var input financeHistoryInput
-	if err := readImportFile(filename, &input, 64<<10); err != nil {
+	if err := readImportFile(filename, &input, 8<<20); err != nil {
 		return errors.New("无法读取历史结算承接清单")
 	}
 	db, err := pgxpool.NewWithConfig(ctx, cfg.database)
@@ -90,6 +92,17 @@ func (s workspace) runFinanceHistory(ctx context.Context, input financeHistoryIn
 		return financeHistoryReview{}, invalid
 	}
 	input.ConfirmedAt = input.ConfirmedAt.UTC().Truncate(time.Microsecond)
+	if len(input.PoolFunding) > 0 {
+		pools, err := normalizeHistoryPoolFunding(input.PoolFunding)
+		if err != nil {
+			return financeHistoryReview{}, err
+		}
+		input.PoolFunding = pools
+		input.poolFundingJSON, err = json.Marshal(pools)
+		if err != nil {
+			return financeHistoryReview{}, err
+		}
+	}
 	if apply {
 		token, err := hex.DecodeString(input.Token)
 		if err != nil || len(token) != sha256.Size {
@@ -116,7 +129,7 @@ func (s workspace) runFinanceHistory(ctx context.Context, input financeHistoryIn
 		var pgError *pgconn.PgError
 		if !apply || !errors.As(err, &pgError) || pgError.Code != "40001" {
 			if err == nil && apply {
-				err = verifyAdoptedHistory(ctx, s.db.Config().ConnConfig, result)
+				err = verifyAdoptedHistory(ctx, s.db.Config().ConnConfig, result, input.PoolFunding)
 			}
 			return result, err
 		}
@@ -176,7 +189,9 @@ func (s workspace) reviewFinanceHistory(ctx context.Context, tx pgx.Tx, input fi
 		if apply {
 			review.PostingsSHA256 = input.PostingsSHA256
 		} else if details != nil {
-			review.PostingsSHA256, err = financeHistoryPostings(ctx, tx, input.PeriodID, details)
+			if err = verifyStoredHistoryPoolFunding(ctx, tx, input.PeriodID, input.PoolFunding); err == nil {
+				review.PostingsSHA256, err = financeHistoryPostings(ctx, tx, input.PeriodID, input.poolFundingJSON, details)
+			}
 		}
 		return review, err
 	} else if !errors.Is(err, pgx.ErrNoRows) {
@@ -208,7 +223,13 @@ func (s workspace) reviewFinanceHistory(ctx context.Context, tx pgx.Tx, input fi
 	// The historical period remains closed to routine confirmation. Reuse the
 	// same pool checks while evaluating the archived allocation.
 	scope.Enabled = true
-	pool, err := reviewPoolSettlement(ctx, tx, input.PeriodID, scope)
+	var pool settlementReview
+	var basis string
+	if len(input.PoolFunding) > 0 {
+		pool, basis, err = reviewHistoryPoolFunding(ctx, tx, input.PeriodID, scope, input.PoolFunding)
+	} else {
+		pool, err = reviewPoolSettlement(ctx, tx, input.PeriodID, scope)
+	}
 	if err != nil {
 		return review, err
 	}
@@ -218,7 +239,7 @@ func (s workspace) reviewFinanceHistory(ctx context.Context, tx pgx.Tx, input fi
 	if pool.LaterPoolActivity {
 		return review, errSettlementPoolHistory
 	}
-	review.PostingsSHA256, err = financeHistoryPostings(ctx, tx, input.PeriodID, details)
+	review.PostingsSHA256, err = financeHistoryPostings(ctx, tx, input.PeriodID, input.poolFundingJSON, details)
 	if err != nil {
 		return review, err
 	}
@@ -240,6 +261,9 @@ func (s workspace) reviewFinanceHistory(ctx context.Context, tx pgx.Tx, input fi
 	if input.Token != token {
 		return review, errFinanceHistoryToken
 	}
+	if err := storeHistoryPoolFunding(ctx, tx, input.PeriodID, scope.Version, basis, input.PoolFunding); err != nil {
+		return review, err
+	}
 	final, err := insertSettlement(ctx, tx, input.PeriodID, scope.Version, financeHistoryActor, financeHistoryReceipt(input), &input.ConfirmedAt)
 	if err != nil {
 		return review, err
@@ -251,7 +275,11 @@ func (s workspace) reviewFinanceHistory(ctx context.Context, tx pgx.Tx, input fi
 // The frozen receipt lets the exact manifest retry after a source metadata
 // backfill or database restart, without treating a different manifest as a retry.
 func financeHistoryReceipt(input financeHistoryInput) string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte("adopted/1\n"+input.Token+"\n"+input.PostingsSHA256)))
+	receipt := "adopted/1\n" + input.Token + "\n" + input.PostingsSHA256
+	if len(input.poolFundingJSON) > 0 {
+		receipt += "\n" + string(input.poolFundingJSON)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(receipt)))
 }
 
 func verifyFinanceHistoryOrder(ctx context.Context, tx pgx.Tx, input financeHistoryInput, scope settlementReview) error {
@@ -301,7 +329,7 @@ func financeHistoryToken(ctx context.Context, tx pgx.Tx, input financeHistoryInp
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(value))), nil
 }
 
-func verifyAdoptedHistory(ctx context.Context, cfg *pgx.ConnConfig, result financeHistoryReview) error {
+func verifyAdoptedHistory(ctx context.Context, cfg *pgx.ConnConfig, result financeHistoryReview, pools []financeHistoryPool) error {
 	conn, err := pgx.ConnectConfig(ctx, cfg.Copy())
 	if err != nil {
 		return errors.New("历史结算已提交，暂时无法连接复查，请使用相同清单重试")
@@ -323,7 +351,7 @@ func verifyAdoptedHistory(ctx context.Context, cfg *pgx.ConnConfig, result finan
 		if totals != result.Totals {
 			return errFinanceHistoryMismatch
 		}
-		return nil
+		return verifyStoredHistoryPoolFunding(ctx, tx, result.PeriodID, pools)
 	})
 	if err != nil {
 		return errors.New("历史结算已提交，回读结果与提交不一致，请使用相同清单核对")

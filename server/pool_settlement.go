@@ -235,6 +235,11 @@ func reviewPoolSettlement(ctx context.Context, tx pgx.Tx, periodID int64, review
 	if err != nil {
 		return review, err
 	}
+	return finishPoolSettlementReview(ctx, tx, periodID, review, states, stale, hex.EncodeToString(hash.Sum(nil)))
+}
+
+func finishPoolSettlementReview(ctx context.Context, tx pgx.Tx, periodID int64, review settlementReview,
+	states map[poolScope]*poolStage, stale map[poolScope]bool, token string) (settlementReview, error) {
 	var affected []poolScope
 	for key, stage := range states {
 		unallocated := stage.balance
@@ -252,12 +257,12 @@ func reviewPoolSettlement(ctx context.Context, tx pgx.Tx, periodID int64, review
 		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Unit, b.Unit), cmp.Compare(a.Scenario, b.Scenario), cmp.Compare(a.Item, b.Item))
 	})
 	if len(affected) > 0 {
-		if err = tx.QueryRow(ctx, laterSettlementPoolSQL, periodID, affected).Scan(&review.LaterPoolActivity); err != nil {
+		if err := tx.QueryRow(ctx, laterSettlementPoolSQL, periodID, affected).Scan(&review.LaterPoolActivity); err != nil {
 			return review, err
 		}
 	}
 	if review.Enabled && review.Ended && review.IssueCount == 0 && len(review.Pools) == 0 && !review.LaterPoolActivity {
-		review.Token = hex.EncodeToString(hash.Sum(nil))
+		review.Token = token
 	}
 	return review, nil
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"io"
 
 	"github.com/jackc/pgx/v5"
@@ -17,12 +18,19 @@ const financeHistoryRowsSQL = `WITH lines AS MATERIALIZED (SELECT * FROM calcula
  refunds AS MATERIALIZED (SELECT * FROM calculation_draft_refunds WHERE period_id=$1),
  corrections AS MATERIALIZED (SELECT * FROM calculation_draft_corrections WHERE period_id=$1),
  draft AS MATERIALIZED (SELECT * FROM calculation_drafts WHERE period_id=$1),
- allocations AS MATERIALIZED (SELECT a.* FROM monthly_pool_allocations a JOIN draft d USING(period_id) WHERE a.draft_version=d.version),
+ allocations AS MATERIALIZED (SELECT a.* FROM monthly_pool_allocations a JOIN draft d USING(period_id)
+  WHERE a.draft_version=d.version AND $2::jsonb IS NULL),
  shares AS MATERIALIZED (SELECT s.* FROM monthly_pool_allocation_shares s JOIN allocations a ON a.id=s.allocation_id),
  funding AS MATERIALIZED (SELECT f.* FROM monthly_pool_allocation_funding f JOIN shares s ON s.id=f.share_id),
+ archived_pools AS MATERIALIZED (SELECT value,ordinality FROM jsonb_array_elements($2::jsonb) WITH ORDINALITY),
+ archived_funding AS MATERIALIZED (
+  SELECT (f->>'sourceLineId')::bigint AS source_line_id,nullif((f->>'personId')::bigint,0) AS person_id
+  FROM archived_pools a CROSS JOIN LATERAL jsonb_array_elements(a.value->'funding') f
+ ),
  original_lines AS MATERIALIZED (
   SELECT l.* FROM calculation_draft_lines l WHERE l.period_id<>$1 AND l.id IN (
-   SELECT original_line_id FROM refunds UNION SELECT original_line_id FROM corrections UNION SELECT source_line_id FROM funding)
+   SELECT original_line_id FROM refunds UNION SELECT original_line_id FROM corrections
+   UNION SELECT source_line_id FROM funding UNION SELECT source_line_id FROM archived_funding)
  ),
  rosters AS MATERIALIZED (SELECT r.* FROM practice_rosters current JOIN draft d ON current.id=d.practice_roster_id
   JOIN practice_rosters r ON r.period_key=current.period_key AND (r.id=current.id OR r.source_version=1)),
@@ -33,7 +41,7 @@ const financeHistoryRowsSQL = `WITH lines AS MATERIALIZED (SELECT * FROM calcula
  ), person_refs(id) AS (
   SELECT person_id FROM lines UNION SELECT allocation_owner_id FROM lines UNION SELECT person_id FROM performance
   UNION SELECT person_id FROM corrections UNION SELECT person_id FROM shares UNION SELECT person_id FROM original_lines
-  UNION SELECT allocation_owner_id FROM original_lines
+  UNION SELECT allocation_owner_id FROM original_lines UNION SELECT person_id FROM archived_funding
  ), rows(section,row_key,value) AS (
   SELECT 'period',id::text,to_jsonb(p) FROM periods p WHERE p.id=$1
   UNION ALL SELECT 'draft',period_id::text,to_jsonb(d) FROM draft d
@@ -47,6 +55,7 @@ const financeHistoryRowsSQL = `WITH lines AS MATERIALIZED (SELECT * FROM calcula
   UNION ALL SELECT 'pool',id::text,to_jsonb(a) FROM allocations a
   UNION ALL SELECT 'poolShare',id::text,to_jsonb(s) FROM shares s
   UNION ALL SELECT 'poolFunding',f.share_id::text||':'||f.source_line_id,to_jsonb(f) FROM funding f
+  UNION ALL SELECT 'archivedPoolFunding',ordinality::text,value FROM archived_pools
   UNION ALL SELECT 'personRef',p.id::text,jsonb_build_object('id',p.id,'party_id',p.legacy_party_id)
    FROM person_refs x JOIN people p USING(id)
   UNION ALL SELECT 'orderVersion',v.id::text,to_jsonb(v) FROM order_refs x JOIN source_order_versions v USING(id)
@@ -65,13 +74,13 @@ const financeHistoryRowsSQL = `WITH lines AS MATERIALIZED (SELECT * FROM calcula
    WHERE e.id IN (SELECT enrollment_id FROM rosters r JOIN practice_roster_members m ON r.id=m.roster_id)
  ) SELECT jsonb_build_array(section,value)::text FROM rows ORDER BY section COLLATE "C",row_key COLLATE "C"`
 
-func financeHistoryPostings(ctx context.Context, tx pgx.Tx, periodID int64, details io.Writer) (string, error) {
+func financeHistoryPostings(ctx context.Context, tx pgx.Tx, periodID int64, poolFunding json.RawMessage, details io.Writer) (string, error) {
 	hash := sha256.New()
 	var output io.Writer = hash
 	if details != nil {
 		output = io.MultiWriter(hash, details)
 	}
-	rows, err := tx.Query(ctx, financeHistoryRowsSQL, periodID)
+	rows, err := tx.Query(ctx, financeHistoryRowsSQL, periodID, poolFunding)
 	if err != nil {
 		return "", err
 	}
