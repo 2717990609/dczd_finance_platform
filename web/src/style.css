@@ -139,6 +139,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .finance-rule-editor .ant-descriptions-small .ant-descriptions-item-label,
 .finance-rule-editor .ant-descriptions-small .ant-descriptions-item-content { padding-block:4px; }
 .finance-rule-editor .rule-formula { margin-bottom:6px; }
+.finance-rule-editor .rule-appointment-details > .ant-collapse-item > .ant-collapse-header,
+.finance-rule-editor .rule-appointment-details .ant-collapse-content-box { padding:4px 0; }
 .finance-rule-editor .form-actions { padding-top:0; }
 .finance-rate-toolbar { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:center; margin-block:4px 6px; }
 .finance-rate-toolbar .ant-radio-group { display:flex; flex-wrap:wrap; }

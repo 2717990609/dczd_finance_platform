@@ -425,13 +425,15 @@ function setTeamPerson(field, id, option) {
   else teamEdits.value.delete(key)
 }
 
+const hasLeaderSalesScope = scope => Boolean(scope.companies.length || scope.groups.length || scope.categoryIds.length)
 function originalLeader(item) {
+  const scope = {orders:item.leaderScope.orders,companies:item.leaderScope.companies || [],groups:item.leaderScope.groups || [],
+    categoryIds:item.leaderScope.categoryIds || []}
   return {
     label:item.label,target:item.targetKind,method:item.fixedMinor==null ? 'rate' : 'fixed',
     amount:((item.fixedMinor ?? item.rateBps)/100).toFixed(2),
     personId:item.recipient?.id,personName:item.recipient?.name,
-    scope:{orders:item.leaderScope.orders,companies:item.leaderScope.companies || [],groups:item.leaderScope.groups || [],
-      categoryIds:item.leaderScope.categoryIds || []},
+    scope,restrictScope:hasLeaderSalesScope(scope),
   }
 }
 const leaderForm = item => leaderEdits.value.get(item.itemKey) || originalLeader(item)
@@ -473,7 +475,9 @@ function formatScope(names, order) {
   return [names.length>2 ? names.slice(0,2).join('、')+' 等 '+names.length+' 个' : names.join('、'),order].filter(Boolean).join(' · ')
 }
 function leaderScopeText(item) {
-  const {companies,groups,orders,categoryIds} = leaderForm(item).scope
+  const {scope,restrictScope} = leaderForm(item)
+  if (restrictScope && !hasLeaderSalesScope(scope)) return '待选择销售范围'
+  const {companies,groups,orders,categoryIds} = scope
   const identifiers = groups.length ? groups : companies.length ? companies : (sheet.value?.teams || []).map(team=>team.key)
   const names = identifiers.map(id=>leaderScopeNames.value.get(id) || '已选组织')
   const groupScope = item.itemKey==='internal-group-leader' && !groups.length ? '各团队下属小组' : ''
@@ -604,6 +608,10 @@ function publicationInput() {
     if (!label || value===undefined || form.target==='person' && !form.personId) {
       selected.value = itemKey
       throw new Error('请补齐「'+(label || '负责人提成')+'」的名称、收款人和计提标准。')
+    }
+    if (form.restrictScope && !hasLeaderSalesScope(form.scope)) {
+      selected.value = itemKey
+      throw new Error('请为「'+label+'」选择适用的销售组织或销售类别。')
     }
     return {itemKey,label,target:form.target,personId:form.personId,scope:form.scope,
       ...(form.method==='fixed' ? {fixedMinor:value} : {rateBps:value})}
@@ -916,17 +924,19 @@ async function publish() {
                 :duties="splitDutyOptions(leader)" :recipient-duty="splitDutyValue(leader)" @update:recipient-duty="setSplitDuty(leader,$event)"
                 :inherited="leader.targetKind==='inherit' && !leader.disabled"
                 @update:model-value="setLeader(leader,$event)">
-                <div v-if="leader.itemKey==='internal-team-leader' && ['inherit','registered'].includes(leaderForm(leader).target) && teamOptions.length" class="catalog-rule-fields">
-                  <a-form-item label="查看登记人所属团队" html-for="catalog-head-company">
-                    <a-select id="catalog-head-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
-                  </a-form-item>
-                  <a-form-item v-if="team" label="规则登记负责人" html-for="catalog-team-head">
-                    <AppointmentPersonSelect v-if="!applied && sheet.mayPublish" id="catalog-team-head" :key="selectedTeam"
-                      :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('head')" :value="teamPerson('head')?.id"
-                      :disabled="!editable" @change="(id,option)=>setTeamPerson('head',id,option)"/>
-                    <span v-else>{{ team.head.name }}</span>
-                  </a-form-item>
-                </div>
+                <template v-if="leader.itemKey==='internal-team-leader' && ['inherit','registered'].includes(leaderForm(leader).target) && teamOptions.length" #registered>
+                  <div class="rule-basics">
+                    <a-form-item label="所属团队" html-for="catalog-head-company">
+                      <a-select id="catalog-head-company" v-model:value="selectedTeam" :options="teamOptions" show-search option-filter-prop="label"/>
+                    </a-form-item>
+                    <a-form-item v-if="team" label="登记负责人" html-for="catalog-team-head">
+                      <AppointmentPersonSelect v-if="!applied && sheet.mayPublish" id="catalog-team-head" :key="selectedTeam"
+                        :api="api" endpoint="/catalog-rule-people" :filters="peopleFilters" :current="teamPerson('head')" :value="teamPerson('head')?.id"
+                        :disabled="!editable" @change="(id,option)=>setTeamPerson('head',id,option)"/>
+                      <span v-else>{{ team.head.name }}</span>
+                    </a-form-item>
+                  </div>
+                </template>
               </CatalogLeaderArrangement>
               <div v-if="sheet.mayPublish && !applied" class="form-actions">
                 <a-button size="small" type="link" :danger="!removedItems.has(leader.itemKey)" :disabled="structureEditing || saving"
@@ -998,9 +1008,6 @@ async function publish() {
 .catalog-rate-context {display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;color:var(--muted);font-size:13px}
 .catalog-rate-context :deep(.ant-tag) {margin-inline-end:0}
 .catalog-rate-effective :deep(.ant-input) {width:min(100%,280px)}
-.catalog-rule-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:4px 10px}
-.catalog-rule-fields :deep(.ant-form-item) {min-width:0;margin-bottom:6px}
-.catalog-rule-fields :deep(.ant-input-number) {width:100%}
 .catalog-more {margin:6px 0}
 .catalog-more :deep(.ant-collapse-header) {padding-block:6px}
 .catalog-more :deep(.ant-collapse-content-box) {padding-block:4px}

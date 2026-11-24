@@ -171,7 +171,7 @@ const calculationMethods = computed(() => [
     </RuleTierTable>
     <a-button type="dashed" size="small" @click="config.tiers.push({})">添加档位</a-button>
   </section>
-  <a-collapse v-if="config.recipient==='person'" ghost class="period-appointment">
+  <a-collapse v-if="config.recipient==='person'" ghost class="rule-appointment-details">
     <a-collapse-panel key="scope" header="收款人任职条件">
       <div class="period-fields">
         <a-form-item label="任职组织" :html-for="field('appointment')" extra="填写后，仅计提任职有效期间的付款。">
@@ -191,5 +191,4 @@ const calculationMethods = computed(() => [
 .period-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:0 10px;align-items:start}
 .period-tier-editor {margin-top:4px}
 .period-tier-option {margin-bottom:4px}
-.period-appointment :deep(.ant-collapse-header),.period-appointment :deep(.ant-collapse-content-box) {padding:4px 0}
 </style>
