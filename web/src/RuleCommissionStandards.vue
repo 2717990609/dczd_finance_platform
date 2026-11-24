@@ -5,10 +5,11 @@ const props = defineProps({groups:Array,priority:{type:Array,default:()=>[]},dis
 const active = defineModel({type:String})
 const labels = {
   company:'按组织计提',companies:'按组织计提',category:'按销售类别计提',
-  general:'通用标准',external:'已保存的兜底比例',inherited:'公司补充比例',
+  person:'个人特例',general:'通用标准',external:'已保存的兜底比例',inherited:'公司补充比例',
 }
 const hasScopeTabs = computed(() => props.groups?.some(group=>group.value==='category') &&
   props.groups.some(group=>['company','companies'].includes(group.value)))
+const hasPersonPriority = computed(() => props.priority.some(item=>item.scope==='person'))
 const fallbackOrder = computed(() => props.priority.filter(item=>item.scope!=='company').map(item=>item.label).join(' → '))
 </script>
 
@@ -17,8 +18,9 @@ const fallbackOrder = computed(() => props.priority.filter(item=>item.scope!=='c
     <header v-if="!embedded || hasScopeTabs || priority.length>1" class="commission-standards-header">
       <h4 v-if="!embedded">计提标准</h4>
       <small v-if="hasScopeTabs" class="finance-rate-priority">
-        <strong class="commission-standards-priority">组织特例优先</strong>
-        <span v-if="fallbackOrder"> · 未命中按 {{ fallbackOrder }}</span>
+        <strong class="commission-standards-priority">{{ hasPersonPriority ? '组织特例优先于销售类别' : '组织特例优先' }}</strong>
+        <span v-if="hasPersonPriority"> · {{ priority.map(item=>item.label).join(' → ') }}</span>
+        <span v-else-if="fallbackOrder"> · 未命中按 {{ fallbackOrder }}</span>
         <span v-else> · 类别和组织可同时配置</span>
       </small>
       <small v-else-if="priority.length>1" class="finance-rate-priority">
@@ -66,6 +68,14 @@ const fallbackOrder = computed(() => props.priority.filter(item=>item.scope!=='c
   .commission-standards-tabs :deep(.ant-tabs-nav-wrap) { flex:1 1 100%; min-width:0 }
   .commission-standards-tabs :deep(.ant-tabs-extra-content) { max-width:100%; margin:4px 0 }
   .commission-standards-toolbar { justify-content:flex-start; flex-wrap:wrap }
+}
+@container (min-width:600px) {
+  .commission-standard-scope:has(> :deep(.rule-scope-filters > .ant-form-item:only-child)) {
+    grid-template-columns:repeat(3,minmax(0,1fr));
+  }
+  .commission-standard-scope > :deep(.rule-scope-filters:has(> .ant-form-item:only-child)) {
+    display:contents;
+  }
 }
 .commission-standard-scope { display:grid; gap:0 10px; grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr)); }
 .commission-standard-scope :deep(.rule-scope-filters) { display:grid; grid-column:1 / -1; gap:0 10px; grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr)) }

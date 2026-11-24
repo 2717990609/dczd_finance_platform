@@ -4,7 +4,7 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
-import { catalogOrderSalesPayees, catalogRecipientIsPerson, catalogScopeOptions } from './rule-component-form'
+import { catalogOrderSalesPayees, catalogScopeOptions } from './rule-component-form'
 
 const props = defineProps({options:Object,api:Function,peopleFilters:Object,prefix:String,disabled:Boolean,salesAvailable:Boolean,
   productId:Number,savedPoolLabel:String,existingPool:Boolean,unitNames:Object})
@@ -40,7 +40,6 @@ function update(fields) {
 function changeTarget(target) {
   update({target,role:undefined,memberRole:undefined,personId:undefined,personName:undefined,
     ownerPersonId:undefined,ownerName:undefined,organization:undefined,poolId:undefined,
-    recipientDuty:catalogRecipientIsPerson(target) ? payee.value.recipientDuty : undefined,
     appointmentUnitId:undefined,appointmentLevel:undefined})
 }
 function addPool(pool) {
@@ -68,11 +67,6 @@ function addPool(pool) {
     :api="api" :product-id="productId" :disabled="disabled" :model-value="payee.poolId"
     :saved-label="savedPoolLabel" :existing="existingPool && !!payee.organization"
     @created="addPool" @update:model-value="update({poolId:$event})"/>
-  <a-form-item v-if="catalogRecipientIsPerson(payee.target)" label="收款人职责" :html-for="field('duty')">
-    <a-select :id="field('duty')" :value="payee.recipientDuty" :options="options.duties"
-      show-search option-filter-prop="label" :disabled="disabled" allow-clear placeholder="选填"
-      @update:value="update({recipientDuty:$event})"/>
-  </a-form-item>
   <a-form-item v-if="payee.target==='person'" label="任职条件" :html-for="field('role')">
     <a-select :id="field('role')" :value="payee.role" :options="roles" show-search option-filter-prop="label" :disabled="disabled"
       allow-clear placeholder="选填"

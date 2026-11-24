@@ -8,9 +8,10 @@ import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import DraftAggregateOrders from './DraftAggregateOrders.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
-import RuleEditableTable from './RuleEditableTable.vue'
+import CatalogPeriodTiers from './CatalogPeriodTiers.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
-import { catalogAppointmentLevels, catalogOrderScope, catalogRecipientIsPerson, emptyCatalogOrderScope } from './rule-component-form'
+import RuleStandardValue from './RuleStandardValue.vue'
+import { catalogAppointmentLevels, catalogOrderScope, emptyCatalogOrderScope } from './rule-component-form'
 
 const props = defineProps({rule:Object, applied:Object, focusItemKey:String, products:Array, api:Function, formatMoney:Function, formatTime:Function, optionLabel:Function, canReviewActivity:Boolean})
 const emit = defineEmits(['close','published','open-draft','copy','open-version','resumed','show-order'])
@@ -55,7 +56,6 @@ let activityRequest = 0
 
 const cycleLabels = {MONTHLY:'自然月',MONTHLY_25_TO_24:'每月 25 日至次月 24 日'}
 const cycleOptions = Object.entries(cycleLabels).map(([value,label])=>({value,label}))
-const tierColumns = ['净额起点（元，含）','净额止点（元，不含）','计提比例（%）']
 const activityIssueLabels = {
   AGGREGATE_REFUND_MONTH_MISSING:'请按该整期规则打开退款发生月的草稿',
   REFUND_ADJUSTMENT:'退款更正待核对', INVALID_EVENT:'交易编号或金额缺失', DUPLICATE_EVENT:'交易编号重复',
@@ -270,7 +270,6 @@ function setTarget(row, target) {
   row.poolName = ''
   row.poolId = undefined
   row.legacyPool = false
-  if (!catalogRecipientIsPerson(target)) row.recipientDuty = undefined
   row.appointment = undefined
   row.appointmentLevel = undefined
   row.appointmentRole = undefined
@@ -603,9 +602,7 @@ async function resumeRule() {
           </button>
           <div v-if="activeComponent===item.uid" :id="'period-rule-part-'+item.uid" class="rule-block-body">
           <a-form v-if="canSave" layout="vertical" size="small">
-            <RuleArrangementFields name-id="period-benefit-label" v-model:name="item.label" :disabled="saving"
-              :duty-id="catalogRecipientIsPerson(item.targetKind) ? 'period-benefit-duty' : undefined" :duties="sheet.options?.duties"
-              v-model:duty="item.recipientDuty">
+            <RuleArrangementFields name-id="period-benefit-label" v-model:name="item.label" :disabled="saving">
               <a-form-item label="收款对象" html-for="period-benefit-target" required>
                 <a-select id="period-benefit-target" :value="item.targetKind" :options="targetTypes" :disabled="saving" @change="setTarget(item,$event)"/>
               </a-form-item>
@@ -619,6 +616,22 @@ async function resumeRule() {
                 <a-select id="period-benefit-org" v-model:value="item.organizationKey" :options="availableOrganizations(item)"
                   :disabled="saving" show-search option-filter-prop="label"/>
               </a-form-item>
+              <template v-if="item.targetKind==='person'">
+                <a-form-item>
+                  <a-checkbox :checked="!!item.appointment" :disabled="saving"
+                    @update:checked="item.appointment=$event ? {} : undefined">仅计提任职期间的订单</a-checkbox>
+                </a-form-item>
+                <template v-if="item.appointment">
+                  <a-form-item label="任职组织" html-for="period-benefit-appointment-unit">
+                    <a-select id="period-benefit-appointment-unit" v-model:value="item.appointment.unitId" :options="unitOptions"
+                      :disabled="saving" show-search option-filter-prop="label"/>
+                  </a-form-item>
+                  <a-form-item label="任职岗位" html-for="period-benefit-appointment-role">
+                    <a-select id="period-benefit-appointment-role" v-model:value="item.appointment.role" :options="availableRoles(item.appointment.role)"
+                      :disabled="saving" show-search option-filter-prop="label"/>
+                  </a-form-item>
+                </template>
+              </template>
               <CatalogOrganizationAppointmentFields v-if="item.targetKind==='appointment'" prefix="period-benefit"
                 v-model:level="item.appointmentLevel" v-model:role="item.appointmentRole"
                 :roles="availableRoles(item.appointmentRole)" :disabled="saving"/>
@@ -656,67 +669,25 @@ async function resumeRule() {
                   :options="periodScopeUnits" :unit-names="salesUnitNames" :categories="periodScopeCategories" :category-names="salesCategoryNames"
                   :can-own="item.targetKind==='person'" :disabled="saving"/>
               </template>
+              <template #standards>
+                <RuleCommissionStandards>
+                  <RuleStandardValue v-if="item.method==='rate'" id="period-benefit-uniform-rate" v-model="item.uniformRate" :disabled="saving"/>
+                  <RuleStandardValue v-else-if="item.method==='fixed'" id="period-benefit-fixed-amount" method="fixed"
+                    v-model="item.fixedAmount" :disabled="saving"
+                    :label="item.targetKind==='appointment' ? '每笔符合条件的订单金额（元）' : undefined"/>
+                  <CatalogPeriodTiers v-else :tiers="item.tiers" :disabled="saving" :format-money="formatMoney"
+                    @remove="removeTier(item.tiers,$event)"/>
+                </RuleCommissionStandards>
+              </template>
             </RuleArrangementFields>
           </a-form>
           <RuleArrangementFields v-else :order-type-text="itemOrderTypes(item)" :calculation-text="methodSummary(item)" :scope-text="orderScopeText(item)">
             <a-form-item label="收款对象"><span class="rule-field-value">{{ targetLabel(item) }}</span></a-form-item>
           </RuleArrangementFields>
-          <RuleCommissionStandards v-if="canSave && item.method!=='tiers'">
-            <a-form layout="vertical" size="small" class="commission-uniform-rate">
-              <a-form-item v-if="item.method==='rate'" label="比例（%）" html-for="period-benefit-uniform-rate" required>
-                <a-input-number id="period-benefit-uniform-rate" v-model:value="item.uniformRate" :min="0" :max="100"
-                  :precision="2" :disabled="saving"/>
-              </a-form-item>
-              <a-form-item v-else :label="item.targetKind==='appointment' ? '每笔符合条件的订单金额（元）' : '金额（元）'"
-                html-for="period-benefit-fixed-amount" required>
-                <a-input-number id="period-benefit-fixed-amount" v-model:value="item.fixedAmount" :min="0" :precision="2" :disabled="saving"/>
-              </a-form-item>
-            </a-form>
-          </RuleCommissionStandards>
-          <a-form v-if="canSave && item.targetKind==='person'" layout="vertical" size="small" class="rule-basics">
-            <a-form-item>
-              <a-checkbox :checked="!!item.appointment" :disabled="saving"
-                @update:checked="item.appointment=$event ? {} : undefined">仅计提任职期间的订单</a-checkbox>
-            </a-form-item>
-            <template v-if="item.appointment">
-              <a-form-item label="任职组织" html-for="period-benefit-appointment-unit">
-                <a-select id="period-benefit-appointment-unit" v-model:value="item.appointment.unitId" :options="unitOptions"
-                  :disabled="saving" show-search option-filter-prop="label"/>
-              </a-form-item>
-              <a-form-item label="任职岗位" html-for="period-benefit-appointment-role">
-                <a-select id="period-benefit-appointment-role" v-model:value="item.appointment.role" :options="availableRoles(item.appointment.role)"
-                  :disabled="saving" show-search option-filter-prop="label"/>
-              </a-form-item>
-            </template>
-          </a-form>
-          <a-form v-if="item.method==='tiers'" layout="vertical" size="small">
-            <p class="rule-formula">按本组净额选档，净额乘该档比例。</p>
-            <RuleEditableTable label="整期净额阶梯" :columns="tierColumns" :rows="item.tiers">
-              <template #cells="{row,index}">
-                <td>
-                  <a-form-item :label="tierColumns[0]" :html-for="'catalog-tier-from-'+index">
-                    <a-input-number :id="'catalog-tier-from-'+index" v-model:value="row.from" :aria-label="'第 '+(index+1)+' 档净额起点'"
-                      :min="0" :precision="2" :disabled="!canSave || saving || index===0"/>
-                  </a-form-item>
-                </td>
-                <td>
-                  <a-form-item :label="tierColumns[1]">
-                    {{ item.tiers[index+1]?.from == null ? (index===item.tiers.length-1 ? '不限' : '待填写') : formatMoney(Math.round(item.tiers[index+1].from*100)) }}
-                  </a-form-item>
-                </td>
-                <td>
-                  <a-form-item :label="tierColumns[2]" :html-for="'catalog-tier-rate-'+index">
-                    <a-input-number :id="'catalog-tier-rate-'+index" v-model:value="row.rate" :aria-label="'第 '+(index+1)+' 档计提比例'"
-                      :min="0" :max="100" :precision="2" :disabled="!canSave || saving"/>
-                  </a-form-item>
-                </td>
-              </template>
-              <template v-if="canSave" #actions="{index}">
-                <a-button danger type="link" size="small" :disabled="saving || item.tiers.length===1"
-                  @click="removeTier(item.tiers,index)">删除</a-button>
-              </template>
-            </RuleEditableTable>
-            <a-button v-if="canSave" type="dashed" size="small" :disabled="saving" @click="item.tiers.push({from:undefined,rate:0})">新增档位</a-button>
+          <a-form v-if="!canSave && item.method==='tiers'" layout="vertical" size="small">
+            <RuleCommissionStandards>
+              <CatalogPeriodTiers :tiers="item.tiers" :format-money="formatMoney" disabled/>
+            </RuleCommissionStandards>
           </a-form>
           <div v-if="canSave && rows.length>1" class="form-actions">
             <a-button type="link" danger size="small" :disabled="saving" @click="removeComponent(item)">移除此安排</a-button>

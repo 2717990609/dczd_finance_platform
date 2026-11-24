@@ -7,6 +7,7 @@ import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import PeriodTasks from './PeriodTasks.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
+import RuleStandardValue from './RuleStandardValue.vue'
 import PracticePersonalScopeFields from './PracticePersonalScopeFields.vue'
 import FinanceLogin from './FinanceLogin.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
@@ -2152,8 +2153,6 @@ async function save() {
           <div v-if="i===activeRuleComponent" :id="'practice-rule-part-'+i" class="rule-block-body component-editor">
           <RuleArrangementFields v-if="!['company_sales','period_rate'].includes(c.mode)"
             :name-id="classRule ? 'rule-sales-label-'+i : undefined" v-model:name="c.label"
-            :duty-id="classRule && ['sales','referral'].includes(c.type) ? 'rule-recipient-duty-'+i : undefined"
-            :duties="options('organizationDuty')" v-model:duty="c.recipientDuty"
             :order-type-id="classRule ? 'rule-member-'+i : undefined" :order-types="classRule ? classMemberChoices(c) : undefined"
             :order-type="c.classMember" @update:order-type="changeClassMember(c,$event)">
             <template v-if="classRule && ['sales','referral'].includes(c.type)">
@@ -2177,33 +2176,29 @@ async function save() {
                 <a-select :id="'rule-mode-'+i" :value="c.mode" :options="amountModes(c)" @change="updateAmountMode(c,$event)"/>
               </a-form-item>
             </template>
-            <template v-if="!['fixed','rate'].includes(c.mode)" #scope>
-              <PracticePersonalScopeFields v-if="classRule && ['sales','referral'].includes(c.type)" :row="c" :index="i"
-                :companies="options('practiceSalesCompany')" :categories="options('practiceSalesCategory')" :units="salesUnitOptions"
-                :people="classPeopleOptions"/>
+            <template #standards>
+              <RuleCommissionStandards v-if="['fixed','rate','tiered'].includes(c.mode)">
+                <template v-if="classRule && ['sales','referral'].includes(c.type)" #scope>
+                  <PracticePersonalScopeFields :row="c" :index="i"
+                    :companies="options('practiceSalesCompany')" :categories="options('practiceSalesCategory')" :units="salesUnitOptions"
+                    :people="classPeopleOptions"/>
+                </template>
+                <RuleStandardValue v-if="c.mode==='fixed' || c.mode==='rate'" :id="'rule-amount-'+i" :method="c.mode" v-model="c.amount"
+                  :max="c.mode==='rate' ? 100 : 1000000000"
+                  :label="c===practiceRetrainSales && c.retrainSplits?.length ?
+                    (c.mode==='rate' ? '复训总提成比例（%）' : '每份复训总提成（元）') : undefined"/>
+                <PracticeTierEditor v-else :config="c.tierConfig" :metrics="options('tierMetric')"
+                  :amounts="baseModes" :people="classPeopleOptions" :companies="options('practiceSalesCompany')"
+                  :sales-categories="options('practiceSalesCategory')" :show-legacy-retrain="c.classMember==='new' && c.tierConfig.hasRetrainPayout"
+                  :retrain-unavailable="draft.components.some(other=>other!==c && other.type==='sales' && matchesPracticeMember(other,'retrain'))"/>
+              </RuleCommissionStandards>
+            </template>
+            <template #advanced>
+              <PracticeRetrainSplitEditor v-if="c===practiceRetrainSales && c.retrainSplits?.length" :component="c" :index="i"
+                :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"
+                :pools="practicePoolOptions" :create-pool="createPracticePool" :format-money="formatMoney"/>
             </template>
           </RuleArrangementFields>
-          <RuleCommissionStandards v-if="c.mode==='fixed' || c.mode==='rate'">
-            <template v-if="classRule && ['sales','referral'].includes(c.type)" #scope>
-              <PracticePersonalScopeFields :row="c" :index="i"
-                :companies="options('practiceSalesCompany')" :categories="options('practiceSalesCategory')" :units="salesUnitOptions"
-                :people="classPeopleOptions"/>
-            </template>
-            <a-form-item class="commission-uniform-rate" :html-for="'rule-amount-'+i"
-              :label="c===practiceRetrainSales && c.retrainSplits?.length ?
-                (c.mode==='rate' ? '复训总提成比例（%）' : '每份复训总提成（元）') :
-                c.mode==='rate' ? '比例（%）' : '金额（元）'">
-              <a-input-number :id="'rule-amount-'+i" v-model:value="c.amount"
-                :min="0" :max="c.mode==='rate'?100:1000000000" :precision="2"/>
-            </a-form-item>
-          </RuleCommissionStandards>
-          <PracticeRetrainSplitEditor v-if="c===practiceRetrainSales && c.retrainSplits?.length" :component="c" :index="i"
-            :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"
-            :pools="practicePoolOptions" :create-pool="createPracticePool" :format-money="formatMoney"/>
-          <PracticeTierEditor v-if="c.mode==='tiered'" :config="c.tierConfig" :metrics="options('tierMetric')"
-            :amounts="baseModes" :people="classPeopleOptions" :companies="options('practiceSalesCompany')"
-            :sales-categories="options('practiceSalesCategory')" :show-legacy-retrain="c.classMember==='new' && c.tierConfig.hasRetrainPayout"
-            :retrain-unavailable="draft.components.some(other=>other!==c && other.type==='sales' && matchesPracticeMember(other,'retrain'))"/>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
             :registration-companies="registrationCompanies" :registration-loading="registrationCompaniesLoading" :registration-error="registrationCompaniesError"
             :sales-categories="options('practiceSalesCategory')"
@@ -2217,7 +2212,7 @@ async function save() {
             :sales-categories="options('practiceSalesCategory')" :recipients="companyRecipientOptions" :amounts="baseModes"
             :source-roles="options('practicePeriodSourceRole')" :payee-roles="componentSourceRoles(c.companySales.payee.role)"
             :people="classPeopleOptions" :units="unitOptions" :pools="practicePoolOptions" :create-pool="createPracticePool"
-            :member-choices="classMemberChoices(c)" :duties="options('organizationDuty')" @member-change="resetAmountMode(c)"/>
+            :member-choices="classMemberChoices(c)" @member-change="resetAmountMode(c)"/>
           <div v-if="draft.components.length>1" class="form-actions">
             <a-button type="link" size="small" danger class="rule-remove"
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>

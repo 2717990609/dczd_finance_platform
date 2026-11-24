@@ -8,6 +8,7 @@ import RuleOrderScope from './RuleOrderScope.vue'
 import RuleSalesScopeFields from './RuleSalesScopeFields.vue'
 import RuleEditableTable from './RuleEditableTable.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
+import RuleStandardValue from './RuleStandardValue.vue'
 import { hasPracticePaymentScope, practiceStandardRateScope, practiceTierSelectionLabels } from './rule-component-form'
 
 const props = defineProps({
@@ -205,54 +206,52 @@ const calculationMethods = computed(() => [
         </template>
       </div>
     </template>
-  </RuleArrangementFields>
-  <a-alert v-if="registration && registrationError" type="warning" :message="registrationError" show-icon/>
-  <a-form-item v-if="registration">
-    <a-checkbox v-model:checked="registration.exclusive">与其他已标记互斥的报名安排不重复匹配</a-checkbox>
-  </a-form-item>
-  <PracticePeriodRateStandards v-if="config.method==='rate'" v-model="config.standardRates" v-model:rate="component.amount"
-    :prefix="field('standards')" :uniform-id="field('rate')" :companies="companies" :organizations="salesUnits" :categories="salesCategories"
-    :scope-group="rateScopeGroup" @start-table="startStandardTable">
-    <template #scope>
-      <div class="period-fields">
-        <RuleOrderScope v-if="showRateScopeMode" :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
-          :additional="registrationOption" @update:model-value="changeScope"/>
-        <RuleSalesScopeFields v-if="scopeMode==='team'"
-          :organization-id="(!usesStandardRates && rateScopeGroup!=='category') || config.salesCompanies?.length || config.salesUnits?.length ? field('sales-units') : undefined"
-          :category-id="(!usesStandardRates && rateScopeGroup!=='company') || config.salesCategoryIds?.length ? field('categories') : undefined"
-          :person-id="rateScopeGroup==='general' || config.salesPeople?.length ? field('sales') : undefined"
-          v-model:organization-ids="config.salesUnits" v-model:source-company-ids="config.salesCompanies"
-          v-model:category-ids="config.salesCategoryIds" v-model:person-ids="config.salesPeople"
-          :organizations="salesUnits" :source-companies="companies" :categories="salesCategories" :people="people"
-          @organizations-change="setOrganizationMapping"/>
-      </div>
-    </template>
-  </PracticePeriodRateStandards>
-  <RuleCommissionStandards v-else-if="fixedMethod">
-    <div class="period-fixed-standard">
-      <RuleOrderScope :id="field('sales-source')" :model-value="fixedScopeMode" :can-own="config.recipient==='person'"
-        :additional="registrationOption" :team-options="fixedTeamOptions" @update:model-value="changeFixedScope"/>
-      <div v-if="scopeMode==='team'" class="period-fields">
-        <RuleSalesScopeFields
-          :organization-id="fixedScopeUses('organization') ? field('sales-units') : undefined"
-          :category-id="fixedScopeUses('category') ? field('categories') : undefined"
-          :person-id="fixedScopeUses('people') ? field('sales') : undefined"
-          v-model:organization-ids="config.salesUnits" v-model:source-company-ids="config.salesCompanies"
-          v-model:category-ids="config.salesCategoryIds" v-model:person-ids="config.salesPeople"
-          :organizations="salesUnits" :source-companies="companies" :categories="salesCategories" :people="people"
-          @organizations-change="setOrganizationMapping"/>
-      </div>
-      <a-form-item v-if="showSalesRole" class="period-fixed-role" label="订单上的销售角色" :html-for="field('role')" required>
-        <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
+    <template #standards>
+      <a-alert v-if="registration && registrationError" type="warning" :message="registrationError" show-icon/>
+      <a-form-item v-if="registration">
+        <a-checkbox v-model:checked="registration.exclusive">与其他已标记互斥的报名安排不重复匹配</a-checkbox>
       </a-form-item>
-      <a-form-item class="period-fixed-amount" :label="config.method==='order_fixed' ? '每笔符合条件的订单金额（元）'
-        : config.recipient==='order_appointment' && config.method==='class_fixed' ? '每个组织整班金额（元）' : '金额（元）'"
-        :html-for="field('fixed')" required>
-        <a-input-number :id="field('fixed')" v-model:value="config.fixedAmount" :min="0" :max="1000000000" :precision="2"/>
-      </a-form-item>
-    </div>
-  </RuleCommissionStandards>
-  <section v-if="config.method==='tiers'" class="period-tier-editor">
+      <PracticePeriodRateStandards v-if="config.method==='rate'" v-model="config.standardRates" v-model:rate="component.amount"
+        :prefix="field('standards')" :uniform-id="field('rate')" :companies="companies" :organizations="salesUnits" :categories="salesCategories"
+        :scope-group="rateScopeGroup" @start-table="startStandardTable">
+        <template #scope>
+          <div class="period-fields">
+            <RuleOrderScope v-if="showRateScopeMode" :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
+              :additional="registrationOption" @update:model-value="changeScope"/>
+            <RuleSalesScopeFields v-if="scopeMode==='team'"
+              :organization-id="(!usesStandardRates && rateScopeGroup!=='category') || config.salesCompanies?.length || config.salesUnits?.length ? field('sales-units') : undefined"
+              :category-id="(!usesStandardRates && rateScopeGroup!=='company') || config.salesCategoryIds?.length ? field('categories') : undefined"
+              :person-id="rateScopeGroup==='general' || config.salesPeople?.length ? field('sales') : undefined"
+              v-model:organization-ids="config.salesUnits" v-model:source-company-ids="config.salesCompanies"
+              v-model:category-ids="config.salesCategoryIds" v-model:person-ids="config.salesPeople"
+              :organizations="salesUnits" :source-companies="companies" :categories="salesCategories" :people="people"
+              @organizations-change="setOrganizationMapping"/>
+          </div>
+        </template>
+      </PracticePeriodRateStandards>
+      <RuleCommissionStandards v-else-if="fixedMethod">
+        <div class="period-fixed-standard">
+          <RuleOrderScope :id="field('sales-source')" :model-value="fixedScopeMode" :can-own="config.recipient==='person'"
+            :additional="registrationOption" :team-options="fixedTeamOptions" @update:model-value="changeFixedScope"/>
+          <div v-if="scopeMode==='team'" class="period-fields">
+            <RuleSalesScopeFields
+              :organization-id="fixedScopeUses('organization') ? field('sales-units') : undefined"
+              :category-id="fixedScopeUses('category') ? field('categories') : undefined"
+              :person-id="fixedScopeUses('people') ? field('sales') : undefined"
+              v-model:organization-ids="config.salesUnits" v-model:source-company-ids="config.salesCompanies"
+              v-model:category-ids="config.salesCategoryIds" v-model:person-ids="config.salesPeople"
+              :organizations="salesUnits" :source-companies="companies" :categories="salesCategories" :people="people"
+              @organizations-change="setOrganizationMapping"/>
+          </div>
+          <a-form-item v-if="showSalesRole" class="period-fixed-role" label="订单上的销售角色" :html-for="field('role')" required>
+            <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
+          </a-form-item>
+          <RuleStandardValue class="period-fixed-amount" :id="field('fixed')" v-model="config.fixedAmount" method="fixed" :max="1000000000"
+            :label="config.method==='order_fixed' ? '每笔符合条件的订单金额（元）'
+              : config.recipient==='order_appointment' && config.method==='class_fixed' ? '每个组织整班金额（元）' : undefined"/>
+        </div>
+      </RuleCommissionStandards>
+  <RuleCommissionStandards v-else-if="config.method==='tiers'" class="period-tier-editor">
     <a-form-item class="period-tier-option" label="阶梯选档范围">
       <a-radio-group :value="Boolean(config.tierOnWholeClass)" role="radiogroup" aria-label="阶梯选档范围"
         @update:value="config.tierOnWholeClass=$event">
@@ -285,7 +284,9 @@ const calculationMethods = computed(() => [
       </template>
     </RuleEditableTable>
     <a-button type="dashed" size="small" @click="config.tiers.push({})">添加档位</a-button>
-  </section>
+  </RuleCommissionStandards>
+    </template>
+  </RuleArrangementFields>
 </template>
 
 <style scoped>

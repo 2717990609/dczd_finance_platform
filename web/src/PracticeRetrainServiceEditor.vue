@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
+import RuleStandardValue from './RuleStandardValue.vue'
 import RuleOrderScope from './RuleOrderScope.vue'
 import RuleSalesScopeFields from './RuleSalesScopeFields.vue'
 import { moneyAsMinor, practiceRetrainShareMethods, practiceRetrainSplitAmounts, practiceRetrainSplitEstimate } from './rule-component-form'
@@ -25,7 +26,8 @@ function setBasis(basis) {
 
 <template>
   <RuleArrangementFields :name-id="field('label')" v-model:name="split.serviceLabel" order-type-text="复训">
-    <a-form-item label="收款对象" :html-for="field('person')" required>
+    <a-form-item label="收款对象"><span class="rule-field-value">个人</span></a-form-item>
+    <a-form-item label="指定收款人" :html-for="field('person')" required>
       <a-select :id="field('person')" v-model:value="split.servicePersonId" :options="people"
         show-search option-filter-prop="label" placeholder="指定个人" size="small"/>
     </a-form-item>
@@ -44,13 +46,13 @@ function setBasis(basis) {
           :organizations="salesUnits" :people="people"/>
       </div>
     </template>
+    <template #standards>
+      <RuleCommissionStandards>
+        <RuleStandardValue :id="field('value')" v-model="split.service" :method="split.serviceBasis"
+          :max="split.serviceBasis==='fixed' ? total : 100" :precision="split.serviceBasis==='fixed' ? 2 : 4"/>
+      </RuleCommissionStandards>
+    </template>
   </RuleArrangementFields>
-  <RuleCommissionStandards>
-    <a-form-item class="commission-uniform-rate" :label="split.serviceBasis==='fixed' ? '金额（元）' : '比例（%）'" :html-for="field('value')" required>
-      <a-input-number :id="field('value')" v-model:value="split.service" :min="0"
-        :max="split.serviceBasis==='fixed' ? total : 100" :precision="split.serviceBasis==='fixed' ? 2 : 4" size="small"/>
-    </a-form-item>
-  </RuleCommissionStandards>
   <div class="retrain-service-footer">
     <p v-if="estimate" class="tier-note" role="status">
       {{ estimate.pool<0 ? '销售与服务份额合计超出复训总提成' :

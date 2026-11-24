@@ -5,12 +5,13 @@ import RuleArrangementFields from './RuleArrangementFields.vue'
 import RuleScopeSelect from './RuleScopeSelect.vue'
 import RuleOrderScope from './RuleOrderScope.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
+import RuleStandardValue from './RuleStandardValue.vue'
 import RuleEditableTable from './RuleEditableTable.vue'
 import { practiceCompanyMatchLabels, practiceCompanyRatePriority,
-  practiceCompanyScopes, practiceRecipientIsPerson } from './rule-component-form'
+  practiceCompanyScopes } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,organizations:Array,salesCategories:Array,recipients:Array,amounts:Array,
-  sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array,duties:Array})
+  sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array})
 const emit = defineEmits(['member-change'])
 const sales = computed(() => props.component.companySales)
 const categories = computed(() => sales.value.categories)
@@ -155,7 +156,6 @@ watch(amounts, choices => {
 
 <template>
   <RuleArrangementFields :name-id="field('label')" v-model:name="component.companySales.label"
-    :duty-id="practiceRecipientIsPerson(payee.kind) ? field('duty') : undefined" :duties="duties" v-model:duty="component.recipientDuty"
     :order-type-id="'rule-member-'+index" :order-types="memberChoices" :order-type="component.classMember"
     @update:order-type="component.classMember=$event; emit('member-change')">
     <a-form-item label="收款对象" :html-for="field('payee')" required>
@@ -170,6 +170,8 @@ watch(amounts, choices => {
     <a-form-item v-if="payee.kind==='company'" label="收款公司" :html-for="field('payee-company')" required>
       <a-select :id="field('payee-company')" v-model:value="payee.companyId" :options="recipients" show-search :filter-option="byName"/>
     </a-form-item>
+    <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
+      :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
     <template #calculation>
       <a-form-item label="计提方式" :html-for="field('method')">
         <a-select :id="field('method')" :value="activeMethod" :options="amounts"
@@ -180,73 +182,69 @@ watch(amounts, choices => {
       <RuleOrderScope :id="field('scope')" :model-value="scopeMode" :can-own="payee.kind==='person'"
         @update:model-value="setScopeMode"/>
     </template>
-  </RuleArrangementFields>
-  <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
-    :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
-  <RuleCommissionStandards v-model="scope" :groups="scopeOptions" :priority="priority">
-    <template v-if="scope!=='general'" #tools>
-      <a-button :disabled="scope==='category' && !salesCategories.length" size="small" @click="addStandard(scope)">
-        {{ standardAction }}
-      </a-button>
+    <template #standards>
+      <RuleCommissionStandards v-model="scope" :groups="scopeOptions" :priority="priority">
+        <template v-if="scope!=='general'" #tools>
+          <a-button :disabled="scope==='category' && !salesCategories.length" size="small" @click="addStandard(scope)">
+            {{ standardAction }}
+          </a-button>
+        </template>
+        <RuleStandardValue v-if="scope==='general'" :id="field('general')" v-model="sales.general.value"
+          :method="sales.general.mode" :precision="sales.general.mode==='rate' ? 4 : 2"/>
+        <section v-else :aria-label="practiceCompanyMatchLabels[scope]">
+          <RuleEditableTable v-if="tableRows.length" :key="scope" :label="practiceCompanyMatchLabels[scope]"
+            :columns="tableColumns" :rows="tableRows" :page-size="pageSize" v-model:page="page" wide-first-column>
+            <template #cells="{row:entry}">
+              <td>
+                <RuleScopeSelect v-if="scope==='category'" :id="field('sales-category-'+entry.index)" label="适用销售类别"
+                  v-model="entry.term.salesCategoryIds" :options="salesCategoryOptions(entry.category)" placeholder="选择销售类别" required/>
+                <RuleScopeSelect v-else-if="entry.override" :id="field('override-'+entry.index+'-'+entry.position)" label="特例销售组织"
+                  v-model="entry.term.salesUnits" v-model:legacy-values="entry.term.companyIds"
+                  :options="organizationOptions(entry.category,entry.override)" :legacy-options="companies" placeholder="选择公司、部门或小组" required/>
+                <RuleScopeSelect v-else :id="field('companies-'+entry.index)" label="适用销售组织"
+                  v-model="entry.term.salesUnits" v-model:legacy-values="entry.term.companies" :options="organizationOptions(entry.category)"
+                  :legacy-options="companies" placeholder="选择公司、部门或小组" required @change="selectOrganizations(entry.category)"/>
+                <small v-if="entry.override && entry.category.salesCategoryIds.length" class="order-version">
+                  来源类别 · {{ entry.category.salesCategoryIds.map(id=>salesCategories.find(option=>option.value===id)?.label || id).join('、') }}
+                </small>
+                <a-button v-if="scope==='category' && entry.term.salesCategoryIds.length && organizationOptions(entry.category).length"
+                  class="company-category-override" type="link" size="small" @click="addCategoryOverride(entry.category,entry.index)">为此类别添加组织特例</a-button>
+              </td>
+              <td v-if="amounts.length>1">
+                <a-form-item label="计提方式" :html-for="termField(entry,'method')">
+                  <a-select :id="termField(entry,'method')" :value="entry.term.mode" :options="amounts" size="small"
+                    @change="modeChanged(entry.term,$event)"/>
+                </a-form-item>
+              </td>
+              <td>
+                <a-form-item :label="entry.term.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="termField(entry,'value')" required>
+                  <a-input-number :id="termField(entry,'value')" v-model:value="entry.term.value" size="small" :min="0"
+                    :addon-after="amounts.length>1 ? (entry.term.mode==='rate' ? '%' : '元') : undefined"
+                    :max="entry.term.mode==='rate'?100:undefined" :precision="entry.term.mode==='rate'?4:2"/>
+                </a-form-item>
+              </td>
+              <td v-if="legacyRecommendations">
+                <a-form-item label="推荐比例（%）" :html-for="termField(entry,'recommendation')">
+                  <a-input-number :id="termField(entry,'recommendation')" v-model:value="entry.term.recommendationRate" size="small"
+                    :min="0" :max="100" :precision="4" :placeholder="entry.override ? '沿用 '+(entry.category.recommendationRate ?? 0)+'%' : undefined"/>
+                </a-form-item>
+              </td>
+            </template>
+            <template #actions="{row:entry}">
+              <a-button v-if="entry.override" type="link" danger size="small" @click="entry.category.overrides.splice(entry.position,1)">移除</a-button>
+              <a-button v-else-if="categories.length>1 || component.companySales.defaultRate != null"
+                type="link" danger size="small" @click="categories.splice(entry.index,1)">移除</a-button>
+            </template>
+          </RuleEditableTable>
+          <p v-else class="finance-rate-empty">未配置</p>
+        </section>
+        <div v-if="scopes.hasDefault" class="saved-standard">
+          <span>{{ practiceCompanyMatchLabels.default }} · {{ sales.defaultRate }}%</span>
+          <a-button type="link" danger size="small" @click="sales.defaultRate=undefined">移除</a-button>
+        </div>
+      </RuleCommissionStandards>
     </template>
-    <div v-if="scope==='general'" class="practice-company-criterion saved-standard">
-      <a-form-item :label="sales.general.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="field('general')" required>
-        <a-input-number :id="field('general')" v-model:value="sales.general.value" :min="0"
-          :max="sales.general.mode==='rate' ? 100 : undefined" :precision="sales.general.mode==='rate' ? 4 : 2"/>
-      </a-form-item>
-    </div>
-    <section v-else :aria-label="practiceCompanyMatchLabels[scope]">
-      <RuleEditableTable v-if="tableRows.length" :key="scope" :label="practiceCompanyMatchLabels[scope]"
-        :columns="tableColumns" :rows="tableRows" :page-size="pageSize" v-model:page="page" wide-first-column>
-        <template #cells="{row:entry}">
-          <td>
-            <RuleScopeSelect v-if="scope==='category'" :id="field('sales-category-'+entry.index)" label="适用销售类别"
-              v-model="entry.term.salesCategoryIds" :options="salesCategoryOptions(entry.category)" placeholder="选择销售类别" required/>
-            <RuleScopeSelect v-else-if="entry.override" :id="field('override-'+entry.index+'-'+entry.position)" label="特例销售组织"
-              v-model="entry.term.salesUnits" v-model:legacy-values="entry.term.companyIds"
-              :options="organizationOptions(entry.category,entry.override)" :legacy-options="companies" placeholder="选择公司、部门或小组" required/>
-            <RuleScopeSelect v-else :id="field('companies-'+entry.index)" label="适用销售组织"
-              v-model="entry.term.salesUnits" v-model:legacy-values="entry.term.companies" :options="organizationOptions(entry.category)"
-              :legacy-options="companies" placeholder="选择公司、部门或小组" required @change="selectOrganizations(entry.category)"/>
-            <small v-if="entry.override && entry.category.salesCategoryIds.length" class="order-version">
-              来源类别 · {{ entry.category.salesCategoryIds.map(id=>salesCategories.find(option=>option.value===id)?.label || id).join('、') }}
-            </small>
-            <a-button v-if="scope==='category' && entry.term.salesCategoryIds.length && organizationOptions(entry.category).length"
-              class="company-category-override" type="link" size="small" @click="addCategoryOverride(entry.category,entry.index)">为此类别添加组织特例</a-button>
-          </td>
-          <td v-if="amounts.length>1">
-            <a-form-item label="计提方式" :html-for="termField(entry,'method')">
-              <a-select :id="termField(entry,'method')" :value="entry.term.mode" :options="amounts" size="small"
-                @change="modeChanged(entry.term,$event)"/>
-            </a-form-item>
-          </td>
-          <td>
-            <a-form-item :label="entry.term.mode==='rate' ? '比例（%）' : '金额（元）'" :html-for="termField(entry,'value')" required>
-              <a-input-number :id="termField(entry,'value')" v-model:value="entry.term.value" size="small" :min="0"
-                :addon-after="amounts.length>1 ? (entry.term.mode==='rate' ? '%' : '元') : undefined"
-                :max="entry.term.mode==='rate'?100:undefined" :precision="entry.term.mode==='rate'?4:2"/>
-            </a-form-item>
-          </td>
-          <td v-if="legacyRecommendations">
-            <a-form-item label="推荐比例（%）" :html-for="termField(entry,'recommendation')">
-              <a-input-number :id="termField(entry,'recommendation')" v-model:value="entry.term.recommendationRate" size="small"
-                :min="0" :max="100" :precision="4" :placeholder="entry.override ? '沿用 '+(entry.category.recommendationRate ?? 0)+'%' : undefined"/>
-            </a-form-item>
-          </td>
-        </template>
-        <template #actions="{row:entry}">
-          <a-button v-if="entry.override" type="link" danger size="small" @click="entry.category.overrides.splice(entry.position,1)">移除</a-button>
-          <a-button v-else-if="categories.length>1 || component.companySales.defaultRate != null"
-            type="link" danger size="small" @click="categories.splice(entry.index,1)">移除</a-button>
-        </template>
-      </RuleEditableTable>
-      <p v-else class="finance-rate-empty">未配置</p>
-    </section>
-    <div v-if="scopes.hasDefault" class="saved-standard">
-      <span>{{ practiceCompanyMatchLabels.default }} · {{ sales.defaultRate }}%</span>
-      <a-button type="link" danger size="small" @click="sales.defaultRate=undefined">移除</a-button>
-    </div>
-  </RuleCommissionStandards>
+  </RuleArrangementFields>
   <a-form-item v-if="hasRecommendations" label="可收推荐分润的公司" :html-for="field('referral-recipients')" required>
     <a-select :id="field('referral-recipients')" v-model:value="component.companySales.recommendationRecipients"
       :options="recipients" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>

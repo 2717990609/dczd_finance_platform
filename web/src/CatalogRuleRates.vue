@@ -8,6 +8,7 @@ import CatalogPayeeFields from './CatalogPayeeFields.vue'
 import CatalogLeaderArrangement from './CatalogLeaderArrangement.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
+import RuleStandardValue from './RuleStandardValue.vue'
 import RuleEditableTable from './RuleEditableTable.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent as percent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, commissionRatePriority, catalogRuleImpactPeriods, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition, rateAsBasisPoints } from './rule-component-form'
@@ -26,7 +27,6 @@ const selected = ref()
 const filter = ref('')
 const effectiveFrom = ref('')
 const membershipEdits = ref(new Map())
-const splitDutyEdits = ref(new Map())
 const edits = ref({})
 const labelEdits = ref(new Map())
 const targetEdits = ref(new Map())
@@ -103,20 +103,7 @@ const serviceReplacement = computed(() => structure.value.items.some(item=>item.
 const serviceRemoved = computed(() => !serviceVisible.value || removedItems.value.has(serviceItemKey) || serviceReplacement.value)
 const serviceArrangement = computed(() => ({itemKey:serviceItemKey,label:splitItem.value?.serviceLabel || '内部团队服务提成',
   membershipNewOnly:splitItem.value?.serviceMembershipNewOnly,recipientDuty:splitItem.value?.serviceRecipientDuty}))
-const splitDutyValue = item => (splitDutyEdits.value.get(item.itemKey) ?? item.recipientDuty) || undefined
-const splitDutyLabel = item => {
-  const duty = splitDutyValue(item)
-  return duty && (props.optionLabel('organizationDuty',duty) || duty)
-}
-function splitDutyOptions(item) {
-  const options = sheet.value?.structureOptions?.duties || []
-  const value = splitDutyValue(item)
-  return value && !options.some(option=>option.value===value) ? [...options,{value,label:splitDutyLabel(item)}] : options
-}
-function setSplitDuty(item, value) {
-  if ((value || '')===(item.recipientDuty || '')) splitDutyEdits.value.delete(item.itemKey)
-  else splitDutyEdits.value.set(item.itemKey,value || '')
-}
+
 const leaderArrangements = computed(() => sheet.value?.leaderArrangements || [])
 const availableLeaders = computed(() => leaderArrangements.value.filter(leader=>leader.disabled && !leaderEdits.value.has(leader.itemKey)))
 const visibleLeaders = computed(() => leaderArrangements.value.filter(leader=>!removedItems.value.has(leader.itemKey) &&
@@ -125,11 +112,12 @@ const splitRemoved = computed(() => salesPayeeRemoved.value && serviceRemoved.va
   !visibleLeaders.value.some(leader=>leaderEdits.value.has(leader.itemKey) || leader.targetKind!=='inherit' || leader.rateBps>0))
 const visibleComponents = computed(() => sheet.value?.components.filter(item=>!item.disabled && !removedItems.value.has(item.itemKey)) || [])
 const editable = computed(() => sheet.value?.mayPublish && !props.applied && !saving.value)
+const canEditArrangement = computed(() => !props.applied && sheet.value?.mayPublish && sheet.value?.structureOptions)
 const editedComponent = computed(() => component.value && {...component.value,targetKind:targetKind.value})
 const hasSales = computed(() => sheet.value?.components.some(item=>item.targetKind==='seller' || item.teamSplit))
 const peopleFilters = computed(() => ({ruleId:props.rule?.id}))
 const recipientsChanged = computed(() => targetEdits.value.size + teamEdits.value.size > 0)
-const hasEdits = computed(() => sheet.value?.independentTeamSales || copy.value || membershipEdits.value.size || splitDutyEdits.value.size || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
+const hasEdits = computed(() => sheet.value?.independentTeamSales || copy.value || membershipEdits.value.size || recipientsChanged.value || Object.keys(edits.value).length > 0 ||
   Object.keys(splitEdits.value).length > 0 || labelEdits.value.size || leaderEdits.value.size || scopeEdits.value.size ||
   structure.value.items.length || structure.value.sales || structure.value.rateRows.length || structure.value.calculations.length ||
   removedItems.value.size || removedRateRows.value.size)
@@ -252,7 +240,6 @@ async function makeServiceIndependent() {
     }
     const item = recipients.get(person.id) ?? {label,target:'person',personId:person.id,personName:person.name,rateBps,
       salesScopeUnitIds:[],membershipNewOnly:sheet.value.membershipSku ? memberValue(serviceArrangement.value)==='new' : undefined,
-      recipientDuty:splitDutyValue(serviceArrangement.value),
       replacesItemKey:serviceItemKey}
     if (!item.salesScopeUnitIds.includes(unitId)) item.salesScopeUnitIds.push(unitId)
     recipients.set(person.id,item)
@@ -507,7 +494,7 @@ function leaderSummary(item) {
   const form = leaderForm(item)
   const payee = form.target==='person' ? form.personName : item.itemKey==='internal-group-leader' ? '各小组的在任负责人' :
     ['inherit','registered'].includes(form.target) ? '规则登记的团队负责人' : '各团队的在任负责人'
-  return [payee,splitDutyLabel(item),form.amount==null || form.amount==='' ? '' : form.amount+(form.method==='fixed' ? ' 元/笔' : '%')].filter(Boolean).join(' · ')
+  return [payee,form.amount==null || form.amount==='' ? '' : form.amount+(form.method==='fixed' ? ' 元/笔' : '%')].filter(Boolean).join(' · ')
 }
 const commissionUnitNames = computed(() => ({...sheet.value?.scopeUnitNames,
   ...Object.fromEntries((sheet.value?.structureOptions?.salesUnits || []).map(unit=>[unit.value,unit.label]))}))
@@ -570,7 +557,6 @@ watch(() => [props.rule, props.applied], async ([rule, applied]) => {
   leaderEdits.value.clear()
   scopeEdits.value.clear()
   membershipEdits.value.clear()
-  splitDutyEdits.value.clear()
   splitEdits.value = {}
   selectedTeam.value = undefined
   filter.value = ''
@@ -686,7 +672,6 @@ function publicationInput() {
     independentTeamSales:sheet.value.independentTeamSales,
     teamSplitRates,
     leaderChanges,
-    splitRecipientDuties:splitRemoved.value ? undefined : Object.fromEntries([...splitDutyEdits.value].filter(([key])=>!removed.has(key))),
     scopeChanges,
     newItems:structure.value.items.map(({personName,ownerName,replacesItemKey,...item})=>item),
     newSalesRates:structure.value.sales?.rows,
@@ -795,27 +780,17 @@ async function publish() {
             <small>{{ [targetName(item),sheet.membershipSku && memberLabel(item),!rateIndicators[item.itemKey]?.length && componentStandard(item)].filter(Boolean).join(' · ') }}</small>
           </button>
           <div v-if="selected===item.itemKey" :id="'catalog-rate-'+item.itemKey" class="rule-block-body">
-          <template v-if="!applied && sheet.mayPublish && sheet.structureOptions">
-            <RuleArrangementFields name-id="catalog-rate-label" :name="labelEdits.get(item.itemKey) ?? item.label"
-              :order-type-text="orderTypeText" :order-type-id="sheet.membershipSku ? 'catalog-member-type' : undefined"
+          <RuleArrangementFields :name-id="canEditArrangement ? 'catalog-rate-label' : undefined" :name="labelEdits.get(item.itemKey) ?? item.label"
+              :order-type-text="canEditArrangement ? orderTypeText : undefined"
+              :order-type-id="canEditArrangement && sheet.membershipSku ? 'catalog-member-type' : undefined"
               :order-types="catalogMembershipTypes" :order-type="memberValue(item)" @update:order-type="selectMemberType(item,$event)"
               :disabled="!editable || structureEditing" @update:name="setLabel(item,$event)">
-              <CatalogPayeeFields :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
+              <CatalogPayeeFields v-if="canEditArrangement" :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
                 prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters" :product-id="sheet.productId"
                 :unit-names="sheet.scopeUnitNames" :sales-available="item.canChooseSalesTable && (!selectedCalculation || !!selectedCalculation.rows?.length)"
                 :saved-pool-label="item.targetLabel" :existing-pool="item.targetKind==='pool' && !item.poolId"
                 :disabled="!editable || structureEditing" @update:model-value="setTarget(item,$event)"/>
-              <template #calculation>
-                <a-form-item label="计提方式" html-for="catalog-flat-method">
-                  <a-input v-if="targetKind==='seller'" id="catalog-flat-method" value="比例" readonly/>
-                  <a-select v-else id="catalog-flat-method" :value="calculationMethod(item)==='table' ? 'rate' : calculationMethod(item)"
-                    :options="catalogFlatMethods" :disabled="!editable || structureEditing" @update:value="chooseCalculation(item,$event)"/>
-                </a-form-item>
-              </template>
-            </RuleArrangementFields>
-          </template>
-          <template v-else>
-            <a-descriptions size="small" :column="{xs:1,sm:2}">
+            <a-descriptions v-if="!canEditArrangement" class="catalog-readonly-arrangement" size="small" :column="{xs:1,sm:2}">
               <a-descriptions-item label="收款对象">{{ targetKind==='seller' ? '按销售比例表确定收款方' : targetName(item) || targetKindLabels[targetKind] }}</a-descriptions-item>
               <a-descriptions-item label="计提方式">{{ readOnlyCalculation(item) }}</a-descriptions-item>
               <a-descriptions-item label="计提订单类型">{{ sheet.membershipSku ? memberLabel(item) : orderTypeText }}</a-descriptions-item>
@@ -833,103 +808,109 @@ async function publish() {
                 {{ roleLabel(item.memberRole) }}
               </a-descriptions-item>
             </a-descriptions>
-          </template>
-          <RuleCommissionStandards v-if="hasRateTable || !applied && sheet.mayPublish && sheet.structureOptions"
-            v-model="rateGroup" :groups="showRateGroups ? standardTabs : undefined" :priority="hasRateTable ? ratePriority : undefined" :disabled="structureEditing">
-            <template #tools>
-              <a-button v-if="activeRateGroup?.add" size="small" :disabled="!editable || structureEditing"
-                @click="addStandard(item,activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
-              <a-input v-if="activeRateGroup?.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
-                class="catalog-rate-filter" placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
-            </template>
-            <template v-if="!applied && sheet.mayPublish && sheet.structureOptions && (!showRateGroups || rateGroup==='general')" #scope>
-              <CatalogCommissionScopeFields prefix="catalog-edit" :model-value="commissionScope(item)"
-                :options="sheet.structureOptions.salesUnits" :unit-names="commissionUnitNames" :categories="sheet.structureOptions.categories"
-                :category-names="sheet.scopeCategoryNames" :disabled="!editable || structureEditing"
-                :can-own="targetKind==='person'" @update:model-value="setCommissionScope(item,$event)"/>
-            </template>
-          <a-space v-if="selectedCalculation" wrap :size="4">
-            <span v-if="!hasRateTable">{{ componentStandard(item) }}</span>
-            <a-button size="small" type="link" :disabled="!editable || structureEditing"
-              @click="structureEditor?.editCalculation(selectedCalculation,calculationMethod(item))">编辑计算条件</a-button>
-            <a-button size="small" type="link" :disabled="!editable || structureEditing" @click="undoCalculation">撤销更换</a-button>
-          </a-space>
-          <a-form-item v-if="!hasRateTable && targetKind!=='seller' && !selectedCalculation && (!showRateGroups || rateGroup==='general')" class="commission-uniform-rate"
-            :label="flatMethod(item)==='fixed' ? '金额（元）' : '比例（%）'"
-            :html-for="flatMethod(item)==='fixed' ? 'catalog-fixed-amount' : 'catalog-fixed-rate'">
-            <a-input-number :id="flatMethod(item)==='fixed' ? 'catalog-fixed-amount' : 'catalog-fixed-rate'" :value="flatValue(item)" :disabled="!editable"
-              :min="0" :max="flatMethod(item)==='rate' ? 100 : undefined" :precision="2" string-mode @update:value="setFlat(item,flatMethod(item),$event)"/>
-          </a-form-item>
-          <p v-if="showRateGroups && !hasRateTable && rateGroup!=='general' && !structureEditing" class="finance-rate-empty">未配置</p>
-          <template v-if="hasRateTable">
-            <p v-if="!displayedRates.length" class="finance-rate-empty">{{ filter ? '未找到匹配的计提标准' : '未配置' }}</p>
-            <RuleEditableTable v-else :key="selected + filter + rateGroup + rateTableRevision" class="catalog-rate-table"
-              label="计提标准明细" :columns="displayedColumns" :rows="displayedRates" :row-key="rateRowKey" :page-size="8" wide-first-column>
-              <template #cell="{ column, record }">
-                <template v-if="column.key==='company'">
-                  <template v-if="rowEditable(record)">
-                    <label class="sr-only" :for="rateFieldId(record,'company')">销售公司</label>
-                    <a-select :id="rateFieldId(record,'company')" mode="multiple" size="small"
-                    :value="record.companyIds || []" :options="rowOptions('companies',record.companyIds)"
-                    :max-tag-count="1" :max-tag-text-length="12" :disabled="!editable || structureEditing" option-filter-prop="label"
-                    placeholder="选择公司" @update:value="setInlineCondition(record,'companyIds',$event)"/>
-                  </template>
-                  <span v-else>{{ record.company }}</span>
-                </template>
-                <template v-if="column.key==='category'">
-                  <template v-if="rowEditable(record) && ['company','category'].includes(record.scope)">
-                    <label class="sr-only" :for="rateFieldId(record,'category')">销售类别</label>
-                    <a-select :id="rateFieldId(record,'category')" mode="multiple" size="small" :value="record.categoryIds || []"
-                      :options="rowOptions('categories',record.categoryIds)" :max-tag-count="1"
-                      :disabled="!editable || structureEditing" option-filter-prop="label"
-                      :placeholder="record.scope==='category' ? '选择销售类别' : '不限'" @update:value="setInlineCondition(record,'categoryIds',$event)"/>
-                  </template>
-                  <span v-else>{{ record.category || '不限' }}</span>
-                </template>
-                <template v-if="column.key==='relationship'">
-                  <template v-if="rowEditable(record) && record.scope!=='external'">
-                    <label class="sr-only" :for="rateFieldId(record,'relationship')">销售关系</label>
-                    <a-select :id="rateFieldId(record,'relationship')" size="small"
-                      :value="record.relationshipCode" :options="rowOptions('relationships',[record.relationshipCode])"
-                      :disabled="!editable || structureEditing" @update:value="setInlineCondition(record,'relationship',$event)"/>
-                  </template>
-                  <span v-else>{{ record.relationship }}</span>
-                </template>
-                <template v-if="column.key==='rate'">
-                  <a-input-number v-if="rowEditable(record)" size="small" :aria-label="record.row ? '第 '+record.row+' 行比例' : '新增比例'"
-                    :id="record.draftKey ? 'catalog-rate-first-'+record.draftKey : undefined"
-                    :value="record.condition ? record.condition.rate : displayRate(record.rateBps,record.row)"
-                    :disabled="!editable || structureEditing"
-                    :min="0" :max="100" :precision="2" string-mode
-                    @update:value="record.condition ? setInlineCondition(record,'rate',$event) : setRate($event,record.rateBps,record.row)"/>
-                  <span v-else>{{ applied ? displayRate(record.rateBps,record.row)+'%' : percent(record.rateBps) }}</span>
-                  <small v-if="record.staged || Object.hasOwn(edits,cellKey(selected,record.row))"
-                    class="order-version">未保存</small>
-                  <small v-if="record.teamRate" class="order-version">内部团队拆分</small>
-                </template>
-                <template v-if="column.key==='payee'">
-                  <template v-if="rowEditable(record) && record.scope!=='external'">
-                    <label class="sr-only" :for="rateFieldId(record,'payee')">收款方</label>
-                    <a-select :id="rateFieldId(record,'payee')" size="small"
-                      :value="record.payee || 'seller'" :options="catalogSalesPayees" :disabled="!editable || structureEditing"
-                      @update:value="setInlineCondition(record,'payee',$event)"/>
-                  </template>
-                  <span v-else>{{ salesPayeeLabel(record) }}</span>
-                </template>
-                <template v-if="column.key==='operation'">
-                  <a-button v-if="removedRateRows.has(cellKey(selected,record.row))" type="link" size="small"
-                    :disabled="saving || structureEditing" @click="toggleRowRemoval(record.row)">撤销删除</a-button>
-                  <template v-else>
-                    <a-button v-if="record.row && (record.staged || Object.hasOwn(edits,cellKey(selected,record.row)))"
-                      type="link" size="small" :disabled="saving || structureEditing" @click="undoRateChange(record)">撤销修改</a-button>
-                    <a-button type="link" danger size="small" :disabled="saving || structureEditing || record.teamRate"
-                      @click="record.draftKey ? discardStagedRate(record) : toggleRowRemoval(record.row)">删除</a-button>
-                  </template>
-                </template>
+              <template #calculation>
+                <a-form-item v-if="canEditArrangement" label="计提方式" html-for="catalog-flat-method">
+                  <a-input v-if="targetKind==='seller'" id="catalog-flat-method" value="比例" readonly/>
+                  <a-select v-else id="catalog-flat-method" :value="calculationMethod(item)==='table' ? 'rate' : calculationMethod(item)"
+                    :options="catalogFlatMethods" :disabled="!editable || structureEditing" @update:value="chooseCalculation(item,$event)"/>
+                </a-form-item>
               </template>
-            </RuleEditableTable>
-          </template>
-          </RuleCommissionStandards>
+            <template #standards>
+              <RuleCommissionStandards v-if="hasRateTable || canEditArrangement"
+                v-model="rateGroup" :groups="showRateGroups ? standardTabs : undefined" :priority="hasRateTable ? ratePriority : undefined" :disabled="structureEditing">
+                <template #tools>
+                  <a-button v-if="activeRateGroup?.add" size="small" :disabled="!editable || structureEditing"
+                    @click="addStandard(item,activeRateGroup.key)">{{ activeRateGroup.add }}</a-button>
+                  <a-input v-if="activeRateGroup?.rows.length>8" id="catalog-rate-filter" v-model:value="filter" size="small"
+                    class="catalog-rate-filter" placeholder="搜索公司或销售类别" aria-label="搜索比例表" allow-clear/>
+                </template>
+                <template v-if="canEditArrangement && (!showRateGroups || rateGroup==='general')" #scope>
+                  <CatalogCommissionScopeFields prefix="catalog-edit" :model-value="commissionScope(item)"
+                    :options="sheet.structureOptions.salesUnits" :unit-names="commissionUnitNames" :categories="sheet.structureOptions.categories"
+                    :category-names="sheet.scopeCategoryNames" :disabled="!editable || structureEditing"
+                    :can-own="targetKind==='person'" @update:model-value="setCommissionScope(item,$event)"/>
+                </template>
+              <a-space v-if="selectedCalculation" wrap :size="4">
+                <span v-if="!hasRateTable">{{ componentStandard(item) }}</span>
+                <a-button size="small" type="link" :disabled="!editable || structureEditing"
+                  @click="structureEditor?.editCalculation(selectedCalculation,calculationMethod(item))">编辑计算条件</a-button>
+                <a-button size="small" type="link" :disabled="!editable || structureEditing" @click="undoCalculation">撤销更换</a-button>
+              </a-space>
+              <RuleStandardValue v-if="!hasRateTable && targetKind!=='seller' && !selectedCalculation && (!showRateGroups || rateGroup==='general')"
+                :id="flatMethod(item)==='fixed' ? 'catalog-fixed-amount' : 'catalog-fixed-rate'" :method="flatMethod(item)"
+                :model-value="flatValue(item)" :disabled="!editable" string-mode @update:model-value="setFlat(item,flatMethod(item),$event)"/>
+              <p v-if="showRateGroups && !hasRateTable && rateGroup!=='general' && !structureEditing" class="finance-rate-empty">未配置</p>
+              <template v-if="hasRateTable">
+                <p v-if="!displayedRates.length" class="finance-rate-empty">{{ filter ? '未找到匹配的计提标准' : '未配置' }}</p>
+                <RuleEditableTable v-else :key="selected + filter + rateGroup + rateTableRevision" class="catalog-rate-table"
+                  label="计提标准明细" :columns="displayedColumns" :rows="displayedRates" :row-key="rateRowKey" :page-size="8" wide-first-column>
+                  <template #cell="{ column, record }">
+                    <template v-if="column.key==='company'">
+                      <template v-if="rowEditable(record)">
+                        <label class="sr-only" :for="rateFieldId(record,'company')">销售公司</label>
+                        <a-select :id="rateFieldId(record,'company')" mode="multiple" size="small"
+                        :value="record.companyIds || []" :options="rowOptions('companies',record.companyIds)"
+                        :max-tag-count="1" :max-tag-text-length="12" :disabled="!editable || structureEditing" option-filter-prop="label"
+                        placeholder="选择公司" @update:value="setInlineCondition(record,'companyIds',$event)"/>
+                      </template>
+                      <span v-else>{{ record.company }}</span>
+                    </template>
+                    <template v-if="column.key==='category'">
+                      <template v-if="rowEditable(record) && ['company','category'].includes(record.scope)">
+                        <label class="sr-only" :for="rateFieldId(record,'category')">销售类别</label>
+                        <a-select :id="rateFieldId(record,'category')" mode="multiple" size="small" :value="record.categoryIds || []"
+                          :options="rowOptions('categories',record.categoryIds)" :max-tag-count="1"
+                          :disabled="!editable || structureEditing" option-filter-prop="label"
+                          :placeholder="record.scope==='category' ? '选择销售类别' : '不限'" @update:value="setInlineCondition(record,'categoryIds',$event)"/>
+                      </template>
+                      <span v-else>{{ record.category || '不限' }}</span>
+                    </template>
+                    <template v-if="column.key==='relationship'">
+                      <template v-if="rowEditable(record) && record.scope!=='external'">
+                        <label class="sr-only" :for="rateFieldId(record,'relationship')">销售关系</label>
+                        <a-select :id="rateFieldId(record,'relationship')" size="small"
+                          :value="record.relationshipCode" :options="rowOptions('relationships',[record.relationshipCode])"
+                          :disabled="!editable || structureEditing" @update:value="setInlineCondition(record,'relationship',$event)"/>
+                      </template>
+                      <span v-else>{{ record.relationship }}</span>
+                    </template>
+                    <template v-if="column.key==='rate'">
+                      <a-input-number v-if="rowEditable(record)" size="small" :aria-label="record.row ? '第 '+record.row+' 行比例' : '新增比例'"
+                        :id="record.draftKey ? 'catalog-rate-first-'+record.draftKey : undefined"
+                        :value="record.condition ? record.condition.rate : displayRate(record.rateBps,record.row)"
+                        :disabled="!editable || structureEditing"
+                        :min="0" :max="100" :precision="2" string-mode
+                        @update:value="record.condition ? setInlineCondition(record,'rate',$event) : setRate($event,record.rateBps,record.row)"/>
+                      <span v-else>{{ applied ? displayRate(record.rateBps,record.row)+'%' : percent(record.rateBps) }}</span>
+                      <small v-if="record.staged || Object.hasOwn(edits,cellKey(selected,record.row))"
+                        class="order-version">未保存</small>
+                      <small v-if="record.teamRate" class="order-version">内部团队拆分</small>
+                    </template>
+                    <template v-if="column.key==='payee'">
+                      <template v-if="rowEditable(record) && record.scope!=='external'">
+                        <label class="sr-only" :for="rateFieldId(record,'payee')">收款方</label>
+                        <a-select :id="rateFieldId(record,'payee')" size="small"
+                          :value="record.payee || 'seller'" :options="catalogSalesPayees" :disabled="!editable || structureEditing"
+                          @update:value="setInlineCondition(record,'payee',$event)"/>
+                      </template>
+                      <span v-else>{{ salesPayeeLabel(record) }}</span>
+                    </template>
+                    <template v-if="column.key==='operation'">
+                      <a-button v-if="removedRateRows.has(cellKey(selected,record.row))" type="link" size="small"
+                        :disabled="saving || structureEditing" @click="toggleRowRemoval(record.row)">撤销删除</a-button>
+                      <template v-else>
+                        <a-button v-if="record.row && (record.staged || Object.hasOwn(edits,cellKey(selected,record.row)))"
+                          type="link" size="small" :disabled="saving || structureEditing" @click="undoRateChange(record)">撤销修改</a-button>
+                        <a-button type="link" danger size="small" :disabled="saving || structureEditing || record.teamRate"
+                          @click="record.draftKey ? discardStagedRate(record) : toggleRowRemoval(record.row)">删除</a-button>
+                      </template>
+                    </template>
+                  </template>
+                </RuleEditableTable>
+              </template>
+              </RuleCommissionStandards>
+            </template>
+          </RuleArrangementFields>
           <div v-if="sheet.mayPublish && !applied" :id="'catalog-rates-edit-'+item.itemKey"/>
           <div v-if="sheet.mayPublish && !applied" class="form-actions">
             <a-button size="small" type="link" danger :disabled="structureEditing || saving"
@@ -944,12 +925,10 @@ async function publish() {
               <strong>{{ labelEdits.get(serviceItemKey)?.trim() || serviceArrangement.label }}</strong>
               <span v-if="serviceReplacement" class="rule-block-badge">待替换</span>
               <span v-if="!serviceReplacement" class="rule-block-recipient" :title="teamOptions.map(option=>option.label).join('、')">提成范围 · {{ serviceScope }}</span>
-              <small v-if="!serviceReplacement" :title="serviceRecipients.join('、')">{{ [formatScope(serviceRecipients),sheet.membershipSku && memberLabel(serviceArrangement),splitDutyLabel(serviceArrangement),splitValue('service')+'%'].filter(Boolean).join(' · ') }}</small>
+              <small v-if="!serviceReplacement" :title="serviceRecipients.join('、')">{{ [formatScope(serviceRecipients),sheet.membershipSku && memberLabel(serviceArrangement),splitValue('service')+'%'].filter(Boolean).join(' · ') }}</small>
             </button>
             <div v-if="selected===serviceItemKey" id="catalog-internal-service" class="rule-block-body">
               <RuleArrangementFields v-if="!serviceRemoved" name-id="catalog-service-label" :name="labelEdits.get(serviceItemKey) ?? serviceArrangement.label"
-                duty-id="catalog-service-duty" :duties="splitDutyOptions(serviceArrangement)" :duty="splitDutyValue(serviceArrangement)"
-                @update:duty="setSplitDuty(serviceArrangement,$event)"
                 :disabled="!editable || structureEditing" calculation-text="比例"
                 :order-type-text="orderTypeText" :order-type-id="sheet.membershipSku ? 'catalog-service-member-type' : undefined"
                 :order-types="catalogMembershipTypes" :order-type="memberValue(serviceArrangement)"
@@ -964,14 +943,14 @@ async function publish() {
                     @change="(id,option)=>setTeamPerson('service',id,option)"/>
                   <span v-else>{{ team.service?.name }}</span>
                 </a-form-item>
+                <template #standards>
+                  <RuleCommissionStandards>
+                    <RuleStandardValue v-if="!salesPayeeRemoved" id="catalog-split-service" :model-value="splitValue('service')"
+                      :disabled="!editable || structureEditing" string-mode @update:model-value="setSplitRate('service',$event)"/>
+                    <span v-else>{{ splitValue('service') }}%</span>
+                  </RuleCommissionStandards>
+                </template>
               </RuleArrangementFields>
-              <RuleCommissionStandards v-if="!serviceRemoved">
-                <a-form-item class="commission-uniform-rate" label="比例（%）" html-for="catalog-split-service">
-                  <a-input-number v-if="!salesPayeeRemoved" id="catalog-split-service" :value="splitValue('service')" :disabled="!editable || structureEditing"
-                    :min="0" :max="100" :precision="2" string-mode @update:value="setSplitRate('service',$event)"/>
-                  <span v-else>{{ splitValue('service') }}%</span>
-                </a-form-item>
-              </RuleCommissionStandards>
               <template v-if="serviceReplacement">
                 <small class="order-version">切换后按独立安排计提，可预览差额。</small>
                 <div id="catalog-rates-edit-internal-service"></div>
@@ -1001,7 +980,6 @@ async function publish() {
                 :membership-editable="sheet.membershipSku" :order-type="memberValue(leader)"
                 @update:order-type="selectMemberType(leader,$event)"
                 :sales-categories="sheet.structureOptions?.categories" :category-names="sheet.scopeCategoryNames"
-                :duties="splitDutyOptions(leader)" :recipient-duty="splitDutyValue(leader)" @update:recipient-duty="setSplitDuty(leader,$event)"
                 :inherited="leader.targetKind==='inherit' && !leader.disabled"
                 @update:model-value="setLeader(leader,$event)">
                 <template v-if="leader.itemKey==='internal-team-leader' && ['inherit','registered'].includes(leaderForm(leader).target) && teamOptions.length" #registered>

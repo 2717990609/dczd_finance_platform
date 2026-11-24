@@ -4,12 +4,13 @@ import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
 import RuleCommissionStandards from './RuleCommissionStandards.vue'
 import RuleOrderScope from './RuleOrderScope.vue'
+import RuleStandardValue from './RuleStandardValue.vue'
 import RuleSalesScopeFields from './RuleSalesScopeFields.vue'
-import { catalogFlatMethods, catalogMembershipTypes, catalogScopeOptions, rateAsBasisPoints } from './rule-component-form'
+import { catalogFlatMethods, catalogMembershipTypes, catalogScopeOptions } from './rule-component-form'
 
 const props = defineProps({itemKey:String,teams:Array,api:Function,peopleFilters:Object,disabled:Boolean,inherited:Boolean,orderTypeText:String,
-  salesCategories:Array,categoryNames:Object,membershipEditable:Boolean,orderType:String,duties:Array,recipientDuty:String})
-const emit = defineEmits(['update:orderType','update:recipientDuty'])
+  salesCategories:Array,categoryNames:Object,membershipEditable:Boolean,orderType:String})
+const emit = defineEmits(['update:orderType'])
 const form = defineModel({type:Object,required:true})
 const field = name => props.itemKey+'-'+name
 const isGroup = computed(() => props.itemKey==='internal-group-leader')
@@ -38,8 +39,6 @@ const organizationIds = computed(() => [
 ])
 const categoryOptions = computed(() => catalogScopeOptions(props.salesCategories || [],form.value.scope.categoryIds,
   props.categoryNames,'已选类别名称待核'))
-const standardGroups = computed(() => form.value.method==='rate'
-  ? [{value:'general',count:Number(rateAsBasisPoints(form.value.amount)!==undefined)}] : undefined)
 function update(fields) {
   form.value = {...form.value,...fields}
 }
@@ -66,7 +65,6 @@ function selectOrganizations(ids) {
 
 <template>
   <RuleArrangementFields :name="form.label" :name-id="field('label')" :order-type-text="orderTypeText"
-    :duty-id="field('duty')" :duties="duties" :duty="recipientDuty" @update:duty="emit('update:recipientDuty',$event)"
     :order-type-id="membershipEditable ? field('member-type') : undefined" :order-type="orderType" :order-types="catalogMembershipTypes"
     @update:order-type="emit('update:orderType',$event)"
     :disabled="disabled" @update:name="update({label:$event})">
@@ -86,33 +84,35 @@ function selectOrganizations(ids) {
           @change="update({method:$event,amount:undefined})"/>
       </a-form-item>
     </template>
-    <template #scope>
-      <RuleOrderScope :id="field('scope')" :model-value="form.restrictScope ? 'team' : 'all'" :disabled="disabled"
-        @update:model-value="changeScope"/>
-      <div class="rule-scope-filters">
-        <RuleSalesScopeFields v-if="form.restrictScope" :organization-id="field('companies')"
-          :category-id="categoryOptions.length ? field('categories') : undefined"
-          :organization-ids="organizationIds" :category-ids="form.scope.categoryIds"
-          :organizations="organizationOptions" :categories="categoryOptions" :disabled="disabled" organization-placeholder="选择公司或小组"
-          @update:organization-ids="selectOrganizations" @update:category-ids="updateScope({categoryIds:$event})"/>
-        <a-form-item label="适用成交人员" :html-for="field('orders')" class="leader-order-filter">
-          <a-select :id="field('orders')" :value="form.scope.orders" :options="orderScopes" :disabled="disabled"
-            @change="updateScope({orders:$event})"/>
-        </a-form-item>
-      </div>
+    <template #standards>
+      <RuleCommissionStandards>
+        <template #scope>
+          <RuleOrderScope :id="field('scope')" :model-value="form.restrictScope ? 'team' : 'all'" all-label="本规则适用团队" :disabled="disabled"
+            @update:model-value="changeScope"/>
+          <div class="rule-scope-filters">
+            <RuleSalesScopeFields v-if="form.restrictScope" :organization-id="field('companies')"
+              :category-id="categoryOptions.length ? field('categories') : undefined"
+              :organization-ids="organizationIds" :category-ids="form.scope.categoryIds"
+              :organizations="organizationOptions" :categories="categoryOptions" :disabled="disabled" organization-placeholder="选择公司或小组"
+              @update:organization-ids="selectOrganizations" @update:category-ids="updateScope({categoryIds:$event})"/>
+            <a-form-item label="适用成交人员" :html-for="field('orders')" class="leader-order-filter">
+              <a-select :id="field('orders')" :value="form.scope.orders" :options="orderScopes" :disabled="disabled"
+                @change="updateScope({orders:$event})"/>
+            </a-form-item>
+          </div>
+        </template>
+        <RuleStandardValue :id="field('amount')" :method="form.method" :model-value="form.amount"
+          :disabled="disabled" string-mode @update:model-value="update({amount:$event})"/>
+      </RuleCommissionStandards>
+    </template>
+    <template #advanced>
+      <a-collapse v-if="$slots.registered" ghost class="rule-appointment-details">
+        <a-collapse-panel key="registered" header="规则登记负责人">
+          <slot name="registered"/>
+        </a-collapse-panel>
+      </a-collapse>
     </template>
   </RuleArrangementFields>
-  <RuleCommissionStandards model-value="general" :groups="standardGroups" :disabled="disabled">
-    <a-form-item class="commission-uniform-rate" :label="form.method==='fixed' ? '金额（元）' : '比例（%）'" :html-for="field('amount')" required>
-      <a-input-number :id="field('amount')" :value="form.amount" :disabled="disabled"
-        :min="0" :max="form.method==='rate' ? 100 : undefined" :precision="2" string-mode @update:value="update({amount:$event})"/>
-    </a-form-item>
-  </RuleCommissionStandards>
-  <a-collapse v-if="$slots.registered" ghost class="rule-appointment-details">
-    <a-collapse-panel key="registered" header="规则登记负责人">
-      <slot name="registered"/>
-    </a-collapse-panel>
-  </a-collapse>
 </template>
 
 <style scoped>
