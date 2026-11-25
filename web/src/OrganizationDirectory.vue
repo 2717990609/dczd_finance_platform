@@ -240,4 +240,5 @@ defineExpose({refresh})
 @media(width>680px){.organization-browser .organization-scope {grid-template-rows:auto minmax(0,1fr)}}
 .organization-tree-actions {display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-bottom:10px}
 .organization-date-options {display:flex;flex-wrap:wrap;align-items:end;gap:8px 14px}
+.organization-date-options :deep(.ant-checkbox-wrapper) {display:inline-flex;align-items:center;margin:0}
 </style>

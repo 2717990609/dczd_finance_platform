@@ -261,7 +261,7 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
-.person-detail {width:min(100%,1120px);margin-inline:auto}
+.person-detail {width:min(100%,1040px);margin-inline:auto}
 .person-detail-header {padding-bottom:10px}
 .person-dossier {display:grid;gap:12px}
 .person-account-area {min-width:0;scroll-margin-top:10px}

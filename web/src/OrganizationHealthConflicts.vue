@@ -18,7 +18,7 @@ const fields = {name:'名称',status:'状态',role:'角色',category_id:'类别�
   desired_role:'目标角色',desired_state:'目标状态',is_owner:'负责人',destination_company_id:'调入公司编号',destination_company_external_id:'调入来源公司编号'}
 const values = {ACTIVE:'启用',INACTIVE:'停用',MEMBER:'成员',OWNER:'负责人',EXTERNAL:'外部',INTERNAL:'内部',SET_OWNER:'设置负责人',
   UNSET_OWNER:'取消负责人',TRANSFER:'调动',DISABLE:'停用',ENABLE:'启用',RECONCILE:'纠正身份',CREATE:'创建'}
-const columns = [{title:'AI 事件',dataIndex:'id'}, {title:'组织或成员',key:'entity'},{title:'冲突原因',key:'reason'}, {title:'状态',key:'state'}, {title:'操作',key:'action'}]
+const columns = [{title:'AI 事件',dataIndex:'id'}, {title:'组织或成员',key:'entity'},{title:'冲突原因',key:'reason'}, {title:'状态',key:'state'}, {title:'',key:'action'}]
 async function refresh(){
   loading.value=true
   error.value=''

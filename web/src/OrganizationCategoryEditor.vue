@@ -14,7 +14,7 @@ let request = 0
 const columns = [
   {title:'销售类别',dataIndex:'name',key:'name',width:220},
   {title:'状态',key:'active',width:100},
-  {title:'操作',key:'actions',width:92},
+  {title:'',key:'actions',width:92},
 ]
 async function refresh() {
   const seq = ++request
