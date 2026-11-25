@@ -24,18 +24,23 @@ const organizationPeopleDirectorySQL = `WITH appointments AS (
  JOIN organization_duty_scopes s ON s.id=d.scope_id LEFT JOIN configuration_options o ON o.group_key='organizationDuty' AND o.option_key=d.role
  WHERE d.person_id IS NOT NULL AND tstzrange(d.valid_from,d.valid_to,'[)') @> statement_timestamp()
 ), matched AS (
- SELECT p.id,p.name,p.a2_status AS "sourceStatus" FROM people p WHERE
+ SELECT p.id,p.name,p.a2_status AS "sourceStatus",p.legacy_party_id,
+ CASE WHEN p.dispatch_name_managed OR p.a2_name_status='MANUAL' OR p.legacy_party_id IS NULL THEN 0
+      WHEN p.a2_name_status='SOURCE_CONFIRMED' THEN 1 ELSE 2 END AS name_rank
+ FROM people p WHERE p.directory_visible AND
  (CASE WHEN $2='archived' THEN p.a2_status='INACTIVE' ELSE coalesce(p.a2_status,'ACTIVE')='ACTIVE' END) AND
  (CASE $2::text
    WHEN 'unassigned' THEN NOT EXISTS(SELECT 1 FROM appointments a WHERE a.person_id=p.id AND a.sales)
    WHEN 'conflicts' THEN p.id IN (SELECT person_id FROM appointments WHERE sales GROUP BY person_id HAVING count(DISTINCT unit_id)>1)
-   WHEN 'multiple-accounts' THEN p.id IN (SELECT person_id FROM accounts GROUP BY person_id HAVING count(*)>1)
+   WHEN 'multiple-accounts' THEN p.id IN (SELECT person_id FROM identity_mappings WHERE valid_to IS NULL GROUP BY person_id HAVING count(*)>1)
    ELSE true END)
  AND ($1='' OR p.id::text=$1 OR strpos(lower(p.name),lower($1))>0
  OR p.id IN (SELECT person_id FROM appointments WHERE strpos(lower(name||' '||position),lower($1))>0)
  OR p.id IN (SELECT person_id FROM accounts WHERE external_id=$1)
  OR p.id IN (SELECT person_id FROM duties WHERE strpos(lower(role||' '||scope),lower($1))>0))
-), page AS (SELECT * FROM matched ORDER BY id DESC LIMIT 25 OFFSET $3),
+), page AS (
+ SELECT id,name,"sourceStatus",row_number() OVER (ORDER BY name_rank,name,legacy_party_id,id) AS ord
+ FROM matched ORDER BY ord LIMIT 20 OFFSET $3),
 rows AS (SELECT p.*,
  coalesce((SELECT jsonb_agg(DISTINCT jsonb_build_object('name',a.name,'kind',a.kind,'position',a.position,'sales',a.sales))
  FROM appointments a WHERE a.person_id=p.id),'[]') AS appointments,
@@ -43,11 +48,11 @@ rows AS (SELECT p.*,
  FROM accounts a WHERE a.person_id=p.id),'[]') AS accounts,
  coalesce((SELECT jsonb_agg(DISTINCT(d.role||' · '||d.scope)) FROM duties d WHERE d.person_id=p.id),'[]') AS duties
  FROM page p)
-SELECT jsonb_build_object('total',(SELECT count(*) FROM matched),'items',coalesce((SELECT jsonb_agg(to_jsonb(rows) ORDER BY id DESC) FROM rows),'[]'))`
+SELECT jsonb_build_object('total',(SELECT count(*) FROM matched),'items',coalesce((SELECT jsonb_agg(to_jsonb(rows)-'ord' ORDER BY ord) FROM rows),'[]'))`
 
 func (s workspace) organizationPeopleDirectory(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	offset, _, term, err := organizationAssignmentFilters(q)
+	offset, _, term, err := organizationFilters(q, 20)
 	scope := q.Get("scope")
 	if err != nil || len([]rune(term)) > 100 {
 		respond(w, nil, invalid)

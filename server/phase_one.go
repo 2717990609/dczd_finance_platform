@@ -504,7 +504,7 @@ const ruleVersionRowsSQL = `SELECT ` + ruleVersionColumnsSQL + `,rv.components` 
 const rulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM (` + ruleVersionRowsSQL + `
  WHERE ($1::bigint[] IS NULL OR rv.product_id=ANY($1)) ORDER BY rv.id DESC LIMIT 500) a`
 const peopleSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
- (SELECT id,name FROM people) p`
+ (SELECT id,name FROM people WHERE directory_visible) p`
 const identitiesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
  (SELECT i.id,i.source,i.external_id AS "externalId",p.name AS "personName",p.id AS "personId",
  i.valid_from AS "validFrom",i.valid_to AS "validTo"

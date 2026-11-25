@@ -52,7 +52,9 @@ CREATE TABLE IF NOT EXISTS organization_company_use_closures (
 CREATE INDEX IF NOT EXISTS organization_company_use_end ON organization_company_use_closures(company_id,source,external_id,closed_at);
 
 ALTER TABLE people ADD COLUMN IF NOT EXISTS a2_status text CHECK (a2_status IN ('ACTIVE','INACTIVE')),
- ADD COLUMN IF NOT EXISTS a2_canonical_party uuid REFERENCES people(legacy_party_id);
+ ADD COLUMN IF NOT EXISTS a2_canonical_party uuid REFERENCES people(legacy_party_id),
+ ADD COLUMN IF NOT EXISTS directory_visible boolean NOT NULL DEFAULT true,
+ ADD COLUMN IF NOT EXISTS a2_name_status text CHECK (a2_name_status IN ('MANUAL','SOURCE_CONFIRMED','MISSING'));
 ALTER TABLE organization_units ADD COLUMN IF NOT EXISTS a2_party_id uuid;
 CREATE TABLE IF NOT EXISTS organization_a2_identifiers (
  origin text NOT NULL, id uuid NOT NULL, party_id uuid, unit_id uuid REFERENCES organization_units(id),

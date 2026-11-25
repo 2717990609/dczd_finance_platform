@@ -56,6 +56,8 @@ SELECT jsonb_build_object(
    WHERE status IN ('PENDING','PROCESSING','RETRYABLE','WAIT_CATEGORY','WAIT_PARENT_COMPANY')),
  'pendingBindings',(SELECT count(*) FROM binding WHERE state NOT IN ('ACTIVE','INACTIVE')),
  'openAIConflicts',(SELECT count(*) FROM finance_organization_ai_conflicts WHERE state IN ('OPEN','RESOLVING')),
+ 'personDirectory',coalesce((SELECT jsonb_object_agg(id,jsonb_build_object(
+   'status',status,'display_name_status',display_name_status)) FROM finance_parties WHERE party_type='PERSON'),'{}'),
  'healthAssignments',coalesce((SELECT jsonb_object_agg(id,member_id) FROM health_assignment),'{}'),
  'dispatchVersionFloor',coalesce((SELECT max(entity_version) FROM finance_organization_sync_outbox),0),
  'dispatchCompanies',coalesce((SELECT jsonb_agg(c ORDER BY "unitId") FROM company c),'[]'),
@@ -83,6 +85,11 @@ def main():
     if any(blockers.values()):
         parser.error(f"resolve outstanding A2 operations before switching senders: {blockers}")
     people = {row["id"] for row in base["people"]}
+    directory = links.pop("personDirectory")
+    for person in base["people"]:
+        if person["id"] not in directory:
+            parser.error("a person in the organization snapshot is missing from the A2 directory")
+        person.update(directory[person["id"]])
     units = {row["id"] for row in base["units"]}
     categories = {row["id"] for row in base.get("salesCategories", [])}
     if (any(row["unitId"] not in units for row in links["dispatchCompanies"])

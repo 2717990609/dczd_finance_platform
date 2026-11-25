@@ -66,7 +66,11 @@ func (s workspace) organizationAssignments(w http.ResponseWriter, r *http.Reques
 	respond(w, result, err)
 }
 
-func organizationAssignmentFilters(params url.Values) (offset int, at *time.Time, name string, err error) {
+func organizationAssignmentFilters(params url.Values) (int, *time.Time, string, error) {
+	return organizationFilters(params, 25)
+}
+
+func organizationFilters(params url.Values, pageSize int) (offset int, at *time.Time, name string, err error) {
 	page := 1
 	if value := params.Get("page"); value != "" {
 		var err error
@@ -90,7 +94,7 @@ func organizationAssignmentFilters(params url.Values) (offset int, at *time.Time
 		}
 		at = &date
 	}
-	return (page - 1) * 25, at, strings.TrimSpace(params.Get("name")), nil
+	return (page - 1) * pageSize, at, strings.TrimSpace(params.Get("name")), nil
 }
 
 type organizationSnapshot struct {
@@ -222,10 +226,13 @@ func storeOrganizationSnapshot(ctx context.Context, db transactionBeginner, raw 
 	})
 }
 
-const importOrganizationPeopleSQL = `INSERT INTO people(name,legacy_party_id)
- SELECT CASE WHEN id IS NOT NULL THEN nullif(btrim(name),'') END,id
- FROM jsonb_to_recordset($1) AS incoming(id uuid,name text)
- ON CONFLICT(legacy_party_id) DO UPDATE SET name=excluded.name WHERE NOT people.dispatch_name_managed`
+const importOrganizationPeopleSQL = `INSERT INTO people(name,legacy_party_id,a2_status,a2_name_status)
+ SELECT CASE WHEN id IS NOT NULL THEN nullif(btrim(name),'') END,id,status,display_name_status
+ FROM jsonb_to_recordset($1) AS incoming(id uuid,name text,status text,display_name_status text)
+ ON CONFLICT(legacy_party_id) DO UPDATE SET
+ name=CASE WHEN people.dispatch_name_managed THEN people.name ELSE excluded.name END,
+ a2_status=coalesce(excluded.a2_status,people.a2_status),
+ a2_name_status=coalesce(excluded.a2_name_status,people.a2_name_status)`
 
 const importedCompanyTypeChange = `excluded.sales_company_type IS NOT NULL
  AND organization_units.sales_company_type IS DISTINCT FROM excluded.sales_company_type

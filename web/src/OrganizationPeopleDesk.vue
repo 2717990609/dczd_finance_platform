@@ -26,7 +26,7 @@ const columns = [
   {title:'业务职责',key:'duties',width:180},
   {title:'操作',key:'action',width:100,fixed:'right'},
 ]
-const pagination = computed(()=>({current:page.value,total:people.value.total,pageSize:25,hideOnSinglePage:true,showSizeChanger:false}))
+const pagination = computed(()=>({current:page.value,total:people.value.total,pageSize:20,hideOnSinglePage:true,showSizeChanger:false}))
 let generation = 0
 let timer
 async function refresh() {

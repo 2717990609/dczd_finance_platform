@@ -36,3 +36,30 @@ func TestOrganizationPeopleDirectorySearchAndUnassigned(t *testing.T) {
 		}
 	}
 }
+
+func TestOrganizationDirectorySeparatesLoginOnlyAndKeepsSourceOrder(t *testing.T) {
+	db := integrationDB(t)
+	ctx := context.Background()
+	_, err := db.Exec(ctx, `INSERT INTO people(name,directory_visible) VALUES('Login only',false),('B',true);
+	 INSERT INTO people(name,legacy_party_id,a2_status,a2_name_status) VALUES
+	 ('A',gen_random_uuid(),'ACTIVE','SOURCE_CONFIRMED'),('C',gen_random_uuid(),'ACTIVE','MANUAL'),
+	 ('D',gen_random_uuid(),'INACTIVE','MANUAL');
+	 INSERT INTO finance_accounts(login,person_id,password_hash,enabled,workspace_access)
+	 SELECT 'test-'||id,id,'unused',true,true FROM people WHERE name IN ('Login only','C')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for scope, want := range map[string]string{"": "BCA", "unassigned": "BCA", "archived": "D"} {
+		var out struct{ Items []struct{ Name string } }
+		if err := db.QueryRow(ctx, organizationPeopleDirectorySQL, "", scope, 0).Scan(&out); err != nil {
+			t.Fatal(err)
+		}
+		var names string
+		for _, row := range out.Items {
+			names += row.Name
+		}
+		if names != want {
+			t.Fatalf("scope %q returned %q, want %q", scope, names, want)
+		}
+	}
+}
