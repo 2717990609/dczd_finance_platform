@@ -4,6 +4,7 @@ import { Drawer } from 'ant-design-vue'
 import { syncReasons } from './organization-sync-reasons'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import OrganizationDispatchProfile from './OrganizationDispatchProfile.vue'
+import OrganizationPersonSourceAccounts from './OrganizationPersonSourceAccounts.vue'
 import OrganizationDispatchAccounts from './OrganizationDispatchAccounts.vue'
 import OrganizationSourceRelations from './OrganizationSourceRelations.vue'
 const props=defineProps({api:Function,company:Object,personId:Number,personName:String,canWrite:Boolean,formatTime:Function,embedded:Boolean})
@@ -92,16 +93,20 @@ defineExpose({refresh})
      </a-modal>
     </section>
    </template>
+   <OrganizationPersonSourceAccounts v-if="personId" :key="personId" :api="api" :person-id="personId" :systems="systems" :format-time="formatTime"/>
    <OrganizationDispatchAccounts v-if="personId && data" :person-id="personId" :person-name="personName" :api="api" :systems="systems" :can-write="canWrite" :bindings="data.bindings" @changed="refresh();emit('changed')"/>
    <div class="dispatch-table-head">
-     <div><h3>同步记录</h3><span v-if="data && !error" class="record-total">{{ data.total }} 条</span></div>
+     <div><h3>{{personId ? '销售身份下发记录' : '同步记录'}}</h3><span v-if="data && !error" class="record-total">{{ data.total }} 条</span></div>
      <a-button size="small" :loading="loading" @click="refresh"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新</a-button>
    </div>
    <a-space wrap>
     <a-select v-model:value="targetFilter" aria-label="筛选目标系统" style="min-width:132px" :options="[{value:'',label:'全部目标系统'},...systems]"/>
     <a-checkbox v-model:checked="issuesOnly">只看异常记录</a-checkbox>
    </a-space>
-   <a-table size="small" row-key="id" :loading="loading" :columns="columns" :data-source="data?.items || []" :scroll="{x:860}"
+   <p v-if="personId && data?.total===0 && !loading && !error" class="dispatch-empty" role="status">
+    {{targetFilter || issuesOnly ? '当前筛选条件下没有下发记录。' : '暂无销售身份下发记录。这里记录财务向业务系统发送的身份变更。'}}
+   </p>
+   <a-table v-else size="small" row-key="id" :loading="loading" :columns="columns" :data-source="data?.items || []" :scroll="{x:860}"
     :pagination="{current:page,total:data?.total || 0,pageSize:25,showSizeChanger:false,hideOnSinglePage:true}" @change="page=$event.current">
     <template #bodyCell="{column,record}">
      <span v-if="column.key==='target'">{{label(record.target)}}</span>
@@ -125,6 +130,7 @@ defineExpose({refresh})
 .dispatch-table-head, .dispatch-table-head > div { display: flex; align-items: center; gap: 8px; }
 .dispatch-table-head { justify-content: space-between; }
 .dispatch-table-head h3 { margin: 0; font-size: 15px; }
+.dispatch-empty {margin:0;padding:12px 14px;background:var(--surface,#f7f8fa);color:var(--muted);border-radius:6px}
 .record-total { color: var(--muted); font-size: 13px; }
 .dispatch-content > .ant-btn { justify-self: start; }
 </style>
