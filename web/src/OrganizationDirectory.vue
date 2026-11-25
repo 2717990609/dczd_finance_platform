@@ -213,13 +213,13 @@ defineExpose({refresh})
             <a v-if="column.key==='personName'" class="person-name-link" :href="personLink(record.personId)">{{ text }}</a>
             <template v-else-if="column.key==='kind'">
               {{ optionLabel('appointmentKind',text) }}
-              <a-tag v-if="record.appointmentType && record.appointmentType!==text">{{ optionLabel('appointmentKind',record.appointmentType) }}</a-tag><small v-if="record.position" class="order-version">{{ record.position }}</small>
+              <a-tag v-if="record.appointmentType && record.appointmentType!==text && (!record.salesCompany || record.appointmentType==='CONCURRENT')">{{ optionLabel('appointmentKind',record.appointmentType) }}</a-tag><small v-if="record.position" class="order-version">{{ record.position }}</small>
             </template>
             <template v-else-if="column.key==='period'">
               <span class="numeric">{{formatTime(record.validFrom)}} 起</span>
               <small v-if="record.validTo" class="order-version numeric">{{formatTime(record.validTo)}} 止</small>
             </template>
-            <PersonAppointmentActions v-else-if="column.key==='actions'" :label="record.unitName" @select="mode=>openEditor(mode,record)"/>
+            <PersonAppointmentActions v-else-if="column.key==='actions'" :label="record.personName+'在'+record.unitName" @select="mode=>openEditor(mode,record)"/>
           </template>
           <template #emptyText>{{ emptyMessage }}</template>
         </a-table>
