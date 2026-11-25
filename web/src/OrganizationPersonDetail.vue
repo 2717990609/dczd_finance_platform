@@ -1,6 +1,6 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { LeftOutlined, UserOutlined } from '@ant-design/icons-vue'
+import { EditOutlined, LeftOutlined, SyncOutlined, UserOutlined } from '@ant-design/icons-vue'
 import OrganizationDispatch from './OrganizationDispatch.vue'
 import MonthlyReport from './MonthlyReport.vue'
 import OrganizationDuties from './OrganizationDuties.vue'
@@ -169,19 +169,29 @@ defineExpose({refresh})
       <div v-else-if="person" class="person-detail-identity">
         <div class="person-detail-avatar" aria-hidden="true"><UserOutlined/></div>
         <div class="person-detail-heading">
-          <h1 ref="heading" tabindex="-1">{{ person.name }}</h1>
+          <div class="person-name-row">
+            <h1 ref="heading" tabindex="-1">{{ person.name }}</h1>
+            <a-button v-if="canWrite" type="text" class="person-edit-name" aria-label="修改人员姓名"
+              @click="rename=person.name;renameError=''"><template #icon><EditOutlined aria-hidden="true"/></template>改名</a-button>
+          </div>
           <dl>
             <div><dt>人员 ID</dt><dd class="numeric">{{ person.id }}</dd></div>
             <div><dt>建档时间</dt><dd>{{ formatTime(person.createdAt) }}</dd></div>
           </dl>
         </div>
+        <a-button type="primary" class="person-sync-action" @click="dispatchOpen=true">
+          <template #icon><SyncOutlined aria-hidden="true"/></template>人员同步
+        </a-button>
       </div>
     </div>
     <template v-if="person">
-      <a-button v-if="canWrite" @click="rename=person.name;renameError=''">修改人员姓名</a-button>
-      <a-modal :open="rename!==undefined" title="修改人员姓名" ok-text="保存" cancel-text="取消" :confirm-loading="renameBusy" @ok="saveName" @cancel="rename=undefined">
+      <OrganizationDispatch v-if="dispatchOpen" :key="personId" :person-id="personId" :api="api" :can-write="canWrite"
+        :format-time="formatTime" @changed="refresh" @close="dispatchOpen=false"/>
+      <a-modal :open="rename!==undefined" title="修改人员姓名" ok-text="保存" cancel-text="取消" :confirm-loading="renameBusy" :ok-button-props="{disabled:!rename?.trim() || rename.trim()===person.name}" @ok="saveName" @cancel="rename=undefined">
        <a-alert v-if="renameError" :message="renameError" type="error" show-icon/>
-       <label>人员姓名<a-input v-model:value="rename" placeholder="最多 25 个字符"/></label>
+       <a-form layout="vertical"><a-form-item label="人员姓名" html-for="person-rename">
+         <a-input id="person-rename" v-model:value="rename" :maxlength="25" show-count/>
+       </a-form-item></a-form>
       </a-modal>
       <nav class="workspace-nav person-detail-nav" aria-label="个人信息导航">
         <a v-for="item in sections" :key="item.key" :href="personLink(personId,item.key==='appointments' ? undefined : item.key)"
@@ -202,8 +212,6 @@ defineExpose({refresh})
             :can-write="canWrite" :person-link="personLink"/>
         </KeepAlive>
         <template v-else-if="selected.key!=='finance'">
-          <OrganizationDispatch v-if="dispatchOpen && selected.key==='accounts'" :key="personId" :person-id="personId" :api="api" :can-write="canWrite" :format-time="formatTime" @changed="loadRows" @close="dispatchOpen=false"/>
-          <a-button v-if="selected.key==='accounts'" @click="dispatchOpen=true">业务系统销售身份</a-button>
           <section v-if="selected.key==='accounts' && financeStatus[person.accountStatus]" class="records person-finance-account">
             <h2>财务登录账号</h2>
             <a-tag :color="financeStatus[person.accountStatus].color">{{ financeStatus[person.accountStatus].label }}</a-tag>
@@ -265,3 +273,16 @@ defineExpose({refresh})
     </a-modal>
   </article>
 </template>
+
+<style scoped>
+.person-detail-header { padding-bottom: 14px; }
+.person-detail-heading { flex: 1; }
+.person-name-row { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: center; }
+.person-edit-name { color: var(--muted); }
+.person-edit-name:hover { color: var(--accent); }
+.person-sync-action { flex: none; }
+@media (max-width: 600px) {
+  .person-detail-identity { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; }
+  .person-sync-action { grid-column: 2; justify-self: start; }
+}
+</style>

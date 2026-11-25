@@ -6,6 +6,8 @@ import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
 import CatalogAppointments from './CatalogAppointments.vue'
 import OrganizationDirectors from './OrganizationDirectors.vue'
+import OrganizationPeopleDesk from './OrganizationPeopleDesk.vue'
+import OrganizationDispatch from './OrganizationDispatch.vue'
 import OrganizationCompanies from './OrganizationCompanies.vue'
 import OrganizationHealthConflicts from './OrganizationHealthConflicts.vue'
 import OrganizationDuties from './OrganizationDuties.vue'
@@ -14,7 +16,7 @@ import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
 import { organizationTree } from './organization-tree'
 
 const props = defineProps({api:Function, optionLabel:Function, formatTime:Function, canWrite:Boolean, appointmentKinds:Array,
-  catalogRoles:Array,catalogScopes:Array,personLink:Function,panel:String})
+  catalogRoles:Array,catalogScopes:Array,personLink:Function,panel:String,syncView:String})
 const emit = defineEmits(['update:panel','position-changed'])
 const units = ref([])
 const unitId = ref()
@@ -37,6 +39,16 @@ const positionsOpen = ref(false)
 const notice = ref('')
 const catalog = ref()
 const companies = ref()
+const sync = ref()
+const channels = ref()
+const channelNames = {DCZD:'大春之道',DCJK:'大春见康',DCAI:'大春 AI'}
+const channelError = ref('')
+async function readChannels() {
+  channelError.value=''
+  try { channels.value=await props.api('/organization-dispatch/channels') }
+  catch (e) { channels.value=undefined;channelError.value=e.message }
+}
+watch(()=>props.panel,panel=>{ if (panel==='sync') readChannels() },{immediate:true})
 const directorPanel = ref()
 const directorCompany = ref()
 const health = ref()
@@ -109,6 +121,7 @@ async function loadEntries() {
 
 function refresh() {
   if (props.panel==='catalog') return catalog.value?.refresh()
+  if (props.panel==='sync') {readChannels();return sync.value?.refresh()}
   if (props.panel==='companies') return companies.value?.refresh()
   if (props.panel==='directors') return directorPanel.value?.refresh()
   if (props.panel==='health') return health.value?.refresh()
@@ -155,7 +168,7 @@ defineExpose({refresh})
       :format-time="formatTime" :scopes="catalogScopes" :roles="catalogRoles" :person-link="personLink"/>
   </KeepAlive>
   <KeepAlive>
-    <OrganizationCompanies v-if="panel==='companies'" ref="companies" :api="api" :format-time="formatTime" :can-write="canWrite"
+    <OrganizationCompanies v-if="panel==='companies'" ref="companies" :api="api" :format-time="formatTime" :can-write="canWrite" :units="units" @directory-changed="loadUnits"
       @show-director="company=>{directorCompany=company;emit('update:panel','directors')}" @show-appointments="showCompanyAppointments" @show-duties="showDuties"/>
   </KeepAlive>
   <KeepAlive>
@@ -164,6 +177,25 @@ defineExpose({refresh})
   </KeepAlive>
   <OrganizationDirectors v-if="panel==='directors'" ref="directorPanel" :api="api" :can-write="canWrite" :format-time="formatTime"
     :company="directorCompany" @clear-company="directorCompany=undefined"/>
+  <template v-if="panel==='sync'">
+    <section class="records sync-toolbar" aria-label="同步工作台">
+      <h2>人员组织同步</h2>
+      <nav aria-label="同步办理入口">
+        <a href="#organization?tab=sync" :aria-current="syncView!=='records' ? 'page' : undefined">人员办理</a>
+        <a href="#organization?tab=companies">公司与成员</a>
+        <a href="#organization?tab=directors">销售总监归属</a>
+        <a href="#organization?tab=sync&view=records" :aria-current="syncView==='records' ? 'page' : undefined">投递记录</a>
+        <a href="#organization?tab=health">AI 冲突处理</a>
+      </nav>
+      <div class="sync-channels" aria-label="各系统下发开关">
+        <span>下发通道</span>
+        <span v-for="(name,key) in channelNames" :key="key">{{ name }} · {{ channels ? channels[key] ? '已开启' : '未开启' : '待读取' }}</span>
+        <a-button v-if="channelError" size="small" @click="readChannels">重新读取</a-button>
+      </div>
+    </section>
+    <OrganizationDispatch v-if="syncView==='records'" ref="sync" embedded :api="api" :can-write="canWrite" :format-time="formatTime"/>
+    <OrganizationPeopleDesk v-else ref="sync" :api="api" :can-write="canWrite" :format-time="formatTime" :option-label="optionLabel" :person-link="personLink"/>
+  </template>
   <OrganizationHealthConflicts v-if="panel==='health'" ref="health" :api="api" :can-write="canWrite"/>
   <div v-show="panel==='organization'">
     <a-alert v-if="unitsError || entriesError" class="feedback" type="error" :message="unitsError || entriesError" show-icon/>
@@ -220,3 +252,12 @@ defineExpose({refresh})
     :tree="appointmentTree" :kinds="appointmentKinds" :unit-id="selectedUnit?.status==='ACTIVE' ? unitId : undefined"
     @saved="saved" @close="editor=undefined"/>
 </template>
+
+<style scoped>
+.sync-toolbar {display:flex;align-items:center;justify-content:space-between;gap:12px 24px;flex-wrap:wrap;padding:12px 16px;margin-bottom:12px}
+.sync-channels {display:flex;align-items:center;gap:6px 18px;flex-wrap:wrap;flex-basis:100%;border-top:1px solid var(--line);padding-top:10px;color:var(--muted);font-size:13px}
+.sync-toolbar h2 {margin:0;font-size:17px}
+.sync-toolbar nav {display:flex;gap:4px;flex-wrap:wrap}
+.sync-toolbar a {padding:7px 10px;border-radius:4px;color:var(--muted)}
+.sync-toolbar a[aria-current] {color:var(--accent);background:var(--accent-soft);font-weight:600}
+</style>

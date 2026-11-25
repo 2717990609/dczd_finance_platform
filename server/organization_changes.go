@@ -136,6 +136,26 @@ func matchingAppointment(ctx context.Context, tx pgx.Tx, personID int64, target 
 }
 
 func insertAppointment(ctx context.Context, tx pgx.Tx, personID int64, target appointmentTarget, from time.Time, through *time.Time, by *string) (string, error) {
+	// A sales appointment may have one company per person and one owner per
+	// company over its effective interval. Department appointments stay independent.
+	if target.Kind == "MEMBER" || target.Kind == "MANAGER" || target.Kind == "OWNER" {
+		var sales bool
+		if err := tx.QueryRow(ctx, `SELECT sales_company_type IS NOT NULL FROM organization_units WHERE id=$1 FOR UPDATE`, target.UnitID).Scan(&sales); err != nil {
+			return "", err
+		}
+		if sales {
+			var collision bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT FROM organization_assignments a JOIN organization_units u ON u.id=a.unit_id
+			WHERE u.sales_company_type IS NOT NULL AND a.kind IN ('MEMBER','MANAGER','OWNER')
+			AND (a.person_id=$1 OR ($3='OWNER' AND a.unit_id=$2 AND a.kind='OWNER'))
+			AND tstzrange(a.valid_from,a.valid_to,'[)') && tstzrange($4,$5,'[)'))`, personID, target.UnitID, target.Kind, from, through).Scan(&collision); err != nil {
+				return "", err
+			}
+			if collision {
+				return "", dispatchProblem("所选期间已有销售公司归属或公司负责人，请先核对归属历史")
+			}
+		}
+	}
 	var status string
 	var kindEnabled, overlaps bool
 	err := tx.QueryRow(ctx, `SELECT u.status,

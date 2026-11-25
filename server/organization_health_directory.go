@@ -186,7 +186,8 @@ func applyHealthCompany(ctx context.Context, tx pgx.Tx, e organizationHealthEven
 		}
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from)
-  SELECT 'DCAI',$1,$2,$3 WHERE NOT EXISTS(SELECT 1 FROM organization_company_sources WHERE source='DCAI' AND source_company_id=$1
+  SELECT 'DCAI',$1,$2,$3 WHERE NOT EXISTS(SELECT 1 FROM organization_company_use_closures
+   WHERE company_id=$2 AND source='DCAI' AND external_id=$1 AND closed_at>=$3) AND NOT EXISTS(SELECT 1 FROM organization_company_sources WHERE source='DCAI' AND source_company_id=$1
    AND company_id=$2 AND valid_from<=now() AND (valid_to IS NULL OR valid_to>now()))`, e.ExternalID, unit, e.At); err != nil {
 		return
 	}

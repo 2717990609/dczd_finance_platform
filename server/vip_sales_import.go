@@ -132,7 +132,9 @@ const importVIPSalesPersonLinks = `INSERT INTO catalog_sales_people_sources(id,s
  ON CONFLICT(id) DO UPDATE SET person_id=excluded.person_id,valid_from=excluded.valid_from,valid_to=excluded.valid_to,observed_at=excluded.observed_at`
 
 const importVIPSalesCompanyLinks = `INSERT INTO catalog_sales_company_aliases(id,source,external_id,company_uuid,company_unit_id,valid_from,valid_to,observed_at)
- SELECT id,$2,"externalId","companyId","unitId","from","to",$3
+ SELECT id,$2,"externalId","companyId","unitId","from",least("to",(
+  SELECT min(c.closed_at) FROM organization_company_use_closures c WHERE c.company_id=i."unitId"
+  AND c.source=$2 AND c.external_id=i."externalId" AND c.closed_at>i."from")),$3
  FROM jsonb_to_recordset($1) AS i(id uuid,"externalId" text,"companyId" uuid,"unitId" uuid,"from" timestamptz,"to" timestamptz)
  ON CONFLICT(id) DO UPDATE SET company_uuid=excluded.company_uuid,company_unit_id=excluded.company_unit_id,
  valid_from=excluded.valid_from,valid_to=excluded.valid_to,observed_at=excluded.observed_at`

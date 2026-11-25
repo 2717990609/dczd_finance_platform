@@ -11,6 +11,12 @@ import (
 func (s workspace) organizationDispatchRoutes() []rest.Route {
 	const base = "/api/v1/organization-dispatch"
 	return []rest.Route{
+		{Method: "POST", Path: base + "/close-company-use", Handler: submitJSON(16<<10, s.closeCompanyUse)},
+		{Method: "POST", Path: base + "/person-intake", Handler: submitJSON(64<<10, s.savePersonIntake)},
+		{Method: "GET", Path: base + "/company-members", Handler: s.companyMemberDirectory},
+		{Method: "GET", Path: base + "/available-companies", Handler: s.availableDispatchCompanies},
+		{Method: "GET", Path: base + "/channels", Handler: s.organizationDispatchChannels},
+		{Method: "GET", Path: base + "/people", Handler: s.organizationPeopleDirectory},
 		{Method: "POST", Path: base + "/create-unit", Handler: submitJSON(16<<10, s.createDispatchUnit)},
 		{Method: "POST", Path: base + "/rename-person", Handler: submitJSON(16<<10, s.renameDispatchPerson)},
 		{Method: "POST", Path: base + "/profile", Handler: submitJSON(32<<10, s.saveDispatchProfile)},
@@ -25,6 +31,11 @@ func (s workspace) organizationDispatchRoutes() []rest.Route {
 		{Method: "POST", Path: base + "/retry", Handler: submitJSON(16<<10, s.retryOrganizationDispatch)},
 	}
 }
+
+const dispatchRetryEligible = `q.state IN ('RETRYABLE','WAIT_PARENT_COMPANY','WAIT_CATEGORY','CONFLICT')
+ AND NOT EXISTS(SELECT FROM organization_dispatch_outbox n WHERE n.target=q.target AND n.entity_type=q.entity_type AND n.entity_id=q.entity_id AND n.version>q.version)
+ AND (q.entity_type<>'COMPANY' OR EXISTS(SELECT FROM organization_dispatch_targets t WHERE t.company_id=q.entity_id AND t.target=q.target))`
+
 func (s workspace) getOrganizationDispatch(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	var id *string
@@ -45,7 +56,7 @@ func (s workspace) getOrganizationDispatch(w http.ResponseWriter, r *http.Reques
 		}
 		person = v
 	}
-	if id != nil && person != nil {
+	if id != nil && person != nil || q.Get("target") != "" && !validDispatchTarget(q.Get("target")) || q.Get("issues") != "" && q.Get("issues") != "true" {
 		respond(w, nil, invalid)
 		return
 	}
@@ -56,19 +67,27 @@ func (s workspace) getOrganizationDispatch(w http.ResponseWriter, r *http.Reques
 	}
 	var data json.RawMessage
 	err = s.db.QueryRow(r.Context(), `WITH history AS (SELECT q.id,q.target,q.entity_type AS kind,q.entity_id AS "entityId",q.version,q.message_type AS "messageType",q.payload->>'operation' AS operation,
- q.state,q.reason,q.external_id AS "externalId",q.attempts,q.effective_at AS "effectiveAt",coalesce(u.name,c.name,p.name) AS name
+ (`+dispatchRetryEligible+`) AS "canRetry",q.state,q.reason,q.external_id AS "externalId",q.attempts,q.effective_at AS "effectiveAt",coalesce(u.name,c.name,p.name) AS name
  FROM organization_dispatch_outbox q LEFT JOIN organization_units u ON q.entity_type='COMPANY' AND q.entity_id=u.id
  LEFT JOIN organization_sales_categories c ON q.entity_type='CATEGORY' AND q.entity_id=c.id
  LEFT JOIN organization_dispatch_links l ON l.entity_type='MEMBER' AND q.entity_type=l.entity_type AND q.entity_id=l.entity_id AND q.target=l.target
  LEFT JOIN people p ON p.id=l.person_id
- WHERE ($1::uuid IS NULL OR (q.entity_type='COMPANY' AND q.entity_id=$1)) AND ($2::bigint IS NULL OR l.person_id=$2)),
+ WHERE ($1::uuid IS NULL OR (q.entity_type='COMPANY' AND q.entity_id=$1)) AND ($2::bigint IS NULL OR l.person_id=$2)
+ AND ($4='' OR q.target=$4) AND (NOT $5 OR q.state IN ('CONFLICT','RETRYABLE','WAIT_CATEGORY','WAIT_PARENT_COMPANY'))),
  page AS(SELECT * FROM history ORDER BY version DESC LIMIT 25 OFFSET $3)
  SELECT jsonb_build_object('targets',array(SELECT target FROM organization_dispatch_targets WHERE company_id=$1 ORDER BY target),
+ 'businessUses',coalesce((SELECT jsonb_agg(to_jsonb(uses) ORDER BY uses.active DESC,uses.source,uses."externalId",uses."validFrom" DESC)
+ FROM (`+companyBusinessUsesSQL+`) uses),'[]'),
+ 'targetStatus',coalesce((SELECT jsonb_agg(jsonb_build_object('target',t.target,'state',coalesce(last.state,CASE WHEN link.external_id IS NOT NULL THEN 'APPLIED' ELSE 'NO_MESSAGE' END),'reason',last.reason,'externalId',link.external_id) ORDER BY t.target)
+ FROM organization_dispatch_targets t LEFT JOIN organization_dispatch_links link ON link.target=t.target AND link.entity_id=t.company_id AND link.entity_type='COMPANY'
+ LEFT JOIN LATERAL (SELECT q.state,q.reason FROM organization_dispatch_outbox q WHERE q.target=t.target AND q.entity_type='COMPANY' AND q.entity_id=t.company_id ORDER BY version DESC LIMIT 1) last ON true WHERE t.company_id=$1),'[]'),
  'profile',(SELECT jsonb_build_object('name',u.name,'status',u.status,'version',u.dispatch_profile_version,'parentId',p.unit_id,'parentName',pu.name) FROM organization_units u LEFT JOIN organization_dispatch_company_keys k ON k.unit_id=u.id LEFT JOIN organization_dispatch_company_keys p ON p.wire_id=k.parent_wire_id LEFT JOIN organization_units pu ON pu.id=p.unit_id WHERE u.id=$1),'wireId',(SELECT wire_id FROM organization_dispatch_company_keys WHERE unit_id=$1),'total',(SELECT count(*) FROM history),
  'items',coalesce((SELECT jsonb_agg(to_jsonb(page) ORDER BY version DESC) FROM page),'[]'),
  'bindings',coalesce((SELECT jsonb_agg(jsonb_build_object('id',l.entity_id,'target',l.target,'userId',l.external_id,'companyId',l.external_company_id,
+ 'companyName',(SELECT u.name FROM organization_dispatch_links comp JOIN organization_units u ON u.id=comp.entity_id WHERE comp.target=l.target AND comp.entity_type='COMPANY' AND comp.external_id=l.external_company_id),
+ 'pending',EXISTS(SELECT FROM organization_dispatch_outbox q WHERE q.target=l.target AND q.entity_type='MEMBER' AND q.entity_id=l.entity_id AND q.state NOT IN ('APPLIED','STOPPED','CONFLICT')),
  'memberId',l.external_member_id,'role',l.role,'state',l.identity_state,'version',l.version) ORDER BY l.target,l.external_id)
- FROM organization_dispatch_links l WHERE person_id=$2 AND entity_type='MEMBER'),'[]'))`, id, person, offset).Scan(&data)
+ FROM organization_dispatch_links l WHERE person_id=$2 AND entity_type='MEMBER'),'[]'))`, id, person, offset, q.Get("target"), q.Get("issues") == "true").Scan(&data)
 	respond(w, data, err)
 }
 
@@ -84,9 +103,7 @@ func (s workspace) retryOrganizationDispatch(ctx context.Context, input dispatch
 	}
 	err := s.writeAppointments(ctx, func(tx pgx.Tx, _ *string) error {
 		tag, err := tx.Exec(ctx, `UPDATE organization_dispatch_outbox q SET state='PENDING',reason='',next_attempt_at=now()
-   WHERE id=$1 AND attempts=$2 AND state IN ('RETRYABLE','WAIT_PARENT_COMPANY','WAIT_CATEGORY','CONFLICT')
-   AND NOT EXISTS(SELECT 1 FROM organization_dispatch_outbox n WHERE n.target=q.target AND n.entity_type=q.entity_type AND n.entity_id=q.entity_id AND n.version>q.version)
-   AND (entity_type<>'COMPANY' OR EXISTS(SELECT FROM organization_dispatch_targets t WHERE t.company_id=q.entity_id AND t.target=q.target))`, id, input.ExpectedAttempts)
+   WHERE id=$1 AND attempts=$2 AND `+dispatchRetryEligible, id, input.ExpectedAttempts)
 		if err != nil {
 			return err
 		}

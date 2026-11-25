@@ -51,7 +51,7 @@ func (s workspace) cancelDispatchMember(ctx context.Context, input dispatchRetry
 		return nil, invalid
 	}
 	err := s.writeAppointments(ctx, func(tx pgx.Tx, by *string) error {
-		tag, err := tx.Exec(ctx, `UPDATE organization_dispatch_outbox SET state='STOPPED',reason='CANCELED' WHERE id=$1 AND entity_type='MEMBER' AND state='PENDING' AND attempts=0 AND effective_at>clock_timestamp()`, id)
+		tag, err := tx.Exec(ctx, `UPDATE organization_dispatch_outbox SET state='STOPPED',reason='CANCELED' WHERE id=$1 AND entity_type='MEMBER' AND payload->>'operation'<>'CREATE' AND state='PENDING' AND attempts=0 AND effective_at>clock_timestamp()`, id)
 		if err != nil {
 			return err
 		}

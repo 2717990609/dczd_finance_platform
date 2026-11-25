@@ -40,3 +40,13 @@ CREATE TABLE IF NOT EXISTS organization_dispatch_commands (
 );
 ALTER TABLE organization_units ADD COLUMN IF NOT EXISTS dispatch_profile_version bigint NOT NULL DEFAULT 0;
 ALTER TABLE people ADD COLUMN IF NOT EXISTS dispatch_name_managed boolean NOT NULL DEFAULT false;
+CREATE TABLE IF NOT EXISTS organization_person_intakes (
+ request_id uuid PRIMARY KEY, fingerprint bytea NOT NULL, person_id bigint NOT NULL REFERENCES people(id),
+ actor uuid REFERENCES finance_accounts(id)
+);
+CREATE TABLE IF NOT EXISTS organization_company_use_closures (
+ request_id uuid PRIMARY KEY, company_id uuid NOT NULL REFERENCES organization_units(id),
+ source text NOT NULL, external_id text NOT NULL, expected_from timestamptz NOT NULL,
+ closed_at timestamptz NOT NULL, actor uuid REFERENCES finance_accounts(id)
+);
+CREATE INDEX IF NOT EXISTS organization_company_use_end ON organization_company_use_closures(company_id,source,external_id,closed_at);

@@ -56,6 +56,7 @@ const workspaces = [{key:'work',title:'工作台'}, {key:'config',title:'配置'
 const organizationPages = [
   {page:'organization',tab:'organization',label:'人员归属'},
   {page:'people',tab:'main',label:'人员档案'},
+  {page:'organization',tab:'sync',label:'人员组织同步'},
   {page:'organization',tab:'duties',label:'业务职责'},
   {page:'organization',tab:'directors',label:'总监归属'},
   {page:'organization',tab:'catalog',label:'分润岗位'},
@@ -63,6 +64,9 @@ const organizationPages = [
   {page:'organization',tab:'companies',label:'销售公司与类别'},
   {page:'organization',tab:'health',label:'AI 组织冲突'},
 ]
+const OrganizationPeopleDesk = defineAsyncComponent(() => import('./OrganizationPeopleDesk.vue'))
+const peopleDesk = ref()
+const syncView = ref('people')
 const organizationPanel = ref('organization')
 const personPage = ref()
 const personDetail = ref()
@@ -709,7 +713,7 @@ async function refresh(reloadOptions = false) {
   if (orderQuery.value) params.set('orderId',orderQuery.value)
   if (olderThan.value) params.set('beforeId',olderThan.value)
   if (unitScope.value) params.set('unitId',unitScope.value)
-  const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], pools:['products','periods'], retention:[], 'pool-config':['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:['people','identities']}
+  const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], pools:['products','periods'], retention:[], 'pool-config':['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:tab.value==='identity'?['people','identities']:[]}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
   if (requests.identities && identityAccount.value) {
     const {source,externalId} = identityAccount.value
@@ -765,6 +769,7 @@ function refreshWorkspace() {
   refresh(true)
   periodTasks.value?.refresh()
   if (personPage.value) personDetail.value?.refresh()
+  else if (current.value==='people' && peopleDesk.value) peopleDesk.value.refresh()
   else organization.value?.refresh()
   monthlyReport.value?.refresh()
   retention.value?.refresh()
@@ -894,6 +899,7 @@ function changeRoute() {
   const previousPerson = personPage.value
   const isOrganizationPage = current.value===key && (key==='organization' || key==='people')
   const requestedTab = organizationPages.find(entry=>entry.page===key && entry.tab===params.get('tab'))?.tab
+  syncView.value = requestedTab==='sync' && params.get('view')==='records' ? 'records' : 'people'
   const personId = isOrganizationPage ? routeId(params.get('personId')) : undefined
   personPage.value = personId ? {id:personId,section:params.get('section'),
     back:organizationHref(key,requestedTab || (key==='people' ? 'main' : 'organization')),
@@ -1781,7 +1787,7 @@ async function save() {
             <a v-else-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
             <div v-if="!practiceSettingsView && actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length) && !identityAccount" class="topbar-actions">
               <a v-if="orderReturn" class="workspace-return" :href="orderReturn.href"><LeftOutlined aria-hidden="true"/>{{ orderReturn.label }}</a>
-              <a-button v-if="canOpenAction" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : actions==='period' ? accountingPeriodTitle(currentPeriodProduct) : titles[actions] }}</a-button>
+              <a-button v-if="canOpenAction && actions!=='person'" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : actions==='period' ? accountingPeriodTitle(currentPeriodProduct) : titles[actions] }}</a-button>
               <a-button v-if="catalogScenarioProducts.length" :type="canOpenAction ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogScenarioCreation">新增逐单规则</a-button>
               <a-button v-if="catalogPeriodProducts.length" :type="canOpenAction || catalogScenarioProducts.length ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogPeriodCreation">新增整期规则</a-button>
             </div>
@@ -1807,7 +1813,7 @@ async function save() {
         <div v-show="!personPage" class="workspace-page-body">
         <KeepAlive>
           <OrganizationDirectory v-if="current==='organization'" ref="organization" :api="api" :option-label="optionLabel" :format-time="formatTime"
-            :panel="organizationPanel" :person-link="personLink" @update:panel="navigateOrganizationPanel" @position-changed="refresh(true)"
+            :panel="organizationPanel" :sync-view="syncView" :person-link="personLink" @update:panel="navigateOrganizationPanel" @position-changed="refresh(true)"
             :can-write="session.user ? session.user.organizationWrite : session.development" :appointment-kinds="options('appointmentKind')"
             :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"/>
         </KeepAlive>
@@ -1859,6 +1865,8 @@ async function save() {
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
 
         </template>
+        <OrganizationPeopleDesk v-else-if="current==='people' && tab!=='identity'" ref="peopleDesk" :api="api" :format-time="formatTime"
+          :person-link="personLink" :option-label="optionLabel" :can-write="session.user ? session.user.organizationWrite : session.development"/>
         <template v-else-if="practiceSettingsView">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <PracticeRuleSettings :key="practiceRulesProduct.id"

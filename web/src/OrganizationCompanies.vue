@@ -1,15 +1,19 @@
 <script setup>
 import { computed, onBeforeUnmount, onDeactivated, ref, watch } from 'vue'
-import { RadioGroup } from 'ant-design-vue'
+import { RadioGroup, TreeSelect } from 'ant-design-vue'
+import { organizationTree } from './organization-tree'
 import OrganizationCategoryEditor from './OrganizationCategoryEditor.vue'
 import OrganizationDispatchProfile from './OrganizationDispatchProfile.vue'
+import OrganizationCompanyMembers from './OrganizationCompanyMembers.vue'
 import OrganizationDispatch from './OrganizationDispatch.vue'
 import OrganizationCompanyType from './OrganizationCompanyType.vue'
 
+const memberCompany=ref()
 const dispatch=ref(), createProfile=ref(false)
-onDeactivated(()=>{dispatch.value=undefined;createProfile.value=false})
-const props = defineProps({api:Function,formatTime:Function,canWrite:Boolean})
-const emit = defineEmits(['show-appointments','show-duties','show-director'])
+onDeactivated(()=>{memberCompany.value=undefined;dispatch.value=undefined;createProfile.value=false})
+const props = defineProps({api:Function,formatTime:Function,canWrite:Boolean,units:Array})
+const emit = defineEmits(['show-appointments','show-duties','show-director','directory-changed'])
+const status = ref('')
 const type = ref('')
 const name = ref('')
 const search = ref('')
@@ -39,8 +43,21 @@ const types = [
   {value:'EXTERNAL',label:'外部'}, {value:'UNKNOWN',label:'待确认'},
 ]
 const typeLabels = Object.fromEntries(types.map(row=>[row.value,row.label]))
+const companyHierarchy = computed(() => organizationTree(
+  (props.units || []).filter(unit => unit.companyType).map(unit => ({
+    ...unit, parentId:unit.salesParentId, kind:unit.companyType,
+  })), kind => typeLabels[kind],
+))
+function openCompanyMembers(id) {
+  memberCompany.value = props.units.find(unit => unit.id===id)
+}
+function companyChanged() {
+  refresh()
+  emit('directory-changed')
+}
 const columns = [
   {title:'销售公司',dataIndex:'name',width:210},
+  {title:'负责人 / 成员',key:'members',width:145},
   {title:'内外部',key:'type',width:95},
   {title:'销售类别',key:'category',width:145},
   {title:'上级组织',key:'parent',width:170},
@@ -58,6 +75,7 @@ async function refresh() {
   loading.value = true
   error.value = ''
   const query = new URLSearchParams({page:page.value,type:type.value,name:search.value})
+  if(status.value) query.set('status',status.value)
   if (category.value) query.set('categoryId',category.value)
   try {
     const rows = await props.api('/organization-sales-companies?'+query)
@@ -124,7 +142,7 @@ async function applyAssignment() {
     assignmentSaving.value = false
   }
 }
-watch([type,category,search], () => {
+watch([type,category,search,status], () => {
   selectedIds.value = []
   page.value = 1
   refresh()
@@ -141,7 +159,7 @@ defineExpose({refresh})
   <section class="records">
     <div class="records-head company-directory-head">
       <h2>销售公司目录</h2>
-      <a-button @click="dispatch={}">组织同步记录</a-button>
+      <a-button href="#organization?tab=sync&view=records">组织同步记录</a-button>
       <RadioGroup v-model:value="type" :options="types" option-type="button" button-style="solid" aria-label="销售公司类型"/>
       <div v-if="canWrite" class="topbar-actions category-actions">
         <a-button v-if="selected.length" @click="openAssignment(selected)">批量调整类别</a-button>
@@ -151,10 +169,16 @@ defineExpose({refresh})
     </div>
     <div class="organization-filters company-directory-filters">
       <div>
+        <label for="company-hierarchy">公司架构</label>
+        <TreeSelect id="company-hierarchy" :value="memberCompany?.id" :tree-data="companyHierarchy"
+          placeholder="按层级查找公司成员" tree-node-filter-prop="title" show-search @select="openCompanyMembers"/>
+      </div>
+      <div>
         <label for="company-category">销售类别</label>
         <a-select id="company-category" v-model:value="category" :options="result.categories" show-search option-filter-prop="label"
           placeholder="全部类别" allow-clear/>
       </div>
+      <div><label for="company-status">公司状态</label><a-select id="company-status" v-model:value="status" :options="[{value:'',label:'全部状态'},{value:'ACTIVE',label:'启用'},{value:'INACTIVE',label:'停用'}]"/></div>
       <div>
         <label for="company-name">公司名称</label>
         <a-input-search id="company-name" v-model:value="name" placeholder="搜索销售公司" allow-clear
@@ -165,7 +189,9 @@ defineExpose({refresh})
       <a-table :columns="columns" :data-source="result.items" :loading="loading" row-key="id" :pagination="pagination"
         :scroll="{x:canWrite ? 970 : 938}" :row-selection="selection" @change="changePage">
         <template #bodyCell="{column,record}">
-          <button v-if="column.key==='type'" type="button" class="order-link" :aria-label="'查看'+record.name+'的公司类型'"
+          <a-button v-if="column.dataIndex==='name'" type="link" size="small" @click="memberCompany=record">{{ record.name }}</a-button>
+          <span v-else-if="column.key==='members'">{{record.owners || '未设负责人'}}<small class="order-version">成员 {{record.members}} 人</small></span>
+          <button v-else-if="column.key==='type'" type="button" class="order-link" :aria-label="'查看'+record.name+'的公司类型'"
             @click="companyTypeDetails=record">
             <a-tag :color="record.companyType==='UNKNOWN' ? 'orange' : 'blue'">{{ typeLabels[record.companyType] }}</a-tag>
           </button>
@@ -177,6 +203,7 @@ defineExpose({refresh})
           <span v-else-if="column.key==='parent'">{{ record.parentName || '—' }}</span>
           <a-tag v-else-if="column.key==='status'" :color="record.status==='ACTIVE' ? 'green' : 'default'">{{ record.status==='ACTIVE' ? '启用' : '停用' }}</a-tag>
           <template v-else-if="column.key==='actions'">
+            <a-button type="link" size="small" @click="memberCompany=record">公司成员</a-button>
             <a-button type="link" size="small" @click="dispatch=record">同步目标</a-button>
             <a-button type="link" size="small" @click="emit('show-appointments',record.id)">查看任职</a-button>
             <a-button v-if="canWrite && record.companyType!=='UNKNOWN'" type="link" size="small" @click="emit('show-director',record)">总监归属</a-button>
@@ -188,8 +215,9 @@ defineExpose({refresh})
       </a-table>
     </div>
   </section>
-  <OrganizationDispatchProfile v-if="createProfile" :api="api" :categories="result.categories" @close="createProfile=false" @saved="createProfile=false;refresh()"/>
-  <OrganizationDispatch v-if="dispatch" :company="dispatch.id ? dispatch : undefined" :api="api" :can-write="canWrite" :format-time="formatTime" @close="dispatch=undefined" @changed="refresh"/>
+  <OrganizationDispatchProfile v-if="createProfile" :api="api" :categories="result.categories" @close="createProfile=false" @saved="createProfile=false;companyChanged()"/>
+  <OrganizationCompanyMembers v-if="memberCompany" :company="memberCompany" :api="api" :format-time="formatTime" :can-write="canWrite" @changed="refresh" @close="memberCompany=undefined"/>
+  <OrganizationDispatch v-if="dispatch" :company="dispatch.id ? dispatch : undefined" :api="api" :can-write="canWrite" :format-time="formatTime" @close="dispatch=undefined" @changed="companyChanged"/>
   <OrganizationCompanyType v-if="companyTypeDetails" :api="api" :company="companyTypeDetails" :can-write="canWrite"
     :format-time="formatTime" :types="types" @close="companyTypeDetails=undefined" @changed="refresh"/>
   <OrganizationCategoryEditor v-if="manageCategories" :api="api" @close="manageCategories=false" @changed="refresh"/>

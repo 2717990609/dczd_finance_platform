@@ -32,12 +32,24 @@ type organizationSyncClient struct {
 	http        *http.Client
 }
 
+func dispatchTargetEnabled(target string) bool {
+	return validDispatchTarget(target) && os.Getenv("ORG_SYNC_"+target+"_ENABLED") == "true"
+}
+
+func (s workspace) organizationDispatchChannels(w http.ResponseWriter, _ *http.Request) {
+	enabled := make(map[string]bool, len(organizationDispatchSystems))
+	for _, target := range organizationDispatchSystems {
+		enabled[target] = dispatchTargetEnabled(target)
+	}
+	respond(w, enabled, nil)
+}
+
 func newOrganizationSyncClient(target string) (*organizationSyncClient, error) {
 	if !validDispatchTarget(target) {
 		return nil, invalid
 	}
 	prefix := "ORG_SYNC_" + target + "_"
-	if os.Getenv(prefix+"ENABLED") != "true" {
+	if !dispatchTargetEnabled(target) {
 		return nil, errSourceDisabled
 	}
 	endpoint, err := url.Parse(strings.TrimRight(strings.TrimSpace(os.Getenv(prefix+"BASE_URL")), "/"))

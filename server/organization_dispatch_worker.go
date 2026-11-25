@@ -231,7 +231,8 @@ func applyDispatchIdentity(ctx context.Context, tx pgx.Tx, msg dispatchEnvelope,
 	}
 	if kind == "COMPANY" {
 		var active, exists bool
-		err := tx.QueryRow(ctx, `SELECT status='ACTIVE',EXISTS(SELECT 1 FROM organization_company_sources WHERE source=$2 AND company_id=$1 AND source_company_id=$3 AND tstzrange(valid_from,valid_to,'[)') @> greatest($4,clock_timestamp())),
+		err := tx.QueryRow(ctx, `SELECT status='ACTIVE' AND NOT EXISTS(SELECT 1 FROM organization_company_use_closures
+   WHERE company_id=$1 AND source=$2 AND external_id=$3 AND closed_at>=$4),EXISTS(SELECT 1 FROM organization_company_sources WHERE source=$2 AND company_id=$1 AND source_company_id=$3 AND tstzrange(valid_from,valid_to,'[)') @> greatest($4,clock_timestamp())),
    EXISTS(SELECT 1 FROM organization_company_sources WHERE source=$2 AND ((company_id=$1 AND source_company_id!=$3) OR (company_id!=$1 AND source_company_id=$3)) AND (valid_to IS NULL OR valid_to>$4))
    FROM organization_units WHERE id=$1`, local, msg.TargetSystem, external, msg.EffectiveAt).Scan(&active, &exists, &clashes)
 		if err != nil {

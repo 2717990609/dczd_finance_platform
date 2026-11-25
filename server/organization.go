@@ -20,8 +20,11 @@ import (
 )
 
 const organizationUnitsSQL = `SELECT coalesce(jsonb_agg(jsonb_build_object(
- 'id',id,'parentId',parent_id,'name',name,'kind',kind,'status',status)
- ORDER BY sort_order,name,id),'[]') FROM organization_units`
+ 'id',u.id,'parentId',u.parent_id,'name',u.name,'kind',u.kind,'status',u.status,
+ 'companyType',u.sales_company_type,'salesParentId',coalesce(parent_key.unit_id,u.parent_id))
+ ORDER BY u.sort_order,u.name,u.id),'[]') FROM organization_units u
+ LEFT JOIN organization_dispatch_company_keys k ON k.unit_id=u.id
+ LEFT JOIN organization_dispatch_company_keys parent_key ON parent_key.wire_id=k.parent_wire_id`
 
 const organizationAssignmentsSQL = `WITH matching AS (
  SELECT a.id,p.name AS "personName",p.id AS "personId",u.id AS "unitId",u.name AS "unitName",
@@ -251,7 +254,9 @@ const importOrganizationAssignmentsSQL = `INSERT INTO organization_assignments(i
  WHERE organization_assignments.changed_at IS NULL`
 
 const importOrganizationCompanySourcesSQL = `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from,valid_to)
- SELECT i.source,nullif(btrim(i."sourceCompanyId"),''),u.id,i."from",i."to"
+ SELECT i.source,nullif(btrim(i."sourceCompanyId"),''),u.id,i."from",least(i."to",(
+  SELECT min(c.closed_at) FROM organization_company_use_closures c WHERE c.company_id=u.id AND c.source=i.source
+  AND c.external_id=btrim(i."sourceCompanyId") AND c.closed_at>i."from"))
  FROM jsonb_to_recordset($1) AS i(source text,"sourceCompanyId" text,"companyId" uuid,"from" timestamptz,"to" timestamptz)
  LEFT JOIN organization_units u ON u.id=i."companyId" AND u.kind='COMPANY'
  ON CONFLICT(source,source_company_id,valid_from) DO UPDATE SET company_id=excluded.company_id,valid_to=excluded.valid_to`

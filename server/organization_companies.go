@@ -10,20 +10,27 @@ import (
 )
 
 const organizationCompaniesSQL = `WITH matched AS (
- SELECT u.id,u.name,u.sales_company_type AS "companyType",u.status,parent.name AS "parentName",
+ SELECT u.id,u.name,u.sales_company_type AS "companyType",u.status,coalesce(wireParent.name,parent.name) AS "parentName",
   c.name AS "categoryName",c.id AS "categoryId",h.valid_from AS "categoryFrom"
  FROM organization_units u LEFT JOIN organization_units parent ON parent.id=u.parent_id
+ LEFT JOIN organization_dispatch_company_keys k ON k.unit_id=u.id
+ LEFT JOIN organization_dispatch_company_keys kp ON kp.wire_id=k.parent_wire_id
+ LEFT JOIN organization_units wireParent ON wireParent.id=kp.unit_id
  LEFT JOIN LATERAL (
   SELECT h.category_id,h.valid_from FROM organization_sales_category_history h
   WHERE h.unit_id=u.id AND h.valid_from<=statement_timestamp() AND (h.valid_to IS NULL OR h.valid_to>statement_timestamp())
   ORDER BY h.valid_from DESC LIMIT 1
  ) h ON true LEFT JOIN organization_sales_categories c ON c.id=h.category_id
  WHERE u.sales_company_type IS NOT NULL AND ($1='' OR u.sales_company_type=$1)
- AND ($2::uuid IS NULL OR c.id=$2) AND ($3='' OR strpos(lower(u.name),lower($3))>0)
- ), page AS (SELECT * FROM matched ORDER BY name,id LIMIT 25 OFFSET $4)
+ AND ($5='' OR u.status=$5) AND ($2::uuid IS NULL OR c.id=$2) AND ($3='' OR strpos(lower(u.name),lower($3))>0)
+ ), page AS (SELECT * FROM matched ORDER BY name,id LIMIT 25 OFFSET $4),
+ enriched AS (SELECT page.*,m.owners,m.members FROM page CROSS JOIN LATERAL (
+ SELECT count(DISTINCT a.person_id) AS members,string_agg(DISTINCT p.name,'、' ORDER BY p.name) FILTER(WHERE a.kind='OWNER') AS owners
+ FROM organization_assignments a JOIN people p ON p.id=a.person_id WHERE a.unit_id=page.id AND a.kind IN ('OWNER','MANAGER','MEMBER')
+ AND tstzrange(a.valid_from,a.valid_to,'[)') @> statement_timestamp()) m)
  SELECT jsonb_build_object(
  'total',(SELECT count(*) FROM matched),
- 'items',coalesce((SELECT jsonb_agg(to_jsonb(page) ORDER BY name,id) FROM page),'[]'),
+ 'items',coalesce((SELECT jsonb_agg(to_jsonb(enriched) ORDER BY name,id) FROM enriched),'[]'),
  'categories',coalesce((SELECT jsonb_agg(jsonb_build_object('value',id,'label',name) ORDER BY name,id)
  FROM organization_sales_categories WHERE active),'[]'))`
 
@@ -42,12 +49,13 @@ func (s workspace) organizationCompanies(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	offset, _, name, err := organizationAssignmentFilters(params)
-	if err != nil || len(name) > 240 {
+	status := params.Get("status")
+	if err != nil || len(name) > 240 || status != "" && status != "ACTIVE" && status != "INACTIVE" {
 		respond(w, nil, invalid)
 		return
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), organizationCompaniesSQL, companyType, category, name, offset).Scan(&result)
+	err = s.db.QueryRow(r.Context(), organizationCompaniesSQL, companyType, category, name, offset, status).Scan(&result)
 	respond(w, result, err)
 }
 
