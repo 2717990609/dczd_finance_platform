@@ -25,7 +25,7 @@ function allowed(b,key){if(b.pending || b.state==='PENDING')return false;if(key=
  <a-alert v-if="error" :message="error" type="error" show-icon/>
  <h3>已绑定的销售身份</h3>
  <ul v-if="bindings?.length" class="identity-list">
-  <li v-for="item in bindings" :key="item.id"><span>{{systems.find(o=>o.value===item.target)?.label}} · 账号 {{item.userId}} · 公司 {{item.companyName || item.companyId}} · {{item.role==='OWNER'?'负责人':item.role==='MANAGER'?'管理人员':'成员'}} · {{stateLabels[item.state]}}</span>
+  <li v-for="item in bindings" :key="item.id"><span>{{systems.find(o=>o.value===item.target)?.label}} · {{item.sourceName ? item.sourceName+' · ' : ''}}账号 {{item.userId}} · 公司 {{item.companyName || item.companyId}} · {{item.role==='OWNER'?'负责人':item.role==='MANAGER'?'管理人员':'成员'}} · {{stateLabels[item.state]}}</span>
    <span v-if="item.pending">有在途操作</span><a-space v-else-if="canWrite" wrap :size="2">
      <a-button v-for="([key,title]) in operations.filter(([key])=>allowed(item,key))" :key="key" type="link" size="small" @click="change(item,key)">{{title}}</a-button>
    </a-space></li>

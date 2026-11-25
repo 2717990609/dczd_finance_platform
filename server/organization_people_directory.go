@@ -24,7 +24,8 @@ const organizationPeopleDirectorySQL = `WITH appointments AS (
  JOIN organization_duty_scopes s ON s.id=d.scope_id LEFT JOIN configuration_options o ON o.group_key='organizationDuty' AND o.option_key=d.role
  WHERE d.person_id IS NOT NULL AND tstzrange(d.valid_from,d.valid_to,'[)') @> statement_timestamp()
 ), matched AS (
- SELECT p.id,p.name FROM people p WHERE
+ SELECT p.id,p.name,p.a2_status AS "sourceStatus" FROM people p WHERE
+ (CASE WHEN $2='archived' THEN p.a2_status='INACTIVE' ELSE coalesce(p.a2_status,'ACTIVE')='ACTIVE' END) AND
  (CASE $2::text
    WHEN 'unassigned' THEN NOT EXISTS(SELECT 1 FROM appointments a WHERE a.person_id=p.id AND a.sales)
    WHEN 'conflicts' THEN p.id IN (SELECT person_id FROM appointments WHERE sales GROUP BY person_id HAVING count(DISTINCT unit_id)>1)
@@ -53,7 +54,7 @@ func (s workspace) organizationPeopleDirectory(w http.ResponseWriter, r *http.Re
 		return
 	}
 	switch scope {
-	case "", "unassigned", "conflicts", "multiple-accounts":
+	case "", "unassigned", "conflicts", "multiple-accounts", "archived":
 	default:
 		respond(w, nil, invalid)
 		return

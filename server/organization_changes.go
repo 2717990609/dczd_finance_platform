@@ -76,7 +76,7 @@ func (s workspace) searchFinancePeople(ctx context.Context, name string) (json.R
 	}
 	var result json.RawMessage
 	err := s.db.QueryRow(ctx, `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.name,p.id),'[]')
-	 FROM (SELECT id,name FROM people WHERE $1='' OR strpos(lower(name),lower($1))>0
+	 FROM (SELECT id,name FROM people WHERE coalesce(a2_status,'ACTIVE')='ACTIVE' AND ($1='' OR strpos(lower(name),lower($1))>0)
 	  ORDER BY name,id LIMIT 25) p`, name).Scan(&result)
 	return result, err
 }

@@ -50,3 +50,29 @@ CREATE TABLE IF NOT EXISTS organization_company_use_closures (
  closed_at timestamptz NOT NULL, actor uuid REFERENCES finance_accounts(id)
 );
 CREATE INDEX IF NOT EXISTS organization_company_use_end ON organization_company_use_closures(company_id,source,external_id,closed_at);
+
+ALTER TABLE people ADD COLUMN IF NOT EXISTS a2_status text CHECK (a2_status IN ('ACTIVE','INACTIVE')),
+ ADD COLUMN IF NOT EXISTS a2_canonical_party uuid REFERENCES people(legacy_party_id);
+ALTER TABLE organization_units ADD COLUMN IF NOT EXISTS a2_party_id uuid;
+CREATE TABLE IF NOT EXISTS organization_a2_identifiers (
+ origin text NOT NULL, id uuid NOT NULL, party_id uuid, unit_id uuid REFERENCES organization_units(id),
+ source text NOT NULL, kind text NOT NULL, external_id text NOT NULL, valid_from timestamptz NOT NULL,
+ valid_to timestamptz, PRIMARY KEY(origin,id)
+);
+CREATE INDEX IF NOT EXISTS organization_a2_identifiers_party ON organization_a2_identifiers(party_id);
+CREATE TABLE IF NOT EXISTS organization_a2_roles (
+ id uuid PRIMARY KEY,party_id uuid NOT NULL,role text NOT NULL,scope_type text NOT NULL,scope_id uuid NOT NULL,
+ scope_name text NOT NULL,valid_from timestamptz NOT NULL,valid_to timestamptz
+);
+CREATE INDEX IF NOT EXISTS organization_a2_roles_party ON organization_a2_roles(party_id);
+CREATE TABLE IF NOT EXISTS organization_a2_position_titles (
+ id uuid PRIMARY KEY,title text NOT NULL,status text NOT NULL,sort_order integer NOT NULL,is_deleted boolean NOT NULL
+);
+CREATE TABLE IF NOT EXISTS organization_a2_director_versions (
+ version_no integer PRIMARY KEY,period_key text NOT NULL,period_name text NOT NULL,starts_at timestamptz NOT NULL,
+ rows jsonb NOT NULL
+);
+CREATE TABLE IF NOT EXISTS organization_a2_delivery_history (
+ id uuid PRIMARY KEY,target text NOT NULL,kind text NOT NULL,entity_id uuid NOT NULL,version bigint NOT NULL,
+ operation text,state text NOT NULL,reason text,external_id text,attempts integer NOT NULL,effective_at timestamptz NOT NULL
+);

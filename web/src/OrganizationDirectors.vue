@@ -5,6 +5,7 @@ const props=defineProps({api:Function,formatTime:Function,canWrite:Boolean,compa
 const emit=defineEmits(['clear-company'])
 const base='/organization-directors'
 const versions=ref([]),periods=ref([]),selected=ref(),detail=ref(),error=ref(''),notice=ref('')
+const sourceVersions=ref([])
 const mode=ref(''),period=ref(),company=ref(''),companyName=ref(''),person=ref(''),department=ref(''),directorId=ref()
 const file=ref(),bindings=ref({}),checked=ref(),valid=ref(false),editRow=ref(),busy=ref(false),loading=ref(false),requestId=ref('')
 let loadSeq=0,detailSeq=0
@@ -38,7 +39,8 @@ async function readDetail(id){
 async function refresh(){
  const n=++loadSeq;loading.value=true;error.value=''
  try{
-  const [v,p]=await Promise.all([props.api(base),props.api(base+'/periods')]);if(n!==loadSeq)return
+  const [v,p,a2]=await Promise.all([props.api(base),props.api(base+'/periods'),props.api('/organization-dispatch/source-directors')]);if(n!==loadSeq)return
+  sourceVersions.value=a2
   versions.value=v;periods.value=p
   await readDetail(mode.value?latest.value?.id:v[0]?.id)
  }catch(e){if(n===loadSeq)error.value=e.message}
@@ -149,6 +151,11 @@ defineExpose({refresh})
    </template>
   </template>
   <template v-else>
+   <details v-for="v in sourceVersions" :key="v.version_no">
+    <summary>老财务已核定 V{{v.version_no}} · {{v.period_name}} · {{v.rows.length}} 条归属</summary>
+    <p>原版自 {{formatTime(v.starts_at)}} 起生效。</p>
+    <a-table :data-source="v.rows" :columns="[{title:'部门',dataIndex:'department'},{title:'总监',dataIndex:'leader_name'},{title:'总监公司',dataIndex:'leader_company_name'},{title:'组员',dataIndex:'member_name'},{title:'下属公司',dataIndex:'member_company_name'}]" row-key="number" size="small" :scroll="{x:690}" :pagination="{pageSize:20}"/>
+   </details>
    <label for="director-version">归属版本</label>
    <a-select id="director-version" :value="selected" :loading="loading" :options="versions.map(v=>({value:v.id,label:'V'+v.version+' · '+v.periodName}))"
      placeholder="暂无归属版本" @change="readDetail"/>

@@ -5,6 +5,7 @@ import { syncReasons } from './organization-sync-reasons'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import OrganizationDispatchProfile from './OrganizationDispatchProfile.vue'
 import OrganizationDispatchAccounts from './OrganizationDispatchAccounts.vue'
+import OrganizationSourceRelations from './OrganizationSourceRelations.vue'
 const props=defineProps({api:Function,company:Object,personId:Number,personName:String,canWrite:Boolean,formatTime:Function,embedded:Boolean})
 const emit=defineEmits(['close','changed'])
 const systems=[{value:'DCZD',label:'大春之道'},{value:'DCJK',label:'大春见康'},{value:'DCAI',label:'大春 AI'}]
@@ -63,6 +64,7 @@ defineExpose({refresh})
    <a-alert v-if="error" :message="error" type="error" show-icon/>
    <a-alert v-if="notice" :message="notice" type="success" show-icon closable @close="notice=''"/>
    <template v-if="company && data">
+    <OrganizationSourceRelations :api="api" :company-id="company.id" :format-time="formatTime"/>
     <a-button v-if="canWrite && data.wireId" @click="editProfile=true">维护公司名称、上级和启停状态</a-button>
     <OrganizationDispatchProfile v-if="editProfile" :api="api" :company="company" :profile="data.profile" @close="editProfile=false" @saved="editProfile=false;refresh();emit('changed')"/>
     <div v-if="data.targetStatus?.length"><h3>各系统当前状态</h3>
@@ -103,10 +105,10 @@ defineExpose({refresh})
     :pagination="{current:page,total:data?.total || 0,pageSize:25,showSizeChanger:false,hideOnSinglePage:true}" @change="page=$event.current">
     <template #bodyCell="{column,record}">
      <span v-if="column.key==='target'">{{label(record.target)}}</span>
-     <span v-else-if="column.key==='operation'">{{record.name}} · {{operations[record.operation] || (record.kind==='COMPANY' ? '公司' : '类别')}}</span>
+     <span v-else-if="column.key==='operation'">{{record.name}} · {{operations[record.operation] || (record.kind==='COMPANY' ? '公司' : record.kind==='MEMBER' ? '人员' : '类别')}}<small v-if="record.imported">老财务记录</small></span>
      <span v-else-if="column.key==='state'"><a-tag :color="stateColors[record.state]">{{states[record.state] || record.state}}</a-tag><small v-if="record.reason">{{syncReasons[record.reason] || record.reason}}</small></span>
      <span v-else-if="column.key==='effective'">{{formatTime(record.effectiveAt)}}</span>
-     <a-button v-else-if="column.key==='actions' && canWrite && record.kind==='MEMBER' && record.operation!=='CREATE' && record.attempts===0 && record.state==='PENDING' && Date.parse(record.effectiveAt)>Date.now()" size="small" @click="submit('cancel',{messageId:record.id})">取消计划</a-button>
+     <a-button v-else-if="column.key==='actions' && canWrite && !record.imported && record.kind==='MEMBER' && record.operation!=='CREATE' && record.attempts===0 && record.state==='PENDING' && Date.parse(record.effectiveAt)>Date.now()" size="small" @click="submit('cancel',{messageId:record.id})">取消计划</a-button>
      <a-button v-else-if="column.key==='actions' && canWrite && record.canRetry" size="small" :disabled="busy" @click="submit('retry',{messageId:record.id,expectedAttempts:record.attempts})">重试</a-button>
     </template>
     <template #emptyText>{{ error ? '同步记录读取失败' : personId ? '此人暂无同步记录' : company ? '此公司暂无同步记录' : '暂无人员或组织同步记录' }}</template>

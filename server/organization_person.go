@@ -36,7 +36,8 @@ func (s workspace) personDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	var result json.RawMessage
 	err = s.db.QueryRow(r.Context(), `SELECT jsonb_strip_nulls(jsonb_build_object(
-	 'id',p.id,'name',p.name,'createdAt',p.created_at,
+	 'id',p.id,'name',p.name,'createdAt',p.created_at,'sourceStatus',p.a2_status,
+	 'canonicalId',(SELECT canonical.id FROM people canonical WHERE canonical.legacy_party_id=p.a2_canonical_party),
 	 'accountStatus',CASE WHEN $2::boolean OR a.id::text=$3 THEN
 	  CASE WHEN a.id IS NULL THEN 'UNCONFIGURED' WHEN a.enabled THEN 'ACTIVE' ELSE 'DISABLED' END END,
 	 'ownLogin',CASE WHEN a.id::text=$3 THEN a.login END))

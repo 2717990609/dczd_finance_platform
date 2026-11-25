@@ -15,7 +15,7 @@ const loading = ref(false)
 const error = ref('')
 const person = ref()
 const scopes = [
-  {label:'全部人员',value:''}, {label:'未归属销售公司',value:'unassigned'},
+  {label:'在用人员',value:''}, {label:'已停用人员',value:'archived'}, {label:'未归属销售公司',value:'unassigned'},
   {label:'公司归属冲突',value:'conflicts'}, {label:'已关联多个账号',value:'multiple-accounts'},
 ]
 const sources = {DCZD:'大春之道',DCJK:'大春见康',DCAI:'大春 AI'}
@@ -82,14 +82,14 @@ defineExpose({refresh})
           <div v-for="a in record.accounts" :key="a.source+':'+a.id">{{ sources[a.source] || a.source }} · {{ a.id }}</div><span v-if="!record.accounts.length">—</span>
         </template>
         <template v-else-if="column.key==='duties'">{{ record.duties.join('、') || '—' }}</template>
-        <a-button v-else-if="column.key==='action'" type="link" size="small" @click="person=record">{{ canWrite ? '办理身份' : '查看身份' }}</a-button>
+        <a-button v-else-if="column.key==='action'" type="link" size="small" @click="person=record">{{ canWrite && record.sourceStatus!=='INACTIVE' ? '办理身份' : '查看身份' }}</a-button>
       </template>
       <template #emptyText>{{ term ? '没有符合条件的人员' : '暂无人员记录' }}</template>
     </a-table>
   </section>
   <OrganizationPersonIntake v-if="creating" :api="api" @close="creating=false" @saved="id=>{creating=false;term='';scope='';page=1;notice='人员已保存 · ID '+id;refresh()}"/>
   <OrganizationDispatch v-if="person" :key="person.id" :api="api" :person-id="person.id" :person-name="person.name"
-    :can-write="canWrite" :format-time="formatTime" @changed="refresh" @close="person=undefined"/>
+    :can-write="canWrite && person.sourceStatus!=='INACTIVE'" :format-time="formatTime" @changed="refresh" @close="person=undefined"/>
 </template>
 <style scoped>
 .people-heading {display:flex;align-items:center;justify-content:space-between}

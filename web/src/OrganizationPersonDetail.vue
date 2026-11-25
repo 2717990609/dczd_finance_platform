@@ -4,6 +4,7 @@ import { EditOutlined, LeftOutlined, SyncOutlined, UserOutlined } from '@ant-des
 import OrganizationDispatch from './OrganizationDispatch.vue'
 import MonthlyReport from './MonthlyReport.vue'
 import OrganizationDuties from './OrganizationDuties.vue'
+import OrganizationSourceRelations from './OrganizationSourceRelations.vue'
 
 const props = defineProps({
   api:Function, personId:Number, section:String, back:String, personLink:Function,
@@ -175,6 +176,7 @@ defineExpose({refresh})
               @click="rename=person.name;renameError=''"><template #icon><EditOutlined aria-hidden="true"/></template>改名</a-button>
           </div>
           <dl>
+            <div v-if="person.sourceStatus==='INACTIVE'"><dt>老财务状态</dt><dd>已停用 <a v-if="person.canonicalId" :href="personLink(person.canonicalId)">查看合并后的人员</a></dd></div>
             <div><dt>人员 ID</dt><dd class="numeric">{{ person.id }}</dd></div>
             <div><dt>建档时间</dt><dd>{{ formatTime(person.createdAt) }}</dd></div>
           </dl>
@@ -207,6 +209,7 @@ defineExpose({refresh})
             v-model:view="reportView" v-model:dimension="reportDimension" :views="reportViews" :dimensions="personDimensions"
             :period-link="periodLink"/>
         </template>
+        <OrganizationSourceRelations v-if="['duties','accounts'].includes(selected.key)" :api="api" :person-id="personId" :group="selected.key" :format-time="formatTime"/>
         <KeepAlive v-if="selected.key==='duties'">
           <OrganizationDuties ref="duties" profile :api="api" :format-time="formatTime" :subject="dutySubject"
             :can-write="canWrite" :person-link="personLink"/>
