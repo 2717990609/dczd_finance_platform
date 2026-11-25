@@ -216,7 +216,7 @@ defineExpose({refresh})
         <div class="person-detail-heading">
           <div class="person-name-row">
             <h1 ref="heading" tabindex="-1">{{ person.name }}</h1>
-
+            <a-button v-if="canWrite" size="small" type="text" class="person-edit-name" @click="rename=person.name;renameError=''">修改姓名</a-button>
           </div>
           <dl>
             <div v-if="person.sourceStatus==='INACTIVE'"><dt>老财务状态</dt><dd>已停用 <a v-if="person.canonicalId" :href="personLink(person.canonicalId)">查看合并后的人员</a></dd></div>
@@ -224,7 +224,6 @@ defineExpose({refresh})
             <div><dt>建档时间</dt><dd>{{ formatTime(person.createdAt) }}</dd></div>
           </dl>
         </div>
-        <a-button v-if="canWrite" class="person-edit-name" @click="rename=person.name;renameError=''">修改姓名</a-button>
       </div>
     </div>
     <template v-if="person">
@@ -341,20 +340,14 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
-.person-detail-header { padding-bottom: 14px; }
-.person-detail-heading { flex: 1; }
-.person-name-row { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: center; }
-.person-edit-name { color: var(--muted); }
-.person-edit-name:hover { color: var(--accent); }
-.person-sync-action { flex: none; }
-@media (max-width: 600px) {
-  .person-detail-identity { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; }
-  .person-sync-action { grid-column: 2; justify-self: start; }
-}
-</style>
-
-<style scoped>
-.person-edit-name {margin-inline-start:auto}
+.person-detail-header {padding-bottom:14px}
+.person-detail-heading {flex:1}
+.person-name-row {display:flex;flex-wrap:wrap;gap:2px 8px;align-items:center}
+.person-edit-name {color:var(--muted)}
+.person-edit-name:hover {color:var(--accent)}
 .person-dispatch-panel {margin-bottom:12px}
-@media(max-width:680px){.person-detail-identity {flex-wrap:wrap}.person-edit-name {margin-inline-start:0}}
+@media (max-width:680px) {
+ .person-detail-identity {align-items:flex-start;gap:10px}
+ .person-detail-nav {column-gap:10px}
+}
 </style>
