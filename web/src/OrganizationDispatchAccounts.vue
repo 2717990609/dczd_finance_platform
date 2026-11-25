@@ -28,12 +28,12 @@ function allowed(b,key){if(b.pending || b.state==='PENDING')return false;if(key=
  <section class="identity-workspace" aria-label="向业务系统同步销售身份">
   <div class="identity-heading">
    <div>
-    <h3>销售身份</h3>
-    <p v-if="!bindings?.length">暂无已绑定的销售身份</p>
+    <h3>销售身份下发</h3>
+    <p v-if="!bindings?.length">财务尚未建立下发绑定</p>
    </div>
    <a-button v-if="canWrite" type="primary" :disabled="!canBind" @click="bindingOpen=true">绑定业务账号</a-button>
   </div>
-  <p v-if="canWrite && channels && !canBind" class="identity-note">下发通道未开启，暂时无法绑定新账号。</p>
+  <p v-if="canWrite && channels && !canBind" class="identity-note">当前环境的下发通道未开启。</p>
   <ul v-if="bindings?.length" class="identity-list">
    <li v-for="item in bindings" :key="item.id">
     <div>
