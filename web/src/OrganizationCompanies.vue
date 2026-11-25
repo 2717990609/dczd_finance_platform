@@ -1,6 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onDeactivated, ref, watch } from 'vue'
-import { RadioGroup, TreeSelect } from 'ant-design-vue'
+import { RadioGroup, Switch, TreeSelect } from 'ant-design-vue'
 import { PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { organizationTree } from './organization-tree'
 import OrganizationCategoryEditor from './OrganizationCategoryEditor.vue'
@@ -85,7 +85,7 @@ const columns = [
   {title:'内外部',key:'type',width:95},
   {title:'销售类别',key:'category',width:145},
   {title:'上级组织',key:'parent',width:170},
-  {title:'状态',key:'status',width:132},
+  {title:'状态',key:'status',width:108},
 ]
 const historyColumns = [
   {title:'销售类别',key:'category',width:160},
@@ -250,11 +250,9 @@ defineExpose({refresh})
             <span v-else>{{ record.categoryName || '未分类' }}</span>
           </template>
           <span v-else-if="column.key==='parent'">{{ record.parentName || '—' }}</span>
-          <div v-else-if="column.key==='status'" class="company-state">
-            <a-tag :color="record.status==='ACTIVE' ? 'green' : 'default'">{{record.status==='ACTIVE' ? '已启用' : '已停用'}}</a-tag>
-            <button v-if="canWrite" type="button" class="order-link" :aria-label="(record.status==='ACTIVE' ? '停用' : '启用')+record.name"
-              @click="statusCompany=record">{{record.status==='ACTIVE' ? '停用' : '启用'}}</button>
-          </div>
+          <Switch v-else-if="column.key==='status'" :checked="record.status==='ACTIVE'" :disabled="!canWrite"
+            checked-children="启用" un-checked-children="停用" :aria-label="record.name+'的启用状态'"
+            @change="statusCompany=record"/>
 
         </template>
         <template #emptyText>{{ error ? '销售公司读取失败' : '暂无符合条件的销售公司' }}</template>
@@ -322,8 +320,6 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
-.company-state {display:flex;align-items:center;gap:7px;white-space:nowrap}
-.company-state :deep(.ant-tag) {margin-inline-end:0}
 .company-members-link {display:block;margin-top:3px;font-size:12px}
 .company-workspace {max-width:1280px;margin-inline:auto}
 .company-profile-links {display:flex;flex-wrap:wrap;gap:4px 10px;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--line)}
