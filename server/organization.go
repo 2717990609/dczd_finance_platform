@@ -26,11 +26,16 @@ const organizationUnitsSQL = `SELECT coalesce(jsonb_agg(jsonb_build_object(
  LEFT JOIN organization_dispatch_company_keys k ON k.unit_id=u.id
  LEFT JOIN organization_dispatch_company_keys parent_key ON parent_key.wire_id=k.parent_wire_id`
 
-const organizationAssignmentsSQL = `WITH matching AS (
- SELECT a.id,p.name AS "personName",p.id AS "personId",u.id AS "unitId",u.name AS "unitName",
+const organizationAssignmentsSQL = `WITH RECURSIVE branches AS (
+ SELECT $1::uuid AS id WHERE $1 IS NOT NULL
+ UNION
+ SELECT u.id FROM organization_units u JOIN branches b ON b.id=u.parent_id WHERE $6
+), matching AS (
+ SELECT a.id,p.name AS "personName",p.id AS "personId",u.id AS "unitId",u.name AS "unitName",u.kind AS "unitKind",
+  (u.sales_company_type IS NOT NULL) AS "salesCompany",
   a.kind,a.position,a.appointment_type AS "appointmentType",a.valid_from AS "validFrom",a.valid_to AS "validTo"
  FROM organization_assignments a JOIN people p ON p.id=a.person_id JOIN organization_units u ON u.id=a.unit_id
- WHERE ($1::uuid IS NULL OR a.unit_id=$1) AND
+ WHERE ($1::uuid IS NULL OR a.unit_id IN (SELECT id FROM branches)) AND
   ($2::timestamptz IS NULL OR (a.valid_from<=$2 AND (a.valid_to IS NULL OR a.valid_to>$2))) AND
   ($3='' OR strpos(lower(p.name),lower($3))>0) AND
   ($5::bigint IS NULL OR a.person_id=$5)
@@ -43,6 +48,11 @@ const organizationAssignmentsSQL = `WITH matching AS (
 func (s workspace) organizationAssignments(w http.ResponseWriter, r *http.Request) {
 	params := r.URL.Query()
 	var unitID pgtype.UUID
+	includeChildren := params.Get("includeChildren")
+	if includeChildren != "" && includeChildren != "true" {
+		respond(w, nil, invalid)
+		return
+	}
 	if value := params.Get("unitId"); value != "" && unitID.Scan(value) != nil {
 		respond(w, nil, invalid)
 		return
@@ -62,7 +72,7 @@ func (s workspace) organizationAssignments(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), organizationAssignmentsSQL, unitID, at, name, offset, personID).Scan(&result)
+	err = s.db.QueryRow(r.Context(), organizationAssignmentsSQL, unitID, at, name, offset, personID, includeChildren == "true").Scan(&result)
 	respond(w, result, err)
 }
 

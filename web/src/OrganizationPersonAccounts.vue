@@ -54,10 +54,6 @@ function openRecords(){
  recordsPage.value=1
  recordsOpen.value=true
 }
-function accountAction(action,row){
- if(action==='history')openHistory(row)
- if(action==='transfer')openEditor(row)
-}
 async function accountHistory(source,externalId){
  return props.api('/identities?'+new URLSearchParams({source,externalId}))
 }
@@ -147,21 +143,16 @@ defineExpose({refresh})
   </a-alert>
   <a-spin v-else :spinning="loading">
    <template v-if="rows.items.length">
-    <div class="account-table-head" aria-hidden="true"><span>业务系统</span><span>用户 ID</span><span>生效时间</span><span>操作</span></div>
+    <div class="account-table-head" aria-hidden="true"><span>业务系统</span><span>用户 ID</span><span>生效时间</span><span></span></div>
     <ul class="account-list">
      <li v-for="row in rows.items" :key="row.origin+':'+row.id" class="account-row">
       <strong class="account-system">{{systemName(row.source)}}</strong>
       <span class="account-number numeric">{{row.externalId}}</span>
       <small class="account-period">{{formatTime(row.validFrom)}} 起<template v-if="row.validTo"> · {{formatTime(row.validTo)}} 止</template></small>
-      <a-dropdown v-if="row.origin==='DIRECTORY'" :trigger="['click']">
-       <a-button size="small" :aria-label="'管理账号 '+row.externalId">管理</a-button>
-       <template #overlay>
-        <a-menu @click="({key})=>accountAction(key,row)">
-         <a-menu-item v-if="canEdit && !row.validTo" key="transfer">变更归属</a-menu-item>
-         <a-menu-item key="history">归属历史</a-menu-item>
-        </a-menu>
-       </template>
-      </a-dropdown>
+      <a-space v-if="row.origin==='DIRECTORY'" class="account-row-links" wrap :size="4">
+       <a-button v-if="canEdit && !row.validTo" type="link" size="small" :aria-label="'变更账号 '+row.externalId+' 的归属'" @click="openEditor(row)">变更归属</a-button>
+       <a-button type="text" size="small" :aria-label="'账号 '+row.externalId+' 的归属历史'" @click="openHistory(row)">历史</a-button>
+      </a-space>
       <span v-else class="account-readonly">业务系统维护</span>
      </li>
     </ul>
@@ -264,18 +255,19 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
-.account-workspace {max-width:1040px;padding:14px 16px 8px}
+.account-workspace {padding:14px 16px 8px}
 .account-header,.record-row {display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px 12px}
 .account-header h2,.account-list,.account-records h3 {margin:0}
 .account-header h2,.account-records h3 {font-size:16px}
 .account-workspace > .ant-alert {margin-top:12px}
-.account-table-head,.account-row {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) 92px;gap:8px 14px;align-items:center;padding:10px 12px}
+.account-table-head,.account-row {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) 142px;gap:8px 14px;align-items:center;padding:10px 12px}
 .account-table-head {margin-top:12px;background:var(--surface,#f5f7fb);border-radius:4px;color:var(--muted);font-size:13px}
 .account-table-head > :last-child,.account-row > :last-child {justify-self:end}
 .account-list {list-style:none;padding:0}
 .account-row,.record-row {border-bottom:1px solid var(--line);overflow-wrap:anywhere}
 .account-list small,.account-empty,.account-readonly,.finance-login {color:var(--muted)}
 .account-list small {display:block}
+.account-row-links :deep(.ant-btn) {padding-inline:4px}
 .account-readonly {font-size:12px}
 .account-empty {margin:12px 0}
 .account-footer {padding-top:6px}

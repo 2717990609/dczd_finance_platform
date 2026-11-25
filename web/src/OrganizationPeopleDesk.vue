@@ -52,7 +52,7 @@ refresh()
 defineExpose({refresh})
 </script>
 <template>
-  <section class="records" aria-label="人员办理">
+  <section class="records people-workspace" aria-label="人员办理">
     <div class="records-head people-heading">
       <div><h2>人员档案</h2><span class="order-version">共 {{ people.total }} 人</span></div>
       <a-button v-if="canWrite" type="primary" @click="creating=true"><template #icon><PlusOutlined aria-hidden="true"/></template>新建人员</a-button>
@@ -96,6 +96,7 @@ defineExpose({refresh})
   <OrganizationPersonIntake v-if="creating" :api="api" @close="creating=false" @saved="openNewPerson"/>
 </template>
 <style scoped>
+.people-workspace {max-width:1280px;margin-inline:auto}
 .people-heading {display:flex;align-items:center;justify-content:space-between}
 .people-filters {display:flex;align-items:center;flex-wrap:wrap;gap:10px 18px;padding:12px 16px}
 .people-filters .ant-input-search {max-width:360px;min-width:min(100%,220px);flex:1}

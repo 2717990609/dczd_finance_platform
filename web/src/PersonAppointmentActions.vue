@@ -4,13 +4,8 @@ defineEmits(['select'])
 </script>
 
 <template>
- <a-dropdown :trigger="['click']">
-  <a-button size="small" :aria-label="'管理'+label+'任职'">管理</a-button>
-  <template #overlay>
-   <a-menu @click="({key})=>$emit('select',key)">
-    <a-menu-item key="transfer">调动任职</a-menu-item>
-    <a-menu-item key="end">结束任职</a-menu-item>
-   </a-menu>
-  </template>
- </a-dropdown>
+ <a-space wrap :size="4">
+  <a-button type="link" size="small" :aria-label="'调动'+label+'任职'" @click="$emit('select','transfer')">调动</a-button>
+  <a-button type="text" size="small" :aria-label="'结束'+label+'任职'" @click="$emit('select','end')">结束</a-button>
+ </a-space>
 </template>

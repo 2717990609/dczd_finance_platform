@@ -13,7 +13,7 @@ const systems=[{value:'DCZD',label:'大春之道'},{value:'DCJK',label:'大春�
 const label=key=>systems.find(o=>o.value===key)?.label || key
 const states={APPLIED:'已送达',PENDING:'待发送',PROCESSING:'发送中',CONFLICT:'需核对',RETRYABLE:'等待重试',STOPPED:'已停止',WAIT_CATEGORY:'等待类别',WAIT_PARENT_COMPANY:'等待上级公司'}
 const operations={CREATE:'创建身份',ENABLE:'启用',DISABLE:'停用',SET_OWNER:'设负责人',UNSET_OWNER:'移交负责人资格',TRANSFER:'调动',RENAME:'同步姓名',RECONCILE:'纠正身份'}
-const columns=[{title:'目标系统',key:'target',width:105},{title:'业务变更',key:'operation',width:180},{title:'状态 / 原因',key:'state',width:200},{title:'生效时间',key:'effective',width:154},{title:'回执编号',dataIndex:'externalId',width:140},{title:'操作',key:'actions',width:80}]
+const columns=[{title:'目标系统',key:'target',width:105},{title:'业务变更',key:'operation',width:180},{title:'状态 / 原因',key:'state',width:200},{title:'生效时间',key:'effective',width:154},{title:'回执编号',dataIndex:'externalId',width:140},{title:'',key:'actions',width:80}]
 const stateColors={APPLIED:'green',PROCESSING:'blue',CONFLICT:'red',RETRYABLE:'orange'}
 const loading=ref(false)
 const channels=ref(), channelError=ref(false)

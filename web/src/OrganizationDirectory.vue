@@ -51,21 +51,22 @@ let unitRequest = 0
 const kindLabel = kind => props.optionLabel('organizationKind',kind)
 const tree = computed(() => organizationTree(units.value,kindLabel))
 const appointmentTree = computed(() => organizationTree(units.value,kindLabel,true))
+const includeChildren = ref(true)
 const selectedUnit = computed(() => units.value.find(unit=>unit.id===unitId.value))
+const hasChildren = computed(() => !!unitId.value && units.value.some(unit=>unit.parentId===unitId.value))
 const waitingForDate = computed(() => dateMode.value==='date' && !on.value)
 const emptyMessage = computed(() => waitingForDate.value
   ? '请选择任职日期'
-  : selectedUnit.value ? '所选组织在该条件下没有直接任职' : '当前条件下没有任职记录')
+  : '当前条件下没有任职记录')
 const fields = [
   {title:'人员',dataIndex:'personName',key:'personName',width:130},
   {title:'组织',dataIndex:'unitName',key:'unitName',width:180},
   {title:'任职',dataIndex:'kind',key:'kind',width:135},
-  {title:'生效时间',dataIndex:'validFrom',key:'validFrom',width:145},
-  {title:'结束时间',dataIndex:'validTo',key:'validTo',width:145},
+  {title:'任职时间',key:'period',width:205},
 ]
 const columns = computed(() => [
   ...fields,
-  ...(props.canWrite ? [{title:'操作',key:'actions',width:124,fixed:'right'}] : []),
+  ...(props.canWrite ? [{title:'',key:'actions',width:120}] : []),
 ])
 const pagination = computed(() => ({current:page.value,pageSize:25,total:entries.value.total,showSizeChanger:false,hideOnSinglePage:true}))
 
@@ -93,7 +94,10 @@ async function loadEntries() {
   }
   loading.value = true
   const params = new URLSearchParams({page:page.value})
-  if (unitId.value) params.set('unitId',unitId.value)
+  if (unitId.value) {
+    params.set('unitId',unitId.value)
+    if (hasChildren.value && includeChildren.value) params.set('includeChildren','true')
+  }
   if (search.value) params.set('name',search.value)
   if (dateMode.value==='history') params.set('history','true')
   if (dateMode.value==='date') params.set('on',on.value)
@@ -147,7 +151,7 @@ function saved(message) {
   notice.value = message
   loadEntries()
 }
-watch([unitId,on,dateMode,search],filterEntries)
+watch([unitId,hasChildren,includeChildren,on,dateMode,search],filterEntries)
 onMounted(() => { loadUnits(); loadEntries() })
 onBeforeUnmount(() => { request++; unitRequest++ })
 defineExpose({refresh})
@@ -170,31 +174,26 @@ defineExpose({refresh})
     :company="directorCompany" @clear-company="directorCompany=undefined"/>
   <OrganizationDispatch v-if="panel==='sync'" ref="sync" embedded :api="api" :can-write="canWrite" :format-time="formatTime"/>
   <OrganizationHealthConflicts v-if="panel==='health'" ref="health" :api="api" :can-write="canWrite"/>
-  <div v-show="panel==='organization'">
+  <div v-show="panel==='organization'" class="organization-workspace">
     <a-alert v-if="unitsError || entriesError" class="feedback" type="error" :message="unitsError || entriesError" show-icon/>
     <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
     <div class="records organization-browser">
       <div class="scope-panel organization-scope">
+        <div class="organization-tree-actions">
+          <a-button v-if="canWrite" size="small" @click="createUnit=true">新建组织</a-button>
+          <a-button size="small" type="text" @click="positionsOpen=true">岗位目录</a-button>
+        </div>
         <WorkspaceOrganizationScope :nodes="tree" :selected="unitId" :loading="unitsLoading" fill-height @select="unitId=$event"/>
       </div>
       <section class="organization-directory">
         <div class="records-head">
           <div class="organization-heading">
             <h2>人员任职</h2>
-            <span class="organization-context">{{ selectedUnit ? selectedUnit.name+' · 直接任职' : '全部组织' }}</span>
+            <span class="organization-context">{{ selectedUnit?.name || '全部组织' }}</span>
           </div>
           <a-space wrap>
+            <a-button v-if="selectedUnit" type="text" @click="dispatchUnit=selectedUnit">关联销售公司</a-button>
             <a-button v-if="canWrite" type="primary" @click="openEditor('add')">登记任职</a-button>
-            <a-dropdown :trigger="['click']">
-              <a-button>更多操作</a-button>
-              <template #overlay>
-                <a-menu>
-                  <a-menu-item v-if="canWrite" key="create" @click="createUnit=true">登记内部组织</a-menu-item>
-                  <a-menu-item v-if="selectedUnit" key="sync" @click="dispatchUnit=selectedUnit">销售公司同步</a-menu-item>
-                  <a-menu-item key="positions" @click="positionsOpen=true">岗位目录</a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
           </a-space>
         </div>
         <div class="organization-filters organization-person-filters">
@@ -203,17 +202,23 @@ defineExpose({refresh})
             <a-input-search id="organization-name" v-model:value="name" placeholder="输入姓名" allow-clear
               @search="searchPeople" @change="!name && searchPeople()"/>
           </div>
-          <AppointmentDateFilter v-model:mode="dateMode" v-model:date="on"/>
+          <div class="organization-date-options">
+            <AppointmentDateFilter v-model:mode="dateMode" v-model:date="on"/>
+            <a-checkbox v-if="hasChildren" v-model:checked="includeChildren">包含下级组织</a-checkbox>
+          </div>
         </div>
         <a-table size="middle" :columns="columns" :data-source="entries.items" :loading="loading" row-key="id" :pagination="pagination"
-          :scroll="{x:canWrite?859:735}" @change="changePage">
+          :scroll="{x:canWrite?770:650}" @change="changePage">
           <template #bodyCell="{column,record,text}">
             <a v-if="column.key==='personName'" class="person-name-link" :href="personLink(record.personId)">{{ text }}</a>
             <template v-else-if="column.key==='kind'">
               {{ optionLabel('appointmentKind',text) }}
               <a-tag v-if="record.appointmentType && record.appointmentType!==text">{{ optionLabel('appointmentKind',record.appointmentType) }}</a-tag><small v-if="record.position" class="order-version">{{ record.position }}</small>
             </template>
-            <span v-else-if="column.key==='validFrom'||column.key==='validTo'" class="numeric">{{ formatTime(text) }}</span>
+            <template v-else-if="column.key==='period'">
+              <span class="numeric">{{formatTime(record.validFrom)}} 起</span>
+              <small v-if="record.validTo" class="order-version numeric">{{formatTime(record.validTo)}} 止</small>
+            </template>
             <PersonAppointmentActions v-else-if="column.key==='actions'" :label="record.unitName" @select="mode=>openEditor(mode,record)"/>
           </template>
           <template #emptyText>{{ emptyMessage }}</template>
@@ -231,4 +236,8 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
+.organization-workspace {max-width:1280px;margin-inline:auto}
+@media(width>680px){.organization-browser .organization-scope {grid-template-rows:auto minmax(0,1fr)}}
+.organization-tree-actions {display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-bottom:10px}
+.organization-date-options {display:flex;flex-wrap:wrap;align-items:end;gap:8px 14px}
 </style>

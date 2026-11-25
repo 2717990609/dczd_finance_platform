@@ -64,6 +64,15 @@ func TestOrganizationDirectoryUsesLocalAssignmentIntervals(t *testing.T) {
 	if got := query("/api/v1/organization-assignments?unitId=00000000-0000-0000-0000-000000000002&history=true", 200); !strings.Contains(got, "测试公司") {
 		t.Fatal(got)
 	}
+	const parentOnChildDay = "/api/v1/organization-assignments?unitId=00000000-0000-0000-0000-000000000002&on=2026-10-02"
+	if got := query(parentOnChildDay, 200); !strings.Contains(got, `"total":0`) {
+		t.Fatal(got)
+	}
+	if got := query(parentOnChildDay+"&includeChildren=true", 200); !strings.Contains(got, "测试小组") ||
+		!strings.Contains(got, `"unitKind":"TEAM"`) || !strings.Contains(got, `"total":1`) {
+		t.Fatal(got)
+	}
+	query(parentOnChildDay+"&includeChildren=invalid", 400)
 	query("/api/v1/organization-assignments?on=2026-02-30", 400)
 	if got := query("/api/v1/organization-assignments?history=true&name=测试人员&page=2", 200); !strings.Contains(got, `"items":[],"total":2`) {
 		t.Fatal(got)

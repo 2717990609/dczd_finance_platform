@@ -1,10 +1,9 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
-import { DownOutlined, LeftOutlined, UserOutlined } from '@ant-design/icons-vue'
+import { LeftOutlined, UserOutlined } from '@ant-design/icons-vue'
 import OrganizationPersonAccounts from './OrganizationPersonAccounts.vue'
 import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
-import OrganizationPersonOverview from './OrganizationPersonOverview.vue'
-import PersonAppointmentActions from './PersonAppointmentActions.vue'
+import OrganizationPersonAppointments from './OrganizationPersonAppointments.vue'
 import { organizationTree } from './organization-tree'
 import MonthlyReport from './MonthlyReport.vue'
 import OrganizationDuties from './OrganizationDuties.vue'
@@ -22,31 +21,19 @@ const dateColumns = [
 ]
 const statusColumn = {title:'状态',key:'status',width:94}
 const sections = [
-  {key:'overview', label:'概览'},
-  {key:'appointments', label:'任职记录', path:'/organization-assignments', empty:'暂无组织任职记录', columns:[
-    {title:'组织',dataIndex:'unitName',width:185},
-    {title:'任职',key:'kind',width:168}, statusColumn, ...dateColumns,
-  ]},
+  {key:'overview', label:'档案'},
   {key:'duties', label:'业务职责'},
   {key:'positions', label:'分润岗位', path:'/catalog-appointments', empty:'暂无分润岗位记录', columns:[
     {title:'岗位',key:'role',width:168}, {title:'适用范围',key:'scope',width:185}, statusColumn, ...dateColumns,
   ]},
-  {key:'accounts', label:'账号与身份'},
   {key:'finance', label:'业绩与分润'},
 ]
-const mainSections=['overview','appointments','accounts','finance']
-const mainTabs=sections.filter(item=>mainSections.includes(item.key))
-const otherTabs=sections.filter(item=>!mainSections.includes(item.key))
-const moreOpen=ref(false)
 const selected = computed(() => sections.find(item=>item.key===props.section) || sections[0])
 const person = ref()
 const canEdit=computed(()=>props.canWrite && person.value?.sourceStatus!=='INACTIVE')
-const overview=ref()
+const personAppointments=ref(),accountArea=ref()
 const appointment=ref(),appointmentUnits=ref(),appointmentLoading=ref(false),actionError=ref(''),notice=ref('')
 const appointmentTree=computed(()=>organizationTree(appointmentUnits.value || [],kind=>props.optionLabel('organizationKind',kind) || kind,true))
-const detailColumns=computed(()=>selected.value.key==='appointments' && canEdit.value
- ? [...selected.value.columns,{title:'操作',key:'appointmentAction',width:96}]
- : selected.value.columns)
 async function editAppointment(mode,record){
  if(appointmentLoading.value)return
  const section=selected.value.key
@@ -63,8 +50,7 @@ async function editAppointment(mode,record){
 function appointmentSaved(message){
  appointment.value=undefined
  notice.value=message
- if(selected.value.key==='overview')overview.value?.refresh()
- else loadRows()
+ personAppointments.value?.refresh()
 }
 const heading = ref()
 const sectionNav = ref()
@@ -108,7 +94,12 @@ async function loadPerson(focus = false) {
     person.value = result
     if (focus) {
       await nextTick()
-      heading.value?.focus({preventScroll:true})
+      if(props.section==='accounts'){
+        accountArea.value?.focus({preventScroll:true})
+        accountArea.value?.scrollIntoView({block:'nearest'})
+      }else{
+        heading.value?.focus({preventScroll:true})
+      }
     }
   } catch (error) {
     if (request===profileRequest) {
@@ -146,14 +137,15 @@ function changePage(next) {
 }
 function refresh() {
   loadPerson()
-  if (selected.value.key==='overview') overview.value?.refresh()
-  else if (selected.value.key==='accounts') accountWorkspace.value?.refresh()
+  if (selected.value.key==='overview') {
+    personAppointments.value?.refresh()
+    accountWorkspace.value?.refresh()
+  }
   else if (selected.value.key==='finance') report.value?.refresh()
   else if (selected.value.key==='duties') duties.value?.refresh()
   else loadRows()
 }
 watch(() => selected.value.key, (key, previous) => {
-  moreOpen.value=false
   actionError.value=''
   notice.value=''
   if(previous){
@@ -163,6 +155,9 @@ watch(() => selected.value.key, (key, previous) => {
   listPage.value = 1
   loadRows()
 }, {immediate:true})
+watch(()=>props.section,section=>{
+  if(section==='accounts')nextTick(()=>accountArea.value?.scrollIntoView({block:'nearest'}))
+})
 watch([reportMonth,reportView], ([month,view]) => {
   if (selected.value.key==='finance') emit('report-filters',{month,view})
 })
@@ -205,25 +200,20 @@ defineExpose({refresh})
        </a-form-item></a-form>
       </a-modal>
       <nav ref="sectionNav" class="workspace-nav person-detail-nav" aria-label="个人信息导航">
-        <a v-for="item in mainTabs" :key="item.key" :href="personLink(personId,item.key==='overview' ? undefined : item.key)"
+        <a v-for="item in sections" :key="item.key" :href="personLink(personId,item.key==='overview' ? undefined : item.key)"
           :aria-current="item.key===selected.key ? 'page' : undefined">{{ item.label }}</a>
-        <a-dropdown v-model:open="moreOpen" :trigger="['click']">
-          <button type="button" class="organization-more" :class="{'is-current':otherTabs.includes(selected)}"
-            aria-haspopup="menu" :aria-expanded="moreOpen">更多<DownOutlined aria-hidden="true"/></button>
-          <template #overlay>
-            <a-menu @click="moreOpen=false">
-              <a-menu-item v-for="item in otherTabs" :key="item.key">
-                <a :href="personLink(personId,item.key)" :aria-current="item.key===selected.key ? 'page' : undefined">{{item.label}}</a>
-              </a-menu-item>
-            </a-menu>
-          </template>
-        </a-dropdown>
       </nav>
       <div class="workspace-page-body person-detail-body">
         <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
         <a-alert v-if="actionError" class="feedback" type="error" :message="actionError" show-icon/>
-        <OrganizationPersonOverview v-if="selected.key==='overview'" ref="overview" :api="api" :person-id="personId"
-          :can-write="canEdit" :appointment-loading="appointmentLoading" :person-link="personLink" :option-label="optionLabel" :format-time="formatTime" @appointment="editAppointment"/>
+        <div v-if="selected.key==='overview'" class="person-dossier">
+          <OrganizationPersonAppointments ref="personAppointments" :api="api" :person-id="personId" :initial-history="section==='appointments'"
+            :can-write="canEdit" :appointment-loading="appointmentLoading" :option-label="optionLabel" :format-time="formatTime" @appointment="editAppointment"/>
+          <div ref="accountArea" class="person-account-area" tabindex="-1">
+            <OrganizationPersonAccounts ref="accountWorkspace" :api="api" :person="person" :can-write="canWrite"
+              :format-time="formatTime" :format-identity-time="formatIdentityTime"/>
+          </div>
+        </div>
         <template v-if="selected.key==='finance'">
           <section class="records person-report-filter">
             <label for="person-report-month">结算月</label>
@@ -233,8 +223,6 @@ defineExpose({refresh})
             v-model:view="reportView" v-model:dimension="reportDimension" :views="reportViews" :dimensions="personDimensions"
             :period-link="periodLink"/>
         </template>
-        <OrganizationPersonAccounts v-if="selected.key==='accounts'" ref="accountWorkspace" :api="api" :person="person" :can-write="canWrite"
-          :format-time="formatTime" :format-identity-time="formatIdentityTime"/>
         <KeepAlive v-if="selected.key==='duties'">
           <OrganizationDuties ref="duties" profile :api="api" :format-time="formatTime" :subject="dutySubject"
             :can-write="canWrite" :person-link="personLink"/>
@@ -245,29 +233,22 @@ defineExpose({refresh})
               <h2>{{ selected.label }}</h2>
               <span v-if="!listLoading && !listError" class="person-record-count">{{ rows.total }} 条记录</span>
               <a v-if="selected.key==='positions'" class="context-link" href="#organization?tab=catalog">{{canWrite ? '管理分润岗位' : '全部分润岗位'}}</a>
-              <a-button v-if="selected.key==='appointments' && canEdit" type="primary" :loading="appointmentLoading" @click="editAppointment('add')">登记任职</a-button>
             </div>
             <a-alert v-if="listError" class="feedback" type="error" :message="listError" show-icon>
               <template #action><a-button size="small" @click="loadRows">重试</a-button></template>
             </a-alert>
-            <a-table v-else :key="selected.key" size="middle" :columns="detailColumns" :data-source="rows.items"
-              :loading="listLoading" :pagination="pagination" :scroll="{x:detailColumns.reduce((width,column)=>width+column.width,0)}"
+            <a-table v-else :key="selected.key" size="middle" :columns="selected.columns" :data-source="rows.items"
+              :loading="listLoading" :pagination="pagination" :scroll="{x:selected.columns.reduce((width,column)=>width+column.width,0)}"
               row-key="id" @change="changePage">
               <template #bodyCell="{column,record,text}">
-                <template v-if="column.key==='kind'">
-                  {{ optionLabel('appointmentKind',record.kind) }}
-                  <a-tag v-if="record.appointmentType && record.appointmentType!==record.kind">{{ optionLabel('appointmentKind',record.appointmentType) }}</a-tag>
-                  <small v-if="record.position" class="order-version">{{ record.position }}</small>
-                </template>
-                <span v-else-if="column.key==='role'">{{ optionLabel('catalogAppointmentRole',record.role) }}</span>
+
+                <span v-if="column.key==='role'">{{ optionLabel('catalogAppointmentRole',record.role) }}</span>
                 <template v-else-if="column.key==='scope'">
                   {{ record.scopeName }}<small class="order-version">{{ optionLabel('catalogAppointmentScope',record.scope) }}</small>
                 </template>
                 <a-tag v-else-if="column.key==='status'" :color="statusFor(record).color">{{ statusFor(record).label }}</a-tag>
                 <span v-else-if="column.key==='validFrom'||column.key==='validTo'" class="numeric">{{ formatTime(text) }}</span>
-                <template v-else-if="column.key==='appointmentAction'">
-                  <PersonAppointmentActions v-if="statusFor(record).label!=='已结束'" :label="record.unitName" @select="mode=>editAppointment(mode,record)"/>
-                </template>
+
 
               </template>
               <template #emptyText>{{ selected.empty }}</template>
@@ -280,7 +261,10 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
-.person-detail-header {padding-bottom:14px}
+.person-detail {width:min(100%,1120px);margin-inline:auto}
+.person-detail-header {padding-bottom:10px}
+.person-dossier {display:grid;gap:12px}
+.person-account-area {min-width:0;scroll-margin-top:10px}
 .person-detail-heading {flex:1}
 .person-name-row {display:flex;flex-wrap:wrap;gap:2px 8px;align-items:center}
 .person-edit-name {color:var(--muted)}

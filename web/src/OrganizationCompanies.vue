@@ -62,7 +62,6 @@ const columns = [
   {title:'销售类别',key:'category',width:145},
   {title:'上级组织',key:'parent',width:170},
   {title:'状态',key:'status',width:82},
-  {title:'操作',key:'actions',width:238},
 ]
 const historyColumns = [
   {title:'销售类别',key:'category',width:160},
@@ -156,7 +155,7 @@ defineExpose({refresh})
     <template #action><a-button size="small" @click="refresh">重试</a-button></template>
   </a-alert>
   <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
-  <section class="records">
+  <section class="records company-workspace">
     <div class="records-head company-directory-head">
       <h2>销售公司目录</h2>
       <a class="context-link" href="#organization?tab=sync&amp;view=records">下发记录</a>
@@ -187,7 +186,7 @@ defineExpose({refresh})
     </div>
     <div class="table-container">
       <a-table :columns="columns" :data-source="result.items" :loading="loading" row-key="id" :pagination="pagination"
-        :scroll="{x:canWrite ? 970 : 938}" :row-selection="selection" @change="changePage">
+        :scroll="{x:canWrite ? 775 : 743}" :row-selection="selection" @change="changePage">
         <template #bodyCell="{column,record}">
           <a-button v-if="column.dataIndex==='name'" type="link" size="small" @click="memberCompany=record">{{ record.name }}</a-button>
           <span v-else-if="column.key==='members'">{{record.owners || '未设负责人'}}<small class="order-version">成员 {{record.members}} 人</small></span>
@@ -202,28 +201,24 @@ defineExpose({refresh})
           </template>
           <span v-else-if="column.key==='parent'">{{ record.parentName || '—' }}</span>
           <a-tag v-else-if="column.key==='status'" :color="record.status==='ACTIVE' ? 'green' : 'default'">{{ record.status==='ACTIVE' ? '启用' : '停用' }}</a-tag>
-          <template v-else-if="column.key==='actions'">
-            <a-button type="link" size="small" @click="memberCompany=record">公司成员</a-button>
-            <a-button type="link" size="small" @click="dispatch=record">同步到业务系统</a-button>
-            <a-dropdown :trigger="['click']">
-              <a-button type="link" size="small">更多</a-button>
-              <template #overlay>
-                <a-menu>
-                  <a-menu-item key="appointments" @click="emit('show-appointments',record.id)">查看任职</a-menu-item>
-                  <a-menu-item key="directors" @click="emit('show-director',record)">总监归属</a-menu-item>
-                  <a-menu-item key="categories" @click="openHistory(record)">类别历史</a-menu-item>
-                  <a-menu-item key="duties" @click="emit('show-duties',{unitId:record.id,name:record.name})">业务职责</a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
-          </template>
+
         </template>
         <template #emptyText>{{ error ? '销售公司读取失败' : '暂无符合条件的销售公司' }}</template>
       </a-table>
     </div>
   </section>
   <OrganizationDispatchProfile v-if="createProfile" :api="api" :categories="result.categories" @close="createProfile=false" @saved="createProfile=false;companyChanged()"/>
-  <OrganizationCompanyMembers v-if="memberCompany" :company="memberCompany" :api="api" :format-time="formatTime" :can-write="canWrite" @changed="refresh" @close="memberCompany=undefined"/>
+  <OrganizationCompanyMembers v-if="memberCompany" :company="memberCompany" :api="api" :format-time="formatTime" :can-write="canWrite" @changed="refresh" @close="memberCompany=undefined">
+    <template #company-tools>
+      <div class="company-profile-links">
+        <a-button type="link" size="small" @click="dispatch=memberCompany">同步到业务系统</a-button>
+        <a-button type="link" size="small" @click="emit('show-appointments',memberCompany.id);memberCompany=undefined">查看任职</a-button>
+        <a-button type="link" size="small" @click="emit('show-director',memberCompany);memberCompany=undefined">总监归属</a-button>
+        <a-button type="link" size="small" @click="openHistory(memberCompany)">类别历史</a-button>
+        <a-button type="link" size="small" @click="emit('show-duties',{unitId:memberCompany.id,name:memberCompany.name});memberCompany=undefined">业务职责</a-button>
+      </div>
+    </template>
+  </OrganizationCompanyMembers>
   <OrganizationDispatch v-if="dispatch" :company="dispatch.id ? dispatch : undefined" :api="api" :can-write="canWrite" :format-time="formatTime" @close="dispatch=undefined" @changed="companyChanged"/>
   <OrganizationCompanyType v-if="companyTypeDetails" :api="api" :company="companyTypeDetails" :can-write="canWrite"
     :format-time="formatTime" :types="types" @close="companyTypeDetails=undefined" @changed="refresh"/>
@@ -270,6 +265,9 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
+.company-workspace {max-width:1280px;margin-inline:auto}
+.company-profile-links {display:flex;flex-wrap:wrap;gap:4px 10px;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--line)}
+.company-profile-links .ant-btn {padding-inline:0}
 .company-directory-head { justify-content: flex-start; flex-wrap: wrap; }
 .category-actions { margin-inline-start: auto; }
 .company-directory-filters { padding-inline: 14px; }

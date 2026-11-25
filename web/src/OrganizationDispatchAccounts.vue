@@ -44,7 +44,7 @@ function allowed(b,key){if(b.pending || b.state==='PENDING')return false;if(key=
     </div>
     <small v-if="item.pending">变更处理中</small>
     <a-dropdown v-else-if="canWrite && operations.some(([key])=>allowed(item,key))" :trigger="['click']">
-     <a-button :aria-label="'办理'+systemName(item.target)+'账号 '+item.userId">管理</a-button>
+     <a-button :aria-label="'办理'+systemName(item.target)+'账号 '+item.userId">变更身份</a-button>
      <template #overlay>
       <a-menu @click="({key})=>change(item,key)">
        <a-menu-item v-for="[key,title] in operations.filter(([key])=>allowed(item,key))" :key="key">{{title}}</a-menu-item>

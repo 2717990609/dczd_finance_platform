@@ -47,7 +47,7 @@ const fields = [
   {title:'生效时间',dataIndex:'validFrom',key:'validFrom',width:155},
   {title:'结束时间',dataIndex:'validTo',key:'validTo',width:155},
 ]
-const columns = computed(() => [...fields,...(props.canWrite ? [{title:'操作',key:'actions',width:102}] : [])])
+const columns = computed(() => [...fields,...(props.canWrite ? [{title:'',key:'actions',width:102}] : [])])
 const pagination = computed(() => ({current:page.value,pageSize:25,total:entries.value.total,showSizeChanger:false,hideOnSinglePage:true}))
 
 async function loadSettings() {

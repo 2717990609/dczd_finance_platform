@@ -7,7 +7,7 @@ const emit=defineEmits(['close','changed'])
 const date=ref(''),term=ref(''),search=ref(''),page=ref(1),rows=ref({items:[],total:0}),loadError=ref(''),loading=ref(false)
 const intake=ref(''),person=ref(),edit=ref(),target=ref(),role=ref('MEMBER'),at=ref(''),choices=ref([]),error=ref(''),busy=ref(false),notice=ref('')
 const roles={MEMBER:'成员',OWNER:'负责人',MANAGER:'管理员'}
-const columns=[{title:'人员',dataIndex:'personName',width:180},{title:'公司内角色',key:'role',width:90},{title:'生效时间',key:'from',width:145},{title:'结束时间',key:'to',width:145},{title:'操作',key:'actions',width:186}]
+const columns=[{title:'人员',dataIndex:'personName',width:180},{title:'公司内角色',key:'role',width:90},{title:'生效时间',key:'from',width:145},{title:'结束时间',key:'to',width:145},{title:'',key:'actions',width:186}]
 const pagination=computed(()=>({current:page.value,pageSize:25,total:rows.value.total,hideOnSinglePage:true,showSizeChanger:false}))
 let seq=0,companySeq=0
 async function load(){
@@ -38,6 +38,7 @@ async function save(){
 </script>
 <template>
  <a-drawer open :width="'min(900px, 100vw)'" :title="company.name+' · 公司成员'" @close="emit('close')">
+  <slot name="company-tools"/>
   <a-space wrap><a-button v-if="canWrite && company.status==='ACTIVE'" type="primary" @click="intake='existing'">加入已有人员</a-button>
    <a-button v-if="canWrite && company.status==='ACTIVE'" @click="intake='new'">新建人员</a-button>
    <a-input-search v-model:value="term" allow-clear placeholder="搜索公司成员" @search="value=>search=value"/>
