@@ -34,7 +34,7 @@ const sections = [
   ]},
   {key:'accounts', label:'账号与身份', path:'/person-source-accounts', empty:'暂无业务来源账号', columns:[
     {title:'业务来源',key:'source',width:120}, {title:'来源账号 ID',dataIndex:'externalId',width:170},
-    {title:'记录来源',key:'origin',width:104}, ...dateColumns, {title:'操作',key:'accountAction',width:100},
+    {title:'记录来源',key:'origin',width:104}, statusColumn, ...dateColumns, {title:'操作',key:'accountAction',width:100},
   ]},
   {key:'finance', label:'业绩与分润'},
 ]

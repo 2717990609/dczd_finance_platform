@@ -80,7 +80,7 @@ func (s workspace) personSourceAccounts(w http.ResponseWriter, r *http.Request) 
 	offset, _, _, err := organizationAssignmentFilters(params)
 	current := params.Get("current")
 	if err != nil || (current != "" && current != "true") {
-		respond(w, nil, err)
+		respond(w, nil, invalid)
 		return
 	}
 	var result json.RawMessage

@@ -52,10 +52,10 @@ defineExpose({refresh})
     </ul>
     <p v-else-if="appointments">暂无有效任职</p>
    </a-spin>
-   <a :href="personLink(personId,'appointments')">查看全部任职记录<template v-if="appointments?.total>5">（{{appointments.total}} 条当前任职）</template></a>
+   <a class="overview-link" :href="personLink(personId,'appointments')">查看全部任职记录<template v-if="appointments?.total>5">（{{appointments.total}} 条当前任职）</template></a>
   </section>
   <section class="records overview-card" aria-label="有效业务账号">
-   <header><h2>有效业务账号</h2><a :href="personLink(personId,'accounts')">管理账号与身份</a></header>
+   <header><h2>有效业务账号</h2><a class="overview-link" :href="personLink(personId,'accounts')">管理账号与身份</a></header>
    <a-alert v-if="errors.accounts" type="error" :message="errors.accounts"><template #action><a-button size="small" @click="refresh">重试</a-button></template></a-alert>
    <a-spin v-else :spinning="loading">
     <ul v-if="accounts?.items.length">
@@ -81,4 +81,6 @@ defineExpose({refresh})
 .overview-card li {border-top:1px solid var(--line);padding:9px 0;overflow-wrap:anywhere}
 .overview-card small {display:block;color:var(--muted)}
 .overview-card > a {justify-self:start}
+.overview-link {color:var(--accent)}
+.overview-link:hover {text-decoration:underline}
 </style>

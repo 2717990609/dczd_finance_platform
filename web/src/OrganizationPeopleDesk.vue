@@ -66,9 +66,9 @@ defineExpose({refresh})
       <div class="people-list-heading"><span>人员</span><span>当前任职</span><span>来源账号</span></div>
       <ul v-if="people.items.length" class="people-list">
         <li v-for="record in people.items" :key="record.id">
-          <a :href="personLink(record.id)" class="people-row">
+          <a :href="personLink(record.id)" class="people-row" :aria-labelledby="'people-name-'+record.id">
             <span class="people-row-name">
-              <strong>{{record.name}}</strong><small>ID {{record.id}}</small>
+              <strong :id="'people-name-'+record.id">{{record.name}}</strong><small>ID {{record.id}}</small>
               <a-tag v-if="record.sourceStatus==='INACTIVE'">已停用</a-tag>
             </span>
             <span class="people-row-appointments">
