@@ -300,6 +300,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/people", Handler: s.list(peopleSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/person-detail", Handler: s.personDetail},
 		{Method: http.MethodGet, Path: "/api/v1/person-source-accounts", Handler: s.personSourceAccounts},
+		{Method: http.MethodPost, Path: "/api/v1/person-source-accounts", Handler: submitJSON(16<<10, s.savePersonSourceAccount)},
 		{Method: http.MethodPost, Path: "/api/v1/people", Handler: submit(s.createPerson)},
 		{Method: http.MethodGet, Path: "/api/v1/identities", Handler: s.identities},
 		{Method: http.MethodPost, Path: "/api/v1/identities", Handler: submit(s.assignIdentity)},
@@ -406,7 +407,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errOrganizationCategoryName), errors.Is(err, errOrganizationCategoryTarget),
 		errors.Is(err, errOrganizationPositionName), errors.Is(err, errOrganizationPositionChanged):
 		code, message = http.StatusConflict, err.Error()
-	case errors.Is(err, conflict), errors.Is(err, errRuleEditStale), errors.Is(err, errRuleAlreadyRetired), errors.Is(err, errAppointmentOverlap), errors.Is(err, errBusinessDutyOverlap), errors.Is(err, errAppointmentChanged), errors.Is(err, errAppointmentUnitInactive),
+	case errors.Is(err, conflict), errors.Is(err, errPersonSourceAccount), errors.Is(err, errRuleEditStale), errors.Is(err, errRuleAlreadyRetired), errors.Is(err, errAppointmentOverlap), errors.Is(err, errBusinessDutyOverlap), errors.Is(err, errAppointmentChanged), errors.Is(err, errAppointmentUnitInactive),
 		errors.Is(err, errCatalogAppointmentContext), errors.Is(err, errCatalogAppointmentOverlap), errors.Is(err, errCatalogAppointmentHolder),
 		errors.Is(err, errCatalogRecipientAppointment):
 		code, message = 409, err.Error()
@@ -1025,6 +1026,10 @@ func (s workspace) createPerson(ctx context.Context, p createPersonInput) (any, 
 	return s.insert(ctx, "INSERT INTO people(name) VALUES($1) RETURNING id", strings.TrimSpace(p.Name))
 }
 func (s workspace) assignIdentity(ctx context.Context, p assignIdentityInput) (any, error) {
+	return s.storeIdentity(ctx, p, nil)
+}
+
+func (s workspace) storeIdentity(ctx context.Context, p assignIdentityInput, expectedMappingID *int64) (any, error) {
 	start, err := time.Parse(time.RFC3339, p.ValidFrom)
 	if err != nil || p.PersonID < 1 || !validSource(p.Source) || !textOK(p.ExternalID, 128) {
 		return nil, invalid
@@ -1032,6 +1037,11 @@ func (s workspace) assignIdentity(ctx context.Context, p assignIdentityInput) (a
 	external := strings.TrimSpace(p.ExternalID)
 	var id int64
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if expectedMappingID != nil {
+			if err := lockAppointmentPerson(ctx, tx, p.PersonID); err != nil {
+				return err
+			}
+		}
 		if _, e := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", p.Source+":"+external); e != nil {
 			return e
 		}
@@ -1042,11 +1052,19 @@ func (s workspace) assignIdentity(ctx context.Context, p assignIdentityInput) (a
 		if e != nil && !errors.Is(e, pgx.ErrNoRows) {
 			return e
 		}
-		if e == nil {
-			if currentPerson == p.PersonID && previousAt.Equal(start) {
-				id = previousID
-				return nil
+		if e == nil && currentPerson == p.PersonID && previousAt.Equal(start) {
+			id = previousID
+			return nil
+		}
+		if expectedMappingID != nil {
+			if *expectedMappingID != previousID {
+				return personSourceAccountProblem("归属已变化，请重新核对")
 			}
+			if err := validatePersonSourceAccount(ctx, tx, p, external, start); err != nil {
+				return err
+			}
+		}
+		if e == nil {
 			if !start.After(previousAt) {
 				return conflict
 			}

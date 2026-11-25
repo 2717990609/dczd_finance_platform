@@ -1,10 +1,13 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/zeromicro/go-zero/rest/httpx"
@@ -86,4 +89,49 @@ func (s workspace) personSourceAccounts(w http.ResponseWriter, r *http.Request) 
 	var result json.RawMessage
 	err = s.db.QueryRow(r.Context(), personSourceAccountsSQL, personID, offset, current == "true").Scan(&result)
 	respond(w, result, err)
+}
+
+var errPersonSourceAccount = errors.New("账号归属未保存")
+
+func personSourceAccountProblem(message string) error {
+	return fmt.Errorf("%w，%s", errPersonSourceAccount, message)
+}
+
+type personSourceAccountInput struct {
+	assignIdentityInput
+	ExpectedMappingID *int64
+}
+
+func (s workspace) savePersonSourceAccount(ctx context.Context, input personSourceAccountInput) (any, error) {
+	if _, err := s.appointmentOperator(ctx); err != nil {
+		return nil, err
+	}
+	if input.ExpectedMappingID == nil || *input.ExpectedMappingID < 0 {
+		return nil, invalid
+	}
+	return s.storeIdentity(ctx, input.assignIdentityInput, input.ExpectedMappingID)
+}
+
+func validatePersonSourceAccount(ctx context.Context, tx pgx.Tx, input assignIdentityInput, external string, at time.Time) error {
+	var eligible, hasBinding, hasSourceConflict, overlaps bool
+	err := tx.QueryRow(ctx, `SELECT
+	 EXISTS(SELECT FROM people WHERE id=$1 AND directory_visible AND coalesce(a2_status,'ACTIVE')='ACTIVE'),
+	 EXISTS(SELECT FROM organization_dispatch_links WHERE entity_type='MEMBER' AND target=$2 AND external_id=$3 AND person_id<>$1),
+	 EXISTS(SELECT FROM catalog_sales_people_sources a JOIN catalog_sales_context c ON c.source=a.source AND c.captured_at=a.observed_at
+	  WHERE a.source=$2 AND a.external_id=$3 AND a.person_id<>$1 AND (a.valid_to IS NULL OR a.valid_to>$4)),
+	 EXISTS(SELECT FROM identity_mappings WHERE source=$2 AND external_id=$3 AND valid_to>$4)`,
+		input.PersonID, input.Source, external, at).Scan(&eligible, &hasBinding, &hasSourceConflict, &overlaps)
+	switch {
+	case err != nil:
+		return err
+	case !eligible:
+		return personSourceAccountProblem("请选择在用的财务人员")
+	case hasBinding:
+		return personSourceAccountProblem("该账号已绑定另一名人员的子系统销售身份，须先核对该绑定")
+	case hasSourceConflict:
+		return personSourceAccountProblem("该生效时间与子系统已同步的人员归属冲突，请核对来源数据")
+	case overlaps:
+		return personSourceAccountProblem("该生效时间与已有账号归属区间重叠，请核对账号历史")
+	}
+	return nil
 }

@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPersonDetailUsesStableIDAndExistingWorkspaceAccess(t *testing.T) {
@@ -86,6 +88,37 @@ INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,
 		t.Fatal(currentAccounts)
 	}
 	call("GET", "/api/v1/person-source-accounts?personId=1&current=unknown", "", reader, 400)
+	const accountPath = "/api/v1/person-source-accounts"
+	const first = `{"personId":1,"source":"DCJK","externalId":"profile-flow","validFrom":"2026-01-01T10:00:00+08:00","expectedMappingId":0}`
+	call("POST", accountPath, first, reader, 403)
+	created := call("POST", accountPath, first, operator, 200)
+	var mapping struct{ ID int64 }
+	if err := json.Unmarshal(created.Body.Bytes(), &mapping); err != nil || mapping.ID < 1 {
+		t.Fatalf("new mapping: %s", created.Body)
+	}
+	if retry := call("POST", accountPath, first, operator, 200); retry.Body.String() != created.Body.String() {
+		t.Fatalf("retry changed mapping: %s", retry.Body)
+	}
+	const next = `{"personId":2,"source":"DCJK","externalId":"profile-flow","validFrom":"2026-02-01T10:00:00+08:00","expectedMappingId":%d}`
+	if blocked := call("POST", accountPath, fmt.Sprintf(next, 0), operator, 409); !strings.Contains(blocked.Body.String(), "归属已变化") {
+		t.Fatal(blocked.Body)
+	}
+	call("POST", accountPath, fmt.Sprintf(next, mapping.ID), operator, 200)
+	history := call("GET", "/api/v1/identities?source=DCJK&externalId=profile-flow", "", reader, 200)
+	var intervals []struct {
+		PersonID  int64
+		ValidFrom time.Time
+		ValidTo   *time.Time
+	}
+	if err := json.Unmarshal(history.Body.Bytes(), &intervals); err != nil || len(intervals) != 2 ||
+		intervals[0].PersonID != 2 || intervals[0].ValidTo != nil || intervals[1].PersonID != 1 ||
+		intervals[1].ValidTo == nil || !intervals[1].ValidTo.Equal(intervals[0].ValidFrom) {
+		t.Fatalf("mapping history: %s", history.Body)
+	}
+	const catalogConflict = `{"personId":2,"source":"DCAI","externalId":"imported-only","validFrom":"2026-02-01T10:00:00+08:00","expectedMappingId":0}`
+	if blocked := call("POST", accountPath, catalogConflict, operator, 409); !strings.Contains(blocked.Body.String(), "子系统已同步的人员归属冲突") {
+		t.Fatal(blocked.Body)
+	}
 	positions := call("GET", "/api/v1/catalog-appointments?history=true&personId=1", "", reader, 200).Body.String()
 	if !strings.Contains(positions, `"total":1`) || !strings.Contains(positions, "exact-person") || strings.Contains(positions, "other-person") {
 		t.Fatal(positions)

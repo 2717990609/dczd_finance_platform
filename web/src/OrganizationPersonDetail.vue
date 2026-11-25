@@ -1,14 +1,13 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { DownOutlined, LeftOutlined, UserOutlined } from '@ant-design/icons-vue'
-import OrganizationDispatch from './OrganizationDispatch.vue'
+import OrganizationPersonAccounts from './OrganizationPersonAccounts.vue'
 import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
 import OrganizationPersonOverview from './OrganizationPersonOverview.vue'
 import PersonAppointmentActions from './PersonAppointmentActions.vue'
 import { organizationTree } from './organization-tree'
 import MonthlyReport from './MonthlyReport.vue'
 import OrganizationDuties from './OrganizationDuties.vue'
-import OrganizationSourceRelations from './OrganizationSourceRelations.vue'
 
 const props = defineProps({
   api:Function, personId:Number, section:String, back:String, personLink:Function,
@@ -32,10 +31,7 @@ const sections = [
   {key:'positions', label:'分润岗位', path:'/catalog-appointments', empty:'暂无分润岗位记录', columns:[
     {title:'岗位',key:'role',width:168}, {title:'适用范围',key:'scope',width:185}, statusColumn, ...dateColumns,
   ]},
-  {key:'accounts', label:'账号与身份', path:'/person-source-accounts', empty:'暂无业务来源账号', columns:[
-    {title:'业务来源',key:'source',width:120}, {title:'来源账号 ID',dataIndex:'externalId',width:170},
-    {title:'记录来源',key:'origin',width:104}, statusColumn, ...dateColumns, {title:'操作',key:'accountAction',width:100},
-  ]},
+  {key:'accounts', label:'账号与身份'},
   {key:'finance', label:'业绩与分润'},
 ]
 const mainSections=['overview','appointments','accounts','finance']
@@ -91,28 +87,16 @@ async function saveName(){
  try{await props.api('/organization-dispatch/rename-person',{method:'POST',body:JSON.stringify({personId:props.personId,name:rename.value,expectedName:person.value.name})});rename.value=undefined;notice.value='姓名已更新。';await loadPerson()}
  catch(e){renameError.value=e.message}finally{renameBusy.value=false}
 }
-const account = ref()
-const accountTitle = computed(() => account.value ? sourceLabel(account.value.source)+' · '+account.value.externalId+' 归属历史' : '')
 let profileRequest = 0
 let rowsRequest = 0
-let accountRequest = 0
+const accountWorkspace=ref()
 const pagination = computed(() => ({current:listPage.value,total:rows.value.total,pageSize:25,showSizeChanger:false,hideOnSinglePage:true}))
-const financeStatus = {
-  ACTIVE:{label:'已启用',color:'green'},
-  DISABLED:{label:'已停用'},
-  UNCONFIGURED:{label:'未开通'},
-}
-const accountHistoryColumns = [
-  {title:'归属人员',dataIndex:'personName',key:'personName',width:155},
-  ...dateColumns,
-]
 function statusFor(record) {
   const now = Date.now()
   if (Date.parse(record.validFrom)>now) return {label:'未生效',color:'blue'}
   if (record.validTo && Date.parse(record.validTo)<=now) return {label:'已结束'}
   return {label:'有效',color:'green'}
 }
-const sourceLabel = source => props.optionLabel('source',source)?.split(' · ')[0]
 
 async function loadPerson(focus = false) {
   const request = ++profileRequest
@@ -145,7 +129,7 @@ async function loadRows() {
   }
   listLoading.value = true
   const params = new URLSearchParams({personId:props.personId,page:listPage.value})
-  if (selected.value.key!=='accounts') params.set('history','true')
+  params.set('history','true')
   try {
     const result = await props.api(selected.value.path+'?'+params)
     if (request===rowsRequest) rows.value = result
@@ -160,31 +144,15 @@ function changePage(next) {
   listPage.value = next.current
   loadRows()
 }
-async function showAccountHistory({source,externalId}) {
-  const request = ++accountRequest
-  account.value = {source,externalId,loading:true,items:[]}
-  try {
-    const result = await props.api('/identities?'+new URLSearchParams({source,externalId}))
-    if (request===accountRequest) account.value.items = result
-  } catch (error) {
-    if (request===accountRequest) account.value.error = error.message
-  } finally {
-    if (request===accountRequest) account.value.loading = false
-  }
-}
-function closeAccountHistory() {
-  accountRequest++
-  account.value = undefined
-}
 function refresh() {
   loadPerson()
   if (selected.value.key==='overview') overview.value?.refresh()
+  else if (selected.value.key==='accounts') accountWorkspace.value?.refresh()
   else if (selected.value.key==='finance') report.value?.refresh()
   else if (selected.value.key==='duties') duties.value?.refresh()
   else loadRows()
 }
 watch(() => selected.value.key, (key, previous) => {
-  if (key!=='accounts') closeAccountHistory()
   moreOpen.value=false
   actionError.value=''
   notice.value=''
@@ -199,7 +167,7 @@ watch([reportMonth,reportView], ([month,view]) => {
   if (selected.value.key==='finance') emit('report-filters',{month,view})
 })
 loadPerson(true)
-onBeforeUnmount(() => { profileRequest++; rowsRequest++; accountRequest++ })
+onBeforeUnmount(() => { profileRequest++; rowsRequest++ })
 defineExpose({refresh})
 </script>
 
@@ -265,23 +233,17 @@ defineExpose({refresh})
             v-model:view="reportView" v-model:dimension="reportDimension" :views="reportViews" :dimensions="personDimensions"
             :period-link="periodLink"/>
         </template>
-        <OrganizationDispatch v-if="selected.key==='accounts'" class="person-dispatch-panel" embedded source-accounts-in-profile :person-id="personId" :person-name="person.name"
-          :api="api" :can-write="canEdit" :format-time="formatTime" @changed="refresh"/>
+        <OrganizationPersonAccounts v-if="selected.key==='accounts'" ref="accountWorkspace" :api="api" :person="person" :can-write="canWrite"
+          :format-time="formatTime" :format-identity-time="formatIdentityTime"/>
         <KeepAlive v-if="selected.key==='duties'">
           <OrganizationDuties ref="duties" profile :api="api" :format-time="formatTime" :subject="dutySubject"
             :can-write="canWrite" :person-link="personLink"/>
         </KeepAlive>
         <template v-else-if="selected.path">
-          <section v-if="selected.key==='accounts' && financeStatus[person.accountStatus]" class="records person-finance-account">
-            <h2>财务登录账号</h2>
-            <a-tag :color="financeStatus[person.accountStatus].color">{{ financeStatus[person.accountStatus].label }}</a-tag>
-            <span v-if="person.ownLogin" class="numeric">{{ person.ownLogin }}</span>
-          </section>
           <section class="records">
             <div class="records-head">
-              <h2>{{ selected.key==='accounts' ? '业务来源账号' : selected.label }}</h2>
+              <h2>{{ selected.label }}</h2>
               <span v-if="!listLoading && !listError" class="person-record-count">{{ rows.total }} 条记录</span>
-              <a v-if="selected.key==='accounts'" class="context-link" href="#people?tab=identity">{{canWrite ? '管理账号归属' : '全部账号归属'}}</a>
               <a v-if="selected.key==='positions'" class="context-link" href="#organization?tab=catalog">{{canWrite ? '管理分润岗位' : '全部分润岗位'}}</a>
               <a-button v-if="selected.key==='appointments' && canEdit" type="primary" :loading="appointmentLoading" @click="editAppointment('add')">登记任职</a-button>
             </div>
@@ -302,42 +264,18 @@ defineExpose({refresh})
                   {{ record.scopeName }}<small class="order-version">{{ optionLabel('catalogAppointmentScope',record.scope) }}</small>
                 </template>
                 <a-tag v-else-if="column.key==='status'" :color="statusFor(record).color">{{ statusFor(record).label }}</a-tag>
-                <span v-else-if="column.key==='source'">{{ sourceLabel(record.source) }}</span>
-                <span v-else-if="column.key==='origin'">{{ record.origin==='DIRECTORY' ? '人员映射' : '业务导入' }}</span>
-                <span v-else-if="column.key==='validFrom'||column.key==='validTo'" class="numeric">{{ selected.key==='accounts' ? formatIdentityTime(text) : formatTime(text) }}</span>
+                <span v-else-if="column.key==='validFrom'||column.key==='validTo'" class="numeric">{{ formatTime(text) }}</span>
                 <template v-else-if="column.key==='appointmentAction'">
                   <PersonAppointmentActions v-if="statusFor(record).label!=='已结束'" :label="record.unitName" @select="mode=>editAppointment(mode,record)"/>
                 </template>
-                <template v-else-if="column.key==='accountAction'">
-                  <a-button v-if="record.origin==='DIRECTORY'" type="link" class="person-account-history" size="small"
-                    @click="showAccountHistory(record)">账号历史</a-button>
-                  <span v-else>—</span>
-                </template>
+
               </template>
               <template #emptyText>{{ selected.empty }}</template>
             </a-table>
           </section>
-          <OrganizationSourceRelations v-if="selected.key==='accounts'" :api="api" :person-id="personId" :format-time="formatTime"/>
         </template>
       </div>
     </template>
-    <a-modal v-if="account" open :title="accountTitle" :width="580" :footer="null" @cancel="closeAccountHistory">
-      <a-alert v-if="account.error" type="error" :message="account.error" show-icon>
-        <template #action><a-button size="small" @click="showAccountHistory(account)">重试</a-button></template>
-      </a-alert>
-      <a-table v-else size="small" row-key="id" :columns="accountHistoryColumns" :data-source="account.items"
-        :loading="account.loading" :pagination="{pageSize:12,hideOnSinglePage:true}" :scroll="{x:463}">
-        <template #bodyCell="{column,record,text}">
-          <template v-if="column.key==='personName'">
-            <a v-if="record.personId!==personId" :href="personLink(record.personId,'accounts')"
-              class="person-name-link" @click="closeAccountHistory">{{ text }}</a>
-            <span v-else>{{ text }}</span>
-            <small class="order-version">人员 {{ record.personId }}</small>
-          </template>
-          <span v-else-if="column.key==='validFrom'||column.key==='validTo'" class="numeric">{{ formatIdentityTime(text) }}</span>
-        </template>
-      </a-table>
-    </a-modal>
   </article>
 </template>
 
@@ -347,7 +285,6 @@ defineExpose({refresh})
 .person-name-row {display:flex;flex-wrap:wrap;gap:2px 8px;align-items:center}
 .person-edit-name {color:var(--muted)}
 .person-edit-name:hover {color:var(--accent)}
-.person-dispatch-panel {margin-bottom:12px}
 @media (max-width:680px) {
  .person-detail-identity {align-items:flex-start;gap:10px}
  .person-detail-nav {column-gap:10px}
