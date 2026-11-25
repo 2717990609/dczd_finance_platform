@@ -1,7 +1,7 @@
 <script setup>
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import { computed, ref, watch } from 'vue'
-const props=defineProps({api:Function,personId:Number,personName:String,company:Object,existing:Boolean})
+const props=defineProps({api:Function,personId:Number,personName:String,company:Object,existing:Boolean,initialTarget:String,channelStatus:Object,existingBindings:Array})
 const emit=defineEmits(['close','saved'])
 const existingId=ref(),chosenCompany=ref(props.company?.id),companyOptions=ref([]),role=ref('MEMBER'),start=ref('')
 const membership=computed(()=>!props.personId && chosenCompany.value)
@@ -14,12 +14,34 @@ async function findCompany(name=''){
 const name=ref(''),rows=ref([]),busy=ref(false),error=ref(''),requestId=ref(crypto.randomUUID())
 const systems=[{value:'DCZD',label:'大春之道'},{value:'DCJK',label:'大春见康'},{value:'DCAI',label:'大春 AI'}]
 const states={ACTIVE:'已启用',INACTIVE:'已停用',NONE:'暂无销售身份'}
+const standaloneChannels=ref()
+const channels=computed(()=>props.channelStatus ?? standaloneChannels.value)
+const systemOptions=computed(()=>systems.map(system=>({
+ ...system,label:channels.value && !channels.value[system.value] ? system.label+'（通道未开启）' : system.label,
+})))
+const systemName=target=>systems.find(system=>system.value===target)?.label || target
+const accountAction=row=>{
+ if(row.account.identity_state==='NONE') return row.owner ? '下发创建销售身份并设为负责人' : '下发创建销售身份'
+ if(row.owner) return '绑定现有身份并下发负责人变更'
+ return '绑定现有销售身份'
+}
+async function loadChannels(){
+ if(props.channelStatus || standaloneChannels.value)return
+ try{standaloneChannels.value=await props.api('/organization-dispatch/channels')}
+ catch{ /* Account lookup also reports connection errors. */ }
+}
 const errors={NOT_FOUND:'该系统未查到已注册账号',CONFLICT:'该手机号匹配多个账号，请先核对',UNAVAILABLE:'来源账号暂不可用'}
 const canSave=computed(()=>(props.personId ? rows.value.length>0 : props.existing ? !!existingId.value : !!name.value.trim()) &&
  rows.value.every(row=>row.confirmed && !row.loading))
-function add(){rows.value.push({key:crypto.randomUUID(),target:'DCZD',countryCode:'+86',phone:'',lookup:0,companySearch:0,companies:[]})}
-function reset(row){row.lookup++;row.account=undefined;row.confirmed=false;row.owner=false;row.companyId=membership.value || undefined;row.companies=[];row.error='';row.loading=false}
+function add(){
+ rows.value.push({key:crypto.randomUUID(),target:rows.value.length ? undefined : props.initialTarget,countryCode:'+86',phone:'',lookup:0,companySearch:0,companies:[]})
+ loadChannels()
+}
+function needsCompany(row){return row.account.identity_state==='NONE' || row.owner}
+function lookupAvailable(row){return !!row.target && channels.value?.[row.target]!==false && !!row.phone.trim() && !row.loading}
+function reset(row){row.lookup++;row.companySearch++;row.account=undefined;row.confirmed=false;row.owner=false;row.companyId=membership.value || undefined;row.companies=[];row.error='';row.loading=false}
 async function lookup(row) {
+ if(!lookupAvailable(row))return
  reset(row)
  const seq=row.lookup
  row.loading=true
@@ -39,6 +61,9 @@ async function searchCompany(row,name=''){
  }catch(e){if(seq===row.companySearch)row.error=e.message}
 }
 function confirm(row){
+ if(props.existingBindings?.some(binding=>binding.target===row.target && binding.userId===row.account.user_id)){
+  row.error='此账号已绑定，请返回该系统卡片办理已有身份。';return
+ }
  if(rows.value.some(other=>other.key!==row.key&&other.confirmed&&other.target===row.target&&other.account?.user_id===row.account.user_id)){
   row.error='此账号已经添加';return
  }
@@ -52,7 +77,8 @@ async function save(){
    bindings:rows.value.map(r=>({target:r.target,countryCode:r.countryCode,phone:r.phone,userId:r.account.user_id,
    companyId:r.companyId,owner:!!r.owner,confirmed:r.account}))}
   const result=await props.api('/organization-dispatch/person-intake',{method:'POST',body:JSON.stringify(body)})
-  emit('saved',result.personId)
+  const sendsChange=rows.value.some(row=>row.account.identity_state==='NONE'||row.owner)
+  emit('saved',result.personId,sendsChange ? '绑定已保存，请在下发记录查看身份变更。' : '已绑定现有销售身份。')
  }catch(e){error.value=e.message}finally{busy.value=false}
 }
 watch([chosenCompany,role],()=>{for(const row of rows.value){row.confirmed=false;row.companyId=chosenCompany.value;row.owner=!!chosenCompany.value&&role.value==='OWNER'&&row.account?.identity_state==='NONE'}})
@@ -74,32 +100,54 @@ if(props.personId)add()
       <a-form-item label="公司内角色"><a-select v-model:value="role" :options="[{value:'MEMBER',label:'成员'},{value:'MANAGER',label:'管理员'},{value:'OWNER',label:'负责人'}]"/></a-form-item>
       <a-form-item label="生效时间（北京时间，留空立即生效）"><a-input v-model:value="start" type="datetime-local"/></a-form-item>
     </a-space>
-    <div class="intake-heading"><h3>业务账号</h3><a-button @click="add">添加手机号</a-button></div>
+    <div class="intake-heading"><h3>{{personId ? '核验已注册账号' : '业务账号（可选）'}}</h3>
+      <a-button @click="add">{{rows.length?'再添加业务账号':'添加业务账号'}}</a-button>
+    </div>
     <section v-for="(row,index) in rows" :key="row.key" class="intake-row">
-     <div class="intake-heading"><strong>账号 {{index+1}}</strong><a-space>
-      <a-tag v-if="row.confirmed" color="green">已确认</a-tag>
+     <div v-if="rows.length>1 || !personId" class="intake-heading"><strong>业务账号 {{index+1}}</strong>
       <a-button type="link" size="small" @click="rows.splice(index,1)">移除</a-button>
-     </a-space></div>
-     <a-space wrap>
-      <a-select v-model:value="row.target" style="width:116px" :options="systems" aria-label="所属系统" @change="reset(row)"/>
-      <a-input v-model:value="row.countryCode" aria-label="区号" style="width:68px" @update:value="reset(row)"/>
-      <a-input v-model:value="row.phone" type="tel" aria-label="已注册手机号" placeholder="已注册手机号" @update:value="reset(row)"/>
-      <a-button :loading="row.loading" :disabled="!row.phone.trim()" @click="lookup(row)">查找账号</a-button>
-     </a-space>
-     <a-alert v-if="row.error" :message="row.error" type="warning" show-icon/>
-     <template v-if="row.account">
-      <p>{{row.account.display_name}} · 账号 {{row.account.user_id}} · {{states[row.account.identity_state]}}<span v-if="row.account.company_id"> · 公司编号 {{row.account.company_id}}</span></p>
-      <a-checkbox v-model:checked="row.owner" @change="row.confirmed=false">设为公司负责人</a-checkbox>
-      <a-form-item v-if="!membership && (row.account.identity_state==='NONE'||row.owner)" label="目标销售公司" required>
-       <a-select v-model:value="row.companyId" show-search :filter-option="false" :options="row.companies" placeholder="搜索已同步到该系统的公司"
-        @focus="searchCompany(row)" @search="q=>searchCompany(row,q)" @change="row.confirmed=false"/>
+     </div>
+     <div class="lookup-fields">
+      <a-form-item label="业务系统" :html-for="row.key+'-system'">
+       <a-select :id="row.key+'-system'" v-model:value="row.target" :options="systemOptions" placeholder="选择系统" @change="reset(row)"/>
       </a-form-item>
-      <a-button v-if="!row.confirmed" :disabled="(row.account.identity_state==='NONE'||row.owner)&&!row.companyId" @click="confirm(row)">确认此账号</a-button>
-     </template>
+      <a-form-item label="区号">
+       <a-input v-model:value="row.countryCode" aria-label="区号" @update:value="reset(row)"/>
+      </a-form-item>
+      <a-form-item label="注册手机号">
+       <a-input v-model:value="row.phone" type="tel" aria-label="注册手机号" placeholder="输入在该系统注册的手机号"
+        @update:value="reset(row)" @press-enter="lookup(row)"/>
+      </a-form-item>
+      <a-button :loading="row.loading" :disabled="!lookupAvailable(row)" @click="lookup(row)">核验账号</a-button>
+     </div>
+     <p v-if="row.target && channels?.[row.target]===false" class="intake-hint">该系统的通道未开启，暂时无法核验账号。</p>
+     <a-alert v-if="row.error" :message="row.error" type="warning" show-icon/>
+     <section v-if="row.account" class="lookup-result">
+      <div class="intake-heading">
+       <strong>{{row.account.display_name || '已找到账号'}} · {{row.account.user_id}}</strong>
+       <a-tag :color="row.account.identity_state==='ACTIVE'?'green':undefined">{{states[row.account.identity_state]}}</a-tag>
+      </div>
+      <p v-if="row.account.company_id">当前公司编号 {{row.account.company_id}}</p>
+      <p v-if="row.account.identity_state==='NONE'" class="intake-hint">选择已送达{{systemName(row.target)}}的销售公司，提交后将创建销售身份。</p>
+      <p v-else-if="!row.owner" class="intake-hint">提交后关联该系统已有的销售身份。</p>
+      <template v-if="!row.confirmed">
+       <a-checkbox v-if="row.account.identity_state!=='INACTIVE' && row.account.role!=='OWNER'" v-model:checked="row.owner">设为公司负责人</a-checkbox>
+       <a-form-item v-if="!membership && needsCompany(row)" label="目标销售公司" :html-for="row.key+'-company'" required>
+        <a-select :id="row.key+'-company'" v-model:value="row.companyId" show-search :filter-option="false" :options="row.companies"
+         placeholder="搜索已送达该系统的公司" not-found-content="暂无可选公司，请先在销售公司与类别完成公司同步"
+         @focus="searchCompany(row)" @search="q=>searchCompany(row,q)"/>
+       </a-form-item>
+       <a-button :disabled="needsCompany(row)&&!row.companyId" @click="confirm(row)">确认账号与办理内容</a-button>
+      </template>
+      <div v-else class="intake-heading">
+       <span>{{accountAction(row)}}<template v-if="needsCompany(row)"> · {{company?.name || row.companies.find(c=>c.value===row.companyId)?.label || companyOptions.find(c=>c.value===row.companyId)?.label}}</template></span>
+       <a-button type="link" @click="row.confirmed=false">返回修改</a-button>
+      </div>
+     </section>
     </section>
    </a-form>
   </fieldset>
-  <template #footer><a-button :disabled="busy" @click="emit('close')">取消</a-button><a-button type="primary" :loading="busy" :disabled="!canSave" @click="save">{{personId?'保存绑定':existing?'确认加入':rows.length?'建档并绑定':'保存人员'}}</a-button></template>
+  <template #footer><a-button :disabled="busy" @click="emit('close')">取消</a-button><a-button type="primary" :loading="busy" :disabled="!canSave" @click="save">{{personId ? (rows.some(r=>r.account && needsCompany(r)) ? '提交绑定与下发' : '确认绑定') : existing?'确认加入':rows.length?'建档并绑定':'保存人员'}}</a-button></template>
  </a-modal>
 </template>
 <style scoped>
@@ -107,4 +155,9 @@ if(props.personId)add()
 .intake-heading {display:flex;align-items:center;justify-content:space-between;gap:12px}.intake-heading h3 {margin:0}
 .intake-row {border-top:1px solid var(--line);margin-top:12px;padding:12px 0;display:grid;gap:10px}
 .intake-row p,.intake-row .ant-form-item {margin:0}
+.lookup-fields {display:grid;grid-template-columns:minmax(120px,1fr) 66px minmax(150px,1.5fr) auto;gap:8px;align-items:end}
+.lookup-result {display:grid;justify-items:start;gap:9px;padding:12px;background:#f7f9fc;border:1px solid var(--line);border-radius:8px}
+.lookup-result .intake-heading,.lookup-result .ant-form-item {width:100%}
+.intake-hint {color:var(--muted)}
+@media(max-width:590px){.lookup-fields {grid-template-columns:1fr 78px}.lookup-fields .ant-form-item:nth-child(3){grid-column:1/-1}}
 </style>

@@ -181,16 +181,17 @@ defineExpose({refresh})
     <section class="records sync-toolbar" aria-label="同步工作台">
       <h2>人员组织同步</h2>
       <nav aria-label="同步办理入口">
-        <a href="#organization?tab=sync" :aria-current="syncView!=='records' ? 'page' : undefined">人员办理</a>
-        <a href="#organization?tab=companies">公司与成员</a>
+        <a href="#organization?tab=sync" :aria-current="syncView!=='records' ? 'page' : undefined">人员销售身份</a>
+        <a href="#organization?tab=companies">销售公司同步</a>
         <a href="#organization?tab=directors">销售总监归属</a>
-        <a href="#organization?tab=sync&view=records" :aria-current="syncView==='records' ? 'page' : undefined">投递记录</a>
+        <a href="#organization?tab=sync&view=records" :aria-current="syncView==='records' ? 'page' : undefined">下发记录</a>
         <a href="#organization?tab=health">AI 冲突处理</a>
       </nav>
       <div class="sync-channels" aria-label="各系统下发开关">
         <span>下发通道</span>
         <span v-for="(name,key) in channelNames" :key="key">{{ name }} · {{ channels ? channels[key] ? '已开启' : '未开启' : '待读取' }}</span>
         <a-button v-if="channelError" size="small" @click="readChannels">重新读取</a-button>
+        <span v-if="channels && Object.keys(channelNames).every(key=>!channels[key])">当前环境的下发通道均未开启。</span>
       </div>
     </section>
     <OrganizationDispatch v-if="syncView==='records'" ref="sync" embedded :api="api" :can-write="canWrite" :format-time="formatTime"/>

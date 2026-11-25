@@ -16,6 +16,35 @@ const operations={CREATE:'创建身份',ENABLE:'启用',DISABLE:'停用',SET_OWN
 const columns=[{title:'目标系统',key:'target',width:105},{title:'业务变更',key:'operation',width:180},{title:'状态 / 原因',key:'state',width:200},{title:'生效时间',key:'effective',width:154},{title:'回执编号',dataIndex:'externalId',width:140},{title:'操作',key:'actions',width:80}]
 const stateColors={APPLIED:'green',PROCESSING:'blue',CONFLICT:'red',RETRYABLE:'orange'}
 const loading=ref(false)
+const channels=ref(), channelError=ref(false)
+async function readChannels(){
+ channelError.value=false
+ try{channels.value=await props.api('/organization-dispatch/channels')}
+ catch{channelError.value=true}
+}
+if(props.personId || props.company)readChannels()
+const targetsChanged=computed(()=>!!data.value && (targets.value.length!==data.value.targets.length || targets.value.some(target=>!data.value.targets.includes(target))))
+const targetStatus=target=>data.value?.targetStatus?.find(status=>status.target===target)
+const targetStatusLabel=target=>{
+ const status=targetStatus(target)
+ return status ? states[status.state] || '待同步' : '未选为同步目标'
+}
+function toggleTarget(target,checked){
+ targets.value=checked ? [...targets.value,target] : targets.value.filter(value=>value!==target)
+}
+const historyHeading=ref()
+function resetTargets(){
+ targets.value=[...data.value.targets]
+ refresh()
+}
+function showHistory(message){
+ notice.value=message
+ targetFilter.value=''
+ issuesOnly.value=false
+ page.value=1
+ refresh()
+ emit('changed')
+}
 const targetFilter=ref(''),issuesOnly=ref(false)
 const editProfile=ref(false)
 const closingUse=ref()
@@ -45,7 +74,11 @@ async function refresh(){
  const req=++seq,params=new URLSearchParams({page:page.value});if(props.company)params.set('companyId',props.company.id);if(props.personId)params.set('personId',props.personId)
  loading.value=true
  if(targetFilter.value)params.set('target',targetFilter.value);if(issuesOnly.value)params.set('issues','true')
- try{error.value='';const value=await props.api('/organization-dispatch?'+params);if(req===seq){data.value=value;targets.value=[...value.targets]}}
+ try{error.value='';const value=await props.api('/organization-dispatch?'+params);if(req===seq){
+  if(!data.value || !targetsChanged.value)targets.value=[...value.targets]
+  else value.targets=data.value.targets
+  data.value=value
+ }}
  catch(e){if(req===seq)error.value=e.message}
  finally{if(req===seq)loading.value=false}
 }
@@ -53,7 +86,17 @@ watch([targetFilter,issuesOnly],()=>{if(page.value!==1)page.value=1;else refresh
 watch(()=>[props.personId,props.company?.id,page.value],refresh,{immediate:true})
 async function submit(path,body){
  busy.value=true;error.value=''
- try{await props.api('/organization-dispatch/'+path,{method:'POST',body:JSON.stringify(body)});await refresh();notice.value='操作已保存';emit('changed')}
+ try{
+  const saved=await props.api('/organization-dispatch/'+path,{method:'POST',body:JSON.stringify(body)})
+  if(path==='targets'){
+   data.value={...data.value,targets:saved};targets.value=[...saved]
+   notice.value='同步目标已更新，请查看各系统的送达状态。'
+  }else{
+   notice.value=path==='retry' ? '已提交重试，请查看下发状态。' : '已取消计划。'
+  }
+  await refresh()
+  emit('changed')
+ }
  catch(e){error.value=e.message}finally{busy.value=false}
 }
 defineExpose({refresh})
@@ -63,17 +106,41 @@ defineExpose({refresh})
    v-bind="embedded ? {} : {open:true,title,width:'min(880px, 100vw)'}" @close="emit('close')">
   <div class="dispatch-content">
    <a-alert v-if="error" :message="error" type="error" show-icon/>
-   <a-alert v-if="notice" :message="notice" type="success" show-icon closable @close="notice=''"/>
+   <a-alert v-if="notice" :message="notice" type="success" show-icon closable @close="notice=''">
+    <template v-if="personId || company" #action>
+     <a-button size="small" @click="historyHeading?.scrollIntoView({block:'start'});historyHeading?.focus()">查看记录</a-button>
+    </template>
+   </a-alert>
+   <a-alert v-if="channelError" type="warning" message="暂时无法读取下发通道">
+    <template #action><a-button size="small" @click="readChannels">重试</a-button></template>
+   </a-alert>
    <template v-if="company && data">
     <OrganizationSourceRelations :api="api" :company-id="company.id" :format-time="formatTime"/>
     <a-button v-if="canWrite && data.wireId" @click="editProfile=true">维护公司名称、上级和启停状态</a-button>
     <OrganizationDispatchProfile v-if="editProfile" :api="api" :company="company" :profile="data.profile" @close="editProfile=false" @saved="editProfile=false;refresh();emit('changed')"/>
-    <div v-if="data.targetStatus?.length"><h3>各系统当前状态</h3>
-      <p v-for="status in data.targetStatus" :key="status.target">{{ label(status.target) }} · {{ states[status.state] || '暂无投递' }}<span v-if="status.externalId"> · 编号 {{status.externalId}}</span><span v-if="status.reason"> · {{syncReasons[status.reason] || status.reason}}</span></p>
-    </div>
-    <label>公司的同步目标</label>
-    <a-checkbox-group v-model:value="targets" :options="systems" :disabled="!canWrite || busy"/>
-    <a-button v-if="canWrite" :loading="busy" @click="submit('targets',{companyId:company.id,targets,expectedTargets:data.targets})">保存目标系统</a-button>
+    <section class="company-sync" aria-label="公司同步目标">
+     <div>
+      <h3>选择接收公司资料的系统</h3>
+      <p>保存后会向新增的系统下发公司资料。公司送达后，可在该系统办理人员销售身份。</p>
+     </div>
+     <div class="company-targets">
+      <section v-for="system in systems" :key="system.value" class="company-target" :aria-label="system.label">
+       <a-checkbox :checked="targets.includes(system.value)" :disabled="!canWrite || busy"
+         @change="toggleTarget(system.value,$event.target.checked)">{{system.label}}</a-checkbox>
+       <div class="target-tags">
+        <a-tag :color="stateColors[targetStatus(system.value)?.state]">{{targetStatusLabel(system.value)}}</a-tag>
+        <a-tag v-if="channels && !channels[system.value]">通道未开启</a-tag>
+       </div>
+       <small v-if="targetStatus(system.value)?.reason">{{syncReasons[targetStatus(system.value).reason] || targetStatus(system.value).reason}}</small>
+       <small v-if="targetStatus(system.value)?.externalId">子系统公司编号 {{targetStatus(system.value).externalId}}</small>
+      </section>
+     </div>
+     <p v-if="canWrite && targetsChanged && targets.some(target=>channels?.[target]===false && !data.targets.includes(target))">通道未开启的系统会等待发送。</p>
+     <a-space v-if="canWrite" wrap>
+      <a-button type="primary" :disabled="!targetsChanged" :loading="busy" @click="submit('targets',{companyId:company.id,targets,expectedTargets:data.targets})">保存同步目标</a-button>
+      <a-button v-if="targetsChanged" :disabled="busy" @click="resetTargets">撤销修改</a-button>
+     </a-space>
+    </section>
     <section aria-label="公司业务使用">
      <h3>业务系统使用关系</h3>
      <p v-if="!activeUses.length">暂无正在使用此公司的业务系统。</p>
@@ -93,18 +160,21 @@ defineExpose({refresh})
      </a-modal>
     </section>
    </template>
-   <OrganizationPersonSourceAccounts v-if="personId" :key="personId" :api="api" :person-id="personId" :systems="systems" :format-time="formatTime"/>
-   <OrganizationDispatchAccounts v-if="personId && data" :person-id="personId" :person-name="personName" :api="api" :systems="systems" :can-write="canWrite" :bindings="data.bindings" @changed="refresh();emit('changed')"/>
+   <OrganizationDispatchAccounts v-if="personId && data" :person-id="personId" :person-name="personName" :api="api" :systems="systems" :can-write="canWrite" :bindings="data.bindings" :channels="channels" @changed="showHistory"/>
+   <details v-if="personId" class="person-source-disclosure">
+    <summary>查看已关联的业务来源账号</summary>
+    <OrganizationPersonSourceAccounts :key="personId" :api="api" :person-id="personId" :systems="systems" :format-time="formatTime"/>
+   </details>
    <div class="dispatch-table-head">
-     <div><h3>{{personId ? '销售身份下发记录' : '同步记录'}}</h3><span v-if="data && !error" class="record-total">{{ data.total }} 条</span></div>
+     <div><h3 ref="historyHeading" tabindex="-1">{{personId ? '销售身份下发记录' : '同步记录'}}</h3><span v-if="data && !error" class="record-total">{{ data.total }} 条</span></div>
      <a-button size="small" :loading="loading" @click="refresh"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新</a-button>
    </div>
-   <a-space wrap>
+   <a-space v-if="!personId || data?.total || targetFilter || issuesOnly" wrap>
     <a-select v-model:value="targetFilter" aria-label="筛选目标系统" style="min-width:132px" :options="[{value:'',label:'全部目标系统'},...systems]"/>
     <a-checkbox v-model:checked="issuesOnly">只看异常记录</a-checkbox>
    </a-space>
    <p v-if="personId && data?.total===0 && !loading && !error" class="dispatch-empty" role="status">
-    {{targetFilter || issuesOnly ? '当前筛选条件下没有下发记录。' : '暂无销售身份下发记录。这里记录财务向业务系统发送的身份变更。'}}
+    {{targetFilter || issuesOnly ? '当前筛选条件下没有下发记录。' : '暂无下发记录。提交销售身份变更后，可在这里查看发送进度和回执。'}}
    </p>
    <a-table v-else size="small" row-key="id" :loading="loading" :columns="columns" :data-source="data?.items || []" :scroll="{x:860}"
     :pagination="{current:page,total:data?.total || 0,pageSize:25,showSizeChanger:false,hideOnSinglePage:true}" @change="page=$event.current">
@@ -124,6 +194,16 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
+.company-sync {display:grid;justify-items:start;gap:10px}
+.company-sync h3,.company-sync p {margin:0}
+.company-sync p {color:var(--muted)}
+.company-targets {width:100%;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,215px),1fr));gap:10px}
+.company-target {display:grid;align-content:start;gap:8px;border:1px solid var(--line);border-radius:8px;padding:12px}
+.target-tags {display:flex;flex-wrap:wrap;gap:4px}
+.target-tags :deep(.ant-tag) {margin-inline-end:0}
+.person-source-disclosure {border:1px solid var(--line);padding:10px 12px;border-radius:8px}
+.person-source-disclosure summary {cursor:pointer;font-weight:600}
+.person-source-disclosure[open] summary {margin-bottom:10px}
 .business-use {display:flex;align-items:center;gap:12px;margin:8px 0}
 .dispatch-content { display: grid; grid-template-columns: minmax(0,1fr); gap: 14px; min-width: 0; }
 .records > .dispatch-content { padding: 16px; }

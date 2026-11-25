@@ -24,7 +24,7 @@ const columns = [
   {title:'组织 / 销售公司',key:'appointments',width:210},
   {title:'业务来源账号',key:'accounts',width:175},
   {title:'业务职责',key:'duties',width:180},
-  {title:'操作',key:'action',width:100,fixed:'right'},
+  {title:'操作',key:'action',width:124,fixed:'right'},
 ]
 const pagination = computed(()=>({current:page.value,total:people.value.total,pageSize:20,hideOnSinglePage:true,showSizeChanger:false}))
 let generation = 0
@@ -82,7 +82,7 @@ defineExpose({refresh})
           <div v-for="a in record.accounts" :key="a.source+':'+a.id">{{ sources[a.source] || a.source }} · {{ a.id }}</div><span v-if="!record.accounts.length">—</span>
         </template>
         <template v-else-if="column.key==='duties'">{{ record.duties.join('、') || '—' }}</template>
-        <a-button v-else-if="column.key==='action'" type="link" size="small" @click="person=record">{{ canWrite && record.sourceStatus!=='INACTIVE' ? '办理身份' : '查看身份' }}</a-button>
+        <a-button v-else-if="column.key==='action'" type="link" size="small" @click="person=record">{{ canWrite && record.sourceStatus!=='INACTIVE' ? '同步销售身份' : '查看同步' }}</a-button>
       </template>
       <template #emptyText>{{ term ? '没有符合条件的人员' : '暂无人员记录' }}</template>
     </a-table>

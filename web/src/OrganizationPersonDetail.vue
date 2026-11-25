@@ -182,12 +182,12 @@ defineExpose({refresh})
           </dl>
         </div>
         <a-button type="primary" class="person-sync-action" @click="dispatchOpen=true">
-          <template #icon><SyncOutlined aria-hidden="true"/></template>人员同步
+          <template #icon><SyncOutlined aria-hidden="true"/></template>销售身份同步
         </a-button>
       </div>
     </div>
     <template v-if="person">
-      <OrganizationDispatch v-if="dispatchOpen" :key="personId" :person-id="personId" :person-name="person.name" :api="api" :can-write="canWrite"
+      <OrganizationDispatch v-if="dispatchOpen" :key="personId" :person-id="personId" :person-name="person.name" :api="api" :can-write="canWrite && person.sourceStatus!=='INACTIVE'"
         :format-time="formatTime" @changed="refresh" @close="dispatchOpen=false"/>
       <a-modal :open="rename!==undefined" title="修改人员姓名" ok-text="保存" cancel-text="取消" :confirm-loading="renameBusy" :ok-button-props="{disabled:!rename?.trim() || rename.trim()===person.name}" @ok="saveName" @cancel="rename=undefined">
        <a-alert v-if="renameError" :message="renameError" type="error" show-icon/>

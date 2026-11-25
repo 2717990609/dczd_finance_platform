@@ -204,7 +204,7 @@ defineExpose({refresh})
           <a-tag v-else-if="column.key==='status'" :color="record.status==='ACTIVE' ? 'green' : 'default'">{{ record.status==='ACTIVE' ? '启用' : '停用' }}</a-tag>
           <template v-else-if="column.key==='actions'">
             <a-button type="link" size="small" @click="memberCompany=record">公司成员</a-button>
-            <a-button type="link" size="small" @click="dispatch=record">同步目标</a-button>
+            <a-button type="link" size="small" @click="dispatch=record">同步到业务系统</a-button>
             <a-button type="link" size="small" @click="emit('show-appointments',record.id)">查看任职</a-button>
             <a-button v-if="canWrite && record.companyType!=='UNKNOWN'" type="link" size="small" @click="emit('show-director',record)">总监归属</a-button>
             <a-button type="link" size="small" @click="openHistory(record)">类别历史</a-button>

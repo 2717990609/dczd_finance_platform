@@ -52,7 +52,7 @@ async function save(){
     <span v-else-if="column.key==='from'">{{formatTime(record.validFrom)}}</span>
     <span v-else-if="column.key==='to'">{{record.validTo?formatTime(record.validTo):'长期有效'}}</span>
     <a-space v-else-if="column.key==='actions'" wrap :size="0">
-     <a-button type="link" size="small" @click="person=record">业务身份</a-button>
+     <a-button type="link" size="small" @click="person=record">销售身份同步</a-button>
      <template v-if="canWrite"><a-button type="link" size="small" @click="begin(record,false)">调整归属</a-button><a-button type="link" size="small" @click="begin(record,true)">结束归属</a-button></template>
     </a-space>
    </template><template #emptyText>暂无符合条件的公司成员</template>
