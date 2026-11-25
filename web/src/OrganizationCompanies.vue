@@ -12,10 +12,8 @@ import OrganizationCompanyType from './OrganizationCompanyType.vue'
 
 const memberCompany=ref()
 const statusCompany=ref()
-const memberStatusNotice=ref('')
 const dispatch=ref(), createProfile=ref(false)
 onDeactivated(()=>{memberCompany.value=undefined;statusCompany.value=undefined;dispatch.value=undefined;createProfile.value=false})
-watch(()=>memberCompany.value?.id,()=>{memberStatusNotice.value=''})
 const props = defineProps({api:Function,formatTime:Function,canWrite:Boolean,units:Array,personLink:Function,viewingPerson:Boolean,requestedCompanyId:String})
 const emit = defineEmits(['show-appointments','show-duties','show-director','directory-changed','close-company'])
 const status = ref('')
@@ -70,13 +68,10 @@ function companyChanged() {
 }
 function companyStatusSaved(id,next) {
   statusCompany.value = undefined
-  const message = next==='ACTIVE' ? '公司已启用。' : '公司已停用。'
   if (memberCompany.value?.id===id) {
     memberCompany.value = {...memberCompany.value,status:next}
-    memberStatusNotice.value = message
-  } else {
-    notice.value = message
   }
+  notice.value = next==='ACTIVE' ? '公司已启用。' : '公司已停用。'
   companyChanged()
 }
 const columns = [
@@ -262,8 +257,7 @@ defineExpose({refresh})
   <OrganizationDispatchProfile v-if="createProfile" :api="api" :categories="result.categories" @close="createProfile=false" @saved="createProfile=false;companyChanged()"/>
   <OrganizationCompanyStatus v-if="statusCompany" :company="statusCompany" :api="api" @saved="companyStatusSaved" @close="statusCompany=undefined"/>
   <OrganizationCompanyMembers v-if="memberCompany" :company="memberCompany" :api="api" :format-time="formatTime" :can-write="canWrite"
-    :open="!viewingPerson" :person-link="personLink" :status-notice="memberStatusNotice"
-    @changed="refresh" @change-status="statusCompany=memberCompany" @dismiss-status="memberStatusNotice=''" @close="closeMemberCompany">
+    :open="!viewingPerson" :person-link="personLink" @changed="refresh" @close="closeMemberCompany">
     <template #company-tools>
       <div class="company-profile-links">
         <a-button type="link" size="small" @click="dispatch=memberCompany">同步到业务系统</a-button>

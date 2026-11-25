@@ -3,11 +3,10 @@ import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import OrganizationPersonIntake from './OrganizationPersonIntake.vue'
 import OrganizationDispatch from './OrganizationDispatch.vue'
 import { appointmentDateError, beijingTime } from './appointment-time'
-const props=defineProps({api:Function,company:Object,formatTime:Function,canWrite:Boolean,open:Boolean,personLink:Function,statusNotice:String})
-const emit=defineEmits(['close','changed','change-status','dismiss-status'])
+const props=defineProps({api:Function,company:Object,formatTime:Function,canWrite:Boolean,open:Boolean,personLink:Function})
+const emit=defineEmits(['close','changed'])
 const date=ref(''),term=ref(''),search=ref(''),page=ref(1),rows=ref({items:[],total:0}),loadError=ref(''),loading=ref(false)
 const intake=ref(''),person=ref(),edit=ref(),target=ref(),role=ref('MEMBER'),at=ref(''),choices=ref([]),error=ref(''),busy=ref(false),notice=ref('')
-const companyStatusAction=computed(()=>props.company.status==='ACTIVE' ? '停用公司' : '启用公司')
 const targetID=useId(),effectiveID=useId()
 const dateError=computed(()=>edit.value ? appointmentDateError({
  mode:edit.value.end?'end':'transfer',record:edit.value.record,effective:at.value,
@@ -59,12 +58,11 @@ async function save(){
   <slot name="company-tools"/>
   <a-space wrap><a-button v-if="canWrite && company.status==='ACTIVE'" type="primary" @click="intake='existing'">加入已有人员</a-button>
    <a-button v-if="canWrite && company.status==='ACTIVE'" @click="intake='new'">新建人员</a-button>
-   <a-button v-if="canWrite" type="text" @click="emit('change-status')">{{companyStatusAction}}</a-button>
    <a-input-search v-model:value="term" allow-clear placeholder="姓名、人员 ID 或来源账号" aria-label="搜索公司成员" @search="searchMembers"/>
    <label>归属日期 <a-input v-model:value="date" type="date" style="width:160px"/></label>
   </a-space>
   <p class="member-note">留空查看当前成员，选择日期可查看当天北京时间零点的财务归属。</p>
-  <a-alert v-if="statusNotice || notice" :message="statusNotice || notice" type="success" show-icon closable @close="notice='';emit('dismiss-status')"/>
+  <a-alert v-if="notice" :message="notice" type="success" show-icon closable @close="notice=''"/>
   <a-alert v-if="loadError" :message="loadError" type="error" show-icon><template #action><a-button @click="load">重试</a-button></template></a-alert>
   <a-table size="small" :loading="loading" :data-source="rows.items" :columns="columns" :pagination="pagination" row-key="id" :scroll="{x:786}" @change="v=>{page=v.current;load()}">
    <template #bodyCell="{column,record}">
