@@ -159,7 +159,6 @@ defineExpose({refresh})
   <section class="records">
     <div class="records-head company-directory-head">
       <h2>销售公司目录</h2>
-      <a-button href="#organization?tab=sync&view=records">组织同步记录</a-button>
       <RadioGroup v-model:value="type" :options="types" option-type="button" button-style="solid" aria-label="销售公司类型"/>
       <div v-if="canWrite" class="topbar-actions category-actions">
         <a-button v-if="selected.length" @click="openAssignment(selected)">批量调整类别</a-button>
@@ -205,10 +204,17 @@ defineExpose({refresh})
           <template v-else-if="column.key==='actions'">
             <a-button type="link" size="small" @click="memberCompany=record">公司成员</a-button>
             <a-button type="link" size="small" @click="dispatch=record">同步到业务系统</a-button>
-            <a-button type="link" size="small" @click="emit('show-appointments',record.id)">查看任职</a-button>
-            <a-button v-if="canWrite && record.companyType!=='UNKNOWN'" type="link" size="small" @click="emit('show-director',record)">总监归属</a-button>
-            <a-button type="link" size="small" @click="openHistory(record)">类别历史</a-button>
-            <a-button type="link" size="small" @click="emit('show-duties',{unitId:record.id,name:record.name})">业务职责</a-button>
+            <a-dropdown :trigger="['click']">
+              <a-button type="link" size="small">更多</a-button>
+              <template #overlay>
+                <a-menu>
+                  <a-menu-item key="appointments" @click="emit('show-appointments',record.id)">查看任职</a-menu-item>
+                  <a-menu-item v-if="canWrite && record.companyType!=='UNKNOWN'" key="directors" @click="emit('show-director',record)">总监归属</a-menu-item>
+                  <a-menu-item key="categories" @click="openHistory(record)">类别历史</a-menu-item>
+                  <a-menu-item key="duties" @click="emit('show-duties',{unitId:record.id,name:record.name})">业务职责</a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
           </template>
         </template>
         <template #emptyText>{{ error ? '销售公司读取失败' : '暂无符合条件的销售公司' }}</template>

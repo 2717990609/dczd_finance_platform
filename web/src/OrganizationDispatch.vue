@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { syncReasons } from './organization-sync-reasons'
 import { ReloadOutlined } from '@ant-design/icons-vue'
@@ -24,6 +24,7 @@ async function readChannels(){
 }
 if(props.personId || props.company)readChannels()
 const targetsChanged=computed(()=>!!data.value && (targets.value.length!==data.value.targets.length || targets.value.some(target=>!data.value.targets.includes(target))))
+const companyReceipts=computed(()=>(data.value?.targetStatus || []).filter(status=>status.externalId))
 const targetStatus=target=>data.value?.targetStatus?.find(status=>status.target===target)
 const targetStatusLabel=target=>{
  const status=targetStatus(target)
@@ -32,7 +33,13 @@ const targetStatusLabel=target=>{
 function toggleTarget(target,checked){
  targets.value=checked ? [...targets.value,target] : targets.value.filter(value=>value!==target)
 }
-const historyHeading=ref()
+const historyHeading=ref(), detailsOpen=ref(false)
+async function openHistory(){
+ detailsOpen.value=true
+ await nextTick()
+ historyHeading.value?.scrollIntoView({block:'start'})
+ historyHeading.value?.focus({preventScroll:true})
+}
 function resetTargets(){
  targets.value=[...data.value.targets]
  refresh()
@@ -108,31 +115,24 @@ defineExpose({refresh})
    <a-alert v-if="error" :message="error" type="error" show-icon/>
    <a-alert v-if="notice" :message="notice" type="success" show-icon closable @close="notice=''">
     <template v-if="personId || company" #action>
-     <a-button size="small" @click="historyHeading?.scrollIntoView({block:'start'});historyHeading?.focus()">查看记录</a-button>
+     <a-button size="small" @click="openHistory">查看记录</a-button>
     </template>
    </a-alert>
    <a-alert v-if="channelError" type="warning" message="暂时无法读取下发通道">
     <template #action><a-button size="small" @click="readChannels">重试</a-button></template>
    </a-alert>
    <template v-if="company && data">
-    <OrganizationSourceRelations :api="api" :company-id="company.id" :format-time="formatTime"/>
-    <a-button v-if="canWrite && data.wireId" @click="editProfile=true">维护公司名称、上级和启停状态</a-button>
-    <OrganizationDispatchProfile v-if="editProfile" :api="api" :company="company" :profile="data.profile" @close="editProfile=false" @saved="editProfile=false;refresh();emit('changed')"/>
     <section class="company-sync" aria-label="公司同步目标">
-     <div>
-      <h3>选择接收公司资料的系统</h3>
-      <p>保存后会向新增的系统下发公司资料。公司送达后，可在该系统办理人员销售身份。</p>
-     </div>
+     <h3>选择同步系统</h3>
      <div class="company-targets">
       <section v-for="system in systems" :key="system.value" class="company-target" :aria-label="system.label">
        <a-checkbox :checked="targets.includes(system.value)" :disabled="!canWrite || busy"
          @change="toggleTarget(system.value,$event.target.checked)">{{system.label}}</a-checkbox>
        <div class="target-tags">
         <a-tag :color="stateColors[targetStatus(system.value)?.state]">{{targetStatusLabel(system.value)}}</a-tag>
-        <a-tag v-if="channels && !channels[system.value]">通道未开启</a-tag>
+        <small v-if="targets.includes(system.value) && channels?.[system.value]===false">通道未开启</small>
        </div>
-       <small v-if="targetStatus(system.value)?.reason">{{syncReasons[targetStatus(system.value).reason] || targetStatus(system.value).reason}}</small>
-       <small v-if="targetStatus(system.value)?.externalId">子系统公司编号 {{targetStatus(system.value).externalId}}</small>
+       <small class="target-reason" v-if="targetStatus(system.value)?.reason">{{syncReasons[targetStatus(system.value).reason] || targetStatus(system.value).reason}}</small>
       </section>
      </div>
      <p v-if="canWrite && targetsChanged && targets.some(target=>channels?.[target]===false && !data.targets.includes(target))">通道未开启的系统会等待发送。</p>
@@ -141,54 +141,67 @@ defineExpose({refresh})
       <a-button v-if="targetsChanged" :disabled="busy" @click="resetTargets">撤销修改</a-button>
      </a-space>
     </section>
-    <section aria-label="公司业务使用">
-     <h3>业务系统使用关系</h3>
-     <p v-if="!activeUses.length">暂无正在使用此公司的业务系统。</p>
-     <div v-for="row in activeUses" :key="row.source+':'+row.externalId" class="business-use">
-      <span>{{label(row.source)}} · 公司编号 {{row.externalId}}</span>
-      <a-button v-if="canWrite" size="small" @click="confirmCloseUse(row)">停止使用</a-button>
-     </div>
-     <details v-if="otherUses.length"><summary>查看其他生效区间（{{otherUses.length}}）</summary>
-      <p v-for="row in otherUses" :key="[row.source,row.externalId,row.validFrom,row.validTo].join(':')">
-       {{label(row.source)}} · {{row.externalId}} · {{formatTime(row.validFrom)}} 至 {{row.validTo ? formatTime(row.validTo) : '长期有效'}}
-      </p>
-     </details>
-     <a-modal v-if="closingUse" open :title="'停止'+label(closingUse.source)+'使用此公司？'" ok-text="确认停止使用"
-      :ok-button-props="{danger:true}" :confirm-loading="busy" :closable="!busy" :keyboard="!busy" :mask-closable="false" @ok="closeUse" @cancel="!busy && (closingUse=undefined)">
-      <p>{{company.name}} 在{{label(closingUse.source)}}的公司编号 {{closingUse.externalId}} 将结束当前归属。历史订单按原生效区间核对。</p>
-      <a-alert v-if="closingUse.error" type="error" :message="closingUse.error" show-icon/>
-     </a-modal>
-    </section>
    </template>
    <OrganizationDispatchAccounts v-if="personId && data" :person-id="personId" :person-name="personName" :api="api" :systems="systems" :can-write="canWrite" :bindings="data.bindings" :channels="channels" @changed="showHistory"/>
-   <details v-if="personId" class="person-source-disclosure">
-    <summary>查看已关联的业务来源账号</summary>
-    <OrganizationPersonSourceAccounts :key="personId" :api="api" :person-id="personId" :systems="systems" :format-time="formatTime"/>
-   </details>
-   <div class="dispatch-table-head">
-     <div><h3 ref="historyHeading" tabindex="-1">{{personId ? '销售身份下发记录' : '同步记录'}}</h3><span v-if="data && !error" class="record-total">{{ data.total }} 条</span></div>
-     <a-button size="small" :loading="loading" @click="refresh"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新</a-button>
-   </div>
-   <a-space v-if="!personId || data?.total || targetFilter || issuesOnly" wrap>
-    <a-select v-model:value="targetFilter" aria-label="筛选目标系统" style="min-width:132px" :options="[{value:'',label:'全部目标系统'},...systems]"/>
-    <a-checkbox v-model:checked="issuesOnly">只看异常记录</a-checkbox>
-   </a-space>
-   <p v-if="personId && data?.total===0 && !loading && !error" class="dispatch-empty" role="status">
-    {{targetFilter || issuesOnly ? '当前筛选条件下没有下发记录。' : '暂无下发记录。提交销售身份变更后，可在这里查看发送进度和回执。'}}
-   </p>
-   <a-table v-else size="small" row-key="id" :loading="loading" :columns="columns" :data-source="data?.items || []" :scroll="{x:860}"
-    :pagination="{current:page,total:data?.total || 0,pageSize:25,showSizeChanger:false,hideOnSinglePage:true}" @change="page=$event.current">
-    <template #bodyCell="{column,record}">
-     <span v-if="column.key==='target'">{{label(record.target)}}</span>
-     <span v-else-if="column.key==='operation'">{{record.name}} · {{operations[record.operation] || (record.kind==='COMPANY' ? '公司' : record.kind==='MEMBER' ? '人员' : '类别')}}<small v-if="record.imported">老财务记录</small></span>
-     <span v-else-if="column.key==='state'"><a-tag :color="stateColors[record.state]">{{states[record.state] || record.state}}</a-tag><small v-if="record.reason">{{syncReasons[record.reason] || record.reason}}</small></span>
-     <span v-else-if="column.key==='effective'">{{formatTime(record.effectiveAt)}}</span>
-     <a-button v-else-if="column.key==='actions' && canWrite && !record.imported && record.kind==='MEMBER' && record.operation!=='CREATE' && record.attempts===0 && record.state==='PENDING' && Date.parse(record.effectiveAt)>Date.now()" size="small" @click="submit('cancel',{messageId:record.id})">取消计划</a-button>
-     <a-button v-else-if="column.key==='actions' && canWrite && record.canRetry" size="small" :disabled="busy" @click="submit('retry',{messageId:record.id,expectedAttempts:record.attempts})">重试</a-button>
-    </template>
-    <template #emptyText>{{ error ? '同步记录读取失败' : personId ? '此人暂无同步记录' : company ? '此公司暂无同步记录' : '暂无人员或组织同步记录' }}</template>
-   </a-table>
-   <a v-if="personId" href="#organization?tab=sync&view=records" @click="emit('close')">查看全部人员组织同步记录</a>
+   <component :is="personId || company ? 'details' : 'div'" class="dispatch-details"
+     :open="personId || company ? detailsOpen : undefined" @toggle="detailsOpen=$event.target.open">
+    <summary v-if="personId || company">
+     {{personId ? '账号与下发记录' : '公司资料与下发记录'}}<span v-if="data?.total && !targetFilter && !issuesOnly" class="record-total">{{data.total}} 条下发记录</span>
+    </summary>
+    <div v-if="detailsOpen || (!personId && !company)" class="dispatch-details-body">
+     <OrganizationPersonSourceAccounts v-if="personId && detailsOpen" :key="personId" :api="api" :person-id="personId" :systems="systems" :format-time="formatTime"/>
+     <template v-if="company && data && detailsOpen">
+     <section v-if="companyReceipts.length" aria-label="业务系统公司编号">
+      <h3>业务系统公司编号</h3>
+      <div v-for="receipt in companyReceipts" :key="receipt.target">{{label(receipt.target)}} · {{receipt.externalId}}</div>
+     </section>
+     <OrganizationSourceRelations :api="api" :company-id="company.id" :format-time="formatTime"/>
+     <a-button v-if="canWrite && data.wireId" @click="editProfile=true">维护公司名称、上级和启停状态</a-button>
+     <OrganizationDispatchProfile v-if="editProfile" :api="api" :company="company" :profile="data.profile" @close="editProfile=false" @saved="editProfile=false;refresh();emit('changed')"/>
+     <section aria-label="公司业务使用">
+      <h3>业务系统使用关系</h3>
+      <p v-if="!activeUses.length">暂无正在使用此公司的业务系统。</p>
+      <div v-for="row in activeUses" :key="row.source+':'+row.externalId" class="business-use">
+       <span>{{label(row.source)}} · 公司编号 {{row.externalId}}</span>
+       <a-button v-if="canWrite" size="small" @click="confirmCloseUse(row)">停止使用</a-button>
+      </div>
+      <details v-if="otherUses.length"><summary>查看其他生效区间（{{otherUses.length}}）</summary>
+       <p v-for="row in otherUses" :key="[row.source,row.externalId,row.validFrom,row.validTo].join(':')">
+        {{label(row.source)}} · {{row.externalId}} · {{formatTime(row.validFrom)}} 至 {{row.validTo ? formatTime(row.validTo) : '长期有效'}}
+       </p>
+      </details>
+      <a-modal v-if="closingUse" open :title="'停止'+label(closingUse.source)+'使用此公司？'" ok-text="确认停止使用"
+       :ok-button-props="{danger:true}" :confirm-loading="busy" :closable="!busy" :keyboard="!busy" :mask-closable="false" @ok="closeUse" @cancel="!busy && (closingUse=undefined)">
+       <p>{{company.name}} 在{{label(closingUse.source)}}的公司编号 {{closingUse.externalId}} 将结束当前归属。历史订单按原生效区间核对。</p>
+       <a-alert v-if="closingUse.error" type="error" :message="closingUse.error" show-icon/>
+      </a-modal>
+     </section>
+     </template>
+    <div class="dispatch-table-head">
+      <div><h3 ref="historyHeading" tabindex="-1">{{personId ? '销售身份下发记录' : '同步记录'}}</h3><span v-if="data && !error" class="record-total">{{ data.total }} 条</span></div>
+      <a-button size="small" :loading="loading" @click="refresh"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新</a-button>
+    </div>
+    <a-space v-if="!personId || data?.total || targetFilter || issuesOnly" wrap>
+     <a-select v-model:value="targetFilter" aria-label="筛选目标系统" style="min-width:132px" :options="[{value:'',label:'全部目标系统'},...systems]"/>
+     <a-checkbox v-model:checked="issuesOnly">只看异常记录</a-checkbox>
+    </a-space>
+    <p v-if="personId && data?.total===0 && !loading && !error" class="dispatch-empty" role="status">
+     {{targetFilter || issuesOnly ? '当前筛选条件下没有下发记录。' : '暂无下发记录。'}}
+    </p>
+    <a-table v-else size="small" row-key="id" :loading="loading" :columns="columns" :data-source="data?.items || []" :scroll="{x:860}"
+     :pagination="{current:page,total:data?.total || 0,pageSize:25,showSizeChanger:false,hideOnSinglePage:true}" @change="page=$event.current">
+     <template #bodyCell="{column,record}">
+      <span v-if="column.key==='target'">{{label(record.target)}}</span>
+      <span v-else-if="column.key==='operation'">{{record.name}} · {{operations[record.operation] || (record.kind==='COMPANY' ? '公司' : record.kind==='MEMBER' ? '人员' : '类别')}}<small v-if="record.imported">老财务记录</small></span>
+      <span v-else-if="column.key==='state'"><a-tag :color="stateColors[record.state]">{{states[record.state] || record.state}}</a-tag><small v-if="record.reason">{{syncReasons[record.reason] || record.reason}}</small></span>
+      <span v-else-if="column.key==='effective'">{{formatTime(record.effectiveAt)}}</span>
+      <a-button v-else-if="column.key==='actions' && canWrite && !record.imported && record.kind==='MEMBER' && record.operation!=='CREATE' && record.attempts===0 && record.state==='PENDING' && Date.parse(record.effectiveAt)>Date.now()" size="small" @click="submit('cancel',{messageId:record.id})">取消计划</a-button>
+      <a-button v-else-if="column.key==='actions' && canWrite && record.canRetry" size="small" :disabled="busy" @click="submit('retry',{messageId:record.id,expectedAttempts:record.attempts})">重试</a-button>
+     </template>
+     <template #emptyText>{{ error ? '同步记录读取失败' : personId ? '此人暂无同步记录' : company ? '此公司暂无同步记录' : '暂无人员或组织同步记录' }}</template>
+    </a-table>
+    </div>
+   </component>
   </div>
  </component>
 </template>
@@ -197,13 +210,17 @@ defineExpose({refresh})
 .company-sync {display:grid;justify-items:start;gap:10px}
 .company-sync h3,.company-sync p {margin:0}
 .company-sync p {color:var(--muted)}
-.company-targets {width:100%;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,215px),1fr));gap:10px}
-.company-target {display:grid;align-content:start;gap:8px;border:1px solid var(--line);border-radius:8px;padding:12px}
-.target-tags {display:flex;flex-wrap:wrap;gap:4px}
+.company-targets {width:100%;border-top:1px solid var(--line)}
+.company-target {display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px 10px;border-bottom:1px solid var(--line);padding:10px 0}
+.target-tags {display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.target-reason {flex-basis:100%;color:var(--muted)}
 .target-tags :deep(.ant-tag) {margin-inline-end:0}
-.person-source-disclosure {border:1px solid var(--line);padding:10px 12px;border-radius:8px}
-.person-source-disclosure summary {cursor:pointer;font-weight:600}
-.person-source-disclosure[open] summary {margin-bottom:10px}
+.dispatch-details:is(details) {border:1px solid var(--line);padding:10px 12px;border-radius:6px}
+.dispatch-details summary {cursor:pointer;font-weight:600}
+.dispatch-details summary .record-total {margin-left:8px;font-weight:400}
+.dispatch-details[open] summary {margin-bottom:12px}
+.dispatch-details-body {display:grid;grid-template-columns:minmax(0,1fr);gap:12px;min-width:0}
+.dispatch-details-body > .ant-btn {justify-self:start}
 .business-use {display:flex;align-items:center;gap:12px;margin:8px 0}
 .dispatch-content { display: grid; grid-template-columns: minmax(0,1fr); gap: 14px; min-width: 0; }
 .records > .dispatch-content { padding: 16px; }

@@ -40,15 +40,6 @@ const notice = ref('')
 const catalog = ref()
 const companies = ref()
 const sync = ref()
-const channels = ref()
-const channelNames = {DCZD:'大春之道',DCJK:'大春见康',DCAI:'大春 AI'}
-const channelError = ref('')
-async function readChannels() {
-  channelError.value=''
-  try { channels.value=await props.api('/organization-dispatch/channels') }
-  catch (e) { channels.value=undefined;channelError.value=e.message }
-}
-watch(()=>props.panel,panel=>{ if (panel==='sync') readChannels() },{immediate:true})
 const directorPanel = ref()
 const directorCompany = ref()
 const health = ref()
@@ -121,7 +112,7 @@ async function loadEntries() {
 
 function refresh() {
   if (props.panel==='catalog') return catalog.value?.refresh()
-  if (props.panel==='sync') {readChannels();return sync.value?.refresh()}
+  if (props.panel==='sync') return sync.value?.refresh()
   if (props.panel==='companies') return companies.value?.refresh()
   if (props.panel==='directors') return directorPanel.value?.refresh()
   if (props.panel==='health') return health.value?.refresh()
@@ -180,19 +171,8 @@ defineExpose({refresh})
   <template v-if="panel==='sync'">
     <section class="records sync-toolbar" aria-label="同步工作台">
       <h2>人员组织同步</h2>
-      <nav aria-label="同步办理入口">
-        <a href="#organization?tab=sync" :aria-current="syncView!=='records' ? 'page' : undefined">人员销售身份</a>
-        <a href="#organization?tab=companies">销售公司同步</a>
-        <a href="#organization?tab=directors">销售总监归属</a>
-        <a href="#organization?tab=sync&view=records" :aria-current="syncView==='records' ? 'page' : undefined">下发记录</a>
-        <a href="#organization?tab=health">AI 冲突处理</a>
-      </nav>
-      <div class="sync-channels" aria-label="各系统下发开关">
-        <span>下发通道</span>
-        <span v-for="(name,key) in channelNames" :key="key">{{ name }} · {{ channels ? channels[key] ? '已开启' : '未开启' : '待读取' }}</span>
-        <a-button v-if="channelError" size="small" @click="readChannels">重新读取</a-button>
-        <span v-if="channels && Object.keys(channelNames).every(key=>!channels[key])">当前环境的下发通道均未开启。</span>
-      </div>
+      <a v-if="syncView==='records'" href="#organization?tab=sync">返回人员列表</a>
+      <a v-else href="#organization?tab=sync&view=records">下发记录</a>
     </section>
     <OrganizationDispatch v-if="syncView==='records'" ref="sync" embedded :api="api" :can-write="canWrite" :format-time="formatTime"/>
     <OrganizationPeopleDesk v-else ref="sync" :api="api" :can-write="canWrite" :format-time="formatTime" :option-label="optionLabel" :person-link="personLink"/>
@@ -256,9 +236,6 @@ defineExpose({refresh})
 
 <style scoped>
 .sync-toolbar {display:flex;align-items:center;justify-content:space-between;gap:12px 24px;flex-wrap:wrap;padding:12px 16px;margin-bottom:12px}
-.sync-channels {display:flex;align-items:center;gap:6px 18px;flex-wrap:wrap;flex-basis:100%;border-top:1px solid var(--line);padding-top:10px;color:var(--muted);font-size:13px}
 .sync-toolbar h2 {margin:0;font-size:17px}
-.sync-toolbar nav {display:flex;gap:4px;flex-wrap:wrap}
 .sync-toolbar a {padding:7px 10px;border-radius:4px;color:var(--muted)}
-.sync-toolbar a[aria-current] {color:var(--accent);background:var(--accent-soft);font-weight:600}
 </style>
