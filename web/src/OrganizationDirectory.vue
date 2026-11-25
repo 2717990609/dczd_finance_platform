@@ -57,9 +57,13 @@ const includeChildren = ref(true)
 const selectedUnit = computed(() => units.value.find(unit=>unit.id===unitId.value))
 const hasChildren = computed(() => !!unitId.value && units.value.some(unit=>unit.parentId===unitId.value))
 const waitingForDate = computed(() => dateMode.value==='date' && !on.value)
-const emptyMessage = computed(() => waitingForDate.value
-  ? '请选择任职日期'
-  : '当前条件下没有任职记录')
+const emptyMessage = computed(() => {
+  if (entriesError.value) return ''
+  if (waitingForDate.value) return '请选择任职日期'
+  if (search.value) return '未找到匹配的任职'
+  if (dateMode.value==='date') return '所选日期暂无任职'
+  return dateMode.value==='current' ? '暂无当前任职' : '暂无任职记录'
+})
 const filtersActive = computed(() => !!name.value.trim() || dateMode.value!=='current' || hasChildren.value && !includeChildren.value)
 function clearFilters() {
   name.value = ''
@@ -186,8 +190,8 @@ defineExpose({refresh})
   <div v-show="panel==='organization'" class="organization-workspace">
     <a-alert v-if="unitsError || entriesError" class="feedback" type="error" :message="unitsError || entriesError" show-icon/>
     <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
-    <div class="records organization-browser">
-      <aside class="scope-panel organization-scope" aria-label="组织目录">
+    <div class="organization-browser">
+      <aside class="records scope-panel organization-scope" aria-label="组织目录">
         <div class="organization-tree-actions">
           <span><ApartmentOutlined aria-hidden="true"/> 组织目录</span>
           <a-space :size="2">
@@ -200,10 +204,11 @@ defineExpose({refresh})
         <WorkspaceOrganizationScope :nodes="tree" :selected="unitId" :loading="unitsLoading" fill-height
           hide-search-label @select="selectOrganization"/>
       </aside>
-      <section class="organization-directory" aria-label="人员任职">
+      <section class="records organization-directory" aria-label="人员任职">
         <header class="organization-directory-header">
           <div class="organization-heading">
             <h2>{{selectedUnit?.name || '全部组织'}}</h2>
+            <a-tag v-if="selectedUnit?.status==='INACTIVE'" class="organization-inactive">已停用</a-tag>
             <span v-if="!loading && !entriesError && !waitingForDate" class="organization-count" role="status">{{entries.total}} 条任职</span>
           </div>
           <a-space wrap>
@@ -239,33 +244,41 @@ defineExpose({refresh})
 
 <style scoped>
 .organization-workspace {max-width:1280px;margin-inline:auto}
-.organization-browser {grid-template-columns:260px minmax(0,1fr)}
-.organization-scope {background:var(--surface,#f5f7fb)}
+.organization-browser {display:grid;grid-template-columns:clamp(260px,25%,320px) minmax(0,1fr);align-items:start;gap:12px}
+.organization-directory {min-width:0}
+.organization-scope {border:1px solid var(--line)}
 .organization-tree-actions {display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:12px}
 .organization-tree-actions > span {color:var(--ink);font-weight:650;white-space:nowrap}
 .organization-tree-actions .ant-btn {color:var(--accent);padding-inline:4px}
 .organization-tree-actions .organization-positions-link {color:var(--muted)}
 .organization-directory-header {display:flex;justify-content:space-between;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:14px 16px 9px}
 .organization-directory-header h2 {font-size:18px;margin:0;overflow-wrap:anywhere}
+.organization-inactive {margin-inline-end:0}
 .organization-count {border-radius:12px;padding:2px 8px;color:var(--muted);background:var(--surface,#f5f7fb);font-size:12px;white-space:nowrap}
 .organization-filterbar {display:flex;gap:8px 12px;align-items:center;flex-wrap:wrap;padding:5px 16px 14px}
 .organization-filterbar > .ant-input-affix-wrapper {width:min(260px,100%);flex:0 1 260px}
 .organization-filterbar :deep(.ant-checkbox-wrapper) {min-height:34px;align-items:center}
 .organization-filterbar > .ant-btn-link {padding-inline:0}
-@media(width>680px){
- .organization-browser .organization-scope {grid-template-rows:auto minmax(0,1fr)}
+@media(width>820px){
+ .organization-scope {position:sticky;top:12px;display:grid;grid-template-rows:auto minmax(0,1fr);height:max(340px,calc(100dvh - 202px))}
+ .organization-scope :deep(.desktop-scope) {display:flex;flex-direction:column;margin-bottom:0;padding-bottom:0;border-bottom:0}
+ .organization-scope :deep(.scope-tree-viewport) {flex:1;min-height:0;contain:size}
+ .organization-scope :deep(.ant-tree-list-holder) {padding-inline-end:10px}
+ .organization-scope :deep(.ant-tree-list-scrollbar-show) {display:block !important}
+ .organization-scope :deep(.ant-tree-list-scrollbar-thumb) {background:color-mix(in srgb,var(--muted) 70%,var(--line)) !important}
+ .organization-scope :deep(.ant-tree-list-scrollbar:hover .ant-tree-list-scrollbar-thumb),
+ .organization-scope :deep(.ant-tree-list-scrollbar-thumb-moving) {background:var(--muted) !important}
 }
 @media(max-width:820px){
- .organization-browser {grid-template-columns:minmax(0,1fr)}
- .organization-browser .organization-scope {display:block;border-right:0;border-bottom:1px solid var(--line)}
+ .organization-browser {grid-template-columns:minmax(0,1fr);gap:8px}
  .organization-scope :deep(.desktop-scope) {display:none}
- .organization-scope :deep(.mobile-scope) {display:flex;align-items:center;gap:9px}
+ .organization-scope :deep(.mobile-scope) {display:flex;align-items:center;gap:9px;margin-bottom:0}
  .organization-scope :deep(.mobile-scope .ant-select) {flex:1;min-width:0}
  .organization-directory-header {padding-inline:12px}
  .organization-filterbar {padding-inline:12px}
 }
 @media(max-width:680px){
- .organization-scope {padding:10px 12px;border-right:0;border-bottom:1px solid var(--line)}
+ .organization-scope {padding:10px 12px}
  .organization-tree-actions {margin-bottom:8px}
  .organization-filterbar > .ant-input-affix-wrapper {width:100%;flex-basis:100%}
  .organization-directory-header :deep(.ant-btn) {min-height:38px}

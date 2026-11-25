@@ -36,7 +36,7 @@ defineEmits(['page','edit'])
     </div>
    </li>
   </ul>
-  <a-empty v-else-if="!loading" class="assignment-empty" :description="emptyMessage"/>
+  <p v-else-if="!loading && emptyMessage" class="assignment-empty" role="status">{{emptyMessage}}</p>
   <div v-if="rows.total>25" class="assignment-footer">
    <a-pagination :current="page" :total="rows.total" :page-size="25" :show-size-changer="false" @change="$emit('page',$event)"/>
   </div>
@@ -52,7 +52,7 @@ defineEmits(['page','edit'])
 .assignment-row small {display:block;color:var(--muted);font-size:12px;line-height:1.5}
 .assignment-actions {justify-self:end}
 .assignment-footer {display:flex;justify-content:flex-end;padding:10px 16px 14px}
-.assignment-empty {margin-block:30px}
+.assignment-empty {margin:0;padding:22px 16px;border-top:1px solid var(--line);color:var(--muted);text-align:center}
 @media(max-width:1000px){
  .assignment-head,.assignment-row {grid-template-columns:minmax(0,.95fr) minmax(0,1.25fr) minmax(0,.9fr) minmax(0,1.15fr) 84px;gap:6px}
 }
