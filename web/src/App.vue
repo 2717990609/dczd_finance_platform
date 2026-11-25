@@ -53,25 +53,34 @@ const navigation = [
   {key:'people', area:'data', title:'人员映射'},
 ]
 const workspaces = [{key:'work',title:'工作台'}, {key:'config',title:'配置'}, {key:'data',title:'系统与数据'}]
-const organizationPages = [
+const organizationPrimaryPages = [
   {page:'organization',tab:'organization',label:'人员归属'},
   {page:'people',tab:'main',label:'人员档案'},
-  {page:'organization',tab:'sync',label:'人员组织同步'},
+  {page:'organization',tab:'companies',label:'销售公司'},
+]
+const organizationOtherPages = [
+  {page:'organization',tab:'sync',label:'下发记录'},
   {page:'organization',tab:'duties',label:'业务职责'},
   {page:'organization',tab:'directors',label:'总监归属'},
   {page:'organization',tab:'catalog',label:'分润岗位'},
   {page:'people',tab:'identity',label:'来源账号'},
-  {page:'organization',tab:'companies',label:'销售公司与类别'},
   {page:'organization',tab:'health',label:'AI 组织冲突'},
 ]
+const organizationPages = [...organizationPrimaryPages, ...organizationOtherPages]
+const organizationMoreOpen = ref(false)
+function isActiveOrganizationPage(entry) {
+  return current.value===entry.page && (entry.page==='people' ? tab.value : organizationPanel.value)===entry.tab
+}
 const OrganizationPeopleDesk = defineAsyncComponent(() => import('./OrganizationPeopleDesk.vue'))
 const peopleDesk = ref()
-const syncView = ref('people')
 const organizationPanel = ref('organization')
 const personPage = ref()
 const personDetail = ref()
 let personListScroll = 0
-const organizationHref = (page, tab) => '#'+page+(['main','organization'].includes(tab) ? '' : '?tab='+tab)
+function organizationHref(page, tab) {
+  if (tab==='sync') return '#organization?tab=sync&view=records'
+  return '#'+page+(['main','organization'].includes(tab) ? '' : '?tab='+tab)
+}
 function personLink(id, section) {
   const base = organizationHref(current.value, current.value==='people' ? tab.value : organizationPanel.value)
   const params = new URLSearchParams(base.split('?')[1])
@@ -892,14 +901,19 @@ function changeRoute() {
   const previous = current.value
   const previousOrigin = periodOrigin.value
   const previousReviewRoot = reviewRootPeriod.value
-  const [key, query] = location.hash.slice(1).split('?', 2)
+  let [key, query] = location.hash.slice(1).split('?', 2)
+  const params = new URLSearchParams(query)
+  if (key==='organization' && params.get('tab')==='sync' && params.get('view')!=='records') {
+    key = 'people'
+    params.delete('tab')
+    params.delete('view')
+    history.replaceState(history.state,'','#people'+(params.size ? '?'+params : ''))
+  }
   current.value = getRoute(key)
   if (active.value) lastWorkspacePages.value[active.value.area] = active.value.area==='data' ? 'organization' : current.value
-  const params = new URLSearchParams(query)
   const previousPerson = personPage.value
   const isOrganizationPage = current.value===key && (key==='organization' || key==='people')
   const requestedTab = organizationPages.find(entry=>entry.page===key && entry.tab===params.get('tab'))?.tab
-  syncView.value = requestedTab==='sync' && params.get('view')==='records' ? 'records' : 'people'
   const personId = isOrganizationPage ? routeId(params.get('personId')) : undefined
   personPage.value = personId ? {id:personId,section:params.get('section'),
     back:organizationHref(key,requestedTab || (key==='people' ? 'main' : 'organization')),
@@ -1793,8 +1807,19 @@ async function save() {
             </div>
           </div>
           <nav v-if="active.area==='data'" class="workspace-nav organization-nav" aria-label="组织与人员导航">
-            <a v-for="entry in organizationPages" :key="entry.tab" :href="organizationHref(entry.page,entry.tab)"
-              :aria-current="current===entry.page && (current==='people' ? tab : organizationPanel)===entry.tab ? 'page' : undefined">{{ entry.label }}</a>
+            <a v-for="entry in organizationPrimaryPages" :key="entry.tab" :href="organizationHref(entry.page,entry.tab)"
+              :aria-current="isActiveOrganizationPage(entry) ? 'page' : undefined">{{ entry.label }}</a>
+            <a-dropdown v-model:open="organizationMoreOpen" :trigger="['click']">
+              <button type="button" class="organization-more" :class="{'is-current':organizationOtherPages.some(isActiveOrganizationPage)}"
+                aria-haspopup="menu" :aria-expanded="organizationMoreOpen">更多<DownOutlined aria-hidden="true"/></button>
+              <template #overlay>
+                <a-menu @click="organizationMoreOpen=false">
+                  <a-menu-item v-for="entry in organizationOtherPages" :key="entry.tab">
+                    <a :href="organizationHref(entry.page,entry.tab)" :aria-current="isActiveOrganizationPage(entry) ? 'page' : undefined">{{entry.label}}</a>
+                  </a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
           </nav>
           <nav v-else-if="workspacePages.length>1" class="workspace-nav" :aria-label="activeWorkspace?.title+'导航'">
             <a v-for="entry in workspacePages" :key="entry.key" :href="'#'+entry.key" :aria-current="current===entry.key ? 'page' : undefined">{{ entry.title }}</a>
@@ -1813,7 +1838,7 @@ async function save() {
         <div v-show="!personPage" class="workspace-page-body">
         <KeepAlive>
           <OrganizationDirectory v-if="current==='organization'" ref="organization" :api="api" :option-label="optionLabel" :format-time="formatTime"
-            :panel="organizationPanel" :sync-view="syncView" :person-link="personLink" @update:panel="navigateOrganizationPanel" @position-changed="refresh(true)"
+            :panel="organizationPanel" :person-link="personLink" @update:panel="navigateOrganizationPanel" @position-changed="refresh(true)"
             :can-write="session.user ? session.user.organizationWrite : session.development" :appointment-kinds="options('appointmentKind')"
             :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"/>
         </KeepAlive>

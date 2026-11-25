@@ -6,7 +6,6 @@ import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
 import CatalogAppointments from './CatalogAppointments.vue'
 import OrganizationDirectors from './OrganizationDirectors.vue'
-import OrganizationPeopleDesk from './OrganizationPeopleDesk.vue'
 import OrganizationDispatch from './OrganizationDispatch.vue'
 import OrganizationCompanies from './OrganizationCompanies.vue'
 import OrganizationHealthConflicts from './OrganizationHealthConflicts.vue'
@@ -16,7 +15,7 @@ import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
 import { organizationTree } from './organization-tree'
 
 const props = defineProps({api:Function, optionLabel:Function, formatTime:Function, canWrite:Boolean, appointmentKinds:Array,
-  catalogRoles:Array,catalogScopes:Array,personLink:Function,panel:String,syncView:String})
+  catalogRoles:Array,catalogScopes:Array,personLink:Function,panel:String})
 const emit = defineEmits(['update:panel','position-changed'])
 const units = ref([])
 const unitId = ref()
@@ -168,15 +167,7 @@ defineExpose({refresh})
   </KeepAlive>
   <OrganizationDirectors v-if="panel==='directors'" ref="directorPanel" :api="api" :can-write="canWrite" :format-time="formatTime"
     :company="directorCompany" @clear-company="directorCompany=undefined"/>
-  <template v-if="panel==='sync'">
-    <section class="records sync-toolbar" aria-label="同步工作台">
-      <h2>人员组织同步</h2>
-      <a v-if="syncView==='records'" href="#organization?tab=sync">返回人员列表</a>
-      <a v-else href="#organization?tab=sync&view=records">下发记录</a>
-    </section>
-    <OrganizationDispatch v-if="syncView==='records'" ref="sync" embedded :api="api" :can-write="canWrite" :format-time="formatTime"/>
-    <OrganizationPeopleDesk v-else ref="sync" :api="api" :can-write="canWrite" :format-time="formatTime" :option-label="optionLabel" :person-link="personLink"/>
-  </template>
+  <OrganizationDispatch v-if="panel==='sync'" ref="sync" embedded :api="api" :can-write="canWrite" :format-time="formatTime"/>
   <OrganizationHealthConflicts v-if="panel==='health'" ref="health" :api="api" :can-write="canWrite"/>
   <div v-show="panel==='organization'">
     <a-alert v-if="unitsError || entriesError" class="feedback" type="error" :message="unitsError || entriesError" show-icon/>
@@ -235,7 +226,4 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
-.sync-toolbar {display:flex;align-items:center;justify-content:space-between;gap:12px 24px;flex-wrap:wrap;padding:12px 16px;margin-bottom:12px}
-.sync-toolbar h2 {margin:0;font-size:17px}
-.sync-toolbar a {padding:7px 10px;border-radius:4px;color:var(--muted)}
 </style>

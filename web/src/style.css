@@ -34,6 +34,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .workspace-nav a { display: flex; align-items: center; flex: none; min-height: 42px; color: var(--muted); border-bottom: 2px solid transparent; text-decoration: none; white-space: nowrap; }
 .workspace-nav a:hover { color: var(--accent); }
 .workspace-nav a[aria-current] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 650; }
+.organization-more { display: inline-flex; align-items: center; gap: 5px; flex: none; min-height: 42px; padding: 0; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--muted); font: inherit; cursor: pointer; }
+.organization-more:hover, .organization-more[aria-expanded="true"] { color: var(--accent); }
+.organization-more.is-current { color: var(--accent); border-bottom-color: var(--accent); font-weight: 650; }
+.organization-more .anticon { font-size: 10px; }
 .workspace-body.with-scope { display: grid; grid-template-columns: 268px minmax(0, 1fr); min-height: calc(100vh - 103px); }
 .scope-panel { min-width: 0; padding: 16px 13px; background: var(--panel); border-right: 1px solid var(--line); }
 .scope-panel h2 { margin: 0 0 13px; font-size: 14px; color: var(--muted); }

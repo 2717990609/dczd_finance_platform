@@ -178,7 +178,7 @@ defineExpose({refresh})
      </section>
      </template>
     <div class="dispatch-table-head">
-      <div><h3 ref="historyHeading" tabindex="-1">{{personId ? '销售身份下发记录' : '同步记录'}}</h3><span v-if="data && !error" class="record-total">{{ data.total }} 条</span></div>
+      <div><h3 ref="historyHeading" tabindex="-1">{{personId ? '销售身份下发记录' : embedded ? '下发记录' : '同步记录'}}</h3><span v-if="data && !error" class="record-total">{{ data.total }} 条</span></div>
       <a-button size="small" :loading="loading" @click="refresh"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新</a-button>
     </div>
     <a-space v-if="!personId || data?.total || targetFilter || issuesOnly" wrap>
