@@ -44,6 +44,16 @@ func TestOrganizationPersonStatus(t *testing.T) {
 	}
 	const status = "/api/v1/organization-dispatch/person-status"
 	const disable = `{"personId":1,"status":"INACTIVE","expectedVersion":0}`
+	const directory = "/api/v1/organization-dispatch/people"
+	checkDirectoryStatus := func(query, changeable, version string) {
+		t.Helper()
+		row := call("GET", directory+query, "", 200)
+		if !strings.Contains(row, `"canChangeStatus":`+changeable) || !strings.Contains(row, `"statusVersion":`+version) {
+			t.Fatal(row)
+		}
+	}
+	checkDirectoryStatus("?name=1", "true", "0")
+	checkDirectoryStatus("?scope=archived&name=2", "false", "0")
 	if msg := call("POST", status, disable, 409); !strings.Contains(msg, "组织任职") {
 		t.Fatal(msg)
 	}
@@ -80,9 +90,7 @@ func TestOrganizationPersonStatus(t *testing.T) {
 	if !strings.Contains(current, `"sourceStatus":"INACTIVE"`) || !strings.Contains(current, `"canRestore":true`) {
 		t.Fatal(current)
 	}
-	if archived := call("GET", "/api/v1/organization-dispatch/people?scope=archived&name=1", "", 200); !strings.Contains(archived, "档案验收") {
-		t.Fatal(archived)
-	}
+	checkDirectoryStatus("?scope=archived&name=1", "true", "1")
 	if results := call("GET", "/api/v1/organization-people?name=档案验收", "", 200); results != "[]" {
 		t.Fatal(results)
 	}
@@ -91,6 +99,7 @@ func TestOrganizationPersonStatus(t *testing.T) {
 	call("POST", status, `{"personId":1,"status":"ACTIVE","expectedVersion":0}`, 409)
 	call("POST", status, `{"personId":2,"status":"ACTIVE","expectedVersion":0}`, 409)
 	call("POST", status, `{"personId":1,"status":"ACTIVE","expectedVersion":1}`, 200)
+	checkDirectoryStatus("?name=1", "true", "2")
 	call("POST", "/api/v1/organization-assignments", add, 200)
 	if rows := call("GET", "/api/v1/organization-assignments?history=true&personId=1", "", 200); !strings.Contains(rows, "fd000000-0000-0000-0000-000000000003") {
 		t.Fatal(rows)

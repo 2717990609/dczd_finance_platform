@@ -35,6 +35,8 @@ const organizationPeopleDirectorySQL = `WITH appointments AS (
  WHERE d.person_id IS NOT NULL AND tstzrange(d.valid_from,d.valid_to,'[)') @> statement_timestamp()
 ), matched AS (
  SELECT p.id,p.name,CASE WHEN p.directory_disabled THEN 'INACTIVE' ELSE p.a2_status END AS "sourceStatus",p.legacy_party_id,
+ coalesce(p.a2_status,'ACTIVE')='ACTIVE' AND p.a2_canonical_party IS NULL AS "canChangeStatus",
+ p.directory_status_version AS "statusVersion",
  CASE WHEN p.dispatch_name_managed OR p.a2_name_status='MANUAL' OR p.legacy_party_id IS NULL THEN 0
       WHEN p.a2_name_status='SOURCE_CONFIRMED' THEN 1 ELSE 2 END AS name_rank
  FROM people p WHERE p.directory_visible AND
@@ -50,7 +52,8 @@ const organizationPeopleDirectorySQL = `WITH appointments AS (
  OR p.id IN (SELECT person_id FROM accounts WHERE external_id=$1)
  OR p.id IN (SELECT person_id FROM duties WHERE strpos(lower(role||' '||scope),lower($1))>0))
 ), page AS (
- SELECT id,name,"sourceStatus",row_number() OVER (ORDER BY name_rank,name,legacy_party_id,id) AS ord
+ SELECT id,name,"sourceStatus","canChangeStatus","statusVersion",
+ row_number() OVER (ORDER BY name_rank,name,legacy_party_id,id) AS ord
  FROM matched ORDER BY ord LIMIT 20 OFFSET $3),
 rows AS (SELECT p.*,
  coalesce((SELECT jsonb_agg(DISTINCT jsonb_build_object('name',a.name,'kind',a.kind,'position',a.position,'sales',a.sales))
