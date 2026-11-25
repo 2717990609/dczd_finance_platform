@@ -190,10 +190,10 @@ defineExpose({refresh})
       <aside class="scope-panel organization-scope" aria-label="组织目录">
         <div class="organization-tree-actions">
           <span><ApartmentOutlined aria-hidden="true"/> 组织目录</span>
-          <a-space wrap :size="2">
+          <a-space :size="2">
             <a-button class="organization-positions-link" type="text" size="small" @click="positionsOpen=true">岗位目录</a-button>
-            <a-button v-if="canWrite" size="small" type="text" @click="createUnit=true">
-              <template #icon><PlusOutlined aria-hidden="true"/></template>新建组织
+            <a-button v-if="canWrite" size="small" type="text" aria-label="新建组织" @click="createUnit=true">
+              <template #icon><PlusOutlined aria-hidden="true"/></template>新建
             </a-button>
           </a-space>
         </div>
