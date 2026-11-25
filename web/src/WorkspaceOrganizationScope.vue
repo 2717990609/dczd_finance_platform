@@ -2,8 +2,10 @@
 import { computed, ref, watch } from 'vue'
 import { Tree, TreeSelect } from 'ant-design-vue'
 
-const props = defineProps({ nodes: Array, selected: String, loading: Boolean })
+const props = defineProps({ nodes: Array, selected: String, loading: Boolean, fillHeight: Boolean })
 const emit = defineEmits(['select'])
+const treeViewport = ref()
+const treeHeight = ref(264)
 const search = ref('')
 const expanded = ref()
 const searchExpanded = ref()
@@ -45,6 +47,15 @@ watch(() => props.selected, unit => {
   if (!unit || !expanded.value) return
   expanded.value = [...new Set([...expanded.value, ...(parentKeys(props.nodes,unit) || [])])]
 })
+watch(treeViewport, (viewport, _, onCleanup) => {
+  if (!props.fillHeight || !viewport) return
+  const observer = new ResizeObserver(([entry]) => {
+    const height = Math.floor(entry.contentRect.height)
+    if (height > 0) treeHeight.value = height
+  })
+  observer.observe(viewport)
+  onCleanup(() => observer.disconnect())
+}, { flush: 'post' })
 </script>
 
 <template>
@@ -55,9 +66,11 @@ watch(() => props.selected, unit => {
     <div class="scope-options">
       <button type="button" :aria-pressed="!selected" @click="emit('select', undefined)">全部组织</button>
     </div>
-    <Tree v-if="visibleNodes.length" v-model:expanded-keys="expandedKeys" :selected-keys="selected ? [selected] : []"
-      :tree-data="visibleNodes" :field-names="fieldNames" :height="264" block-node
-      @select="keys=>keys.length && emit('select',keys[0])" />
+    <div v-if="visibleNodes.length" ref="treeViewport" class="scope-tree-viewport">
+      <Tree v-model:expanded-keys="expandedKeys" :selected-keys="selected ? [selected] : []"
+        :tree-data="visibleNodes" :field-names="fieldNames" :height="treeHeight" block-node
+        @select="keys=>keys.length && emit('select',keys[0])" />
+    </div>
     <p v-else class="organization-scope-status" role="status">{{ loading ? '正在读取组织' : term ? '未找到匹配组织' : '暂无组织' }}</p>
   </section>
   <div class="scope-organization mobile-scope">

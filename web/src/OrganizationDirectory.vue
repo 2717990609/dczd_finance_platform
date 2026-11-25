@@ -202,7 +202,7 @@ defineExpose({refresh})
     <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
     <div class="records organization-browser">
       <div class="scope-panel organization-scope">
-        <WorkspaceOrganizationScope :nodes="tree" :selected="unitId" :loading="unitsLoading" @select="unitId=$event"/>
+        <WorkspaceOrganizationScope :nodes="tree" :selected="unitId" :loading="unitsLoading" fill-height @select="unitId=$event"/>
       </div>
       <section class="organization-directory">
         <div class="records-head">
