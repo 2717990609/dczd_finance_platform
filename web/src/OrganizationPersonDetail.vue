@@ -232,7 +232,6 @@ defineExpose({refresh})
             <div class="records-head">
               <h2>{{ selected.label }}</h2>
               <span v-if="!listLoading && !listError" class="person-record-count">{{ rows.total }} 条记录</span>
-              <a v-if="selected.key==='positions'" class="context-link" href="#organization?tab=catalog">{{canWrite ? '管理分润岗位' : '全部分润岗位'}}</a>
             </div>
             <a-alert v-if="listError" class="feedback" type="error" :message="listError" show-icon>
               <template #action><a-button size="small" @click="loadRows">重试</a-button></template>

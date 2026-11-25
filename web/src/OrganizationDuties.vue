@@ -156,7 +156,6 @@ defineExpose({refresh})
   <section class="records">
     <div class="records-head">
       <h2>业务职责</h2>
-      <a v-if="profile" class="context-link" href="#organization?tab=duties">全部业务职责</a>
       <a-button v-if="canWrite" type="primary" :disabled="!settings.scopes.some(scope=>scope.active)" @click="open('add')">登记业务职责</a-button>
     </div>
     <div class="organization-filters duty-filters">
