@@ -192,10 +192,13 @@ defineExpose({refresh})
         <template #prefix><SearchOutlined aria-hidden="true"/></template>
       </a-input>
       <RadioGroup v-model:value="type" :options="types" option-type="button" button-style="solid" aria-label="销售公司类型"/>
+      <label class="sr-only" for="company-category">销售类别</label>
       <a-select id="company-category" v-model:value="category" :options="result.categories" show-search option-filter-prop="label"
         aria-label="销售类别" placeholder="全部类别" allow-clear/>
+      <label class="sr-only" for="company-status">公司状态</label>
       <a-select id="company-status" v-model:value="status" aria-label="公司状态"
         :options="[{value:'',label:'全部状态'},{value:'ACTIVE',label:'启用'},{value:'INACTIVE',label:'停用'}]"/>
+      <label class="sr-only" for="company-hierarchy">按架构打开公司</label>
       <TreeSelect id="company-hierarchy" :value="memberCompany?.id" :tree-data="companyHierarchy" aria-label="按架构打开公司"
         placeholder="按架构打开公司" tree-node-filter-prop="title" show-search @select="openCompanyMembers"/>
       <a-button v-if="filtersActive" type="link" size="small" @click="clearFilters">清除筛选</a-button>

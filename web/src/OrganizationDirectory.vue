@@ -122,8 +122,12 @@ function refresh() {
   if (props.panel==='duties') return duties.value?.refresh()
   return Promise.all([loadUnits(),loadEntries()])
 }
+function selectOrganization(id) {
+  if(unitId.value!==id)notice.value=''
+  unitId.value=id
+}
 function showCompanyAppointments(id) {
-  unitId.value = id
+  selectOrganization(id)
   emit('update:panel','organization')
 }
 function showDuties(subject) {
@@ -187,14 +191,14 @@ defineExpose({refresh})
         <div class="organization-tree-actions">
           <span><ApartmentOutlined aria-hidden="true"/> 组织目录</span>
           <a-space wrap :size="2">
-            <a-button class="organization-positions-link" type="text" size="small" @click="positionsOpen=true">岗位</a-button>
+            <a-button class="organization-positions-link" type="text" size="small" @click="positionsOpen=true">岗位目录</a-button>
             <a-button v-if="canWrite" size="small" type="text" @click="createUnit=true">
               <template #icon><PlusOutlined aria-hidden="true"/></template>新建组织
             </a-button>
           </a-space>
         </div>
         <WorkspaceOrganizationScope :nodes="tree" :selected="unitId" :loading="unitsLoading" fill-height
-          hide-search-label @select="unitId=$event"/>
+          hide-search-label @select="selectOrganization"/>
       </aside>
       <section class="organization-directory" aria-label="人员任职">
         <header class="organization-directory-header">
@@ -203,7 +207,7 @@ defineExpose({refresh})
             <span v-if="!loading && !entriesError && !waitingForDate" class="organization-count" role="status">{{entries.total}} 条任职</span>
           </div>
           <a-space wrap>
-            <a-button v-if="selectedUnit" type="text" @click="dispatchUnit=selectedUnit">关联销售公司</a-button>
+            <a-button v-if="selectedUnit" type="text" @click="dispatchUnit=selectedUnit">{{selectedUnit.companyType ? '公司同步' : '关联销售公司'}}</a-button>
             <a-button v-if="canWrite" type="primary" @click="openEditor('add')">
               <template #icon><PlusOutlined aria-hidden="true"/></template>登记任职
             </a-button>
