@@ -50,7 +50,7 @@ func (s workspace) personDetail(w http.ResponseWriter, r *http.Request) {
 	respond(w, result, err)
 }
 
-const personSourceAccountsSQL = `WITH matching AS (
+const personSourceAccountsSQL = `WITH source_accounts AS (
  SELECT i.id::text AS id,i.source,i.external_id AS "externalId",i.valid_from AS "validFrom",
   i.valid_to AS "validTo",'DIRECTORY' AS origin
  FROM identity_mappings i WHERE i.person_id=$1
@@ -61,6 +61,9 @@ const personSourceAccountsSQL = `WITH matching AS (
   SELECT 1 FROM identity_mappings m WHERE m.person_id=i.person_id AND m.source=i.source AND m.external_id=i.external_id
    AND m.valid_from=i.valid_from AND m.valid_to IS NOT DISTINCT FROM i.valid_to
  )
+), matching AS (
+ SELECT * FROM source_accounts
+ WHERE NOT $3::boolean OR tstzrange("validFrom","validTo",'[)') @> statement_timestamp()
 ), page AS (
  SELECT * FROM matching ORDER BY "validFrom" DESC,source,id LIMIT 25 OFFSET $2
 )
@@ -75,11 +78,12 @@ func (s workspace) personSourceAccounts(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	offset, _, _, err := organizationAssignmentFilters(params)
-	if err != nil {
+	current := params.Get("current")
+	if err != nil || (current != "" && current != "true") {
 		respond(w, nil, err)
 		return
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), personSourceAccountsSQL, personID, offset).Scan(&result)
+	err = s.db.QueryRow(r.Context(), personSourceAccountsSQL, personID, offset, current == "true").Scan(&result)
 	respond(w, result, err)
 }

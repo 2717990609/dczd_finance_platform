@@ -7,7 +7,7 @@ import OrganizationDispatchProfile from './OrganizationDispatchProfile.vue'
 import OrganizationPersonSourceAccounts from './OrganizationPersonSourceAccounts.vue'
 import OrganizationDispatchAccounts from './OrganizationDispatchAccounts.vue'
 import OrganizationSourceRelations from './OrganizationSourceRelations.vue'
-const props=defineProps({api:Function,company:Object,personId:Number,personName:String,canWrite:Boolean,formatTime:Function,embedded:Boolean})
+const props=defineProps({api:Function,company:Object,personId:Number,personName:String,canWrite:Boolean,formatTime:Function,embedded:Boolean,sourceAccountsInProfile:Boolean})
 const emit=defineEmits(['close','changed'])
 const systems=[{value:'DCZD',label:'大春之道'},{value:'DCJK',label:'大春见康'},{value:'DCAI',label:'大春 AI'}]
 const label=key=>systems.find(o=>o.value===key)?.label || key
@@ -146,10 +146,10 @@ defineExpose({refresh})
    <component :is="personId || company ? 'details' : 'div'" class="dispatch-details"
      :open="personId || company ? detailsOpen : undefined" @toggle="detailsOpen=$event.target.open">
     <summary v-if="personId || company">
-     {{personId ? '账号与下发记录' : '公司资料与下发记录'}}<span v-if="data?.total && !targetFilter && !issuesOnly" class="record-total">{{data.total}} 条下发记录</span>
+     {{personId ? (sourceAccountsInProfile ? '下发记录' : '账号与下发记录') : '公司资料与下发记录'}}<span v-if="data?.total && !targetFilter && !issuesOnly" class="record-total">{{data.total}} 条下发记录</span>
     </summary>
     <div v-if="detailsOpen || (!personId && !company)" class="dispatch-details-body">
-     <OrganizationPersonSourceAccounts v-if="personId && detailsOpen" :key="personId" :api="api" :person-id="personId" :systems="systems" :format-time="formatTime"/>
+     <OrganizationPersonSourceAccounts v-if="personId && detailsOpen && !sourceAccountsInProfile" :key="personId" :api="api" :person-id="personId" :systems="systems" :format-time="formatTime"/>
      <template v-if="company && data && detailsOpen">
      <section v-if="companyReceipts.length" aria-label="业务系统公司编号">
       <h3>业务系统公司编号</h3>

@@ -16,8 +16,8 @@ func TestPersonDetailUsesStableIDAndExistingWorkspaceAccess(t *testing.T) {
 INSERT INTO people(name) VALUES('同名人员'),('同名人员'),('只读财务'),('规则用户');
 INSERT INTO products(code,name,period_mode) VALUES('TEST','测试产品','class');
 INSERT INTO identity_mappings(person_id,source,external_id,valid_from,valid_to)
- VALUES(1,'DCZD','original','2026-01-01','2026-09-01'),
- (2,'DCZD','original','2026-09-01',NULL),(2,'DCJK','other-only','2026-01-01',NULL);
+ VALUES(1,'DCZD','original','2020-01-01','2021-01-01'),
+ (2,'DCZD','original','2021-01-01',NULL),(2,'DCJK','other-only','2026-01-01',NULL);
 INSERT INTO catalog_sales_context(source,captured_at,snapshot_digest) VALUES('DCAI','2026-01-01','\x01');
 INSERT INTO catalog_sales_people_sources(id,source,external_id,person_id,valid_from,observed_at)
  VALUES(gen_random_uuid(),'DCAI','imported-only',1,'2025-01-01','2026-01-01');
@@ -81,6 +81,11 @@ INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,
 		!strings.Contains(accounts, "original") || strings.Contains(accounts, "other-only") {
 		t.Fatal(accounts)
 	}
+	currentAccounts := call("GET", "/api/v1/person-source-accounts?personId=1&current=true", "", reader, 200).Body.String()
+	if !strings.Contains(currentAccounts, `"total":1`) || !strings.Contains(currentAccounts, "imported-only") || strings.Contains(currentAccounts, "original") {
+		t.Fatal(currentAccounts)
+	}
+	call("GET", "/api/v1/person-source-accounts?personId=1&current=unknown", "", reader, 400)
 	positions := call("GET", "/api/v1/catalog-appointments?history=true&personId=1", "", reader, 200).Body.String()
 	if !strings.Contains(positions, `"total":1`) || !strings.Contains(positions, "exact-person") || strings.Contains(positions, "other-person") {
 		t.Fatal(positions)

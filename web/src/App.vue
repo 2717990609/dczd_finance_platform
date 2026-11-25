@@ -1830,7 +1830,7 @@ async function save() {
           </nav>
         </section>
         <OrganizationPersonDetail v-if="personPage" :key="personPage.id" ref="personDetail"
-          :person-id="personPage.id" :section="personPage.section" :back="personPage.back" :person-link="personLink"
+          :person-id="personPage.id" :section="personPage.section" :back="personPage.back" :person-link="personLink" :appointment-kinds="options('appointmentKind')"
           :api="api" :option-label="optionLabel" :format-time="formatTime" :format-identity-time="formatIdentityTime" :format-money="formatMoney" :month="workspaceMonth"
           :report-views="options('monthlyReportView')" :report-dimensions="options('draftReportDimension')"
           :report-filters="personPage.reportFilters" :period-link="personReportPeriodLink" @report-filters="rememberPersonReport"
@@ -1890,7 +1890,7 @@ async function save() {
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
 
         </template>
-        <OrganizationPeopleDesk v-else-if="current==='people' && tab!=='identity'" ref="peopleDesk" :api="api" :format-time="formatTime"
+        <OrganizationPeopleDesk v-else-if="current==='people' && tab!=='identity'" ref="peopleDesk" :api="api"
           :person-link="personLink" :option-label="optionLabel" :can-write="session.user ? session.user.organizationWrite : session.development"/>
         <template v-else-if="practiceSettingsView">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>

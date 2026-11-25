@@ -3,9 +3,9 @@ import { computed, ref } from 'vue'
 import { TreeSelect } from 'ant-design-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 
-const props = defineProps({api:Function, mode:String, record:Object, tree:Array, kinds:Array, unitId:String})
+const props = defineProps({api:Function, mode:String, record:Object, tree:Array, kinds:Array, unitId:String, fixedPerson:Object})
 const emit = defineEmits(['close','saved'])
-const personId = ref()
+const personId = ref(props.fixedPerson?.id)
 const target = ref(props.mode==='add' ? props.unitId : undefined)
 const kind = ref(props.mode==='transfer' ? props.record.kind : undefined)
 const position = ref(props.record?.position || '')
@@ -46,7 +46,8 @@ async function save() {
     :keyboard="!saving" :mask-closable="!saving" @close="emit('close')">
     <a-form layout="vertical" @submit.prevent="save">
       <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon/>
-      <a-form-item v-if="mode==='add'" label="人员" html-for="appointment-person" required>
+      <p v-if="mode==='add' && fixedPerson">{{fixedPerson.name}}</p>
+      <a-form-item v-else-if="mode==='add'" label="人员" html-for="appointment-person" required>
         <AppointmentPersonSelect id="appointment-person" v-model:value="personId" :api="api"/>
       </a-form-item>
       <p v-else>{{ record.personName }} · {{ record.unitName }}<template v-if="record.position"> · {{ record.position }}</template></p>

@@ -4,6 +4,7 @@ import OrganizationDispatchCreateUnit from './OrganizationDispatchCreateUnit.vue
 import OrganizationDispatchUnit from './OrganizationDispatchUnit.vue'
 import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
+import PersonAppointmentActions from './PersonAppointmentActions.vue'
 import CatalogAppointments from './CatalogAppointments.vue'
 import OrganizationDirectors from './OrganizationDirectors.vue'
 import OrganizationDispatch from './OrganizationDispatch.vue'
@@ -183,10 +184,17 @@ defineExpose({refresh})
             <span class="organization-context">{{ selectedUnit ? selectedUnit.name+' · 直接任职' : '全部组织' }}</span>
           </div>
           <a-space wrap>
-            <a-button v-if="canWrite" @click="createUnit=true">登记内部组织</a-button>
-            <a-button v-if="selectedUnit" @click="dispatchUnit=selectedUnit">销售公司同步</a-button>
-            <a-button @click="positionsOpen=true">岗位目录</a-button>
             <a-button v-if="canWrite" type="primary" @click="openEditor('add')">登记任职</a-button>
+            <a-dropdown :trigger="['click']">
+              <a-button>更多操作</a-button>
+              <template #overlay>
+                <a-menu>
+                  <a-menu-item v-if="canWrite" key="create" @click="createUnit=true">登记内部组织</a-menu-item>
+                  <a-menu-item v-if="selectedUnit" key="sync" @click="dispatchUnit=selectedUnit">销售公司同步</a-menu-item>
+                  <a-menu-item key="positions" @click="positionsOpen=true">岗位目录</a-menu-item>
+                </a-menu>
+              </template>
+            </a-dropdown>
           </a-space>
         </div>
         <div class="organization-filters organization-person-filters">
@@ -206,10 +214,7 @@ defineExpose({refresh})
               <a-tag v-if="record.appointmentType && record.appointmentType!==text">{{ optionLabel('appointmentKind',record.appointmentType) }}</a-tag><small v-if="record.position" class="order-version">{{ record.position }}</small>
             </template>
             <span v-else-if="column.key==='validFrom'||column.key==='validTo'" class="numeric">{{ formatTime(text) }}</span>
-            <a-space v-else-if="column.key==='actions'" :size="1">
-              <a-button type="link" size="small" @click="openEditor('transfer',record)">调动</a-button>
-              <a-button type="link" size="small" @click="openEditor('end',record)">结束</a-button>
-            </a-space>
+            <PersonAppointmentActions v-else-if="column.key==='actions'" :label="record.unitName" @select="mode=>openEditor(mode,record)"/>
           </template>
           <template #emptyText>{{ emptyMessage }}</template>
         </a-table>
