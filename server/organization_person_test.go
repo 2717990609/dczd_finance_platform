@@ -16,6 +16,11 @@ func TestPersonDetailUsesStableIDAndExistingWorkspaceAccess(t *testing.T) {
 	s := workspace{db: integrationDB(t)}
 	const seed = `
 INSERT INTO people(name) VALUES('同名人员'),('同名人员'),('只读财务'),('规则用户');
+UPDATE people SET legacy_party_id='ae05bffd-1971-4f20-88c5-f6c9837cb2a1' WHERE id=1;
+INSERT INTO organization_a2_identifiers(origin,id,party_id,source,kind,external_id,valid_from,valid_to)
+ VALUES('MAPPING',gen_random_uuid(),'ae05bffd-1971-4f20-88c5-f6c9837cb2a1','DCZD','SOURCE_USER_ID','original','2020-01-01','2021-01-01'),
+ ('IDENTIFIER',gen_random_uuid(),'ae05bffd-1971-4f20-88c5-f6c9837cb2a1','DCZD','SOURCE_USER_ID','unmapped-extra','2020-01-01',NULL),
+ ('IDENTIFIER',gen_random_uuid(),'ae05bffd-1971-4f20-88c5-f6c9837cb2a1','DCAI','SOURCE_ACCOUNT_ID','distinct-member','2020-01-01',NULL);
 INSERT INTO products(code,name,period_mode) VALUES('TEST','测试产品','class');
 INSERT INTO identity_mappings(person_id,source,external_id,valid_from,valid_to)
  VALUES(1,'DCZD','original','2020-01-01','2021-01-01'),
@@ -88,6 +93,20 @@ INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,
 		t.Fatal(currentAccounts)
 	}
 	call("GET", "/api/v1/person-source-accounts?personId=1&current=unknown", "", reader, 400)
+	historicalAccounts := call("GET", "/api/v1/person-source-accounts?personId=1&history=true", "", reader, 200).Body.String()
+	if !strings.Contains(historicalAccounts, `"total":1`) || !strings.Contains(historicalAccounts, "original") || strings.Contains(historicalAccounts, "imported-only") {
+		t.Fatal(historicalAccounts)
+	}
+	call("GET", "/api/v1/person-source-accounts?personId=1&current=true&history=true", "", reader, 400)
+	const relationsURL = "/api/v1/organization-dispatch/source-relations?personId=1"
+	if records := call("GET", relationsURL, "", reader, 200).Body.String(); !strings.Contains(records, "original") {
+		t.Fatal(records)
+	}
+	if records := call("GET", relationsURL+"&supplementary=true", "", reader, 200).Body.String(); strings.Contains(records, "original") ||
+		!strings.Contains(records, "unmapped-extra") || !strings.Contains(records, "distinct-member") {
+		t.Fatal(records)
+	}
+
 	const accountPath = "/api/v1/person-source-accounts"
 	const first = `{"personId":1,"source":"DCJK","externalId":"profile-flow","validFrom":"2026-01-01T10:00:00+08:00","expectedMappingId":0}`
 	call("POST", accountPath, first, reader, 403)

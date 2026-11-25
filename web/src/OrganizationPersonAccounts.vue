@@ -8,11 +8,13 @@ const props=defineProps({api:Function,person:Object,canWrite:Boolean,formatTime:
 const systems=[{value:'DCZD',label:'大春之道'},{value:'DCJK',label:'大春见康'},{value:'DCAI',label:'大春 AI'}]
 const systemName=source=>systems.find(system=>system.value===source)?.label || source
 const canEdit=computed(()=>props.canWrite && props.person.sourceStatus!=='INACTIVE')
-const rows=ref({total:0,items:[]}),page=ref(1),showAll=ref(false),salesOpen=ref(false)
+const rows=ref({total:0,items:[]}),page=ref(1),salesOpen=ref(false),recordsOpen=ref(false)
 const loading=ref(false),loadError=ref(''),notice=ref('')
 const editor=ref(),formError=ref(''),checking=ref(false),saving=ref(false)
 const history=ref(),historyError=ref(''),historyLoading=ref(false)
-let listRequest=0,lookupRequest=0,historyRequest=0
+const records=ref({total:0,items:[]}),recordsPage=ref(1),recordsLoading=ref(false),recordsError=ref('')
+const scheduledChange=ref(false)
+let listRequest=0,lookupRequest=0,historyRequest=0,recordsRequest=0
 const financeStatus={ACTIVE:'已启用',DISABLED:'已停用',UNCONFIGURED:'未开通'}
 const latest=computed(()=>editor.value?.matches?.find(row=>!row.validTo))
 const lastKnown=computed(()=>latest.value || editor.value?.matches?.[0])
@@ -27,18 +29,34 @@ async function refresh(){
  const request=++listRequest
  loading.value=true
  loadError.value=''
- const params=new URLSearchParams({personId:props.person.id,page:page.value})
- if(!showAll.value)params.set('current','true')
  try{
-  const result=await props.api('/person-source-accounts?'+params)
+  const result=await readAccounts('current',page.value)
   if(request===listRequest)rows.value=result
  }catch(e){if(request===listRequest)loadError.value=e.message}
  finally{if(request===listRequest)loading.value=false}
 }
-watch([page,showAll],refresh,{immediate:true})
-function setHistory(event){
- page.value=1
- showAll.value=event.target.checked
+function readAccounts(scope,page){
+ return props.api('/person-source-accounts?'+new URLSearchParams({personId:props.person.id,page,[scope]:'true'}))
+}
+watch(page,refresh,{immediate:true})
+async function loadRecords(){
+ const request=++recordsRequest
+ recordsLoading.value=true
+ recordsError.value=''
+ try{
+  const result=await readAccounts('history',recordsPage.value)
+  if(request===recordsRequest)records.value=result
+ }catch(e){if(request===recordsRequest)recordsError.value=e.message}
+ finally{if(request===recordsRequest)recordsLoading.value=false}
+}
+watch([recordsOpen,recordsPage],()=>{if(recordsOpen.value)loadRecords()})
+function openRecords(){
+ recordsPage.value=1
+ recordsOpen.value=true
+}
+function accountAction(action,row){
+ if(action==='history')openHistory(row)
+ if(action==='transfer')openEditor(row)
 }
 async function accountHistory(source,externalId){
  return props.api('/identities?'+new URLSearchParams({source,externalId}))
@@ -87,14 +105,12 @@ async function save(){
   const transferred=form.targetPersonId!==props.person.id
   editor.value=undefined
   const scheduled=Date.parse(beijingTime(form.effective))>Date.now()
+  scheduledChange.value=scheduled && !transferred
   notice.value=scheduled
    ? (transferred ? '已安排账号归属变更。' : '账号归属已保存，等待生效。')
    : (transferred ? '账号归属已变更。' : '账号归属已保存。')
-  if(page.value===1 && (!scheduled || showAll.value))refresh()
-  else {
-   page.value=1
-   if(scheduled)showAll.value=true
-  }
+  if(page.value===1)refresh()
+  else page.value=1
  }catch(e){formError.value=e.message}
  finally{saving.value=false}
 }
@@ -110,55 +126,85 @@ async function openHistory(row){
  finally{if(request===historyRequest)historyLoading.value=false}
 }
 function closeHistory(){historyRequest++;history.value=undefined}
-onBeforeUnmount(()=>{listRequest++;lookupRequest++;historyRequest++})
+onBeforeUnmount(()=>{listRequest++;lookupRequest++;historyRequest++;recordsRequest++})
 defineExpose({refresh})
 </script>
 
 <template>
  <section class="records account-workspace" aria-label="业务账号归属">
   <header class="account-header">
-   <h2>业务账号归属</h2>
-   <a-button v-if="canEdit" type="primary" @click="openEditor()">添加账号归属</a-button>
+   <h2>业务账号</h2>
+   <a-space wrap>
+    <a-button :aria-expanded="salesOpen" aria-controls="person-sales-identity" @click="salesOpen=!salesOpen">销售身份</a-button>
+    <a-button v-if="canEdit" type="primary" @click="openEditor()">添加账号</a-button>
+   </a-space>
   </header>
-  <p>按业务系统的用户 ID 关联财务人员，用于匹配来源订单。</p>
-  <a-alert v-if="notice" type="success" show-icon :message="notice" closable @close="notice=''"/>
+  <a-alert v-if="notice" type="success" show-icon :message="notice" closable @close="notice=''">
+   <template v-if="scheduledChange" #action><a-button size="small" @click="openRecords">查看记录</a-button></template>
+  </a-alert>
   <a-alert v-if="loadError" type="error" :message="loadError" show-icon>
    <template #action><a-button size="small" @click="refresh">重试</a-button></template>
   </a-alert>
   <a-spin v-else :spinning="loading">
-   <ul v-if="rows.items.length" class="account-list">
-    <li v-for="row in rows.items" :key="row.origin+':'+row.id">
-     <div>
-      <div class="account-name">
-       <strong>{{systemName(row.source)}} · <span class="numeric">{{row.externalId}}</span></strong>
-       <a-tag v-if="showAll" :color="status(row)==='有效'?'green':undefined">{{status(row)}}</a-tag>
-      </div>
-      <small>{{formatIdentityTime(row.validFrom)}} 起<template v-if="row.validTo"> · {{formatIdentityTime(row.validTo)}} 止</template></small>
-     </div>
-     <a-space v-if="row.origin==='DIRECTORY'" wrap>
-      <a-button type="link" size="small" :aria-label="'查看账号 '+row.externalId+' 的归属历史'" @click="openHistory(row)">归属历史</a-button>
-      <a-button v-if="canEdit && !row.validTo && status(row)==='有效'" size="small"
-        :aria-label="'变更账号 '+row.externalId+' 的归属'" @click="openEditor(row)">变更归属</a-button>
-     </a-space>
-    </li>
-   </ul>
-   <p v-else-if="!loading">{{showAll ? '暂无账号归属记录。' : '暂无当前有效的账号归属。'}}</p>
+   <template v-if="rows.items.length">
+    <div class="account-table-head" aria-hidden="true"><span>业务系统</span><span>用户 ID</span><span>生效时间</span><span>操作</span></div>
+    <ul class="account-list">
+     <li v-for="row in rows.items" :key="row.origin+':'+row.id" class="account-row">
+      <strong class="account-system">{{systemName(row.source)}}</strong>
+      <span class="account-number numeric">{{row.externalId}}</span>
+      <small class="account-period">{{formatTime(row.validFrom)}} 起<template v-if="row.validTo"> · {{formatTime(row.validTo)}} 止</template></small>
+      <a-dropdown v-if="row.origin==='DIRECTORY'" :trigger="['click']">
+       <a-button size="small" :aria-label="'管理账号 '+row.externalId">管理</a-button>
+       <template #overlay>
+        <a-menu @click="({key})=>accountAction(key,row)">
+         <a-menu-item v-if="canEdit && !row.validTo" key="transfer">变更归属</a-menu-item>
+         <a-menu-item key="history">归属历史</a-menu-item>
+        </a-menu>
+       </template>
+      </a-dropdown>
+      <span v-else class="account-readonly">业务系统维护</span>
+     </li>
+    </ul>
+   </template>
+   <p v-else-if="!loading" class="account-empty">暂无有效业务账号</p>
    <a-pagination v-if="rows.total>25" :current="page" :total="rows.total" :page-size="25" :show-size-changer="false" @change="page=$event"/>
   </a-spin>
-  <a-checkbox :checked="showAll" @change="setHistory">查看全部记录</a-checkbox>
+  <div v-show="salesOpen" id="person-sales-identity" class="account-sales">
+   <OrganizationDispatch v-if="salesOpen" embedded in-account-workspace :person-id="person.id" :person-name="person.name"
+     :api="api" :can-write="canEdit" :format-time="formatTime" @changed="refresh"/>
+  </div>
+  <footer class="account-footer">
+   <a-button type="link" size="small" @click="openRecords">历史与编号</a-button>
+  </footer>
  </section>
 
- <details class="records account-disclosure" @toggle="salesOpen=$event.target.open">
-  <summary>子系统销售身份</summary>
-  <OrganizationDispatch v-if="salesOpen" embedded source-accounts-in-profile :person-id="person.id" :person-name="person.name"
-    :api="api" :can-write="canEdit" :format-time="formatTime" @changed="refresh"/>
- </details>
- <div v-if="financeStatus[person.accountStatus]" class="finance-login">
-  财务登录账号 · {{financeStatus[person.accountStatus]}}<template v-if="person.ownLogin"> · {{person.ownLogin}}</template>
- </div>
- <OrganizationSourceRelations :api="api" :person-id="person.id" :format-time="formatTime"/>
+ <a-modal v-if="recordsOpen" open title="账号历史与编号" :width="640" :footer="null" @cancel="recordsOpen=false">
+  <section class="account-records" aria-label="历史或待生效归属">
+   <h3>历史或待生效归属</h3>
+   <a-alert v-if="recordsError" type="error" :message="recordsError" show-icon>
+    <template #action><a-button size="small" @click="loadRecords">重试</a-button></template>
+   </a-alert>
+   <a-spin v-else :spinning="recordsLoading">
+    <ul v-if="records.items.length" class="account-list">
+     <li v-for="row in records.items" :key="row.origin+':'+row.id" class="record-row">
+      <div>
+       <strong>{{systemName(row.source)}} · {{row.externalId}}</strong>
+       <small>{{formatIdentityTime(row.validFrom)}}<template v-if="row.validTo"> 至 {{formatIdentityTime(row.validTo)}}</template></small>
+      </div>
+      <a-tag>{{status(row)}}</a-tag>
+     </li>
+    </ul>
+    <p v-else-if="!recordsLoading" class="account-empty">暂无记录</p>
+    <a-pagination v-if="records.total>25" v-model:current="recordsPage" :total="records.total" :page-size="25" :show-size-changer="false"/>
+   </a-spin>
+  </section>
+  <OrganizationSourceRelations account-records :api="api" :person-id="person.id" :format-time="formatTime"/>
+  <p v-if="financeStatus[person.accountStatus]" class="finance-login">
+   财务登录账号 · {{financeStatus[person.accountStatus]}}<template v-if="person.ownLogin"> · {{person.ownLogin}}</template>
+  </p>
+ </a-modal>
 
- <a-modal v-if="editor" open :title="editor.transfer ? '变更账号归属' : '添加账号归属'" :width="520"
+ <a-modal v-if="editor" open :title="editor.transfer ? '变更账号归属' : '添加账号'" :width="520"
    :ok-text="latest && latest.personId!==editor.targetPersonId ? '确认变更归属' : '保存归属'"
    :ok-button-props="{disabled:!ready || editor.transfer && latest?.personId!==person.id}"
    :confirm-loading="saving" :cancel-button-props="{disabled:saving}" :closable="!saving" :keyboard="!saving" :mask-closable="false"
@@ -208,7 +254,7 @@ defineExpose({refresh})
   </a-alert>
   <a-spin v-else :spinning="historyLoading">
    <ul class="account-list">
-    <li v-for="row in history.items" :key="row.id">
+    <li v-for="row in history.items" :key="row.id" class="record-row">
      <div><strong>{{row.personName}}</strong><small>{{formatIdentityTime(row.validFrom)}} 至 {{row.validTo?formatIdentityTime(row.validTo):'长期有效'}}</small></div>
      <a-tag>{{status(row)}}</a-tag>
     </li>
@@ -218,19 +264,34 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
-.account-workspace,.account-disclosure {margin-bottom:12px;padding:14px 16px}
-.account-workspace {display:grid;gap:10px}
-.account-header,.account-list li,.account-name {display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px 12px}
-.account-header h2,.account-workspace p,.account-list {margin:0}
-.account-header h2 {font-size:16px}
-.account-workspace p,.account-list small {color:var(--muted)}
+.account-workspace {max-width:1040px;padding:14px 16px 8px}
+.account-header,.record-row {display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px 12px}
+.account-header h2,.account-list,.account-records h3 {margin:0}
+.account-header h2,.account-records h3 {font-size:16px}
+.account-workspace > .ant-alert {margin-top:12px}
+.account-table-head,.account-row {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,1.5fr) 92px;gap:8px 14px;align-items:center;padding:10px 12px}
+.account-table-head {margin-top:12px;background:var(--surface,#f5f7fb);border-radius:4px;color:var(--muted);font-size:13px}
+.account-table-head > :last-child,.account-row > :last-child {justify-self:end}
 .account-list {list-style:none;padding:0}
-.account-list li {border-top:1px solid var(--line);padding:10px 0;overflow-wrap:anywhere}
+.account-row,.record-row {border-bottom:1px solid var(--line);overflow-wrap:anywhere}
+.account-list small,.account-empty,.account-readonly,.finance-login {color:var(--muted)}
 .account-list small {display:block}
+.account-readonly {font-size:12px}
+.account-empty {margin:12px 0}
+.account-footer {padding-top:6px}
+.account-footer .ant-btn {padding-inline:0}
+.account-records {margin-bottom:16px}
+.record-row {padding:9px 0}
 .account-list :deep(.ant-tag) {margin-inline-end:0}
-.account-disclosure summary {cursor:pointer;font-weight:600}
-.account-disclosure[open] summary {margin-bottom:10px}
-.account-disclosure :deep(.records) {border:0;background:transparent}
-.account-disclosure :deep(.dispatch-content) {padding:0}
-.finance-login {padding:0 2px;color:var(--muted)}
+.account-sales {margin-top:10px;padding:12px;border-top:1px solid var(--line);background:var(--surface,#f5f7fb)}
+.finance-login {margin:12px 0 0}
+@media (max-width:590px) {
+ .account-workspace {padding:10px 12px 6px}
+ .account-table-head {display:none}
+ .account-row {grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:4px 8px;padding:10px 0}
+ .account-row:first-child {margin-top:8px;border-top:1px solid var(--line)}
+ .account-period {grid-column:1/3;grid-row:2}
+ .account-row > :last-child {grid-column:3;grid-row:1/3}
+ .account-sales {padding:10px 0}
+}
 </style>

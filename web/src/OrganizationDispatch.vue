@@ -7,7 +7,7 @@ import OrganizationDispatchProfile from './OrganizationDispatchProfile.vue'
 import OrganizationPersonSourceAccounts from './OrganizationPersonSourceAccounts.vue'
 import OrganizationDispatchAccounts from './OrganizationDispatchAccounts.vue'
 import OrganizationSourceRelations from './OrganizationSourceRelations.vue'
-const props=defineProps({api:Function,company:Object,personId:Number,personName:String,canWrite:Boolean,formatTime:Function,embedded:Boolean,sourceAccountsInProfile:Boolean})
+const props=defineProps({api:Function,company:Object,personId:Number,personName:String,canWrite:Boolean,formatTime:Function,embedded:Boolean,inAccountWorkspace:Boolean})
 const emit=defineEmits(['close','changed'])
 const systems=[{value:'DCZD',label:'大春之道'},{value:'DCJK',label:'大春见康'},{value:'DCAI',label:'大春 AI'}]
 const label=key=>systems.find(o=>o.value===key)?.label || key
@@ -109,7 +109,7 @@ async function submit(path,body){
 defineExpose({refresh})
 </script>
 <template>
- <component :is="embedded ? 'section' : Drawer" :class="{'records':embedded}"
+ <component :is="embedded ? 'section' : Drawer" :class="{'records':embedded && !inAccountWorkspace}"
    v-bind="embedded ? {} : {open:true,title,width:'min(880px, 100vw)'}" @close="emit('close')">
   <div class="dispatch-content">
    <a-alert v-if="error" :message="error" type="error" show-icon/>
@@ -142,14 +142,16 @@ defineExpose({refresh})
      </a-space>
     </section>
    </template>
-   <OrganizationDispatchAccounts v-if="personId && data" :person-id="personId" :person-name="personName" :api="api" :systems="systems" :can-write="canWrite" :bindings="data.bindings" :channels="channels" @changed="showHistory"/>
-   <component :is="personId || company ? 'details' : 'div'" class="dispatch-details"
-     :open="personId || company ? detailsOpen : undefined" @toggle="detailsOpen=$event.target.open">
-    <summary v-if="personId || company">
-     {{personId ? (sourceAccountsInProfile ? '下发记录' : '账号与下发记录') : '公司资料与下发记录'}}<span v-if="data?.total && !targetFilter && !issuesOnly" class="record-total">{{data.total}} 条下发记录</span>
+   <OrganizationDispatchAccounts v-if="personId && data" :person-id="personId" :person-name="personName" :api="api" :systems="systems" :can-write="canWrite" :bindings="data.bindings" :channels="channels" :compact="inAccountWorkspace" @changed="showHistory"/>
+   <a-button v-if="inAccountWorkspace && (data?.total || detailsOpen)" type="link" size="small"
+     class="dispatch-history-link" :aria-expanded="detailsOpen" @click="detailsOpen=!detailsOpen">下发记录</a-button>
+   <component v-if="!inAccountWorkspace || detailsOpen" :is="!inAccountWorkspace && (personId || company) ? 'details' : 'div'" class="dispatch-details"
+     :open="!inAccountWorkspace && (personId || company) ? detailsOpen : undefined" @toggle="detailsOpen=$event.target.open">
+    <summary v-if="!inAccountWorkspace && (personId || company)">
+     {{personId ? '账号与下发记录' : '公司资料与下发记录'}}<span v-if="data?.total && !targetFilter && !issuesOnly" class="record-total">{{data.total}} 条下发记录</span>
     </summary>
     <div v-if="detailsOpen || (!personId && !company)" class="dispatch-details-body">
-     <OrganizationPersonSourceAccounts v-if="personId && detailsOpen && !sourceAccountsInProfile" :key="personId" :api="api" :person-id="personId" :systems="systems" :format-time="formatTime"/>
+     <OrganizationPersonSourceAccounts v-if="personId && detailsOpen && !inAccountWorkspace" :key="personId" :api="api" :person-id="personId" :systems="systems" :format-time="formatTime"/>
      <template v-if="company && data && detailsOpen">
      <section v-if="companyReceipts.length" aria-label="业务系统公司编号">
       <h3>业务系统公司编号</h3>
@@ -227,6 +229,7 @@ defineExpose({refresh})
 .business-use {display:flex;align-items:center;gap:12px;margin:8px 0}
 .dispatch-content { display: grid; grid-template-columns: minmax(0,1fr); gap: 14px; min-width: 0; }
 .records > .dispatch-content { padding: 16px; }
+.dispatch-history-link {justify-self:start;padding-inline:0}
 .dispatch-table-head, .dispatch-table-head > div { display: flex; align-items: center; gap: 8px; }
 .dispatch-table-head { justify-content: space-between; }
 .dispatch-table-head h3 { margin: 0; font-size: 15px; }

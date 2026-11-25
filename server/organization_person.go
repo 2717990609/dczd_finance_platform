@@ -66,7 +66,10 @@ const personSourceAccountsSQL = `WITH source_accounts AS (
  )
 ), matching AS (
  SELECT * FROM source_accounts
- WHERE NOT $3::boolean OR tstzrange("validFrom","validTo",'[)') @> statement_timestamp()
+ WHERE CASE $3::text
+  WHEN 'current' THEN tstzrange("validFrom","validTo",'[)') @> statement_timestamp()
+  WHEN 'history' THEN NOT (tstzrange("validFrom","validTo",'[)') @> statement_timestamp())
+  ELSE true END
 ), page AS (
  SELECT * FROM matching ORDER BY "validFrom" DESC,source,id LIMIT 25 OFFSET $2
 )
@@ -81,13 +84,20 @@ func (s workspace) personSourceAccounts(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	offset, _, _, err := organizationAssignmentFilters(params)
-	current := params.Get("current")
-	if err != nil || (current != "" && current != "true") {
+	current, history := params.Get("current"), params.Get("history")
+	if err != nil || (current != "" && current != "true") || (history != "" && history != "true") || (current != "" && history != "") {
 		respond(w, nil, invalid)
 		return
 	}
+	var scope string
+	switch {
+	case current == "true":
+		scope = "current"
+	case history == "true":
+		scope = "history"
+	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), personSourceAccountsSQL, personID, offset, current == "true").Scan(&result)
+	err = s.db.QueryRow(r.Context(), personSourceAccountsSQL, personID, offset, scope).Scan(&result)
 	respond(w, result, err)
 }
 

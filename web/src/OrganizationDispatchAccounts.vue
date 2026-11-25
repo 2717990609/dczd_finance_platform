@@ -1,7 +1,7 @@
 <script setup>
 import OrganizationPersonIntake from './OrganizationPersonIntake.vue'
 import {computed,ref,watch} from 'vue'
-const props=defineProps({api:Function,personId:Number,personName:String,systems:Array,bindings:Array,channels:Object,canWrite:Boolean})
+const props=defineProps({api:Function,personId:Number,personName:String,systems:Array,bindings:Array,channels:Object,canWrite:Boolean,compact:Boolean})
 const emit=defineEmits(['changed'])
 const bindingOpen=ref(false),companies=ref([])
 const selection=ref(),destination=ref(),effective=ref(''),reason=ref(''),error=ref(''),busy=ref(false)
@@ -26,14 +26,16 @@ function allowed(b,key){if(b.pending || b.state==='PENDING')return false;if(key=
 </script>
 <template>
  <section class="identity-workspace" aria-label="向业务系统同步销售身份">
-  <div class="identity-heading">
+  <div v-if="!compact || !bindings?.length || canWrite" class="identity-heading">
    <div>
-    <h3>销售身份下发</h3>
-    <p v-if="!bindings?.length">财务尚未建立下发绑定</p>
+    <h3 v-if="!compact">销售身份下发</h3>
+    <p v-if="compact && canWrite && channels && !canBind">下发通道未开启</p>
+    <p v-else-if="!bindings?.length">财务尚未建立下发绑定</p>
    </div>
-   <a-button v-if="canWrite" type="primary" :disabled="!canBind" @click="bindingOpen=true">绑定业务账号</a-button>
+   <a-button v-if="canWrite && (!compact || canBind)" type="primary" :disabled="!canBind"
+     @click="bindingOpen=true">{{compact ? '按手机号绑定' : '绑定业务账号'}}</a-button>
   </div>
-  <p v-if="canWrite && channels && !canBind" class="identity-note">当前环境的下发通道未开启。</p>
+  <p v-if="!compact && canWrite && channels && !canBind" class="identity-note">当前环境的下发通道未开启。</p>
   <ul v-if="bindings?.length" class="identity-list">
    <li v-for="item in bindings" :key="item.id">
     <div>
