@@ -67,6 +67,7 @@ type draftIssue struct {
 }
 
 type paymentDraft struct {
+	directorVersionID    int64
 	PracticeStartsAt     time.Time
 	PracticeEnrollments  []int64
 	practicePriorCounts  map[int64]int64

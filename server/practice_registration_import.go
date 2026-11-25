@@ -29,16 +29,19 @@ type practiceRegistrationDocument struct {
 }
 
 type practiceRegistrationImportRow struct {
-	Number        int    `json:"number"`
-	LeaderID      string `json:"leader_id"`
-	LeaderName    string `json:"leader_display_name"`
-	LeaderCompany string `json:"leader_company_id"`
-	Recipient     string `json:"recipient_id"`
-	SourceSeller  string `json:"leader_source_user_id"`
-	SourceCompany string `json:"leader_source_company_id"`
-	SourceMember  string `json:"member_source_company_id"`
-	MemberName    string `json:"member_company_name"`
-	Pending       bool   `json:"pending_review"`
+	Number         int    `json:"number"`
+	LeaderID       string `json:"leader_id"`
+	LeaderName     string `json:"leader_display_name"`
+	LeaderCompany  string `json:"leader_company_id"`
+	Recipient      string `json:"recipient_id"`
+	SourceSeller   string `json:"leader_source_user_id"`
+	SourceCompany  string `json:"leader_source_company_id"`
+	SourceMember   string `json:"member_source_company_id"`
+	MemberName     string `json:"member_company_name"`
+	Pending        bool   `json:"pending_review"`
+	DirectorOnly   bool   `json:"director_only"`
+	MemberCompany  string `json:"member_company_id"`
+	PendingCompany string `json:"pending_company_id"`
 }
 
 type practiceRegistrationImportIssue struct {
@@ -227,7 +230,7 @@ func (s workspace) previewPracticeRegistrationImport(ctx context.Context, input 
 		var companies, sellers []string
 		for _, row := range doc.Rows {
 			companies = append(companies, row.SourceCompany)
-			if !row.Pending {
+			if !row.Pending && !row.DirectorOnly {
 				companies = append(companies, row.SourceMember)
 			}
 			if row.Recipient != "" && row.Recipient == row.LeaderID {
@@ -305,6 +308,12 @@ func buildPracticeRegistrationImport(doc practiceRegistrationDocument, rate int6
 		} else if entry.row.SourceSeller != row.SourceSeller || entry.row.SourceCompany != row.SourceCompany ||
 			entry.row.LeaderCompany != row.LeaderCompany || entry.row.Recipient != row.Recipient {
 			issue("同一总监的销售归属或收款方有冲突")
+			continue
+		}
+		if row.DirectorOnly {
+			if row.Pending || row.MemberCompany != "" || row.PendingCompany != "" || row.SourceMember != "" {
+				issue("独立总监档案不能同时登记下属公司或待核关系")
+			}
 			continue
 		}
 		if row.Pending {

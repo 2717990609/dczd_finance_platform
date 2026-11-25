@@ -60,15 +60,18 @@ func checkOrganizationCategoryName(ctx context.Context, tx pgx.Tx, name, id stri
 
 func (s workspace) createOrganizationCategory(ctx context.Context, input organizationCategoryInput) (organizationCategory, error) {
 	result := organizationCategory{Name: strings.TrimSpace(input.Name), Active: true}
-	if !textOK(result.Name, 80) {
-		return result, invalid
+	if !textOK(result.Name, 10) {
+		return result, errDispatchCategoryName
 	}
 	err := s.writeOrganizationCategory(ctx, func(tx pgx.Tx, by *string) error {
 		if err := checkOrganizationCategoryName(ctx, tx, result.Name, ""); err != nil {
 			return err
 		}
-		return tx.QueryRow(ctx, `INSERT INTO organization_sales_categories(id,name,active,recorded_at,recorded_by)
-		 VALUES(gen_random_uuid(),$1,true,clock_timestamp(),$2) RETURNING id::text,version`, result.Name, by).Scan(&result.ID, &result.Version)
+		if err := tx.QueryRow(ctx, `INSERT INTO organization_sales_categories(id,name,active,recorded_at,recorded_by)
+		 VALUES(gen_random_uuid(),$1,true,clock_timestamp(),$2) RETURNING id::text,version`, result.Name, by).Scan(&result.ID, &result.Version); err != nil {
+			return err
+		}
+		return enqueueDispatchCategory(ctx, tx, result, by)
 	})
 	return result, err
 }
@@ -77,7 +80,10 @@ func (s workspace) updateOrganizationCategory(ctx context.Context, input updateO
 	id, ok := canonicalSourceUUID(input.ID)
 	name := strings.TrimSpace(input.Name)
 	var result organizationCategory
-	if !ok || input.ExpectedVersion < 1 || !textOK(name, 80) {
+	if !textOK(name, 10) {
+		return result, errDispatchCategoryName
+	}
+	if !ok || input.ExpectedVersion < 1 {
 		return result, invalid
 	}
 	err := s.writeOrganizationCategory(ctx, func(tx pgx.Tx, by *string) error {
@@ -108,9 +114,15 @@ func (s workspace) updateOrganizationCategory(ctx context.Context, input updateO
 				return errOrganizationCategoryInUse
 			}
 		}
-		return tx.QueryRow(ctx, `UPDATE organization_sales_categories SET name=$2,active=$3,version=version+1,
+		if protectedDispatchCategory(result.Name) {
+			return dispatchProblem("健康大使和健康创客类别由大春 AI 维护")
+		}
+		if err := tx.QueryRow(ctx, `UPDATE organization_sales_categories SET name=$2,active=$3,version=version+1,
 		 recorded_at=clock_timestamp(),recorded_by=$4 WHERE id=$1 RETURNING name,active,version`, id, name, input.Active, by).
-			Scan(&result.Name, &result.Active, &result.Version)
+			Scan(&result.Name, &result.Active, &result.Version); err != nil {
+			return err
+		}
+		return enqueueDispatchCategory(ctx, tx, result, by)
 	})
 	return result, err
 }
@@ -248,6 +260,11 @@ func (s workspace) assignOrganizationCategory(ctx context.Context, input assignO
 		}
 		if err := enqueueDraftConfiguration(ctx, tx, draftRefreshCompanyClassification, changed, at, false); err != nil {
 			return err
+		}
+		for _, unit := range changed {
+			if err := enqueueDispatchCompany(ctx, tx, unit, by); err != nil {
+				return err
+			}
 		}
 		result = categoryAssignmentResult{Changed: len(changed), EffectiveAt: &at}
 		return nil

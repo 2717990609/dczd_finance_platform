@@ -1,6 +1,7 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { LeftOutlined, UserOutlined } from '@ant-design/icons-vue'
+import OrganizationDispatch from './OrganizationDispatch.vue'
 import MonthlyReport from './MonthlyReport.vue'
 import OrganizationDuties from './OrganizationDuties.vue'
 
@@ -47,6 +48,12 @@ const reportMonth = ref(props.reportFilters.month || props.month)
 const reportView = ref(props.reportFilters.view)
 const reportDimension = ref('person')
 const personDimensions = computed(() => props.reportDimensions.filter(item=>item.value==='person'))
+const dispatchOpen=ref(false),rename=ref(),renameBusy=ref(false),renameError=ref('')
+async function saveName(){
+ renameBusy.value=true;renameError.value=''
+ try{await props.api('/organization-dispatch/rename-person',{method:'POST',body:JSON.stringify({personId:props.personId,name:rename.value,expectedName:person.value.name})});rename.value=undefined;await loadPerson()}
+ catch(e){renameError.value=e.message}finally{renameBusy.value=false}
+}
 const account = ref()
 const accountTitle = computed(() => account.value ? sourceLabel(account.value.source)+' · '+account.value.externalId+' 归属历史' : '')
 let profileRequest = 0
@@ -171,6 +178,11 @@ defineExpose({refresh})
       </div>
     </div>
     <template v-if="person">
+      <a-button v-if="canWrite" @click="rename=person.name;renameError=''">修改人员姓名</a-button>
+      <a-modal :open="rename!==undefined" title="修改人员姓名" ok-text="保存" cancel-text="取消" :confirm-loading="renameBusy" @ok="saveName" @cancel="rename=undefined">
+       <a-alert v-if="renameError" :message="renameError" type="error" show-icon/>
+       <label>人员姓名<a-input v-model:value="rename" placeholder="最多 25 个字符"/></label>
+      </a-modal>
       <nav class="workspace-nav person-detail-nav" aria-label="个人信息导航">
         <a v-for="item in sections" :key="item.key" :href="personLink(personId,item.key==='appointments' ? undefined : item.key)"
           :aria-current="item.key===selected.key ? 'page' : undefined">{{ item.label }}</a>
@@ -190,6 +202,8 @@ defineExpose({refresh})
             :can-write="canWrite" :person-link="personLink"/>
         </KeepAlive>
         <template v-else-if="selected.key!=='finance'">
+          <OrganizationDispatch v-if="dispatchOpen && selected.key==='accounts'" :key="personId" :person-id="personId" :api="api" :can-write="canWrite" :format-time="formatTime" @changed="loadRows" @close="dispatchOpen=false"/>
+          <a-button v-if="selected.key==='accounts'" @click="dispatchOpen=true">业务系统销售身份</a-button>
           <section v-if="selected.key==='accounts' && financeStatus[person.accountStatus]" class="records person-finance-account">
             <h2>财务登录账号</h2>
             <a-tag :color="financeStatus[person.accountStatus].color">{{ financeStatus[person.accountStatus].label }}</a-tag>

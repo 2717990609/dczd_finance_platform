@@ -69,7 +69,7 @@ onBeforeUnmount(() => { request++ })
       <a-alert v-if="saveError" class="feedback" type="error" :message="saveError" show-icon/>
       <a-form :model="edit" layout="vertical" @finish="save">
         <a-form-item label="类别名称" html-for="category-editor-name" required>
-          <a-input id="category-editor-name" v-model:value="edit.name" :maxlength="80" :disabled="saving"/>
+          <a-input id="category-editor-name" v-model:value="edit.name" placeholder="最多 10 个字符" :disabled="saving"/>
         </a-form-item>
         <a-form-item v-if="edit.id" label="状态">
           <a-checkbox v-model:checked="edit.active" :disabled="saving">启用</a-checkbox>

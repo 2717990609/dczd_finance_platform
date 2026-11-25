@@ -1,9 +1,13 @@
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import OrganizationDispatchCreateUnit from './OrganizationDispatchCreateUnit.vue'
+import OrganizationDispatchUnit from './OrganizationDispatchUnit.vue'
 import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
 import CatalogAppointments from './CatalogAppointments.vue'
+import OrganizationDirectors from './OrganizationDirectors.vue'
 import OrganizationCompanies from './OrganizationCompanies.vue'
+import OrganizationHealthConflicts from './OrganizationHealthConflicts.vue'
 import OrganizationDuties from './OrganizationDuties.vue'
 import OrganizationPositions from './OrganizationPositions.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
@@ -25,10 +29,17 @@ const entriesError = ref('')
 const loading = ref(false)
 const unitsLoading = ref(false)
 const editor = ref()
+const dispatchUnit=ref(),createUnit=ref(false)
+async function savedUnit(id){createUnit.value=false;await loadUnits();unitId.value=id}
+onDeactivated(()=>{dispatchUnit.value=undefined;createUnit.value=false})
+watch(()=>props.panel,()=>{dispatchUnit.value=undefined;createUnit.value=false})
 const positionsOpen = ref(false)
 const notice = ref('')
 const catalog = ref()
 const companies = ref()
+const directorPanel = ref()
+const directorCompany = ref()
+const health = ref()
 const duties = ref()
 const dutySubject = ref()
 let request = 0
@@ -99,6 +110,8 @@ async function loadEntries() {
 function refresh() {
   if (props.panel==='catalog') return catalog.value?.refresh()
   if (props.panel==='companies') return companies.value?.refresh()
+  if (props.panel==='directors') return directorPanel.value?.refresh()
+  if (props.panel==='health') return health.value?.refresh()
   if (props.panel==='duties') return duties.value?.refresh()
   return Promise.all([loadUnits(),loadEntries()])
 }
@@ -143,12 +156,15 @@ defineExpose({refresh})
   </KeepAlive>
   <KeepAlive>
     <OrganizationCompanies v-if="panel==='companies'" ref="companies" :api="api" :format-time="formatTime" :can-write="canWrite"
-      @show-appointments="showCompanyAppointments" @show-duties="showDuties"/>
+      @show-director="company=>{directorCompany=company;emit('update:panel','directors')}" @show-appointments="showCompanyAppointments" @show-duties="showDuties"/>
   </KeepAlive>
   <KeepAlive>
     <OrganizationDuties v-if="panel==='duties'" ref="duties" :api="api" :format-time="formatTime" :can-write="canWrite"
       :units="units" :subject="dutySubject" :person-link="personLink" @clear-subject="dutySubject=undefined"/>
   </KeepAlive>
+  <OrganizationDirectors v-if="panel==='directors'" ref="directorPanel" :api="api" :can-write="canWrite" :format-time="formatTime"
+    :company="directorCompany" @clear-company="directorCompany=undefined"/>
+  <OrganizationHealthConflicts v-if="panel==='health'" ref="health" :api="api" :can-write="canWrite"/>
   <div v-show="panel==='organization'">
     <a-alert v-if="unitsError || entriesError" class="feedback" type="error" :message="unitsError || entriesError" show-icon/>
     <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
@@ -163,6 +179,8 @@ defineExpose({refresh})
             <span class="organization-context">{{ selectedUnit ? selectedUnit.name+' · 直接任职' : '全部组织' }}</span>
           </div>
           <a-space wrap>
+            <a-button v-if="canWrite" @click="createUnit=true">登记内部组织</a-button>
+            <a-button v-if="selectedUnit" @click="dispatchUnit=selectedUnit">销售公司同步</a-button>
             <a-button @click="positionsOpen=true">岗位目录</a-button>
             <a-button v-if="canWrite" type="primary" @click="openEditor('add')">登记任职</a-button>
           </a-space>
@@ -194,6 +212,8 @@ defineExpose({refresh})
       </section>
     </div>
   </div>
+  <OrganizationDispatchCreateUnit v-if="createUnit" :api="api" :units="units" :parent-id="selectedUnit?.id" @close="createUnit=false" @saved="savedUnit"/>
+  <OrganizationDispatchUnit v-if="dispatchUnit" :key="dispatchUnit.id" :unit="dispatchUnit" :api="api" :can-write="canWrite" :format-time="formatTime" @close="dispatchUnit=undefined"/>
   <OrganizationPositions v-if="positionsOpen && panel==='organization'" :api="api" :can-write="canWrite" :scopes="catalogScopes"
     @close="positionsOpen=false" @changed="emit('position-changed')"/>
   <OrganizationAppointmentForm v-if="canWrite && editor" :api="api" :mode="editor.mode" :record="editor.record"

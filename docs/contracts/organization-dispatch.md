@@ -1,0 +1,42 @@
+# 财务组织下发
+
+财务通过现有组织与人员工作台维护销售公司、销售类别、内部组织和人员。销售公司目录支持登记公司、选择目标系统、编辑名称/上级/启停及查看投递记录。内部组织可关联同名且启用的内部销售公司。人员详情的「账号与身份」可按手机号查询来源系统的既有账号，核对账号后绑定。成员身份由目标系统实际回执确认。人员改名将逐账号同步当前有效销售身份。销售身份的调动、启停和负责人变更在人员详情中显式选择账号，财务任职历史继续按组织任职入口维护。
+
+销售类别名称最多 10 字符，销售公司和内部组织最多 100 字符，人员姓名最多 25 字符。大春 AI 原生的「健康大使」「健康创客」类别保留给原系统维护。公司只向已选择的系统发送；普通类别的本地维护向三个系统分别生成记录。保存业务变更、选择目标、账号绑定、生成待发消息均在相应业务事务内落库。未配置发送端时，财务人员仍能维护本地数据并查看待发记录。账号查询和重新核对手机号绑定须使用对应目标系统的已配置读取接口。
+
+## 发送配置
+
+每个目标独立配置，目标简称为 DCZD（大春之道）、DCJK（大春见康）和 DCAI（大春 AI）。
+
+| 环境变量 | 用途 |
+| --- | --- |
+| ORG_SYNC_目标_ENABLED | 值为 true 时开启该系统的客户端和发送任务。默认关闭 |
+| ORG_SYNC_目标_BASE_URL | 接收端 HTTPS 地址，可包含 /api 前缀 |
+| ORG_SYNC_目标_KEY_ID | 对端登记的密钥标识 |
+| ORG_SYNC_目标_SECRET | 与对端配对的 HMAC 密钥，至少 32 字节 |
+| ORG_SYNC_PHONE_HASH_SECRET | 稳定的手机号 HMAC 密钥，至少 32 字节。接续旧资料时沿用 A2 的 FINANCE_ORG_SYNC_PHONE_HASH_SECRET，可直接沿用旧环境变量。相同号码不能绑定两个财务人员 |
+| ORG_SYNC_ENVIRONMENT | 只有值为 test 且目标为 DCZD 时，允许 A2 原已登记的精确 TEST HTTP 地址 |
+
+例如，大春之道的地址配置键为 `ORG_SYNC_DCZD_BASE_URL`。凭据由运行环境提供。测试中的 HTTPS 接收端与密钥均为临时本地 fixture。
+
+协议采用旧系统 `/internal/v1/organization-sync/messages` 和 `/internal/v1/organization-sync/accounts/lookup`。签名包含请求体摘要、固定相对路径、密钥标识、秒级时间戳、随机 nonce。网络错误、租约过期及等待依赖均使用同一 message_id、entity_version 与消息内容重试。类别和公司的新快照会替代未执行的旧快照。成员操作同一时刻只允许一个在途变更。绑定时设为负责人会先创建身份，取得 member_id 后再下发负责人设置。未来操作到达生效时间后发送，在未领取前可取消。异常回执显示为需核对，重复操作和失败可在组织同步记录中检查。
+
+公司成功回执将经过核对的目标编号同时登记到组织来源映射。人工已登记的公司号不一致或编号已属于其他公司时保留冲突状态。成员回执更新绑定角色、启停、实际公司和成员号；账号绑定同时检查财务来源账号映射及当前业务来源资料。启停公司受当前公司成员、下级公司的约束，停用、调动负责人身份前须先解除其负责人角色。
+
+## 接续旧组织资料
+
+组织快照原有字段保持兼容。接续旧投递协议时，在首次开启对应发送任务之前导入以下扩展数据。旧系统正在投递、等待或有冲突的消息需先核对归属和状态。导出器与对端既有登记用同一组财务主体号和版本水位。快照导入本身不会生成下发消息。
+
+| 扩展字段 | 内容 |
+| --- | --- |
+| dispatchVersionFloor | 旧 outbox 的全局最高版本。后续新消息高于此值 |
+| dispatchCompanies | unitId 为本平台公司组织范围 UUID，entityId 为旧销售公司主体 UUID，targets 为既有同步目标列表。internalUnitId 为可选的旧内部组织 UUID，parentEntityId 为可选的上级公司主体 UUID |
+| dispatchReceipts | target、kind（CATEGORY 或 COMPANY）、entityId、externalId、version。公司 entityId 填旧公司主体编号，类别填类别 UUID |
+| dispatchBindings | entityId 为原绑定 UUID，personId 为财务人员旧主体 UUID，target、userId、memberId、companyId、role、state、version 为最后已确认身份。无既有消息时可用版本 0 |
+| dispatchPhoneBindings | phoneKey 为旧手机号 HMAC-SHA256 的十六进制摘要，personId 为旧人员主体 UUID。导入时核对既有人员归属 |
+
+公司对外发送销售公司主体 UUID，财务内部以组织范围 UUID 关联查询。旧组织仅有范围编号时须补录核对的快照映射后才能发送。新登记销售公司会同时生成这两个编号。对于人员手机号，新绑定仅存储带密钥摘要，导入不会猜测账号的明文手机号。
+
+## 本地验收
+
+在独立 PostgreSQL 测试库中设置 `FINANCE_TEST_DATABASE_URL`，库名以 `_dev` 结尾。从 server 运行 `go test -count=1 -run 'TestOrganizationDispatch' .`。测试启动本地 TLS 接收端校验签名、重复消息、类别依赖、公司主体号、账号查验、负责人、调动、停启和人员改名回执，并检查版本水位与事务回滚。前端从 web 运行 `pnpm run build`。

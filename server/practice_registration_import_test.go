@@ -177,3 +177,39 @@ func TestPracticeRegistrationImportPreviewsApprovedGroupsAndPendingRows(t *testi
 		t.Fatalf("unmapped approved company blocks adding the batch: %+v %v", result, err)
 	}
 }
+
+func TestPracticeRegistrationImportDirectorOnly(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		fields string
+		valid  bool
+	}{
+		{"self only", `,"director_only":true`, true},
+		{"ordinary row missing member", "", false},
+		{"director only with member", `,"director_only":true,"member_source_company_id":"55"`, false},
+		{"director only with finance member", `,"director_only":true,"member_company_id":"c5"`, false},
+		{"director only with unresolved company", `,"director_only":true,"pending_company_id":"c5"`, false},
+		{"director only pending", `,"director_only":true,"pending_review":true`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var doc practiceRegistrationDocument
+			if err := json.Unmarshal([]byte(`{"rows":[{"number":1,"leader_id":"p1","leader_company_id":"c1","recipient_id":"p1","leader_source_user_id":"12","leader_source_company_id":"34"`+tc.fields+`}]}`), &doc); err != nil {
+				t.Fatal(err)
+			}
+			result := buildPracticeRegistrationImport(doc, 30000, map[string]string{"34": "c1", "55": "c5"}, map[string]int64{"12": 9})
+			if !tc.valid {
+				if len(result.Issues) == 0 || len(result.Components) != 0 {
+					t.Fatalf("malformed row was accepted: %+v", result)
+				}
+				return
+			}
+			if len(result.Issues) != 0 || len(result.Components) != 1 || len(result.Pending) != 0 {
+				t.Fatalf("independent director rejected: %+v", result)
+			}
+			benefit := result.Components[0].PeriodBenefit
+			if benefit.PersonID != 9 || !benefit.RegistrationScope.matches("12", "34") || benefit.RegistrationScope.matches("99", "34") || benefit.RegistrationScope.matches("12", "55") {
+				t.Fatal("expected only the director's registered account and company")
+			}
+		})
+	}
+}

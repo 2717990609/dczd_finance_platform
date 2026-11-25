@@ -98,7 +98,7 @@ const uncalculatedOrderInOrganization = `EXISTS (
   SELECT min(chosen.role) AS code FROM mapped m
   LEFT JOIN financial_scope p ON true
   JOIN LATERAL (
-   SELECT rv.components FROM rule_versions rv CROSS JOIN LATERAL (SELECT ` + componentRuleRetiredAtSQL + ` AS at) stopped WHERE rv.product_id=m.id
+   SELECT rv.components FROM rule_versions rv CROSS JOIN LATERAL (SELECT ` + componentRulePeriodEndSQL + ` AS at) stopped WHERE rv.product_id=m.id
     AND (rv.period_id=p.id OR rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal))
     AND ` + matchingPracticeActivity + `
     AND (rv.effective_from IS NULL OR rv.effective_from<=coalesce(p.as_of,latest.occurred_at))

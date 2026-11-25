@@ -217,6 +217,7 @@ export function catalogPayeeComplete(payee, roles) {
 }
 
 export function ruleComponentLabel(component, optionLabel) {
+  if (component.mode==='director_rate') return '按班期归属的总监提成'
   if (component.label?.trim()) return component.label.trim()
   if (component.salesLabel?.trim()) return component.salesLabel.trim()
   if (component.companySales?.label != null) return component.companySales.label.trim() || '未命名收款安排'
@@ -589,7 +590,7 @@ export function copiedRuleComponents(savedComponents, optionLabel) {
     if (form.salesPersonId) form.salesRecipientKind = 'person'
     if (['sales','referral'].includes(form.type) && !form.label) form.label = ruleComponentLabel(component,optionLabel)
     form.classMember ??= ''
-    form.amount = value / (form.mode === 'period_rate' ? 10000 : 100)
+    form.amount = value / (['period_rate','director_rate'].includes(form.mode) ? 10000 : 100)
     for (const key of ['companyExceptions','personExceptions']) {
       if (form.saleScope?.[key]) form.saleScope[key] = form.saleScope[key].map(row=>({...row,amount:row.value/100}))
     }

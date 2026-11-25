@@ -1572,3 +1572,68 @@ BEGIN
 END $$;
 CREATE OR REPLACE TRIGGER protect_department_retention_entries BEFORE UPDATE OR DELETE ON department_retention_entries
  FOR EACH ROW EXECUTE FUNCTION protect_department_retention_entry();
+
+ALTER TABLE products ADD COLUMN IF NOT EXISTS director_registry_revision bigint NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS practice_director_versions (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ product_id bigint NOT NULL REFERENCES products(id),
+ period_id bigint NOT NULL,
+ starts_at timestamptz NOT NULL,
+ version_no integer NOT NULL CHECK (version_no > 0),
+ document jsonb NOT NULL,
+ file_name text NOT NULL,
+ source_file bytea NOT NULL,
+ file_hash text NOT NULL,
+ preview_hash text NOT NULL,
+ request_hash text NOT NULL,
+ request_id uuid NOT NULL,
+ created_by uuid REFERENCES finance_accounts(id),
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
+ UNIQUE(product_id,version_no),
+ UNIQUE(product_id,request_id),
+ FOREIGN KEY(product_id,period_id) REFERENCES periods(product_id,id)
+);
+CREATE INDEX IF NOT EXISTS practice_director_versions_effective ON practice_director_versions(product_id,starts_at DESC,version_no DESC);
+CREATE OR REPLACE FUNCTION protect_practice_director_version() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN RAISE EXCEPTION '总监归属版本已冻结' USING ERRCODE='23514'; END
+$$;
+CREATE OR REPLACE TRIGGER protect_practice_director_version BEFORE UPDATE OR DELETE ON practice_director_versions
+ FOR EACH ROW EXECUTE FUNCTION protect_practice_director_version();
+ALTER TABLE calculation_drafts ADD COLUMN IF NOT EXISTS director_version_id bigint REFERENCES practice_director_versions(id);
+CREATE TABLE IF NOT EXISTS organization_health_inbox (
+ source_id bigint PRIMARY KEY,
+ kind text NOT NULL CHECK (kind IN ('COMPANY','MEMBER')),
+ external_id text NOT NULL,
+ entity_id uuid NOT NULL,
+ wire_id uuid NOT NULL,
+ category_id uuid REFERENCES organization_sales_categories(id),
+ finance_base_version bigint NOT NULL,
+ acknowledge_only boolean NOT NULL DEFAULT false,
+ acknowledged_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS organization_health_inbox_entity ON organization_health_inbox(kind,external_id,source_id DESC);
+CREATE INDEX IF NOT EXISTS organization_health_inbox_pending ON organization_health_inbox(source_id) WHERE acknowledged_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS organization_health_conflicts (
+ source_id bigint PRIMARY KEY,
+ kind text NOT NULL,
+ external_id text NOT NULL,
+ entity_id uuid,
+ version bigint NOT NULL,
+ applied_version bigint NOT NULL,
+ finance_value jsonb NOT NULL,
+ ai_value jsonb NOT NULL,
+ reason text NOT NULL,
+ state text NOT NULL DEFAULT 'OPEN' CHECK(state IN ('OPEN','RESOLVING','RESOLVED')),
+ decision text,
+ evidence text,
+ resolved_by uuid REFERENCES finance_accounts(id),
+ resolution_message_id uuid,
+ resolved_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS organization_health_conflicts_entity ON organization_health_conflicts(kind,external_id,source_id DESC);
+CREATE INDEX IF NOT EXISTS organization_health_conflicts_resolution ON organization_health_conflicts(resolution_message_id) WHERE state='RESOLVING';
+
+-- Only an assignment created from an AI membership can be closed by its native disable event.
+ALTER TABLE organization_assignments ADD COLUMN IF NOT EXISTS health_member_id text;

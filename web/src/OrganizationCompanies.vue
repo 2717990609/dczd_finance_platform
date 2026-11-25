@@ -1,11 +1,15 @@
 <script setup>
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, ref, watch } from 'vue'
 import { RadioGroup } from 'ant-design-vue'
 import OrganizationCategoryEditor from './OrganizationCategoryEditor.vue'
+import OrganizationDispatchProfile from './OrganizationDispatchProfile.vue'
+import OrganizationDispatch from './OrganizationDispatch.vue'
 import OrganizationCompanyType from './OrganizationCompanyType.vue'
 
+const dispatch=ref(), createProfile=ref(false)
+onDeactivated(()=>{dispatch.value=undefined;createProfile.value=false})
 const props = defineProps({api:Function,formatTime:Function,canWrite:Boolean})
-const emit = defineEmits(['show-appointments','show-duties'])
+const emit = defineEmits(['show-appointments','show-duties','show-director'])
 const type = ref('')
 const name = ref('')
 const search = ref('')
@@ -137,9 +141,11 @@ defineExpose({refresh})
   <section class="records">
     <div class="records-head company-directory-head">
       <h2>销售公司目录</h2>
+      <a-button @click="dispatch={}">组织同步记录</a-button>
       <RadioGroup v-model:value="type" :options="types" option-type="button" button-style="solid" aria-label="销售公司类型"/>
       <div v-if="canWrite" class="topbar-actions category-actions">
         <a-button v-if="selected.length" @click="openAssignment(selected)">批量调整类别</a-button>
+        <a-button @click="createProfile=true">登记销售公司</a-button>
         <a-button @click="manageCategories=true">管理销售类别</a-button>
       </div>
     </div>
@@ -171,7 +177,9 @@ defineExpose({refresh})
           <span v-else-if="column.key==='parent'">{{ record.parentName || '—' }}</span>
           <a-tag v-else-if="column.key==='status'" :color="record.status==='ACTIVE' ? 'green' : 'default'">{{ record.status==='ACTIVE' ? '启用' : '停用' }}</a-tag>
           <template v-else-if="column.key==='actions'">
+            <a-button type="link" size="small" @click="dispatch=record">同步目标</a-button>
             <a-button type="link" size="small" @click="emit('show-appointments',record.id)">查看任职</a-button>
+            <a-button v-if="canWrite && record.companyType!=='UNKNOWN'" type="link" size="small" @click="emit('show-director',record)">总监归属</a-button>
             <a-button type="link" size="small" @click="openHistory(record)">类别历史</a-button>
             <a-button type="link" size="small" @click="emit('show-duties',{unitId:record.id,name:record.name})">业务职责</a-button>
           </template>
@@ -180,6 +188,8 @@ defineExpose({refresh})
       </a-table>
     </div>
   </section>
+  <OrganizationDispatchProfile v-if="createProfile" :api="api" :categories="result.categories" @close="createProfile=false" @saved="createProfile=false;refresh()"/>
+  <OrganizationDispatch v-if="dispatch" :company="dispatch.id ? dispatch : undefined" :api="api" :can-write="canWrite" :format-time="formatTime" @close="dispatch=undefined" @changed="refresh"/>
   <OrganizationCompanyType v-if="companyTypeDetails" :api="api" :company="companyTypeDetails" :can-write="canWrite"
     :format-time="formatTime" :types="types" @close="companyTypeDetails=undefined" @changed="refresh"/>
   <OrganizationCategoryEditor v-if="manageCategories" :api="api" @close="manageCategories=false" @changed="refresh"/>

@@ -330,6 +330,7 @@ async function loadMore(section, cursorName) {
         <a-tag :color="draft?.settlement ? 'green' : draft ? 'blue' : 'default'">{{ draft?.settlement ? '已结算' : draft ? '草稿 v'+draft.version : '未试算' }}</a-tag>
         <strong class="mobile-period-name">{{ selectedPeriod.name }}</strong>
         {{ selectedPeriod.startsOn }} 至 {{ selectedPeriod.endsOn }}
+        <span v-if="draft?.directorVersion"> · 总监归属 v{{ draft.directorVersion }}</span>
         <span v-if="draft?.practiceRosterVersion"> · 签到名单 v{{ draft.practiceRosterVersion }} · 到课 {{ draft.attendanceCount }} 人</span>
         <span v-if="selectedPeriod.practiceRosterVersion && selectedPeriod.practiceRosterVersion!==draft?.practiceRosterVersion">
           · 最新签到名单 v{{ selectedPeriod.practiceRosterVersion }} · 到课 {{ selectedPeriod.practiceRosterAttendance }} 人

@@ -74,6 +74,9 @@ func (s workspace) updateOrganizationCompanyType(ctx context.Context, input upda
 		if err := enqueueDraftConfiguration(ctx, tx, draftRefreshCompanyClassification, []string{unit}, at, true); err != nil {
 			return err
 		}
+		if err := enqueueDispatchCompany(ctx, tx, unit, by); err != nil {
+			return err
+		}
 		result.Changed = true
 		return nil
 	})

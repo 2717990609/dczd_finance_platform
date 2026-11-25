@@ -57,9 +57,11 @@ const organizationPages = [
   {page:'organization',tab:'organization',label:'人员归属'},
   {page:'people',tab:'main',label:'人员档案'},
   {page:'organization',tab:'duties',label:'业务职责'},
+  {page:'organization',tab:'directors',label:'总监归属'},
   {page:'organization',tab:'catalog',label:'分润岗位'},
   {page:'people',tab:'identity',label:'来源账号'},
   {page:'organization',tab:'companies',label:'销售公司与类别'},
+  {page:'organization',tab:'health',label:'AI 组织冲突'},
 ]
 const organizationPanel = ref('organization')
 const personPage = ref()
@@ -456,6 +458,7 @@ const recipientChoices = computed(() => {
       {type:'company_sales',label:'公司销售提成'},
       {type:'service',label:'服务提成'},
       {type:'delivery',label:'交付提成'},
+      ...(selectedProduct.value?.directorRulesAvailable ? [{key:'director_rate',type:'manager',label:'按班期归属的总监提成'}] : []),
       {key:'referral_company',type:'manager',recipient:'referral_company',label:'推荐公司提成'},
       {type:'manager',label:'独立收款安排'},
     ] : []),
@@ -466,6 +469,11 @@ const recipientChoices = computed(() => {
   }))
 })
 function addRuleComponent(key) {
+  if (key==='director_rate') {
+    draft.value.components.push({type:'manager',mode:key,classMember:'',amount:undefined})
+    activeRuleComponent.value=draft.value.components.length-1
+    return
+  }
   const {type,recipient,label} = recipientChoices.value.find(choice=>choice.key===key)
   const members = classRule.value ? classMemberChoices({},type).filter(member=>!member.disabled) : []
   const member = type==='company_sales' ? members.find(option=>!draft.value.components.some(
@@ -480,6 +488,7 @@ function addRuleComponent(key) {
   activeRuleComponent.value = draft.value.components.length-1
 }
 function ruleRecipientSummary(row) {
+  if (row.mode==='director_rate') return '按生效归属收款'+(row.amount==null ? '' : ' · '+row.amount+'%')
   if (row.periodBenefit) {
     const benefit = row.periodBenefit
     const payee = benefit.recipient==='pool' ? practicePoolOptions.value.find(option=>option.value===benefit.pool?.poolId)?.label || '团队池'
@@ -1267,6 +1276,7 @@ function open(kind, row, edit = false) {
     } else if (target) {
       draft.value.scope = 'period'
       draft.value.periodId = target.id
+      draft.value.fromOrdinal = target.ordinal
       draft.value.lockedPeriod = true
       draft.value.label = target.name+'分润规则'
     }
@@ -1370,6 +1380,10 @@ function initialPracticeCountStart() {
   return {countFromOrdinal:ordinals.length ? Math.min(...ordinals) : 1}
 }
 function ruleComponentBody(row) {
+  if (row.mode==='director_rate') {
+    return {type:'manager',mode:'director_rate',value:periodRate(must(row.amount,'请填写总监提成比例')),
+      ...(row.classMember ? {classMember:row.classMember} : {})}
+  }
   const sourceRole = row.sourceRole?.trim().toUpperCase()
   if (['sales','referral'].includes(row.type)) must(sourceRole,'请选择销售或推荐分项的订单角色。')
   const component = {type:must(row.type),mode:must(row.mode,'请选择计提方式'),value:0,
@@ -2101,9 +2115,12 @@ async function save() {
         <div class="rule-basics">
         <a-form-item label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="ruleProductOptions" :disabled="Boolean(draft.copiedFrom || draft.lockedPeriod)"/></a-form-item>
         <a-form-item label="规则名称" required><a-input v-model:value="draft.label" aria-label="规则名称"/></a-form-item>
-        <a-form-item html-for="rule-scope" label="适用范围"><a-select id="rule-scope" v-model:value="draft.scope" :options="options('ruleScope')" :disabled="Boolean(draft.lockedPeriod || draft.editBaseId)"/></a-form-item>
+        <a-form-item html-for="rule-scope" label="适用范围">
+          <a-select id="rule-scope" v-model:value="draft.scope" :disabled="Boolean(draft.editBaseId)"
+            :options="draft.lockedPeriod ? [{value:'period',label:'仅本期'},{value:'ordinal',label:'本期及以后',disabled:!draft.fromOrdinal}] : options('ruleScope')"/>
+        </a-form-item>
         <a-form-item v-if="draft.scope==='period'" html-for="rule-period" label="指定期次" required><a-select id="rule-period" v-model:value="draft.periodId" :options="periodOptions" :disabled="Boolean(draft.lockedPeriod || draft.editBaseId)"/></a-form-item>
-        <a-form-item v-if="draft.scope==='ordinal'" label="起始期数" required><a-input-number v-model:value="draft.fromOrdinal" aria-label="起始期数" :min="1" :precision="0" :disabled="Boolean(draft.editBaseId)"/></a-form-item>
+        <a-form-item v-if="draft.scope==='ordinal'" label="起始期数" :extra="selectedProduct?.directorRulesAvailable ? '每期只用一个版本。新规则生效后，覆盖范围内的旧版本自动过期。' : '本期及后续班期自动沿用，直到新规则生效。指定单期的配置优先。'" required><a-input-number v-model:value="draft.fromOrdinal" aria-label="起始期数" :min="1" :precision="0" :disabled="Boolean(draft.editBaseId || draft.lockedPeriod)"/></a-form-item>
         <a-form-item v-if="classRule && draft.scope!=='period'" html-for="rule-activity-type" label="开班方式">
           <a-select id="rule-activity-type" :value="draft.activityType || 0" :options="practiceActivityTypes"
             :disabled="Boolean(draft.editBaseId)" @update:value="draft.activityType=$event"/>
@@ -2151,7 +2168,13 @@ async function save() {
             <small>{{ ruleSalesScope(c) ? '收款 · ' : '' }}{{ ruleRecipientSummary(c) }}</small>
           </button>
           <div v-if="i===activeRuleComponent" :id="'practice-rule-part-'+i" class="rule-block-body component-editor">
-          <RuleArrangementFields v-if="!['company_sales','period_rate'].includes(c.mode)"
+          <template v-if="c.mode==='director_rate'">
+            <a-form-item :html-for="'director-member-'+i" label="计提订单类型"><a-select :id="'director-member-'+i" v-model:value="c.classMember" :options="classMembers"/></a-form-item>
+            <a-form-item :html-for="'director-rate-'+i" label="总监提成比例" extra="按签到报名净实收计提，收款人和下属公司取本班生效的总监归属。">
+              <a-input-number :id="'director-rate-'+i" v-model:value="c.amount" :min="0" :max="100" :precision="4" addon-after="%"/>
+            </a-form-item>
+          </template>
+          <RuleArrangementFields v-else-if="!['company_sales','period_rate'].includes(c.mode)"
             :name-id="classRule ? 'rule-sales-label-'+i : undefined" v-model:name="c.label"
             :order-type-id="classRule ? 'rule-member-'+i : undefined" :order-types="classRule ? classMemberChoices(c) : undefined"
             :order-type="c.classMember" @update:order-type="changeClassMember(c,$event)">

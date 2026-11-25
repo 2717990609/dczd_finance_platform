@@ -41,7 +41,7 @@ func practiceEnrollmentQuotesEligible(rule paymentRule) bool {
 	hasLocalAwards := false
 	for _, part := range rule.Components {
 		benefit := part.PeriodBenefit
-		if part.Tiers != nil || benefit != nil && (benefit.FixedPerClass || len(benefit.Tiers) != 0) {
+		if part.Mode == directorRateMode || part.Tiers != nil || benefit != nil && (benefit.FixedPerClass || len(benefit.Tiers) != 0) {
 			return false
 		}
 		hasLocalAwards = hasLocalAwards || benefit == nil

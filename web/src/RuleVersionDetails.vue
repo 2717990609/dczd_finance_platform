@@ -120,6 +120,7 @@ const range = (row, count, next) => {
 }
 function recipient(part) {
   const withDuty = (name,duty) => [name,duty && label('organizationDuty',duty)].filter(Boolean).join(' · ')
+  if (part.mode==='director_rate') return '总监归属登记的收款方'
   const benefit = part.periodBenefit
   if (benefit?.pool) return poolName(benefit.pool)
   if (benefit?.personId) return withDuty(personName(benefit.personId),benefit.recipientDuty)
@@ -141,6 +142,7 @@ function recipient(part) {
   return withDuty(part.salesPersonId ? personName(part.salesPersonId) : roleName(part.sourceRole),part.recipientDuty) || '—'
 }
 function formula(part) {
+  if (part.mode==='director_rate') return '总监本人及下属公司报名净实收 × '+rate(part.value,10000)
   if (part.mode==='period_rate') {
     if (part.periodBenefit?.standardRates?.length) {
       return practiceStandardRateGroups(part.periodBenefit.standardRates).filter(group=>group.items.length).map(group=>group.label).join(' → ')
@@ -172,6 +174,7 @@ function standardSummary(part) {
 }
 const salesScope = (part, limit) => props.classProduct ? practiceSalesScopeText(part,practiceScopeNames.value,limit) : undefined
 function fullOrderScope(part) {
+  if (part.mode==='director_rate') return '本班生效的总监本人账号及其下属公司'
   return part.periodBenefit ? practicePeriodScopeText(part.periodBenefit,practiceScopeNames.value,Infinity)
     : salesScope(part,part.companySales ? 0 : Infinity)
 }

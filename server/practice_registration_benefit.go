@@ -63,7 +63,7 @@ func checkPracticeRegistrationScopes(parts []component) error {
 
 func usesPracticeRegistrations(rule paymentRule) bool {
 	return slices.ContainsFunc(rule.Components, func(part component) bool {
-		return part.PeriodBenefit != nil && part.PeriodBenefit.RegistrationScope != nil
+		return part.Mode == directorRateMode || part.PeriodBenefit != nil && part.PeriodBenefit.RegistrationScope != nil
 	})
 }
 

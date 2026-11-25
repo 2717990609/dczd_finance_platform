@@ -91,16 +91,23 @@ func organizationAssignmentFilters(params url.Values) (offset int, at *time.Time
 }
 
 type organizationSnapshot struct {
-	CapturedAt           time.Time
-	People               json.RawMessage
-	Units                json.RawMessage
-	Assignments          json.RawMessage
-	Companies            json.RawMessage
-	Recommendations      json.RawMessage
-	SalesCategories      json.RawMessage
-	SalesCategoryHistory json.RawMessage
-	DutyScopes           json.RawMessage
-	BusinessDuties       json.RawMessage
+	DispatchPhoneBindings []dispatchSnapshotPhone
+	DispatchVersionFloor  *int64
+	DispatchCompanies     []dispatchSnapshotCompany
+	DispatchReceipts      []dispatchSnapshotReceipt
+	DispatchBindings      []dispatchSnapshotBinding
+	CapturedAt            time.Time
+	People                json.RawMessage
+	Units                 json.RawMessage
+	Assignments           json.RawMessage
+	Companies             json.RawMessage
+	Recommendations       json.RawMessage
+	SalesCategories       json.RawMessage
+	SalesCategoryHistory  json.RawMessage
+	DutyScopes            json.RawMessage
+	BusinessDuties        json.RawMessage
+	AIHealthCategories    json.RawMessage
+	AIHealthReceipts      json.RawMessage
 }
 
 func importOrganization(ctx context.Context, cfg config, path string) error {
@@ -135,7 +142,7 @@ func storeOrganizationSnapshot(ctx context.Context, db transactionBeginner, raw 
 			return invalid
 		}
 	}
-	for _, rows := range []json.RawMessage{snapshot.Companies, snapshot.Recommendations, snapshot.SalesCategories, snapshot.SalesCategoryHistory, snapshot.DutyScopes, snapshot.BusinessDuties} {
+	for _, rows := range []json.RawMessage{snapshot.Companies, snapshot.Recommendations, snapshot.SalesCategories, snapshot.SalesCategoryHistory, snapshot.DutyScopes, snapshot.BusinessDuties, snapshot.AIHealthCategories, snapshot.AIHealthReceipts} {
 		if len(rows) != 0 && rows[0] != '[' {
 			return invalid
 		}
@@ -180,8 +187,17 @@ func storeOrganizationSnapshot(ctx context.Context, db transactionBeginner, raw 
 		if err := importOrganizationSalesCategories(ctx, tx, snapshot); err != nil {
 			return fmt.Errorf("write organization sales categories: %w", err)
 		}
+		if err := importDispatchSnapshot(ctx, tx, snapshot); err != nil {
+			return fmt.Errorf("write organization dispatch snapshot: %w", err)
+		}
 		if err := importOrganizationDuties(ctx, tx, snapshot); err != nil {
 			return fmt.Errorf("write organization business duties: %w", err)
+		}
+		if err := importHealthCategoryLinks(ctx, tx, snapshot.AIHealthCategories); err != nil {
+			return fmt.Errorf("write AI health category links: %w", err)
+		}
+		if err := importHealthReceipts(ctx, tx, snapshot.AIHealthReceipts); err != nil {
+			return fmt.Errorf("write AI health receipts: %w", err)
 		}
 		var cyclic bool
 		if err := tx.QueryRow(ctx, `WITH RECURSIVE ancestry(id,parent_id) AS (
@@ -206,7 +222,7 @@ func storeOrganizationSnapshot(ctx context.Context, db transactionBeginner, raw 
 const importOrganizationPeopleSQL = `INSERT INTO people(name,legacy_party_id)
  SELECT CASE WHEN id IS NOT NULL THEN nullif(btrim(name),'') END,id
  FROM jsonb_to_recordset($1) AS incoming(id uuid,name text)
- ON CONFLICT(legacy_party_id) DO UPDATE SET name=excluded.name`
+ ON CONFLICT(legacy_party_id) DO UPDATE SET name=excluded.name WHERE NOT people.dispatch_name_managed`
 
 const importedCompanyTypeChange = `excluded.sales_company_type IS NOT NULL
  AND organization_units.sales_company_type IS DISTINCT FROM excluded.sales_company_type
@@ -215,20 +231,23 @@ const importedCompanyTypeChange = `excluded.sales_company_type IS NOT NULL
 const importOrganizationUnitsSQL = `INSERT INTO organization_units(id,parent_id,name,kind,status,sort_order,sales_company_type)
  SELECT id,"parentId",name,kind,status,coalesce("sortOrder",100),"salesCompanyType"
  FROM jsonb_to_recordset($1) AS incoming(id uuid,"parentId" uuid,name text,kind text,status text,"sortOrder" integer,"salesCompanyType" text)
- ON CONFLICT(id) DO UPDATE SET parent_id=excluded.parent_id,name=excluded.name,kind=excluded.kind,status=excluded.status,
+ ON CONFLICT(id) DO UPDATE SET parent_id=CASE WHEN organization_units.dispatch_profile_version=0 THEN excluded.parent_id ELSE organization_units.parent_id END,
+ name=CASE WHEN organization_units.dispatch_profile_version=0 THEN excluded.name ELSE organization_units.name END,kind=excluded.kind,
+ status=CASE WHEN organization_units.dispatch_profile_version=0 THEN excluded.status ELSE organization_units.status END,
  sort_order=excluded.sort_order,
  sales_company_type=CASE WHEN ` + importedCompanyTypeChange + `
   THEN excluded.sales_company_type ELSE organization_units.sales_company_type END,
  sales_company_type_version=organization_units.sales_company_type_version +
   CASE WHEN ` + importedCompanyTypeChange + ` THEN 1 ELSE 0 END`
 
-const importOrganizationAssignmentsSQL = `INSERT INTO organization_assignments(id,person_id,unit_id,kind,position,valid_from,valid_to,appointment_type)
- SELECT i.id,p.id,i."unitId",i.kind,coalesce(i.position,''),i."from",i."to",i."appointmentType"
- FROM jsonb_to_recordset($1) AS i(id uuid,"personId" uuid,"unitId" uuid,kind text,position text,"from" timestamptz,"to" timestamptz,"appointmentType" text)
+const importOrganizationAssignmentsSQL = `INSERT INTO organization_assignments(id,person_id,unit_id,kind,position,valid_from,valid_to,appointment_type,health_member_id)
+ SELECT i.id,p.id,i."unitId",i.kind,coalesce(i.position,''),i."from",i."to",i."appointmentType",i."healthMemberId"
+ FROM jsonb_to_recordset($1) AS i(id uuid,"personId" uuid,"unitId" uuid,kind text,position text,"from" timestamptz,"to" timestamptz,"appointmentType" text,"healthMemberId" text)
  LEFT JOIN people p ON p.legacy_party_id=i."personId"
  ON CONFLICT(id) DO UPDATE SET person_id=excluded.person_id,unit_id=excluded.unit_id,kind=excluded.kind,
  position=excluded.position,valid_from=excluded.valid_from,valid_to=excluded.valid_to,
- appointment_type=coalesce(excluded.appointment_type,organization_assignments.appointment_type)
+ appointment_type=coalesce(excluded.appointment_type,organization_assignments.appointment_type),
+ health_member_id=coalesce(excluded.health_member_id,organization_assignments.health_member_id)
  WHERE organization_assignments.changed_at IS NULL`
 
 const importOrganizationCompanySourcesSQL = `INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from,valid_to)

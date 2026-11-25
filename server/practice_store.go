@@ -187,7 +187,7 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	 CROSS JOIN LATERAL (SELECT ($4::timestamptz AT TIME ZONE 'Asia/Shanghai')::date AS day) opening
 	 CROSS JOIN LATERAL (SELECT coalesce(roster.starts_at<$4,
 	  p.starts_on<opening.day OR p.starts_on=opening.day AND p.ordinal<current.ordinal) AS earlier) timing
-	 LEFT JOIN LATERAL (SELECT rv.components FROM rule_versions rv CROSS JOIN LATERAL (SELECT `+componentRuleRetiredAtSQL+` AS at) stopped
+	 LEFT JOIN LATERAL (SELECT rv.components FROM rule_versions rv CROSS JOIN LATERAL (SELECT `+componentRulePeriodEndSQL+` AS at) stopped
 	  WHERE CASE WHEN closed.rule_id IS NOT NULL THEN rv.id=closed.rule_id
 	   ELSE `+matchingRuleScope+` AND roster.starts_at IS NOT NULL AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
 	     AND (stopped.at IS NULL OR roster.starts_at<stopped.at) END
@@ -423,6 +423,20 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	runtime := practiceDraftRuntime{appointments: appointments, orderAppointments: orderAppointments, salesOrganizations: salesOrganizations, companyOffers: companyOffers,
 		companyClassifications: companyClassifications, internalSalesCategories: internalSalesCategories,
 		companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
+	if usesDirectorRegistry(rule.Components) {
+		var doc practiceRegistrationDocument
+		runtime.directorVersionID, doc, err = readApplicableDirectorVersion(ctx, tx, summary.ProductID, summary.PeriodID)
+		if err != nil {
+			return paymentDraft{}, nil, err
+		}
+		if runtime.directorVersionID != 0 {
+			runtime.directorBenefits, err = directorRateBenefits(doc)
+			if err != nil {
+				return paymentDraft{}, nil, err
+			}
+			runtime.directorPending = slices.ContainsFunc(doc.Rows, func(row practiceRegistrationImportRow) bool { return row.Pending })
+		}
+	}
 	if quotes != nil && practiceEnrollmentQuotesEligible(rule) {
 		var configurationRevision int64
 		if err := tx.QueryRow(ctx, "SELECT revision FROM source_write_state WHERE source='CONFIG'").Scan(&configurationRevision); err != nil {
@@ -443,6 +457,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
+	result.directorVersionID = runtime.directorVersionID
 	result.PracticeStartsAt = summary.PracticeStartsAt
 	result.PracticeEnrollments = make([]int64, 0, len(members))
 	for _, member := range members {

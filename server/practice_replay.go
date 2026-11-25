@@ -61,7 +61,7 @@ type practiceReplayCompany struct {
 
 func hasPracticeReplayDependencies(rule paymentRule, members []practiceEnrollment) bool {
 	for _, part := range rule.Components {
-		if part.Tiers != nil || part.PeriodBenefit != nil || part.CompanySales.usesOrganizationStandards() || part.CompanySales != nil && part.CompanySales.OwnSales || part.SaleScope != nil || len(part.salesCompanies()) != 0 || len(part.retrainSplits()) != 0 {
+		if part.Mode == directorRateMode || part.Tiers != nil || part.PeriodBenefit != nil || part.CompanySales.usesOrganizationStandards() || part.CompanySales != nil && part.CompanySales.OwnSales || part.SaleScope != nil || len(part.salesCompanies()) != 0 || len(part.retrainSplits()) != 0 {
 			return true
 		}
 	}
@@ -194,11 +194,11 @@ type practiceReplayPosting struct {
 func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practiceReplay, error) {
 	var replay practiceReplay
 	var saved *practiceReplayInputs
-	var rosterID int64
-	err := tx.QueryRow(ctx, `SELECT d.practice_roster_id,r.id,r.components,d.practice_replay_inputs
+	var rosterID, productID, directorVersionID int64
+	err := tx.QueryRow(ctx, `SELECT d.practice_roster_id,r.id,r.components,d.practice_replay_inputs,r.product_id,coalesce(d.director_version_id,0)
 	 FROM calculation_drafts d JOIN rule_versions r ON r.id=d.rule_id JOIN settlements s ON s.period_id=d.period_id
 	 WHERE d.period_id=$1 AND d.practice_roster_id IS NOT NULL`, periodID).
-		Scan(&rosterID, &replay.rule.ID, &replay.rule.Components, &saved)
+		Scan(&rosterID, &replay.rule.ID, &replay.rule.Components, &saved, &productID, &directorVersionID)
 	if err != nil {
 		return replay, err
 	}
@@ -293,6 +293,20 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 		legacyFixedPersonalRefund:   values.Version < practiceReplayFixedPersonalPaymentShares,
 		legacyImplicitFixedRefund:   values.Version < practiceReplayDefaultFixedPaymentShares,
 		legacyFixedRefundPolicy:     values.Version < practiceReplayProportionalFixedRefunds,
+	}
+	if usesDirectorRegistry(replay.rule.Components) {
+		if directorVersionID == 0 {
+			return replay, errPracticeRefundReplay
+		}
+		doc, err := readDirectorVersionDocument(ctx, tx, productID, directorVersionID)
+		if err != nil {
+			return replay, err
+		}
+		replay.runtime.directorVersionID = directorVersionID
+		replay.runtime.directorBenefits, err = directorRateBenefits(doc)
+		if err != nil {
+			return replay, err
+		}
 	}
 	if usesPracticeRegistrations(replay.rule) {
 		replay.runtime.registrations, err = readPracticeRegistrationInputs(ctx, tx, rosterID, false, values.RegistrationVersions)

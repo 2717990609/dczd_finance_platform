@@ -891,7 +891,46 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 	runtime practiceDraftRuntime, identities map[identityKey][]identityAssignment, paymentCounts map[paymentKey]int) error {
 	classPurchases := append(purchases, fullyRefunded...)
 	reportedRegistrations := make(map[int64]bool)
-	for index, part := range rule.Components {
+	parts := rule.Components
+	var directorIndexes []int
+	for i, part := range rule.Components {
+		if part.Mode != directorRateMode {
+			continue
+		}
+		if runtime.directorVersionID == 0 {
+			draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, Component: practicePeriodComponentKey(part, i), Code: "PRACTICE_DIRECTOR_VERSION_MISSING"})
+			continue
+		}
+		if len(parts) == len(rule.Components) {
+			parts = slices.Clone(rule.Components)
+		}
+		for _, benefit := range runtime.directorBenefits {
+			benefit.Value, benefit.ClassMember = part.Value, part.ClassMember
+			parts = append(parts, benefit)
+			directorIndexes = append(directorIndexes, i)
+		}
+		if runtime.directorPending {
+			for _, purchase := range purchases {
+				enrollment := purchase.member
+				if purchase.noReferrer || purchase.issue != "" || !part.matchesPracticeMember(classMember(enrollment.MembershipType)) {
+					continue
+				}
+				registered := runtime.registrations[enrollment.ID]
+				if registered.VersionID == 0 || registered.Issue != "" {
+					continue
+				}
+				if !slices.ContainsFunc(runtime.directorBenefits, func(c component) bool {
+					return c.PeriodBenefit.RegistrationScope.matches(registered.SellerID, registered.CompanyID)
+				}) {
+					draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, EnrollmentID: enrollment.ID, Component: practicePeriodComponentKey(part, i), Code: "PRACTICE_DIRECTOR_UNRESOLVED", Advisory: true})
+				}
+			}
+		}
+	}
+	for index, part := range parts {
+		if index >= len(rule.Components) {
+			index = directorIndexes[index-len(rule.Components)]
+		}
 		b := part.PeriodBenefit
 		if b == nil {
 			continue

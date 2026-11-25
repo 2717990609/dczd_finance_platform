@@ -48,6 +48,9 @@ func (p practicePurchase) salesIssue(code string, rule paymentRule, part string)
 }
 
 type practiceDraftRuntime struct {
+	directorVersionID           int64
+	directorBenefits            []component
+	directorPending             bool
 	enrollmentQuotes            *practiceDraftQuoteRun
 	appointments                map[practiceAppointmentKey][]practiceAppointment
 	orderAppointments           practiceOrderAppointments
@@ -251,7 +254,7 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		if !part.matchesPracticeMember(classMember(member.MembershipType)) {
 			continue
 		}
-		if part.CompanySales != nil || part.PeriodBenefit != nil {
+		if part.CompanySales != nil || part.PeriodBenefit != nil || part.Mode == directorRateMode {
 			continue
 		}
 		if purchase.noReferrer && (part.Type == "sales" || part.Type == "referral") {

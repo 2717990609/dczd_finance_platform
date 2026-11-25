@@ -19,6 +19,17 @@ const componentRuleRetiredAtSQL = `(SELECT min(st.effective_from)
  AND anchor.period_id IS NOT DISTINCT FROM rv.period_id AND anchor.from_ordinal IS NOT DISTINCT FROM rv.from_ordinal
  AND anchor.activity_type=rv.activity_type)`
 
+// For a family-education class, each later applicable publication ends its
+// predecessor for that class alone. Other classes can still inherit it.
+// A subsequent explicit stop of the replacement does not revive the old one.
+const componentRulePeriodEndSQL = `least(` + componentRuleRetiredAtSQL + `, CASE
+ WHEN p.source_period_key ~ '^PRACTICE:[12]:4:' THEN (
+ SELECT min(coalesce(n.effective_from,'-infinity'::timestamptz)) FROM rule_versions n
+ WHERE n.product_id=rv.product_id AND n.version>rv.version
+ AND (n.period_id=p.id OR (n.period_id IS NULL AND (n.from_ordinal IS NULL OR n.from_ordinal<=p.ordinal)))
+ AND (n.activity_type=0 OR n.activity_type::text=split_part(p.source_period_key,':',2))
+ ) END)`
+
 const catalogRuleRetiredAtSQL = `(SELECT st.effective_from FROM catalog_rule_retirements st WHERE st.package_id=p.source_id)`
 const catalogRuleExecutionThrough = `least(v.effective_to,` + catalogRuleRetiredAtSQL + `)`
 

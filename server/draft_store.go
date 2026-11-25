@@ -22,6 +22,7 @@ var (
 type calculateDraftInput struct{ PeriodID int64 }
 
 type draftSummary struct {
+	ProductID             int64     `json:"-"`
 	Catalog               bool      `json:"catalog,omitempty"`
 	PracticeRefundMonth   bool      `json:"practiceRefundMonth,omitempty"`
 	PracticeRosterID      *int64    `json:"-"`
@@ -54,7 +55,7 @@ const draftScopeSQL = `SELECT pro.id,pro.period_mode, p.starts_on::timestamp AT 
 
 const draftRulesSQL = `SELECT rv.id,rv.version,rv.effective_from,stopped.at,rv.components FROM periods p
  JOIN rule_versions rv ON ` + matchingRuleScope + `
- CROSS JOIN LATERAL (SELECT ` + componentRuleRetiredAtSQL + ` AS at) stopped
+ CROSS JOIN LATERAL (SELECT ` + componentRulePeriodEndSQL + ` AS at) stopped
  WHERE p.id=$1 AND (rv.effective_from IS NULL OR rv.effective_from<$2)
  AND (stopped.at IS NULL OR greatest($3::timestamptz,rv.effective_from)<stopped.at)
  ORDER BY ` + matchingRuleOrder
@@ -186,6 +187,7 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 	if err != nil {
 		return window, nil, err
 	}
+	summary.ProductID = productID
 	if summary.PracticeRefundMonth {
 		summary.Catalog = false
 		return window, nil, nil
@@ -410,6 +412,11 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 			return nil, err
 		}
 	}
+	if result.directorVersionID != 0 {
+		if err := encode.Encode(struct{ DirectorVersionID int64 }{result.directorVersionID}); err != nil {
+			return nil, err
+		}
+	}
 	if result.practiceReplay != nil {
 		if err := encode.Encode(result.practiceReplay); err != nil {
 			return nil, err
@@ -441,19 +448,19 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 			lineCount++
 		}
 	}
-	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id,performance_ready,catalog_refunds_ready,practice_replay_inputs,aggregate_predecessor_id)
-	  VALUES($1,nullif($2::bigint,0),1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,true,$12,$13,$14)
+	err := tx.QueryRow(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id,performance_ready,catalog_refunds_ready,practice_replay_inputs,aggregate_predecessor_id,director_version_id)
+	  VALUES($1,nullif($2::bigint,0),1,$3,$4,$5,$6,now(),$7,$8,$9,$10,$11,true,$12,$13,$14,$15)
 	  ON CONFLICT(period_id) DO UPDATE SET rule_id=excluded.rule_id,version=calculation_drafts.version+1,
 	  input_digest=excluded.input_digest,total_minor=excluded.total_minor,line_count=excluded.line_count,issue_count=excluded.issue_count,
 	  performance_ready=true,calculated_at=excluded.calculated_at,refund_minor=excluded.refund_minor,refund_count=excluded.refund_count,
 	  correction_minor=excluded.correction_minor,correction_count=excluded.correction_count,practice_roster_id=excluded.practice_roster_id,
 	  catalog_refunds_ready=excluded.catalog_refunds_ready,practice_replay_inputs=excluded.practice_replay_inputs,
-	  aggregate_predecessor_id=excluded.aggregate_predecessor_id
+	  aggregate_predecessor_id=excluded.aggregate_predecessor_id,director_version_id=excluded.director_version_id
 	  WHERE NOT calculation_drafts.performance_ready OR calculation_drafts.input_digest<>excluded.input_digest
 	   OR calculation_drafts.catalog_refunds_ready<>excluded.catalog_refunds_ready
 	  RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
 		summary.PeriodID, summary.RuleID, digest, result.Total, lineCount, result.blockingIssues(), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections),
-		summary.PracticeRosterID, summary.Catalog, result.practiceReplay, optionalDraftID(result.aggregatePredecessor)).
+		summary.PracticeRosterID, summary.Catalog, result.practiceReplay, optionalDraftID(result.aggregatePredecessor), optionalDraftID(result.directorVersionID)).
 		Scan(&summary.Version, &summary.Accrued, &summary.LineCount, &summary.IssueCount, &summary.CalculatedAt, &summary.RefundTotal, &summary.RefundCount, &summary.CorrectionTotal, &summary.CorrectionCount, &summary.PracticeRosterID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Keep monetary lines and allocations stable when a newer roster
@@ -600,7 +607,7 @@ const draftPostingLabelSQL = `CASE WHEN rv.id IS NOT NULL AND starts_with(l.comp
         FROM jsonb_array_elements(rv.components->(split_part(l.component_type,':',3)::int)->'retrainSplits') split
         WHERE split->>'companyId'=company.company_id)
        ELSE (
-        SELECT coalesce(role.label,
+        SELECT coalesce(CASE WHEN rv.components->(split_part(l.component_type,':',3)::int)->>'mode'='director_rate' THEN '按班期归属的总监提成' END,role.label,
          CASE WHEN b.benefit->>'labelIsCustom' IS DISTINCT FROM 'true' AND b.benefit->>'label'='SERVICE' THEN '服务' END,
          b.benefit->>'label')
         FROM (SELECT rv.components->(split_part(l.component_type,':',3)::int)->'periodBenefit' AS benefit) b
@@ -723,7 +730,8 @@ var draftDetailIssuesSQL = `
    o.id AS "sourceVersionId",o.version AS "sourceVersion",e.source_enrollment_id AS "enrollmentId",
    CASE WHEN o.id IS NULL THEN e.paid_order_ids END AS "enrollmentOrderIds",
    CASE WHEN r.id IS NOT NULL AND starts_with(i.component_type,'period:')
-     THEN r.components->(split_part(i.component_type,':',3)::int)->'periodBenefit'->>'label' END AS "componentLabel",
+     THEN coalesce(r.components->(split_part(i.component_type,':',3)::int)->'periodBenefit'->>'label',
+       CASE WHEN r.components->(split_part(i.component_type,':',3)::int)->>'mode'='director_rate' THEN '按班期归属的总监提成' END) END AS "componentLabel",
    CASE WHEN starts_with(i.component_type,'period:') THEN r.version END AS "ruleVersion",
    CASE WHEN i.recovery_person_id IS NOT NULL THEN jsonb_build_object(
      'personName',recipient.name,'personId',recipient.id,'amountMinor',i.recovery_minor,'originalPeriod',original_period.name,
@@ -770,7 +778,7 @@ var draftDetailTemplateSQL = draftDetailPrefixSQL + `
    AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,
  'scopeCorrectionCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_corrections c
   WHERE c.period_id=d.period_id AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `)) END,
- 'lineCount',d.line_count,'issueCount',d.issue_count,'practiceRosterVersion',roster.source_version,
+ 'lineCount',d.line_count,'issueCount',d.issue_count,'practiceRosterVersion',roster.source_version,'directorVersion',(SELECT version_no FROM practice_director_versions WHERE id=d.director_version_id),
  'advisoryCount',(SELECT count(*) FROM calculation_draft_issues i WHERE i.period_id=d.period_id AND i.advisory),
  'attendanceCount',roster.attendance_count,
  'settlement',CASE WHEN st.id IS NOT NULL THEN jsonb_build_object('id',st.id,'confirmedAt',st.confirmed_at,'draftVersion',st.draft_version) END` + "," +

@@ -183,7 +183,7 @@ UNION SELECT p.id FROM changed c JOIN source_order_versions v ON v.id=c.current_
  JOIN LATERAL (SELECT id FROM practice_rosters r WHERE r.period_key=e.period_key ORDER BY r.source_version DESC LIMIT 1) latest ON true
  JOIN practice_roster_members member ON member.roster_id=latest.id AND member.enrollment_id=e.id
  WHERE v.source='DCZD' AND v.kind='DELIVERY_COMPLETED' AND split_part(v.record_key,':',1)='dc_offline_order_log_t'
- AND EXISTS(SELECT 1 FROM rule_versions rv WHERE ` + matchingRuleScope + ` AND rv.components @>'[{"periodBenefit":{"registrationScope":{}}}]')
+ AND EXISTS(SELECT 1 FROM rule_versions rv WHERE ` + matchingRuleScope + ` AND (rv.components @>'[{"periodBenefit":{"registrationScope":{}}}]' OR rv.components @>'[{"mode":"director_rate"}]'))
 UNION SELECT id FROM practice_refund_months
 UNION SELECT p.id FROM practice_changed_classes c JOIN periods p USING(product_id) WHERE p.calendar_month IS NOT NULL
  AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on

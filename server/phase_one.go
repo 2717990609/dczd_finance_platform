@@ -21,7 +21,9 @@ import (
 )
 
 //go:embed schema.sql
-var schema string
+var baseSchema string
+
+var schema = baseSchema + "\n" + organizationDispatchSchema
 
 const schemaLockSQL = "SELECT pg_advisory_xact_lock(637619238)"
 
@@ -99,6 +101,13 @@ func validateComponents(items []component) error {
 			members = 2
 		default:
 			return invalid
+		}
+		if c.Mode == directorRateMode {
+			if c.Type != "manager" || c.Value < 0 || c.Value > periodRateScale ||
+				c != (component{Type: "manager", Mode: directorRateMode, Value: c.Value, ClassMember: c.ClassMember}) {
+				return invalid
+			}
+			continue
 		}
 		if c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) || !validPracticeRetrainSplits(c) {
 			return invalid
@@ -189,6 +198,9 @@ func validateComponents(items []component) error {
 			return errors.New("请移除销售公司安排中的推荐比例，再单独配置推荐公司提成")
 		}
 	}
+	if err := checkDirectorRateScopes(items); err != nil {
+		return err
+	}
 	return checkPracticeRegistrationScopes(items)
 }
 
@@ -251,6 +263,14 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
 		{Method: http.MethodPost, Path: "/api/v1/rules/retire", Handler: submit(s.retireRule)},
 		{Method: http.MethodPost, Path: "/api/v1/rule-impact", Handler: submitJSON(1<<20, s.postComponentRuleImpact)},
+		{Method: http.MethodGet, Path: "/api/v1/organization-directors", Handler: s.list(directorVersionsListSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/organization-directors/periods", Handler: s.list(directorPeriodsListSQL)},
+		{Method: http.MethodGet, Path: "/api/v1/organization-directors/detail", Handler: s.directorDetail},
+		{Method: http.MethodGet, Path: "/api/v1/organization-directors/options", Handler: s.directorOptions},
+		{Method: http.MethodPost, Path: "/api/v1/organization-directors/preview", Handler: submitJSON(directorUploadLimit, s.previewDirectorEdit)},
+		{Method: http.MethodPost, Path: "/api/v1/organization-directors", Handler: submitJSON(directorUploadLimit, s.saveDirectorEdit)},
+		{Method: http.MethodGet, Path: "/api/v1/organization-health-conflicts", Handler: s.list(organizationHealthConflictsSQL)},
+		{Method: http.MethodPost, Path: "/api/v1/organization-health-conflicts/resolve", Handler: submitJSON(16<<10, s.resolveOrganizationHealth)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-units", Handler: s.list(organizationUnitsSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/organization-positions", Handler: s.list(organizationPositionsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/organization-positions", Handler: submitJSON(32<<10, s.saveOrganizationPosition)},
@@ -308,6 +328,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/draft-pool-allocations", Handler: submit(s.savePoolAllocation)},
 		{Method: http.MethodPost, Path: "/api/v1/drafts", Handler: submit(s.recalculateDraft)},
 	}
+	routes = append(routes, s.organizationDispatchRoutes()...)
 	for i := range routes {
 		routes[i] = s.financeRoute(routes[i])
 	}
@@ -352,10 +373,10 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusForbidden, err.Error()
 	case errors.Is(err, errFinanceLoginBusy):
 		code, message = http.StatusTooManyRequests, err.Error()
-	case errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope), errors.Is(err, errCatalogPeriodResumeDate), errors.Is(err, errCatalogPeriodQuoteItem),
+	case errors.Is(err, errDispatchCategoryName), errors.Is(err, errDispatchCompanyName), errors.Is(err, errDispatchPersonName), errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope), errors.Is(err, errCatalogPeriodResumeDate), errors.Is(err, errCatalogPeriodQuoteItem),
 		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany),
 		errors.Is(err, errPracticeServiceSeparate),
-		errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap), errors.Is(err, errRuleOrderRole),
+		errors.Is(err, errDirectorRateScope), errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap), errors.Is(err, errRuleOrderRole),
 		errors.Is(err, errAccountingMonthRequired), errors.Is(err, errCatalogPeriodQuoteOrders):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
@@ -381,7 +402,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusConflict, err.Error()
 	case errors.Is(err, errCalculationOverflow):
 		code, message = http.StatusConflict, "试算金额超出范围，请核对原单和规则"
-	case errors.Is(err, errOrganizationCompanyTypeChanged), errors.Is(err, errOrganizationCategoryChanged), errors.Is(err, errOrganizationCategoryInUse),
+	case errors.Is(err, errOrganizationDispatch), errors.Is(err, errOrganizationCompanyTypeChanged), errors.Is(err, errOrganizationCategoryChanged), errors.Is(err, errOrganizationCategoryInUse),
 		errors.Is(err, errOrganizationCategoryName), errors.Is(err, errOrganizationCategoryTarget),
 		errors.Is(err, errOrganizationPositionName), errors.Is(err, errOrganizationPositionChanged):
 		code, message = http.StatusConflict, err.Error()
@@ -415,6 +436,7 @@ func (s workspace) list(query string) http.HandlerFunc {
 
 const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT p.id,p.code,p.name,p.period_mode AS "periodMode",p.cycle_start_day AS "cycleStartDay",
+ EXISTS(SELECT 1 FROM products pro WHERE pro.id=p.id AND ` + directorFamilyProductSQL + `) AS "directorRulesAvailable",
  (l.product_id IS NOT NULL) AS "catalogPending",
  coalesce(l.source_system='DCAI' AND p.period_mode='calendar' AND p.cycle_start_day IN (1,25),false) AS "catalogPeriodRule",
  coalesce((
@@ -459,7 +481,7 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
  ) roster ON pro.period_mode='class'
  LEFT JOIN LATERAL (
   SELECT rv.version,rv.label FROM rule_versions rv
-  CROSS JOIN LATERAL (SELECT ` + componentRuleRetiredAtSQL + ` AS at) stopped WHERE ` + matchingRuleScope + `
+  CROSS JOIN LATERAL (SELECT ` + componentRulePeriodEndSQL + ` AS at) stopped WHERE ` + matchingRuleScope + `
   AND CASE WHEN final.period_id IS NOT NULL THEN rv.id=draft.rule_id
     WHEN pro.period_mode='class' THEN roster.in_period AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
       AND (stopped.at IS NULL OR roster.starts_at<stopped.at)
@@ -776,6 +798,15 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				return invalid
 			}
 		}
+		if usesDirectorRegistry(p.Components) {
+			var eligible bool
+			if err := tx.QueryRow(ctx, `SELECT `+directorFamilyProductSQL+` FROM products pro WHERE id=$1`, p.ProductID).Scan(&eligible); err != nil {
+				return err
+			}
+			if !eligible {
+				return invalid
+			}
+		}
 		var recipientDuties []string
 		for _, c := range p.Components {
 			if mode == "class" && (c.Type == "sales" || c.Type == "referral") && c.SourceRole == "" {
@@ -831,7 +862,7 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 					personIDs = append(personIDs, split.ServicePersonID)
 				}
 			}
-			if mode == "class" && (c.Type == "manager" || c.Type == "delivery") && c.PeriodBenefit == nil {
+			if mode == "class" && (c.Type == "manager" || c.Type == "delivery") && c.PeriodBenefit == nil && c.Mode != directorRateMode {
 				return invalid
 			}
 			if benefit := c.PeriodBenefit; benefit != nil {
@@ -988,8 +1019,8 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 	return version, err
 }
 func (s workspace) createPerson(ctx context.Context, p createPersonInput) (any, error) {
-	if !textOK(p.Name, 80) {
-		return nil, invalid
+	if !textOK(strings.TrimSpace(p.Name), 25) {
+		return nil, errDispatchPersonName
 	}
 	return s.insert(ctx, "INSERT INTO people(name) VALUES($1) RETURNING id", strings.TrimSpace(p.Name))
 }
@@ -1051,11 +1082,29 @@ func startHTTP(ctx context.Context, cfg config, db *pgxpool.Pool) error {
 	health := newHandler(db.Ping)
 	api := workspace{db: db, draftQuotes: &draftCalculationCaches{}, sources: readSources(), ruleAuth: cfg.ruleAuth, development: cfg.development,
 		settlementSyncMaxAge: cfg.settlementSyncMaxAge}
+	stopHealth, err := api.startOrganizationHealth(ctx)
+	if err != nil {
+		return err
+	}
+	defer stopHealth()
+	stopDispatch, err := api.startOrganizationDispatch(ctx)
+	if err != nil {
+		return err
+	}
+	defer stopDispatch()
 	stopSync := api.startOrderSyncWorkers(ctx, cfg.dcaiSyncInterval, cfg.dczdSyncInterval)
 	defer stopSync()
 	stopDraftRefresh := api.startDraftRefreshWorker(ctx, cfg.draftInterval)
 	defer stopDraftRefresh()
-	server.AddRoutes(append([]rest.Route{{Method: http.MethodGet, Path: "/healthz", Handler: health.ServeHTTP}, {Method: http.MethodGet, Path: "/readyz", Handler: health.ServeHTTP}}, api.routes()...))
+	routes := []rest.Route{{Method: http.MethodGet, Path: "/healthz", Handler: health.ServeHTTP}, {Method: http.MethodGet, Path: "/readyz", Handler: health.ServeHTTP}}
+	for _, route := range api.routes() {
+		if route.Method == http.MethodPost && strings.HasPrefix(route.Path, "/api/v1/organization-directors") {
+			server.AddRoute(route, rest.WithMaxBytes(directorUploadLimit))
+		} else {
+			routes = append(routes, route)
+		}
+	}
+	server.AddRoutes(routes)
 	server.Start()
 	return nil
 }
