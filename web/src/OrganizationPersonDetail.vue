@@ -219,7 +219,7 @@ defineExpose({refresh})
             <a-button v-if="canWrite" size="small" type="text" class="person-edit-name" @click="rename=person.name;renameError=''">修改姓名</a-button>
           </div>
           <dl>
-            <div v-if="person.sourceStatus==='INACTIVE'"><dt>老财务状态</dt><dd>已停用 <a v-if="person.canonicalId" :href="personLink(person.canonicalId)">查看合并后的人员</a></dd></div>
+            <div v-if="person.sourceStatus==='INACTIVE'"><dt>状态</dt><dd>已停用 <a v-if="person.canonicalId" :href="personLink(person.canonicalId)">查看合并后的人员</a></dd></div>
             <div><dt>人员 ID</dt><dd class="numeric">{{ person.id }}</dd></div>
             <div><dt>建档时间</dt><dd>{{ formatTime(person.createdAt) }}</dd></div>
           </dl>
@@ -267,7 +267,6 @@ defineExpose({refresh})
         </template>
         <OrganizationDispatch v-if="selected.key==='accounts'" class="person-dispatch-panel" embedded source-accounts-in-profile :person-id="personId" :person-name="person.name"
           :api="api" :can-write="canEdit" :format-time="formatTime" @changed="refresh"/>
-        <OrganizationSourceRelations v-if="['duties','accounts'].includes(selected.key)" :api="api" :person-id="personId" :group="selected.key" :format-time="formatTime"/>
         <KeepAlive v-if="selected.key==='duties'">
           <OrganizationDuties ref="duties" profile :api="api" :format-time="formatTime" :subject="dutySubject"
             :can-write="canWrite" :person-link="personLink"/>
@@ -282,6 +281,8 @@ defineExpose({refresh})
             <div class="records-head">
               <h2>{{ selected.key==='accounts' ? '业务来源账号' : selected.label }}</h2>
               <span v-if="!listLoading && !listError" class="person-record-count">{{ rows.total }} 条记录</span>
+              <a v-if="selected.key==='accounts'" class="context-link" href="#people?tab=identity">{{canWrite ? '管理账号归属' : '全部账号归属'}}</a>
+              <a v-if="selected.key==='positions'" class="context-link" href="#organization?tab=catalog">{{canWrite ? '管理分润岗位' : '全部分润岗位'}}</a>
               <a-button v-if="selected.key==='appointments' && canEdit" type="primary" :loading="appointmentLoading" @click="editAppointment('add')">登记任职</a-button>
             </div>
             <a-alert v-if="listError" class="feedback" type="error" :message="listError" show-icon>
@@ -316,6 +317,7 @@ defineExpose({refresh})
               <template #emptyText>{{ selected.empty }}</template>
             </a-table>
           </section>
+          <OrganizationSourceRelations v-if="selected.key==='accounts'" :api="api" :person-id="personId" :format-time="formatTime"/>
         </template>
       </div>
     </template>

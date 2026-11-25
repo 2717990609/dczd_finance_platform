@@ -179,7 +179,10 @@ defineExpose({refresh})
      </template>
     <div class="dispatch-table-head">
       <div><h3 ref="historyHeading" tabindex="-1">{{personId ? '销售身份下发记录' : embedded ? '下发记录' : '同步记录'}}</h3><span v-if="data && !error" class="record-total">{{ data.total }} 条</span></div>
-      <a-button size="small" :loading="loading" @click="refresh"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新</a-button>
+      <a-space>
+        <a v-if="embedded && !personId" class="context-link" href="#organization?tab=health">AI 回传冲突</a>
+        <a-button size="small" :loading="loading" @click="refresh"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新</a-button>
+      </a-space>
     </div>
     <a-space v-if="!personId || data?.total || targetFilter || issuesOnly" wrap>
      <a-select v-model:value="targetFilter" aria-label="筛选目标系统" style="min-width:132px" :options="[{value:'',label:'全部目标系统'},...systems]"/>
@@ -192,7 +195,7 @@ defineExpose({refresh})
      :pagination="{current:page,total:data?.total || 0,pageSize:25,showSizeChanger:false,hideOnSinglePage:true}" @change="page=$event.current">
      <template #bodyCell="{column,record}">
       <span v-if="column.key==='target'">{{label(record.target)}}</span>
-      <span v-else-if="column.key==='operation'">{{record.name}} · {{operations[record.operation] || (record.kind==='COMPANY' ? '公司' : record.kind==='MEMBER' ? '人员' : '类别')}}<small v-if="record.imported">老财务记录</small></span>
+      <span v-else-if="column.key==='operation'">{{record.name}} · {{operations[record.operation] || (record.kind==='COMPANY' ? '公司' : record.kind==='MEMBER' ? '人员' : '类别')}}</span>
       <span v-else-if="column.key==='state'"><a-tag :color="stateColors[record.state]">{{states[record.state] || record.state}}</a-tag><small v-if="record.reason">{{syncReasons[record.reason] || record.reason}}</small></span>
       <span v-else-if="column.key==='effective'">{{formatTime(record.effectiveAt)}}</span>
       <a-button v-else-if="column.key==='actions' && canWrite && !record.imported && record.kind==='MEMBER' && record.operation!=='CREATE' && record.attempts===0 && record.state==='PENDING' && Date.parse(record.effectiveAt)>Date.now()" size="small" @click="submit('cancel',{messageId:record.id})">取消计划</a-button>

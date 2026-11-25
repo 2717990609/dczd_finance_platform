@@ -400,3 +400,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .person-detail-heading h1 { font-size: 21px; }
   .person-detail-avatar { width: 42px; height: 42px; font-size: 20px; }
 }
+
+.context-link {color:var(--accent);white-space:nowrap}
+.context-link:hover {text-decoration:underline}

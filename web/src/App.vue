@@ -58,7 +58,8 @@ const organizationPrimaryPages = [
   {page:'people',tab:'main',label:'人员档案'},
   {page:'organization',tab:'companies',label:'销售公司'},
 ]
-const organizationOtherPages = [
+const organizationPages = [
+  ...organizationPrimaryPages,
   {page:'organization',tab:'sync',label:'下发记录'},
   {page:'organization',tab:'duties',label:'业务职责'},
   {page:'organization',tab:'directors',label:'总监归属'},
@@ -66,8 +67,6 @@ const organizationOtherPages = [
   {page:'people',tab:'identity',label:'来源账号'},
   {page:'organization',tab:'health',label:'AI 组织冲突'},
 ]
-const organizationPages = [...organizationPrimaryPages, ...organizationOtherPages]
-const organizationMoreOpen = ref(false)
 function isActiveOrganizationPage(entry) {
   return current.value===entry.page && (entry.page==='people' ? tab.value : organizationPanel.value)===entry.tab
 }
@@ -1809,17 +1808,6 @@ async function save() {
           <nav v-if="active.area==='data'" class="workspace-nav organization-nav" aria-label="组织与人员导航">
             <a v-for="entry in organizationPrimaryPages" :key="entry.tab" :href="organizationHref(entry.page,entry.tab)"
               :aria-current="isActiveOrganizationPage(entry) ? 'page' : undefined">{{ entry.label }}</a>
-            <a-dropdown v-model:open="organizationMoreOpen" :trigger="['click']">
-              <button type="button" class="organization-more" :class="{'is-current':organizationOtherPages.some(isActiveOrganizationPage)}"
-                aria-haspopup="menu" :aria-expanded="organizationMoreOpen">更多<DownOutlined aria-hidden="true"/></button>
-              <template #overlay>
-                <a-menu @click="organizationMoreOpen=false">
-                  <a-menu-item v-for="entry in organizationOtherPages" :key="entry.tab">
-                    <a :href="organizationHref(entry.page,entry.tab)" :aria-current="isActiveOrganizationPage(entry) ? 'page' : undefined">{{entry.label}}</a>
-                  </a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
           </nav>
           <nav v-else-if="workspacePages.length>1" class="workspace-nav" :aria-label="activeWorkspace?.title+'导航'">
             <a v-for="entry in workspacePages" :key="entry.key" :href="'#'+entry.key" :aria-current="current===entry.key ? 'page' : undefined">{{ entry.title }}</a>

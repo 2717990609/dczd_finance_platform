@@ -98,8 +98,15 @@ defineExpose({refresh})
    <a-space v-if="canWrite" wrap>
     <a-button :disabled="busy||loading" @click="start('director')">登记总监</a-button>
     <a-button :disabled="busy||loading" @click="start('member')">调整公司归属</a-button>
-    <a-button :disabled="busy||loading" @click="start('legacy')">导入已核定版本</a-button>
-    <a-button type="primary" :disabled="busy||loading" @click="start('import')">导入原表</a-button>
+    <a-dropdown :trigger="['click']" :disabled="busy||loading">
+     <a-button type="primary" :disabled="busy||loading">导入归属</a-button>
+     <template #overlay>
+      <a-menu>
+       <a-menu-item key="import" @click="start('import')">Excel 表格</a-menu-item>
+       <a-menu-item key="legacy" @click="start('legacy')">已核定版本（JSON）</a-menu-item>
+      </a-menu>
+     </template>
+    </a-dropdown>
    </a-space>
   </div>
   <a-alert v-if="error" type="error" :message="error" show-icon>
@@ -108,14 +115,14 @@ defineExpose({refresh})
   <a-alert v-if="notice" type="success" :message="notice" show-icon/>
   <p>每期按开班时间使用一版归属，此后沿用至下一版。已确认结算保留原版本。</p>
   <template v-if="mode && canWrite">
-   <h3>{{ ({legacy:'导入已核定版本',import:'导入原表',director:'登记总监',member:'调整公司归属'})[mode] }}</h3>
+   <h3>{{ ({legacy:'导入已核定版本',import:'导入 Excel 表格',director:'登记总监',member:'调整公司归属'})[mode] }}</h3>
    <a-form layout="vertical" :disabled="busy">
     <div class="director-fields">
      <a-form-item label="起始期次" required><a-select v-model:value="period" :options="periodsOptions" placeholder="选择已同步的家庭教育期次"/></a-form-item>
      <a-form-item v-if="mode==='import'" label="六列原表（xlsx）" required>
       <input type="file" accept=".xlsx" :disabled="busy" @change="chooseFile"/>
      </a-form-item>
-     <a-form-item v-if="mode==='legacy'" label="原财务核定版本（JSON）" required>
+     <a-form-item v-if="mode==='legacy'" label="已核定版本（JSON）" required>
       <input type="file" accept=".json" :disabled="busy" @change="chooseFile"/>
      </a-form-item>
      <a-form-item v-if="mode==='member'||mode==='director'" label="销售公司" required>
@@ -152,14 +159,14 @@ defineExpose({refresh})
   </template>
   <template v-else>
    <details v-for="v in sourceVersions" :key="v.version_no">
-    <summary>老财务已核定 V{{v.version_no}} · {{v.period_name}} · {{v.rows.length}} 条归属</summary>
-    <p>原版自 {{formatTime(v.starts_at)}} 起生效。</p>
+    <summary>{{v.period_name}} · 历史版本 V{{v.version_no}}</summary>
+    <p>{{formatTime(v.starts_at)}} 起生效</p>
     <a-table :data-source="v.rows" :columns="[{title:'部门',dataIndex:'department'},{title:'总监',dataIndex:'leader_name'},{title:'总监公司',dataIndex:'leader_company_name'},{title:'组员',dataIndex:'member_name'},{title:'下属公司',dataIndex:'member_company_name'}]" row-key="number" size="small" :scroll="{x:690}" :pagination="{pageSize:20}"/>
    </details>
    <label for="director-version">归属版本</label>
    <a-select id="director-version" :value="selected" :loading="loading" :options="versions.map(v=>({value:v.id,label:'V'+v.version+' · '+v.periodName}))"
      placeholder="暂无归属版本" @change="readDetail"/>
-   <p v-if="detail">开班 {{formatTime(detail.startsAt)}} · {{detail.createdBy}} 于 {{formatTime(detail.createdAt)}} 保存 · {{detail.fileName}}<template v-if="detail.document?.source_version"> · 原财务 V{{detail.document.source_version}}</template></p>
+   <p v-if="detail">开班 {{formatTime(detail.startsAt)}} · {{detail.createdBy}} 于 {{formatTime(detail.createdAt)}} 保存 · {{detail.fileName}}</p>
    <details v-if="detail"><summary>版本依据及归属变动</summary>
     <p class="director-digest">文件 SHA-256 · {{detail.fileHash}}</p>
     <a-table :columns="changes" :data-source="detail.changes" :row-key="r=>r.company+r.kind" size="small" :pagination="{pageSize:15}"/>

@@ -160,7 +160,7 @@ defineExpose({refresh})
   </KeepAlive>
   <KeepAlive>
     <OrganizationCompanies v-if="panel==='companies'" ref="companies" :api="api" :format-time="formatTime" :can-write="canWrite" :units="units" @directory-changed="loadUnits"
-      @show-director="company=>{directorCompany=company;emit('update:panel','directors')}" @show-appointments="showCompanyAppointments" @show-duties="showDuties"/>
+      @show-director="company=>{directorCompany=company.companyType==='UNKNOWN' ? undefined : company;emit('update:panel','directors')}" @show-appointments="showCompanyAppointments" @show-duties="showDuties"/>
   </KeepAlive>
   <KeepAlive>
     <OrganizationDuties v-if="panel==='duties'" ref="duties" :api="api" :format-time="formatTime" :can-write="canWrite"
