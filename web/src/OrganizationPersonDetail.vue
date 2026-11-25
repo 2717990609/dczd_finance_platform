@@ -71,6 +71,7 @@ function appointmentSaved(message){
  else loadRows()
 }
 const heading = ref()
+const sectionNav = ref()
 const profileError = ref('')
 const profileLoading = ref(false)
 const rows = ref({total:0,items:[]})
@@ -182,11 +183,15 @@ function refresh() {
   else if (selected.value.key==='duties') duties.value?.refresh()
   else loadRows()
 }
-watch(() => selected.value.key, key => {
+watch(() => selected.value.key, (key, previous) => {
   if (key!=='accounts') closeAccountHistory()
   moreOpen.value=false
   actionError.value=''
   notice.value=''
+  if(previous){
+    appointment.value=undefined
+    nextTick(()=>sectionNav.value?.scrollIntoView({block:'nearest'}))
+  }
   listPage.value = 1
   loadRows()
 }, {immediate:true})
@@ -219,7 +224,7 @@ defineExpose({refresh})
             <div><dt>建档时间</dt><dd>{{ formatTime(person.createdAt) }}</dd></div>
           </dl>
         </div>
-        <a-button v-if="canEdit" class="person-edit-name" @click="rename=person.name;renameError=''">修改姓名</a-button>
+        <a-button v-if="canWrite" class="person-edit-name" @click="rename=person.name;renameError=''">修改姓名</a-button>
       </div>
     </div>
     <template v-if="person">
@@ -232,7 +237,7 @@ defineExpose({refresh})
          <a-input id="person-rename" v-model:value="rename" :maxlength="25" show-count/>
        </a-form-item></a-form>
       </a-modal>
-      <nav class="workspace-nav person-detail-nav" aria-label="个人信息导航">
+      <nav ref="sectionNav" class="workspace-nav person-detail-nav" aria-label="个人信息导航">
         <a v-for="item in mainTabs" :key="item.key" :href="personLink(personId,item.key==='overview' ? undefined : item.key)"
           :aria-current="item.key===selected.key ? 'page' : undefined">{{ item.label }}</a>
         <a-dropdown v-model:open="moreOpen" :trigger="['click']">
@@ -266,7 +271,7 @@ defineExpose({refresh})
         <OrganizationSourceRelations v-if="['duties','accounts'].includes(selected.key)" :api="api" :person-id="personId" :group="selected.key" :format-time="formatTime"/>
         <KeepAlive v-if="selected.key==='duties'">
           <OrganizationDuties ref="duties" profile :api="api" :format-time="formatTime" :subject="dutySubject"
-            :can-write="canEdit" :person-link="personLink"/>
+            :can-write="canWrite" :person-link="personLink"/>
         </KeepAlive>
         <template v-else-if="selected.path">
           <section v-if="selected.key==='accounts' && financeStatus[person.accountStatus]" class="records person-finance-account">
