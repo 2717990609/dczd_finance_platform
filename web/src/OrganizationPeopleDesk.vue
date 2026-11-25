@@ -1,6 +1,6 @@
 <script setup>
 import { onBeforeUnmount, ref, watch } from 'vue'
-import { PlusOutlined } from '@ant-design/icons-vue'
+import { PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import OrganizationPersonIntake from './OrganizationPersonIntake.vue'
 
 const props = defineProps({api:Function,canWrite:Boolean,personLink:Function,optionLabel:Function})
@@ -54,12 +54,14 @@ defineExpose({refresh})
 <template>
   <section class="records people-workspace" aria-label="人员办理">
     <div class="records-head people-heading">
-      <div><h2>人员档案</h2><span class="order-version">共 {{ people.total }} 人</span></div>
+      <div class="people-title"><h2>人员档案</h2><span v-if="!loading && !error" role="status">{{people.total}} 人</span></div>
       <a-button v-if="canWrite" type="primary" @click="creating=true"><template #icon><PlusOutlined aria-hidden="true"/></template>新建人员</a-button>
     </div>
     <div class="people-filters">
+      <a-input v-model:value="term" placeholder="搜索姓名、账号 ID、组织或职责" aria-label="搜索人员" :maxlength="100" allow-clear @press-enter="refresh">
+        <template #prefix><SearchOutlined aria-hidden="true"/></template>
+      </a-input>
       <a-select :value="scope" :options="scopes" aria-label="筛选人员" style="width:164px" @change="setScope"/>
-      <a-input-search v-model:value="term" placeholder="搜索姓名、账号 ID、组织或职责" aria-label="搜索人员" :maxlength="100" allow-clear @search="refresh"/>
     </div>
     <a-alert v-if="error" :message="error" type="error" show-icon><template #action><a-button @click="refresh">重试</a-button></template></a-alert>
     <a-spin v-else :spinning="loading">
@@ -97,12 +99,15 @@ defineExpose({refresh})
 </template>
 <style scoped>
 .people-workspace {max-width:1280px;margin-inline:auto}
-.people-heading {display:flex;align-items:center;justify-content:space-between}
-.people-filters {display:flex;align-items:center;flex-wrap:wrap;gap:10px 18px;padding:12px 16px}
-.people-filters .ant-input-search {max-width:360px;min-width:min(100%,220px);flex:1}
+.people-heading {display:flex;align-items:center;justify-content:space-between;padding:14px 16px 9px}
+.people-title {display:flex;align-items:center;gap:10px}
+.people-title h2 {font-size:18px}
+.people-title span {border-radius:12px;padding:2px 8px;color:var(--muted);background:var(--surface,#f5f7fb);font-size:12px}
+.people-filters {display:flex;align-items:center;flex-wrap:wrap;gap:8px 12px;padding:5px 16px 14px}
+.people-filters .ant-input-affix-wrapper {max-width:360px;min-width:min(100%,220px);flex:1}
 .people-list {list-style:none;margin:0;padding:0}
 .people-list-heading,.people-row {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.5fr) minmax(0,1fr);gap:12px 20px;padding:10px 16px;align-items:center}
-.people-list-heading {background:var(--accent-soft);color:var(--muted);font-weight:600}
+.people-list-heading {background:var(--surface,#f5f7fb);color:var(--muted);font-weight:600;border-block:1px solid var(--line)}
 .people-row {border-bottom:1px solid var(--line);color:var(--ink);overflow-wrap:anywhere}
 .people-row:hover,.people-row:focus-visible {background:var(--accent-soft)}
 .people-row-name,.people-row-appointments {display:grid;justify-items:start;gap:2px}

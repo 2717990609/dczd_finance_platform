@@ -2,7 +2,7 @@
 import { computed, ref, watch } from 'vue'
 import { Tree, TreeSelect } from 'ant-design-vue'
 
-const props = defineProps({ nodes: Array, selected: String, loading: Boolean, fillHeight: Boolean })
+const props = defineProps({ nodes: Array, selected: String, loading: Boolean, fillHeight: Boolean, hideSearchLabel: Boolean })
 const emit = defineEmits(['select'])
 const treeViewport = ref()
 const treeHeight = ref(264)
@@ -60,7 +60,7 @@ watch(treeViewport, (viewport, _, onCleanup) => {
 
 <template>
   <section class="scope-organization desktop-scope" aria-label="组织范围">
-    <label for="workspace-organization-search" class="scope-title">组织范围</label>
+    <label v-if="!hideSearchLabel" for="workspace-organization-search" class="scope-title">组织范围</label>
     <a-input id="workspace-organization-search" v-model:value="search" aria-label="搜索组织"
       placeholder="搜索公司、部门或小组" allow-clear />
     <div class="scope-options">
@@ -69,7 +69,9 @@ watch(treeViewport, (viewport, _, onCleanup) => {
     <div v-if="visibleNodes.length" ref="treeViewport" class="scope-tree-viewport">
       <Tree v-model:expanded-keys="expandedKeys" :selected-keys="selected ? [selected] : []"
         :tree-data="visibleNodes" :field-names="fieldNames" :height="treeHeight" block-node
-        @select="keys=>keys.length && emit('select',keys[0])" />
+        @select="keys=>keys.length && emit('select',keys[0])">
+        <template #title="{title}"><span class="scope-node-title" :title="title">{{title}}</span></template>
+      </Tree>
     </div>
     <p v-else class="organization-scope-status" role="status">{{ loading ? '正在读取组织' : term ? '未找到匹配组织' : '暂无组织' }}</p>
   </section>

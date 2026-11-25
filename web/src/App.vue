@@ -1,7 +1,7 @@
 <script setup>
 import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import {
-  BankOutlined, CloudSyncOutlined, DownOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined,
+  ApartmentOutlined, BankOutlined, CloudSyncOutlined, DownOutlined, IdcardOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined, ShopOutlined,
 } from '@ant-design/icons-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import PeriodTasks from './PeriodTasks.vue'
@@ -54,9 +54,9 @@ const navigation = [
 ]
 const workspaces = [{key:'work',title:'工作台'}, {key:'config',title:'配置'}, {key:'data',title:'系统与数据'}]
 const organizationPrimaryPages = [
-  {page:'organization',tab:'organization',label:'人员归属'},
-  {page:'people',tab:'main',label:'人员档案'},
-  {page:'organization',tab:'companies',label:'销售公司'},
+  {page:'organization',tab:'organization',label:'组织任职',icon:ApartmentOutlined},
+  {page:'people',tab:'main',label:'人员档案',icon:IdcardOutlined},
+  {page:'organization',tab:'companies',label:'销售公司',icon:ShopOutlined},
 ]
 const organizationPages = [
   ...organizationPrimaryPages,
@@ -1790,7 +1790,7 @@ async function save() {
         </template>
       </aside>
       <main class="workspace-content">
-        <section v-show="!personPage" class="workspace-page-head">
+        <section v-show="!personPage" class="workspace-page-head" :class="{'organization-page-head':active.area==='data'}">
           <div class="workspace-page-title">
             <h1>{{ active.area==='data' ? '组织与人员' : active.title }}</h1>
             <a v-if="reviewRootPeriod" class="workspace-return" :href="settlementLink(reviewRootPeriod,'review',periodOrigin)"><LeftOutlined aria-hidden="true"/>返回原期核对</a>
@@ -1807,7 +1807,9 @@ async function save() {
           </div>
           <nav v-if="active.area==='data'" class="workspace-nav organization-nav" aria-label="组织与人员导航">
             <a v-for="entry in organizationPrimaryPages" :key="entry.tab" :href="organizationHref(entry.page,entry.tab)"
-              :aria-current="isActiveOrganizationPage(entry) ? 'page' : undefined">{{ entry.label }}</a>
+              :aria-current="isActiveOrganizationPage(entry) ? 'page' : undefined">
+              <component :is="entry.icon" aria-hidden="true"/>{{entry.label}}
+            </a>
           </nav>
           <nav v-else-if="workspacePages.length>1" class="workspace-nav" :aria-label="activeWorkspace?.title+'导航'">
             <a v-for="entry in workspacePages" :key="entry.key" :href="'#'+entry.key" :aria-current="current===entry.key ? 'page' : undefined">{{ entry.title }}</a>

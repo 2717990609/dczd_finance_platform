@@ -4,7 +4,8 @@ import OrganizationDispatchCreateUnit from './OrganizationDispatchCreateUnit.vue
 import OrganizationDispatchUnit from './OrganizationDispatchUnit.vue'
 import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import OrganizationAppointmentForm from './OrganizationAppointmentForm.vue'
-import PersonAppointmentActions from './PersonAppointmentActions.vue'
+import OrganizationAssignmentList from './OrganizationAssignmentList.vue'
+import { ApartmentOutlined, PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import CatalogAppointments from './CatalogAppointments.vue'
 import OrganizationDirectors from './OrganizationDirectors.vue'
 import OrganizationDispatch from './OrganizationDispatch.vue'
@@ -47,6 +48,7 @@ const duties = ref()
 const dutySubject = ref()
 let request = 0
 let unitRequest = 0
+let searchTimer
 
 const kindLabel = kind => props.optionLabel('organizationKind',kind)
 const tree = computed(() => organizationTree(units.value,kindLabel))
@@ -58,17 +60,14 @@ const waitingForDate = computed(() => dateMode.value==='date' && !on.value)
 const emptyMessage = computed(() => waitingForDate.value
   ? '请选择任职日期'
   : '当前条件下没有任职记录')
-const fields = [
-  {title:'人员',dataIndex:'personName',key:'personName',width:130},
-  {title:'组织',dataIndex:'unitName',key:'unitName',width:180},
-  {title:'任职',dataIndex:'kind',key:'kind',width:135},
-  {title:'任职时间',key:'period',width:205},
-]
-const columns = computed(() => [
-  ...fields,
-  ...(props.canWrite ? [{title:'',key:'actions',width:120}] : []),
-])
-const pagination = computed(() => ({current:page.value,pageSize:25,total:entries.value.total,showSizeChanger:false,hideOnSinglePage:true}))
+const filtersActive = computed(() => !!name.value.trim() || dateMode.value!=='current' || hasChildren.value && !includeChildren.value)
+function clearFilters() {
+  name.value = ''
+  searchPeople()
+  dateMode.value = 'current'
+  on.value = ''
+  includeChildren.value = true
+}
 
 async function loadUnits() {
   const version = ++unitRequest
@@ -136,10 +135,11 @@ function filterEntries() {
   loadEntries()
 }
 function searchPeople() {
+  clearTimeout(searchTimer)
   search.value = name.value.trim()
 }
-function changePage(pagination) {
-  page.value = pagination.current
+function changePage(nextPage) {
+  page.value = nextPage
   loadEntries()
 }
 function openEditor(mode, record) {
@@ -151,9 +151,14 @@ function saved(message) {
   notice.value = message
   loadEntries()
 }
+watch(name,value=>{
+  clearTimeout(searchTimer)
+  if(!value.trim())searchPeople()
+  else searchTimer=setTimeout(searchPeople,220)
+})
 watch([unitId,hasChildren,includeChildren,on,dateMode,search],filterEntries)
 onMounted(() => { loadUnits(); loadEntries() })
-onBeforeUnmount(() => { request++; unitRequest++ })
+onBeforeUnmount(() => { clearTimeout(searchTimer); request++; unitRequest++ })
 defineExpose({refresh})
 </script>
 
@@ -178,51 +183,44 @@ defineExpose({refresh})
     <a-alert v-if="unitsError || entriesError" class="feedback" type="error" :message="unitsError || entriesError" show-icon/>
     <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
     <div class="records organization-browser">
-      <div class="scope-panel organization-scope">
+      <aside class="scope-panel organization-scope" aria-label="组织目录">
         <div class="organization-tree-actions">
-          <a-button v-if="canWrite" size="small" @click="createUnit=true">新建组织</a-button>
-          <a-button size="small" type="text" @click="positionsOpen=true">岗位目录</a-button>
+          <span><ApartmentOutlined aria-hidden="true"/> 组织目录</span>
+          <a-space wrap :size="2">
+            <a-button class="organization-positions-link" type="text" size="small" @click="positionsOpen=true">岗位</a-button>
+            <a-button v-if="canWrite" size="small" type="text" @click="createUnit=true">
+              <template #icon><PlusOutlined aria-hidden="true"/></template>新建组织
+            </a-button>
+          </a-space>
         </div>
-        <WorkspaceOrganizationScope :nodes="tree" :selected="unitId" :loading="unitsLoading" fill-height @select="unitId=$event"/>
-      </div>
-      <section class="organization-directory">
-        <div class="records-head">
+        <WorkspaceOrganizationScope :nodes="tree" :selected="unitId" :loading="unitsLoading" fill-height
+          hide-search-label @select="unitId=$event"/>
+      </aside>
+      <section class="organization-directory" aria-label="人员任职">
+        <header class="organization-directory-header">
           <div class="organization-heading">
-            <h2>人员任职</h2>
-            <span class="organization-context">{{ selectedUnit?.name || '全部组织' }}</span>
+            <h2>{{selectedUnit?.name || '全部组织'}}</h2>
+            <span v-if="!loading && !entriesError && !waitingForDate" class="organization-count" role="status">{{entries.total}} 条任职</span>
           </div>
           <a-space wrap>
             <a-button v-if="selectedUnit" type="text" @click="dispatchUnit=selectedUnit">关联销售公司</a-button>
-            <a-button v-if="canWrite" type="primary" @click="openEditor('add')">登记任职</a-button>
+            <a-button v-if="canWrite" type="primary" @click="openEditor('add')">
+              <template #icon><PlusOutlined aria-hidden="true"/></template>登记任职
+            </a-button>
           </a-space>
+        </header>
+        <div class="organization-filterbar">
+          <a-input id="organization-name" v-model:value="name" placeholder="搜索姓名或人员 ID" aria-label="搜索姓名或人员 ID"
+            allow-clear :maxlength="100" @press-enter="searchPeople">
+            <template #prefix><SearchOutlined aria-hidden="true"/></template>
+          </a-input>
+          <AppointmentDateFilter v-model:mode="dateMode" v-model:date="on" compact/>
+          <a-checkbox v-if="hasChildren" v-model:checked="includeChildren">包含下级组织</a-checkbox>
+          <a-button v-if="filtersActive" type="link" size="small" @click="clearFilters">清除筛选</a-button>
         </div>
-        <div class="organization-filters organization-person-filters">
-          <div>
-            <label for="organization-name">人员姓名</label>
-            <a-input-search id="organization-name" v-model:value="name" placeholder="输入姓名" allow-clear
-              @search="searchPeople" @change="!name && searchPeople()"/>
-          </div>
-          <div class="organization-date-options">
-            <AppointmentDateFilter v-model:mode="dateMode" v-model:date="on"/>
-            <a-checkbox v-if="hasChildren" v-model:checked="includeChildren">包含下级组织</a-checkbox>
-          </div>
-        </div>
-        <a-table size="middle" :columns="columns" :data-source="entries.items" :loading="loading" row-key="id" :pagination="pagination"
-          :scroll="{x:canWrite?770:650}" @change="changePage">
-          <template #bodyCell="{column,record,text}">
-            <a v-if="column.key==='personName'" class="person-name-link" :href="personLink(record.personId)">{{ text }}</a>
-            <template v-else-if="column.key==='kind'">
-              {{ optionLabel('appointmentKind',text) }}
-              <a-tag v-if="record.appointmentType && record.appointmentType!==text && (!record.salesCompany || record.appointmentType==='CONCURRENT')">{{ optionLabel('appointmentKind',record.appointmentType) }}</a-tag><small v-if="record.position" class="order-version">{{ record.position }}</small>
-            </template>
-            <template v-else-if="column.key==='period'">
-              <span class="numeric">{{formatTime(record.validFrom)}} 起</span>
-              <small v-if="record.validTo" class="order-version numeric">{{formatTime(record.validTo)}} 止</small>
-            </template>
-            <PersonAppointmentActions v-else-if="column.key==='actions'" :label="record.personName+'在'+record.unitName" @select="mode=>openEditor(mode,record)"/>
-          </template>
-          <template #emptyText>{{ emptyMessage }}</template>
-        </a-table>
+        <OrganizationAssignmentList :rows="entries" :loading="loading" :page="page" :can-write="canWrite"
+          :empty-message="emptyMessage" :option-label="optionLabel" :person-link="personLink" :format-time="formatTime"
+          @page="changePage" @edit="openEditor"/>
       </section>
     </div>
   </div>
@@ -237,8 +235,35 @@ defineExpose({refresh})
 
 <style scoped>
 .organization-workspace {max-width:1280px;margin-inline:auto}
-@media(width>680px){.organization-browser .organization-scope {grid-template-rows:auto minmax(0,1fr)}}
-.organization-tree-actions {display:flex;align-items:center;flex-wrap:wrap;gap:4px;margin-bottom:10px}
-.organization-date-options {display:flex;flex-wrap:wrap;align-items:end;gap:8px 14px}
-.organization-date-options :deep(.ant-checkbox-wrapper) {display:inline-flex;align-items:center;margin:0}
+.organization-browser {grid-template-columns:260px minmax(0,1fr)}
+.organization-scope {background:var(--surface,#f5f7fb)}
+.organization-tree-actions {display:flex;align-items:center;justify-content:space-between;gap:6px;margin-bottom:12px}
+.organization-tree-actions > span {color:var(--ink);font-weight:650;white-space:nowrap}
+.organization-tree-actions .ant-btn {color:var(--accent);padding-inline:4px}
+.organization-tree-actions .organization-positions-link {color:var(--muted)}
+.organization-directory-header {display:flex;justify-content:space-between;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:14px 16px 9px}
+.organization-directory-header h2 {font-size:18px;margin:0;overflow-wrap:anywhere}
+.organization-count {border-radius:12px;padding:2px 8px;color:var(--muted);background:var(--surface,#f5f7fb);font-size:12px;white-space:nowrap}
+.organization-filterbar {display:flex;gap:8px 12px;align-items:center;flex-wrap:wrap;padding:5px 16px 14px}
+.organization-filterbar > .ant-input-affix-wrapper {width:min(260px,100%);flex:0 1 260px}
+.organization-filterbar :deep(.ant-checkbox-wrapper) {min-height:34px;align-items:center}
+.organization-filterbar > .ant-btn-link {padding-inline:0}
+@media(width>680px){
+ .organization-browser .organization-scope {grid-template-rows:auto minmax(0,1fr)}
+}
+@media(max-width:820px){
+ .organization-browser {grid-template-columns:minmax(0,1fr)}
+ .organization-browser .organization-scope {display:block;border-right:0;border-bottom:1px solid var(--line)}
+ .organization-scope :deep(.desktop-scope) {display:none}
+ .organization-scope :deep(.mobile-scope) {display:flex;align-items:center;gap:9px}
+ .organization-scope :deep(.mobile-scope .ant-select) {flex:1;min-width:0}
+ .organization-directory-header {padding-inline:12px}
+ .organization-filterbar {padding-inline:12px}
+}
+@media(max-width:680px){
+ .organization-scope {padding:10px 12px;border-right:0;border-bottom:1px solid var(--line)}
+ .organization-tree-actions {margin-bottom:8px}
+ .organization-filterbar > .ant-input-affix-wrapper {width:100%;flex-basis:100%}
+ .organization-directory-header :deep(.ant-btn) {min-height:38px}
+}
 </style>

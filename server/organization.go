@@ -32,18 +32,19 @@ const organizationAssignmentsSQL = `WITH RECURSIVE branches AS (
  SELECT u.id FROM organization_units u JOIN branches b ON b.id=u.parent_id WHERE $6
 ), matching AS (
  SELECT a.id,p.name AS "personName",p.id AS "personId",u.id AS "unitId",u.name AS "unitName",u.kind AS "unitKind",
+  (coalesce(p.a2_name_status='MISSING',false) OR p.name ~ '^[[:digit:][:punct:][:space:]]+$') AS "nameNeedsReview",
   (u.sales_company_type IS NOT NULL) AS "salesCompany",
   a.kind,a.position,a.appointment_type AS "appointmentType",a.valid_from AS "validFrom",a.valid_to AS "validTo"
  FROM organization_assignments a JOIN people p ON p.id=a.person_id JOIN organization_units u ON u.id=a.unit_id
  WHERE ($1::uuid IS NULL OR a.unit_id IN (SELECT id FROM branches)) AND
   ($2::timestamptz IS NULL OR (a.valid_from<=$2 AND (a.valid_to IS NULL OR a.valid_to>$2))) AND
-  ($3='' OR strpos(lower(p.name),lower($3))>0) AND
+  ($3='' OR p.id::text=$3 OR strpos(lower(p.name),lower($3))>0) AND
   ($5::bigint IS NULL OR a.person_id=$5)
  ), page AS (
- SELECT * FROM matching ORDER BY "personName","validFrom" DESC,id LIMIT 25 OFFSET $4
+ SELECT * FROM matching ORDER BY "nameNeedsReview","personName","validFrom" DESC,id LIMIT 25 OFFSET $4
  )
  SELECT jsonb_build_object('total',(SELECT count(*) FROM matching),
-  'items',coalesce((SELECT jsonb_agg(to_jsonb(page) ORDER BY "personName","validFrom" DESC,id) FROM page),'[]'))`
+  'items',coalesce((SELECT jsonb_agg(to_jsonb(page) ORDER BY "nameNeedsReview","personName","validFrom" DESC,id) FROM page),'[]'))`
 
 func (s workspace) organizationAssignments(w http.ResponseWriter, r *http.Request) {
 	params := r.URL.Query()

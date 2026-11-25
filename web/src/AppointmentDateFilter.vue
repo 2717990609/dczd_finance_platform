@@ -2,6 +2,8 @@
 import { useId } from 'vue'
 import { RadioGroup } from 'ant-design-vue'
 
+defineProps({compact:Boolean})
+
 const mode = defineModel('mode', {type:String, required:true})
 const date = defineModel('date', {type:String, required:true})
 const dateId = useId()
@@ -15,7 +17,7 @@ const modes = [
 <template>
   <div class="appointment-date-filter">
     <div>
-      <div class="appointment-filter-label">任职记录</div>
+      <div v-if="!compact" class="appointment-filter-label">任职记录</div>
       <RadioGroup v-model:value="mode" role="radiogroup" aria-label="任职记录"
         :options="modes" option-type="button" button-style="solid"/>
     </div>

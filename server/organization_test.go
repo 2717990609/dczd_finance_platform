@@ -73,6 +73,9 @@ func TestOrganizationDirectoryUsesLocalAssignmentIntervals(t *testing.T) {
 		t.Fatal(got)
 	}
 	query(parentOnChildDay+"&includeChildren=invalid", 400)
+	if got := query("/api/v1/organization-assignments?name=1&history=true", 200); !strings.Contains(got, `"total":2`) {
+		t.Fatal(got)
+	}
 	query("/api/v1/organization-assignments?on=2026-02-30", 400)
 	if got := query("/api/v1/organization-assignments?history=true&name=测试人员&page=2", 200); !strings.Contains(got, `"items":[],"total":2`) {
 		t.Fatal(got)

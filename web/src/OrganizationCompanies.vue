@@ -1,6 +1,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onDeactivated, ref, watch } from 'vue'
 import { RadioGroup, TreeSelect } from 'ant-design-vue'
+import { PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { organizationTree } from './organization-tree'
 import OrganizationCategoryEditor from './OrganizationCategoryEditor.vue'
 import OrganizationDispatchProfile from './OrganizationDispatchProfile.vue'
@@ -17,6 +18,7 @@ const status = ref('')
 const type = ref('')
 const name = ref('')
 const search = ref('')
+let searchTimer
 const category = ref()
 const page = ref(1)
 const result = ref({items:[],categories:[],total:0})
@@ -141,12 +143,29 @@ async function applyAssignment() {
     assignmentSaving.value = false
   }
 }
+const filtersActive=computed(()=>!!name.value.trim() || !!type.value || !!category.value || !!status.value)
+function searchCompanies(){
+  clearTimeout(searchTimer)
+  search.value=name.value.trim()
+}
+function clearFilters(){
+  name.value=''
+  searchCompanies()
+  type.value=''
+  category.value=undefined
+  status.value=''
+}
+watch(name,value=>{
+  clearTimeout(searchTimer)
+  if(!value.trim())searchCompanies()
+  else searchTimer=setTimeout(searchCompanies,220)
+})
 watch([type,category,search,status], () => {
   selectedIds.value = []
   page.value = 1
   refresh()
 }, {immediate:true})
-onBeforeUnmount(() => { request++; historyRequest++ })
+onBeforeUnmount(() => { clearTimeout(searchTimer); request++; historyRequest++ })
 defineExpose({refresh})
 </script>
 
@@ -156,33 +175,35 @@ defineExpose({refresh})
   </a-alert>
   <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
   <section class="records company-workspace">
-    <div class="records-head company-directory-head">
-      <h2>销售公司目录</h2>
-      <a class="context-link" href="#organization?tab=sync&amp;view=records">下发记录</a>
+    <header class="company-directory-head">
+      <div class="company-heading">
+        <h2>销售公司</h2><span v-if="!loading && !error" role="status">{{result.total}} 家</span>
+      </div>
+      <a-space wrap>
+        <a-button type="text" href="#organization?tab=sync&amp;view=records">下发记录</a-button>
+        <a-button v-if="canWrite" @click="manageCategories=true">销售类别</a-button>
+        <a-button v-if="canWrite" type="primary" @click="createProfile=true">
+          <template #icon><PlusOutlined aria-hidden="true"/></template>登记销售公司
+        </a-button>
+      </a-space>
+    </header>
+    <div class="company-filterbar">
+      <a-input id="company-name" v-model:value="name" placeholder="搜索公司名称" aria-label="搜索公司名称" allow-clear :maxlength="100" @press-enter="searchCompanies">
+        <template #prefix><SearchOutlined aria-hidden="true"/></template>
+      </a-input>
       <RadioGroup v-model:value="type" :options="types" option-type="button" button-style="solid" aria-label="销售公司类型"/>
-      <div v-if="canWrite" class="topbar-actions category-actions">
-        <a-button v-if="selected.length" @click="openAssignment(selected)">批量调整类别</a-button>
-        <a-button @click="createProfile=true">登记销售公司</a-button>
-        <a-button @click="manageCategories=true">管理销售类别</a-button>
-      </div>
+      <a-select id="company-category" v-model:value="category" :options="result.categories" show-search option-filter-prop="label"
+        aria-label="销售类别" placeholder="全部类别" allow-clear/>
+      <a-select id="company-status" v-model:value="status" aria-label="公司状态"
+        :options="[{value:'',label:'全部状态'},{value:'ACTIVE',label:'启用'},{value:'INACTIVE',label:'停用'}]"/>
+      <TreeSelect id="company-hierarchy" :value="memberCompany?.id" :tree-data="companyHierarchy" aria-label="按架构打开公司"
+        placeholder="按架构打开公司" tree-node-filter-prop="title" show-search @select="openCompanyMembers"/>
+      <a-button v-if="filtersActive" type="link" size="small" @click="clearFilters">清除筛选</a-button>
     </div>
-    <div class="organization-filters company-directory-filters">
-      <div>
-        <label for="company-hierarchy">公司架构</label>
-        <TreeSelect id="company-hierarchy" :value="memberCompany?.id" :tree-data="companyHierarchy"
-          placeholder="按层级查找公司成员" tree-node-filter-prop="title" show-search @select="openCompanyMembers"/>
-      </div>
-      <div>
-        <label for="company-category">销售类别</label>
-        <a-select id="company-category" v-model:value="category" :options="result.categories" show-search option-filter-prop="label"
-          placeholder="全部类别" allow-clear/>
-      </div>
-      <div><label for="company-status">公司状态</label><a-select id="company-status" v-model:value="status" :options="[{value:'',label:'全部状态'},{value:'ACTIVE',label:'启用'},{value:'INACTIVE',label:'停用'}]"/></div>
-      <div>
-        <label for="company-name">公司名称</label>
-        <a-input-search id="company-name" v-model:value="name" placeholder="搜索销售公司" allow-clear
-          @search="search=$event.trim()" @change="!name && (search='')"/>
-      </div>
+    <div v-if="canWrite && selected.length" class="company-selection">
+      已选 {{selected.length}} 家
+      <a-button size="small" type="primary" @click="openAssignment(selected)">批量调整类别</a-button>
+      <a-button size="small" type="text" @click="selectedIds=[]">取消选择</a-button>
     </div>
     <div class="table-container">
       <a-table :columns="columns" :data-source="result.items" :loading="loading" row-key="id" :pagination="pagination"
@@ -268,8 +289,17 @@ defineExpose({refresh})
 .company-workspace {max-width:1280px;margin-inline:auto}
 .company-profile-links {display:flex;flex-wrap:wrap;gap:4px 10px;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--line)}
 .company-profile-links .ant-btn {padding-inline:0}
-.company-directory-head { justify-content: flex-start; flex-wrap: wrap; }
-.category-actions { margin-inline-start: auto; }
-.company-directory-filters { padding-inline: 14px; }
-.company-directory-filters .ant-select { min-width: 170px; }
+.company-directory-head,.company-heading,.company-filterbar,.company-selection {display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px}
+.company-directory-head {justify-content:space-between;padding:14px 16px 9px}
+.company-heading h2 {font-size:18px;margin:0}
+.company-heading span {border-radius:12px;padding:2px 8px;color:var(--muted);background:var(--surface,#f5f7fb);font-size:12px}
+.company-filterbar {padding:5px 16px 14px}
+.company-filterbar > .ant-input-affix-wrapper {width:min(235px,100%);flex:0 1 235px}
+.company-filterbar > .ant-select {min-width:100px}
+.company-filterbar > .ant-select-tree-select {min-width:156px}
+.company-selection {padding:8px 16px;background:var(--accent-soft)}
+@media(max-width:680px){
+ .company-directory-head,.company-filterbar {padding-inline:12px}
+ .company-filterbar > .ant-input-affix-wrapper {width:100%;flex-basis:100%}
+}
 </style>
