@@ -202,22 +202,24 @@ func (s workspace) assignOrganizationCategory(ctx context.Context, input assignO
 		if err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&at); err != nil {
 			return err
 		}
-		rows, err := tx.Query(ctx, `SELECT u.id::text,coalesce(h.category_id::text,''),h.valid_from
+		rows, err := tx.Query(ctx, `SELECT u.id::text,coalesce(h.category_id::text,''),h.valid_from,u.status='ACTIVE'
 		 FROM organization_units u LEFT JOIN LATERAL (
 		  SELECT h.category_id,h.valid_from FROM organization_sales_category_history h
 		  WHERE h.unit_id=u.id AND tstzrange(h.valid_from,h.valid_to,'[)') @> $2::timestamptz
 		  ORDER BY h.valid_from DESC LIMIT 1) h ON true
-		 WHERE u.id=ANY($1::uuid[]) AND u.sales_company_type IS NOT NULL AND u.status='ACTIVE' ORDER BY u.id FOR UPDATE OF u`, ids, at)
+		 WHERE u.id=ANY($1::uuid[]) AND u.sales_company_type IS NOT NULL
+		  AND (u.status='ACTIVE' OR cardinality($1::uuid[])=1) ORDER BY u.id FOR UPDATE OF u`, ids, at)
 		if err != nil {
 			return err
 		}
 		type assignment struct {
 			Unit, Category string
 			Since          *time.Time
+			Active         bool
 		}
 		current, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (assignment, error) {
 			var item assignment
-			err := row.Scan(&item.Unit, &item.Category, &item.Since)
+			err := row.Scan(&item.Unit, &item.Category, &item.Since, &item.Active)
 			return item, err
 		})
 		if err != nil {
@@ -226,7 +228,7 @@ func (s workspace) assignOrganizationCategory(ctx context.Context, input assignO
 		if len(current) != len(ids) {
 			return errOrganizationCategoryTarget
 		}
-		var changed []string
+		var changed, dispatchUnits []string
 		for _, item := range current {
 			if item.Category == id {
 				continue
@@ -237,6 +239,9 @@ func (s workspace) assignOrganizationCategory(ctx context.Context, input assignO
 				return errOrganizationCategoryChanged
 			}
 			changed = append(changed, item.Unit)
+			if item.Active {
+				dispatchUnits = append(dispatchUnits, item.Unit)
+			}
 		}
 		if len(changed) == 0 {
 			return nil
@@ -261,7 +266,7 @@ func (s workspace) assignOrganizationCategory(ctx context.Context, input assignO
 		if err := enqueueDraftConfiguration(ctx, tx, draftRefreshCompanyClassification, changed, at, false); err != nil {
 			return err
 		}
-		for _, unit := range changed {
+		for _, unit := range dispatchUnits {
 			if err := enqueueDispatchCompany(ctx, tx, unit, by); err != nil {
 				return err
 			}

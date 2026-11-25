@@ -114,7 +114,8 @@ async function openHistory(company) {
 function openAssignment(companies) {
   notice.value = ''
   assignmentError.value = ''
-  assignment.value = {companies,categoryId:companies.length===1 ? companies[0].categoryId ?? undefined : undefined}
+  const categoryId = companies.length===1 ? companies[0].categoryId : undefined
+  assignment.value = {companies,categoryId:result.value.categories.some(option=>option.value===categoryId) ? categoryId : undefined}
 }
 async function applyAssignment() {
   if (!assignment.value || assignmentSaving.value) return
@@ -219,7 +220,7 @@ defineExpose({refresh})
             <a-tag :color="record.companyType==='UNKNOWN' ? 'orange' : 'blue'">{{ typeLabels[record.companyType] }}</a-tag>
           </button>
           <template v-else-if="column.key==='category'">
-            <button v-if="canWrite && record.status==='ACTIVE'" type="button" class="order-link"
+            <button v-if="canWrite" type="button" class="order-link"
               :aria-label="'调整'+record.name+'的销售类别'" @click="openAssignment([record])">{{ record.categoryName || '未分类' }}</button>
             <span v-else>{{ record.categoryName || '未分类' }}</span>
           </template>
@@ -263,7 +264,7 @@ defineExpose({refresh})
         <a-select id="assign-category" v-model:value="assignment.categoryId" :options="result.categories"
           :disabled="assignmentSaving" show-search option-filter-prop="label" placeholder="选择启用的类别"/>
       </a-form-item>
-      <p class="draft-report-note">保存时生效。大春 AI 按付款时间匹配销售类别。</p>
+      <p class="draft-report-note">{{assignment.companies[0]?.status==='INACTIVE' ? '类别保存后，可以重新启用公司。' : '保存时生效。大春 AI 按付款时间匹配销售类别。'}}</p>
     </a-form>
     <template #footer>
       <a-space>

@@ -129,9 +129,22 @@ func TestOrganizationCompanyStatusDependencies(t *testing.T) {
 	}
 	run(`
  INSERT INTO organization_sales_categories(id,name,active) VALUES ('fd200000-0000-0000-0000-000000000003','有效类别',true);
- INSERT INTO organization_sales_category_history(unit_id,category_id,valid_from)
- VALUES ('fd200000-0000-0000-0000-000000000001','fd200000-0000-0000-0000-000000000003','2020-01-01');`)
+ INSERT INTO organization_dispatch_targets(company_id,target) VALUES ('fd200000-0000-0000-0000-000000000001','DCZD');`)
+	assigned, err := s.assignOrganizationCategory(ctx, assignOrganizationCategoryInput{
+		CategoryID: "fd200000-0000-0000-0000-000000000003",
+		Companies:  []categoryCompanyVersion{{UnitID: company}},
+	})
+	if err != nil || assigned.Changed != 1 {
+		t.Fatalf("prepare category for inactive company: %+v %v", assigned, err)
+	}
+	var queued int
+	if err := s.db.QueryRow(ctx, "SELECT count(*) FROM organization_dispatch_outbox").Scan(&queued); err != nil || queued != 0 {
+		t.Fatalf("category preparation queued %d messages: %v", queued, err)
+	}
 	if _, err := s.saveDispatchProfile(ctx, input); err != nil {
 		t.Fatal(err)
+	}
+	if err := s.db.QueryRow(ctx, "SELECT count(*) FROM organization_dispatch_outbox WHERE entity_id=$1 AND entity_type='COMPANY'", company).Scan(&queued); err != nil || queued != 1 {
+		t.Fatalf("activation queued %d company messages: %v", queued, err)
 	}
 }
