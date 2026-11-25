@@ -2,6 +2,7 @@
 import { computed, onActivated, onBeforeUnmount, ref, useId, watch } from 'vue'
 import AppointmentDateFilter from './AppointmentDateFilter.vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
+import { appointmentDateError, beijingTime } from './appointment-time'
 
 const props = defineProps({api:Function, formatTime:Function, canWrite:Boolean, units:Array, subject:Object, personLink:Function, profile:Boolean})
 const emit = defineEmits(['clear-subject'])
@@ -31,6 +32,7 @@ let settingsRequest = 0
 const kinds = {PROJECT:'项目',PRODUCT:'产品',ORGANIZATION_UNIT:'组织'}
 const subjects = [{label:'人员',value:'PERSON'},{label:'组织',value:'ORGANIZATION'}]
 const titles = {add:'登记业务职责',transfer:'交接业务职责',end:'结束业务职责'}
+const submitLabels = {add:'保存职责',transfer:'确认交接',end:'确认结束'}
 const scopeOptions = computed(() => settings.value.scopes.map(scope=>({...scope,label:scope.label+' · '+kinds[scope.kind]+
   (scope.active ? '' : '（已停用）')})))
 const scopeLabel = id => scopeOptions.value.find(scope=>scope.value===id)?.label
@@ -40,6 +42,8 @@ const allowedSubjects = computed(() => subjects.filter(subject=>selectedRole.val
 const allowedScopes = computed(() => scopeOptions.value.filter(scope=>scope.active && selectedRole.value?.scopes?.includes(scope.kind)))
 const unitOptions = computed(() => (props.units || profileUnits.value).filter(unit=>unit.status==='ACTIVE').map(unit=>({value:unit.id,label:unit.name})))
 const person = computed(() => props.subject?.personId ? {id:props.subject.personId,name:props.subject.name} : undefined)
+const fixedPerson = computed(() => props.profile && form.value?.mode==='add' ? person.value : undefined)
+const roleOptions = computed(() => settings.value.roles.filter(role=>role.active && (!fixedPerson.value || role.subjects?.includes('PERSON'))))
 const fields = [
   {title:'任职主体',key:'subject',width:160},
   {title:'业务职责',key:'role',width:160},
@@ -103,25 +107,29 @@ function open(mode, record) {
   const preferred = props.subject?.unitId || record?.unitId ? 'ORGANIZATION' : 'PERSON'
   form.value = {mode,record,role:mode==='add'?roleFilter.value:undefined,subjectKind:preferred,
     personId:mode==='add'?props.subject?.personId:undefined,unitId:mode==='add'?props.subject?.unitId:undefined}
+  if (mode==='add' && !roleOptions.value.some(role=>role.value===form.value.role)) form.value.role=undefined
   if (mode==='add' && allowedScopes.value.some(scope=>scope.value===scopeFilter.value)) form.value.scopeId = scopeFilter.value
 }
 function selectRole() {
   if (!allowedScopes.value.some(scope=>scope.value===form.value.scopeId)) form.value.scopeId = undefined
   if (!allowedSubjects.value.some(subject=>subject.value===form.value.subjectKind)) form.value.subjectKind = allowedSubjects.value[0]?.value
 }
-const beijing = value => value ? (value.length===16 ? value+':00' : value)+'+08:00' : null
+const dateError = computed(() => form.value ? appointmentDateError(form.value) : '')
+const ready = computed(() => {
+  if (!form.value?.effective || dateError.value) return false
+  const {mode,personId,unitId,subjectKind,role,scopeId} = form.value
+  if (mode==='end') return true
+  const hasOwner = subjectKind==='PERSON' ? !!personId : !!unitId
+  return hasOwner && (mode==='transfer' || !!role && !!scopeId)
+})
 async function save() {
-  if (!form.value || saving.value) return
+  if (!ready.value || saving.value) return
   const {mode,record,personId,unitId,subjectKind,role,scopeId,effective,through} = form.value
   const owner = subjectKind==='PERSON' ? {personId} : {unitId}
-  if (!effective || (mode!=='end' && !Object.values(owner)[0]) || (mode==='add' && (!role || !scopeId))) {
-    writeError.value = '请填写必填项。'
-    return
-  }
   saving.value = true
   writeError.value = ''
-  const at = beijing(effective)
-  const payload = mode==='add' ? {...owner,role,scopeId,startsAt:at,throughAt:beijing(through)}
+  const at = beijingTime(effective)
+  const payload = mode==='add' ? {...owner,role,scopeId,startsAt:at,throughAt:beijingTime(through)}
     : {assignmentId:record.id,at,expectedThroughAt:record.validTo,...(mode==='transfer' ? owner : {})}
   try {
     await props.api(base+(mode==='add' ? '' : '/'+mode),{method:'POST',body:JSON.stringify(payload)})
@@ -204,14 +212,15 @@ defineExpose({refresh})
     <a-form layout="vertical" @finish="save">
       <template v-if="form.mode==='add'">
         <a-form-item label="业务职责" html-for="duty-role" required>
-          <a-select id="duty-role" v-model:value="form.role" :options="settings.roles.filter(role=>role.active)" @change="selectRole"/>
+          <a-select id="duty-role" v-model:value="form.role" :options="roleOptions" @change="selectRole"/>
         </a-form-item>
         <a-form-item label="适用范围" html-for="duty-scope" required>
           <a-select id="duty-scope" v-model:value="form.scopeId" :options="allowedScopes" show-search option-filter-prop="label"/>
         </a-form-item>
       </template>
       <p v-else>{{ form.record.subjectName }} · {{ roleLabel(form.record.role) }} · {{ scopeLabel(form.record.scopeId) }}</p>
-      <template v-if="form.mode!=='end'">
+      <a-form-item v-if="fixedPerson" label="人员">{{fixedPerson.name}}</a-form-item>
+      <template v-else-if="form.mode!=='end'">
         <a-form-item label="主体类型" html-for="duty-subject-kind" required>
           <a-select id="duty-subject-kind" v-model:value="form.subjectKind" :options="allowedSubjects"/>
         </a-form-item>
@@ -222,17 +231,19 @@ defineExpose({refresh})
           <a-select id="duty-unit-select" v-model:value="form.unitId" :options="unitOptions" show-search option-filter-prop="label"/>
         </a-form-item>
       </template>
-      <a-form-item :label="form.mode==='end' ? '结束时间' : '生效时间'" html-for="duty-effective" required>
+      <a-form-item :label="form.mode==='end' ? '结束时间（北京时间）' : '生效时间（北京时间）'" html-for="duty-effective" required
+        :help="form.mode!=='add' && dateError || undefined" :validate-status="form.mode!=='add' && dateError ? 'error' : undefined">
         <a-input id="duty-effective" type="datetime-local" v-model:value="form.effective"/>
       </a-form-item>
-      <a-form-item v-if="form.mode==='add'" label="结束时间" html-for="duty-through">
+      <a-form-item v-if="form.mode==='add'" label="计划结束时间（北京时间）" html-for="duty-through"
+        :help="dateError || undefined" :validate-status="dateError ? 'error' : undefined">
         <a-input id="duty-through" type="datetime-local" v-model:value="form.through"/>
       </a-form-item>
     </a-form>
     <template #footer>
       <a-space>
         <a-button :disabled="saving" @click="form=undefined">取消</a-button>
-        <a-button :loading="saving" type="primary" @click="save">保存</a-button>
+        <a-button :loading="saving" :disabled="!ready" :danger="form.mode==='end'" type="primary" @click="save">{{submitLabels[form.mode]}}</a-button>
       </a-space>
     </template>
   </a-drawer>

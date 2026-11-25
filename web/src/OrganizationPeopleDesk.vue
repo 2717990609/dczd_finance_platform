@@ -1,10 +1,11 @@
 <script setup>
-import { onBeforeUnmount, ref, watch } from 'vue'
+import { onBeforeUnmount, ref, useId, watch } from 'vue'
 import { PlusOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import OrganizationPersonIntake from './OrganizationPersonIntake.vue'
 
 const props = defineProps({api:Function,canWrite:Boolean,personLink:Function,optionLabel:Function})
 const creating = ref(false)
+const scopeID = useId()
 const term = ref('')
 const scope = ref('')
 const page = ref(1)
@@ -61,7 +62,8 @@ defineExpose({refresh})
       <a-input v-model:value="term" placeholder="搜索姓名、账号 ID、组织或职责" aria-label="搜索人员" :maxlength="100" allow-clear @press-enter="refresh">
         <template #prefix><SearchOutlined aria-hidden="true"/></template>
       </a-input>
-      <a-select :value="scope" :options="scopes" aria-label="筛选人员" style="width:164px" @change="setScope"/>
+      <label class="sr-only" :for="scopeID">筛选人员</label>
+      <a-select :id="scopeID" :value="scope" :options="scopes" style="width:164px" @change="setScope"/>
     </div>
     <a-alert v-if="error" :message="error" type="error" show-icon><template #action><a-button @click="refresh">重试</a-button></template></a-alert>
     <a-spin v-else :spinning="loading">

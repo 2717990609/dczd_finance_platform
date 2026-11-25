@@ -7,25 +7,20 @@ import OrganizationPersonAppointments from './OrganizationPersonAppointments.vue
 import { organizationTree } from './organization-tree'
 import MonthlyReport from './MonthlyReport.vue'
 import OrganizationDuties from './OrganizationDuties.vue'
+import CatalogAppointments from './CatalogAppointments.vue'
 
 const props = defineProps({
   api:Function, personId:Number, section:String, back:String, personLink:Function,
   optionLabel:Function, formatTime:Function, formatIdentityTime:Function, formatMoney:Function,
   month:String, reportViews:Array, reportDimensions:Array, reportFilters:Object, periodLink:Function, canWrite:Boolean, appointmentKinds:Array,
+  catalogRoles:Array, catalogScopes:Array,
 })
 
 const emit = defineEmits(['report-filters'])
-const dateColumns = [
-  {title:'生效时间',dataIndex:'validFrom',key:'validFrom',width:154},
-  {title:'结束时间',dataIndex:'validTo',key:'validTo',width:154},
-]
-const statusColumn = {title:'状态',key:'status',width:94}
 const sections = [
   {key:'overview', label:'档案'},
   {key:'duties', label:'业务职责'},
-  {key:'positions', label:'分润岗位', path:'/catalog-appointments', empty:'暂无分润岗位记录', columns:[
-    {title:'岗位',key:'role',width:168}, {title:'适用范围',key:'scope',width:185}, statusColumn, ...dateColumns,
-  ]},
+  {key:'positions', label:'分润岗位'},
   {key:'finance', label:'业绩与分润'},
 ]
 const selected = computed(() => sections.find(item=>item.key===props.section) || sections[0])
@@ -56,12 +51,9 @@ const heading = ref()
 const sectionNav = ref()
 const profileError = ref('')
 const profileLoading = ref(false)
-const rows = ref({total:0,items:[]})
-const listPage = ref(1)
-const listError = ref('')
-const listLoading = ref(false)
 const report = ref()
 const duties = ref()
+const positions = ref()
 const dutySubject = computed(() => person.value ? {personId:props.personId,name:person.value.name} : undefined)
 const reportMonth = ref(props.reportFilters.month || props.month)
 const reportView = ref(props.reportFilters.view)
@@ -74,15 +66,7 @@ async function saveName(){
  catch(e){renameError.value=e.message}finally{renameBusy.value=false}
 }
 let profileRequest = 0
-let rowsRequest = 0
 const accountWorkspace=ref()
-const pagination = computed(() => ({current:listPage.value,total:rows.value.total,pageSize:25,showSizeChanger:false,hideOnSinglePage:true}))
-function statusFor(record) {
-  const now = Date.now()
-  if (Date.parse(record.validFrom)>now) return {label:'未生效',color:'blue'}
-  if (record.validTo && Date.parse(record.validTo)<=now) return {label:'已结束'}
-  return {label:'有效',color:'green'}
-}
 
 async function loadPerson(focus = false) {
   const request = ++profileRequest
@@ -110,31 +94,6 @@ async function loadPerson(focus = false) {
     if (request===profileRequest) profileLoading.value = false
   }
 }
-async function loadRows() {
-  const request = ++rowsRequest
-  listError.value = ''
-  rows.value = {total:0,items:[]}
-  if (!selected.value.path) {
-    listLoading.value = false
-    return
-  }
-  listLoading.value = true
-  const params = new URLSearchParams({personId:props.personId,page:listPage.value})
-  params.set('history','true')
-  try {
-    const result = await props.api(selected.value.path+'?'+params)
-    if (request===rowsRequest) rows.value = result
-  } catch (error) {
-    if (request===rowsRequest) listError.value = error.message
-  } finally {
-    if (request===rowsRequest) listLoading.value = false
-  }
-}
-function changePage(next) {
-  if (listPage.value===next.current) return
-  listPage.value = next.current
-  loadRows()
-}
 function refresh() {
   loadPerson()
   if (selected.value.key==='overview') {
@@ -143,7 +102,7 @@ function refresh() {
   }
   else if (selected.value.key==='finance') report.value?.refresh()
   else if (selected.value.key==='duties') duties.value?.refresh()
-  else loadRows()
+  else positions.value?.refresh()
 }
 watch(() => selected.value.key, (key, previous) => {
   actionError.value=''
@@ -152,9 +111,7 @@ watch(() => selected.value.key, (key, previous) => {
     appointment.value=undefined
     nextTick(()=>sectionNav.value?.scrollIntoView({block:'nearest'}))
   }
-  listPage.value = 1
-  loadRows()
-}, {immediate:true})
+})
 watch(()=>props.section,section=>{
   if(section==='accounts')nextTick(()=>accountArea.value?.scrollIntoView({block:'nearest'}))
 })
@@ -162,7 +119,7 @@ watch([reportMonth,reportView], ([month,view]) => {
   if (selected.value.key==='finance') emit('report-filters',{month,view})
 })
 loadPerson(true)
-onBeforeUnmount(() => { profileRequest++; rowsRequest++ })
+onBeforeUnmount(() => { profileRequest++ })
 defineExpose({refresh})
 </script>
 
@@ -225,35 +182,12 @@ defineExpose({refresh})
         </template>
         <KeepAlive v-if="selected.key==='duties'">
           <OrganizationDuties ref="duties" profile :api="api" :format-time="formatTime" :subject="dutySubject"
-            :can-write="canWrite" :person-link="personLink"/>
+            :can-write="canEdit" :person-link="personLink"/>
         </KeepAlive>
-        <template v-else-if="selected.path">
-          <section class="records">
-            <div class="records-head">
-              <h2>{{ selected.label }}</h2>
-              <span v-if="!listLoading && !listError" class="person-record-count">{{ rows.total }} 条记录</span>
-            </div>
-            <a-alert v-if="listError" class="feedback" type="error" :message="listError" show-icon>
-              <template #action><a-button size="small" @click="loadRows">重试</a-button></template>
-            </a-alert>
-            <a-table v-else :key="selected.key" size="middle" :columns="selected.columns" :data-source="rows.items"
-              :loading="listLoading" :pagination="pagination" :scroll="{x:selected.columns.reduce((width,column)=>width+column.width,0)}"
-              row-key="id" @change="changePage">
-              <template #bodyCell="{column,record,text}">
-
-                <span v-if="column.key==='role'">{{ optionLabel('catalogAppointmentRole',record.role) }}</span>
-                <template v-else-if="column.key==='scope'">
-                  {{ record.scopeName }}<small class="order-version">{{ optionLabel('catalogAppointmentScope',record.scope) }}</small>
-                </template>
-                <a-tag v-else-if="column.key==='status'" :color="statusFor(record).color">{{ statusFor(record).label }}</a-tag>
-                <span v-else-if="column.key==='validFrom'||column.key==='validTo'" class="numeric">{{ formatTime(text) }}</span>
-
-
-              </template>
-              <template #emptyText>{{ selected.empty }}</template>
-            </a-table>
-          </section>
-        </template>
+        <KeepAlive>
+          <CatalogAppointments v-if="selected.key==='positions'" ref="positions" :person="person" :api="api"
+            :can-write="canEdit" :roles="catalogRoles" :scopes="catalogScopes" :format-time="formatTime"/>
+        </KeepAlive>
       </div>
     </template>
   </article>

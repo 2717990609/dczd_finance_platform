@@ -1821,6 +1821,7 @@ async function save() {
         </section>
         <OrganizationPersonDetail v-if="personPage" :key="personPage.id" ref="personDetail"
           :person-id="personPage.id" :section="personPage.section" :back="personPage.back" :person-link="personLink" :appointment-kinds="options('appointmentKind')"
+          :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"
           :api="api" :option-label="optionLabel" :format-time="formatTime" :format-identity-time="formatIdentityTime" :format-money="formatMoney" :month="workspaceMonth"
           :report-views="options('monthlyReportView')" :report-dimensions="options('draftReportDimension')"
           :report-filters="personPage.reportFilters" :period-link="personReportPeriodLink" @report-filters="rememberPersonReport"

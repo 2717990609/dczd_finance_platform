@@ -1,15 +1,22 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import OrganizationPersonIntake from './OrganizationPersonIntake.vue'
 import OrganizationDispatch from './OrganizationDispatch.vue'
+import { appointmentDateError, beijingTime } from './appointment-time'
 const props=defineProps({api:Function,company:Object,formatTime:Function,canWrite:Boolean})
 const emit=defineEmits(['close','changed'])
 const date=ref(''),term=ref(''),search=ref(''),page=ref(1),rows=ref({items:[],total:0}),loadError=ref(''),loading=ref(false)
 const intake=ref(''),person=ref(),edit=ref(),target=ref(),role=ref('MEMBER'),at=ref(''),choices=ref([]),error=ref(''),busy=ref(false),notice=ref('')
+const targetID=useId(),effectiveID=useId()
+const dateError=computed(()=>edit.value ? appointmentDateError({
+ mode:edit.value.end?'end':'transfer',record:edit.value.record,effective:at.value,
+}) : '')
+const canSave=computed(()=>!!at.value && !dateError.value && (edit.value?.end || !!target.value))
 const roles={MEMBER:'成员',OWNER:'负责人',MANAGER:'管理员'}
 const columns=[{title:'人员',dataIndex:'personName',width:180},{title:'公司内角色',key:'role',width:90},{title:'生效时间',key:'from',width:145},{title:'结束时间',key:'to',width:145},{title:'',key:'actions',width:186}]
 const pagination=computed(()=>({current:page.value,pageSize:25,total:rows.value.total,hideOnSinglePage:true,showSizeChanger:false}))
 let seq=0,companySeq=0
+let searchTimer
 async function load(){
  const id=++seq;loading.value=true;loadError.value=''
  try{const res=await props.api('/organization-dispatch/company-members?'+new URLSearchParams({companyId:props.company.id,on:date.value,name:search.value,page:page.value}));if(id===seq)rows.value=res}
@@ -17,6 +24,16 @@ async function load(){
 }
 watch([date,search],()=>{page.value=1;load()})
 watch(()=>props.company.id,load,{immediate:true})
+function searchMembers(){
+ clearTimeout(searchTimer)
+ search.value=term.value.trim()
+}
+watch(term,value=>{
+ clearTimeout(searchTimer)
+ if(!value.trim())searchMembers()
+ else searchTimer=setTimeout(searchMembers,220)
+})
+onBeforeUnmount(()=>{clearTimeout(searchTimer);seq++;companySeq++})
 function changed(message){notice.value=message;load();emit('changed')}
 function begin(record,end){edit.value={record,end};target.value=props.company.id;role.value=record.kind;at.value='';error.value='';choices.value=[{value:props.company.id,label:props.company.name}]}
 async function companies(name=''){
@@ -25,11 +42,11 @@ async function companies(name=''){
  catch(e){if(id===companySeq)error.value=e.message}
 }
 async function save(){
+ if(!canSave.value||busy.value)return
  const {record,end}=edit.value
- if(!at.value||busy.value)return
  busy.value=true;error.value=''
  try{
-  const body={assignmentId:record.id,expectedThroughAt:record.validTo,at:at.value+':00+08:00'}
+  const body={assignmentId:record.id,expectedThroughAt:record.validTo,at:beijingTime(at.value)}
   if(!end)Object.assign(body,{unitId:target.value,kind:role.value,position:record.position})
   await props.api('/organization-assignments/'+(end?'end':'transfer'),{method:'POST',body:JSON.stringify(body)})
   edit.value=undefined;changed('财务归属已更新')
@@ -41,7 +58,7 @@ async function save(){
   <slot name="company-tools"/>
   <a-space wrap><a-button v-if="canWrite && company.status==='ACTIVE'" type="primary" @click="intake='existing'">加入已有人员</a-button>
    <a-button v-if="canWrite && company.status==='ACTIVE'" @click="intake='new'">新建人员</a-button>
-   <a-input-search v-model:value="term" allow-clear placeholder="搜索公司成员" @search="value=>search=value"/>
+   <a-input-search v-model:value="term" allow-clear placeholder="搜索公司成员" aria-label="搜索公司成员" @search="searchMembers"/>
    <label>归属日期 <a-input v-model:value="date" type="date" style="width:160px"/></label>
   </a-space>
   <p class="member-note">留空查看当前成员，选择日期可查看当天北京时间零点的财务归属。</p>
@@ -60,12 +77,18 @@ async function save(){
   </a-table>
   <OrganizationPersonIntake v-if="intake" :api="api" :company="company" :existing="intake==='existing'" @close="intake=''" @saved="intake='';changed('人员与归属已保存')"/>
   <OrganizationDispatch v-if="person" :person-id="person.personId" :person-name="person.personName" :api="api" :can-write="canWrite" :format-time="formatTime" @close="person=undefined" @changed="load"/>
-  <a-modal v-if="edit" open :title="edit.record.personName+' · '+(edit.end?'结束财务归属':'调整财务归属')" :confirm-loading="busy" :ok-button-props="{disabled:!at}" @ok="save" @cancel="edit=undefined">
+  <a-modal v-if="edit" open :title="edit.record.personName+' · '+(edit.end?'结束财务归属':'调整财务归属')"
+   :ok-text="edit.end?'确认结束':'保存归属'" cancel-text="取消" :confirm-loading="busy"
+   :ok-button-props="{disabled:!canSave,danger:edit.end}" :cancel-button-props="{disabled:busy}"
+   :closable="!busy" :keyboard="!busy" :mask-closable="!busy" @ok="save" @cancel="!busy && (edit=undefined)">
    <a-alert v-if="error" :message="error" type="error" show-icon/>
    <a-form layout="vertical">
-    <template v-if="!edit.end"><a-form-item label="销售公司"><a-select v-model:value="target" show-search :options="choices" :filter-option="false" @search="companies" @focus="companies()"/></a-form-item>
+    <template v-if="!edit.end"><a-form-item label="销售公司" :html-for="targetID"><a-select :id="targetID" v-model:value="target" show-search :options="choices" :filter-option="false" @search="companies" @focus="companies()"/></a-form-item>
      <a-form-item label="公司内角色"><a-radio-group v-model:value="role" :options="Object.entries(roles).map(([value,label])=>({value,label}))"/></a-form-item></template>
-    <a-form-item label="生效时间（北京时间）" required><a-input v-model:value="at" type="datetime-local"/></a-form-item>
+    <a-form-item :label="edit.end?'结束时间（北京时间）':'生效时间（北京时间）'" :html-for="effectiveID" required
+     :help="dateError || undefined" :validate-status="dateError?'error':undefined">
+     <a-input :id="effectiveID" v-model:value="at" type="datetime-local"/>
+    </a-form-item>
    </a-form>
   </a-modal>
  </a-drawer>

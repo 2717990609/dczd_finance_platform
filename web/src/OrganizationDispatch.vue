@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, nextTick, ref, useId, watch } from 'vue'
 import { Drawer } from 'ant-design-vue'
 import { syncReasons } from './organization-sync-reasons'
 import { ReloadOutlined } from '@ant-design/icons-vue'
@@ -9,6 +9,7 @@ import OrganizationDispatchAccounts from './OrganizationDispatchAccounts.vue'
 import OrganizationSourceRelations from './OrganizationSourceRelations.vue'
 const props=defineProps({api:Function,company:Object,personId:Number,personName:String,canWrite:Boolean,formatTime:Function,embedded:Boolean,inAccountWorkspace:Boolean})
 const emit=defineEmits(['close','changed'])
+const targetFilterID=useId()
 const systems=[{value:'DCZD',label:'大春之道'},{value:'DCJK',label:'大春见康'},{value:'DCAI',label:'大春 AI'}]
 const label=key=>systems.find(o=>o.value===key)?.label || key
 const states={APPLIED:'已送达',PENDING:'待发送',PROCESSING:'发送中',CONFLICT:'需核对',RETRYABLE:'等待重试',STOPPED:'已停止',WAIT_CATEGORY:'等待类别',WAIT_PARENT_COMPANY:'等待上级公司'}
@@ -187,7 +188,8 @@ defineExpose({refresh})
       </a-space>
     </div>
     <a-space v-if="!personId || data?.total || targetFilter || issuesOnly" wrap>
-     <a-select v-model:value="targetFilter" aria-label="筛选目标系统" style="min-width:132px" :options="[{value:'',label:'全部目标系统'},...systems]"/>
+     <label class="sr-only" :for="targetFilterID">筛选目标系统</label>
+     <a-select :id="targetFilterID" v-model:value="targetFilter" style="min-width:132px" :options="[{value:'',label:'全部目标系统'},...systems]"/>
      <a-checkbox v-model:checked="issuesOnly">只看异常记录</a-checkbox>
     </a-space>
     <p v-if="personId && data?.total===0 && !loading && !error" class="dispatch-empty" role="status">
