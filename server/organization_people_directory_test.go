@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -60,6 +63,47 @@ func TestOrganizationDirectorySeparatesLoginOnlyAndKeepsSourceOrder(t *testing.T
 		}
 		if names != want {
 			t.Fatalf("scope %q returned %q, want %q", scope, names, want)
+		}
+	}
+}
+
+func TestCompanyMemberSearchByPersonAndAccount(t *testing.T) {
+	db := integrationDB(t)
+	ctx := context.Background()
+	if _, err := db.Exec(ctx, directorFixtureSQL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO identity_mappings(person_id,source,external_id,valid_from,valid_to)
+	 VALUES(1,'DCJK','111822','2020-01-01','2025-01-01')`); err != nil {
+		t.Fatal(err)
+	}
+	s := workspace{db: db, development: true}
+	for _, test := range []struct {
+		term, on string
+		total    int
+	}{{"样本甲", "", 1}, {"1", "", 1}, {"201", "", 1}, {"202", "", 0},
+		{"111822", "", 0}, {"111822", "2024-01-01", 1}} {
+		req := httptest.NewRequest(http.MethodGet, "/company-members?companyId=42000000-0000-4000-8000-000000000001", nil)
+		q := req.URL.Query()
+		q.Set("name", test.term)
+		q.Set("on", test.on)
+		req.URL.RawQuery = q.Encode()
+		w := httptest.NewRecorder()
+		s.companyMemberDirectory(w, req)
+		var results struct {
+			Total int
+			Items []struct{ PersonID int64 }
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &results); w.Code != 200 || err != nil ||
+			results.Total != test.total || (test.total == 1 && (len(results.Items) != 1 || results.Items[0].PersonID != 1)) {
+			t.Fatalf("%+v: status %d %s", test, w.Code, w.Body)
+		}
+	}
+	for _, term := range []string{"1", "201"} {
+		people, err := s.searchFinancePeople(ctx, term)
+		var results []struct{ ID int64 }
+		if err != nil || json.Unmarshal(people, &results) != nil || len(results) != 1 || results[0].ID != 1 {
+			t.Fatalf("directory picker %q: %s (%v)", term, people, err)
 		}
 	}
 }

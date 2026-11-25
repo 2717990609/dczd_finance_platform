@@ -17,8 +17,8 @@ import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
 import { organizationTree } from './organization-tree'
 
 const props = defineProps({api:Function, optionLabel:Function, formatTime:Function, canWrite:Boolean, appointmentKinds:Array,
-  catalogRoles:Array,catalogScopes:Array,personLink:Function,panel:String})
-const emit = defineEmits(['update:panel','position-changed'])
+  catalogRoles:Array,catalogScopes:Array,personLink:Function,panel:String,viewingPerson:Boolean,requestedCompanyId:String})
+const emit = defineEmits(['update:panel','position-changed','close-company'])
 const units = ref([])
 const unitId = ref()
 const name = ref('')
@@ -176,7 +176,9 @@ defineExpose({refresh})
       :format-time="formatTime" :scopes="catalogScopes" :roles="catalogRoles" :person-link="personLink"/>
   </KeepAlive>
   <KeepAlive>
-    <OrganizationCompanies v-if="panel==='companies'" ref="companies" :api="api" :format-time="formatTime" :can-write="canWrite" :units="units" @directory-changed="loadUnits"
+    <OrganizationCompanies v-if="panel==='companies'" ref="companies" :api="api" :format-time="formatTime" :can-write="canWrite" :units="units"
+      :person-link="personLink" :viewing-person="viewingPerson" :requested-company-id="requestedCompanyId"
+      @directory-changed="loadUnits" @close-company="emit('close-company')"
       @show-director="company=>{directorCompany=company.companyType==='UNKNOWN' ? undefined : company;emit('update:panel','directors')}" @show-appointments="showCompanyAppointments" @show-duties="showDuties"/>
   </KeepAlive>
   <KeepAlive>

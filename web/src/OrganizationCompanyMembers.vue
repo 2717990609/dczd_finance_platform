@@ -3,42 +3,18 @@ import { computed, onBeforeUnmount, ref, useId, watch } from 'vue'
 import OrganizationPersonIntake from './OrganizationPersonIntake.vue'
 import OrganizationDispatch from './OrganizationDispatch.vue'
 import { appointmentDateError, beijingTime } from './appointment-time'
-const props=defineProps({api:Function,company:Object,formatTime:Function,canWrite:Boolean})
-const emit=defineEmits(['close','changed','status-changed'])
+const props=defineProps({api:Function,company:Object,formatTime:Function,canWrite:Boolean,open:Boolean,personLink:Function,statusNotice:String})
+const emit=defineEmits(['close','changed','change-status','dismiss-status'])
 const date=ref(''),term=ref(''),search=ref(''),page=ref(1),rows=ref({items:[],total:0}),loadError=ref(''),loading=ref(false)
 const intake=ref(''),person=ref(),edit=ref(),target=ref(),role=ref('MEMBER'),at=ref(''),choices=ref([]),error=ref(''),busy=ref(false),notice=ref('')
-const statusEdit=ref(),statusBusy=ref(false),statusError=ref('')
 const companyStatusAction=computed(()=>props.company.status==='ACTIVE' ? '停用公司' : '启用公司')
-function openStatus(){
- statusError.value=''
- statusEdit.value=props.company.status==='ACTIVE' ? 'INACTIVE' : 'ACTIVE'
-}
-async function saveCompanyStatus(){
- if(!statusEdit.value || statusBusy.value)return
- const status=statusEdit.value
- statusBusy.value=true
- statusError.value=''
- try{
-  const {profile,wireId}=await props.api('/organization-dispatch?'+new URLSearchParams({companyId:props.company.id}))
-  if(!profile || !wireId)throw new Error('请先核对该公司的财务主体编号。')
-  if(profile.status!==props.company.status)throw new Error('公司状态已变化，请关闭后重新打开公司。')
-  await props.api('/organization-dispatch/profile',{method:'POST',body:JSON.stringify({
-   id:props.company.id,name:profile.name,parentId:profile.parentId,status,expectedVersion:profile.version,
-  })})
-  statusEdit.value=undefined
-  notice.value=status==='ACTIVE' ? '公司已启用。' : '公司已停用。'
-  emit('status-changed',status)
-  load()
- }catch(e){statusError.value=e.message}
- finally{statusBusy.value=false}
-}
 const targetID=useId(),effectiveID=useId()
 const dateError=computed(()=>edit.value ? appointmentDateError({
  mode:edit.value.end?'end':'transfer',record:edit.value.record,effective:at.value,
 }) : '')
 const canSave=computed(()=>!!at.value && !dateError.value && (edit.value?.end || !!target.value))
 const roles={MEMBER:'成员',OWNER:'负责人',MANAGER:'管理员'}
-const columns=[{title:'人员',dataIndex:'personName',width:180},{title:'公司内角色',key:'role',width:90},{title:'生效时间',key:'from',width:145},{title:'结束时间',key:'to',width:145},{title:'',key:'actions',width:186}]
+const columns=[{title:'人员',key:'person',width:200},{title:'公司内角色',key:'role',width:90},{title:'生效时间',key:'from',width:134},{title:'结束时间',key:'to',width:134},{title:'',key:'actions',width:228}]
 const pagination=computed(()=>({current:page.value,pageSize:25,total:rows.value.total,hideOnSinglePage:true,showSizeChanger:false}))
 let seq=0,companySeq=0
 let searchTimer
@@ -79,23 +55,27 @@ async function save(){
 }
 </script>
 <template>
- <a-drawer open :width="'min(900px, 100vw)'" :title="company.name+' · 公司成员'" @close="emit('close')">
+ <a-drawer :open="open" :width="'min(900px, 100vw)'" :title="company.name+' · 公司成员'" @close="emit('close')">
   <slot name="company-tools"/>
   <a-space wrap><a-button v-if="canWrite && company.status==='ACTIVE'" type="primary" @click="intake='existing'">加入已有人员</a-button>
    <a-button v-if="canWrite && company.status==='ACTIVE'" @click="intake='new'">新建人员</a-button>
-   <a-button v-if="canWrite" type="text" @click="openStatus">{{companyStatusAction}}</a-button>
-   <a-input-search v-model:value="term" allow-clear placeholder="搜索公司成员" aria-label="搜索公司成员" @search="searchMembers"/>
+   <a-button v-if="canWrite" type="text" @click="emit('change-status')">{{companyStatusAction}}</a-button>
+   <a-input-search v-model:value="term" allow-clear placeholder="姓名、人员 ID 或来源账号" aria-label="搜索公司成员" @search="searchMembers"/>
    <label>归属日期 <a-input v-model:value="date" type="date" style="width:160px"/></label>
   </a-space>
   <p class="member-note">留空查看当前成员，选择日期可查看当天北京时间零点的财务归属。</p>
-  <a-alert v-if="notice" :message="notice" type="success" show-icon closable @close="notice=''"/>
+  <a-alert v-if="statusNotice || notice" :message="statusNotice || notice" type="success" show-icon closable @close="notice='';emit('dismiss-status')"/>
   <a-alert v-if="loadError" :message="loadError" type="error" show-icon><template #action><a-button @click="load">重试</a-button></template></a-alert>
-  <a-table size="small" :loading="loading" :data-source="rows.items" :columns="columns" :pagination="pagination" row-key="id" :scroll="{x:746}" @change="v=>{page=v.current;load()}">
+  <a-table size="small" :loading="loading" :data-source="rows.items" :columns="columns" :pagination="pagination" row-key="id" :scroll="{x:786}" @change="v=>{page=v.current;load()}">
    <template #bodyCell="{column,record}">
-    <span v-if="column.key==='role'">{{roles[record.kind]}}</span>
+    <template v-if="column.key==='person'">
+     <a :href="personLink(record.personId,undefined,company.id)" class="person-name-link">{{record.personName}}</a>
+     <small class="order-version">人员 ID {{record.personId}}</small>
+    </template>
+    <span v-else-if="column.key==='role'">{{roles[record.kind]}}</span>
     <span v-else-if="column.key==='from'">{{formatTime(record.validFrom)}}</span>
     <span v-else-if="column.key==='to'">{{record.validTo?formatTime(record.validTo):'长期有效'}}</span>
-    <a-space v-else-if="column.key==='actions'" wrap :size="0">
+    <a-space v-else-if="column.key==='actions'" class="member-actions" :size="2">
      <a-button type="link" size="small" @click="person=record">销售身份同步</a-button>
      <template v-if="canWrite"><a-button type="link" size="small" @click="begin(record,false)">调整归属</a-button><a-button type="link" size="small" @click="begin(record,true)">结束归属</a-button></template>
     </a-space>
@@ -104,14 +84,6 @@ async function save(){
   <OrganizationPersonIntake v-if="intake" :api="api" :company="company" :existing="intake==='existing'" @close="intake=''" @saved="intake='';changed('人员与归属已保存')"/>
   <OrganizationDispatch v-if="person" :person-id="person.personId" :person-name="person.personName" :member-company="company"
    :api="api" :can-write="canWrite" :format-time="formatTime" @close="person=undefined" @changed="load"/>
-  <a-modal v-if="statusEdit" open :title="companyStatusAction" :ok-text="statusEdit==='ACTIVE'?'确认启用':'确认停用'"
-   cancel-text="取消" :ok-button-props="{danger:statusEdit==='INACTIVE'}" :confirm-loading="statusBusy"
-   :closable="!statusBusy" :keyboard="!statusBusy" :mask-closable="false" @ok="saveCompanyStatus" @cancel="!statusBusy && (statusEdit=undefined)">
-   <p><strong>{{company.name}}</strong></p>
-   <p v-if="statusEdit==='INACTIVE'">停用前请交接有效的人员归属、下级公司和销售身份。</p>
-   <p v-else>启用后可重新登记公司成员。</p>
-   <a-alert v-if="statusError" type="error" :message="statusError" show-icon/>
-  </a-modal>
   <a-modal v-if="edit" open :title="edit.record.personName+' · '+(edit.end?'结束财务归属':'调整财务归属')"
    :ok-text="edit.end?'确认结束':'保存归属'" cancel-text="取消" :confirm-loading="busy"
    :ok-button-props="{disabled:!canSave,danger:edit.end}" :cancel-button-props="{disabled:busy}"
@@ -128,4 +100,7 @@ async function save(){
   </a-modal>
  </a-drawer>
 </template>
-<style scoped>.member-note{color:var(--muted);font-size:13px;margin:12px 0}</style>
+<style scoped>
+.member-note {color:var(--muted);font-size:13px;margin:12px 0}
+.member-actions :deep(.ant-btn) {padding-inline:5px}
+</style>

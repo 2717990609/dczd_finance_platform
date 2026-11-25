@@ -5,6 +5,16 @@ import (
 	"net/http"
 )
 
+// Search by name, finance ID, or a source account valid at the selected date.
+const directoryPersonSearchSQL = `($1='' OR p.id::text=$1 OR strpos(lower(p.name),lower($1))>0
+ OR EXISTS(SELECT FROM identity_mappings m WHERE m.person_id=p.id AND m.external_id=$1
+  AND tstzrange(m.valid_from,m.valid_to,'[)') @> $2::timestamptz)
+ OR EXISTS(SELECT FROM catalog_sales_people_sources m JOIN catalog_sales_context c
+  ON c.source=m.source AND c.captured_at=m.observed_at WHERE m.person_id=p.id AND m.external_id=$1
+   AND tstzrange(m.valid_from,m.valid_to,'[)') @> $2::timestamptz)
+ OR ($3::boolean AND EXISTS(SELECT FROM organization_dispatch_links l
+  WHERE l.person_id=p.id AND l.entity_type='MEMBER' AND l.external_id=$1)))`
+
 // The roster shows finance appointments and business account identifiers side
 // by side. A linked source account by itself is not a sales-company membership.
 const organizationPeopleDirectorySQL = `WITH appointments AS (
@@ -97,9 +107,9 @@ func (s workspace) companyMemberDirectory(w http.ResponseWriter, r *http.Request
 	err = s.db.QueryRow(r.Context(), `WITH found AS (
  SELECT a.id,a.person_id AS "personId",p.name AS "personName",a.kind,a.position,a.valid_from AS "validFrom",a.valid_to AS "validTo"
  FROM organization_units u JOIN organization_assignments a ON a.unit_id=u.id JOIN people p ON p.id=a.person_id
- WHERE u.id=$1 AND u.sales_company_type IS NOT NULL AND a.kind IN ('OWNER','MEMBER','MANAGER')
- AND tstzrange(a.valid_from,a.valid_to,'[)') @> $2::timestamptz AND strpos(lower(p.name),lower($3))>0
- ), page AS (SELECT * FROM found ORDER BY (kind='OWNER') DESC,"personName",id LIMIT 25 OFFSET $4)
- SELECT jsonb_build_object('total',(SELECT count(*) FROM found),'items',coalesce((SELECT jsonb_agg(to_jsonb(page) ORDER BY (kind='OWNER') DESC,"personName",id) FROM page),'[]'))`, company, at, name, offset).Scan(&result)
+ WHERE u.id=$4 AND u.sales_company_type IS NOT NULL AND a.kind IN ('OWNER','MEMBER','MANAGER')
+ AND tstzrange(a.valid_from,a.valid_to,'[)') @> $2::timestamptz AND `+directoryPersonSearchSQL+`
+ ), page AS (SELECT * FROM found ORDER BY (kind='OWNER') DESC,"personName",id LIMIT 25 OFFSET $5)
+ SELECT jsonb_build_object('total',(SELECT count(*) FROM found),'items',coalesce((SELECT jsonb_agg(to_jsonb(page) ORDER BY (kind='OWNER') DESC,"personName",id) FROM page),'[]'))`, name, at, q.Get("on") == "", company, offset).Scan(&result)
 	respond(w, result, err)
 }

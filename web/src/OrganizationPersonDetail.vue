@@ -10,7 +10,7 @@ import OrganizationDuties from './OrganizationDuties.vue'
 import CatalogAppointments from './CatalogAppointments.vue'
 
 const props = defineProps({
-  api:Function, personId:Number, section:String, back:String, personLink:Function,
+  api:Function, personId:Number, section:String, back:String, backLabel:{type:String,default:'返回列表'}, personLink:Function,
   optionLabel:Function, formatTime:Function, formatIdentityTime:Function, formatMoney:Function,
   month:String, reportViews:Array, reportDimensions:Array, reportFilters:Object, periodLink:Function, canWrite:Boolean, appointmentKinds:Array,
   catalogRoles:Array, catalogScopes:Array,
@@ -146,7 +146,7 @@ defineExpose({refresh})
 <template>
   <article class="person-detail" aria-label="人员详情">
     <div class="person-detail-header">
-      <a class="workspace-return" :href="back"><LeftOutlined aria-hidden="true"/>返回列表</a>
+      <a class="workspace-return" :href="back"><LeftOutlined aria-hidden="true"/>{{backLabel}}</a>
       <a-alert v-if="profileError" class="feedback" type="error" :message="profileError" show-icon>
         <template #action><a-button size="small" @click="loadPerson(true)">重试</a-button></template>
       </a-alert>

@@ -73,6 +73,7 @@ function isActiveOrganizationPage(entry) {
 const OrganizationPeopleDesk = defineAsyncComponent(() => import('./OrganizationPeopleDesk.vue'))
 const peopleDesk = ref()
 const organizationPanel = ref('organization')
+const companyRouteId = ref()
 const personPage = ref()
 const personDetail = ref()
 let personListScroll = 0
@@ -80,12 +81,17 @@ function organizationHref(page, tab) {
   if (tab==='sync') return '#organization?tab=sync&view=records'
   return '#'+page+(['main','organization'].includes(tab) ? '' : '?tab='+tab)
 }
-function personLink(id, section) {
+function personLink(id, section, companyId) {
   const base = organizationHref(current.value, current.value==='people' ? tab.value : organizationPanel.value)
   const params = new URLSearchParams(base.split('?')[1])
   params.set('personId',id)
   if (section) params.set('section',section)
+  const company = companyId || personPage.value?.companyId
+  if (organizationPanel.value==='companies' && current.value==='organization' && company) params.set('companyId',company)
   return '#'+current.value+'?'+params
+}
+function clearCompanyRoute() {
+  if (companyRouteId.value) location.hash = organizationHref('organization','companies')
 }
 function navigateOrganizationPanel(panel) {
   location.hash = organizationHref('organization',panel)
@@ -885,7 +891,9 @@ function readPersonReportOrigin(value) {
   const id = routeId(params.get('personId'))
   if (!id) return
   const tab = organizationPages.find(entry=>entry.page===page && entry.tab===params.get('tab'))?.tab
-  return personalReportHref(organizationHref(page,tab || (page==='people' ? 'main' : 'organization')),id,personReportFilters(params))
+  const companyId = tab==='companies' ? routeUnit(params.get('companyId')) : undefined
+  const href = organizationHref(page,tab || (page==='people' ? 'main' : 'organization'))
+  return personalReportHref(href+(companyId ? '&companyId='+companyId : ''),id,personReportFilters(params))
 }
 function rememberPersonReport(settings) {
   if (!personPage.value) return
@@ -913,9 +921,13 @@ function changeRoute() {
   const previousPerson = personPage.value
   const isOrganizationPage = current.value===key && (key==='organization' || key==='people')
   const requestedTab = organizationPages.find(entry=>entry.page===key && entry.tab===params.get('tab'))?.tab
+  const companyId = requestedTab==='companies' ? routeUnit(params.get('companyId')) : undefined
+  companyRouteId.value = companyId
   const personId = isOrganizationPage ? routeId(params.get('personId')) : undefined
+  const personBack = organizationHref(key,requestedTab || (key==='people' ? 'main' : 'organization'))
   personPage.value = personId ? {id:personId,section:params.get('section'),
-    back:organizationHref(key,requestedTab || (key==='people' ? 'main' : 'organization')),
+    back:personBack+(companyId ? '&companyId='+companyId : ''), companyId,
+    backLabel:companyId ? '返回公司成员' : undefined,
     reportFilters:personReportFilters(params)} : undefined
   if (key==='organization' && isOrganizationPage) {
     organizationPanel.value = requestedTab || 'organization'
@@ -1820,7 +1832,7 @@ async function save() {
           </nav>
         </section>
         <OrganizationPersonDetail v-if="personPage" :key="personPage.id" ref="personDetail"
-          :person-id="personPage.id" :section="personPage.section" :back="personPage.back" :person-link="personLink" :appointment-kinds="options('appointmentKind')"
+          :person-id="personPage.id" :section="personPage.section" :back="personPage.back" :back-label="personPage.backLabel" :person-link="personLink" :appointment-kinds="options('appointmentKind')"
           :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"
           :api="api" :option-label="optionLabel" :format-time="formatTime" :format-identity-time="formatIdentityTime" :format-money="formatMoney" :month="workspaceMonth"
           :report-views="options('monthlyReportView')" :report-dimensions="options('draftReportDimension')"
@@ -1829,7 +1841,8 @@ async function save() {
         <div v-show="!personPage" class="workspace-page-body">
         <KeepAlive>
           <OrganizationDirectory v-if="current==='organization'" ref="organization" :api="api" :option-label="optionLabel" :format-time="formatTime"
-            :panel="organizationPanel" :person-link="personLink" @update:panel="navigateOrganizationPanel" @position-changed="refresh(true)"
+            :panel="organizationPanel" :person-link="personLink" :viewing-person="!!personPage" :requested-company-id="companyRouteId"
+            @update:panel="navigateOrganizationPanel" @position-changed="refresh(true)" @close-company="clearCompanyRoute"
             :can-write="session.user ? session.user.organizationWrite : session.development" :appointment-kinds="options('appointmentKind')"
             :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"/>
         </KeepAlive>

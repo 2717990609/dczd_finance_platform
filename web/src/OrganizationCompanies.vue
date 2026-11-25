@@ -6,14 +6,18 @@ import { organizationTree } from './organization-tree'
 import OrganizationCategoryEditor from './OrganizationCategoryEditor.vue'
 import OrganizationDispatchProfile from './OrganizationDispatchProfile.vue'
 import OrganizationCompanyMembers from './OrganizationCompanyMembers.vue'
+import OrganizationCompanyStatus from './OrganizationCompanyStatus.vue'
 import OrganizationDispatch from './OrganizationDispatch.vue'
 import OrganizationCompanyType from './OrganizationCompanyType.vue'
 
 const memberCompany=ref()
+const statusCompany=ref()
+const memberStatusNotice=ref('')
 const dispatch=ref(), createProfile=ref(false)
-onDeactivated(()=>{memberCompany.value=undefined;dispatch.value=undefined;createProfile.value=false})
-const props = defineProps({api:Function,formatTime:Function,canWrite:Boolean,units:Array})
-const emit = defineEmits(['show-appointments','show-duties','show-director','directory-changed'])
+onDeactivated(()=>{memberCompany.value=undefined;statusCompany.value=undefined;dispatch.value=undefined;createProfile.value=false})
+watch(()=>memberCompany.value?.id,()=>{memberStatusNotice.value=''})
+const props = defineProps({api:Function,formatTime:Function,canWrite:Boolean,units:Array,personLink:Function,viewingPerson:Boolean,requestedCompanyId:String})
+const emit = defineEmits(['show-appointments','show-duties','show-director','directory-changed','close-company'])
 const status = ref('')
 const type = ref('')
 const name = ref('')
@@ -53,9 +57,27 @@ const companyHierarchy = computed(() => organizationTree(
 function openCompanyMembers(id) {
   memberCompany.value = props.units.find(unit => unit.id===id)
 }
+watch([()=>props.requestedCompanyId,()=>props.units],([id,units])=>{
+  if (id && memberCompany.value?.id!==id && units?.some(unit=>unit.id===id && unit.companyType)) openCompanyMembers(id)
+}, {immediate:true})
+function closeMemberCompany() {
+  memberCompany.value = undefined
+  emit('close-company')
+}
 function companyChanged() {
   refresh()
   emit('directory-changed')
+}
+function companyStatusSaved(id,next) {
+  statusCompany.value = undefined
+  const message = next==='ACTIVE' ? '公司已启用。' : '公司已停用。'
+  if (memberCompany.value?.id===id) {
+    memberCompany.value = {...memberCompany.value,status:next}
+    memberStatusNotice.value = message
+  } else {
+    notice.value = message
+  }
+  companyChanged()
 }
 const columns = [
   {title:'销售公司',dataIndex:'name',width:210},
@@ -63,7 +85,7 @@ const columns = [
   {title:'内外部',key:'type',width:95},
   {title:'销售类别',key:'category',width:145},
   {title:'上级组织',key:'parent',width:170},
-  {title:'状态',key:'status',width:82},
+  {title:'状态',key:'status',width:132},
 ]
 const historyColumns = [
   {title:'销售类别',key:'category',width:160},
@@ -214,7 +236,10 @@ defineExpose({refresh})
         :scroll="{x:canWrite ? 775 : 743}" :row-selection="selection" @change="changePage">
         <template #bodyCell="{column,record}">
           <a-button v-if="column.dataIndex==='name'" type="link" size="small" @click="memberCompany=record">{{ record.name }}</a-button>
-          <span v-else-if="column.key==='members'">{{record.owners || '未设负责人'}}<small class="order-version">成员 {{record.members}} 人</small></span>
+          <div v-else-if="column.key==='members'">
+            {{record.owners || '未设负责人'}}
+            <button type="button" class="order-link company-members-link" :aria-label="'查看'+record.name+'的成员'" @click="memberCompany=record">成员 {{record.members}} 人</button>
+          </div>
           <button v-else-if="column.key==='type'" type="button" class="order-link" :aria-label="'查看'+record.name+'的公司类型'"
             @click="companyTypeDetails=record">
             <a-tag :color="record.companyType==='UNKNOWN' ? 'orange' : 'blue'">{{ typeLabels[record.companyType] }}</a-tag>
@@ -225,7 +250,11 @@ defineExpose({refresh})
             <span v-else>{{ record.categoryName || '未分类' }}</span>
           </template>
           <span v-else-if="column.key==='parent'">{{ record.parentName || '—' }}</span>
-          <a-tag v-else-if="column.key==='status'" :color="record.status==='ACTIVE' ? 'green' : 'default'">{{ record.status==='ACTIVE' ? '启用' : '停用' }}</a-tag>
+          <div v-else-if="column.key==='status'" class="company-state">
+            <a-tag :color="record.status==='ACTIVE' ? 'green' : 'default'">{{record.status==='ACTIVE' ? '已启用' : '已停用'}}</a-tag>
+            <button v-if="canWrite" type="button" class="order-link" :aria-label="(record.status==='ACTIVE' ? '停用' : '启用')+record.name"
+              @click="statusCompany=record">{{record.status==='ACTIVE' ? '停用' : '启用'}}</button>
+          </div>
 
         </template>
         <template #emptyText>{{ error ? '销售公司读取失败' : '暂无符合条件的销售公司' }}</template>
@@ -233,8 +262,10 @@ defineExpose({refresh})
     </div>
   </section>
   <OrganizationDispatchProfile v-if="createProfile" :api="api" :categories="result.categories" @close="createProfile=false" @saved="createProfile=false;companyChanged()"/>
+  <OrganizationCompanyStatus v-if="statusCompany" :company="statusCompany" :api="api" @saved="companyStatusSaved" @close="statusCompany=undefined"/>
   <OrganizationCompanyMembers v-if="memberCompany" :company="memberCompany" :api="api" :format-time="formatTime" :can-write="canWrite"
-    @changed="refresh" @status-changed="status=>{memberCompany={...memberCompany,status};companyChanged()}" @close="memberCompany=undefined">
+    :open="!viewingPerson" :person-link="personLink" :status-notice="memberStatusNotice"
+    @changed="refresh" @change-status="statusCompany=memberCompany" @dismiss-status="memberStatusNotice=''" @close="closeMemberCompany">
     <template #company-tools>
       <div class="company-profile-links">
         <a-button type="link" size="small" @click="dispatch=memberCompany">同步到业务系统</a-button>
@@ -291,6 +322,9 @@ defineExpose({refresh})
 </template>
 
 <style scoped>
+.company-state {display:flex;align-items:center;gap:7px;white-space:nowrap}
+.company-state :deep(.ant-tag) {margin-inline-end:0}
+.company-members-link {display:block;margin-top:3px;font-size:12px}
 .company-workspace {max-width:1280px;margin-inline:auto}
 .company-profile-links {display:flex;flex-wrap:wrap;gap:4px 10px;padding-bottom:10px;margin-bottom:10px;border-bottom:1px solid var(--line)}
 .company-profile-links .ant-btn {padding-inline:0}

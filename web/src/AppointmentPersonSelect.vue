@@ -3,7 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 
 defineOptions({inheritAttrs:false})
 const props = defineProps({api:Function, endpoint:{type:String,default:'/organization-people'}, filters:Object, current:Object,
-  placeholder:{type:String,default:'输入姓名搜索'}})
+  placeholder:{type:String,default:'姓名、人员 ID 或来源账号'}})
 const value = defineModel('value', {type:Number})
 const directory = ref([])
 const searching = ref(false)
