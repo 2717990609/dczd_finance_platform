@@ -39,7 +39,10 @@ func (s workspace) personDetail(w http.ResponseWriter, r *http.Request) {
 	}
 	var result json.RawMessage
 	err = s.db.QueryRow(r.Context(), `SELECT jsonb_strip_nulls(jsonb_build_object(
-	 'id',p.id,'name',p.name,'createdAt',p.created_at,'sourceStatus',p.a2_status,
+	 'id',p.id,'name',p.name,'createdAt',p.created_at,
+	 'sourceStatus',CASE WHEN p.directory_disabled THEN 'INACTIVE' ELSE p.a2_status END,
+	 'statusVersion',p.directory_status_version,
+	 'canRestore',p.directory_disabled AND coalesce(p.a2_status,'ACTIVE')='ACTIVE' AND p.a2_canonical_party IS NULL,
 	 'canonicalId',(SELECT canonical.id FROM people canonical WHERE canonical.legacy_party_id=p.a2_canonical_party),
 	 'accountStatus',CASE WHEN $2::boolean OR a.id::text=$3 THEN
 	  CASE WHEN a.id IS NULL THEN 'UNCONFIGURED' WHEN a.enabled THEN 'ACTIVE' ELSE 'DISABLED' END END,
@@ -125,7 +128,7 @@ func (s workspace) savePersonSourceAccount(ctx context.Context, input personSour
 func validatePersonSourceAccount(ctx context.Context, tx pgx.Tx, input assignIdentityInput, external string, at time.Time) error {
 	var eligible, hasBinding, hasSourceConflict, overlaps bool
 	err := tx.QueryRow(ctx, `SELECT
-	 EXISTS(SELECT FROM people WHERE id=$1 AND directory_visible AND coalesce(a2_status,'ACTIVE')='ACTIVE'),
+	 EXISTS(SELECT FROM people WHERE id=$1 AND directory_visible AND NOT directory_disabled AND coalesce(a2_status,'ACTIVE')='ACTIVE'),
 	 EXISTS(SELECT FROM organization_dispatch_links WHERE entity_type='MEMBER' AND target=$2 AND external_id=$3 AND person_id<>$1),
 	 EXISTS(SELECT FROM catalog_sales_people_sources a JOIN catalog_sales_context c ON c.source=a.source AND c.captured_at=a.observed_at
 	  WHERE a.source=$2 AND a.external_id=$3 AND a.person_id<>$1 AND (a.valid_to IS NULL OR a.valid_to>$4)),

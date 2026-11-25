@@ -4,9 +4,34 @@ import OrganizationPersonIntake from './OrganizationPersonIntake.vue'
 import OrganizationDispatch from './OrganizationDispatch.vue'
 import { appointmentDateError, beijingTime } from './appointment-time'
 const props=defineProps({api:Function,company:Object,formatTime:Function,canWrite:Boolean})
-const emit=defineEmits(['close','changed'])
+const emit=defineEmits(['close','changed','status-changed'])
 const date=ref(''),term=ref(''),search=ref(''),page=ref(1),rows=ref({items:[],total:0}),loadError=ref(''),loading=ref(false)
 const intake=ref(''),person=ref(),edit=ref(),target=ref(),role=ref('MEMBER'),at=ref(''),choices=ref([]),error=ref(''),busy=ref(false),notice=ref('')
+const statusEdit=ref(),statusBusy=ref(false),statusError=ref('')
+const companyStatusAction=computed(()=>props.company.status==='ACTIVE' ? '停用公司' : '启用公司')
+function openStatus(){
+ statusError.value=''
+ statusEdit.value=props.company.status==='ACTIVE' ? 'INACTIVE' : 'ACTIVE'
+}
+async function saveCompanyStatus(){
+ if(!statusEdit.value || statusBusy.value)return
+ const status=statusEdit.value
+ statusBusy.value=true
+ statusError.value=''
+ try{
+  const {profile,wireId}=await props.api('/organization-dispatch?'+new URLSearchParams({companyId:props.company.id}))
+  if(!profile || !wireId)throw new Error('请先核对该公司的财务主体编号。')
+  if(profile.status!==props.company.status)throw new Error('公司状态已变化，请关闭后重新打开公司。')
+  await props.api('/organization-dispatch/profile',{method:'POST',body:JSON.stringify({
+   id:props.company.id,name:profile.name,parentId:profile.parentId,status,expectedVersion:profile.version,
+  })})
+  statusEdit.value=undefined
+  notice.value=status==='ACTIVE' ? '公司已启用。' : '公司已停用。'
+  emit('status-changed',status)
+  load()
+ }catch(e){statusError.value=e.message}
+ finally{statusBusy.value=false}
+}
 const targetID=useId(),effectiveID=useId()
 const dateError=computed(()=>edit.value ? appointmentDateError({
  mode:edit.value.end?'end':'transfer',record:edit.value.record,effective:at.value,
@@ -58,6 +83,7 @@ async function save(){
   <slot name="company-tools"/>
   <a-space wrap><a-button v-if="canWrite && company.status==='ACTIVE'" type="primary" @click="intake='existing'">加入已有人员</a-button>
    <a-button v-if="canWrite && company.status==='ACTIVE'" @click="intake='new'">新建人员</a-button>
+   <a-button v-if="canWrite" type="text" @click="openStatus">{{companyStatusAction}}</a-button>
    <a-input-search v-model:value="term" allow-clear placeholder="搜索公司成员" aria-label="搜索公司成员" @search="searchMembers"/>
    <label>归属日期 <a-input v-model:value="date" type="date" style="width:160px"/></label>
   </a-space>
@@ -76,7 +102,16 @@ async function save(){
    </template><template #emptyText>暂无符合条件的公司成员</template>
   </a-table>
   <OrganizationPersonIntake v-if="intake" :api="api" :company="company" :existing="intake==='existing'" @close="intake=''" @saved="intake='';changed('人员与归属已保存')"/>
-  <OrganizationDispatch v-if="person" :person-id="person.personId" :person-name="person.personName" :api="api" :can-write="canWrite" :format-time="formatTime" @close="person=undefined" @changed="load"/>
+  <OrganizationDispatch v-if="person" :person-id="person.personId" :person-name="person.personName" :member-company="company"
+   :api="api" :can-write="canWrite" :format-time="formatTime" @close="person=undefined" @changed="load"/>
+  <a-modal v-if="statusEdit" open :title="companyStatusAction" :ok-text="statusEdit==='ACTIVE'?'确认启用':'确认停用'"
+   cancel-text="取消" :ok-button-props="{danger:statusEdit==='INACTIVE'}" :confirm-loading="statusBusy"
+   :closable="!statusBusy" :keyboard="!statusBusy" :mask-closable="false" @ok="saveCompanyStatus" @cancel="!statusBusy && (statusEdit=undefined)">
+   <p><strong>{{company.name}}</strong></p>
+   <p v-if="statusEdit==='INACTIVE'">停用前请交接有效的人员归属、下级公司和销售身份。</p>
+   <p v-else>启用后可重新登记公司成员。</p>
+   <a-alert v-if="statusError" type="error" :message="statusError" show-icon/>
+  </a-modal>
   <a-modal v-if="edit" open :title="edit.record.personName+' · '+(edit.end?'结束财务归属':'调整财务归属')"
    :ok-text="edit.end?'确认结束':'保存归属'" cancel-text="取消" :confirm-loading="busy"
    :ok-button-props="{disabled:!canSave,danger:edit.end}" :cancel-button-props="{disabled:busy}"

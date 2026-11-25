@@ -1,7 +1,7 @@
 <script setup>
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import { computed, ref, watch } from 'vue'
-const props=defineProps({api:Function,personId:Number,personName:String,company:Object,existing:Boolean,channelStatus:Object,existingBindings:Array})
+const props=defineProps({api:Function,personId:Number,personName:String,company:Object,preferredCompany:Object,existing:Boolean,channelStatus:Object,existingBindings:Array})
 const emit=defineEmits(['close','saved'])
 const existingId=ref(),chosenCompany=ref(props.company?.id),companyOptions=ref([]),role=ref('MEMBER'),start=ref('')
 const membership=computed(()=>!props.personId && chosenCompany.value)
@@ -42,7 +42,7 @@ function add(){
 }
 function needsCompany(row){return row.account.identity_state==='NONE' || row.owner}
 function lookupAvailable(row){return !!row.target && channels.value?.[row.target]!==false && !!row.phone.trim() && !row.loading}
-function reset(row){row.lookup++;row.companySearch++;row.account=undefined;row.owner=false;row.companyId=membership.value || undefined;row.companies=[];row.error='';row.loading=false}
+function reset(row){row.lookup++;row.companySearch++;row.account=undefined;row.owner=false;row.companyId=undefined;row.companies=[];row.error='';row.loading=false}
 async function lookup(row) {
  if(!lookupAvailable(row))return
  reset(row)
@@ -51,7 +51,11 @@ async function lookup(row) {
  try{
   const result=await props.api('/organization-dispatch/lookup',{method:'POST',body:JSON.stringify({target:row.target,phone:row.phone,countryCode:row.countryCode})})
   if(seq!==row.lookup)return
-  if(result.status==='FOUND'){row.account=result;if(membership.value&&role.value==='OWNER'&&result.identity_state==='NONE')row.owner=true}
+  if(result.status==='FOUND'){
+   row.account=result
+   if(membership.value&&role.value==='OWNER'&&result.identity_state==='NONE')row.owner=true
+   if(needsCompany(row))await prefillCompany(row)
+  }
   else row.error=errors[result.status] || '未能核验此账号'
  }catch(e){if(seq===row.lookup)row.error=e.message}
  finally{if(seq===row.lookup)row.loading=false}
@@ -60,8 +64,22 @@ async function searchCompany(row,name=''){
  const seq=++row.companySearch,sys=row.target
  try{
   const list=await props.api('/organization-dispatch/available-companies?'+new URLSearchParams({target:sys,name}))
-  if(seq===row.companySearch&&sys===row.target)row.companies=list
+  if(seq===row.companySearch&&sys===row.target){row.companies=list;return list}
  }catch(e){if(seq===row.companySearch)row.error=e.message}
+}
+async function prefillCompany(row){
+ const id=membership.value || props.preferredCompany?.id
+ if(!id)return
+ const name=props.company?.name || props.preferredCompany?.name || companyOptions.value.find(item=>item.value===id)?.label
+ const options=await searchCompany(row,name || '')
+ if(!options)return
+ if(options.some(item=>item.value===id)){
+  row.companyId=id
+  row.error=''
+ }else{
+  row.companyId=undefined
+  row.error='这家公司尚未送达所选系统，请先在公司同步中确认。'
+ }
 }
 function checkDuplicates(){
  const checked=new Set((props.existingBindings || []).map(binding=>binding.target+':'+binding.userId))
@@ -87,7 +105,14 @@ async function save(){
   emit('saved',result.personId,sendsChange ? '绑定已保存，请在下发记录查看身份变更。' : '已绑定现有销售身份。')
  }catch(e){error.value=e.message}finally{busy.value=false}
 }
-watch([chosenCompany,role],()=>{for(const row of rows.value){row.companyId=chosenCompany.value;row.owner=!!chosenCompany.value&&role.value==='OWNER'&&row.account?.identity_state==='NONE'}})
+watch([chosenCompany,role],()=>{
+ for(const row of rows.value){
+  row.companyId=undefined
+  row.companySearch++
+  row.owner=!!chosenCompany.value&&role.value==='OWNER'&&row.account?.identity_state==='NONE'
+  if(chosenCompany.value && row.account && needsCompany(row))prefillCompany(row)
+ }
+})
 watch(()=>[name.value,existingId.value,chosenCompany.value,role.value,start.value,rows.value.map(r=>[r.key,r.target,r.phone,r.countryCode,r.companyId,r.owner,r.account])],()=>{requestId.value=crypto.randomUUID()},{deep:true})
 if(props.personId)add()
 </script>
@@ -135,11 +160,12 @@ if(props.personId)add()
       </div>
       <p v-if="row.account.company_id">当前公司编号 {{row.account.company_id}}</p>
       <p v-if="row.account.identity_state==='NONE'" class="intake-hint">选择已送达{{systemName(row.target)}}的销售公司，提交后将创建销售身份。</p>
-       <a-checkbox v-if="row.account.identity_state!=='INACTIVE' && row.account.role!=='OWNER'" v-model:checked="row.owner">设为公司负责人</a-checkbox>
-       <a-form-item v-if="!membership && needsCompany(row)" label="目标销售公司" :html-for="row.key+'-company'" required>
+       <a-checkbox v-if="row.account.identity_state!=='INACTIVE' && row.account.role!=='OWNER'" v-model:checked="row.owner"
+        @change="$event.target.checked && prefillCompany(row)">设为公司负责人</a-checkbox>
+     <a-form-item v-if="!membership && needsCompany(row)" label="目标销售公司" :html-for="row.key+'-company'" required>
         <a-select :id="row.key+'-company'" v-model:value="row.companyId" show-search :filter-option="false" :options="row.companies"
          placeholder="搜索已送达该系统的公司" not-found-content="暂无可选公司，请先在销售公司与类别完成公司同步"
-         @focus="searchCompany(row)" @search="q=>searchCompany(row,q)"/>
+         @focus="searchCompany(row)" @search="q=>searchCompany(row,q)" @change="row.error=''"/>
        </a-form-item>
        <p v-if="!needsCompany(row) || row.companyId" class="intake-hint">{{accountAction(row)}}</p>
      </section>

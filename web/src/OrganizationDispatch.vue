@@ -7,7 +7,7 @@ import OrganizationDispatchProfile from './OrganizationDispatchProfile.vue'
 import OrganizationPersonSourceAccounts from './OrganizationPersonSourceAccounts.vue'
 import OrganizationDispatchAccounts from './OrganizationDispatchAccounts.vue'
 import OrganizationSourceRelations from './OrganizationSourceRelations.vue'
-const props=defineProps({api:Function,company:Object,personId:Number,personName:String,canWrite:Boolean,formatTime:Function,embedded:Boolean,inAccountWorkspace:Boolean})
+const props=defineProps({api:Function,company:Object,memberCompany:Object,personId:Number,personName:String,canWrite:Boolean,formatTime:Function,embedded:Boolean,inAccountWorkspace:Boolean})
 const emit=defineEmits(['close','changed'])
 const targetFilterID=useId()
 const companyView=ref('settings')
@@ -200,7 +200,8 @@ defineExpose({refresh})
      <OrganizationSourceRelations :api="api" :company-id="company.id" :format-time="formatTime"/>
     </template>
    </template>
-   <OrganizationDispatchAccounts v-if="personId && data" :person-id="personId" :person-name="personName" :api="api" :systems="systems" :can-write="canWrite" :bindings="data.bindings" :channels="channels" :compact="inAccountWorkspace" @changed="showHistory"/>
+   <OrganizationDispatchAccounts v-if="personId && data" :person-id="personId" :person-name="personName" :company="memberCompany"
+    :api="api" :systems="systems" :can-write="canWrite" :bindings="data.bindings" :channels="channels" :compact="inAccountWorkspace" @changed="showHistory"/>
    <a-button v-if="inAccountWorkspace && (data?.total || detailsOpen)" type="link" size="small"
      class="dispatch-history-link" :aria-expanded="detailsOpen" @click="detailsOpen=!detailsOpen">下发记录</a-button>
    <component v-if="company ? companyView==='history' : !inAccountWorkspace || detailsOpen"

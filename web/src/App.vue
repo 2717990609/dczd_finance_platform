@@ -1824,7 +1824,7 @@ async function save() {
           :catalog-roles="options('catalogAppointmentRole')" :catalog-scopes="options('catalogAppointmentScope')"
           :api="api" :option-label="optionLabel" :format-time="formatTime" :format-identity-time="formatIdentityTime" :format-money="formatMoney" :month="workspaceMonth"
           :report-views="options('monthlyReportView')" :report-dimensions="options('draftReportDimension')"
-          :report-filters="personPage.reportFilters" :period-link="personReportPeriodLink" @report-filters="rememberPersonReport"
+          :report-filters="personPage.reportFilters" :period-link="personReportPeriodLink" @report-filters="rememberPersonReport" @status-changed="peopleDesk?.refresh()"
           :can-write="session.user ? session.user.organizationWrite : session.development"/>
         <div v-show="!personPage" class="workspace-page-body">
         <KeepAlive>

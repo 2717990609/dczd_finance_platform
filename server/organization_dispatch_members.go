@@ -110,9 +110,12 @@ func dispatchBindPhoneKey(input dispatchBindInput) ([]byte, error) {
 	return mac.Sum(nil), nil
 }
 func storeVerifiedDispatchBinding(ctx context.Context, tx pgx.Tx, by *string, input dispatchBindInput, account dispatchAccount, phoneKey []byte, effective *time.Time) (string, error) {
+	if err := lockActiveDirectoryPerson(ctx, tx, input.PersonID); err != nil {
+		return "", err
+	}
 	var binding string
 	var name string
-	if err := tx.QueryRow(ctx, "SELECT name FROM people WHERE id=$1 FOR UPDATE", input.PersonID).Scan(&name); err != nil {
+	if err := tx.QueryRow(ctx, "SELECT name FROM people WHERE id=$1", input.PersonID).Scan(&name); err != nil {
 		return "", err
 	}
 	if _, err := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", input.Target+":"+account.UserID); err != nil {
@@ -256,6 +259,9 @@ func (s workspace) operateDispatchMember(ctx context.Context, input dispatchMemb
 	}
 	var result string
 	err := s.writeAppointments(ctx, func(tx pgx.Tx, by *string) error {
+		if err := lockAppointmentPerson(ctx, tx, input.PersonID); err != nil {
+			return err
+		}
 		var target, userID, member, company, role, state, name string
 		var version int64
 		err := tx.QueryRow(ctx, `SELECT l.target,l.external_id,l.external_member_id,l.external_company_id,l.role,l.identity_state,p.name,l.version
@@ -284,6 +290,9 @@ func (s workspace) operateDispatchMember(ctx context.Context, input dispatchMemb
 			if !errors.Is(err, pgx.ErrNoRows) {
 				return err
 			}
+		}
+		if err := lockActiveDirectoryPerson(ctx, tx, input.PersonID); err != nil {
+			return err
 		}
 		if version != current || current != input.ExpectedVersion {
 			return conflict

@@ -105,15 +105,41 @@ func (s workspace) saveDispatchProfile(ctx context.Context, input dispatchProfil
 			if version != input.ExpectedVersion {
 				return conflict
 			}
+			if status == "INACTIVE" && input.Status == "ACTIVE" {
+				var eligible bool
+				if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT FROM organization_sales_category_history h
+ JOIN organization_sales_categories c ON c.id=h.category_id AND c.active
+ WHERE h.unit_id=$1 AND tstzrange(h.valid_from,h.valid_to,'[)') @> statement_timestamp())`, id).Scan(&eligible); err != nil {
+					return err
+				}
+				if !eligible {
+					return dispatchProblem("启用公司前请选择有效销售类别")
+				}
+			}
 			if status == "ACTIVE" && input.Status == "INACTIVE" {
 				var inUse bool
 				if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT FROM organization_assignments WHERE unit_id=$1 AND (valid_to IS NULL OR valid_to>now())
+     UNION ALL SELECT FROM organization_assignments a JOIN organization_dispatch_units link ON link.unit_id=a.unit_id
+     WHERE link.company_id=$1 AND (a.valid_to IS NULL OR a.valid_to>now())
      UNION ALL SELECT FROM organization_dispatch_company_keys k JOIN organization_units u ON u.id=k.unit_id AND u.status='ACTIVE' WHERE k.parent_wire_id=(SELECT wire_id FROM organization_dispatch_company_keys WHERE unit_id=$1)
      UNION ALL SELECT FROM organization_dispatch_links c JOIN organization_dispatch_links m ON m.target=c.target AND m.entity_type='MEMBER' AND m.external_company_id=c.external_id AND m.identity_state IN ('ACTIVE','PENDING') WHERE c.entity_type='COMPANY' AND c.entity_id=$1)`, id).Scan(&inUse); err != nil {
 					return err
 				}
 				if inUse {
 					return dispatchProblem("请先交接该公司仍有效的任职、下级公司和销售身份")
+				}
+				var unmanaged bool
+				if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT FROM (`+companyBusinessUsesSQL+`) u WHERE u.active
+ AND NOT EXISTS(SELECT FROM organization_dispatch_links l WHERE l.entity_id=$1 AND l.entity_type='COMPANY'
+  AND l.target=u.source AND l.external_id=u."externalId")
+ AND NOT EXISTS(SELECT FROM organization_a2_delivery_history h JOIN organization_dispatch_company_keys k ON k.wire_id=h.entity_id
+  WHERE k.unit_id=$1 AND h.kind='COMPANY' AND h.state='APPLIED' AND h.target=u.source AND h.external_id=u."externalId")
+ AND NOT EXISTS(SELECT FROM organization_health_inbox a WHERE u.source='DCAI' AND a.entity_id=$1 AND a.kind='COMPANY'
+  AND a.external_id=u."externalId" AND a.acknowledged_at IS NOT NULL))`, id).Scan(&unmanaged); err != nil {
+					return err
+				}
+				if unmanaged {
+					return dispatchProblem("停用前，请在公司资料里结束尚未接管的业务系统使用关系")
 				}
 			}
 			if _, err := tx.Exec(ctx, "UPDATE organization_dispatch_company_keys SET parent_wire_id=$2 WHERE unit_id=$1", id, parentWire); err != nil {

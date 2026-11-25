@@ -1,7 +1,7 @@
 <script setup>
 import OrganizationPersonIntake from './OrganizationPersonIntake.vue'
 import {computed,ref,watch} from 'vue'
-const props=defineProps({api:Function,personId:Number,personName:String,systems:Array,bindings:Array,channels:Object,canWrite:Boolean,compact:Boolean})
+const props=defineProps({api:Function,personId:Number,personName:String,company:Object,systems:Array,bindings:Array,channels:Object,canWrite:Boolean,compact:Boolean})
 const emit=defineEmits(['changed'])
 const bindingOpen=ref(false),companies=ref([])
 const selection=ref(),destination=ref(),effective=ref(''),reason=ref(''),error=ref(''),busy=ref(false)
@@ -73,7 +73,7 @@ function allowed(b,key){if(b.pending || b.state==='PENDING')return false;if(key=
   </a-form>
  </a-modal>
  <OrganizationPersonIntake v-if="bindingOpen" :person-id="personId" :person-name="personName" :api="api"
-   :channel-status="channels" :existing-bindings="bindings"
+   :preferred-company="company" :channel-status="channels" :existing-bindings="bindings"
    @close="bindingOpen=false" @saved="(_, message)=>{bindingOpen=false;emit('changed',message)}"/>
 </template>
 <style scoped>

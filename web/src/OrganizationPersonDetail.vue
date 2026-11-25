@@ -16,7 +16,7 @@ const props = defineProps({
   catalogRoles:Array, catalogScopes:Array,
 })
 
-const emit = defineEmits(['report-filters'])
+const emit = defineEmits(['report-filters','status-changed'])
 const sections = [
   {key:'overview', label:'档案'},
   {key:'duties', label:'业务职责'},
@@ -60,6 +60,26 @@ const reportView = ref(props.reportFilters.view)
 const reportDimension = ref('person')
 const personDimensions = computed(() => props.reportDimensions.filter(item=>item.value==='person'))
 const rename=ref(),renameBusy=ref(false),renameError=ref('')
+const statusEdit=ref(),statusBusy=ref(false),statusError=ref('')
+const statusAction=computed(()=>person.value?.sourceStatus==='INACTIVE' ? '启用人员' : '停用人员')
+function openStatus(){
+ statusError.value=''
+ statusEdit.value={status:person.value.sourceStatus==='INACTIVE' ? 'ACTIVE' : 'INACTIVE',expectedVersion:person.value.statusVersion}
+}
+async function saveStatus(){
+ if(statusBusy.value || !statusEdit.value)return
+ const input={personId:props.personId,...statusEdit.value}
+ statusBusy.value=true
+ statusError.value=''
+ try{
+  await props.api('/organization-dispatch/person-status',{method:'POST',body:JSON.stringify(input)})
+  statusEdit.value=undefined
+  await loadPerson()
+  notice.value=input.status==='ACTIVE' ? '人员已启用。' : '人员已停用。'
+  emit('status-changed')
+ }catch(e){statusError.value=e.message}
+ finally{statusBusy.value=false}
+}
 async function saveName(){
  renameBusy.value=true;renameError.value=''
  try{await props.api('/organization-dispatch/rename-person',{method:'POST',body:JSON.stringify({personId:props.personId,name:rename.value,expectedName:person.value.name})});rename.value=undefined;notice.value='姓名已更新。';await loadPerson()}
@@ -136,7 +156,9 @@ defineExpose({refresh})
         <div class="person-detail-heading">
           <div class="person-name-row">
             <h1 ref="heading" tabindex="-1">{{ person.name }}</h1>
-            <a-button v-if="canWrite" size="small" type="text" class="person-edit-name" @click="rename=person.name;renameError=''">修改姓名</a-button>
+            <a-button v-if="canEdit" size="small" type="text" class="person-edit-name" @click="rename=person.name;renameError=''">修改姓名</a-button>
+            <a-button v-if="canWrite && (person.canRestore || (canEdit && !person.canonicalId))" size="small" type="text"
+              class="person-edit-name" @click="openStatus">{{statusAction}}</a-button>
           </div>
           <dl>
             <div v-if="person.sourceStatus==='INACTIVE'"><dt>状态</dt><dd>已停用 <a v-if="person.canonicalId" :href="personLink(person.canonicalId)">查看合并后的人员</a></dd></div>
@@ -147,6 +169,14 @@ defineExpose({refresh})
       </div>
     </div>
     <template v-if="person">
+      <a-modal v-if="statusEdit" open :title="statusAction" :ok-text="statusEdit.status==='ACTIVE' ? '确认启用' : '确认停用'"
+        cancel-text="取消" :ok-button-props="{danger:statusEdit.status==='INACTIVE'}" :confirm-loading="statusBusy"
+        :closable="!statusBusy" :keyboard="!statusBusy" :mask-closable="false" @ok="saveStatus" @cancel="!statusBusy && (statusEdit=undefined)">
+        <p><strong>{{person.name}}</strong></p>
+        <p v-if="statusEdit.status==='INACTIVE'">停用前请结束组织任职、业务职责和分润岗位，并处理子系统销售身份。</p>
+        <p v-else>启用后可重新为此人员登记任职或绑定销售身份。</p>
+        <a-alert v-if="statusError" type="error" :message="statusError" show-icon/>
+      </a-modal>
       <OrganizationAppointmentForm v-if="canEdit && appointment" :api="api" :mode="appointment.mode" :record="appointment.record"
         :tree="appointmentTree" :kinds="appointmentKinds" :fixed-person="person"
         @saved="appointmentSaved" @close="appointment=undefined"/>

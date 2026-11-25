@@ -76,7 +76,7 @@ func (s workspace) searchFinancePeople(ctx context.Context, name string) (json.R
 	}
 	var result json.RawMessage
 	err := s.db.QueryRow(ctx, `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.name,p.id),'[]')
-	 FROM (SELECT id,name FROM people WHERE directory_visible AND coalesce(a2_status,'ACTIVE')='ACTIVE' AND ($1='' OR strpos(lower(name),lower($1))>0)
+	 FROM (SELECT id,name FROM people WHERE directory_visible AND NOT directory_disabled AND coalesce(a2_status,'ACTIVE')='ACTIVE' AND ($1='' OR strpos(lower(name),lower($1))>0)
 	  ORDER BY name,id LIMIT 25) p`, name).Scan(&result)
 	return result, err
 }
@@ -136,6 +136,9 @@ func matchingAppointment(ctx context.Context, tx pgx.Tx, personID int64, target 
 }
 
 func insertAppointment(ctx context.Context, tx pgx.Tx, personID int64, target appointmentTarget, from time.Time, through *time.Time, by *string) (string, error) {
+	if err := lockActiveDirectoryPerson(ctx, tx, personID); err != nil {
+		return "", err
+	}
 	// A sales appointment may have one company per person and one owner per
 	// company over its effective interval. Department appointments stay independent.
 	if target.Kind == "MEMBER" || target.Kind == "MANAGER" || target.Kind == "OWNER" {

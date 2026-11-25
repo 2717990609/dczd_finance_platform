@@ -232,7 +232,8 @@ defineExpose({refresh})
     </div>
   </section>
   <OrganizationDispatchProfile v-if="createProfile" :api="api" :categories="result.categories" @close="createProfile=false" @saved="createProfile=false;companyChanged()"/>
-  <OrganizationCompanyMembers v-if="memberCompany" :company="memberCompany" :api="api" :format-time="formatTime" :can-write="canWrite" @changed="refresh" @close="memberCompany=undefined">
+  <OrganizationCompanyMembers v-if="memberCompany" :company="memberCompany" :api="api" :format-time="formatTime" :can-write="canWrite"
+    @changed="refresh" @status-changed="status=>{memberCompany={...memberCompany,status};companyChanged()}" @close="memberCompany=undefined">
     <template #company-tools>
       <div class="company-profile-links">
         <a-button type="link" size="small" @click="dispatch=memberCompany">同步到业务系统</a-button>

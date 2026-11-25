@@ -112,11 +112,15 @@ func registerBusinessDuty(ctx context.Context, tx pgx.Tx, input createBusinessDu
 	if id, err := findBusinessDuty(ctx, tx, input); !errors.Is(err, pgx.ErrNoRows) {
 		return id, err
 	}
+	if input.PersonID > 0 {
+		if err := lockActiveDirectoryPerson(ctx, tx, input.PersonID); err != nil {
+			return "", err
+		}
+	}
 	var configured, overlap bool
 	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM configuration_options WHERE group_key='organizationDuty'
 	 AND enabled AND option_key=$2 AND applies_to->'scopes'?$7 AND applies_to->'subjects'?$8)
-	 AND CASE WHEN $3::bigint>0 THEN EXISTS(SELECT 1 FROM people WHERE id=$3)
-	 ELSE EXISTS(SELECT 1 FROM organization_units WHERE id=nullif($4,'')::uuid AND status='ACTIVE') END,
+	 AND ($3::bigint>0 OR EXISTS(SELECT 1 FROM organization_units WHERE id=nullif($4,'')::uuid AND status='ACTIVE')),
 	 EXISTS(SELECT 1 FROM organization_business_duties WHERE scope_id=$1::uuid AND role=$2
 	 AND person_id IS NOT DISTINCT FROM nullif($3::bigint,0) AND unit_id IS NOT DISTINCT FROM nullif($4,'')::uuid
 	 AND tstzrange(valid_from,valid_to,'[)') && tstzrange($5,$6,'[)'))`,

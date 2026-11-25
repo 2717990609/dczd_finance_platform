@@ -21,6 +21,7 @@ func (s workspace) organizationDispatchRoutes() []rest.Route {
 		{Method: "GET", Path: base + "/people", Handler: s.organizationPeopleDirectory},
 		{Method: "POST", Path: base + "/create-unit", Handler: submitJSON(16<<10, s.createDispatchUnit)},
 		{Method: "POST", Path: base + "/rename-person", Handler: submitJSON(16<<10, s.renameDispatchPerson)},
+		{Method: "POST", Path: base + "/person-status", Handler: submitJSON(16<<10, s.setDispatchPersonStatus)},
 		{Method: "POST", Path: base + "/profile", Handler: submitJSON(32<<10, s.saveDispatchProfile)},
 		{Method: "GET", Path: base + "/unit", Handler: s.getDispatchUnit},
 		{Method: "POST", Path: base + "/unit", Handler: submitJSON(16<<10, s.linkDispatchUnit)},

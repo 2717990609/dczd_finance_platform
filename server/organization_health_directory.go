@@ -41,9 +41,12 @@ func loadHealthFinanceState(ctx context.Context, tx pgx.Tx, e organizationHealth
 			return a, nil
 		}
 	} else {
-		err = tx.QueryRow(ctx, `SELECT entity_id::text FROM organization_dispatch_links WHERE target='DCAI' AND entity_type='MEMBER' AND external_id=$1`, e.UserID).Scan(&a.EntityID)
+		var personID int64
+		err = tx.QueryRow(ctx, `SELECT entity_id::text,person_id FROM organization_dispatch_links WHERE target='DCAI' AND entity_type='MEMBER' AND external_id=$1`, e.UserID).Scan(&a.EntityID, &personID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			err = nil
+		} else if err == nil {
+			err = lockAppointmentPerson(ctx, tx, personID)
 		}
 	}
 	if err != nil || a.EntityID == "" {
@@ -251,7 +254,15 @@ func applyHealthMember(ctx context.Context, tx pgx.Tx, e organizationHealthEvent
 	} else {
 		person = people[0]
 	}
-	if err = lockAppointmentPerson(ctx, tx, person); err != nil {
+	if e.Status == 1 {
+		err = lockActiveDirectoryPerson(ctx, tx, person)
+		if errors.Is(err, errOrganizationDispatch) {
+			err = conflict
+		}
+	} else {
+		err = lockAppointmentPerson(ctx, tx, person)
+	}
+	if err != nil {
 		return "", err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO identity_mappings(person_id,source,external_id,valid_from)

@@ -1,4 +1,6 @@
 CREATE SEQUENCE IF NOT EXISTS organization_dispatch_version;
+ALTER TABLE people ADD COLUMN IF NOT EXISTS directory_disabled boolean NOT NULL DEFAULT false,
+ ADD COLUMN IF NOT EXISTS directory_status_version bigint NOT NULL DEFAULT 0;
 CREATE TABLE IF NOT EXISTS organization_dispatch_company_keys (
  unit_id uuid PRIMARY KEY REFERENCES organization_units(id), wire_id uuid NOT NULL UNIQUE
 );

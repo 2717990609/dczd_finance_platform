@@ -164,6 +164,9 @@ const catalogAppointmentRequiresHolder = `EXISTS(
 )`
 
 func registerCatalogAppointment(ctx context.Context, tx pgx.Tx, baseline time.Time, by *string, person int64, target catalogAppointmentTarget, from time.Time, through *time.Time) (string, error) {
+	if err := lockActiveDirectoryPerson(ctx, tx, person); err != nil {
+		return "", err
+	}
 	var configured, overlaps, holderConflict bool
 	err := tx.QueryRow(ctx, `WITH targets AS (`+catalogAppointmentTargets+`), overlapping_roles AS (
 	 SELECT person_id,valid_from,valid_to FROM catalog_sales_appointments WHERE source='DCAI' AND observed_at=$1 AND role=$2

@@ -24,11 +24,12 @@ const organizationPeopleDirectorySQL = `WITH appointments AS (
  JOIN organization_duty_scopes s ON s.id=d.scope_id LEFT JOIN configuration_options o ON o.group_key='organizationDuty' AND o.option_key=d.role
  WHERE d.person_id IS NOT NULL AND tstzrange(d.valid_from,d.valid_to,'[)') @> statement_timestamp()
 ), matched AS (
- SELECT p.id,p.name,p.a2_status AS "sourceStatus",p.legacy_party_id,
+ SELECT p.id,p.name,CASE WHEN p.directory_disabled THEN 'INACTIVE' ELSE p.a2_status END AS "sourceStatus",p.legacy_party_id,
  CASE WHEN p.dispatch_name_managed OR p.a2_name_status='MANUAL' OR p.legacy_party_id IS NULL THEN 0
       WHEN p.a2_name_status='SOURCE_CONFIRMED' THEN 1 ELSE 2 END AS name_rank
  FROM people p WHERE p.directory_visible AND
- (CASE WHEN $2='archived' THEN p.a2_status='INACTIVE' ELSE coalesce(p.a2_status,'ACTIVE')='ACTIVE' END) AND
+ (CASE WHEN $2='archived' THEN p.directory_disabled OR p.a2_status='INACTIVE'
+  ELSE NOT p.directory_disabled AND coalesce(p.a2_status,'ACTIVE')='ACTIVE' END) AND
  (CASE $2::text
    WHEN 'unassigned' THEN NOT EXISTS(SELECT 1 FROM appointments a WHERE a.person_id=p.id AND a.sales)
    WHEN 'conflicts' THEN p.id IN (SELECT person_id FROM appointments WHERE sales GROUP BY person_id HAVING count(DISTINCT unit_id)>1)
