@@ -138,6 +138,18 @@ INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,
 	if blocked := call("POST", accountPath, catalogConflict, operator, 409); !strings.Contains(blocked.Body.String(), "子系统已同步的人员归属冲突") {
 		t.Fatal(blocked.Body)
 	}
+	const legacyAccountPath = "/api/v1/identities"
+	legacyFirst := strings.Replace(first, `"profile-flow"`, `"legacy-profile-flow"`, 1)
+	legacyFirst = strings.Replace(legacyFirst, `,"expectedMappingId":0`, "", 1)
+	call("POST", legacyAccountPath, legacyFirst, reader, 403)
+	legacyCreated := call("POST", legacyAccountPath, legacyFirst, operator, 200)
+	if retry := call("POST", legacyAccountPath, legacyFirst, operator, 200); retry.Body.String() != legacyCreated.Body.String() {
+		t.Fatalf("legacy account retry changed mapping: %s", retry.Body)
+	}
+	legacyConflict := strings.Replace(catalogConflict, `,"expectedMappingId":0`, "", 1)
+	if blocked := call("POST", legacyAccountPath, legacyConflict, operator, 409); !strings.Contains(blocked.Body.String(), "子系统已同步的人员归属冲突") {
+		t.Fatal(blocked.Body)
+	}
 	positions := call("GET", "/api/v1/catalog-appointments?history=true&personId=1", "", reader, 200).Body.String()
 	if !strings.Contains(positions, `"total":1`) || !strings.Contains(positions, "exact-person") || strings.Contains(positions, "other-person") {
 		t.Fatal(positions)

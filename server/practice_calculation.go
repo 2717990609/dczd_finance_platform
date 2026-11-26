@@ -63,6 +63,7 @@ type practicePurchase struct {
 	noReferrer          bool
 	replaying           bool
 	refundCutoff        *time.Time
+	postingRounding     postingRounding
 }
 
 func (p practicePurchase) salesIssue(code string, rule paymentRule, part string) draftIssue {
@@ -99,6 +100,7 @@ type practiceDraftRuntime struct {
 	legacyFixedPersonalRefund   bool
 	legacyImplicitFixedRefund   bool
 	legacyFixedRefundPolicy     bool
+	postingRounding             postingRounding
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
@@ -147,6 +149,9 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 	purchases, err := preparePracticePurchases(members, orders, blocked, refunds, history.replaying, cutoffs)
 	if err != nil {
 		return draft, err
+	}
+	for i := range purchases {
+		purchases[i].postingRounding = runtime.postingRounding
 	}
 	var fullyRefunded []practicePurchase
 	if history.replaying && runtime.refundCutoff == nil {
@@ -382,21 +387,18 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 			commission := part.Value
 			exactCommission := big.NewRat(commission, 1)
 			if part.Mode == "rate" {
-				commission = calculatePaymentAmount(base, part)
+				commission = runtime.postingRounding.paymentAmount(base, part)
 				exactCommission = exactMinor(base, part.Value, 10000)
 			}
 			activeSplit := *split
 			if !slices.Contains(serviceMatches[:len(payments)], true) {
 				activeSplit.ServiceRate, activeSplit.ServiceMinor = nil, 0
 			}
-			amounts, valid := activeSplit.amounts(commission, base)
+			amounts, valid := activeSplit.amountsForPosting(commission, base, exactCommission, runtime.postingRounding)
 			if !valid {
 				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_RETRAIN_SPLIT_EXCEEDS_COMMISSION", member, rule, componentKey))
 				continue
 			}
-			amounts.exact = [3]*big.Rat{exactCommission,
-				activeSplit.SalesRate.exactAmount(exactCommission, base, activeSplit.PersonalMinor),
-				activeSplit.ServiceRate.exactAmount(exactCommission, base, activeSplit.ServiceMinor)}
 			unit := runtime.poolUnits[split.Pool.PoolID]
 			if !unit.Valid {
 				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_POOL_MISSING", member, rule, componentKey))
@@ -476,7 +478,7 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 			paymentAmount := fixedShares[index]
 			if !fixedByPayment && !grossShares {
 				cumulativeBase += net
-				cumulativeShare := prorateMinor(amount, cumulativeBase, base)
+				cumulativeShare := runtime.postingRounding.proportion(amount, cumulativeBase, base)
 				paymentAmount = cumulativeShare - previousShare
 				previousShare = cumulativeShare
 			}

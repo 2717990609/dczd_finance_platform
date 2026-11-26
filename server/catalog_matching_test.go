@@ -165,7 +165,7 @@ func TestCatalogRuleMatchingUsesOccurrenceMappingAndPriority(t *testing.T) {
 		t.Fatalf("mismatched classification: %+v", byOrder)
 	}
 	fixed := byOrder["after"].FixedParts
-	if len(fixed) != 1 || fixed[0].Label != "固定分项" || fixed[0].AmountMinor != 20 {
+	if len(fixed) != 1 || fixed[0].Label != "固定分项" || fixed[0].AmountMinor != 19 {
 		t.Fatalf("incorrect fixed-part preview: %+v", fixed)
 	}
 	renewal := get("&memberTransactionType=RENEWAL")

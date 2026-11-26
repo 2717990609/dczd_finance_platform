@@ -117,6 +117,11 @@ CREATE INDEX IF NOT EXISTS source_order_versions_lookup
 CREATE INDEX IF NOT EXISTS source_order_versions_source_page
  ON source_order_versions(source, id DESC);
 
+CREATE TABLE IF NOT EXISTS source_order_display (
+ source_version_id bigint PRIMARY KEY REFERENCES source_order_versions(id) ON DELETE CASCADE,
+ details jsonb NOT NULL CHECK (jsonb_typeof(details)='object')
+);
+
 ALTER TABLE products ADD COLUMN IF NOT EXISTS cycle_start_day smallint;
 DO $$
 BEGIN
@@ -451,25 +456,29 @@ $$;
 CREATE OR REPLACE TRIGGER protect_settlements BEFORE UPDATE OR DELETE ON settlements
  FOR EACH ROW EXECUTE FUNCTION protect_settlement_record();
 
+CREATE OR REPLACE FUNCTION source_version_is_settled(version_id bigint, version_kind text) RETURNS boolean
+LANGUAGE plpgsql STABLE AS $$
+BEGIN
+ RETURN EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.source_version_id=version_id)
+     OR EXISTS(SELECT 1 FROM calculation_draft_performance a JOIN settlements s USING(period_id)
+       WHERE a.source_version_id=version_id OR a.payment_version_id=version_id OR a.completion_version_id=version_id OR a.prior_refund_version_id=version_id)
+     OR EXISTS(SELECT 1 FROM calculation_draft_refunds a JOIN settlements s USING(period_id) WHERE a.refund_source_version_id=version_id)
+     OR EXISTS(SELECT 1 FROM calculation_draft_corrections a JOIN settlements s USING(period_id) WHERE a.source_version_id=version_id)
+     OR EXISTS(SELECT 1 FROM catalog_aggregate_draft_events a JOIN settlements s USING(period_id)
+       WHERE a.source_version_id=version_id OR a.payment_version_id=version_id OR a.completion_version_id=version_id)
+     OR EXISTS(SELECT 1 FROM catalog_aggregate_draft_groups g JOIN settlements s USING(period_id) WHERE g.anchor_payment_id=version_id)
+     OR EXISTS(SELECT 1 FROM calculation_draft_practice_changes a JOIN settlements s USING(period_id) WHERE a.source_version_id=version_id)
+  OR (version_kind='DELIVERY_COMPLETED' AND EXISTS(
+   SELECT 1 FROM calculation_drafts d JOIN settlements s USING(period_id)
+   CROSS JOIN LATERAL jsonb_each_text(d.practice_replay_inputs->'registrationVersions') ref
+   WHERE ref.value=version_id::text));
+END $$;
+
 CREATE OR REPLACE FUNCTION protect_settlement_input() RETURNS trigger LANGUAGE plpgsql AS $$
 BEGIN
  IF TG_TABLE_NAME='source_order_versions' THEN
-  IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.source_version_id=OLD.id)
-     OR EXISTS(SELECT 1 FROM calculation_draft_performance a JOIN settlements s USING(period_id)
-       WHERE a.source_version_id=OLD.id OR a.payment_version_id=OLD.id OR a.completion_version_id=OLD.id OR a.prior_refund_version_id=OLD.id)
-     OR EXISTS(SELECT 1 FROM calculation_draft_refunds a JOIN settlements s USING(period_id) WHERE a.refund_source_version_id=OLD.id)
-     OR EXISTS(SELECT 1 FROM calculation_draft_corrections a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id)
-     OR EXISTS(SELECT 1 FROM catalog_aggregate_draft_events a JOIN settlements s USING(period_id)
-       WHERE a.source_version_id=OLD.id OR a.payment_version_id=OLD.id OR a.completion_version_id=OLD.id)
-     OR EXISTS(SELECT 1 FROM catalog_aggregate_draft_groups g JOIN settlements s USING(period_id) WHERE g.anchor_payment_id=OLD.id)
-     OR EXISTS(SELECT 1 FROM calculation_draft_practice_changes a JOIN settlements s USING(period_id) WHERE a.source_version_id=OLD.id) THEN
+  IF source_version_is_settled(OLD.id,OLD.kind) THEN
    RAISE EXCEPTION 'source version is referenced by a confirmed calculation' USING ERRCODE='55000';
-  END IF;
-  IF OLD.kind='DELIVERY_COMPLETED' AND EXISTS(
-   SELECT 1 FROM calculation_drafts d JOIN settlements s USING(period_id)
-   CROSS JOIN LATERAL jsonb_each_text(d.practice_replay_inputs->'registrationVersions') ref
-   WHERE ref.value=OLD.id::text) THEN
-   RAISE EXCEPTION 'attendance version is referenced by a confirmed calculation' USING ERRCODE='55000';
   END IF;
  ELSE
   IF EXISTS(SELECT 1 FROM calculation_draft_lines l JOIN settlements s USING(period_id) WHERE l.rule_id=OLD.id)
@@ -1656,6 +1665,9 @@ LANGUAGE sql STABLE STRICT AS $$
  SELECT coalesce(p.refund_cutoff_at,(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
 $$;
 
+CREATE INDEX IF NOT EXISTS periods_refund_cutoff_predecessor
+ ON periods(product_id,ends_on,aggregate_package_id) WHERE refund_cutoff_at IS NOT NULL;
+
 CREATE OR REPLACE FUNCTION refund_period_start(p periods) RETURNS timestamptz
 LANGUAGE sql STABLE STRICT AS $$
  SELECT coalesce((SELECT previous.refund_cutoff_at FROM periods previous
@@ -1669,7 +1681,8 @@ $$;
 CREATE OR REPLACE FUNCTION refund_payment_on_or_after(v source_order_versions, boundary timestamptz) RETURNS boolean
 LANGUAGE sql STABLE STRICT AS $$
  SELECT EXISTS(SELECT 1 FROM source_order_versions paid
-  WHERE paid.source=v.source AND paid.kind='ORDER_PAID' AND paid.fact->>'domain'=v.fact->>'domain'
+  WHERE paid.source=v.source AND paid.kind='ORDER_PAID'
+   AND (paid.fact->>'domain',paid.fact->>'sourceKey')=(v.fact->>'domain',v.fact->>'sourceKey')
    AND paid.order_id=v.fact#>>'{refundsPayment,0,orderId}' AND paid.occurred_at>=boundary AND paid.occurred_at<=v.occurred_at
    AND (coalesce(v.fact#>>'{refundsPayment,0,lineId}','')='' OR paid.line_id=v.fact#>>'{refundsPayment,0,lineId}')
    AND (coalesce(v.fact#>>'{refundsPayment,0,recordId}','')='' OR

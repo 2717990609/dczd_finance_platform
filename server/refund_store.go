@@ -67,27 +67,70 @@ const duplicateRefundSQL = `v.kind='REFUND_SUCCEEDED' AND EXISTS(
   )
 )`
 
-const refundInputSelectionSQL = `SELECT v.id,coalesce(origin.id,0),v.fact,coalesce(history.changed,false),` +
-	duplicateRefundSQL + ` FROM periods target`
+// Bind the refund window before inspecting source versions. A past draft can
+// also own earlier refunds it has already reserved for posting.
+const refundQueryTargetSQL = `WITH refund_target AS MATERIALIZED (
+ SELECT p.*,refund_period_start(p) AS refund_from,refund_period_end(p) AS refund_through,
+  least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',refund_period_start(p)) AS scan_from,
+  (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on AS is_current
+ FROM periods p WHERE p.id=$1
+), reserved_refunds AS MATERIALIZED (
+ SELECT DISTINCT r.source,r.fact->>'domain' AS domain,r.fact->>'refundId' AS refund_id
+ FROM (
+  SELECT refund_source_version_id AS id FROM calculation_draft_refunds WHERE period_id=$1
+  UNION ALL SELECT source_version_id FROM calculation_draft_performance WHERE period_id=$1 AND payment_version_id IS NOT NULL
+  UNION ALL SELECT prior_refund_version_id FROM calculation_draft_performance WHERE period_id=$1 AND prior_refund_version_id IS NOT NULL
+ ) booked JOIN source_order_versions r USING(id) WHERE r.kind='REFUND_SUCCEEDED'
+)`
 
-var refundInputsSQL = refundInputSelectionSQL + `
+// The normal branch can seek the source date index. Earlier unhandled refunds
+// are still considered in the current working month or their reserved month.
+func refundCandidateSQL(source, filter string) string {
+	const common = "SELECT v.id FROM refund_target target "
+	base := common + source + " WHERE v.kind='REFUND_SUCCEEDED' AND v.occurred_at<=CURRENT_TIMESTAMP " + filter
+	const inWindow = "v.occurred_at>=target.scan_from AND v.occurred_at<target.refund_through"
+	return `, refund_candidates AS MATERIALIZED (` + base + ` AND ` + inWindow +
+		` UNION ALL ` + base + ` AND target.is_current AND NOT (` + inWindow + `)
+		 UNION ALL ` + base + ` AND NOT target.is_current AND NOT (` + inWindow + `)
+		  AND EXISTS(SELECT 1 FROM reserved_refunds reserved WHERE reserved.source=v.source
+		   AND reserved.domain=v.fact->>'domain' AND reserved.refund_id=v.fact->>'refundId')
+		)`
+}
+
+func refundOriginWindowsSQL(scope string) string {
+	return `, refund_origins AS MATERIALIZED (
+	 SELECT p AS period_row,p.id,refund_period_start(p) AS refund_from,refund_period_end(p) AS refund_through,
+	  least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',refund_period_start(p)) AS scan_from
+	 FROM periods p JOIN refund_target target ON target.product_id=p.product_id WHERE ` + scope + `
+	)`
+}
+
+const refundInputSelectionSQL = `SELECT v.id,coalesce(origin.id,0),v.fact,coalesce(history.changed,false),` +
+	duplicateRefundSQL + ` FROM refund_target target
+ JOIN refund_candidates candidate ON true JOIN source_order_versions v ON v.id=candidate.id`
+
+const ordinaryRefundSource = `
  JOIN source_mappings m ON m.product_id=target.product_id
  JOIN source_order_versions v ON v.source=m.source AND v.fact->>'domain'=m.domain AND v.fact->>'sourceKey'=m.source_key
-` + refundPeriodSQL + ` AND NOT ` + catalogSourceReservedSQL + refundEligibilitySQL
-
-var catalogRefundInputsSQL = refundInputSelectionSQL + `
+`
+const catalogRefundSource = `
  JOIN product_catalog_settings c ON c.product_id=target.product_id
  JOIN source_order_versions v ON v.source=c.source_system AND EXISTS(
   SELECT 1 FROM catalog_business_routes m
   WHERE m.product_id=c.product_id AND m.observed_at=c.captured_at AND ` + catalogRouteFactSQL + `
  )
-` + refundPeriodSQL + refundEligibilitySQL
+`
+const calendarRefundOriginSQL = `
+ LEFT JOIN refund_origins origin ON v.occurred_at>=origin.scan_from AND v.occurred_at<origin.refund_through
+  AND CASE WHEN v.occurred_at>=origin.scan_from AND v.occurred_at<origin.refund_through
+   THEN refund_calendar_contains(origin.period_row,v) ELSE false END
+` + refundPostingHistorySQL + ` WHERE true`
 
-const refundPeriodSQL = `
- LEFT JOIN periods origin ON origin.product_id=target.product_id AND origin.aggregate_package_id IS NULL
-  AND refund_calendar_contains(origin,v)
-` + refundPostingHistorySQL + `
- WHERE target.id=$1 AND v.kind='REFUND_SUCCEEDED' AND v.occurred_at<=CURRENT_TIMESTAMP`
+var refundInputsSQL = refundQueryTargetSQL + refundCandidateSQL(ordinaryRefundSource, "AND NOT "+catalogSourceReservedSQL) +
+	refundOriginWindowsSQL("p.aggregate_package_id IS NULL") + refundInputSelectionSQL + calendarRefundOriginSQL + refundEligibilitySQL
+
+var catalogRefundInputsSQL = refundQueryTargetSQL + refundCandidateSQL(catalogRefundSource, "") +
+	refundOriginWindowsSQL("p.aggregate_package_id IS NULL") + refundInputSelectionSQL + calendarRefundOriginSQL + refundEligibilitySQL
 
 const refundPostingHistorySQL = ` LEFT JOIN LATERAL (
   SELECT min(a.period_id) FILTER (WHERE s.id IS NULL) AS reserved_period,
@@ -119,7 +162,8 @@ func refundHasSettledCalendarPaymentSQL(product string) string {
   JOIN settlements final ON final.period_id=perf.period_id
   JOIN periods prior ON prior.id=perf.period_id AND prior.aggregate_package_id IS NULL
   WHERE prior.product_id=` + product + `
-   AND paid.source=v.source AND paid.kind='ORDER_PAID' AND paid.fact->>'domain'=v.fact->>'domain'
+   AND paid.source=v.source AND paid.kind='ORDER_PAID'
+   AND (paid.fact->>'domain',paid.fact->>'sourceKey')=(v.fact->>'domain',v.fact->>'sourceKey')
    AND paid.order_id=v.fact#>>'{refundsPayment,0,orderId}' AND paid.occurred_at<=v.occurred_at
    AND (coalesce(v.fact#>>'{refundsPayment,0,lineId}','')='' OR paid.line_id=v.fact#>>'{refundsPayment,0,lineId}')
    AND (coalesce(v.fact#>>'{refundsPayment,0,recordId}','')='' OR
@@ -135,7 +179,7 @@ var refundEligibilitySQL = `
    history.reserved_period IS NULL AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN target.starts_on AND target.ends_on
   ))
  ) OR (
-  origin.id IS NULL AND v.occurred_at<refund_period_start(target)
+  origin.id IS NULL AND v.occurred_at<target.refund_from
   AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN target.starts_on AND target.ends_on
   AND ` + refundHasSettledCalendarPaymentSQL("target.product_id") + `
  ))
@@ -148,22 +192,29 @@ var refundEligibilitySQL = `
  ORDER BY v.occurred_at,v.source,v.fact->>'domain',v.fact->>'refundId',v.order_id,v.line_id,v.record_key LIMIT $2`
 
 type refundReference struct {
-	ID       int64  `json:"id"`
-	Source   string `json:"source"`
-	OrderID  string `json:"order_id"`
-	LineID   string `json:"line_id"`
-	RecordID string `json:"record_id"`
+	ID         int64     `json:"id"`
+	Source     string    `json:"source"`
+	Domain     string    `json:"domain"`
+	SourceKey  string    `json:"source_key"`
+	OrderID    string    `json:"order_id"`
+	LineID     string    `json:"line_id"`
+	RecordID   string    `json:"record_id"`
+	OccurredAt time.Time `json:"occurred_at"`
 }
+
+const refundReferencePaymentsSQL = `FROM jsonb_to_recordset($1::jsonb) AS q(
+  id bigint,source text,domain text,source_key text,order_id text,line_id text,record_id text,occurred_at timestamptz)
+ JOIN source_order_versions p ON p.source=q.source AND p.order_id=q.order_id AND p.kind='ORDER_PAID'
+  AND (p.fact->>'domain',p.fact->>'sourceKey')=(q.domain,q.source_key) AND p.occurred_at<=q.occurred_at
+  AND (q.line_id='' OR p.line_id=q.line_id)
+  AND (q.record_id='' OR substr(p.record_key,strpos(p.record_key,':')+1)=q.record_id AND strpos(p.record_key,':')>0)`
 
 func loadRefundObligations(ctx context.Context, tx pgx.Tx, periodID int64, requests []refundReference, practiceMonth bool) (map[int64][]refundObligation, error) {
 	rows, err := tx.Query(ctx, `SELECT q.id,l.id,p.id,l.base_minor,l.amount_minor,l.component_type,r.components,
   l.catalog_rule_id IS NOT NULL,coalesce(l.applied_rate_bps,-1),coalesce(cv.definition->>'refund_policy',''),
   coalesce(cardinality(enrollment.paid_order_ids),0),coalesce(enrollment.membership_type,0),coalesce(company.company_id,''),
   coalesce(d.practice_replay_inputs->'companyClassifications'->>(p.fact->>'paymentId'),'')
- FROM jsonb_to_recordset($1::jsonb) AS q(id bigint,source text,order_id text,line_id text,record_id text)
- JOIN source_order_versions p ON p.source=q.source AND p.order_id=q.order_id AND p.kind='ORDER_PAID'
-  AND (q.line_id='' OR p.line_id=q.line_id)
-  AND (q.record_id='' OR substr(p.record_key,strpos(p.record_key,':')+1)=q.record_id AND strpos(p.record_key,':')>0)
+ `+refundReferencePaymentsSQL+`
  JOIN calculation_draft_lines l ON l.source_version_id=p.id AND l.aggregate_group_key IS NULL
  JOIN settlements s ON s.period_id=l.period_id
  JOIN calculation_drafts d ON d.period_id=l.period_id
@@ -275,7 +326,7 @@ func includeCurrentObligations(window periodWindow, refs []refundReference, obli
 	}
 	for _, ref := range refs {
 		for _, payment := range payments[orderKey{ref.Source, ref.OrderID}] {
-			if !refundRefMatches(ref, payment.Fact) {
+			if !ref.matchesPayment(payment.Fact) {
 				continue
 			}
 			for _, line := range byVersion[payment.ID] {
@@ -339,7 +390,8 @@ func applyRefundEvents(ctx context.Context, tx pgx.Tx, periodID int64, window pe
 		if !event.BookedChanged && event.RefundPeriodID != 0 && len(f.RefundsPayment) == 1 &&
 			f.RefundsPayment[0].OrderID != "" && (!practiceMonth || f.OrderID == f.RefundsPayment[0].OrderID) {
 			link := f.RefundsPayment[0]
-			ref := refundReference{event.ID, f.Source, link.OrderID, link.LineID, link.RecordID}
+			ref := refundReference{ID: event.ID, Source: f.Source, Domain: f.Domain, SourceKey: f.SourceKey,
+				OrderID: link.OrderID, LineID: link.LineID, RecordID: link.RecordID, OccurredAt: f.OccurredAt}
 			refs = append(refs, ref)
 			if catalogTerms != nil && f.Source == "DCAI" && f.Domain == "HEALTH_IDENTITY" {
 				healthRefs = append(healthRefs, ref)

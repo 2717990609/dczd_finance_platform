@@ -225,11 +225,11 @@ func TestHistoricalRefundRoutesToAugustThenCurrentAndReusesFrozenRule(t *testing
 	}
 	saveFact(makeRefund("first", "1", 34, refundedAt, refundedAt))
 	draftAt(august, 0, 0, 0, 1)
-	original := confirm(draftAt(june, 51, -17, 1, 0))
+	original := confirm(draftAt(june, 51, -16, 1, 0))
 	if _, err := service.db.Exec(ctx, "DELETE FROM settlements WHERE id=$1", original.ID); err != nil {
 		t.Fatalf("same-period refund incorrectly blocked technical redo: %v", err)
 	}
-	original = confirm(draftAt(june, 51, -17, 1, 0))
+	original = confirm(draftAt(june, 51, -16, 1, 0))
 	if err := service.refreshPendingDrafts(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -275,8 +275,8 @@ func TestHistoricalRefundRoutesToAugustThenCurrentAndReusesFrozenRule(t *testing
 		t.Fatal(err)
 	}
 	saveFact(makeRefund("second", "1", 71, refundedAt.Add(time.Hour), now))
-	current := draftAt(november, -24, -24, 1, 0)
-	if repeated := draftAt(november, -24, -24, 1, 0); repeated.Version != current.Version {
+	current := draftAt(november, -23, -23, 1, 0)
+	if repeated := draftAt(november, -23, -23, 1, 0); repeated.Version != current.Version {
 		t.Fatalf("no-op changed draft from %d to %d", current.Version, repeated.Version)
 	}
 
@@ -297,8 +297,81 @@ func TestHistoricalRefundRoutesToAugustThenCurrentAndReusesFrozenRule(t *testing
 		t.Fatalf("incorrect refund attribution: %+v", got)
 	}
 	saveFact(makeRefund("first", "2", 35, refundedAt, now.Add(time.Second)))
-	draftAt(november, -24, -24, 1, 1)
+	draftAt(november, -23, -23, 1, 1)
 	if _, err := service.db.Exec(ctx, "DELETE FROM settlements WHERE id=$1", original.ID); err == nil {
 		t.Fatal("source settlement was removable with a booked deduction referencing it")
+	}
+}
+
+func TestRefundUsesOriginalPaymentDomainProductAndTime(t *testing.T) {
+	ctx := context.Background()
+	service := workspace{db: integrationDB(t)}
+	mustID := func(value any, err error) int64 {
+		t.Helper()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return value.(map[string]int64)["id"]
+	}
+	day := 1
+	product := mustID(service.createProduct(ctx, createProductInput{Code: "refund_scope", Name: "Refund scope", PeriodMode: "calendar", CycleStartDay: &day}))
+	previous := mustID(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "Previous", SettlementMonth: "2025-06"}))
+	target := mustID(service.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "Target", SettlementMonth: "2025-07"}))
+	person := mustID(service.createPerson(ctx, createPersonInput{Name: "Refund scope recipient"}))
+	for _, scope := range [][2]string{{"DOMAIN_A", "PRODUCT_A"}, {"DOMAIN_B", "PRODUCT_A"}, {"DOMAIN_A", "PRODUCT_B"}} {
+		mustID(service.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: scope[0], SourceKey: scope[1]}))
+	}
+	mustID(service.assignIdentity(ctx, assignIdentityInput{PersonID: person, Source: "DCZD", ExternalID: "seller", ValidFrom: "2025-01-01T00:00:00+08:00"}))
+	if _, err := service.publishRule(ctx, publishRuleInput{ProductID: product, Label: "Refund scope",
+		Components: []component{{Type: "sales", Mode: "rate", Value: 1000, SourceRole: "DIRECT_REFERRER"}}}); err != nil {
+		t.Fatal(err)
+	}
+	store := func(facts []sourceFact) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, service.db, func(tx pgx.Tx) error {
+			_, err := storeSourceFacts(ctx, tx, facts)
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	paidAt := time.Date(2025, 6, 10, 12, 0, 0, 0, shanghai)
+	refundedAt := time.Date(2025, 7, 10, 12, 0, 0, 0, shanghai)
+	paidAmount, refundAmount := int64(10000), int64(5000)
+	makePayment := func(id string, at time.Time) sourceFact {
+		return sourceFact{Source: "DCZD", Kind: "ORDER_PAID", OrderID: id, RecordKey: "orders:" + id, Version: "1",
+			Domain: "DOMAIN_A", SourceKey: "PRODUCT_A", AmountMinor: &paidAmount, PaymentID: id, OccurredAt: at, UpdatedAt: at, ReferrerID: "seller"}
+	}
+	makeRefund := func(id, domain, product string) sourceFact {
+		return sourceFact{Source: "DCZD", Kind: "REFUND_SUCCEEDED", OrderID: id, RecordKey: "refunds:" + id, Version: "1",
+			Domain: domain, SourceKey: product, AmountMinor: &refundAmount, RefundID: id, OccurredAt: refundedAt, UpdatedAt: refundedAt,
+			RefundsPayment: []sourcePaymentReference{{OrderID: id, RecordID: id}}}
+	}
+	store([]sourceFact{makePayment("same-domain", paidAt), makePayment("other-domain", paidAt), makePayment("other-product", paidAt)})
+	prior, err := service.calculateCurrentDraft(ctx, previous, 0)
+	if err != nil || prior.Total != 3000 || prior.IssueCount != 0 {
+		t.Fatalf("original draft: %+v %v", prior, err)
+	}
+	if _, err := service.db.Exec(ctx, "INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')", previous, prior.Version); err != nil {
+		t.Fatal(err)
+	}
+	store([]sourceFact{
+		makePayment("later-payment", refundedAt.Add(time.Hour)),
+		makeRefund("same-domain", "DOMAIN_A", "PRODUCT_A"),
+		makeRefund("other-domain", "DOMAIN_B", "PRODUCT_A"),
+		makeRefund("other-product", "DOMAIN_A", "PRODUCT_B"),
+		makeRefund("later-payment", "DOMAIN_A", "PRODUCT_A"),
+	})
+	draft, err := service.calculateCurrentDraft(ctx, target, 0)
+	if err != nil || draft.RefundCount != 1 || draft.RefundTotal != -500 || draft.IssueCount != 3 {
+		t.Fatalf("expected only the validated refund and three pending refunds: %+v %v", draft, err)
+	}
+	var refundOrders, performanceOrders []string
+	if err := service.db.QueryRow(ctx, `SELECT
+	 ARRAY(SELECT v.order_id FROM calculation_draft_refunds r JOIN source_order_versions v ON v.id=r.refund_source_version_id WHERE r.period_id=$1),
+	 ARRAY(SELECT v.order_id FROM calculation_draft_performance p JOIN source_order_versions v ON v.id=p.source_version_id
+	  WHERE p.period_id=$1 AND p.payment_version_id IS NOT NULL)`, target).Scan(&refundOrders, &performanceOrders); err != nil ||
+		fmt.Sprint(refundOrders) != "[same-domain]" || fmt.Sprint(performanceOrders) != "[same-domain]" {
+		t.Fatalf("unexpected posted refunds: commission %v performance %v, %v", refundOrders, performanceOrders, err)
 	}
 }

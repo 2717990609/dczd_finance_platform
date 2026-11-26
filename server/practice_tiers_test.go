@@ -148,7 +148,7 @@ func checkPracticeFixedRefundPaymentShares(t *testing.T, part component, replayV
 	}
 	if replayVersion != 0 {
 		// Recreate the posted allocations and replay version from the old calculation.
-		if _, err := s.db.Exec(ctx, `UPDATE calculation_drafts SET practice_replay_inputs=jsonb_set(practice_replay_inputs,'{version}',to_jsonb($2::int)),
+		if _, err := s.db.Exec(ctx, `UPDATE calculation_drafts SET practice_replay_inputs=jsonb_set(practice_replay_inputs-'postingMode','{version}',to_jsonb($2::int)),
 		 total_minor=$3 WHERE period_id=$1`, period, replayVersion, depositShare+tailShare); err != nil {
 			t.Fatal(err)
 		}
@@ -187,7 +187,7 @@ func checkPracticeFixedRefundPaymentShares(t *testing.T, part component, replayV
 	}
 	post(refund("2", "13", 3000, september.Add(time.Hour)))
 	booked, err = s.calculateCurrentDraft(ctx, refundPeriod, 0)
-	wantRefund, wantCount := -depositShare-(tailShare+1)/2, 2
+	wantRefund, wantCount := -depositShare-tailShare/2, 2
 	if part.PracticeSignupBasis {
 		wantRefund, wantCount = -depositShare, 1
 	}

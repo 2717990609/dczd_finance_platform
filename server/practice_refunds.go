@@ -99,7 +99,7 @@ func matchPracticeRefunds(events []practiceRefund, orders map[string][]paymentIn
 			match.issue = "REFUND_MISSING_AMOUNT_OR_ID"
 		} else if event.duplicate {
 			match.issue = "REFUND_DUPLICATE_ID"
-		} else if event.wrongProduct && match.issue == "" {
+		} else if match.issue == "" && (event.wrongProduct || f.SourceKey != targets[0].Fact.SourceKey) {
 			match.issue = "PRACTICE_REFUND_PRODUCT_MISMATCH"
 		}
 		for _, payment := range targets {
@@ -219,21 +219,21 @@ func practiceFixedSignupShares(payments []paymentInput, award int64) [2]int64 {
 func (p practicePurchase) remainingFixedShare(payment paymentInput, award int64) int64 {
 	paid := *payment.Fact.AmountMinor
 	refunded := paid - p.netAmount(payment)
-	if refunded == 0 {
-		return award
-	}
-	return award - prorateMinor(award, refunded, paid)
+	return p.postingRounding.unpostedNet(award, refunded, paid)
 }
 
 func (p practicePurchase) commissionAmount(part component) (int64, string) {
-	amount := calculatePaymentAmount(p.base, part)
+	amount := p.postingRounding.paymentAmount(p.base, part)
 	if part.Mode == "rate" || p.gross == p.base {
 		return amount, ""
 	}
 	refunded := p.gross - p.base
 	if part.RefundPolicy != "" {
-		grossAward := calculatePaymentAmount(p.gross, part)
-		delta, err := refundDelta(part, p.gross, grossAward, refunded, 0)
+		grossAward := p.postingRounding.paymentAmount(p.gross, part)
+		if part.RefundPolicy == "proportional" {
+			return p.postingRounding.unpostedNet(grossAward, refunded, p.gross), ""
+		}
+		delta, err := p.postingRounding.refundDelta(part, p.gross, grossAward, refunded, 0)
 		if err != nil {
 			return 0, "REFUND_POLICY_MISSING"
 		}

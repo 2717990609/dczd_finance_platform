@@ -234,14 +234,14 @@ func (r *practiceRetrainRate) validWith(fixed int64) bool {
 		(r.Basis == practiceRetrainCommissionBasis || r.Basis == practiceRetrainReceiptsBasis)
 }
 
-func (r *practiceRetrainRate) amount(commission, net, fixed int64) int64 {
+func (r *practiceRetrainRate) amount(commission, net, fixed int64, rounding postingRounding) int64 {
 	if r == nil {
 		return fixed
 	}
 	if r.Basis == practiceRetrainReceiptsBasis {
-		return practiceCompanyRate(net, r.Value)
+		return rounding.rate(net, r.Value, periodRateScale)
 	}
-	return practiceCompanyRate(commission, r.Value)
+	return rounding.rate(commission, r.Value, periodRateScale)
 }
 
 type practiceRetrainAmounts struct {
@@ -250,17 +250,31 @@ type practiceRetrainAmounts struct {
 }
 
 func (r practiceRetrainSplit) amounts(commission, net int64) (practiceRetrainAmounts, bool) {
-	sales := r.SalesRate.amount(commission, net, r.PersonalMinor)
-	service := r.ServiceRate.amount(commission, net, r.ServiceMinor)
+	return r.amountsForPosting(commission, net, big.NewRat(commission, 1), truncatePosting)
+}
+
+func (r practiceRetrainSplit) amountsForPosting(commission, net int64, exactCommission *big.Rat, rounding postingRounding) (practiceRetrainAmounts, bool) {
+	salesExact := r.SalesRate.exactAmount(exactCommission, net, r.PersonalMinor)
+	serviceExact := r.ServiceRate.exactAmount(exactCommission, net, r.ServiceMinor)
+	sales, service := truncateExactMinor(salesExact), truncateExactMinor(serviceExact)
+	if rounding == legacyPosting {
+		sales = r.SalesRate.amount(commission, net, r.PersonalMinor, rounding)
+		service = r.ServiceRate.amount(commission, net, r.ServiceMinor, rounding)
+	}
 	if a, b := r.SalesRate, r.ServiceRate; a != nil && b != nil && a.Basis == b.Basis {
 		if a.Value > periodRateScale-b.Value {
 			return practiceRetrainAmounts{}, false
 		}
 		// Allocate cents once across shares using the same base, then pass the remainder to the pool.
-		combined := practiceRetrainRate{Basis: a.Basis, Value: a.Value + b.Value}
-		service = combined.amount(commission, net, 0) - sales
+		if rounding == legacyPosting {
+			combined := practiceRetrainRate{Basis: a.Basis, Value: a.Value + b.Value}
+			service = combined.amount(commission, net, 0, rounding) - sales
+		} else {
+			service = truncateExactMinor(new(big.Rat).Add(salesExact, serviceExact)) - sales
+		}
 	}
-	return practiceRetrainAmounts{commission: commission, sales: sales, service: service}, sales <= commission-service
+	return practiceRetrainAmounts{commission: commission, sales: sales, service: service,
+		exact: [3]*big.Rat{exactCommission, salesExact, serviceExact}}, sales <= commission-service
 }
 
 func (r *practiceRetrainRate) exactAmount(commission *big.Rat, net, fixed int64) *big.Rat {

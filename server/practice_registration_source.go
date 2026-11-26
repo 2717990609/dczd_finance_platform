@@ -76,12 +76,12 @@ func sourceRegistrationPeriodKey(fields map[string]json.RawMessage) string {
 
 func fillSourcePracticeRegistration(ctx context.Context, tx pgx.Tx, version int64, registration *sourcePracticeRegistration) (bool, error) {
 	tag, err := tx.Exec(ctx, `UPDATE source_order_versions SET practice_registration=$2
-	 WHERE id=$1 AND practice_registration IS NULL`, version, registration)
+	 WHERE id=$1 AND practice_registration IS NULL AND NOT source_version_is_settled(id,kind)`, version, registration)
 	if err != nil || tag.RowsAffected() != 0 {
 		return err == nil, err
 	}
 	var same bool
-	if err := tx.QueryRow(ctx, `SELECT practice_registration=$2::jsonb FROM source_order_versions WHERE id=$1`,
+	if err := tx.QueryRow(ctx, `SELECT coalesce(practice_registration=$2::jsonb,source_version_is_settled(id,kind)) FROM source_order_versions WHERE id=$1`,
 		version, registration).Scan(&same); err != nil {
 		return false, err
 	}

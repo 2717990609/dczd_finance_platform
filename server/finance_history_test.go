@@ -58,6 +58,24 @@ func TestFinanceHistoryAdoptionChecksReplayAndCarriesOriginalRefund(t *testing.T
 	if err := s.db.QueryRow(ctx, `SELECT current_database(),current_schema()`).Scan(&input.Database, &input.Schema); err != nil {
 		t.Fatal(err)
 	}
+	t.Run("original confirmation before refund cutoff", func(t *testing.T) {
+		cutoff := confirmedAt.Add(time.Hour)
+		if _, err := s.setPeriodRefundCutoff(ctx, periodRefundCutoffInput{PeriodID: period, CutoffAt: &cutoff}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.calculateCurrentDraft(ctx, period, 0); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.runFinanceHistory(ctx, input, false, nil); !errors.Is(err, errFinanceHistoryTime) {
+			t.Errorf("history accepted a confirmation before the refund cutoff: %v", err)
+		}
+		if _, err := s.setPeriodRefundCutoff(ctx, periodRefundCutoffInput{PeriodID: period}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.calculateCurrentDraft(ctx, period, 0); err != nil {
+			t.Fatal(err)
+		}
+	})
 	wrong := input
 	wrong.Database = "another_database"
 	if _, err := s.runFinanceHistory(ctx, wrong, false, nil); !errors.Is(err, errFinanceHistoryTarget) {

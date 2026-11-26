@@ -757,7 +757,7 @@ func (b practicePeriodBenefit) rate(configured, basis int64) (int64, bool) {
 	return 0, false
 }
 
-// Round once for the entitlement group, then assign leftover cents by the
+// Post once for the entitlement group, then assign leftover cents by the
 // largest remainder. The enrollment or single-payment key breaks ties.
 func allocatePracticePeriodRate(shares []practiceBenefitShare, rate int64) (int64, error) {
 	var net, assigned int64
@@ -774,7 +774,11 @@ func allocatePracticePeriodRate(shares []practiceBenefitShare, rate int64) (int6
 		s.rem = product % periodRateScale
 		assigned += s.amount
 	}
-	total := net/periodRateScale*rate + (net%periodRateScale*rate+periodRateScale/2)/periodRateScale
+	rounding := truncatePosting
+	if len(shares) != 0 {
+		rounding = shares[0].purchase.postingRounding
+	}
+	total := rounding.rate(net, rate, periodRateScale)
 	if total == assigned {
 		return total, nil
 	}
@@ -1013,7 +1017,7 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 				// The company referral standard rounds each enrollment's entitlement.
 				for i := range shares {
 					shares[i].rate = rate
-					shares[i].amount = practiceCompanyRate(shares[i].net, rate)
+					shares[i].amount = runtime.postingRounding.rate(shares[i].net, rate, periodRateScale)
 					total, err = addMinor(total, shares[i].amount)
 					if err != nil {
 						return err

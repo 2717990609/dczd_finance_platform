@@ -539,7 +539,7 @@ export function practiceRetrainSplitEstimate(split, totalMinor) {
   if (totalMinor==null || split.salesRate?.basis==='net_receipts' || split.serviceRate?.basis==='net_receipts') return
   const scale = 1000000
   const amount = rate => Math.floor(totalMinor/scale)*rate+
-    Math.floor(((totalMinor%scale)*rate+scale/2)/scale)
+    Math.floor(((totalMinor%scale)*rate)/scale)
   const sales = split.salesRate ? amount(split.salesRate.value) : split.personalMinor || 0
   const service = split.salesRate && split.serviceRate ? amount(split.salesRate.value+split.serviceRate.value)-sales :
     split.serviceRate ? amount(split.serviceRate.value) : split.serviceMinor || 0

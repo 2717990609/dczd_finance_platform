@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-func TestVIPRefundRoundsByOriginalRecipientAndCapsEachPriorBalance(t *testing.T) {
-	// 29 cents originally paid at 70%. The rounded distribution is 20 cents.
+func TestVIPRefundTruncatesByOriginalRecipientAndCapsEachPriorBalance(t *testing.T) {
+	// 29 cents originally paid at 70%. The posted distribution is 20 cents.
 	// Allocate the refund against each original 8:4:4:4 posted share.
 	// A small refund must not be moved from one recipient to another.
 	parts := []refundObligation{
@@ -39,7 +39,7 @@ func TestVIPRefundRoundsByOriginalRecipientAndCapsEachPriorBalance(t *testing.T)
 		}
 	}
 	refund("part-one", 3, false)
-	if draft.RefundTotal != -1 || len(draft.Refunds) != 4 {
+	if draft.RefundTotal != 0 || len(draft.Refunds) != 4 {
 		t.Fatalf("first refund = %+v", draft.Refunds)
 	}
 	refund("part-two", 19, false)
@@ -59,7 +59,7 @@ func TestVIPRefundRoundsByOriginalRecipientAndCapsEachPriorBalance(t *testing.T)
 	}
 	draft = paymentDraft{}
 	refund("renewal-partial", 3, false)
-	if draft.RefundTotal != -1 || history[unposted] != nil {
+	if draft.RefundTotal != 0 || history[unposted] != nil {
 		t.Fatalf("partial refund of the actual postings = %+v", draft.Refunds)
 	}
 	refund("renewal-rest", 26, true)

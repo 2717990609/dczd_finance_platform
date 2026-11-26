@@ -428,7 +428,7 @@ func TestPracticeDeferredEnrollmentKeepsBookedPaymentInOriginalClass(t *testing.
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, original, originalVersion); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(ctx, `DROP FUNCTION practice_payment_dependents(bigint)`); err != nil {
+	if _, err := s.db.Exec(ctx, `DELETE FROM finance_schema_revisions; DROP FUNCTION practice_payment_dependents(bigint)`); err != nil {
 		t.Fatal(err)
 	}
 	if err := migrate(ctx, s.db); err != nil {
@@ -674,6 +674,7 @@ func TestPracticeDraftUsesLatestPartialRefundForConfirmedEnrollment(t *testing.T
 	}
 	wrongProduct := refund("8", "PRACTICE", "1", confirmed.AddDate(0, 1, 0).Add(time.Hour), &late)
 	wrongProduct.SourceKey = "another-product"
+	mustID(s.createMapping(ctx, createMappingInput{ProductID: product, Source: "DCZD", Domain: "PRACTICE", SourceKey: wrongProduct.SourceKey}))
 	storeRefund(wrongProduct)
 	if got := run(); got.IssueCount != 1 || got.Total != 0 {
 		t.Fatalf("a late refund not mapped to the payment's product must not become a handoff: %+v", got)

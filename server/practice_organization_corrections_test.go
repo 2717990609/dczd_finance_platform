@@ -113,12 +113,12 @@ func verifyPracticeOrganizationCorrection(t *testing.T, withPool bool) {
 		}
 	}
 	original := draftAt(class)
-	expected := int64(1000)
+	expected := int64(999)
 	if withPool {
-		expected += 1000
+		expected += 999
 	}
 	if original.Total != expected || original.IssueCount != 0 {
-		t.Fatalf("expected company and pool gain of 1000 each: %+v", original)
+		t.Fatalf("expected company and pool gain of 999 cents each: %+v", original)
 	}
 	var basis string
 	if err := s.db.QueryRow(ctx, poolAllocationBasisSQL+"$1", class).Scan(&basis); err != nil {
@@ -126,7 +126,7 @@ func verifyPracticeOrganizationCorrection(t *testing.T, withPool bool) {
 	}
 	scope := poolScope{Unit: poolUnit, Item: fmt.Sprint(pool), Scenario: "class"}
 	if withPool {
-		if _, err := s.savePoolAllocation(ctx, savePoolAllocationInput{PeriodID: class, Version: original.Version, Basis: basis, Retained: 1000, poolScope: scope}); err != nil {
+		if _, err := s.savePoolAllocation(ctx, savePoolAllocationInput{PeriodID: class, Version: original.Version, Basis: basis, Retained: 999, poolScope: scope}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -145,13 +145,13 @@ func verifyPracticeOrganizationCorrection(t *testing.T, withPool bool) {
 			OrderID: "moving", RecordKey: "refund:1", RefundID: "r1", Version: "1", AmountMinor: &refundAmount,
 			OccurredAt: refundAt, UpdatedAt: refundAt, RefundsPayment: []sourcePaymentReference{{OrderID: "moving", RecordID: "moving"}}}, refundAt)
 		refunded := draftAt(october)
-		if refunded.RefundTotal != -200 || refunded.CorrectionTotal != -200 || refunded.CorrectionCount != 2 || refunded.IssueCount != 0 {
+		if refunded.RefundTotal != -199 || refunded.CorrectionTotal != -201 || refunded.CorrectionCount != 2 || refunded.IssueCount != 0 {
 			t.Fatalf("company-only refund must preserve its original refund policy and debit the revised company: %+v", refunded)
 		}
 		return
 	}
-	if changed.CorrectionCount != 3 || changed.CorrectionTotal != 0 || changed.IssueCount != 0 {
-		t.Fatalf("the original company and pool should debit 1000 each and the new company receive 2000: %+v", changed)
+	if changed.CorrectionCount != 3 || changed.CorrectionTotal != 1 || changed.IssueCount != 0 {
+		t.Fatalf("the original company and pool should debit 999 each and the new company receive 1999: %+v", changed)
 	}
 	readPool := func(period int64) poolDraftItem {
 		t.Helper()
@@ -165,16 +165,16 @@ func verifyPracticeOrganizationCorrection(t *testing.T, withPool bool) {
 		}
 		return stages[scope].poolDraftItem
 	}
-	if got := readPool(september); got.Opening != 0 || got.Balance != -1000 {
+	if got := readPool(september); got.Opening != 0 || got.Balance != -999 {
 		t.Fatalf("the original allocation remains paid and the pool absorbs the deficit: %+v", got)
 	}
-	if got := readPool(class); got.Confirmed != 1000 || got.Balance != 0 {
+	if got := readPool(class); got.Confirmed != 999 || got.Balance != 0 {
 		t.Fatalf("the frozen class pool changed: %+v", got)
 	}
 	freeze(changed)
 
 	// Seed a later credit from a payment with a different membership window.
-	// The isolated ledger leaves 200 available after filling the deficit.
+	// The isolated ledger leaves 201 available after filling the deficit.
 	const laterKey = "PRACTICE:1:1:57"
 	later := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "十月补班", Ordinal: 57,
 		StartsOn: "2026-10-01", EndsOn: "2026-10-01", SourcePeriodKey: laterKey}))
@@ -217,10 +217,10 @@ func verifyPracticeOrganizationCorrection(t *testing.T, withPool bool) {
 		OrderID: "moving", RecordKey: "refund:1", RefundID: "r1", Version: "1", AmountMinor: &refundAmount,
 		OccurredAt: refundAt, UpdatedAt: refundAt, RefundsPayment: []sourcePaymentReference{{OrderID: "moving", RecordID: "moving"}}}, refundAt)
 	refunded := draftAt(october)
-	if refunded.RefundTotal != -400 || refunded.CorrectionTotal != 0 || refunded.CorrectionCount != 3 || refunded.IssueCount != 0 {
+	if refunded.RefundTotal != -398 || refunded.CorrectionTotal != -2 || refunded.CorrectionCount != 3 || refunded.IssueCount != 0 {
 		t.Fatalf("refund should charge 400 to the corrected company and offset the original company and pool debits: %+v", refunded)
 	}
-	if got := readPool(october); got.Opening != 200 || got.Refund != -200 || got.Correction != 200 || got.Balance != 200 {
+	if got := readPool(october); got.Opening != 201 || got.Refund != -199 || got.Correction != 199 || got.Balance != 201 {
 		t.Fatalf("the refund's correction should cancel the extra pool debit: %+v", got)
 	}
 	for dim, expected := range map[string]map[string]int64{
@@ -247,7 +247,7 @@ func verifyPracticeOrganizationCorrection(t *testing.T, withPool bool) {
 		t.Fatal(err)
 	}
 	if _, err := s.savePoolAllocation(ctx, savePoolAllocationInput{PeriodID: october, Version: refunded.Version, Basis: basis,
-		Shares: []poolAllocationShare{{PersonID: laterPerson, Amount: 200}}, poolScope: scope}); err != nil {
+		Shares: []poolAllocationShare{{PersonID: laterPerson, Amount: 201}}, poolScope: scope}); err != nil {
 		t.Fatalf("the offsetting refund and correction must not move funds away from the source payment and eligible member: %v", err)
 	}
 	freeze(refunded)
@@ -257,7 +257,7 @@ func verifyPracticeOrganizationCorrection(t *testing.T, withPool bool) {
 	payment.Version, payment.UpdatedAt, payment.SalesCompanyID = "3", restoredAt, "old-company"
 	store(payment, restoredAt)
 	restored := draftAt(november)
-	if restored.CorrectionCount != 3 || restored.CorrectionTotal != 0 || restored.IssueCount != 0 {
+	if restored.CorrectionCount != 3 || restored.CorrectionTotal != 1 || restored.IssueCount != 0 {
 		t.Fatalf("restoring the original company should use the already-refunded payment balance: %+v", restored)
 	}
 	if got := readPool(november); got.Opening != 0 || got.Correction != 800 || got.Balance != 800 {

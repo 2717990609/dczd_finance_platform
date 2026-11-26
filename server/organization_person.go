@@ -115,6 +115,13 @@ type personSourceAccountInput struct {
 	ExpectedMappingID *int64
 }
 
+func (s workspace) saveLegacyPersonSourceAccount(ctx context.Context, input assignIdentityInput) (any, error) {
+	if _, err := s.appointmentOperator(ctx); err != nil {
+		return nil, err
+	}
+	return s.assignIdentity(ctx, input)
+}
+
 func (s workspace) savePersonSourceAccount(ctx context.Context, input personSourceAccountInput) (any, error) {
 	if _, err := s.appointmentOperator(ctx); err != nil {
 		return nil, err

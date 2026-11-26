@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-func TestPaymentDraftResolvesConfiguredRoleOnPaymentDateAndRoundsMoney(t *testing.T) {
+func TestPaymentDraftResolvesConfiguredRoleOnPaymentDateAndTruncatesMoney(t *testing.T) {
 	at := time.Date(2026, 8, 5, 4, 0, 0, 0, time.UTC)
 	amount := int64(105)
 	window := periodWindow{Start: at.Add(-time.Hour), Through: at.Add(time.Hour)}
@@ -21,11 +21,11 @@ func TestPaymentDraftResolvesConfiguredRoleOnPaymentDateAndRoundsMoney(t *testin
 			},
 			{Source: "DCAI", ExternalID: "b"}: {{PersonID: 43, ValidFrom: at.Add(-time.Hour)}},
 		})
-	if err != nil || len(got.Lines) != 1 || len(got.Issues) != 0 || got.Total != 11 {
+	if err != nil || len(got.Lines) != 1 || len(got.Issues) != 0 || got.Total != 10 {
 		t.Fatalf("draft=%+v, error=%v", got, err)
 	}
 	line := got.Lines[0]
-	if line.PersonID != 30 || line.FactID != 17 || line.Base != 105 || line.Amount != 11 {
+	if line.PersonID != 30 || line.FactID != 17 || line.Base != 105 || line.Amount != 10 {
 		t.Fatalf("wrong inputs or result: %+v", line)
 	}
 }

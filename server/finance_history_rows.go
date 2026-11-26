@@ -44,7 +44,7 @@ const financeHistoryRowsSQL = `WITH lines AS MATERIALIZED (SELECT * FROM calcula
   UNION SELECT allocation_owner_id FROM original_lines UNION SELECT person_id FROM archived_funding
  ), rows(section,row_key,value) AS (
   SELECT 'period',id::text,to_jsonb(p) FROM periods p WHERE p.id=$1
-  UNION ALL SELECT 'draft',period_id::text,to_jsonb(d) FROM draft d
+  UNION ALL SELECT 'draft',period_id::text,to_jsonb(d)-'posting_digest' FROM draft d
   UNION ALL SELECT CASE WHEN practice_tier_reference THEN 'tierReference' ELSE 'accrual' END,id::text,
    CASE WHEN practice_tier_reference THEN to_jsonb(l) ELSE to_jsonb(l)-'practice_tier_reference' END FROM lines l
   UNION ALL SELECT 'originalAccrual',id::text,

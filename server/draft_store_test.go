@@ -140,7 +140,7 @@ func TestDraftStoreReusesUnchangedVersionAndReplacesOnlyChangedOrdinaryLines(t *
 	insert("2", 990, at.Add(time.Minute))
 	check(1, 299)
 	insert("3", 105, at.Add(2*time.Minute))
-	check(2, 211)
+	check(2, 210)
 	updated := idFor("O1")
 	if updated == first || idFor("O2") != second {
 		t.Fatal("an order revision should replace its line and keep the unrelated line")
@@ -151,7 +151,7 @@ func TestDraftStoreReusesUnchangedVersionAndReplacesOnlyChangedOrdinaryLines(t *
 	var count int
 	var amount int64
 	err := service.db.QueryRow(ctx, "SELECT count(*), sum(amount_minor) FROM calculation_draft_lines WHERE period_id=$1", period).Scan(&count, &amount)
-	if err != nil || count != 2 || amount != 211 {
+	if err != nil || count != 2 || amount != 210 {
 		t.Fatalf("stored lines: count=%d amount=%d error=%v", count, amount, err)
 	}
 	response := httptest.NewRecorder()

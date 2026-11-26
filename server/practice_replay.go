@@ -15,6 +15,7 @@ import (
 // supply when a later refund changes the outcome for the class.
 type practiceReplayInputs struct {
 	Version                 int                                  `json:"version"`
+	PostingMode             string                               `json:"postingMode,omitempty"`
 	RefundCutoff            *time.Time                           `json:"refundCutoff,omitempty"`
 	IndependentRefunds      bool                                 `json:"independentRefunds,omitempty"`
 	PriorCounts             map[int64]int64                      `json:"priorCounts,omitempty"`
@@ -79,6 +80,7 @@ func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []p
 	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) *practiceReplayInputs {
 	inputs := &practiceReplayInputs{
 		RefundCutoff: runtime.refundCutoff,
+		PostingMode:  postingModeTruncate,
 		Version:      practiceReplayNetRateShares, PriorCounts: draft.practicePriorCounts,
 		TierAmounts: draft.practiceTierAmounts, TierArrangements: draft.practiceFrozenTiers,
 		Identities: make(map[string][]identityAssignment), Appointments: make(map[int][]practiceAppointment),
@@ -297,6 +299,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 		legacyFixedPersonalRefund:   values.Version < practiceReplayFixedPersonalPaymentShares,
 		legacyImplicitFixedRefund:   values.Version < practiceReplayDefaultFixedPaymentShares,
 		legacyFixedRefundPolicy:     values.Version < practiceReplayProportionalFixedRefunds,
+		postingRounding:             postingRounding(values.PostingMode != postingModeTruncate),
 	}
 	if usesDirectorRegistry(replay.rule.Components) {
 		if directorVersionID == 0 {

@@ -104,7 +104,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 	var result catalogPeriodDefinition
 	if json.Unmarshal(raw, &stored) != nil || stored.Basis != "ACTUAL_RECEIVED" ||
 		(stored.Recognition != "PAID" && stored.Recognition != catalogPeriodProductRecognition) ||
-		stored.Refund != "PROPORTIONAL" || stored.Stacking != "SUM" || !stored.Performance.valid() || stored.Rounding.Mode != "HALF_UP" || stored.Rounding.Scale != 2 ||
+		stored.Refund != "PROPORTIONAL" || stored.Stacking != "SUM" || !stored.Performance.valid() || !supportedPostingMode(stored.Rounding.Mode, stored.Rounding.Scale) ||
 		!slices.Equal(stored.Scope.Sources, []string{"DCAI"}) || !slices.Equal(stored.Scope.Events, []string{"order.paid"}) ||
 		len(stored.Scope.Scenarios) == 0 || len(stored.Actions) == 0 || stored.Settlement.Negative != "CARRY_FORWARD" ||
 		(stored.Settlement.Cycle != "MONTHLY" && stored.Settlement.Cycle != "MONTHLY_25_TO_24") {

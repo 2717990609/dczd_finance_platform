@@ -101,3 +101,42 @@ func TestPracticeRegistrationSourceRetainsCompanyAndEnrollmentOnOrderVersion(t *
 		t.Fatalf("order version must show the signup seller and company, got %d %s %v", reply.Code, reply.Body, err)
 	}
 }
+
+func TestSourceSyncCanBackfillAroundFrozenFacts(t *testing.T) {
+	ctx := context.Background()
+	db := integrationDB(t)
+	paid, err := normalizeFact("DCZD", "1100", json.RawMessage(strings.ReplaceAll(practiceRegistrationSourceFixture, "DELIVERY_COMPLETED", "ORDER_PAID")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	save := func(expected int64, facts ...sourceFact) {
+		t.Helper()
+		if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+			count, err := storeSourceFacts(ctx, tx, facts)
+			if err == nil && count != expected {
+				t.Errorf("got %d inserted facts, expected %d", count, expected)
+			}
+			return err
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	save(1, paid)
+	if _, err := db.Exec(ctx, `INSERT INTO products(code,name,period_mode) VALUES('FREEZE','Freeze','class');
+	 INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on) VALUES(1,'Fixture',1,'2026-06-08','2026-06-08');
+	 INSERT INTO calculation_drafts(period_id,version,input_digest,total_minor,line_count,issue_count,calculated_at)
+	 VALUES(1,1,decode('00','hex'),0,0,0,now());
+	 INSERT INTO calculation_draft_performance(period_id,source_version_id) SELECT 1,id FROM source_order_versions;
+	 INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixture')`); err != nil {
+		t.Fatal(err)
+	}
+	paid.PracticeInactiveCompany = &sourcePracticeSignup{EnrollmentID: 95, ParticipantID: 12, StrategyID: 4}
+	revision := paid
+	revision.Version = "v2"
+	save(1, paid, revision)
+	var frozenModified, revisionRecorded bool
+	if err := db.QueryRow(ctx, `SELECT bool_or(fact ? 'practiceInactiveCompany') FILTER (WHERE version='v1'),
+	 bool_or(fact ? 'practiceInactiveCompany') FILTER (WHERE version='v2') FROM source_order_versions`).Scan(&frozenModified, &revisionRecorded); err != nil || frozenModified || !revisionRecorded {
+		t.Fatalf("old fact changed=%t, new fact present=%t, err=%v", frozenModified, revisionRecorded, err)
+	}
+}

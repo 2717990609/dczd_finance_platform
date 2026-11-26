@@ -129,7 +129,7 @@ func initializeFinance(ctx context.Context, db *pgxpool.Pool, raw []byte, apply 
 	if occupied {
 		return false, errFinanceInitializationExisting
 	}
-	if _, err := tx.Exec(ctx, schema); err != nil {
+	if err := applyFinanceSchema(ctx, tx); err != nil {
 		return false, initializationError("创建财务数据结构", err)
 	}
 	if err := storeOrganizationSnapshot(ctx, tx, input.Organization); err != nil {

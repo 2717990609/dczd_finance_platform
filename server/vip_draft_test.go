@@ -442,7 +442,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	}
 	saveRefund("two", "partial", "1", 5050, boundary.AddDate(0, 0, 1))
 	partial := recalc()
-	if partial.Version != 3 || partial.Accrued != 6700 || partial.RefundTotal != -1163 || partial.Total != 5537 || partial.RefundCount != 5 || partial.IssueCount != 1 {
+	if partial.Version != 3 || partial.Accrued != 6700 || partial.RefundTotal != -1160 || partial.Total != 5540 || partial.RefundCount != 5 || partial.IssueCount != 1 {
 		t.Fatalf("same-period partial refund = %+v", partial)
 	}
 	if recalc().Version != partial.Version {
@@ -474,7 +474,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	}
 	// 5050 / 20000 of the original 2000, 1400, 600, 400 and 200 cent awards.
 	slices.Sort(debits)
-	if !slices.Equal(debits, []int64{-505, -354, -152, -101, -51}) {
+	if !slices.Equal(debits, []int64{-505, -353, -151, -101, -50}) {
 		t.Fatalf("refund debits did not match the original splits: %v", debits)
 	}
 
@@ -529,7 +529,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if _, err := s.savePoolAllocation(ctx, plan); err != nil {
 		t.Fatal(err)
 	}
-	if partialReview := review(finished); partialReview.Token != "" || len(partialReview.Pools) != 1 || partialReview.Pools[0].Unallocated != 181 {
+	if partialReview := review(finished); partialReview.Token != "" || len(partialReview.Pools) != 1 || partialReview.Pools[0].Unallocated != 182 {
 		t.Fatalf("review should expose the unallocated portion: %+v", partialReview)
 	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO draft_refresh_queue(period_id) VALUES($1)`, periodID); err != nil {
@@ -541,7 +541,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if _, err := s.db.Exec(ctx, `DELETE FROM draft_refresh_queue WHERE period_id=$1`, periodID); err != nil {
 		t.Fatal(err)
 	}
-	plan.Revision, plan.Retained = 2, 181
+	plan.Revision, plan.Retained = 2, 182
 	if _, err := s.savePoolAllocation(ctx, plan); err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	if rerun := recalc(); rerun.Version != finished.Version {
 		t.Fatalf("restored amount should clear pending work without publishing a new draft: %+v", rerun)
 	}
-	plan.Revision, plan.Retained = 3, 182
+	plan.Revision, plan.Retained = 3, 183
 	plan.Shares[0].Amount = 599
 	if _, err := s.savePoolAllocation(ctx, plan); err != nil {
 		t.Fatal(err)
@@ -586,7 +586,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 				t.Fatalf("open pool plan must not enter the ledger: %+v", ledger)
 			}
 		} else if len(ledger.Items) != 1 || len(ledger.Entries) != 1 || ledger.Entries[0].PeriodID != periodID ||
-			ledger.Entries[0].AmountMinor != 182 || ledger.Items[0].OpeningMinor != opening ||
+			ledger.Entries[0].AmountMinor != 183 || ledger.Items[0].OpeningMinor != opening ||
 			ledger.Items[0].IncomeMinor != income || ledger.Items[0].BalanceMinor != opening+income {
 			t.Fatalf("the only retention credit should be the confirmed August share: %+v", ledger)
 		}
@@ -594,7 +594,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 	checkRetention("2026-08", 0, 0)
 	secondReview := review(finished)
 	closed := verifySettlementHTTP(t, ctx, s, alice.ID, productID, finished, secondReview.Token)
-	checkRetention("2026-08", 0, 182)
+	checkRetention("2026-08", 0, 183)
 	if after := review(finished); after.Settlement == nil || after.Settlement.ID != closed.ID || after.Token != "" {
 		t.Fatalf("closed review should reference the existing settlement: %+v", after)
 	}
@@ -667,7 +667,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		t.Fatal(err)
 	}
 	closeReviewed(september, review(september).Token)
-	checkRetention("2026-09", 182, 0)
+	checkRetention("2026-09", 183, 0)
 	if got := readPools(emptyOctober); !got.Closed || len(got.Items) != 0 || got.Basis != beforeBackfill.Basis {
 		t.Fatalf("confirming an earlier refund must not rewrite October's confirmed carry: %+v", got)
 	}
@@ -688,16 +688,16 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 
 	saveRefund("two", "after-close", "1", 14950, lateAt.Add(time.Hour))
 	late := draftAt(current)
-	if late.RefundTotal != -3437 || late.Total != -3437 || late.RefundCount != 5 || late.IssueCount != 0 {
+	if late.RefundTotal != -3440 || late.Total != -3440 || late.RefundCount != 5 || late.IssueCount != 0 {
 		t.Fatalf("the current period should take only the unbooked remainder: %+v", late)
 	}
-	if latePool := readPools(late).Items[0]; latePool.Opening != -60 || latePool.Refund != -448 || latePool.Balance != -508 {
+	if latePool := readPools(late).Items[0]; latePool.Opening != -60 || latePool.Refund != -449 || latePool.Balance != -509 {
 		t.Fatalf("refund after distribution must leave original distribution fixed and charge the pool: %+v", latePool)
 	}
 
 	saveRefund("one", "in-september", "2", 2100, lateAt.Add(time.Minute))
 	bookedChanged := draftAt(current)
-	if bookedChanged.RefundTotal != -3437 || bookedChanged.IssueCount != 1 {
+	if bookedChanged.RefundTotal != -3440 || bookedChanged.IssueCount != 1 {
 		t.Fatalf("booked refund revision should need review without changing original debit: %+v", bookedChanged)
 	}
 	for _, dimension := range []string{"person", "company", "department"} {
@@ -714,7 +714,7 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 			total += row.TotalMinor
 			performance += row.PerformanceMinor
 		}
-		if performance != -14950 || total != -3437 {
+		if performance != -14950 || total != -3440 {
 			t.Fatalf("%s refund report: %d %d", dimension, performance, total)
 		}
 	}

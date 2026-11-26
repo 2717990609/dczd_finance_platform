@@ -233,6 +233,14 @@ func verifySettlementDraft(ctx context.Context, tx pgx.Tx, periodID int64, scope
 	if current.blockingIssues() != 0 {
 		return errSettlementPending
 	}
+	var postingsUnchanged bool
+	if err := tx.QueryRow(ctx, `SELECT coalesce(d.posting_digest=settlement_posting_digest(d.period_id),false)
+	 FROM calculation_drafts d WHERE d.period_id=$1`, periodID).Scan(&postingsUnchanged); err != nil {
+		return err
+	}
+	if !postingsUnchanged {
+		return errSettlementStale
+	}
 	return nil
 }
 

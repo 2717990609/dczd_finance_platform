@@ -16,14 +16,20 @@ const practiceRefundMonthScope = `product.period_mode='class' AND period.calenda
 
 // Booked refund facts include pre-confirmation amounts already taken into the
 // class settlement. Late revisions and new facts still go through the month.
-const practiceRefundMonthEventsSQL = `SELECT v.id,coalesce(origin.id,0),v.fact,coalesce(history.changed,false),
+var practiceRefundMonthEventsSQL = refundQueryTargetSQL +
+	refundCandidateSQL(practiceRefundMonthSourceSQL, "AND v.occurred_at<target.refund_through") +
+	refundOriginWindowsSQL("p.calendar_month IS NOT NULL") + ` SELECT v.id,coalesce(origin.id,0),v.fact,coalesce(history.changed,false),
  EXISTS(SELECT 1 FROM source_order_versions v2
   WHERE v2.source='DCZD' AND v2.kind='REFUND_SUCCEEDED' AND v2.fact->>'domain'='PRACTICE'
    AND v2.fact->>'refundId'=v.fact->>'refundId' AND v2.record_key<>v.record_key
    AND NOT EXISTS(SELECT 1 FROM source_order_versions newer
     WHERE newer.source='DCZD' AND newer.kind='REFUND_SUCCEEDED' AND newer.record_key=v2.record_key
-     AND (newer.updated_at,newer.id)>(v2.updated_at,v2.id)))` + practiceRefundMonthFromSQL + `
- WHERE target.id=$1 AND target.calendar_month IS NOT NULL` + practiceRefundMonthRoutingSQL + `
+     AND (newer.updated_at,newer.id)>(v2.updated_at,v2.id)))
+ FROM refund_target bounds JOIN periods target ON target.id=bounds.id
+ JOIN refund_candidates candidate ON true JOIN source_order_versions v ON v.id=candidate.id
+ LEFT JOIN refund_origins origin ON v.occurred_at>=origin.refund_from AND v.occurred_at<origin.refund_through
+ ` + refundPostingHistorySQL + `
+ WHERE target.calendar_month IS NOT NULL` + practiceRefundMonthRoutingSQL + `
   AND EXISTS(
    SELECT 1 FROM (` + practiceRefundOrderKeysSQL + `) keys
    JOIN source_order_versions paid ON paid.order_id=keys.id AND paid.source='DCZD' AND paid.kind='ORDER_PAID'
@@ -38,9 +44,12 @@ const practiceRefundMonthEventsSQL = `SELECT v.id,coalesce(origin.id,0),v.fact,c
 const practiceRefundOrderKeysSQL = `SELECT v.order_id AS id
  UNION SELECT ref->>'orderId' FROM jsonb_array_elements(v.fact->'refundsPayment') ref`
 
-const practiceRefundMonthFromSQL = ` FROM periods target
+const practiceRefundMonthSourceSQL = `
  JOIN source_mappings m ON m.product_id=target.product_id AND m.source='DCZD' AND m.domain='PRACTICE'
  JOIN source_order_versions v ON v.source=m.source AND v.fact->>'domain'=m.domain AND v.fact->>'sourceKey'=m.source_key
+`
+
+const practiceRefundMonthFromSQL = ` FROM periods target` + practiceRefundMonthSourceSQL + `
   AND v.kind='REFUND_SUCCEEDED' AND v.occurred_at<=CURRENT_TIMESTAMP
   AND v.occurred_at<refund_period_end(target)
  LEFT JOIN periods origin ON origin.product_id=target.product_id AND origin.calendar_month IS NOT NULL
@@ -102,7 +111,7 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 		}
 		switch part.Mode {
 		case "rate":
-			if calculatePaymentAmount(original.Base, part) == original.Accrued {
+			if calculatePaymentAmount(original.Base, part) == original.Accrued || legacyPosting.paymentAmount(original.Base, part) == original.Accrued {
 				part.RefundPolicy = "proportional"
 				return part
 			}
@@ -137,7 +146,7 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 	} else if c.Mode == "fixed" {
 		return component{RefundPolicy: "proportional"}
 	}
-	if practiceCompanyRate(original.Base, rate) != original.Accrued {
+	if practiceCompanyRate(original.Base, rate) != original.Accrued && legacyPosting.rate(original.Base, rate, periodRateScale) != original.Accrued {
 		return replay
 	}
 	return component{RefundPolicy: "proportional"}

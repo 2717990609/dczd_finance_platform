@@ -235,9 +235,12 @@ func paymentBeneficiary(fact sourceFact, role string, identities map[identityKey
 }
 
 func calculatePaymentAmount(base int64, c component) int64 {
+	return truncatePosting.paymentAmount(base, c)
+}
+
+func (r postingRounding) paymentAmount(base int64, c component) int64 {
 	if c.Mode == "fixed" {
 		return c.Value
 	}
-	// Split the division to keep multiplication in range, including amounts close to MaxInt64.
-	return (base/10000)*c.Value + ((base%10000)*c.Value+5000)/10000
+	return r.rate(base, c.Value, 10000)
 }

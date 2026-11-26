@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -136,6 +138,23 @@ func TestFinanceReportsFilterUsingOrganizationTree(t *testing.T) {
 	if err := json.Unmarshal(orders.Body.Bytes(), &rows); err != nil || orders.Code != 200 || len(rows) != 1 || rows[0].OrderID != "one" || rows[0].Version != "2" {
 		t.Fatalf("team orders: %d %v %s", orders.Code, err, orders.Body)
 	}
+	t.Run("export respects filters, cursor and frozen organization", func(t *testing.T) {
+		for _, test := range []struct {
+			query string
+			want  int
+		}{
+			{"&orderId=one", 2}, {"&orderId=two", 1}, {"&orderId=one&beforeId=1", 1}, {"&source=DCAI", 1},
+		} {
+			w := call(s.orders, orderURL+"&format=csv"+test.query)
+			records, err := csv.NewReader(strings.NewReader(strings.TrimPrefix(w.Body.String(), "\uFEFF"))).ReadAll()
+			if w.Code != http.StatusOK || err != nil || len(records) != test.want {
+				t.Fatalf("CSV scope %s: HTTP %d, %d rows, %v", test.query, w.Code, len(records), err)
+			}
+			if len(records) > 1 && (records[1][1] != "one" || records[1][2] != "DCJK") {
+				t.Fatal("expected the one source order belonging to the selected team")
+			}
+		}
+	})
 	if w := call(s.monthlyReport, monthURL+"&unitId=bogus"); w.Code != http.StatusBadRequest {
 		t.Fatalf("invalid scope must fail: %d", w.Code)
 	}

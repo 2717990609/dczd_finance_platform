@@ -76,12 +76,12 @@ func TestRefundDeltaUsesFrozenPolicyAndAccumulatesUntilFull(t *testing.T) {
 		{"first partial refund", component{Mode: "rate", Value: 3333, RefundPolicy: "proportional"}, 105, 35, 34, 0, -11},
 		{"sales on half of 1000 yuan", component{Mode: "rate", Value: 1000, RefundPolicy: "proportional"}, 100000, 10000, 50000, 0, -5000},
 		{"delivery on half of 1000 yuan", component{Mode: "rate", Value: 100, RefundPolicy: "proportional"}, 100000, 1000, 50000, 0, -500},
-		{"half-cent deducts from frozen award", component{Mode: "rate", Value: 1000, RefundPolicy: "proportional"}, 10, 1, 5, 0, -1},
+		{"half-cent waits for the next cumulative deduction", component{Mode: "rate", Value: 1000, RefundPolicy: "proportional"}, 10, 1, 5, 0, 0},
 		{"residual cents already deducted", component{Mode: "rate", Value: 1000, RefundPolicy: "proportional"}, 10, 1, 10, 1, 0},
 		{"residual on full refund", component{Mode: "rate", Value: 3333, RefundPolicy: "proportional"}, 105, 35, 105, 11, -24},
 		{"same accumulated refund", component{Mode: "rate", Value: 3333, RefundPolicy: "proportional"}, 105, 35, 105, 35, 0},
 		{"reversal on partial", component{Mode: "fixed", Value: 501, RefundPolicy: "full_reversal"}, 1000, 501, 1, 0, -501},
-		{"fixed amount prorated on frozen award", component{Mode: "fixed", Value: 501, RefundPolicy: "proportional"}, 1000, 501, 500, 0, -251},
+		{"fixed amount prorated on frozen award", component{Mode: "fixed", Value: 501, RefundPolicy: "proportional"}, 1000, 501, 500, 0, -250},
 		{"explicitly no recovery", component{Mode: "rate", Value: 1000, RefundPolicy: "non_refundable"}, 1000, 100, 1000, 0, 0},
 	} {
 		t.Run(test.name, func(t *testing.T) {

@@ -150,6 +150,9 @@ const productScope = computed({
 })
 const productScopedPages = new Set(['products','periods','rules','tasks','settlement','monthly','pools'])
 const usesProductScope = computed(() => productScopedPages.has(current.value))
+const periodWorkflowPages = new Set(['tasks','settlement','pools','rules'])
+const monthPeriodPages = new Set(['tasks','settlement','pools'])
+let periodContextID
 const ruleBusinessOptions = computed(() => {
   const products = data.value.products.filter(product=>!productScope.value || product.id===productScope.value)
   return products.flatMap(product=>{
@@ -224,6 +227,8 @@ const tab = ref('main')
 const draft = ref({})
 const filter = ref('')
 const orderQuery = ref('')
+const periodQuery = ref('')
+const nextPeriodCursor = ref()
 const identityAccount = ref()
 const sourceFilter = ref('')
 const olderThan = ref('')
@@ -582,7 +587,7 @@ function savedOpeningLabel(id) {
   return opening ? openingLabel(opening) : '冻结期初 '+id
 }
 
-const labels = {ORDER_PAID:'付款',ORDER_REFUNDED:'退款',REFUND_SUCCEEDED:'退款',REFUND_ADJUSTED:'退款更正',DELIVERY_COMPLETED:'已交付'}
+const labels = {ORDER_PAID:'付款',ORDER_REFUNDED:'退款',REFUND_SUCCEEDED:'退款',REFUND_ADJUSTED:'退款更正',ORDER_COMPLETED:'已完成',DELIVERY_COMPLETED:'已交付'}
 const catalogScopeLabels = {BUSINESS_SCENARIO:'业务场景',CROSS_SCENARIO_AGGREGATE:'跨场景汇总'}
 const canOpenAction = computed(() => current.value==='periods'
   ? accountingProductOptions.value.some(product=>!productScope.value || product.value===productScope.value)
@@ -690,7 +695,7 @@ const mainRows = computed(() => {
     const {source,externalId} = identityAccount.value
     rows = rows.filter(row=>row.source===source && row.externalId===externalId)
   }
-  if (current.value === 'orders' || !filter.value.trim()) return rows
+  if (['orders','periods'].includes(current.value) || !filter.value.trim()) return rows
   const q = filter.value.trim().toLowerCase()
   return rows.filter(row => Object.values(row).some(value => typeof value === 'string' && value.toLowerCase().includes(q))
     || key==='people' && String(row.id)===q)
@@ -703,7 +708,7 @@ const columns = computed(() => {
       ['退款截止时间','refundCutoff',158],['报表月份','reportMonth',115],['来源期次','sourcePeriodKey',148],['签到名单','practiceRoster',150],['适用规则','ruleVersion',200]],
     rule:[['规则名称','label',210],['所属产品','productName',128],['版本','version',68],
       ['适用订单','scope',188],['生效时间','effectiveFrom',165],['状态','components',112],['操作','ruleAction',240]],
-    pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
+    pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136],['手机号','contactPhones',195]],
     person:[['人员名称','name'],['人员 ID','id']],
     identity:[['归属人员','personName',128],['业务来源','source',112],['来源人员 ID','externalId',164],
       ['生效时间','validFrom',158],['结束时间','validTo',158],['操作','identityAction',192]],
@@ -724,18 +729,56 @@ async function api(path, options) {
   }
   return body
 }
-async function refresh(reloadOptions = false) {
-  if (!current.value) return
-  const version = ++requestVersion
-  loading.value = true
-  globalError.value = ''
+function orderListParams() {
   const params = new URLSearchParams()
   if (sourceFilter.value) params.set('source',sourceFilter.value)
   if (orderQuery.value) params.set('orderId',orderQuery.value)
   if (olderThan.value) params.set('beforeId',olderThan.value)
   if (unitScope.value) params.set('unitId',unitScope.value)
+  return params
+}
+const orderExportHref = computed(() => {
+  const params = orderListParams()
+  params.set('format','csv')
+  return '/api/v1/orders?' + params
+})
+async function refresh(reloadOptions = false, periodsOnly = false) {
+  if (!current.value) return
+  const version = ++requestVersion
+  loading.value = true
+  globalError.value = ''
   const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], pools:['products','periods'], retention:[], 'sync-config':[], 'pool-config':['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:tab.value==='identity'?['people','identities']:[]}
-  const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
+  if (periodContextID && periodWorkflowPages.has(current.value)) {
+    const target = periodContextID
+    try {
+      const [period] = await api('/periods?periodId='+target)
+      if (version!==requestVersion) return
+      if (period) {
+        if (current.value==='rules') productScope.value = period.productId
+        else if (productScope.value && productScope.value!==period.productId) productScope.value = undefined
+        if (monthPeriodPages.has(current.value)) workspaceMonth.value = period.reportMonth
+      }
+    } catch (err) {
+      if (version!==requestVersion) return
+      globalError.value = err.message
+    }
+    periodContextID = undefined
+  }
+  const keys = periodsOnly ? ['periods'] : sections[current.value]
+  const requests = Object.fromEntries(keys.map(key => [key, key === 'orders' ? '/orders?' + orderListParams() : '/'+key]))
+  const periodPage = current.value==='periods'
+  if (periodPage) {
+    const search = new URLSearchParams()
+    if (productScope.value) search.set('productId',productScope.value)
+    if (olderThan.value) search.set('beforeId',olderThan.value)
+    if (periodQuery.value) search.set('q',periodQuery.value)
+    requests.periods = '/periods/page?'+search
+  } else if (requests.periods && periodWorkflowPages.has(current.value)) {
+    const search = new URLSearchParams()
+    if (productScope.value) search.set('productId',productScope.value)
+    if (monthPeriodPages.has(current.value) && workspaceMonth.value) search.set('month',workspaceMonth.value)
+    requests.periods = '/periods?'+search
+  }
   if (requests.identities && identityAccount.value) {
     const {source,externalId} = identityAccount.value
     requests.identities += '?'+new URLSearchParams({source,externalId})
@@ -756,7 +799,10 @@ async function refresh(reloadOptions = false) {
         configuration.value = result.value
         configurationReady.value = true
       } else if (key === 'scopeUnits') scopeUnits.value = result.value
-      else {
+      else if (key==='periods' && periodPage) {
+        data.value.periods = result.value.items
+        nextPeriodCursor.value = result.value.nextBeforeId
+      } else {
         data.value[key] = result.value
         if (key === 'products' && productScope.value && !result.value.some(product=>product.id===productScope.value)) {
           productScope.value = undefined
@@ -764,6 +810,10 @@ async function refresh(reloadOptions = false) {
       }
     } else {
       if (key==='orders') data.value.orders = []
+      if (key==='periods' && periodPage) {
+        data.value.periods = []
+        nextPeriodCursor.value = undefined
+      }
       globalError.value ||= result.reason.message
     }
   })
@@ -1045,10 +1095,13 @@ function changeRoute() {
   identityAccount.value = undefined
   orderQuery.value = isOrders ? (params.get('orderId') || '').trim() : ''
   filter.value = orderQuery.value
+  periodQuery.value = ''
+  nextPeriodCursor.value = undefined
   sourceFilter.value = isOrders ? params.get('source') || '' : ''
   olderThan.value = ''
   pageStack.value = []
   notice.value = ''
+  periodContextID = requestedPeriod.value || requestedPoolPeriod.value || requestedRulePeriod.value
   pulledOrderLink.value = undefined
   if (reviewRootPeriod.value || previousReviewRoot || configurationReturn.value || orderReturn.value) {
     nextTick(() => window.scrollTo(0,0))
@@ -1235,7 +1288,10 @@ function selectOrganization(unit) {
   if (current.value === 'orders') resetOrders()
 }
 function selectProduct(product) {
+  if (productScope.value===product) return
   productScope.value = product
+  if (current.value==='periods') resetPeriods()
+  else if (periodWorkflowPages.has(current.value)) refresh(false,true)
   const [key, search] = location.hash.slice(1).split('?', 2)
   if (key !== current.value || !configProductPages.has(key)) return
   const params = new URLSearchParams(search)
@@ -1248,6 +1304,11 @@ function selectProduct(product) {
   const query = params.toString()
   history.replaceState(history.state, '', '#'+key+(query ? '?'+query : ''))
 }
+function selectWorkspaceMonth(month) {
+  if (workspaceMonth.value===month) return
+  workspaceMonth.value = month
+  if (monthPeriodPages.has(current.value)) refresh(false,true)
+}
 function selectSource(source) {
   sourceFilter.value = source
   resetOrders()
@@ -1258,6 +1319,26 @@ function nextOrders() {
   refresh()
 }
 function prevOrders() { olderThan.value = pageStack.value.pop() || ''; refresh() }
+function resetPeriods() {
+  olderThan.value = ''
+  pageStack.value = []
+  nextPeriodCursor.value = undefined
+  refresh(false,true)
+}
+function searchList(value) {
+  if (current.value==='orders') searchOrders(value)
+  if (current.value==='periods') {
+    periodQuery.value = (value || '').trim()
+    resetPeriods()
+  }
+}
+function pagePeriods(forward) {
+  if (forward) {
+    pageStack.value.push(olderThan.value)
+    olderThan.value = String(nextPeriodCursor.value)
+  } else olderThan.value = pageStack.value.pop() || ''
+  refresh(false,true)
+}
 
 function open(kind, row, edit = false) {
   if (!configurationReady.value) return
@@ -1782,7 +1863,7 @@ function periodPullNotice(result) {
       <div class="workspace-bar-actions">
         <div v-if="usesWorkspaceMonth" class="workspace-month">
           <label for="workspace-month">结算月</label>
-          <a-input id="workspace-month" v-model:value="workspaceMonth" type="month"/>
+          <a-input id="workspace-month" :value="workspaceMonth" @update:value="selectWorkspaceMonth" type="month"/>
         </div>
         <a-button v-if="current!=='settlement'" :loading="loading" @click="refreshWorkspace"><template #icon><ReloadOutlined aria-hidden="true"/></template>刷新数据</a-button>
         <nav class="workspace-areas" aria-label="工作区">
@@ -1947,9 +2028,12 @@ function periodPullNotice(result) {
             <h2 v-else>{{ {periods:'期次列表',rules:'规则列表',orders:'订单业务记录'}[current] }}</h2>
             <div class="search">
               <a-input-search v-model:value="filter" :placeholder="current==='orders'?'输入原订单 ID':current==='people'
-                  ? (tab==='identity'?'搜索归属人员或来源账号':'搜索姓名或人员 ID') : '在当前列表中搜索'"
+                  ? (tab==='identity'?'搜索归属人员或来源账号':'搜索姓名或人员 ID') : current==='periods' ? '按期次、产品或日期搜索' : '在当前列表中搜索'"
                 :aria-label="current==='orders'?'原订单 ID':'搜索列表'" :maxlength="current==='orders'?128:undefined"
-                allow-clear @search="value=>current==='orders'&&searchOrders(value)"/>
+                allow-clear @search="searchList"/>
+              <a-button v-if="current==='orders'" :href="orderExportHref" :disabled="loading || !mainRows.length" download="finance-orders.csv">
+                导出当前页
+              </a-button>
             </div>
           </div>
           <div v-if="current==='rules' && ruleBusinessOptions.length" class="rule-scope-bar">
@@ -1980,7 +2064,7 @@ function periodPullNotice(result) {
           </section>
           <div class="table-container">
             <a-table :columns="columns" :data-source="mainRows" :loading="loading" row-key="id"
-              :pagination="current==='orders'?false:{pageSize:12,showSizeChanger:false,hideOnSinglePage:current==='people'}"
+              :pagination="['orders','periods'].includes(current)?false:{pageSize:12,showSizeChanger:false,hideOnSinglePage:current==='people'}"
               :scroll="{x:tableWidth}">
               <template #bodyCell="{ column, record, text }">
                 <template v-if="column.key==='businessSkus'">
@@ -2087,6 +2171,14 @@ function periodPullNotice(result) {
                 </template>
                 <template v-else-if="column.key==='source'">{{ sourceLabel(text) }}</template>
                 <template v-else-if="column.key==='orderNo'"><button class="order-link" type="button" @click="orderDetails={order:record,versionId:record.id,allowPull:true}" :title="'原订单 ID '+record.orderId">{{ text || record.orderId }}</button><small class="order-version">版本 {{ record.version }}</small></template>
+                <template v-else-if="column.key==='contactPhones'">
+                  <template v-if="record.display?.customerPhone || record.display?.referrerPhone || record.display?.sellerPhone">
+                    <small v-if="record.display.customerPhone" class="order-version">客户 {{ record.display.customerPhone }}</small>
+                    <small v-if="record.display.referrerPhone" class="order-version">推荐人 {{ record.display.referrerPhone }}</small>
+                    <small v-if="record.display.sellerPhone" class="order-version">销售 {{ record.display.sellerPhone }}</small>
+                  </template>
+                  <span v-else>—</span>
+                </template>
                 <template v-else-if="column.key==='kind'"><a-tag>{{ labels[text] || text }}</a-tag></template>
                 <template v-else-if="column.key==='productName'&&current==='orders'"><a-tag v-if="!text" color="orange">待映射</a-tag><span v-else>{{ text }}</span></template>
                 <template v-else-if="column.key==='amountMinor'"><span class="numeric">{{ formatMoney(text) }}</span></template>
@@ -2097,6 +2189,10 @@ function periodPullNotice(result) {
                 <div class="empty"><a-empty :image="undefined" :description="(current==='orders' ? orderQuery : filter) ? '未找到匹配记录' : '暂无记录'"/><a-button v-if="!filter && !orderQuery && !identityAccount && configurationReady && canOpenAction" @click="open(actions)">{{ actions==='period' ? accountingPeriodTitle(currentPeriodProduct) : titles[actions] }}</a-button></div>
               </template>
             </a-table>
+          </div>
+          <div v-if="current==='periods' && (nextPeriodCursor || pageStack.length)" class="paging">
+            <a-button :disabled="!pageStack.length || loading" @click="pagePeriods(false)">上一页</a-button>
+            <a-button :disabled="!nextPeriodCursor || loading" @click="pagePeriods(true)">下一页</a-button>
           </div>
           <div v-if="current==='orders' && (mainRows.length>=50 || pageStack.length)" class="paging"><a-button :disabled="!pageStack.length||loading" @click="prevOrders">上一页</a-button><a-button :disabled="mainRows.length<50||loading" @click="nextOrders">下一页</a-button></div>
         </section>

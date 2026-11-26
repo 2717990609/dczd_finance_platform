@@ -328,8 +328,8 @@ func TestCreateFirstCatalogScenarioRuleMatchesAndQueuesPayment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := refunded.(draftSummary); got.RefundTotal != -1302 || got.RefundCount != 3 || got.IssueCount != 0 {
-		t.Fatalf("a half refund must recover 302 cents of the original 603-cent award in the refund period: %+v", got)
+	if got := refunded.(draftSummary); got.RefundTotal != -1301 || got.RefundCount != 3 || got.IssueCount != 0 {
+		t.Fatalf("a half refund must recover 301 cents of the original 603-cent award in the refund period: %+v", got)
 	}
 	var companyDeduction int64
 	if err := db.QueryRow(ctx, `SELECT r.amount_minor FROM calculation_draft_refunds r

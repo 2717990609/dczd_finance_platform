@@ -9,6 +9,7 @@ func TestProductRuleCatalogUpgradePreservesRuleReferences(t *testing.T) {
 	ctx := context.Background()
 	db := integrationDB(t)
 	if _, err := db.Exec(ctx, `
+	 DELETE FROM finance_schema_revisions;
 	 ALTER TABLE product_rule_versions RENAME TO legacy_rule_versions;
 	 ALTER TABLE product_rule_packages RENAME TO legacy_rule_packages;
 	 ALTER TABLE product_catalog_settings RENAME TO legacy_catalog_products;

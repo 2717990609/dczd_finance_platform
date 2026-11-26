@@ -2,7 +2,6 @@ package main
 
 import (
 	"errors"
-	"math/big"
 	"slices"
 )
 
@@ -21,6 +20,10 @@ func validRefundPolicy(value string) bool {
 }
 
 func refundDelta(policy component, base, accrued, principal, alreadyDeducted int64) (int64, error) {
+	return truncatePosting.refundDelta(policy, base, accrued, principal, alreadyDeducted)
+}
+
+func (r postingRounding) refundDelta(policy component, base, accrued, principal, alreadyDeducted int64) (int64, error) {
 	if base <= 0 || accrued < 0 || principal <= 0 || principal > base || alreadyDeducted < 0 || alreadyDeducted > accrued {
 		return 0, errRefundAmount
 	}
@@ -35,7 +38,7 @@ func refundDelta(policy component, base, accrued, principal, alreadyDeducted int
 	case policy.RefundPolicy == "proportional":
 		// Recover the cumulative proportion of the original award, down to
 		// the last cent. Historical deductions keep their posted amounts.
-		return -max(0, prorateMinor(accrued, principal, base)-alreadyDeducted), nil
+		return -max(0, r.proportion(accrued, principal, base)-alreadyDeducted), nil
 	default:
 		return 0, errRefundPolicy
 	}
@@ -45,12 +48,8 @@ func refundDelta(policy component, base, accrued, principal, alreadyDeducted int
 	return remaining - accrued + alreadyDeducted, nil
 }
 
-// prorateMinor rounds a nonnegative proportion to cents, with halves rounded up.
 func prorateMinor(amount, part, whole int64) int64 {
-	var value big.Int
-	value.Mul(big.NewInt(amount), big.NewInt(part))
-	value.Add(&value, big.NewInt(whole/2))
-	return value.Quo(&value, big.NewInt(whole)).Int64()
+	return truncatePosting.proportion(amount, part, whole)
 }
 
 type sourceRefundCheck struct {

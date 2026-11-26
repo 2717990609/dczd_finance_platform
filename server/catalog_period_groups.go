@@ -31,6 +31,21 @@ type catalogActivityEvent struct {
 	selection           *catalogAggregateMatch
 	frozenPeriod        int64
 	frozenGroups        []catalogFrozenGroupReference
+	fixedHistory        map[string]catalogFixedRefundHistory
+}
+
+type catalogFixedRefundHistory struct {
+	accrued                         *int64
+	refundedBeforePosting, deducted int64
+}
+
+func (h catalogFixedRefundHistory) original(award, gross int64) refundObligation {
+	if h.accrued != nil {
+		award = *h.accrued
+	} else {
+		award = legacyPosting.unpostedNet(award, h.refundedBeforePosting, gross)
+	}
+	return refundObligation{Base: gross - h.refundedBeforePosting, Accrued: award}
 }
 
 type catalogAggregateRule struct {
@@ -548,21 +563,35 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 			award := *group.items[0].FixedMinor
 			var amount int64
 			if payment.paidHere {
-				amount = award - prorateMinor(award, payment.refunds, payment.original)
+				amount = truncatePosting.unpostedNet(award, payment.refunds, payment.original)
+				if group.posting.FixedAccruals == nil {
+					group.posting.FixedAccruals = make(map[int64]int64)
+				}
+				group.posting.FixedAccruals[paymentID] = amount
 				if group.orderExactCredit == nil {
 					group.orderExactCredit = new(big.Rat)
 				}
 				group.orderExactCredit.Add(group.orderExactCredit, exactMinor(award, payment.original-payment.refunds, payment.original))
 			} else {
-				refundPrincipal := payment.priorRefunds
-				deducted := prorateMinor(award, refundPrincipal, payment.original)
+				history, known := payment.refundEvents[0].fixedHistory[group.ID]
+				original := history.original(award, payment.original)
+				refundPrincipal := payment.priorRefunds - history.refundedBeforePosting
+				deducted := history.deducted
+				if !known {
+					deducted = prorateMinor(original.Accrued, refundPrincipal, original.Base)
+				}
+				if refundPrincipal < 0 {
+					return report, errRefundAmount
+				}
+				policy := component{RefundPolicy: "proportional"}
 				for _, event := range payment.refundEvents {
 					refundPrincipal += event.Amount
-					next := prorateMinor(award, refundPrincipal, payment.original)
-					delta := deducted - next
-					precise := preciseRefundAmount(component{RefundPolicy: "proportional"},
-						refundObligation{Base: payment.original, Accrued: award}, refundPrincipal, deducted, delta)
-					deducted = next
+					delta, err := refundDelta(policy, original.Base, original.Accrued, refundPrincipal, deducted)
+					if err != nil {
+						return report, err
+					}
+					precise := preciseRefundAmount(policy, original, refundPrincipal, deducted, delta)
+					deducted -= delta
 					amount += delta
 					if delta != 0 && event.EventID != 0 {
 						origin := frozen[catalogFrozenGroupReference{PeriodID: event.frozenPeriod, Key: group.ID}]

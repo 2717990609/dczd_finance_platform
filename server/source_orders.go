@@ -56,6 +56,7 @@ type sourceFact struct {
 	OccurredAt        time.Time                `json:"occurredAt"`
 	UpdatedAt         time.Time                `json:"updatedAt"`
 
+	Display                 orderDisplayFields          `json:"-"`
 	PracticeRegistration    *sourcePracticeRegistration `json:"-"`
 	PracticeNoReferrer      *sourcePracticeSignup       `json:"practiceNoReferrer,omitempty"`
 	PracticeInactiveCompany *sourcePracticeSignup       `json:"practiceInactiveCompany,omitempty"`
@@ -248,7 +249,7 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 		PracticeNoReferrer:      noReferrer,
 		PracticeInactiveCompany: inactiveCompany,
 		OccurredAt:              occurredAt, UpdatedAt: wire.Record.UpdatedAt,
-		Classification: classification, VIPClaims: vipClaims}, nil
+		Classification: classification, VIPClaims: vipClaims, Display: readOrderDisplay(source, wire, raw)}, nil
 }
 
 var sourcesList = []string{"DCAI", "DCZD", "DCJK"}
@@ -299,6 +300,9 @@ func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) (sourceOr
 		q := endpoint.Query()
 		q.Set("stream", stream)
 		q.Set("source_order_id", req.OrderID)
+		if canRequestOrderDisplay(endpoint) && (req.Source == "DCAI" || practiceOnly) {
+			q.Set("include", orderDisplayInclude)
+		}
 		endpoint.RawQuery = q.Encode()
 	}
 	request, err := http.NewRequestWithContext(ctx, method, endpoint.String(), body)
@@ -477,6 +481,7 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 		}
 	}
 	var insertedIDs, metadataIDs []int64
+	displays := make(map[string]orderDisplayFields)
 	for _, f := range facts {
 		raw, e := json.Marshal(f)
 		if e != nil {
@@ -510,7 +515,7 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 				// Backfill the source's display status on versions read by earlier builds.
 				tag, err := tx.Exec(ctx, `UPDATE source_order_versions
 				 SET fact=fact || jsonb_build_object('practiceInactiveCompany',$2::jsonb)
-				 WHERE id=$1 AND NOT (fact ? 'practiceInactiveCompany')`, sourceVersion, f.PracticeInactiveCompany)
+				 WHERE id=$1 AND NOT (fact ? 'practiceInactiveCompany') AND NOT source_version_is_settled(id,kind)`, sourceVersion, f.PracticeInactiveCompany)
 				if err != nil {
 					return 0, err
 				}
@@ -536,8 +541,25 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 			}
 			metadataChanged = metadataChanged || changed
 		}
+		if len(f.Display) > 0 {
+			key := strconv.FormatInt(sourceVersion, 10)
+			if displays[key] == nil {
+				displays[key] = make(orderDisplayFields)
+			}
+			for name, value := range f.Display {
+				displays[key][name] = value
+			}
+		}
 		if metadataChanged && !created {
 			metadataIDs = append(metadataIDs, sourceVersion)
+		}
+	}
+	if len(displays) > 0 {
+		if _, err := tx.Exec(ctx, `INSERT INTO source_order_display(source_version_id,details)
+		 SELECT key::bigint,value FROM jsonb_each($1::jsonb) ORDER BY key::bigint
+		 ON CONFLICT(source_version_id) DO UPDATE SET details=source_order_display.details || excluded.details
+		 WHERE source_order_display.details IS DISTINCT FROM source_order_display.details || excluded.details`, displays); err != nil {
+			return 0, err
 		}
 	}
 	if err := enqueueDraftFactChanges(ctx, tx, insertedIDs, metadataIDs); err != nil {
@@ -578,7 +600,7 @@ func storeSourcePaymentCompany(ctx context.Context, tx pgx.Tx, version int64, f 
 	return false, nil
 }
 
-const sourceOrderPageFields = `id,source,order_id,line_id,kind,record_key,occurred_at,fact`
+const sourceOrderPageFields = `id,source,order_id,line_id,kind,record_key,occurred_at,updated_at,fact`
 const sourceOrderPageFilters = `($1='' OR source=$1) AND ($2='' OR order_id=$2)`
 const sourceOrderPageLimit = `50`
 const sourceOrderCandidateLimit = `640`
@@ -597,7 +619,11 @@ var ordersTemplateSQL = `order_page_candidates AS MATERIALIZED (
  /* org scope */ ORDER BY latest.id DESC LIMIT ` + sourceOrderPageLimit + `
 )
 SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
- SELECT v.id,v.fact || jsonb_build_object('id',v.id,'productName',p.name,'mapped',p.id IS NOT NULL) AS data
+ SELECT v.id,v.fact || jsonb_build_object('id',v.id,'productName',p.name,'mapped',p.id IS NOT NULL,
+  'display',jsonb_strip_nulls(jsonb_build_object(
+   'customerPhone',coalesce(display.details->'customerPhone',original.details->'customerPhone'),
+   'referrerPhone',coalesce(display.details->'referrerPhone',original.details->'referrerPhone'),
+   'sellerPhone',coalesce(display.details->'sellerPhone',original.details->'sellerPhone')))) AS data
  FROM (
   SELECT * FROM recent_order_page
   UNION ALL
@@ -611,6 +637,7 @@ SELECT coalesce(jsonb_agg(q.data ORDER BY q.id DESC),'[]') FROM (
    ORDER BY latest.id DESC LIMIT (SELECT ` + sourceOrderPageLimit + `-count(*) FROM recent_order_page)
   ) grouped_page WHERE (SELECT count(*) FROM order_page_candidates)=` + sourceOrderCandidateLimit + `
  ) v
+ ` + orderDisplayJoinsSQL + `
  LEFT JOIN source_mappings m ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'
  LEFT JOIN source_order_classifications classification ON classification.source_version_id=v.id
  LEFT JOIN LATERAL (
@@ -635,6 +662,7 @@ var scopedOrdersSQL = organizationScopeQuery("WITH RECURSIVE "+organizationScope
 func (s workspace) orders(w http.ResponseWriter, r *http.Request) {
 	params := r.URL.Query()
 	source, order, before := params.Get("source"), strings.TrimSpace(params.Get("orderId")), params.Get("beforeId")
+	format := params.Get("format")
 	var boundary int64
 	if before != "" {
 		id, err := strconv.ParseInt(before, 10, 64)
@@ -644,7 +672,7 @@ func (s workspace) orders(w http.ResponseWriter, r *http.Request) {
 		}
 		boundary = id
 	}
-	if (source != "" && !validSource(source)) || len(order) > 128 {
+	if (source != "" && !validSource(source)) || len(order) > 128 || (format != "" && format != "csv") {
 		respond(w, nil, invalid)
 		return
 	}
@@ -659,9 +687,22 @@ func (s workspace) orders(w http.ResponseWriter, r *http.Request) {
 		query = scopedOrdersSQL
 		args = append(args, unit)
 	}
-	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), query, args...).Scan(&result)
-	respond(w, result, err)
+	var rows []orderHTTPResult
+	if err := s.db.QueryRow(r.Context(), query, args...).Scan(&rows); err != nil {
+		respond(w, nil, err)
+		return
+	}
+	for _, row := range rows {
+		if err := row.maskPhones(); err != nil {
+			respond(w, nil, err)
+			return
+		}
+	}
+	if format == "csv" {
+		writeOrderCSV(w, rows)
+		return
+	}
+	respond(w, rows, nil)
 }
 
 func (s workspace) orderVersion(w http.ResponseWriter, r *http.Request) {
@@ -674,17 +715,22 @@ func (s workspace) orderVersion(w http.ResponseWriter, r *http.Request) {
 	for source := range s.sources {
 		configured = append(configured, source)
 	}
-	var result json.RawMessage
+	var result orderHTTPResult
 	err = s.db.QueryRow(r.Context(), `SELECT v.fact || jsonb_build_object(
 	 'sourceConfigured',v.source=ANY($2::text[]),'salesAttribution',c.sales_claims,
 	 'salesCompanyId',company.company_id,'salesCompanyName',company_label.label,
-	 'referrerCompanyId',company.recommendation_company_id,'practiceRegistration',v.practice_registration)
+	 'referrerCompanyId',company.recommendation_company_id,'practiceRegistration',v.practice_registration,
+	 'display',coalesce(original.details,'{}'::jsonb) || coalesce(display.details,'{}'::jsonb))
 	 FROM source_order_versions v
+	 `+orderDisplayJoinsSQL+`
 	 LEFT JOIN source_order_classifications c ON c.source_version_id=v.id
 	 LEFT JOIN source_payment_companies company ON company.source_version_id=v.id
 	 LEFT JOIN configuration_options company_label ON company_label.group_key='practiceSalesCompany'
 	  AND company_label.option_key=coalesce(company.company_id,v.practice_registration->>'companyId')
 	 WHERE v.id=$1`, id, configured).Scan(&result)
+	if err == nil {
+		err = result.maskPhones()
+	}
 	respond(w, result, err)
 }
 

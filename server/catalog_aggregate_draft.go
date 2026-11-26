@@ -84,7 +84,8 @@ type catalogAggregateGroupInput struct {
 	Receipts, Refunds int64
 	CarryIn, CarryOut int64
 	CarryFromPeriod   int64
-	FixedOnly         bool `json:",omitempty"`
+	FixedOnly         bool            `json:",omitempty"`
+	FixedAccruals     map[int64]int64 `json:",omitempty"`
 }
 
 func catalogAggregateWindow(month string, cycle string) (periodWindow, error) {
@@ -95,7 +96,7 @@ func catalogAggregateWindow(month string, cycle string) (periodWindow, error) {
 	return calendarWindow(month, day)
 }
 
-func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []catalogActivityEvent, display bool) (map[catalogFrozenGroupReference]catalogPeriodGroup, error) {
+func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []catalogActivityEvent, before time.Time, display bool) (map[catalogFrozenGroupReference]catalogPeriodGroup, error) {
 	type paymentReference struct{ period, payment int64 }
 	eventIndexes := make(map[paymentReference][]int)
 	var periods, payments []int64
@@ -112,10 +113,27 @@ func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []c
 	if len(periods) == 0 {
 		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `SELECT membership.period_id,membership.source_version_id,membership.group_key
+	rows, err := tx.Query(ctx, `SELECT membership.period_id,membership.source_version_id,membership.group_key,g.fixed_only,
+	  membership.fixed_accrued_minor,coalesce(initial.refunded,0),coalesce(history.deducted,0)
 	 FROM unnest($1::bigint[],$2::bigint[]) AS payment(period_id,source_version_id)
 	 JOIN catalog_aggregate_event_groups membership USING(period_id,source_version_id)
-	 ORDER BY membership.period_id,membership.source_version_id,membership.group_key`, periods, payments)
+	 JOIN catalog_aggregate_draft_groups g USING(period_id,group_key)
+	 LEFT JOIN LATERAL (
+	  SELECT sum((v.fact->>'amountMinor')::bigint)::bigint AS refunded
+	  FROM catalog_aggregate_draft_events event JOIN source_order_versions v ON v.id=event.source_version_id
+	  WHERE g.fixed_only AND event.period_id=membership.period_id AND event.payment_version_id=membership.source_version_id
+	   AND v.kind='REFUND_SUCCEEDED'
+	 ) initial ON true
+	 LEFT JOIN LATERAL (
+	  SELECT -sum(r.amount_minor)::bigint AS deducted
+	  FROM calculation_draft_lines l JOIN calculation_draft_refunds r ON r.original_line_id=l.id
+	  JOIN settlements final ON final.period_id=r.period_id
+	  JOIN periods booked ON booked.id=r.period_id
+	  JOIN catalog_aggregate_draft_events event ON event.period_id=r.period_id AND event.source_version_id=r.refund_source_version_id
+	  WHERE g.fixed_only AND l.period_id=membership.period_id AND l.aggregate_group_key=membership.group_key
+	   AND event.payment_version_id=membership.source_version_id AND booked.ends_on<($3::timestamptz AT TIME ZONE 'Asia/Shanghai')::date
+	 ) history ON true
+	 ORDER BY membership.period_id,membership.source_version_id,membership.group_key`, periods, payments, before)
 	if err != nil {
 		return nil, err
 	}
@@ -123,9 +141,19 @@ func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []c
 	seen := make(map[catalogFrozenGroupReference]bool)
 	var payment int64
 	var ref catalogFrozenGroupReference
-	_, err = pgx.ForEachRow(rows, []any{&ref.PeriodID, &payment, &ref.Key}, func() error {
+	var fixed bool
+	var history catalogFixedRefundHistory
+	_, err = pgx.ForEachRow(rows, []any{&ref.PeriodID, &payment, &ref.Key, &fixed, &history.accrued,
+		&history.refundedBeforePosting, &history.deducted}, func() error {
 		for _, i := range eventIndexes[paymentReference{ref.PeriodID, payment}] {
-			events[i].frozenGroups = append(events[i].frozenGroups, ref)
+			event := &events[i]
+			event.frozenGroups = append(event.frozenGroups, ref)
+			if fixed {
+				if event.fixedHistory == nil {
+					event.fixedHistory = make(map[string]catalogFixedRefundHistory)
+				}
+				event.fixedHistory[ref.Key] = history
+			}
 		}
 		if !seen[ref] {
 			refs = append(refs, ref)
@@ -572,8 +600,9 @@ func storeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, periodID int64, 
 		return err
 	}
 	type groupEvent struct {
-		group string
-		event int64
+		group   string
+		event   int64
+		accrued *int64
 	}
 	var memberships []groupEvent
 	_, err = tx.CopyFrom(ctx, pgx.Identifier{"catalog_aggregate_draft_groups"},
@@ -582,7 +611,11 @@ func storeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, periodID int64, 
 		pgx.CopyFromSlice(len(groups), func(i int) ([]any, error) {
 			group := groups[i]
 			for _, eventID := range group.Events {
-				memberships = append(memberships, groupEvent{group.Key, eventID})
+				var accrued *int64
+				if amount, found := group.FixedAccruals[eventID]; found {
+					accrued = &amount
+				}
+				memberships = append(memberships, groupEvent{group.Key, eventID, accrued})
 			}
 			return []any{periodID, group.Key, group.RuleID, group.Targets, group.Receipts, group.Refunds,
 				group.CarryIn, group.CarryOut, optionalDraftID(group.CarryFromPeriod), group.FixedOnly}, nil
@@ -591,8 +624,8 @@ func storeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, periodID int64, 
 		return err
 	}
 	_, err = tx.CopyFrom(ctx, pgx.Identifier{"catalog_aggregate_event_groups"},
-		[]string{"period_id", "group_key", "source_version_id"}, pgx.CopyFromSlice(len(memberships), func(i int) ([]any, error) {
-			return []any{periodID, memberships[i].group, memberships[i].event}, nil
+		[]string{"period_id", "group_key", "source_version_id", "fixed_accrued_minor"}, pgx.CopyFromSlice(len(memberships), func(i int) ([]any, error) {
+			return []any{periodID, memberships[i].group, memberships[i].event, memberships[i].accrued}, nil
 		}))
 	return err
 }

@@ -826,7 +826,7 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		}
 		share = shares[0]
 	} else if award.Mode == "rate" {
-		amount = practiceCompanyRate(p.base, award.Value)
+		amount = runtime.postingRounding.rate(p.base, award.Value, periodRateScale)
 	}
 	if amount > p.base && !fixedSignup {
 		draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_COMPANY_AWARD_EXCEEDS_PAYMENT", p.member, rule, award.key))
@@ -861,7 +861,7 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		} else if parent.Valid {
 			referral := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: key, BeneficiaryUnit: &parent,
 				practiceProportionalRefund: true}
-			amount := practiceCompanyRate(p.base, award.recommendationRate)
+			amount := runtime.postingRounding.rate(p.base, award.recommendationRate, periodRateScale)
 			referralShare := practiceBenefitShare{purchase: p, payments: p.payments}
 			useNet := !award.signupBasis && !runtime.legacyGrossRateShares
 			referralShare.exact = p.exactBenefitShares(p.payments, exactMinor(p.base, award.recommendationRate, periodRateScale), useNet)
@@ -872,7 +872,7 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 }
 
 func practiceCompanyRate(base, rate int64) int64 {
-	return base/periodRateScale*rate + (base%periodRateScale*rate+periodRateScale/2)/periodRateScale
+	return truncatePosting.rate(base, rate, periodRateScale)
 }
 
 func appendPracticeCompanyShare(draft *paymentDraft, line draftLine, share practiceBenefitShare, amount int64, amounts [2]int64) error {

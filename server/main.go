@@ -133,6 +133,12 @@ func main() {
 	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if len(os.Args) == 2 && os.Args[1] == "migrate-finance" {
+		if err := migrateFinanceCommand(ctx, cfg); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "initialize-finance" {
 		if len(os.Args) != 3 && (len(os.Args) != 4 || os.Args[3] != "--apply") {
 			log.Fatal("usage: initialize-finance <file.json> [--apply]")

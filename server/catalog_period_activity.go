@@ -120,7 +120,10 @@ draft_scope AS (
   coalesce((SELECT refund_period_start(p) FROM periods p JOIN draft_scope d ON d.period_id=p.id),$3) AS from_at,
   coalesce((SELECT refund_period_end(p) FROM periods p JOIN draft_scope d ON d.period_id=p.id),$4) AS through_at
 ), closed_windows AS MATERIALIZED (
- SELECT p.id,p.starts_on,p.ends_on FROM draft_scope draft JOIN periods p USING(aggregate_package_id)
+ SELECT p.id,p.starts_on,p.ends_on,p AS period_row,refund_period_start(p) AS refund_from,
+  least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',refund_period_start(p)) AS scan_from,
+  refund_period_end(p) AS refund_through
+ FROM draft_scope draft JOIN periods p USING(aggregate_package_id)
  JOIN settlements final ON final.period_id=p.id
 ),
 recognition_rules AS MATERIALIZED (
@@ -203,18 +206,20 @@ recognition_rules AS MATERIALIZED (
   AND v.occurred_at<CASE WHEN v.kind='ORDER_PAID' THEN $4 ELSE bounds.through_at END
   AND v.occurred_at<=CURRENT_TIMESTAMP AND booked.changed IS DISTINCT FROM false
   AND ($7::timestamptz IS NULL OR v.kind<>'ORDER_PAID' OR v.occurred_at<$7)
-  AND v.occurred_at>=least($3,bounds.from_at,(
-   SELECT min(refund_period_start(earlier))
-   FROM draft_scope draft JOIN periods earlier USING(aggregate_package_id) JOIN settlements final ON final.period_id=earlier.id
-   WHERE earlier.starts_on<draft.starts_on
-  ))
+  AND (v.kind='ORDER_PAID' AND v.occurred_at>=$3 OR
+   v.kind<>'ORDER_PAID' AND v.occurred_at>=least($3,bounds.from_at,(
+    SELECT min(earlier.refund_from) FROM closed_windows earlier CROSS JOIN draft_scope draft
+    WHERE earlier.starts_on<draft.starts_on
+   )))
   AND (CASE WHEN v.kind='ORDER_PAID' THEN v.occurred_at>=$3
    ELSE coalesce((SELECT refund_calendar_contains(p,v) FROM periods p WHERE p.id=bounds.period_id),v.occurred_at>=bounds.from_at) END
    OR missing.in_scope OR (v.kind IN ('REFUND_SUCCEEDED','REFUND_ADJUSTED') AND EXISTS(
-   SELECT 1 FROM draft_scope draft JOIN periods earlier USING(aggregate_package_id) JOIN settlements final ON final.period_id=earlier.id
+   SELECT 1 FROM draft_scope draft CROSS JOIN closed_windows earlier
    WHERE (booked.reserved_period=draft.period_id OR (booked.reserved_period IS NULL AND
      (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN draft.starts_on AND draft.ends_on))
-    AND refund_calendar_contains(earlier,v)
+    AND v.occurred_at>=earlier.scan_from AND v.occurred_at<earlier.refund_through
+    AND CASE WHEN v.occurred_at>=earlier.scan_from AND v.occurred_at<earlier.refund_through
+     THEN refund_calendar_contains(earlier.period_row,v) ELSE false END
   )))
   AND (EXISTS(SELECT 1 FROM routes m WHERE m.sku_code=ANY($2) AND ` + catalogRouteFactSQL + `)
    OR v.kind='REFUND_SUCCEEDED' AND EXISTS(
@@ -781,7 +786,7 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 			if err != nil {
 				return result, err
 			}
-			original, err := readFrozenCatalogAggregateGroups(ctx, tx, selected, in.DraftPeriodID == 0)
+			original, err := readFrozenCatalogAggregateGroups(ctx, tx, selected, in.Window.Start, in.DraftPeriodID == 0)
 			if err != nil {
 				return result, err
 			}

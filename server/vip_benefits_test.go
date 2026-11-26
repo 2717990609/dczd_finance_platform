@@ -282,19 +282,19 @@ func TestVIPBenefitsUseHistoricalRecipientsAndKeepPoolSeparate(t *testing.T) {
 	}
 	row := catalogPaymentMatch{SourceVersionID: 1, PaidAt: start, PaidMinor: &amount}
 	got := quote(row)
-	if got[0].Party != "alice" || got[0].Amount != 501 || got[1].Kind != "company" || got[1].Unit != "company" ||
+	if got[0].Party != "alice" || got[0].Amount != 500 || got[1].Kind != "company" || got[1].Unit != "company" ||
 		got[2].Kind != "pool" || got[2].Party != "team" || got[2].Owner != "bob" || got[2].Amount != 300 ||
 		got[3].Amount != 100 {
 		t.Fatalf("results at appointment start: %+v", got)
 	}
 	data.Roles = append(data.Roles, vipRole{Person: "other", Role: "TEAM_LEAD", Scope: "ORGANIZATION_UNIT", Key: "dept"})
 	got = quote(row)
-	if got[2].Status != "BENEFIT_POOL_OWNER_CONFLICT" || got[2].Amount != 0 || got[0].Amount != 501 {
+	if got[2].Status != "BENEFIT_POOL_OWNER_CONFLICT" || got[2].Amount != 0 || got[0].Amount != 500 {
 		t.Fatalf("a pool conflict should affect only that benefit: %+v", got)
 	}
 	data.Claims = nil
 	got = quote(row)
-	if got[3].Status != "SALES_SOURCE_MISSING" || got[0].Amount != 501 {
+	if got[3].Status != "SALES_SOURCE_MISSING" || got[0].Amount != 500 {
 		t.Fatalf("only company-specific selection depends on the order's sales attribution: %+v", got)
 	}
 	amount = 0

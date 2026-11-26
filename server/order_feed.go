@@ -222,15 +222,21 @@ func (c orderFeedClient) cutoff(ctx context.Context) (orderFeedCutoff, error) {
 }
 
 type orderWireRow struct {
-	Cursor orderCursor       `json:"cursor"`
-	Facts  []json.RawMessage `json:"facts"`
-	Gates  []dcaiGate        `json:"gates"`
+	Cursor     orderCursor       `json:"cursor"`
+	Facts      []json.RawMessage `json:"facts"`
+	Gates      []dcaiGate        `json:"gates"`
+	Extensions struct {
+		Contacts map[string]json.RawMessage `json:"finance_order_display"`
+	} `json:"extensions"`
 }
 
 func (c orderFeedClient) page(ctx context.Context, stream string, after orderCursor, through time.Time, limit int) (orderPage, error) {
 	query := url.Values{
 		"stream": {c.remoteStream(stream)}, "after_updated_at": {after.UpdatedAt.UTC().Format(time.RFC3339Nano)},
 		"after_id": {after.ID}, "through": {through.UTC().Format(time.RFC3339Nano)}, "limit": {strconv.Itoa(limit)},
+	}
+	if canRequestOrderDisplay(c.endpoint) && (c.source == "DCAI" || c.practiceOnly) {
+		query.Set("include", orderDisplayInclude)
 	}
 	var body struct {
 		Version string         `json:"contract_version"`
@@ -330,6 +336,7 @@ func normalizeDCAIOrderRow(stream string, through time.Time, wire orderWireRow) 
 		if rank <= previousRank {
 			return row, errSourceRead
 		}
+		fact.Display.addContacts(wire.Extensions.Contacts)
 		previousRank, row.OrderID, productCode = rank, doc.Order.ID, fact.SourceKey
 		row.Facts = append(row.Facts, fact)
 	}

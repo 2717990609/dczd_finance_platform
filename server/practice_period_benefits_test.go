@@ -109,9 +109,8 @@ func TestPracticeIndependentBenefitCanUseCompanyAndCategoryRates(t *testing.T) {
 		{Type: "delivery", Mode: "period_rate", PeriodBenefit: &practicePeriodBenefit{Label: "交付", PersonID: 8, StandardRates: standard}},
 	}
 	draft, err = calculatePracticeDraft(members[1:2], rule, orders, nil, nil, practiceTierHistory{}, nil, runtime)
-	if err != nil || draft.Total != 2 || len(draft.Lines) != 2 || draft.Lines[0].Amount != 1 || draft.Lines[1].Amount != 1 ||
-		draft.Lines[0].Component == draft.Lines[1].Component {
-		t.Fatalf("two arrangements at the same rate must round independently: %+v %v", draft, err)
+	if err != nil || draft.Total != 0 || draft.blockingIssues() != 0 {
+		t.Fatalf("two sub-cent arrangements must each truncate independently: %+v %v", draft, err)
 	}
 }
 
@@ -992,8 +991,15 @@ func TestPracticePercentageBenefitSplitsNetPaymentsAndPreservesSettledShares(t *
 					t.Fatal(err)
 				}
 				late, err := s.calculateCurrentDraft(ctx, period, 0)
-				if err != nil || late.RefundTotal != want || late.RefundCount != 1 || late.IssueCount != 0 {
+				wantRows := 1
+				if want == 0 {
+					wantRows = 0
+				}
+				if err != nil || late.RefundTotal != want || late.RefundCount != wantRows || late.IssueCount != 0 {
 					t.Fatalf("refund %s should reverse %d of the booked share: %+v %v", fact.RefundID, want, late, err)
+				}
+				if wantRows == 0 {
+					return late
 				}
 				var oldPeriod, refundPeriod int64
 				var order string
@@ -1007,10 +1013,10 @@ func TestPracticePercentageBenefitSplitsNetPaymentsAndPreservesSettledShares(t *
 				return late
 			}
 			if tc.partialAfter {
-				late := checkRefund(september, refund("1", "12", 750, start.AddDate(0, 1, 0)), -1)
+				late := checkRefund(september, refund("1", "12", 750, start.AddDate(0, 1, 0)), 0)
 				exec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, september, late.Version)
 				october := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "十月退款", SettlementMonth: "2026-10"}))
-				checkRefund(october, refund("1", "13", 2750, start.AddDate(0, 2, 0)), -2)
+				checkRefund(october, refund("1", "13", 2750, start.AddDate(0, 2, 0)), -3)
 			} else {
 				checkRefund(september, refund("2", "12", 6000, start.AddDate(0, 1, 0)), -tc.tail)
 			}
@@ -1280,10 +1286,10 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 		t.Fatal(err)
 	}
 	summary := result.(draftSummary)
-	if summary.Total != 285 || summary.LineCount != 3 || summary.IssueCount != 0 {
-		t.Fatalf("manager receives 220 from the on-appointment balance and delivery receives 65 from the new enrollment: %+v", summary)
+	if summary.Total != 284 || summary.LineCount != 3 || summary.IssueCount != 0 {
+		t.Fatalf("manager receives 220 from the on-appointment balance and delivery receives 64 from the new enrollment: %+v", summary)
 	}
-	for dimension, want := range map[string]int64{"person": 285, "company": 285, "department": 285} {
+	for dimension, want := range map[string]int64{"person": 284, "company": 284, "department": 284} {
 		var output struct{ Items []struct{ TotalMinor int64 } }
 		err := s.db.QueryRow(ctx, draftReportSQL, period, summary.Version, dimension, 0).Scan(&output)
 		var total int64
@@ -1431,7 +1437,7 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 		t.Fatal(err)
 	}
 	summary = result.(draftSummary)
-	if summary.Total != 3742 || summary.LineCount != 8 || summary.IssueCount != 0 {
+	if summary.Total != 3741 || summary.LineCount != 8 || summary.IssueCount != 0 {
 		t.Fatalf("class awards use the seller's payment-time team in the order company: %+v", summary)
 	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')`, period, summary.Version); err != nil {
@@ -1449,13 +1455,13 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 			return err
 		}
 		beforeRefund, err := replay.calculate()
-		if err != nil || beforeRefund.Total != 3742 {
+		if err != nil || beforeRefund.Total != 3741 {
 			t.Fatalf("replay must use original scope after organization and category changes: %d %v", beforeRefund.Total, err)
 		}
 		deposit := replay.payments["31"][0].ID
 		replay.refunds[deposit] = append(replay.refunds[deposit], practiceRefundMatch{event: paymentInput{Fact: fact("refund", 1000, at)}})
 		afterRefund, err := replay.calculate()
-		if err != nil || afterRefund.Total != 3592 {
+		if err != nil || afterRefund.Total != 3590 {
 			t.Fatalf("refund must reselect tier using the whole class and apply it to the frozen scope: %d %v", afterRefund.Total, err)
 		}
 		var tail int64

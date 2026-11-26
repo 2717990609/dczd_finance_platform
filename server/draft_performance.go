@@ -52,10 +52,7 @@ const performanceRefundOriginsSQL = `SELECT q.id,a.source_version_id,coalesce(a.
  JOIN source_order_versions rv ON rv.id=prior.source_version_id
  WHERE prior.payment_version_id=a.source_version_id),0)::bigint,
  a.period_id,` + practiceRefundReplaySQL + `,a.group_id
- FROM jsonb_to_recordset($1::jsonb) AS q(id bigint,source text,order_id text,line_id text,record_id text)
- JOIN source_order_versions p ON p.source=q.source AND p.order_id=q.order_id AND p.kind='ORDER_PAID'
-  AND (q.line_id='' OR p.line_id=q.line_id)
-  AND (q.record_id='' OR substr(p.record_key,strpos(p.record_key,':')+1)=q.record_id AND strpos(p.record_key,':')>0)
+ ` + refundReferencePaymentsSQL + `
  JOIN calculation_draft_performance a ON a.source_version_id=p.id AND a.payment_version_id IS NULL
  LEFT JOIN source_order_versions previous_refund ON previous_refund.id=a.prior_refund_version_id
  JOIN settlements closed ON closed.period_id=a.period_id
@@ -98,13 +95,18 @@ func loadPerformanceRefundOrigins(ctx context.Context, tx pgx.Tx, periodID int64
 	}
 	for _, ref := range refs {
 		for _, p := range currentByOrder[orderKey{ref.Source, ref.OrderID}] {
-			if !refundRefMatches(ref, p.Fact) {
+			if !ref.matchesPayment(p.Fact) {
 				continue
 			}
 			out[ref.ID] = append(out[ref.ID], performanceRefundOrigin{draftPerformance: performance[p.ID]})
 		}
 	}
 	return out, nil
+}
+
+func (ref refundReference) matchesPayment(fact sourceFact) bool {
+	return ref.Domain == fact.Domain && ref.SourceKey == fact.SourceKey &&
+		!fact.OccurredAt.After(ref.OccurredAt) && refundRefMatches(ref, fact)
 }
 
 func refundRefMatches(ref refundReference, fact sourceFact) bool {

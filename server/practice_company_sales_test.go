@@ -122,15 +122,15 @@ func TestPracticeCompanySalesSeparatesSellerPerformanceAndCompanyProceeds(t *tes
 		t.Fatal(err)
 	}
 	got := raw.(draftSummary)
-	if got.Total != 15901 || got.IssueCount != 0 || got.LineCount != 4 {
-		t.Fatalf("external new 5001 + external retrain 9900 + internal 1000 expected: %+v", got)
+	if got.Total != 15900 || got.IssueCount != 0 || got.LineCount != 4 {
+		t.Fatalf("external new 5000 + external retrain 9900 + internal 1000 expected: %+v", got)
 	}
 	var corporate, personal, performance int64
 	err = s.db.QueryRow(ctx, `SELECT
 	 (SELECT sum(amount_minor) FROM calculation_draft_lines WHERE period_id=$1 AND beneficiary_unit_id='40000000-0000-4000-8000-000000000001'),
 	 (SELECT sum(amount_minor) FROM calculation_draft_lines WHERE period_id=$1 AND person_id=$2),
 	 (SELECT count(*) FROM calculation_draft_performance WHERE period_id=$1 AND person_id=$2)`, period, person).Scan(&corporate, &personal, &performance)
-	if err != nil || corporate != 14901 || personal != 1000 || performance != 4 {
+	if err != nil || corporate != 14900 || personal != 1000 || performance != 4 {
 		t.Fatalf("company %d, person %d, seller facts %d, err %v", corporate, personal, performance, err)
 	}
 	payee := id(s.createPerson(ctx, createPersonInput{Name: "指定收款人"}))
@@ -151,14 +151,14 @@ func TestPracticeCompanySalesSeparatesSellerPerformanceAndCompanyProceeds(t *tes
 			t.Fatalf("publish %s recipient: %v", test.recipient.Kind, err)
 		}
 		raw, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
-		if err != nil || raw.(draftSummary).Total != 15901 || raw.(draftSummary).IssueCount != 0 {
+		if err != nil || raw.(draftSummary).Total != 15900 || raw.(draftSummary).IssueCount != 0 {
 			t.Fatalf("%s must keep company rate and seller performance: %+v %v", test.recipient.Kind, raw, err)
 		}
 		var amount int64
 		if err := s.db.QueryRow(ctx, `SELECT coalesce(sum(amount_minor),0) FROM calculation_draft_lines
 		 WHERE period_id=$1 AND component_type='period:company_sales:1' AND coalesce(person_id,0)=$2
 		  AND coalesce(practice_pool_id,0)=$3 AND coalesce(beneficiary_unit_id::text,'')=$4`,
-			period, test.personID, test.poolID, test.unitID).Scan(&amount); err != nil || amount != 5001 {
+			period, test.personID, test.poolID, test.unitID).Scan(&amount); err != nil || amount != 5000 {
 			t.Fatalf("%s must receive both payment shares: got %d, %v", test.recipient.Kind, amount, err)
 		}
 	}
@@ -198,7 +198,7 @@ func TestPracticeCompanySalesSeparatesSellerPerformanceAndCompanyProceeds(t *tes
 		t.Fatal(err)
 	}
 	got = raw.(draftSummary)
-	if got.Total != 15801 || got.IssueCount != 0 {
+	if got.Total != 15800 || got.IssueCount != 0 {
 		t.Fatalf("fixed company commission should reduce with the actual partial refund: %+v", got)
 	}
 	later := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "下期", Ordinal: 2,
@@ -370,8 +370,8 @@ func TestPracticeCompanyRecommendationUsesCurrentDirectoryAndSkipsKnownNoParent(
 		err := s.db.QueryRow(ctx, `SELECT array_agg(beneficiary_unit_id::text ORDER BY amount_minor),
 		array_agg(amount_minor ORDER BY amount_minor) FROM calculation_draft_lines
 		WHERE period_id=$1 AND component_type LIKE 'period:company_referral:%'`, period).Scan(&recipients, &amounts)
-		if err != nil || !reflect.DeepEqual(recipients, []string{want, want}) || !reflect.DeepEqual(amounts, []int64{201, 300}) {
-			t.Fatalf("expected %s with exact amounts 201 and 300: %v %v %v", want, recipients, amounts, err)
+		if err != nil || !reflect.DeepEqual(recipients, []string{want, want}) || !reflect.DeepEqual(amounts, []int64{200, 300}) {
+			t.Fatalf("expected %s with posted amounts 200 and 300: %v %v %v", want, recipients, amounts, err)
 		}
 	}
 	assertDraft(5005, 1, 2)
@@ -380,16 +380,16 @@ func TestPracticeCompanyRecommendationUsesCurrentDirectoryAndSkipsKnownNoParent(
 	if err := s.db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1)", period).Scan(&queued); err != nil || !queued {
 		t.Fatalf("directory updates must enqueue the open draft: %t %v", queued, err)
 	}
-	current := assertDraft(5506, 0, 4)
+	current := assertDraft(5505, 0, 4)
 	assertRecipient(referrer)
-	if next := assertDraft(5506, 0, 4); next.Version != current.Version {
+	if next := assertDraft(5505, 0, 4); next.Version != current.Version {
 		t.Fatal("unchanged inputs replaced the draft")
 	}
 	rule.Components[0].CompanySales.Payee = &practiceCompanyPayee{Kind: "company", CompanyID: referrer}
 	if _, err := s.publishRule(ctx, rule); err != nil {
 		t.Fatal(err)
 	}
-	assertDraft(5506, 0, 4)
+	assertDraft(5505, 0, 4)
 	assertRecipient(referrer)
 	rule.Components[0].CompanySales.Payee = nil
 	if _, err := s.publishRule(ctx, rule); err != nil {
@@ -426,7 +426,7 @@ func TestPracticeCompanyRecommendationUsesCurrentDirectoryAndSkipsKnownNoParent(
 	if _, err := s.publishRule(ctx, rule); err != nil {
 		t.Fatal(err)
 	}
-	assertDraft(5506, 0, 4)
+	assertDraft(5505, 0, 4)
 	assertRecipient(explicitReferrer)
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		return storePayment(tx, "32", "2", "conflicting", 6009, at.Add(2*time.Hour))
@@ -683,12 +683,18 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 		}
 		return summary
 	}
-	settlementAmount, settlementLines := int64(6000), 3
-	firstAmount, nextAmount, fullAmount := int64(-200), int64(-50), int64(-3800)
+	// The first company's 40% of 9999 cents posts as 3999; a fixed award stays at 4000.
+	companyAward := int64(3999)
+	if fixedMember != "" {
+		companyAward = 4000
+	}
+	settlementAmount, settlementLines := companyAward+2000, 3
+	firstAmount, nextAmount, fullAmount := int64(-200), int64(-50), -companyAward+200
 	firstLines, nextLines, fullLines := 1, 1, 2
 	if withTier {
-		settlementAmount, settlementLines = 6600, 6
-		firstAmount, nextAmount, fullAmount = -505, -51, -3895
+		// Delivery falls from 599 to 294 after the first refund, then to 293 and 200.
+		settlementAmount, settlementLines = settlementAmount+599, 6
+		firstAmount, nextAmount, fullAmount = firstAmount-305, nextAmount-1, fullAmount-94
 		firstLines, nextLines, fullLines = 4, 2, 2
 	}
 	if splitPayment {
@@ -751,7 +757,7 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 	if err := s.db.QueryRow(ctx, `SELECT sum(r.amount_minor) FROM calculation_draft_refunds r
 	 JOIN calculation_draft_lines l ON l.id=r.original_line_id WHERE r.period_id=$1 AND l.component_type='period:company_sales:1'`, month).
 		Scan(&companyDebit); err != nil || companyDebit != -200 {
-		t.Fatalf("company reversal must follow the original rounded payout: %d %v", companyDebit, err)
+		t.Fatalf("company reversal must follow the original posted payout: %d %v", companyDebit, err)
 	}
 	mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES ($1,$2,'fixture')`, month, partial.Version)
 	if splitPayment {
@@ -763,10 +769,12 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 			t.Fatalf("a deposit refund may only reverse the deposit's original company share: %+v %v", charged, err)
 		}
 		refund("31", "deposit-complete", time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC), 3498)
-		cleared := checkDraft(nextMonth, -1435, 0)
-		wantCount, wantCredit := 2, int64(0)
+		// The delivery pool reverses the deposit share and rebalances the balance
+		// to its 60-cent entitlement. The signed delivery adjustment is -34.
+		cleared := checkDraft(nextMonth, -1434, 0)
+		wantCount, wantCredit := 3, int64(1)
 		if legacyShares {
-			wantCount, wantCredit = 3, 3
+			wantCredit = 4
 		}
 		if cleared.RefundCount != wantCount {
 			t.Fatalf("expected %d original lines to be adjusted: %+v", wantCount, cleared)
@@ -787,9 +795,9 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 			t.Fatal(err)
 		}
 		hasCredit := slices.ContainsFunc(details.Refunds, func(row adjustmentDetail) bool {
-			return row.TierCredit && row.AmountMinor == 3 && row.OriginalOrderID == "34" && row.ReplayTriggerOrderID == "31"
+			return row.TierCredit && row.AmountMinor == wantCredit && row.OriginalOrderID == "34" && row.ReplayTriggerOrderID == "31"
 		})
-		if hasCredit != legacyShares {
+		if !hasCredit {
 			t.Fatalf("draft detail must identify the adjustment and the refund that triggered it: %+v", details)
 		}
 		if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
@@ -801,7 +809,7 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 				t.Fatalf("unexpected pool accounts: %v", stages)
 			}
 			for _, stage := range stages {
-				if stage.Opening != 295 || stage.Refund != -35 || stage.Balance != 260 {
+				if stage.Opening != 294 || stage.Refund != -34 || stage.Balance != 260 {
 					t.Fatalf("both sides of the recalculation must reach the team pool: %+v", stage.poolDraftItem)
 				}
 			}
@@ -812,7 +820,11 @@ func verifyPracticeCategoryRefund(t *testing.T, withTier, splitPayment, legacySh
 		mustExec(`INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES ($1,$2,'fixture')`, nextMonth, cleared.Version)
 		thirdMonth := id(s.createPeriod(ctx, createPeriodInput{ProductID: product, Name: "十一月", SettlementMonth: "2026-11"}))
 		refund("34", "balance-partial", time.Date(2026, 11, 5, 12, 0, 0, 0, time.UTC), 1000)
-		if later := checkDraft(thirdMonth, -410, 0); later.RefundCount != 2 {
+		balanceRefund := int64(-409)
+		if fixedMember != "" {
+			balanceRefund = -410
+		}
+		if later := checkDraft(thirdMonth, balanceRefund, 0); later.RefundCount != 2 {
 			t.Fatalf("the next refund must account for the confirmed payment shares: %+v", later)
 		}
 		return

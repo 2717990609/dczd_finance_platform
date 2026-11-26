@@ -23,7 +23,10 @@ import (
 //go:embed schema.sql
 var baseSchema string
 
-var schema = baseSchema + "\n" + organizationDispatchSchema
+//go:embed settlement_integrity.sql
+var settlementIntegritySchema string
+
+var schema = baseSchema + "\n" + organizationDispatchSchema + "\n" + settlementIntegritySchema
 
 const schemaLockSQL = "SELECT pg_advisory_xact_lock(637619238)"
 
@@ -217,16 +220,6 @@ func validateComponentsForProduct(items []component, practice bool) error {
 	return checkPracticeRegistrationScopes(items)
 }
 
-func migrate(ctx context.Context, db *pgxpool.Pool) error {
-	return pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
-		if _, err := tx.Exec(ctx, schemaLockSQL); err != nil {
-			return err
-		}
-		_, err := tx.Exec(ctx, schema)
-		return err
-	})
-}
-
 type workspace struct {
 	db                                           *pgxpool.Pool
 	draftQuotes                                  *draftCalculationCaches
@@ -247,7 +240,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/products", Handler: submit(s.createProduct)},
 		{Method: http.MethodGet, Path: "/api/v1/mappings", Handler: s.list(mappingsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/mappings", Handler: submit(s.createMapping)},
-		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.listForAuthorizedProducts(periodsSQL, true)},
+		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.periods},
+		{Method: http.MethodGet, Path: "/api/v1/periods/page", Handler: s.periodPage},
 		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createAccountingMonth)},
 		{Method: http.MethodPost, Path: "/api/v1/periods/pull", Handler: submitJSON(8<<10, s.pullPracticePeriods)},
 		{Method: http.MethodGet, Path: "/api/v1/periods/source-products", Handler: s.list(practiceSourceProductsSQL)},
@@ -322,7 +316,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/person-source-accounts", Handler: submitJSON(16<<10, s.savePersonSourceAccount)},
 		{Method: http.MethodPost, Path: "/api/v1/people", Handler: submit(s.createPerson)},
 		{Method: http.MethodGet, Path: "/api/v1/identities", Handler: s.identities},
-		{Method: http.MethodPost, Path: "/api/v1/identities", Handler: submit(s.assignIdentity)},
+		{Method: http.MethodPost, Path: "/api/v1/identities", Handler: submit(s.saveLegacyPersonSourceAccount)},
 		{Method: http.MethodGet, Path: "/api/v1/orders", Handler: s.orders},
 		{Method: http.MethodGet, Path: "/api/v1/orders/version", Handler: s.orderVersion},
 		{Method: http.MethodPost, Path: "/api/v1/orders/pull", Handler: submit(s.pullOrder)},
@@ -481,8 +475,7 @@ const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'
 const mappingsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT m.id,m.product_id AS "productId",p.name AS "productName",m.source,m.domain,m.source_key AS "sourceKey"
  FROM source_mappings m JOIN products p ON p.id=m.product_id ORDER BY m.id DESC LIMIT 500) p`
-const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM
- (SELECT p.id,p.product_id AS "productId",pro.name AS "productName",pro.period_mode AS "periodMode",p.name,p.ordinal,
+const periodListColumnsSQL = `SELECT p.id,p.product_id AS "productId",pro.name AS "productName",pro.period_mode AS "periodMode",p.name,p.ordinal,
  p.aggregate_package_id AS "aggregatePackageId",
  (p.aggregate_package_id IS NULL AND pro.period_mode='calendar' AND EXISTS(SELECT 1 FROM catalog_business_routes m JOIN product_catalog_settings c USING(product_id)
   WHERE m.product_id=p.product_id AND m.observed_at=c.captured_at)) AS "ruleMatchingAvailable",
@@ -499,8 +492,9 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
  THEN draft.version END AS "poolDraftVersion",
  p.source_period_key AS "sourcePeriodKey",roster.starts_at AS "classStartsAt",
  roster.source_version AS "practiceRosterVersion",roster.attendance_count AS "practiceRosterAttendance",
- coalesce(NOT roster.in_period,false) AS "classStartOutsidePeriod",rule.version AS "ruleVersion",rule.label AS "ruleLabel"
- FROM periods p JOIN products pro ON pro.id=p.product_id
+ coalesce(NOT roster.in_period,false) AS "classStartOutsidePeriod",rule.version AS "ruleVersion",rule.label AS "ruleLabel"`
+
+const periodListJoinsSQL = `JOIN products pro ON pro.id=p.product_id
  LEFT JOIN settlements final ON final.period_id=p.id
  LEFT JOIN calculation_drafts draft ON draft.period_id=p.id
  LEFT JOIN LATERAL (
@@ -517,7 +511,11 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
     ELSE (rv.effective_from IS NULL OR rv.effective_from < ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'))
       AND (stopped.at IS NULL OR greatest(rv.effective_from,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')<stopped.at) END
   ORDER BY ` + matchingRuleOrder + ` LIMIT 1
- ) rule ON true WHERE ($1::bigint[] IS NULL OR p.product_id=ANY($1)) ORDER BY p.id DESC LIMIT 500) a`
+ ) rule ON true`
+
+const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM (` +
+	periodListColumnsSQL + ` FROM periods p ` + periodListJoinsSQL +
+	` WHERE ($1::bigint[] IS NULL OR p.product_id=ANY($1)) ORDER BY p.id DESC LIMIT 500) a`
 const matchingPracticeActivity = `(rv.activity_type=0 OR rv.activity_type::text=split_part(p.source_period_key,':',2))`
 const matchingRuleScope = `rv.product_id=p.product_id AND
   (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal))) AND ` + matchingPracticeActivity
@@ -1074,10 +1072,8 @@ func (s workspace) storeIdentity(ctx context.Context, p assignIdentityInput, exp
 	external := strings.TrimSpace(p.ExternalID)
 	var id int64
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		if expectedMappingID != nil {
-			if err := lockAppointmentPerson(ctx, tx, p.PersonID); err != nil {
-				return err
-			}
+		if err := lockAppointmentPerson(ctx, tx, p.PersonID); err != nil {
+			return err
 		}
 		if _, e := tx.Exec(ctx, "SELECT pg_advisory_xact_lock(hashtextextended($1,0))", p.Source+":"+external); e != nil {
 			return e
@@ -1093,13 +1089,11 @@ func (s workspace) storeIdentity(ctx context.Context, p assignIdentityInput, exp
 			id = previousID
 			return nil
 		}
-		if expectedMappingID != nil {
-			if *expectedMappingID != previousID {
-				return personSourceAccountProblem("归属已变化，请重新核对")
-			}
-			if err := validatePersonSourceAccount(ctx, tx, p, external, start); err != nil {
-				return err
-			}
+		if expectedMappingID != nil && *expectedMappingID != previousID {
+			return personSourceAccountProblem("归属已变化，请重新核对")
+		}
+		if err := validatePersonSourceAccount(ctx, tx, p, external, start); err != nil {
+			return err
 		}
 		if e == nil {
 			if !start.After(previousAt) {
@@ -1126,7 +1120,7 @@ func startHTTP(ctx context.Context, cfg config, db *pgxpool.Pool) error {
 	if err != nil || port < 1 || port > 65535 {
 		return errors.New("invalid port")
 	}
-	if err = migrate(ctx, db); err != nil {
+	if err = prepareFinanceSchema(ctx, db); err != nil {
 		return err
 	}
 	server, err := rest.NewServer(rest.RestConf{Host: host, Port: port, MaxConns: 64, MaxBytes: 1 << 20, Timeout: 15000, Middlewares: rest.MiddlewaresConf{Recover: true, Timeout: true, MaxBytes: true}})

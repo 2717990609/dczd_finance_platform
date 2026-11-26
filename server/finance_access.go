@@ -45,7 +45,7 @@ func (s workspace) financeRoute(route rest.Route) rest.Route {
 		rulesAccess = true
 	case "/api/v1/practice-registration-companies", "/api/v1/practice-registration-import/preview", "/api/v1/practice-rule-settings", "/api/v1/team-pools", "/api/v1/team-pools/owner":
 		rulesAccess = true
-	case "/api/v1/products", "/api/v1/periods":
+	case "/api/v1/products", "/api/v1/periods", "/api/v1/periods/page":
 		rulesAccess = route.Method == http.MethodGet
 	}
 	localSettlementWrite := route.Method == http.MethodPost &&

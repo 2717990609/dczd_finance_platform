@@ -159,15 +159,12 @@ func (s workspace) reviewFinanceHistory(ctx context.Context, tx pgx.Tx, input fi
 	}
 	var code string
 	var through, now time.Time
-	if err := tx.QueryRow(ctx, `SELECT pro.code,(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',CURRENT_TIMESTAMP
+	if err := tx.QueryRow(ctx, `SELECT pro.code,greatest((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',p.refund_cutoff_at),CURRENT_TIMESTAMP
 	 FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1`, input.PeriodID).Scan(&code, &through, &now); err != nil {
 		return review, err
 	}
 	if code != input.ProductCode {
 		return review, errFinanceHistoryTarget
-	}
-	if input.ConfirmedAt.Before(through) || input.ConfirmedAt.After(now) {
-		return review, errFinanceHistoryTime
 	}
 	if scope.Version == 0 {
 		return review, errSettlementStale
@@ -196,6 +193,9 @@ func (s workspace) reviewFinanceHistory(ctx context.Context, tx pgx.Tx, input fi
 		return review, err
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return review, err
+	}
+	if input.ConfirmedAt.Before(through) || input.ConfirmedAt.After(now) {
+		return review, errFinanceHistoryTime
 	}
 	if scope.Enabled {
 		return review, errFinanceHistoryEnabled

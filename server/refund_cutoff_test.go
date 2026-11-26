@@ -50,7 +50,7 @@ func TestRefundCutoffIncludesLateArrivalAndCarriesBoundary(t *testing.T) {
 	}
 	store(payment)
 	initial, err := s.calculateCurrentDraft(ctx, first, 0)
-	if err != nil || initial.Total != 34 {
+	if err != nil || initial.Total != 33 {
 		t.Fatalf("original draft: %+v %v", initial, err)
 	}
 	var precise string
@@ -75,18 +75,18 @@ func TestRefundCutoffIncludesLateArrivalAndCarriesBoundary(t *testing.T) {
 		t.Fatalf("late arrival failed to queue its original open period: %d %v", queued, err)
 	}
 	current, err := s.calculateCurrentDraft(ctx, first, 0)
-	if err != nil || current.IssueCount != 0 || current.RefundTotal != -10 || current.RefundCount != 1 {
+	if err != nil || current.IssueCount != 0 || current.RefundTotal != -9 || current.RefundCount != 1 {
 		t.Fatalf("expected only the pre-cutoff refund: %+v %v", current, err)
 	}
 	if err := s.db.QueryRow(ctx, "SELECT precise_amount::text FROM calculation_draft_refunds WHERE period_id=$1", first).Scan(&precise); err != nil ||
-		precise != "-0.1009900990" {
+		precise != "-0.0980198020" {
 		t.Fatalf("expected the original frozen amount prorated without cent rounding, got %q %v", precise, err)
 	}
 	if _, err := s.db.Exec(ctx, "INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'fixture')", first, current.Version); err != nil {
 		t.Fatal(err)
 	}
 	following, err := s.calculateCurrentDraft(ctx, next, 0)
-	if err != nil || following.IssueCount != 0 || following.Accrued != 34 || following.RefundTotal != -20 || following.RefundCount != 2 {
+	if err != nil || following.IssueCount != 0 || following.Accrued != 33 || following.RefundTotal != -19 || following.RefundCount != 2 {
 		t.Fatalf("expected the refund exactly at cutoff in the next period: %+v %v", following, err)
 	}
 }

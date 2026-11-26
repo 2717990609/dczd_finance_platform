@@ -215,14 +215,14 @@ const catalogMatchSQL = `WITH period AS (
   THEN v.definition->'benefit_actions' ELSE '[]'::jsonb END) a
  WHERE v.definition->>'amount_basis'='ACTUAL_RECEIVED' AND v.definition->>'stacking_policy'='SUM'
   AND v.definition->'internal_sales_direct_split' IS NULL
-  AND v.definition->'rounding_policy'='{"mode":"HALF_UP","scale":2}'::jsonb
+  AND v.definition->'rounding_policy' IN ('{"mode":"HALF_UP","scale":2}'::jsonb,'{"mode":"TRUNCATE","scale":2}'::jsonb)
   AND a->>'type'='RATE' AND a->>'beneficiary_mode'='PARTY' AND a->>'role' IN ('AI_RND_GENERAL_MANAGER','CHAIRMAN')
   AND nullif(a->>'designated_party_id','') IS NOT NULL
   AND nullif(a->>'item_key','') IS NOT NULL AND nullif(a->>'label','') IS NOT NULL
   AND CASE WHEN jsonb_typeof(a)='object' THEN a-ARRAY['type','beneficiary_mode','role','designated_party_id','item_key','label','rate_bps']='{}'::jsonb ELSE false END
 ), output AS (
  SELECT page.*,coalesce((
-  SELECT jsonb_agg(jsonb_build_object('itemKey',a.item_key,'label',a.label,'amountMinor',round(coalesce(page."recognizedMinor",page."paidMinor")::numeric*a.rate_bps/10000)) ORDER BY a.item_key)
+  SELECT jsonb_agg(jsonb_build_object('itemKey',a.item_key,'label',a.label,'amountMinor',trunc(coalesce(page."recognizedMinor",page."paidMinor")::numeric*a.rate_bps/10000)) ORDER BY a.item_key)
   FROM fixed_actions a WHERE page.status='MATCHED' AND a.rule_id=page."ruleId" AND a.rate_bps BETWEEN 0 AND 10000
  ),'[]') AS "fixedParts" FROM page
 )

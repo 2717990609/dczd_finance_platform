@@ -542,7 +542,14 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 			october, sourceID); err != nil {
 			t.Fatal(err)
 		}
-		freeze(october, result.Version)
+		// This is historical data already confirmed by the earlier release, before the posting digest.
+		if _, err := db.Exec(ctx, `UPDATE calculation_drafts SET posting_digest=NULL WHERE period_id=$1`, october); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(ctx, `INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES($1,$2,'legacy fixture')`,
+			october, result.Version); err != nil {
+			t.Fatal(err)
+		}
 		if _, err := db.Exec(ctx, `WITH late AS (
 		 INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
 		 VALUES('DCAI','105','','vip:105','1','ORDER_PAID','2026-11-02',

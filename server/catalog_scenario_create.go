@@ -276,7 +276,7 @@ func createCatalogScenarioRule(ctx context.Context, tx pgx.Tx, input catalogScen
 	definition := map[string]any{
 		"schema_version": "1.1", "recognition_trigger": "PAID", "sales_attribution": "ORDER_SELLER",
 		"amount_basis": "ACTUAL_RECEIVED", "stacking_policy": "SUM", "refund_policy": "PROPORTIONAL",
-		"rounding_policy":   map[string]any{"mode": "HALF_UP", "scale": 2},
+		"rounding_policy":   map[string]any{"mode": postingModeTruncate, "scale": 2},
 		"settlement_policy": map[string]string{"cycle": cycle},
 		"policy_scope":      scope,
 	}

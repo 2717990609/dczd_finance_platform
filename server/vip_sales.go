@@ -136,7 +136,7 @@ type vipCommissionDefinition struct {
 func readVIPCommissionDefinition(raw json.RawMessage) (vipCommissionDefinition, bool) {
 	var def vipCommissionDefinition
 	if json.Unmarshal(raw, &def) != nil || def.Basis != "ACTUAL_RECEIVED" || def.Stacking != "SUM" ||
-		def.Rounding.Mode != "HALF_UP" || def.Rounding.Scale != 2 ||
+		!supportedPostingMode(def.Rounding.Mode, def.Rounding.Scale) ||
 		def.Split != nil && (def.Split.Mode != "DCAI_INTERNAL_DIRECT" || def.Split.Item == "") {
 		return vipCommissionDefinition{}, false
 	}
@@ -638,7 +638,7 @@ func calculateVIPSalesWithMembership(policy vipSalesPolicy, req vipSalesRequest,
 	return slices.DeleteFunc(parts, replaced), ""
 }
 
-// Distribute the rounded transaction total; ties are stable for an order and role.
+// Distribute the posted transaction total; ties are stable for an order and role.
 func distributeVIPSales(parts []vipSalesPart, total, rate int64, order string) {
 	type remainder struct {
 		index int

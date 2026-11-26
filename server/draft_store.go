@@ -459,6 +459,7 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	  aggregate_predecessor_id=excluded.aggregate_predecessor_id,director_version_id=excluded.director_version_id
 	  WHERE NOT calculation_drafts.performance_ready OR calculation_drafts.input_digest<>excluded.input_digest
 	   OR calculation_drafts.catalog_refunds_ready<>excluded.catalog_refunds_ready
+		   OR calculation_drafts.posting_digest IS DISTINCT FROM settlement_posting_digest(excluded.period_id)
 	   OR EXISTS(SELECT 1 FROM calculation_draft_lines l WHERE l.period_id=excluded.period_id AND l.precise_amount IS NULL)
 	   OR EXISTS(SELECT 1 FROM calculation_draft_refunds r WHERE r.period_id=excluded.period_id AND r.precise_amount IS NULL)
 	   OR EXISTS(SELECT 1 FROM calculation_draft_corrections c WHERE c.period_id=excluded.period_id AND c.precise_amount IS NULL)
@@ -471,6 +472,9 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 		// has the same result, or a refund is routed to a separate month.
 		if rosterID != nil {
 			if err := syncPracticeDraftMetadata(ctx, tx, summary.PeriodID, *rosterID, result.Issues); err != nil {
+				return err
+			}
+			if err := recordDraftPostingDigest(ctx, tx, summary.PeriodID); err != nil {
 				return err
 			}
 		}
@@ -550,6 +554,16 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 					c.Amount, c.organization.Company, c.organization.Department, c.Unit, c.organization.groupID(), precise}, nil
 			}))
 	}
+	if err != nil {
+		return err
+	}
+	return recordDraftPostingDigest(ctx, tx, summary.PeriodID)
+}
+
+func recordDraftPostingDigest(ctx context.Context, tx pgx.Tx, periodID int64) error {
+	_, err := tx.Exec(ctx, `WITH seal AS MATERIALIZED (SELECT settlement_posting_digest($1) AS digest)
+	 UPDATE calculation_drafts d SET posting_digest=seal.digest FROM seal
+	 WHERE d.period_id=$1 AND d.posting_digest IS DISTINCT FROM seal.digest`, periodID)
 	return err
 }
 

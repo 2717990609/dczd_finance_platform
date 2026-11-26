@@ -280,7 +280,7 @@ func (a vipBenefitAction) quote(req vipSalesRequest, sourceIssue string) (rate, 
 	if a.Fixed != nil {
 		amount = *a.Fixed
 		if req.Paid > 0 && req.OriginalPaid > req.Paid {
-			amount -= prorateMinor(amount, req.OriginalPaid-req.Paid, req.OriginalPaid)
+			amount = truncatePosting.unpostedNet(amount, req.OriginalPaid-req.Paid, req.OriginalPaid)
 		}
 		return 0, amount, ""
 	}

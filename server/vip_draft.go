@@ -98,7 +98,8 @@ func readVIPDraftFacts(ctx context.Context, tx pgx.Tx, items []catalogPaymentMat
 	for i, item := range items {
 		ids[i] = item.SourceVersionID
 	}
-	rows, err := tx.Query(ctx, `SELECT id,source,order_id,line_id,record_key,coalesce(fact->>'paymentId',''),occurred_at
+	rows, err := tx.Query(ctx, `SELECT id,source,order_id,line_id,record_key,coalesce(fact->>'paymentId',''),occurred_at,
+	 coalesce(fact->>'domain',''),coalesce(fact->>'sourceKey','')
 	 FROM source_order_versions WHERE id=ANY($1::bigint[])`, ids)
 	if err != nil {
 		return nil, nil, err
@@ -107,7 +108,7 @@ func readVIPDraftFacts(ctx context.Context, tx pgx.Tx, items []catalogPaymentMat
 		var item paymentInput
 		f := &item.Fact
 		f.Kind = "ORDER_PAID"
-		err := row.Scan(&item.ID, &f.Source, &f.OrderID, &f.LineID, &f.RecordKey, &f.PaymentID, &f.OccurredAt)
+		err := row.Scan(&item.ID, &f.Source, &f.OrderID, &f.LineID, &f.RecordKey, &f.PaymentID, &f.OccurredAt, &f.Domain, &f.SourceKey)
 		return item, err
 	})
 	if err != nil {
