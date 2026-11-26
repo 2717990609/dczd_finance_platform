@@ -136,8 +136,9 @@ async function save() {
           <div v-if="report.closed"><dt>确认分配</dt><dd>{{ formatMoney(pool.confirmedMinor) }}</dd></div>
           <div><dt>{{ report.closed ? '期末余额' : '池余额' }}</dt><dd>{{ formatMoney(pool.balanceMinor) }}</dd></div>
         </dl>
-        <div v-if="pool.owners?.length" class="pool-owners">
-          <span>本期归集负责人</span>
+        <div v-if="pool.ownerName" class="pool-owners"><span>团队池负责人</span><span>{{ pool.ownerName }}</span></div>
+        <div v-else-if="pool.owners?.length" class="pool-owners">
+          <span>原归集负责人</span>
           <span v-for="owner in pool.owners" :key="owner.personId">
             {{ owner.name || ('人员 '+owner.personId) }}<template v-if="pool.owners.length>1"> · {{ formatMoney(owner.incomeMinor) }}</template>
           </span>
@@ -166,7 +167,7 @@ async function save() {
           </div>
           <a-button v-if="memberOptions.some(item=>!item.disabled)" :disabled="!editable" @click="rows.push({})">添加成员</a-button>
           <div class="pool-control">
-            <label for="pool-retention">留存金额</label>
+            <label for="pool-retention">转入部门留存金</label>
             <a-input-number id="pool-retention" v-model:value="retained" string-mode :min="0" :precision="2"
               placeholder="金额（元）" :disabled="!editable"/>
           </div>

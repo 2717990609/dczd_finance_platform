@@ -210,13 +210,13 @@ func impactArrangements(ctx context.Context, tx pgx.Tx, all ...[]ruleImpactPosti
 	  CASE WHEN action.item IS NOT NULL AND action.item<>p.code THEN split_part(p.code,':',2) ELSE '' END
 	 FROM parts p
 	 LEFT JOIN LATERAL (
-	  SELECT coalesce(p.part->'companySales'->>'label',p.part->'periodBenefit'->>'label',CASE WHEN p.part->>'mode'='director_rate' THEN '按班期归属的总监提成' END) AS name
+	  SELECT coalesce(p.part->'companySales'->>'label',p.part->'periodBenefit'->>'label',p.part->>'label',p.part->>'salesLabel',CASE WHEN p.part->>'mode'='director_rate' THEN '按班期归属的总监提成' END) AS name
 	 ) title ON p.idx IS NOT NULL
 	 LEFT JOIN LATERAL (
 	  SELECT count(*) AS ord FROM jsonb_array_elements(p.components) WITH ORDINALITY AS c(part,pos)
 	  WHERE c.pos<=p.idx AND c.part->>'type'=p.part->>'type'
 	   AND coalesce(c.part->>'classMember','')=coalesce(p.part->>'classMember','')
-	   AND coalesce(c.part->'companySales'->>'label',c.part->'periodBenefit'->>'label',CASE WHEN c.part->>'mode'='director_rate' THEN '按班期归属的总监提成' END)=title.name
+	   AND coalesce(c.part->'companySales'->>'label',c.part->'periodBenefit'->>'label',c.part->>'label',c.part->>'salesLabel',CASE WHEN c.part->>'mode'='director_rate' THEN '按班期归属的总监提成' END)=title.name
 	 ) duplicate ON title.name<>''
 	 LEFT JOIN configuration_options opt ON opt.group_key='component' AND opt.option_key=p.kind
 	 LEFT JOIN configuration_options legacy_role ON legacy_role.group_key='catalogAppointmentRole' AND legacy_role.option_key=title.name

@@ -320,13 +320,17 @@ func validateCatalogRecipientAppointments(ctx context.Context, tx pgx.Tx, produc
 		return err
 	}
 	var label string
+	// A 499 rule can reference a later project or product appointment. The
+	// designated recipient is still checked at each payment's effective time.
 	err = tx.QueryRow(ctx, `SELECT wanted.label
 	 FROM jsonb_to_recordset($3) AS wanted(label text,key text,role text,unit text,named_organization boolean)
 	 JOIN products pro ON pro.id=$1 JOIN product_catalog_settings settings ON settings.product_id=pro.id
 	 CROSS JOIN LATERAL (
 	  SELECT count(DISTINCT a.person_id) AS holders,bool_or(`+vipPersonKey+`=wanted.key) AS chosen
 	  FROM catalog_current_sales_appointments a JOIN people p ON p.id=a.person_id
-	  WHERE a.source='DCAI' AND a.role=wanted.role AND (wanted.named_organization OR a.valid_from<=$2) AND (a.valid_to IS NULL OR a.valid_to>$2)
+	  WHERE a.source='DCAI' AND a.role=wanted.role
+	   AND (a.valid_from<=$2 OR wanted.named_organization OR (pro.code='DCAI_VIP' AND wanted.unit=''))
+	   AND (a.valid_to IS NULL OR a.valid_to>$2)
 	   AND ((wanted.unit='' AND ((a.scope='PRODUCT' AND a.scope_key=pro.code)
 	    OR (a.scope='PROJECT' AND a.scope_key=settings.project_code)))
 	    OR (wanted.unit<>'' AND a.scope='ORGANIZATION_UNIT' AND a.scope_key=wanted.unit))

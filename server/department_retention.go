@@ -21,7 +21,7 @@ var departmentRetentionSQL = organizationScopeQuery(`WITH RECURSIVE `+organizati
 manual AS MATERIALIZED (
  SELECT entry.*, original.kind AS original_kind FROM department_retention_entries entry
  LEFT JOIN department_retention_entries original ON original.id=entry.original_id
- WHERE entry.book_month<=$1::date AND ({{unit}} IS NULL OR entry.unit_id IN (SELECT id FROM organization_scope))
+ WHERE ({{unit}} IS NULL OR entry.unit_id IN (SELECT id FROM organization_scope))
 ), credits AS (
  SELECT share.id,a.unit_id,share.amount_minor,p.id AS period_id,p.name AS period_name,
   product.name AS product_name,a.item_key,a.scenario_key,settlement.confirmed_at,`+periodReportMonthSQL+` AS book_month
@@ -29,7 +29,7 @@ manual AS MATERIALIZED (
  JOIN settlements settlement ON (settlement.period_id,settlement.draft_version)=(a.period_id,a.draft_version)
  JOIN periods p ON p.id=a.period_id JOIN products product ON product.id=p.product_id
  LEFT JOIN manual opening ON opening.unit_id=a.unit_id AND opening.kind='opening'
- WHERE share.person_id IS NULL AND `+periodReportMonthSQL+` <= $1::date
+ WHERE share.person_id IS NULL
   AND (opening.id IS NULL OR `+periodReportMonthSQL+`>opening.book_month)
   AND ({{unit}} IS NULL OR a.unit_id IN (SELECT id FROM organization_scope))
 ), entries AS MATERIALIZED (
@@ -43,30 +43,34 @@ manual AS MATERIALIZED (
   kind IN ('expense','correction') AND NOT EXISTS(SELECT 1 FROM department_retention_entries r WHERE r.original_id=manual.id)
  FROM manual
 ), accounts AS (
- SELECT unit_id, coalesce(sum(amount_minor) FILTER(WHERE book_month < $1 OR kind='opening'),0) AS opening_minor,
+ SELECT unit_id, coalesce(sum(amount_minor) FILTER(WHERE book_month < $1 OR (book_month=$1 AND kind='opening')),0) AS opening_minor,
   coalesce(sum(amount_minor) FILTER(WHERE book_month=$1 AND category='income'),0) AS income_minor,
   coalesce(sum(amount_minor) FILTER(WHERE book_month=$1 AND category='expense'),0) AS expense_minor,
   coalesce(sum(amount_minor) FILTER(WHERE book_month=$1 AND category='correction'),0) AS correction_minor,
-  sum(amount_minor) AS balance_minor
+  coalesce(sum(amount_minor) FILTER(WHERE book_month<=$1),0) AS balance_minor,
+  sum(amount_minor) AS current_balance_minor,
+  coalesce(sum(amount_minor) FILTER(WHERE category='income'),0) AS total_income_minor,
+  -coalesce(sum(amount_minor) FILTER(WHERE category='expense'),0) AS total_spent_minor
  FROM entries GROUP BY unit_id
 ), statement AS (
  SELECT key AS id,period_id AS "periodId",period_name AS "periodName",product_name AS "productName",
   unit_id AS "unitId",item_key AS "itemKey",scenario_key AS scenario,
   amount_minor AS "amountMinor",recorded_at AS "confirmedAt",to_char(book_month,'YYYY-MM') AS month,
   kind,manual_id AS "manualId",note,reimbursement_no AS "reimbursementNo",reversible
- FROM entries WHERE unit_id=$3::uuid
+ FROM entries WHERE unit_id=$3::uuid AND ($7::boolean OR book_month<=$1)
  ORDER BY book_month DESC,recorded_at DESC,key DESC LIMIT $4 OFFSET $5
 )
 SELECT jsonb_build_object(
  'items',coalesce((SELECT jsonb_agg(jsonb_build_object(
   'unitId',u.id,'name',u.name,'scopeName',concat_ws(' / ',grandparent.name,parent.name,u.name),
   'openingMinor',a.opening_minor,'incomeMinor',a.income_minor,'expenseMinor',a.expense_minor,
-  'correctionMinor',a.correction_minor,'balanceMinor',a.balance_minor
+  'correctionMinor',a.correction_minor,'balanceMinor',a.balance_minor,'currentBalanceMinor',a.current_balance_minor,
+  'totalIncomeMinor',a.total_income_minor,'totalSpentMinor',a.total_spent_minor
  ) ORDER BY grandparent.name,parent.name,u.name,u.id) FROM accounts a
   JOIN organization_units u ON u.id=a.unit_id LEFT JOIN organization_units parent ON parent.id=u.parent_id
   LEFT JOIN organization_units grandparent ON grandparent.id=parent.parent_id),'[]'),
  'entries',coalesce((SELECT jsonb_agg(to_jsonb(statement) ORDER BY month DESC,"confirmedAt" DESC,id DESC) FROM statement),'[]'),
- 'totalEntries',(SELECT count(*) FROM entries WHERE unit_id=$3::uuid),
+ 'totalEntries',(SELECT count(*) FROM entries WHERE unit_id=$3::uuid AND ($7::boolean OR book_month<=$1)),
  'canRecord',$6::boolean
 )`, "$2")
 
@@ -86,7 +90,7 @@ func (s workspace) departmentRetention(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), departmentRetentionSQL, month, scope, account, retentionHistoryPageSize, offset, allowed).Scan(&result)
+	err = s.db.QueryRow(r.Context(), departmentRetentionSQL, month, scope, account, retentionHistoryPageSize, offset, allowed, q.Get("history") == "all").Scan(&result)
 	respond(w, result, err)
 }
 

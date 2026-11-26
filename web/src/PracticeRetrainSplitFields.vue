@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import { moneyAsMinor, practiceRetrainPoolRemainder, practiceRetrainShareMethods, practiceRetrainSplitAmounts } from './rule-component-form'
 
-const props = defineProps({ split:Object, prefix:String, amount:Number, pools:Array, people:Array, units:Array, createPool:Function, formatMoney:Function })
+const props = defineProps({ split:Object, prefix:String, amount:Number, pools:Array, people:Array, units:Array,  formatMoney:Function })
 const remainder = computed(() => {
   try {
     return practiceRetrainPoolRemainder(practiceRetrainSplitAmounts(props.split),moneyAsMinor(props.amount))
@@ -39,7 +39,7 @@ function setBasis(field, amount, basis) {
           (split.serviceScopeMode==='selected' ? '整份报名命中时归入 ' : '每份报名归入 ')+formatMoney(remainder) }}
       </p>
       <p v-else-if="dynamic" class="tier-note">归入每份复训提成扣除已配置份额后的余额</p>
-      <PracticePoolFields :target="split.pool" :prefix="prefix+'-split'" :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
+      <PracticePoolFields :target="split.pool" :prefix="prefix+'-split'" :pools="pools"/>
     </fieldset>
   </div>
 </template>

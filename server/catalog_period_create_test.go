@@ -547,7 +547,7 @@ func TestCreateCatalogPeriodRuleFromEmptyConfiguration(t *testing.T) {
 		fixedInput := fmt.Sprintf(`{"create":{"productId":980,"label":"固定规则","cycle":"MONTHLY_25_TO_24"},
 		 "effectiveFrom":"2026-09-25T00:00:00+08:00","scenarioCodes":["SECOND"],"components":[
 		 {"label":"池比例计提","targetKind":"pool","poolId":%d,
-		  "ownerPersonId":9801,"memberRole":"DELIVERY_TEAM","tiers":[{"rate_bps":1500}]},
+		  "memberRole":"DELIVERY_TEAM","tiers":[{"rate_bps":1500}]},
 		 {"label":"每期固定池","targetKind":"pool","poolId":%d,
 		  "ownerRole":"PROJECT_OWNER","memberRole":"DELIVERY_TEAM","fixedMinor":5000}]}`, poolID, poolID)
 		manual := submit(980, path+"/preview", s.postCatalogPeriodQuote, strings.TrimSuffix(fixedInput, "}")+`,"receiptsMinor":123}`)

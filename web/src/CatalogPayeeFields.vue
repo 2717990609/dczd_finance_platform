@@ -1,13 +1,12 @@
 <script setup>
 import { computed } from 'vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
-import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
 import { catalogOrderSalesPayees, catalogScopeOptions } from './rule-component-form'
 
 const props = defineProps({options:Object,api:Function,peopleFilters:Object,prefix:String,disabled:Boolean,salesAvailable:Boolean,
-  productId:Number,savedPoolLabel:String,existingPool:Boolean,unitNames:Object})
+  savedPoolLabel:String,existingPool:Boolean,unitNames:Object})
 const payee = defineModel({type:Object,required:true})
 const seller = {value:'seller',label:'按销售比例表确定收款方'}
 const targets = computed(() => [
@@ -21,7 +20,7 @@ const targets = computed(() => [
 ])
 const organizations = computed(() => props.options.organizations.filter(option=>
   payee.value.target!=='company' || option.kind==='COMPANY'))
-const roles = computed(() => props.options.roles.filter(option=>payee.value.target==='pool' || option.personal || option.organization))
+const roles = computed(() => props.options.roles.filter(option=>option.personal || option.organization))
 const organizationRoles = computed(() => roles.value.filter(option=>option.organization))
 const appointmentRole = computed(() => roles.value.find(option=>option.value===payee.value.role))
 const appointmentUnits = computed(() => catalogScopeOptions(props.options.salesUnits || [],
@@ -33,7 +32,6 @@ const memberRoles = computed(() => {
   return [...available,original || {value:payee.value.memberRole,label:payee.value.memberRole}]
 })
 const field = key => props.prefix+'-'+key
-const poolOwner = computed(() => ({role:payee.value.role,personId:payee.value.ownerPersonId,personName:payee.value.ownerName}))
 function update(fields) {
   payee.value = {...payee.value,...fields}
 }
@@ -41,10 +39,6 @@ function changeTarget(target) {
   update({target,role:undefined,memberRole:undefined,personId:undefined,personName:undefined,
     ownerPersonId:undefined,ownerName:undefined,organization:undefined,poolId:undefined,
     appointmentUnitId:undefined,appointmentLevel:undefined})
-}
-function addPool(pool) {
-  const pools=props.options.teamPools ??= []
-  if (!pools.some(option=>option.id===pool.id)) pools.push(pool)
 }
 </script>
 
@@ -63,10 +57,9 @@ function addPool(pool) {
       show-search option-filter-prop="label" :disabled="disabled" placeholder="从组织目录选择"
       @update:value="update({organization:$event})"/>
   </a-form-item>
-  <CatalogTeamPoolFields v-else-if="payee.target==='pool'" :prefix="prefix" :pools="options.teamPools" :units="options.salesUnits"
-    :api="api" :product-id="productId" :disabled="disabled" :model-value="payee.poolId"
-    :saved-label="savedPoolLabel" :existing="existingPool && !!payee.organization"
-    @created="addPool" @update:model-value="update({poolId:$event})"/>
+  <CatalogTeamPoolFields v-else-if="payee.target==='pool'" :prefix="prefix" :pools="options.teamPools"
+    :disabled="disabled" :model-value="payee.poolId" :saved-label="savedPoolLabel"
+    :existing="existingPool && !!payee.organization" @update:model-value="update({poolId:$event})"/>
   <a-form-item v-if="payee.target==='person'" label="任职条件" :html-for="field('role')">
     <a-select :id="field('role')" :value="payee.role" :options="roles" show-search option-filter-prop="label" :disabled="disabled"
       allow-clear placeholder="选填"
@@ -81,10 +74,6 @@ function addPool(pool) {
   </a-form-item>
   <CatalogOrganizationAppointmentFields v-if="payee.target==='appointment'" :prefix="prefix" :roles="organizationRoles" :disabled="disabled"
     :level="payee.appointmentLevel" :role="payee.role" @update:level="update({appointmentLevel:$event})" @update:role="update({role:$event})"/>
-  <CatalogPoolOwnerFields v-if="payee.target==='pool'" :prefix="field('owner')" :roles="roles"
-    :api="api" :people-filters="peopleFilters" :disabled="disabled"
-    :model-value="poolOwner"
-    @update:model-value="({role,personId,personName})=>update({role,ownerPersonId:personId,ownerName:personName})"/>
   <a-form-item v-if="payee.target==='pool'" label="可参与分配的成员岗位" :html-for="field('member-role')" required>
     <a-select :id="field('member-role')" :value="payee.memberRole" :options="memberRoles" show-search option-filter-prop="label"
       :disabled="disabled" @update:value="update({memberRole:$event})"/>

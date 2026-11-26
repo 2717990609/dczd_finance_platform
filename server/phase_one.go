@@ -78,6 +78,10 @@ var invalid = errors.New("请核对名称、范围与必填配置")
 var conflict = errors.New("记录与现有配置冲突，请重新读取")
 
 func validateComponents(items []component) error {
+	return validateComponentsForProduct(items, true)
+}
+
+func validateComponentsForProduct(items []component, practice bool) error {
 	if len(items) == 0 {
 		return invalid
 	}
@@ -158,7 +162,7 @@ func validateComponents(items []component) error {
 			}
 			continue
 		}
-		if c.Type == "service" || c.PeriodBenefit != nil || seen[c.Type]&members != 0 {
+		if c.Type == "service" || c.PeriodBenefit != nil || seen[c.Type]&members != 0 && !(practice && c.isPracticePersonalArrangement()) {
 			return invalid
 		}
 		seen[c.Type] |= members
@@ -235,6 +239,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/mappings", Handler: submit(s.createMapping)},
 		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.listForAuthorizedProducts(periodsSQL, true)},
 		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createAccountingMonth)},
+		{Method: http.MethodPost, Path: "/api/v1/periods/pull", Handler: submitJSON(8<<10, s.pullPracticePeriods)},
 		{Method: http.MethodPost, Path: "/api/v1/period-report-month", Handler: submit(s.setPeriodReportMonth)},
 		{Method: http.MethodPost, Path: "/api/v1/period-practice-roster", Handler: submit(s.setPeriodPracticeRoster)},
 		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.getComponentRules},
@@ -258,8 +263,9 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/practice-registration-companies", Handler: s.practiceRegistrationCompanyOptions},
 		{Method: http.MethodPost, Path: "/api/v1/practice-registration-import/preview", Handler: submitJSON(896<<10, s.previewPracticeRegistrationImport)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-pools", Handler: s.listPracticePools},
-		{Method: http.MethodPost, Path: "/api/v1/practice-pools", Handler: submit(s.createPracticePool)},
-		{Method: http.MethodPost, Path: "/api/v1/team-pools", Handler: submit(s.createCatalogTeamPool)},
+		{Method: http.MethodGet, Path: "/api/v1/team-pools", Handler: s.listPracticePools},
+		{Method: http.MethodPost, Path: "/api/v1/team-pools", Handler: submit(s.createConfiguredTeamPool)},
+		{Method: http.MethodPost, Path: "/api/v1/team-pools/owner", Handler: submit(s.updateTeamPoolOwner)},
 		{Method: http.MethodPost, Path: "/api/v1/rules", Handler: submit(s.publishAuthorizedRule)},
 		{Method: http.MethodPost, Path: "/api/v1/rules/retire", Handler: submit(s.retireRule)},
 		{Method: http.MethodPost, Path: "/api/v1/rule-impact", Handler: submitJSON(1<<20, s.postComponentRuleImpact)},
@@ -323,6 +329,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/period-rule-matches", Handler: s.catalogMatches},
 		{Method: http.MethodGet, Path: "/api/v1/period-pool-contributions", Handler: s.periodPoolContributions},
 		{Method: http.MethodGet, Path: "/api/v1/draft-pools", Handler: s.draftPools},
+		{Method: http.MethodGet, Path: "/api/v1/team-pool-ledger", Handler: s.teamPoolLedger},
 		{Method: http.MethodGet, Path: "/api/v1/settlement-review", Handler: s.getSettlementReview},
 		{Method: http.MethodPost, Path: "/api/v1/settlements", Handler: submitJSON(32<<10, s.confirmAuthorizedSettlement)},
 		{Method: http.MethodPost, Path: "/api/v1/correction-recovery", Handler: submit(s.reviewCorrectionRecovery)},
@@ -417,6 +424,10 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = 409, "来源接口尚未配置"
 	case errors.Is(err, errSourceLookupTimeout):
 		code, message = http.StatusGatewayTimeout, err.Error()
+	case errors.Is(err, errPracticePeriodSource):
+		code, message = http.StatusBadGateway, err.Error()
+	case errors.Is(err, errPracticePeriodMappingMissing):
+		code, message = http.StatusConflict, err.Error()
 	case errors.Is(err, errSourceRead):
 		code, message = 502, "来源读取失败，请核对接口或订单号"
 	case errors.As(err, &dbErr) && (dbErr.Code == "23505" || dbErr.Code == "40001"):
@@ -439,6 +450,7 @@ const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'
  (SELECT p.id,p.code,p.name,p.period_mode AS "periodMode",p.cycle_start_day AS "cycleStartDay",
  EXISTS(SELECT 1 FROM products pro WHERE pro.id=p.id AND ` + directorFamilyProductSQL + `) AS "directorRulesAvailable",
  (l.product_id IS NOT NULL) AS "catalogPending",
+ (p.period_mode='class' AND EXISTS(SELECT 1 FROM source_mappings m WHERE m.product_id=p.id AND ` + practicePeriodSourceMappings + `)) AS "practicePeriodPull",
  coalesce(l.source_system='DCAI' AND p.period_mode='calendar' AND p.cycle_start_day IN (1,25),false) AS "catalogPeriodRule",
  coalesce((
   SELECT jsonb_agg(jsonb_build_object('code',sku_code,'label',label,'paymentRule',payment_rule) ORDER BY label,sku_code)
@@ -739,6 +751,11 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 		if scenarioRules && mode != "class" {
 			return errProductRuleUnavailable
 		}
+		if mode != "class" {
+			if err := validateComponentsForProduct(p.Components, false); err != nil {
+				return err
+			}
+		}
 		if p.EditBaseID != nil {
 			var savedVersion int
 			var unchanged bool
@@ -779,11 +796,15 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 		var unitIDs, appointmentKinds, receivingCompanies, salesUnitIDs, categoryIDs []string
 		poolIDs := make(map[int64]int64)
 		for _, target := range practicePoolTargets(p.Components) {
-			if owner := poolIDs[target.PoolID]; owner != 0 && owner != target.OwnerID {
-				return invalid
+			if target.OwnerID > 0 {
+				if owner := poolIDs[target.PoolID]; owner != 0 && owner != target.OwnerID {
+					return invalid
+				}
+				poolIDs[target.PoolID] = target.OwnerID
+				personIDs = append(personIDs, target.OwnerID)
+			} else if _, exists := poolIDs[target.PoolID]; !exists {
+				poolIDs[target.PoolID] = 0
 			}
-			poolIDs[target.PoolID] = target.OwnerID
-			personIDs = append(personIDs, target.OwnerID)
 		}
 		if len(poolIDs) != 0 {
 			ids := make([]int64, 0, len(poolIDs))

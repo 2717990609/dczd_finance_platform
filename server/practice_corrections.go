@@ -358,24 +358,18 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 		changed[revision.OriginalID] = revision.Fact
 	}
 	affectedPeople := map[string]map[int64]bool{"new": {}, "retrain": {}}
-	saleRules := make(map[string]component, len(affectedPeople))
-	for kind := range affectedPeople {
-		for _, part := range replay.rule.Components {
-			if part.Type == "sales" && part.matchesPracticeMember(kind) {
-				saleRules[kind] = part
-				break
-			}
-		}
-	}
 	for i, line := range original {
 		next := target[i].PersonID
 		revised, hasChange := changed[line.payment]
 		kind := membership[line.enrollment]
 		people := affectedPeople[kind]
-		if line.component != "sales" || !hasChange || people == nil {
+		if !hasChange || people == nil {
 			continue
 		}
-		sales := saleRules[kind]
+		sales, ok := practicePersonalComponent(replay.rule.Components, line.component, kind)
+		if !ok || sales.Type != "sales" {
+			continue
+		}
 		companies := sales.salesCompanies()
 		leftTierScope := (kind == "retrain" || sales.Tiers != nil) && len(companies) != 0 &&
 			revised.SalesCompanyID != "" && !slices.Contains(companies, revised.SalesCompanyID)
@@ -429,7 +423,7 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 	  LEFT JOIN calculation_draft_performance performance ON performance.period_id=l.period_id
 	   AND performance.source_version_id=l.source_version_id
 	  CROSS JOIN LATERAL (SELECT coalesce(performance.person_id,l.person_id) AS person_id) owner
-	  CROSS JOIN LATERAL jsonb_array_elements(rule.components) component
+	  CROSS JOIN LATERAL jsonb_array_elements(rule.components) WITH ORDINALITY AS arrangements(component,position)
 	  CROSS JOIN LATERAL (SELECT component->'tiers' AS config) tier
 	  LEFT JOIN LATERAL (
 	   SELECT item FROM jsonb_array_elements(coalesce(tier.config->'personCountStarts','[]')) start(item)
@@ -438,7 +432,7 @@ func (b practiceCorrectionBatch) flagLaterTiers(ctx context.Context, tx pgx.Tx, 
 	  ) personal ON true
 	  LEFT JOIN practice_count_openings opening ON personal.item IS NULL AND opening.id=(tier.config->>'openingId')::bigint
 	  CROSS JOIN LATERAL (SELECT coalesce(personal.item,tier.config) AS config) start_window
-	  WHERE l.period_id=later.id AND l.component_type='sales'
+	  WHERE l.period_id=later.id AND (l.component_type='sales' OR l.component_type='period:sales:'||(position-1)::text)
 	  AND component->>'type'='sales' AND component->>'mode'='tiered'
 	  AND CASE WHEN start_window.config ? 'countFromAt' THEN original_roster.starts_at>=(start_window.config->>'countFromAt')::timestamptz
 	   WHEN opening.id IS NOT NULL THEN original_roster.starts_at>opening.through_at

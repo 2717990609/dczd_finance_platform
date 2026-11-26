@@ -144,7 +144,8 @@ func readPracticeMembers(ctx context.Context, tx pgx.Tx, rosterIDs []int64, elig
 	return members, err
 }
 
-func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummary, config practiceSalesTiers) (practiceTierHistory, error) {
+func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummary, arrangement component) (practiceTierHistory, error) {
+	config := *arrangement.Tiers
 	history := practiceTierHistory{current: practiceHistoryPeriod{
 		rosterID: *summary.PracticeRosterID, ordinal: summary.PeriodOrdinal, startsAt: &summary.PracticeStartsAt,
 	}}
@@ -206,21 +207,13 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 			&period.notEarlierInTime)
 		period.ruleKnown = len(components) != 0
 		period.companyOffers = practiceCompanyStandards(paymentRule{Components: components})
-		for _, part := range components {
-			if part.Type != "sales" {
-				continue
-			}
-			if period.personalRole == "" && part.matchesPracticeMember("new") {
-				period.personalRole = part.SourceRole
-				if part.Tiers != nil {
-					period.scopedTierCompanies = part.salesCompanies()
-				}
-			}
-			if period.retrainRole == "" && part.matchesPracticeMember("retrain") {
-				period.retrainRole = part.SourceRole
-				period.retrainCompanies = part.salesCompanies()
-			}
+		newSale := historicalPracticeSale(components, arrangement, "new")
+		period.personalRole = newSale.SourceRole
+		if newSale.Tiers != nil {
+			period.scopedTierCompanies = newSale.salesCompanies()
 		}
+		retrain := historicalPracticeSale(components, arrangement, "retrain")
+		period.retrainRole, period.retrainCompanies = retrain.SourceRole, retrain.salesCompanies()
 		return period, err
 	})
 	if err == nil {
@@ -240,18 +233,18 @@ func readPracticeDraftTierHistory(ctx context.Context, tx pgx.Tx, summary draftS
 	rosterIDs := []int64{*summary.PracticeRosterID}
 	seenRosters := map[int64]bool{*summary.PracticeRosterID: true}
 	var history practiceTierHistory
-	for _, part := range parts {
+	for i, part := range parts {
 		if part.Tiers == nil || !part.Tiers.usesPriorTiers() {
 			continue
 		}
-		state, err := readPracticeTierHistory(ctx, tx, summary, *part.Tiers)
+		state, err := readPracticeTierHistory(ctx, tx, summary, part)
 		if err != nil {
 			return history, nil, err
 		}
 		if history.arrangements == nil {
 			history.arrangements = make(map[string]practiceTierHistory)
 		}
-		history.arrangements[part.ClassMember] = state
+		history.arrangements[practiceTierArrangementKey(parts, i)] = state
 		for _, period := range state.periods {
 			if period.rosterID != 0 && !seenRosters[period.rosterID] {
 				seenRosters[period.rosterID] = true

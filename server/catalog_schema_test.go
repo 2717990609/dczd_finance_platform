@@ -69,13 +69,13 @@ func TestCatalogPoolUpgradeKeepsImportedPoolIDs(t *testing.T) {
 	}
 	for range 2 {
 		if err := migrate(ctx, db); err != nil {
-			t.Fatalf("startup must register named rule pools without overwriting imported IDs: %v", err)
+			t.Fatalf("startup must preserve manually registered pool IDs: %v", err)
 		}
 	}
 	var imported, registered, count int64
 	err := db.QueryRow(ctx, `SELECT max(id) FILTER(WHERE name='归档资金池'),
-	 max(id) FILTER(WHERE name='规则资金池'), count(*) FROM practice_pools WHERE product_id=151`).Scan(&imported, &registered, &count)
-	if err != nil || imported != 1 || registered <= imported || count != 2 {
+	 coalesce(max(id) FILTER(WHERE name='规则资金池'),0), count(*) FROM practice_pools WHERE product_id=151`).Scan(&imported, &registered, &count)
+	if err != nil || imported != 1 || registered != 0 || count != 1 {
 		t.Fatalf("imported ID=%d, registered ID=%d, count=%d, error=%v", imported, registered, count, err)
 	}
 }

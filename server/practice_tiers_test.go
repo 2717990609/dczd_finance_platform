@@ -547,6 +547,9 @@ func TestPracticeSeparateAndSharedEnrollmentTiers(t *testing.T) {
 	retrainByCount.ClassMember = "retrain"
 	retrainByCount.Tiers = &practiceSalesTiers{CountFromOrdinal: 1,
 		Count: []practiceTier{{From: 1, Mode: "rate", Value: 250}}}
+	extraNewTier := newTier
+	extraNewTier.Tiers = &practiceSalesTiers{CountFromOrdinal: 1,
+		Count: []practiceTier{{From: 0, Mode: "rate", Value: 400}}}
 	for _, tc := range []struct {
 		name  string
 		parts []component
@@ -554,6 +557,7 @@ func TestPracticeSeparateAndSharedEnrollmentTiers(t *testing.T) {
 	}{
 		{"separate", []component{newTier, retrainTier}, [2]int64{200, 900}},
 		{"shared", []component{shared}, [2]int64{200, 600}},
+		{"two tiers for the same enrollment", []component{newTier, extraNewTier}, [2]int64{600, 0}},
 		{"new enrollment only supplies the metric", []component{retrainByCount}, [2]int64{0, 750}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -567,6 +571,9 @@ func TestPracticeSeparateAndSharedEnrollmentTiers(t *testing.T) {
 			}
 			if err != nil || len(draft.Issues) != 0 || actual != tc.want || len(draft.Performance) != 2 {
 				t.Fatalf("expected separate awards %v: %+v %v", tc.want, draft, err)
+			}
+			if len(tc.parts) > 1 && len(draft.practiceFrozenTiers) != len(tc.parts) {
+				t.Fatalf("each tier arrangement must capture its own inputs: %+v", draft.practiceFrozenTiers)
 			}
 		})
 	}
@@ -900,8 +907,8 @@ func TestPracticeRetrainSharesNewEnrollmentTierWithoutRaisingIt(t *testing.T) {
 	separateRetrain := component{Type: "sales", Mode: "fixed", ClassMember: "retrain", SourceRole: "DIRECT_REFERRER", Value: 1500}
 	overlapping := policy
 	overlapping.Components = append([]component{separateRetrain}, policy.Components...)
-	if _, err := s.publishRule(ctx, overlapping); !errors.Is(err, invalid) {
-		t.Fatalf("shared tier and independent retraining sale must not overlap: %v", err)
+	if err := validateComponents(overlapping.Components); err != nil {
+		t.Fatalf("shared tier and independent retraining sale may coexist: %v", err)
 	}
 	at := time.Date(2026, 6, 8, 9, 0, 0, 0, shanghai)
 	roster := practiceRoster{Key: key, SourceVersion: 1, Hash: "tier-retrain", StartsAt: at, ConfirmedAt: at.Add(time.Hour)}

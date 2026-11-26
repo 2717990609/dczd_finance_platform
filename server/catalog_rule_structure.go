@@ -612,8 +612,11 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 		}
 	case "pool":
 		pool, registered := catalogRegisteredPool(options.TeamPools, target.PoolID)
-		validDestination := target.PoolID == 0 && org.Value != "" || registered && target.Organization == ""
-		if target.PersonID != 0 || !validDestination || (target.Role != "") == (target.OwnerPersonID != 0) ||
+		legacyDestination := target.PoolID == 0 && before.Mode == "TEAM_POOL" && catalogPoolID(before.PoolCode) == 0 &&
+			org.Value == before.PoolParty && org.UnitID == before.PoolUnit
+		validDestination := legacyDestination || registered && target.Organization == ""
+		usesDirectoryOwner := registered && target.Role == "" && target.OwnerPersonID == 0
+		if target.PersonID != 0 || !validDestination || !usesDirectoryOwner && (target.Role != "") == (target.OwnerPersonID != 0) ||
 			target.Role != "" && role.Value == "" || target.OwnerPersonID != 0 && people[target.OwnerPersonID] == "" {
 			return invalid
 		}
@@ -636,9 +639,6 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 				return invalid
 			}
 			action.Role = member.Value
-		} else if before.Mode != "TEAM_POOL" && target.MemberRole != "" &&
-			!role.Organization && role.Value != "SALES" {
-			return invalid
 		}
 		if action.Role == "" {
 			return invalid

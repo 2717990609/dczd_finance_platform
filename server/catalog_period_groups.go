@@ -284,7 +284,7 @@ func (d catalogAggregateDirectory) groupTarget(item catalogPeriodItem, at time.T
 		if target.OwnerName == "" {
 			return target, key, "BENEFIT_POOL_OWNER_MISSING"
 		}
-	} else {
+	} else if item.PoolID == 0 || item.OwnerRole != "" {
 		owners := d.members(key.Unit, item.OwnerRole, at)
 		switch len(owners) {
 		case 0:

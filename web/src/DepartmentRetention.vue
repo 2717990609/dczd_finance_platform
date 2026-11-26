@@ -18,11 +18,9 @@ const account = computed(() => report.value?.items.find(item=>item.unitId===acco
 const pageSize = 25
 const columns = [
   {title:'归集组织',dataIndex:'scopeName',key:'organization',width:260},
-  {title:'期初余额',dataIndex:'openingMinor',align:'right',width:120},
-  {title:'本月结算留存',dataIndex:'incomeMinor',align:'right',width:140},
-  {title:'支出净额',dataIndex:'expenseMinor',align:'right',width:120},
-  {title:'本月更正',dataIndex:'correctionMinor',align:'right',width:120},
-  {title:'可用余额',dataIndex:'balanceMinor',key:'balance',align:'right',width:120},
+  {title:'当前余额',dataIndex:'currentBalanceMinor',key:'balance',align:'right',width:120},
+  {title:'历史总收入',dataIndex:'totalIncomeMinor',align:'right',width:140},
+  {title:'历史总支出',dataIndex:'totalSpentMinor',align:'right',width:140},
   {title:'操作',key:'action',width:100},
 ]
 const entryColumns = [
@@ -53,7 +51,7 @@ async function load() {
   }
   loading.value = true
   try {
-    const query = new URLSearchParams({month:props.month})
+    const query = new URLSearchParams({month:props.month,history:'all'})
     if (props.unitId) query.set('unitId',props.unitId)
     if (accountId.value) query.set('accountId',accountId.value)
     if (page.value>1) query.set('page',page.value)
@@ -124,14 +122,14 @@ defineExpose({refresh:load})
       <a-button v-if="report?.canRecord" type="primary" :disabled="!month" @click="startEntry()">登记收支</a-button>
     </div>
     <a-table :columns="columns" :data-source="report?.items || []" row-key="unitId"
-      :loading="loading && !accountId" :pagination="false" :scroll="{x:925}">
+      :loading="loading && !accountId" :pagination="false" :scroll="{x:760}">
       <template #bodyCell="{column,record,text}">
         <span v-if="column.key==='organization'">{{ text }}</span>
         <a-button v-else-if="column.key==='action'" size="small" type="link" @click="openAccount(record.unitId)">查看明细</a-button>
         <strong v-else-if="column.key==='balance'" class="numeric">{{ formatMoney(text) }}</strong>
         <span v-else class="numeric">{{ formatMoney(text) }}</span>
       </template>
-      <template #emptyText>{{ month ? '截至本月暂无留存记录' : '请选择结算月' }}</template>
+      <template #emptyText>暂无留存流水</template>
     </a-table>
   </section>
   <a-drawer :open="Boolean(account)" :title="account ? account.scopeName+' · 留存明细' : '留存明细'"

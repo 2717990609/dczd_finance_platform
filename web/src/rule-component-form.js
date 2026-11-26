@@ -211,7 +211,7 @@ export function catalogPayeeComplete(payee, roles) {
     case 'appointment': return roles.some(option=>option.value===payee.role && option.organization) &&
       catalogAppointmentLevels.some(option=>option.value===payee.appointmentLevel)
     case 'company': return !!payee.organization
-    case 'pool': return !!((payee.poolId || payee.organization) && (payee.role || payee.ownerPersonId) && payee.memberRole)
+    case 'pool': return !!((payee.poolId || payee.organization && (payee.role || payee.ownerPersonId)) && payee.memberRole)
     default: return false
   }
 }
@@ -339,7 +339,7 @@ export const practiceCumulativeAmountMetrics = [
 ]
 
 export function tierFormUsesHistory(form) {
-  return !!form.cumulativeMetric || form.forceCount || !form.onlyOverrides && form.metric!=='performance' ||
+  return !!form.cumulativeMetric || form.forceCount || form.forceFallback || !form.onlyOverrides && form.metric!=='performance' ||
     form.companies.some(row=>row.metric!=='performance') ||
     form.categories.some(row=>row.metric!=='performance') ||
     form.people.some(row=>row.metric!=='performance')
@@ -347,14 +347,16 @@ export function tierFormUsesHistory(form) {
 
 function tierForm(tiers) {
   const schedules = tiers.companySchedules || []
-  const hasLegacyMetrics = !tiers.cumulativeMetric && [tiers,...schedules,...(tiers.categorySchedules || []),...(tiers.personSchedules || [])]
-    .some(schedule=>schedule.performance?.length)
+  const pricedSchedules = [tiers,...schedules,...(tiers.categorySchedules || []),...(tiers.personSchedules || [])]
+    .filter(schedule=>schedule.count?.length || schedule.performance?.length)
+  const hasLegacyMetrics = !tiers.cumulativeMetric && pricedSchedules.some(schedule=>schedule.performance?.length)
   return {
     ...practiceCountStartForm(tiers),
     includeRetrain:Boolean(tiers.includeRetrain),
     hasRetrainPayout:Boolean(tiers.includeRetrain),
     cumulativeMetric:tiers.cumulativeMetric,
     hasLegacyMetrics,
+    forceFallback:hasLegacyMetrics && pricedSchedules.every(schedule=>tierMetric(schedule)==='fallback'),
     forceCount:!tiers.cumulativeMetric && !hasLegacyMetrics,
     metric:tierMetric(tiers),
     onlyOverrides:!tiers.count?.length && !tiers.performance?.length,
@@ -558,7 +560,7 @@ export function practiceRetrainSplitBody(split, totalMinor) {
     throw new Error('使用同一计算基数时，销售和服务比例合计不能超过 100%')
   }
   if (practiceRetrainPoolRemainder(amounts,totalMinor)<0) throw new Error('销售与服务份额合计不能超过复训总提成')
-  if (!split.pool?.poolId || !split.pool?.ownerId) throw new Error('请选择资金池和分配负责人')
+  if (!split.pool?.poolId) throw new Error('请选择团队池')
   const service = {}
   if (split.servicePersonId) {
     if (split.serviceLabel?.trim()) service.serviceLabel = split.serviceLabel.trim()

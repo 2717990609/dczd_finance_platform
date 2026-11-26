@@ -7,7 +7,8 @@ const emit = defineEmits(['close','changed'])
 const path = '/organization-positions'
 const positions = ref([])
 const loading = ref(false)
-const saving = ref(false)
+const pending = ref()
+const saving = computed(() => Boolean(pending.value))
 const error = ref('')
 const notice = ref('')
 const search = ref('')
@@ -16,12 +17,11 @@ const rows = computed(() => {
   const term = search.value.trim().toLocaleLowerCase()
   return positions.value.filter(position=>position.name.toLocaleLowerCase().includes(term))
 })
-const columns = computed(() => [
+const columns = [
   {title:'岗位名称',dataIndex:'name',key:'name',width:'38%'},
   {title:'适用范围',key:'scopes'},
-  {title:'状态',key:'status',width:66},
-  ...(props.canWrite ? [{title:'操作',key:'actions',width:56}] : []),
-])
+  {title:'状态',key:'status',width:86},
+]
 const scopeLabel = key => props.scopes.find(scope=>scope.value===key)?.label || key
 const scopeDescription = keys => props.scopes.length && props.scopes.every(scope=>keys.includes(scope.value))
   ? '全部范围' : keys.map(scopeLabel).join('、')
@@ -37,10 +37,10 @@ async function load() {
     loading.value = false
   }
 }
-function edit(position) {
+function openCreate() {
   error.value = ''
   notice.value = ''
-  draft.value = position ? {...position,scopes:[...position.scopes]} : {
+  draft.value = {
     name:'',scopes:props.scopes.map(scope=>scope.value),active:true,
   }
 }
@@ -48,20 +48,29 @@ function cancel() {
   draft.value = undefined
   error.value = ''
 }
-async function save() {
-  if (!draft.value?.name.trim() || !draft.value.scopes.length || saving.value) return
-  saving.value = true
+function createPosition() {
+  if (draft.value?.name.trim() && draft.value.scopes.length) save(draft.value)
+}
+async function save(input) {
+  if (!props.canWrite || saving.value) return
+  pending.value = input.id || 'create'
   error.value = ''
+  notice.value = ''
   try {
-    const updated = await props.api(path,{method:'POST',body:JSON.stringify(draft.value)})
-    notice.value = updated.name+'已保存'
-    draft.value = undefined
+    const updated = await props.api(path,{method:'POST',body:JSON.stringify(input)})
+    if (input.id) {
+      positions.value = positions.value.map(position=>position.id===updated.id ? updated : position)
+      notice.value = updated.name+(updated.active ? '已启用' : '已停用')
+    } else {
+      notice.value = updated.name+'已保存'
+      draft.value = undefined
+      await load()
+    }
     emit('changed')
-    await load()
   } catch (err) {
     error.value = err.message
   } finally {
-    saving.value = false
+    pending.value = undefined
   }
 }
 onMounted(load)
@@ -72,7 +81,7 @@ onMounted(load)
     :mask-closable="!saving" @close="emit('close')">
     <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon/>
     <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon/>
-    <a-form v-if="draft" :model="draft" layout="vertical" size="small" :disabled="saving" @finish="save">
+    <a-form v-if="draft" :model="draft" layout="vertical" size="small" :disabled="saving" @finish="createPosition">
       <div class="position-fields">
         <a-form-item label="岗位名称" html-for="organization-position-name" required>
           <a-input id="organization-position-name" v-model:value="draft.name" :maxlength="80" autofocus/>
@@ -92,15 +101,16 @@ onMounted(load)
     </a-form>
     <div v-else class="position-toolbar">
       <a-input v-model:value="search" placeholder="搜索岗位名称" aria-label="搜索岗位名称" allow-clear/>
-      <a-button v-if="canWrite" type="primary" :disabled="loading || !scopes.length" @click="edit()">新增岗位</a-button>
+      <a-button v-if="canWrite" type="primary" :disabled="loading || saving || !scopes.length" @click="openCreate">新增岗位</a-button>
     </div>
     <a-table :columns="columns" :data-source="rows" :loading="loading && !saving" row-key="id" size="small"
       :pagination="{pageSize:10,hideOnSinglePage:true,showSizeChanger:false}">
       <template #bodyCell="{column,record}">
         <template v-if="column.key==='scopes'">{{ scopeDescription(record.scopes) }}</template>
-        <a-tag v-else-if="column.key==='status'" :color="record.active ? 'green' : undefined">{{ record.active ? '启用' : '停用' }}</a-tag>
-        <a-button v-else-if="column.key==='actions'" type="link" size="small" :disabled="saving"
-          @click="edit(record)">编辑</a-button>
+        <Switch v-else-if="column.key==='status'" :checked="record.active" :aria-label="record.name+'状态'"
+          checked-children="启用" un-checked-children="停用" :loading="pending===record.id"
+          :disabled="!canWrite || Boolean(draft) || saving"
+          @change="active=>save({id:record.id,revision:record.revision,active})"/>
       </template>
     </a-table>
   </a-drawer>

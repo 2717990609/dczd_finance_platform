@@ -13,7 +13,7 @@ func TestCatalogPoolOwnerAndMembersUseIndependentRoles(t *testing.T) {
 		Organizations: []catalogStructureOption{{Value: "pool-party", UnitID: "team-unit", Kind: "DEPARTMENT"}},
 		Roles:         []catalogStructureOption{{Value: "PROJECT_OWNER", Personal: true}, {Value: "DELIVERY_TEAM", Organization: true}},
 	}
-	action := vipBenefitAction{Item: "delivery", Label: "交付"}
+	action := vipBenefitAction{Item: "delivery", Label: "交付", Mode: "TEAM_POOL", PoolParty: "pool-party", PoolUnit: "team-unit", PoolName: "交付", PoolCode: "delivery"}
 	target := catalogBenefitTarget{Target: "pool", Organization: "pool-party", Role: "PROJECT_OWNER", MemberRole: "DELIVERY_TEAM"}
 	if err := configureCatalogBenefitTarget(&action, target, options, nil); err != nil {
 		t.Fatal(err)
@@ -140,7 +140,7 @@ func TestCatalogPoolCanAssignNamedOwner(t *testing.T) {
 		Roles:         []catalogStructureOption{{Value: "POOL_MEMBERS", Organization: true}},
 	}
 	target := catalogBenefitTarget{Target: "pool", Organization: "pool-party", OwnerPersonID: 7, MemberRole: "POOL_MEMBERS"}
-	action := vipBenefitAction{Item: "delivery", Label: "交付"}
+	action := vipBenefitAction{Item: "delivery", Label: "交付", Mode: "TEAM_POOL", PoolParty: "pool-party", PoolUnit: "team-unit", PoolName: "交付", PoolCode: "delivery"}
 	if err := configureCatalogBenefitTarget(&action, target, options, map[int64]string{7: "person:7"}); err != nil {
 		t.Fatal(err)
 	}
@@ -154,18 +154,18 @@ func TestCatalogPoolCanAssignNamedOwner(t *testing.T) {
 	}
 }
 
-func TestCatalogPoolSelectionResolvesRegisteredUnit(t *testing.T) {
+func TestCatalogPoolSelectionResolvesRegisteredUnitWithoutRuleOwner(t *testing.T) {
 	unit := "40000000-0000-4000-8000-000000000011"
 	options := catalogStructureOptions{
 		TeamPools: []teamPool{{ID: 9, UnitID: unit, Name: "交付池"}},
 		Roles:     []catalogStructureOption{{Value: "MEMBER", Organization: true}},
 	}
-	target := catalogBenefitTarget{Target: "pool", PoolID: 9, OwnerPersonID: 7, MemberRole: "MEMBER"}
+	target := catalogBenefitTarget{Target: "pool", PoolID: 9, MemberRole: "MEMBER"}
 	action := vipBenefitAction{Item: "service", Label: "交付服务"}
 	if err := configureCatalogBenefitTarget(&action, target, options, map[int64]string{7: "person:7"}); err != nil {
 		t.Fatal(err)
 	}
-	if !action.validTarget() || action.PoolCode != "team-pool:9" || action.PoolParty != "unit:"+unit ||
+	if !action.validTarget() || action.OwnerRole != "" || action.OwnerParty != "" || action.PoolCode != "team-pool:9" || action.PoolParty != "unit:"+unit ||
 		action.PoolUnit != unit || action.PoolName != "交付池" {
 		t.Fatalf("registered pool must supply its own identity and organization: %+v", action)
 	}

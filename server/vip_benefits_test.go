@@ -322,6 +322,7 @@ func TestVIPPoolSummaryCountsEachPaymentOncePerPool(t *testing.T) {
 			vipBenefitPart{Kind: "pool", Status: "SALES_CATEGORY_MISSING"},
 		),
 		payment(vipBenefitPart{Kind: "pool", Status: "ZERO"}),
+		payment(vipBenefitPart{Kind: "pool", Status: vipCommissionOutsideScope}),
 		{PaidMinor: &amount, Status: "MATCHED", BenefitParts: []vipBenefitPart{}},
 		{PaidMinor: &amount, Status: "COMPOUND_COMPLETION_PENDING"},
 		{PaidMinor: &amount, Status: "COMPOUND_COMPLETED_IN_OTHER_PERIOD"},
@@ -329,7 +330,7 @@ func TestVIPPoolSummaryCountsEachPaymentOncePerPool(t *testing.T) {
 		{PaidMinor: &amount, Status: "RULE_MISSING"},
 	}
 	got, err := summarizeVIPPools(rows)
-	if err != nil || got.PendingPaymentCount != 3 || got.PaymentCount != 8 || len(got.Pools) != 1 ||
+	if err != nil || got.PendingPaymentCount != 3 || got.PaymentCount != 9 || len(got.Pools) != 1 ||
 		got.Pools[0].Amount != 75 || got.Pools[0].PaymentCount != 2 {
 		t.Fatalf("pool report includes gross configured pool inputs only: %+v, %v", got, err)
 	}

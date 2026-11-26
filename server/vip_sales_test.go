@@ -13,10 +13,10 @@ func TestVIPRateResolvesCompanyBeforeCategoryAndKeepsExplicitZero(t *testing.T) 
 	rows := []vipRateRow{
 		{Company: "fixed", Relationship: "ANY", Category: "partner", Rate: 1000},
 		{Company: "default", Relationship: "ANY", SnapshotDefault: true, Rate: 700},
-		{Company: "ANY", Relationship: "ANY", Category: "partner", Rate: 900},
+		{Company: "ANY", Relationship: "ANY", CategoryIDs: []string{"partner", "affiliate"}, Rate: 900},
 		{Company: "ANY", Relationship: "ANY", Rate: 0},
 	}
-	partner, unclassified, other := "partner", "", "known"
+	partner, affiliate, unclassified, other := "partner", "affiliate", "", "known"
 	for _, test := range []struct {
 		company  string
 		category *string
@@ -24,7 +24,8 @@ func TestVIPRateResolvesCompanyBeforeCategoryAndKeepsExplicitZero(t *testing.T) 
 		want     int64
 	}{{"fixed", &partner, "", 1000}, {"default", &partner, "", 900},
 		{"default", nil, "", 700}, {"other", nil, "SALES_CATEGORY_MISSING", 0},
-		{"other", &unclassified, "", 0}, {"other", &other, "", 0}, {"other", &partner, "", 900}} {
+		{"other", &unclassified, "", 0}, {"other", &other, "", 0}, {"other", &partner, "", 900},
+		{"other", &affiliate, "", 900}} {
 		if got, issue := resolveVIPRate(rows, test.company, "DIRECT", test.category); got != test.want || issue != test.issue {
 			t.Fatalf("%+v: rate=%d issue=%s", test, got, issue)
 		}

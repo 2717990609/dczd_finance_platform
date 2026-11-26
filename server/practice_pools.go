@@ -15,15 +15,16 @@ import (
 
 type practicePoolTarget struct {
 	PoolID  int64 `json:"poolId"`
-	OwnerID int64 `json:"ownerId"`
+	OwnerID int64 `json:"ownerId,omitempty"`
 }
 
-func (p practicePoolTarget) valid() bool { return p.PoolID > 0 && p.OwnerID > 0 }
+func (p practicePoolTarget) valid() bool { return p.PoolID > 0 && p.OwnerID >= 0 }
 
 type createPracticePoolInput struct {
 	ProductID int64  `json:"productId"`
 	UnitID    string `json:"unitId"`
 	Name      string `json:"name"`
+	OwnerID   int64  `json:"ownerPersonId"`
 }
 
 type teamPool struct {
@@ -31,6 +32,7 @@ type teamPool struct {
 	UnitID   string `json:"unitId"`
 	Name     string `json:"name"`
 	UnitName string `json:"unitName"`
+	OwnerID  int64  `json:"ownerPersonId,omitempty"`
 }
 
 const catalogPoolPrefix = "team-pool:"
@@ -80,13 +82,15 @@ func (s workspace) listPracticePools(w http.ResponseWriter, r *http.Request) {
 	var result json.RawMessage
 	err = s.db.QueryRow(r.Context(), `SELECT jsonb_build_object(
 	 'items',coalesce((SELECT jsonb_agg(jsonb_build_object('id',p.id,'name',p.name,
-	  'unitName',concat_ws(' / ',parent.name,u.name),'unitStatus',u.status) ORDER BY parent.name,u.name,p.name,p.id)
+	  'unitId',u.id,'unitName',concat_ws(' / ',parent.name,u.name),'unitStatus',u.status,
+	  'ownerPersonId',owner.id,'ownerName',owner.name) ORDER BY parent.name,u.name,p.name,p.id)
 	  FROM practice_pools p JOIN organization_units u ON u.id=p.unit_id
+	  LEFT JOIN people owner ON owner.id=p.owner_person_id
 	  LEFT JOIN organization_units parent ON parent.id=u.parent_id WHERE p.product_id=$1),'[]'),
 	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',u.id,'name',concat_ws(' / ',parent.name,u.name)) ORDER BY parent.name,u.name,u.id)
 	  FROM organization_units u LEFT JOIN organization_units parent ON parent.id=u.parent_id
 	  WHERE u.status='ACTIVE' AND $2),'[]'))
-	 FROM products WHERE id=$1 AND period_mode='class'`, product,
+	 FROM products WHERE id=$1 AND period_mode IN ('class','calendar')`, product,
 		actor == nil || actor.permitsRule(product, true)).Scan(&result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = invalid
@@ -103,6 +107,35 @@ func (s workspace) createCatalogTeamPool(ctx context.Context, input createPracti
 	return s.upsertTeamPool(ctx, input, "calendar")
 }
 
+func (s workspace) createConfiguredTeamPool(ctx context.Context, input createPracticePoolInput) (any, error) {
+	if input.OwnerID <= 0 {
+		return nil, invalid
+	}
+	return s.upsertTeamPool(ctx, input, "")
+}
+
+type teamPoolOwnerInput struct {
+	PoolID    int64 `json:"poolId"`
+	ProductID int64 `json:"productId"`
+	OwnerID   int64 `json:"ownerPersonId"`
+}
+
+func (s workspace) updateTeamPoolOwner(ctx context.Context, input teamPoolOwnerInput) (any, error) {
+	if input.PoolID <= 0 || input.ProductID <= 0 || input.OwnerID <= 0 {
+		return nil, invalid
+	}
+	if actor := financeUser(ctx); actor != nil && !actor.permitsRule(input.ProductID, true) {
+		return nil, errFinanceForbidden
+	}
+	var id int64
+	err := s.db.QueryRow(ctx, `UPDATE practice_pools pool SET owner_person_id=$3 FROM people owner
+	 WHERE pool.id=$1 AND pool.product_id=$2 AND owner.id=$3 RETURNING pool.id`, input.PoolID, input.ProductID, input.OwnerID).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		err = invalid
+	}
+	return map[string]int64{"id": id}, err
+}
+
 func (s workspace) upsertTeamPool(ctx context.Context, input createPracticePoolInput, mode string) (teamPool, error) {
 	var pool teamPool
 	unit, ok := canonicalSourceUUID(input.UnitID)
@@ -113,14 +146,16 @@ func (s workspace) upsertTeamPool(ctx context.Context, input createPracticePoolI
 		return pool, errFinanceForbidden
 	}
 	err := s.db.QueryRow(ctx, `WITH saved AS (
-	 INSERT INTO practice_pools(product_id,unit_id,name)
-	 SELECT p.id,u.id,btrim($3) FROM products p CROSS JOIN organization_units u
-	 WHERE p.id=$1 AND p.period_mode=$4 AND u.id=$2::uuid AND u.status='ACTIVE'
-	 ON CONFLICT(product_id,unit_id,name) DO UPDATE SET name=excluded.name RETURNING id,unit_id,name)
-	 SELECT saved.id,saved.unit_id::text,saved.name,concat_ws(' / ',parent.name,u.name)
+	 INSERT INTO practice_pools(product_id,unit_id,name,owner_person_id)
+	 SELECT p.id,u.id,btrim($3),nullif($5::bigint,0) FROM products p CROSS JOIN organization_units u
+	 WHERE p.id=$1 AND p.period_mode IN ('class','calendar') AND ($4='' OR p.period_mode=$4) AND u.id=$2::uuid AND u.status='ACTIVE'
+	  AND ($5=0 OR EXISTS(SELECT 1 FROM people WHERE id=$5))
+	 ON CONFLICT(product_id,unit_id,name) DO UPDATE SET name=excluded.name
+	 WHERE practice_pools.owner_person_id IS NOT DISTINCT FROM excluded.owner_person_id RETURNING id,unit_id,name,owner_person_id)
+	 SELECT saved.id,saved.unit_id::text,saved.name,concat_ws(' / ',parent.name,u.name),coalesce(saved.owner_person_id,0)
 	 FROM saved JOIN organization_units u ON u.id=saved.unit_id
 	 LEFT JOIN organization_units parent ON parent.id=u.parent_id`,
-		input.ProductID, unit, input.Name, mode).Scan(&pool.ID, &pool.UnitID, &pool.Name, &pool.UnitName)
+		input.ProductID, unit, input.Name, mode, input.OwnerID).Scan(&pool.ID, &pool.UnitID, &pool.Name, &pool.UnitName, &pool.OwnerID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = invalid
 	}
@@ -310,7 +345,8 @@ func appendPracticeRetrainSplit(draft *paymentDraft, p practicePurchase, rule pa
 		line := draftLine{FactID: payment.ID, RuleID: rule.ID, EnrollmentID: p.member.ID, Base: p.netAmount(payment), practiceProportionalRefund: true}
 		if sales > 0 {
 			sale := line
-			sale.Component, sale.PersonID, sale.IdentityID, sale.Amount = "sales", sellers[i].PersonID, sellers[i].ID, sales
+			sale.Component = practicePersonalComponentKey(rule.Components, index, classMember(p.member.MembershipType))
+			sale.PersonID, sale.IdentityID, sale.Amount = sellers[i].PersonID, sellers[i].ID, sales
 			sale.practiceArrangementLabel = rule.Components[index].arrangementLabel()
 			draft.Lines = append(draft.Lines, sale)
 		}

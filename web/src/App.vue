@@ -257,7 +257,7 @@ function matchesOption(option, periodMode, type, member) {
 const productOptions = computed(() => data.value.products.map(p => ({value:p.id,label:p.name})))
 const canReadRules = productId => session.value?.user
   ? session.value.user.rules.some(rule=>rule.productId===productId) : session.value?.development
-const poolProducts = computed(() => data.value.products.filter(product=>product.periodMode==='class' && canReadRules(product.id)))
+const poolProducts = computed(() => data.value.products.filter(product=>['class','calendar'].includes(product.periodMode) && canReadRules(product.id)))
 const scopedProducts = computed(() => data.value.products.filter(p => current.value !== 'rules' || canReadRules(p.id)))
 const scopeProductOptions = computed(() => scopedProducts.value.map(p=>({value:p.id,label:p.name})))
 const canPublishRule = productId => session.value?.user
@@ -365,8 +365,12 @@ watch(() => data.value.periods.find(period=>period.id===requestedPoolPeriod.valu
   if (current.value==='pools' && id && productScope.value && productScope.value!==id) productScope.value = undefined
 })
 const classRule = computed(() => selectedProduct.value?.periodMode === 'class')
+const healthPracticeRule = computed(() => classRule.value && selectedProduct.value.code==='DCZD_PRACTICE')
+const allowsPracticeFallback = row => healthPracticeRule.value &&
+  row.type==='sales' && row.classMember==='new'
+const allowsPracticeOpening = row => !row.tierConfig?.cumulativeMetric && !hasPracticePaymentScope(row.saleScope || {})
 const practiceRetrainSales = computed(() => classRule.value
-  ? draft.value.components?.find(part=>part.type==='sales' && ['fixed','rate'].includes(part.mode) && part.classMember==='retrain') : undefined)
+  ? draft.value.components?.find(part=>part.type==='sales' && ['fixed','rate'].includes(part.mode) && part.classMember==='retrain' && part.retrainSplits?.length) : undefined)
 const retrainSplits = computed(() => practiceRetrainSales.value?.retrainSplits || [])
 const recordedServiceShares = computed(() => retrainSplits.value.filter(split=>split.serviceEnabled))
 const serviceCardKey = companyId => 'retrain-service-'+companyId
@@ -446,27 +450,22 @@ function resetAmountMode(row) {
 }
 function changeClassMember(row, member) {
   row.classMember = member
-  if (row.tierConfig && member!=='new') row.tierConfig.includeRetrain = false
+  if (row.tierConfig && member!=='new') {
+    row.tierConfig.includeRetrain = false
+    if (row.tierConfig.forceFallback && !row.tierConfig.hasLegacyMetrics) {
+      row.tierConfig.forceFallback = false
+      row.tierConfig.forceCount = true
+    }
+  }
   resetAmountMode(row)
 }
 function tierIncludesRetrain(row) {
   return row.mode==='tiered' && Boolean(row.tierConfig?.includeRetrain ?? row.tiers?.includeRetrain)
 }
-function matchesPracticeMember(row, member) {
-  return !row.classMember || row.classMember===member || member==='retrain' && tierIncludesRetrain(row)
-}
 const componentTypes = computed(() => options('component').filter(option=>
   matchesOption(option,selectedProduct.value?.periodMode) &&
   (!isPeriodBenefit(option.value) || !!periodBenefitMode.value?.scope?.componentTypes?.includes(option.value)) &&
   (option.value!=='company_sales' || !!companySalesMode.value)))
-function classMemberChoices(row,type = row.type) {
-  if (isPeriodBenefit(type) || type==='company_sales') return classMembers.value
-  return classMembers.value.map(member=>{
-    const occupied = draft.value.components.some(c=>c!==row && c.type===type &&
-      (!member.value || matchesPracticeMember(c,member.value)))
-    return occupied ? {...member,disabled:true,label:member.label+'（已配置）'} : member
-  })
-}
 const recipientChoices = computed(() => {
   if (drawer.value!=='rule' || !selectedProduct.value) return []
   const choices = [
@@ -482,8 +481,7 @@ const recipientChoices = computed(() => {
     ] : []),
   ]
   return choices.filter(choice=>componentTypes.value.some(type=>type.value===choice.type)).map(choice=>({
-    ...choice,key:choice.key || choice.type,disabled:classRule.value ? classMemberChoices({},choice.type).every(member=>member.disabled) :
-      draft.value.components.some(row=>row.type===choice.type),
+    ...choice,key:choice.key || choice.type,disabled:!classRule.value && draft.value.components.some(row=>row.type===choice.type),
   }))
 })
 function addRuleComponent(key) {
@@ -493,7 +491,7 @@ function addRuleComponent(key) {
     return
   }
   const {type,recipient,label} = recipientChoices.value.find(choice=>choice.key===key)
-  const members = classRule.value ? classMemberChoices({},type).filter(member=>!member.disabled) : []
+  const members = classRule.value ? classMembers.value : []
   const member = type==='company_sales' ? members.find(option=>!draft.value.components.some(
     part=>part.type===type && part.classMember===option.value)) || members[0] : members[0]
   const row = {type,classMember:member?.value,
@@ -519,7 +517,8 @@ function ruleRecipientSummary(row) {
     const amount = benefit.method==='tiers' ? '阶梯' : benefit.method==='rate'
       ? (benefit.standardRates ? practiceStandardRateSummary(benefit.standardRates,value=>value+'%') : row.amount == null ? '' : row.amount+'%')
       : (benefit.fixedAmount == null ? '' : formatMoney(minor(benefit.fixedAmount))+
-        (benefit.method==='order_fixed' ? ' / 笔' : benefit.recipient==='order_appointment' && benefit.method==='class_fixed' ? ' / 组织 / 班' : ''))
+        (benefit.method==='fixed' ? ' / 报名' : benefit.method==='order_fixed' ? ' / 笔'
+          : benefit.recipient==='order_appointment' && benefit.method==='class_fixed' ? ' / 组织 / 班' : ''))
     return [payee,amount].filter(Boolean).join(' · ')
   }
   if (row.mode==='company_sales') {
@@ -553,7 +552,9 @@ const syncStreams = computed(() => data.value.sources
   .filter(entry => entry.configured && (!sourceFilter.value || sourceFilter.value===entry.source))
   .flatMap(entry => options(entry.source.toLowerCase()+'OrderStream')))
 const sourceLabel = key => optionLabel('source',key)?.split(' · ')[0]
-const titles = {product:'新增产品',mapping:'添加来源映射',periodRoster:'更正签到关联',
+const periodPullProducts = computed(() => data.value.products.filter(product=>product.practicePeriodPull &&
+  (!productScope.value || product.id===productScope.value)).map(product=>({label:product.name,value:product.id})))
+const titles = {product:'新增产品',mapping:'添加来源映射',periodRoster:'更正签到关联',periodPull:'同步来源期次',
   reportMonth:'设置报表月份',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
 const actions = computed(() => {
   if (current.value === 'products') return tab.value === 'mapping' ? 'mapping' : 'product'
@@ -564,9 +565,11 @@ const formatTime = value => value ? new Intl.DateTimeFormat('zh-CN',{dateStyle:'
 const identityTimeFormat = new Intl.DateTimeFormat('zh-CN',{dateStyle:'short',timeStyle:'medium',timeZone:'Asia/Shanghai'})
 const formatIdentityTime = value => value ? identityTimeFormat.format(new Date(value)) : '—'
 const formatMoney = minor => minor == null ? '—' : new Intl.NumberFormat('zh-CN',{style:'currency',currency:'CNY'}).format(minor/100)
-const practiceOpeningOptions = computed(() => data.value.practiceCountOpenings
-  .filter(row => row.productId===practiceRulesProduct.value?.id)
-  .map(row => ({value:row.id,label:openingLabel(row)})))
+const practiceOpeningOptions = computed(() => {
+  const productId = drawer.value==='rule' ? draft.value.productId : practiceRulesProduct.value?.id
+  return data.value.practiceCountOpenings.filter(row=>row.productId===productId)
+    .map(row=>({value:row.id,label:openingLabel(row)}))
+})
 function openingLabel(row) {
   return '冻结结算 '+row.sourceSettlementId.slice(0,8)+' · 截至 '+formatTime(row.throughAt)+' · '+row.personCount+' 人'
 }
@@ -1240,14 +1243,6 @@ function selectProduct(product) {
   const query = params.toString()
   history.replaceState(history.state, '', '#'+key+(query ? '?'+query : ''))
 }
-async function createPracticePool(name, unitId) {
-  const productId = draft.value.productId
-  const result = await api('/practice-pools', {method:'POST',body:JSON.stringify({productId,name,unitId})})
-  if (classRuleDirectory.value && draft.value.productId===productId && !classRuleDirectory.value.pools.some(pool=>pool.id===result.id)) {
-    classRuleDirectory.value.pools.push({id:result.id,name,unitName:unitOptions.value.find(unit=>unit.value===unitId)?.label})
-  }
-  return result.id
-}
 function selectSource(source) {
   sourceFilter.value = source
   resetOrders()
@@ -1281,6 +1276,7 @@ function open(kind, row, edit = false) {
     draft.value.sourceConfigured = row?.sourceConfigured
   }
   if (kind === 'reportMonth') draft.value = {periodId:row.id, periodName:row.name, reportMonth:row.reportMonthOverride || ''}
+  if (kind === 'periodPull') draft.value = {productId:periodPullProducts.value.length===1 ? periodPullProducts.value[0].value : undefined}
   if (kind === 'periodRoster') {
     draft.value = {periodId:row.id, periodName:row.name, sourcePeriodKey:row.sourcePeriodKey,
       expectedSourcePeriodKey:row.sourcePeriodKey, startsOn:row.startsOn, endsOn:row.endsOn,
@@ -1394,7 +1390,7 @@ function must(value, msg = '请补齐必填内容') {
 const minor = value => Math.round(Number(value)*100)
 const periodRate = value => Math.round(Number(must(value,'请填写班次计提比例'))*10000)
 function practicePoolBody(pool) {
-  return {poolId:must(pool.poolId,'请选择资金池'),ownerId:must(pool.ownerId,'请选择分配负责人')}
+  return {poolId:must(pool.poolId,'请选择团队池'),ownerId:pool.ownerId || undefined}
 }
 function initialPracticeCountStart() {
   const {scope,periodId,fromOrdinal,effectiveFrom,editBaseId,productId,activityType} = draft.value
@@ -1415,7 +1411,11 @@ function ruleComponentBody(row) {
     return {type:'manager',mode:'director_rate',value:periodRate(must(row.amount,'请填写总监提成比例')),
       ...(row.classMember ? {classMember:row.classMember} : {})}
   }
-  const sourceRole = row.sourceRole?.trim().toUpperCase()
+  const benefit = row.mode==='period_rate' ? row.periodBenefit : undefined
+  const needsSalesRole = row.mode==='company_sales' || benefit && (benefit.recipient==='order_appointment' ||
+    !benefit.registrationScope && (benefit.ownSales || benefit.salesPeople?.length || benefit.salesUnits?.length) ||
+    benefit.method==='rate' && benefit.standardRates?.some(standard=>standard.salesUnits?.length))
+  const sourceRole = row.sourceRole?.trim().toUpperCase() || (needsSalesRole ? 'DIRECT_REFERRER' : undefined)
   if (['sales','referral'].includes(row.type)) must(sourceRole,'请选择销售或推荐分项的订单角色。')
   const component = {type:must(row.type),mode:must(row.mode,'请选择计提方式'),value:0,
     ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy && !['period_rate','company_sales'].includes(row.mode) ? {refundPolicy:row.refundPolicy} : {}),
@@ -1443,7 +1443,6 @@ function ruleComponentBody(row) {
     }
   }
   if (row.mode==='company_sales') {
-    must(sourceRole,'请选择业绩使用的订单销售角色')
     const sales = row.companySales
     must(sales.label?.trim(),'请填写收款安排名称')
     const scopeMode = sales.scopeMode || (sales.ownSales ? 'own' : sales.general ? 'all' : 'team')
@@ -1574,10 +1573,6 @@ function ruleComponentBody(row) {
       }
       if (b.recipient!=='order_appointment' && !component.periodBenefit.standardRates?.some(standard=>standard.salesUnits?.length)) delete component.sourceRole
     }
-    if (b.recipient==='order_appointment' || !registration && (b.ownSales || b.salesPeople?.length || b.salesUnits?.length) ||
-        component.periodBenefit.standardRates?.some(standard=>standard.salesUnits?.length)) {
-      must(sourceRole,'请选择订单上的销售角色')
-    }
     return component
   }
   if (row.mode !== 'tiered') {
@@ -1592,6 +1587,7 @@ function ruleComponentBody(row) {
     return component
   }
   const form = row.tierConfig
+  const useFallback = allowsPracticeFallback(row) && form.forceFallback
   const amountMetricLabel = practiceCumulativeAmountMetrics.find(option=>option.value===form.cumulativeMetric)?.label
   must(form.metric,'请选择阶梯指标')
   const serialize = (rows, convert) => rows.map(tier => ({
@@ -1606,6 +1602,7 @@ function ruleComponentBody(row) {
   })).sort((a,b) => a.from-b.from)
   const scheduleBody = (schedule, metric) => {
     if (form.cumulativeMetric) metric = 'performance'
+    else if (useFallback) metric = 'fallback'
     else if (form.forceCount) metric = 'count'
     if (metric!=='performance' && !schedule.count.length) throw new Error('请添加至少一档累计人数标准。')
     if (metric!=='count' && !schedule.performance.length) throw new Error('请添加至少一档'+(amountMetricLabel || '本期实付')+'标准。')
@@ -1619,7 +1616,10 @@ function ruleComponentBody(row) {
   if (form.cumulativeMetric) component.tiers.cumulativeMetric = form.cumulativeMetric
   if (tierFormUsesHistory(form)) {
     const useOpening = form.startMode==='opening'
-    const openingAllowed = !form.cumulativeMetric && !hasPracticePaymentScope(row.saleScope || {})
+    const openingAllowed = allowsPracticeOpening(row)
+    if (useOpening && !openingAllowed && useFallback) {
+      throw new Error('请选择订单来源销售公司，或清空冻结期初。')
+    }
     if (useOpening && !openingAllowed && draft.value.editBaseId) {
       throw new Error('请先在「累计起点」把该规则的冻结期初改为起始期数或开班时间。')
     }
@@ -1700,15 +1700,17 @@ async function save() {
   if (saving.value) return
   const issuedFor = sessionRequest
   const kind = drawer.value
-  const paths = {product:'/products',mapping:'/mappings',period:'/periods',periodRoster:'/period-practice-roster',
+  const paths = {product:'/products',mapping:'/mappings',period:'/periods',periodRoster:'/period-practice-roster',periodPull:'/periods/pull',
     reportMonth:'/period-report-month',rule:'/rules',person:'/people',identity:'/identities',pull:'/orders/pull'}
   formError.value = ''
   saving.value = true
   try {
-    const payload = bodyFor(kind,draft.value)
+    const payload = kind==='periodPull' ? {productId:draft.value.productId} : bodyFor(kind,draft.value)
+    if (kind==='periodPull' && !payload.productId) throw new Error('请选择要同步期次的产品。')
     const result = await api(paths[kind],{method:'POST',body:JSON.stringify(payload)})
     if (issuedFor!==sessionRequest) return
     notice.value = kind === 'pull' ? orderPullNotice(result)
+      : kind === 'periodPull' ? periodPullNotice(result)
       : kind === 'rule' ? '规则 v'+result.version+' 已保存。'
       : kind === 'periodRoster' ? result.changed ? '签到名单关联已更新，待重新试算。' : '签到名单关联无变化。'
       : kind === 'identity' ? '来源账号归属已保存。' : '保存成功。'
@@ -1729,6 +1731,13 @@ async function save() {
   } finally {
     if (issuedFor===sessionRequest) saving.value = false
   }
+}
+function periodPullNotice(result) {
+  const conflicts = result.conflicts || []
+  const counts = `新增 ${result.added} 期，已登记 ${result.existing} 期。`
+  const skipped = result.skipped ? `来源缺少期数或日期 ${result.skipped} 期。` : ''
+  const issues = conflicts.length ? `需核对 ${conflicts.length} 期（${conflicts.slice(0,3).join('、')}${conflicts.length>3?'等':''}）。` : ''
+  return counts+skipped+issues
 }
 </script>
 
@@ -1810,9 +1819,10 @@ async function save() {
             <a v-if="retentionPoolReturn" class="workspace-return" :href="retentionPoolReturn"><LeftOutlined aria-hidden="true"/>返回部门留存金</a>
             <a v-if="configurationReturn" class="workspace-return" :href="configurationReturn.href"><LeftOutlined aria-hidden="true"/>{{ configurationReturn.label }}</a>
             <a v-else-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
-            <div v-if="!practiceSettingsView && actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length) && !identityAccount" class="topbar-actions">
+            <div v-if="!practiceSettingsView && actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length || current==='periods' && periodPullProducts.length) && !identityAccount" class="topbar-actions">
               <a v-if="orderReturn" class="workspace-return" :href="orderReturn.href"><LeftOutlined aria-hidden="true"/>{{ orderReturn.label }}</a>
               <a-button v-if="canOpenAction && actions!=='person'" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="current==='orders'?CloudSyncOutlined:PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : actions==='period' ? accountingPeriodTitle(currentPeriodProduct) : titles[actions] }}</a-button>
+              <a-button v-if="current==='periods' && periodPullProducts.length" :type="canOpenAction ? 'default' : 'primary'" :disabled="!configurationReady" @click="open('periodPull')"><template #icon><CloudSyncOutlined aria-hidden="true"/></template>同步来源期次</a-button>
               <a-button v-if="catalogScenarioProducts.length" :type="canOpenAction ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogScenarioCreation">新增逐单规则</a-button>
               <a-button v-if="catalogPeriodProducts.length" :type="canOpenAction || catalogScenarioProducts.length ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogPeriodCreation">新增整期规则</a-button>
             </div>
@@ -1878,7 +1888,7 @@ async function save() {
         <template v-else-if="current==='pools'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <TeamPools v-model="teamPoolPeriod" :periods="calculationPeriods" :requested-period="requestedPoolPeriod"
-            :requested-pool="poolContext.get('pool')" :loading="loading" :api="api" :format-money="formatMoney"
+            :requested-pool="poolContext.get('pool')" :loading="loading" :api="api" :format-money="formatMoney" :format-time="formatTime" :product-id="productScope"
             :can-configure="poolProducts.length>0" :period-link="id=>settlementLink(id,'detail','pools')"/>
         </template>
         <template v-else-if="current==='pool-config'">
@@ -2109,6 +2119,9 @@ async function save() {
         </a-form-item>
       </template>
       <a-form-item v-if="['mapping','period'].includes(drawer)" label="所属产品" required><a-select v-model:value="draft.productId" aria-label="所属产品" placeholder="选择产品" :options="drawer==='period' ? accountingProductOptions : productOptions" :disabled="Boolean(draft.lockedPeriod)"/></a-form-item>
+      <a-form-item v-if="drawer==='periodPull'" label="所属产品" html-for="practice-period-pull-product" required>
+        <a-select id="practice-period-pull-product" v-model:value="draft.productId" placeholder="选择产品" :options="periodPullProducts"/>
+      </a-form-item>
       <a-form-item v-if="['mapping','pull','identity'].includes(drawer)" :label="drawer==='pull' ? '订单来源' : '业务来源'">
         <a-select v-model:value="draft.source" :aria-label="drawer==='pull' ? '订单来源' : '业务来源'"
           :options="sources" :disabled="drawer==='pull' && draft.lockedOrder || drawer==='identity' && Boolean(draft.previousOwner)"/>
@@ -2213,7 +2226,7 @@ async function save() {
           </template>
           <RuleArrangementFields v-else-if="!['company_sales','period_rate'].includes(c.mode)"
             :name-id="classRule ? 'rule-sales-label-'+i : undefined" v-model:name="c.label"
-            :order-type-id="classRule ? 'rule-member-'+i : undefined" :order-types="classRule ? classMemberChoices(c) : undefined"
+            :order-type-id="classRule ? 'rule-member-'+i : undefined" :order-types="classRule ? classMembers : undefined"
             :order-type="c.classMember" @update:order-type="changeClassMember(c,$event)">
             <template v-if="classRule && ['sales','referral'].includes(c.type)">
               <a-form-item :html-for="'rule-payee-kind-'+i" label="收款对象">
@@ -2241,6 +2254,7 @@ async function save() {
                 <template v-if="classRule && ['sales','referral'].includes(c.type)" #scope>
                   <PracticePersonalScopeFields :row="c" :index="i"
                     :companies="options('practiceSalesCompany')" :categories="options('practiceSalesCategory')" :units="salesUnitOptions"
+                    :allow-source-company="c.mode==='tiered' && allowsPracticeFallback(c) && Boolean(c.tierConfig?.forceFallback)"
                     :people="classPeopleOptions"/>
                 </template>
                 <RuleStandardValue v-if="c.mode==='fixed' || c.mode==='rate'" :id="'rule-amount-'+i" :method="c.mode" v-model="c.amount"
@@ -2249,30 +2263,31 @@ async function save() {
                     (c.mode==='rate' ? '复训总提成比例（%）' : '每份复训总提成（元）') : undefined"/>
                 <PracticeTierEditor v-else :config="c.tierConfig" :metrics="options('tierMetric')"
                   :amounts="baseModes" :people="classPeopleOptions" :companies="options('practiceSalesCompany')"
-                  :sales-categories="options('practiceSalesCategory')" :show-legacy-retrain="c.classMember==='new' && c.tierConfig.hasRetrainPayout"
-                  :retrain-unavailable="draft.components.some(other=>other!==c && other.type==='sales' && matchesPracticeMember(other,'retrain'))"/>
+                  :allow-fallback="allowsPracticeFallback(c)" :allow-opening="allowsPracticeOpening(c)" :openings="practiceOpeningOptions"
+                  :sales-categories="options('practiceSalesCategory')" :show-legacy-retrain="c.classMember==='new' && c.tierConfig.hasRetrainPayout"/>
               </RuleCommissionStandards>
             </template>
             <template #advanced>
               <PracticeRetrainSplitEditor v-if="c===practiceRetrainSales && c.retrainSplits?.length" :component="c" :index="i"
                 :people="classPeopleOptions" :units="unitOptions" :companies="options('practiceSalesCompany')"
-                :pools="practicePoolOptions" :create-pool="createPracticePool" :format-money="formatMoney"/>
+                :pools="practicePoolOptions" :format-money="formatMoney"/>
             </template>
           </RuleArrangementFields>
           <PracticePeriodBenefitEditor v-if="c.mode==='period_rate'" :component="c" :index="i" :people="classPeopleOptions" :units="unitOptions"
+            :allow-signup-fixed="healthPracticeRule"
             :registration-companies="registrationCompanies" :registration-loading="registrationCompaniesLoading" :registration-error="registrationCompaniesError"
             :sales-categories="options('practiceSalesCategory')"
             :companies="options('practiceSalesCompany')" :recipient-types="options('practicePeriodRecipient')"
             :referral-companies="companyRecipientOptions"
-            :appointment-kinds="options('appointmentKind')" :source-roles="options('practicePeriodSourceRole')" :sales-units="salesUnitOptions"
+            :appointment-kinds="options('appointmentKind')" :sales-units="salesUnitOptions"
             :payee-roles="componentSourceRoles(c.periodBenefit.orderRecipientRole)"
-            :pools="practicePoolOptions" :create-pool="createPracticePool" :member-choices="classMemberChoices(c)"/>
+            :pools="practicePoolOptions" :member-choices="classMembers"/>
           <PracticeCompanySalesEditor v-if="c.mode==='company_sales'" :component="c" :index="i" :companies="options('practiceSalesCompany')"
             :organizations="salesUnitOptions"
             :sales-categories="options('practiceSalesCategory')" :recipients="companyRecipientOptions" :amounts="baseModes"
-            :source-roles="options('practicePeriodSourceRole')" :payee-roles="componentSourceRoles(c.companySales.payee.role)"
-            :people="classPeopleOptions" :units="unitOptions" :pools="practicePoolOptions" :create-pool="createPracticePool"
-            :member-choices="classMemberChoices(c)" @member-change="resetAmountMode(c)"/>
+            :payee-roles="componentSourceRoles(c.companySales.payee.role)"
+            :people="classPeopleOptions" :units="unitOptions" :pools="practicePoolOptions"
+            :member-choices="classMembers" @member-change="resetAmountMode(c)"/>
           <div v-if="draft.components.length>1" class="form-actions">
             <a-button type="link" size="small" danger class="rule-remove"
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>
@@ -2340,7 +2355,7 @@ async function save() {
           <a-button :disabled="saving" @click="close">取消</a-button>
           <a-button v-if="drawer==='rule'" id="rule-preview-button" :disabled="saving" @click="previewRule">预览规则</a-button>
         </template>
-        <a-button html-type="submit" form="finance-edit-form" type="primary" :loading="saving" :disabled="ruleImpactBusy">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':'保存' }}</a-button>
+        <a-button html-type="submit" form="finance-edit-form" type="primary" :loading="saving" :disabled="ruleImpactBusy">{{ drawer==='rule'?'保存并生效':drawer==='pull'?'开始拉取':drawer==='periodPull'?'开始同步':'保存' }}</a-button>
       </div>
     </template>
   </a-drawer>

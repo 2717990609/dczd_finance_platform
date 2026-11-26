@@ -4,7 +4,6 @@ import { DownOutlined } from '@ant-design/icons-vue'
 import AppointmentPersonSelect from './AppointmentPersonSelect.vue'
 import CatalogCommissionScopeFields from './CatalogCommissionScopeFields.vue'
 import CatalogOrganizationAppointmentFields from './CatalogOrganizationAppointmentFields.vue'
-import CatalogPoolOwnerFields from './CatalogPoolOwnerFields.vue'
 import CatalogTeamPoolFields from './CatalogTeamPoolFields.vue'
 import DraftAggregateOrders from './DraftAggregateOrders.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
@@ -171,7 +170,7 @@ function editableRows(items) {
 function componentTarget(item) {
   return {itemKey:item.itemKey,label:item.label.trim(),targetKind:item.targetKind,organizationKey:item.poolId ? undefined : item.organizationKey,
     personId:item.personId,poolId:item.poolId,poolName:item.poolId ? undefined : item.poolName,
-    ownerRole:item.ownerRole,ownerPersonId:item.ownerPersonId,
+    ownerRole:item.poolId ? undefined : item.ownerRole,ownerPersonId:item.poolId ? undefined : item.ownerPersonId,
     appointmentLevel:item.appointmentLevel,appointmentRole:item.appointmentRole,
     memberRole:item.memberRole,scenarioCodes:[...item.scenarioCodes].sort(),membershipNewOnly:Boolean(item.membershipNewOnly),
     ...orderScopeBody(item)}
@@ -280,10 +279,6 @@ function addComponent() {
   rows.value.push({uid,label:'',targetKind:'company',method:'rate',tiers:[],scenarioCodes:[],salesScope:null})
   activeComponent.value = uid
 }
-function addPool(pool) {
-  const pools=sheet.value.options.teamPools ??= []
-  if (!pools.some(option=>option.id===pool.id)) pools.push(pool)
-}
 function initializeCreation(data, product) {
   const copy = copiedFrom.value
   creationCycle.value = copy?.cycle || data.cycle
@@ -337,8 +332,8 @@ function componentChanges() {
         ? !item.appointmentRole || !item.appointmentLevel : !item.organizationKey && !item.poolId)) {
       throw new Error('请填写收款安排名称并选择收款对象。')
     }
-    if (item.targetKind==='pool' && (!(item.poolId || item.poolName?.trim()) || !(item.ownerRole || item.ownerPersonId) || !item.memberRole)) {
-      throw new Error('请选择团队池、分配负责人和成员职责。')
+    if (item.targetKind==='pool' && (!(item.poolId || item.legacyPool && item.poolName?.trim()) || !item.memberRole)) {
+      throw new Error('请选择团队池和成员职责。')
     }
     if (emptyCatalogOrderScope(item.salesScope)) throw new Error('请为「'+item.label+'」选择适用的销售组织或销售类别。')
     if (item.appointment && (!item.appointment.unitId || !item.appointment.role)) throw new Error('请为「'+item.label+'」选择任职组织和岗位。')
@@ -637,13 +632,9 @@ async function resumeRule() {
                 :roles="availableRoles(item.appointmentRole)" :disabled="saving"/>
               <template v-if="item.targetKind==='pool'">
                 <CatalogTeamPoolFields v-model="item.poolId" prefix="period-benefit" :pools="sheet.options?.teamPools"
-                  :units="sheet.options?.salesUnits" :product-id="sheet.productId" :api="api" :disabled="saving"
+                  :disabled="saving"
                   :saved-label="[item.poolName,item.organizationName || sheet.items.find(old=>old.itemKey===item.itemKey)?.targetName].filter(Boolean).join(' · ')"
-                  :existing="item.legacyPool" @created="addPool"/>
-                <CatalogPoolOwnerFields prefix="period-benefit-owner" :roles="availableRoles(item.ownerRole)" :api="api"
-                  :people-filters="peopleFilters" :disabled="saving"
-                  :model-value="{role:item.ownerRole,personId:item.ownerPersonId,personName:item.ownerName}"
-                  @update:model-value="({role,personId,personName})=>Object.assign(item,{ownerRole:role,ownerPersonId:personId,ownerName:personName})"/>
+                  :existing="item.legacyPool"/>
                 <a-form-item label="成员职责" html-for="period-benefit-member" required>
                   <a-select id="period-benefit-member" v-model:value="item.memberRole" :options="availableRoles(item.memberRole)" :disabled="saving"/>
                 </a-form-item>

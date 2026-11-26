@@ -64,7 +64,7 @@ func summarizeVIPPools(items []catalogPaymentMatch) (vipPoolReport, error) {
 		}
 		pending := false
 		for _, part := range item.BenefitParts {
-			if part.Kind != "pool" || part.Status == "ZERO" {
+			if part.Kind != "pool" || part.Status == "ZERO" || part.Status == vipCommissionOutsideScope {
 				continue
 			}
 			if part.Status != "CALCULATED" {

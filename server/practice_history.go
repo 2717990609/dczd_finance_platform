@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -42,6 +43,33 @@ type practiceTierHistory struct {
 type practiceFrozenTier struct {
 	PriorCounts map[int64]int64 `json:"priorCounts,omitempty"`
 	Amounts     map[int64]int64 `json:"tierAmounts,omitempty"`
+}
+
+func practiceTierArrangementKey(parts []component, index int) string {
+	part := parts[index]
+	for _, prior := range parts[:index] {
+		if prior.Tiers != nil && prior.ClassMember == part.ClassMember {
+			return practicePeriodComponentKey(part, index)
+		}
+	}
+	return part.ClassMember
+}
+
+func historicalPracticeSale(parts []component, current component, member string) component {
+	var fallback component
+	for _, part := range parts {
+		if part.Type != "sales" || part.SourceRole == "" || !part.matchesPracticeMember(member) {
+			continue
+		}
+		if fallback.SourceRole == "" {
+			fallback = part
+		}
+		if part.SourceRole == current.SourceRole && part.arrangementLabel() == current.arrangementLabel() &&
+			slices.Equal(part.salesCompanies(), current.salesCompanies()) {
+			return part
+		}
+	}
+	return fallback
 }
 
 func (h practiceTierHistory) defaultStart(config practiceSalesTiers) practiceCountStart {

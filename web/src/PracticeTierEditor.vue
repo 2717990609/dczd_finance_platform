@@ -12,28 +12,39 @@ const props = defineProps({
   companies: { type: Array, required: true },
   salesCategories: { type: Array, required: true },
   showLegacyRetrain: Boolean,
-  retrainUnavailable: Boolean,
+  allowFallback: Boolean,
+  allowOpening: Boolean,
+  openings: { type: Array, default: () => [] },
 })
+const fallback = computed(() => props.allowFallback && props.config.forceFallback)
 const metricOptions = computed(() => [
   {value:'count',label:'累计新报人数'},
   ...practiceCumulativeAmountMetrics,
+  ...(props.allowFallback ? [{value:'fallback',label:'人数优先，未命中按本期净实收'}] : []),
   ...(props.config.hasLegacyMetrics ? [{value:'legacy',label:'沿用各组档位指标'}] : []),
 ])
 const amountLabel = computed(() => practiceCumulativeAmountMetrics.find(metric=>metric.value===props.config.cumulativeMetric)?.label)
-const metricMode = computed(() => props.config.cumulativeMetric || (props.config.forceCount ? 'count' : 'legacy'))
+const metricMode = computed(() => props.config.cumulativeMetric || (fallback.value ? 'fallback' : props.config.forceCount ? 'count' : 'legacy'))
 function setMetric(metric) {
   const config = props.config
   config.cumulativeMetric = practiceCumulativeAmountMetrics.some(option=>option.value===metric) ? metric : undefined
   config.forceCount = metric==='count'
+  config.forceFallback = metric==='fallback'
   if (config.cumulativeMetric && config.startMode==='opening') config.startMode = undefined
   if (!config.cumulativeMetric && !config.startMode && config.openingId) config.startMode = 'opening'
 }
+function setOpening(openingId) {
+  props.config.openingId = openingId
+  props.config.startMode = openingId ? 'opening' : props.config.countFromAt ? 'time' : 'ordinal'
+}
 function sectionsFor(metric) {
   if (amountLabel.value) return [{key:'performance',title:amountLabel.value,unit:'元',decimals:2}]
-  if (props.config.forceCount) metric = 'count'
+  if (fallback.value) metric = 'fallback'
+  else if (props.config.forceCount) metric = 'count'
   const result = []
   if (metric !== 'performance') result.push({ key: 'count', title: '累计人数档', unit: '人', decimals: 0 })
-  if (metric !== 'count') result.push({ key: 'performance', title: '本期实付档', unit: '元', decimals: 2 })
+  if (metric !== 'count') result.push({ key: 'performance',
+    title: fallback.value ? '本期新报净实收档' : '本期实付档', unit: '元', decimals: 2 })
   return result
 }
 const sections = computed(() => sectionsFor(props.config.metric))
@@ -92,11 +103,17 @@ function removeSchedule(schedules, index) {
         <a-form-item label="阶梯指标" html-for="tier-amount-metric">
           <a-select id="tier-amount-metric" :value="metricMode" :options="metricOptions" @change="setMetric"/>
         </a-form-item>
-        <a-checkbox v-if="showLegacyRetrain" :checked="config.includeRetrain" :disabled="retrainUnavailable && !config.includeRetrain"
+        <a-form-item v-if="fallback && (allowOpening && openings.length || config.openingId)" label="冻结期初" html-for="tier-fallback-opening"
+          :extra="allowOpening ? undefined : '请选择订单来源销售公司，或清空冻结期初。'">
+          <a-select id="tier-fallback-opening" :value="config.startMode==='opening' ? config.openingId : undefined"
+            :options="openings" placeholder="使用规则的累计起点" allow-clear @update:value="setOpening"/>
+        </a-form-item>
+        <a-checkbox v-if="showLegacyRetrain" :checked="config.includeRetrain"
           @change="setIncludeRetrain($event.target.checked)">使用原有复训档值</a-checkbox>
       </div>
     </div>
     <RuleCommissionStandards v-model="activeGroup" :groups="groups" :priority="priority" embedded>
+      <p v-if="fallback" class="tier-note">未命中人数档的报名，按销售个人汇总这些报名的本期新报净实收后选金额档。</p>
       <p class="tier-note tier-bounds">上下限均含本值，上限留空至下一档前，最后一档可留空表示不限。</p>
       <section v-if="activeGroup==='category'" class="tier-group" aria-label="销售类别默认">
         <div v-for="(category,index) in config.categories" :key="index" class="tier-range">

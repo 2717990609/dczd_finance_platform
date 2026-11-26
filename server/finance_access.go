@@ -43,7 +43,7 @@ func (s workspace) financeRoute(route rest.Route) rest.Route {
 	switch route.Path {
 	case "/api/v1/configuration-options", "/api/v1/rules", "/api/v1/rules/retire", "/api/v1/rule-catalog", "/api/v1/practice-count-openings", "/api/v1/practice-rule-recipients", "/api/v1/practice-pools", "/api/v1/rule-impact":
 		rulesAccess = true
-	case "/api/v1/practice-registration-companies", "/api/v1/practice-registration-import/preview", "/api/v1/practice-rule-settings", "/api/v1/team-pools":
+	case "/api/v1/practice-registration-companies", "/api/v1/practice-registration-import/preview", "/api/v1/practice-rule-settings", "/api/v1/team-pools", "/api/v1/team-pools/owner":
 		rulesAccess = true
 	case "/api/v1/products", "/api/v1/periods":
 		rulesAccess = route.Method == http.MethodGet

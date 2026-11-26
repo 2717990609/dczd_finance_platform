@@ -39,9 +39,17 @@ type saveOrganizationPositionInput struct {
 
 func (s workspace) saveOrganizationPosition(ctx context.Context, input saveOrganizationPositionInput) (organizationPosition, error) {
 	var result organizationPosition
+	if input.Active == nil {
+		return result, invalid
+	}
+	if input.ID != "" {
+		if !textOK(input.ID, 80) || len(input.Revision) != 32 || input.Name != "" || input.Scopes != nil {
+			return result, invalid
+		}
+		return s.setOrganizationPositionActive(ctx, input.ID, input.Revision, *input.Active)
+	}
 	name := strings.TrimSpace(input.Name)
-	if !textOK(name, 80) || input.Active == nil || len(input.Scopes) == 0 || len(input.Scopes) > 3 ||
-		input.ID != "" && (!textOK(input.ID, 80) || len(input.Revision) != 32) {
+	if !textOK(name, 80) || len(input.Scopes) == 0 || len(input.Scopes) > 3 {
 		return result, invalid
 	}
 	scopes := slices.Clone(input.Scopes)
@@ -63,25 +71,29 @@ func (s workspace) saveOrganizationPosition(ctx context.Context, input saveOrgan
 		}
 		var taken bool
 		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM configuration_options
-		 WHERE group_key='catalogAppointmentRole' AND option_key<>$1 AND lower(btrim(label))=lower($2))`, input.ID, name).Scan(&taken); err != nil {
+		 WHERE group_key='catalogAppointmentRole' AND lower(btrim(label))=lower($1))`, name).Scan(&taken); err != nil {
 			return err
 		}
 		if taken {
 			return errOrganizationPositionName
 		}
-		if input.ID == "" {
-			return tx.QueryRow(ctx, `INSERT INTO configuration_options(group_key,option_key,label,enabled,display_order,applies_to)
-			 SELECT 'catalogAppointmentRole','ROLE_'||replace(gen_random_uuid()::text,'-',''),$1,$2,
-			  coalesce(max(display_order),0)+10,jsonb_build_object('scopes',to_jsonb($3::text[]))
-			 FROM configuration_options WHERE group_key='catalogAppointmentRole'
-			 RETURNING option_key,label,enabled,`+positionScopesSQL+`,`+positionRevisionSQL,
-				name, *input.Active, scopes).Scan(&result.ID, &result.Name, &result.Active, &result.Scopes, &result.Revision)
-		}
-		err := tx.QueryRow(ctx, `UPDATE configuration_options SET label=$2,enabled=$3,
-		 applies_to=applies_to||jsonb_build_object('scopes',to_jsonb($4::text[]))
-		 WHERE group_key='catalogAppointmentRole' AND option_key=$1 AND `+positionRevisionSQL+`=$5
+		return tx.QueryRow(ctx, `INSERT INTO configuration_options(group_key,option_key,label,enabled,display_order,applies_to)
+		 SELECT 'catalogAppointmentRole','ROLE_'||replace(gen_random_uuid()::text,'-',''),$1,$2,
+		  coalesce(max(display_order),0)+10,jsonb_build_object('scopes',to_jsonb($3::text[]))
+		 FROM configuration_options WHERE group_key='catalogAppointmentRole'
 		 RETURNING option_key,label,enabled,`+positionScopesSQL+`,`+positionRevisionSQL,
-			input.ID, name, *input.Active, scopes, input.Revision).Scan(&result.ID, &result.Name, &result.Active, &result.Scopes, &result.Revision)
+			name, *input.Active, scopes).Scan(&result.ID, &result.Name, &result.Active, &result.Scopes, &result.Revision)
+	})
+	return result, err
+}
+
+func (s workspace) setOrganizationPositionActive(ctx context.Context, id, revision string, active bool) (organizationPosition, error) {
+	var result organizationPosition
+	err := s.writeAppointments(ctx, func(tx pgx.Tx, _ *string) error {
+		err := tx.QueryRow(ctx, `UPDATE configuration_options SET enabled=$2
+		 WHERE group_key='catalogAppointmentRole' AND option_key=$1 AND `+positionRevisionSQL+`=$3
+		 RETURNING option_key,label,enabled,`+positionScopesSQL+`,`+positionRevisionSQL,
+			id, active, revision).Scan(&result.ID, &result.Name, &result.Active, &result.Scopes, &result.Revision)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errOrganizationPositionChanged
 		}

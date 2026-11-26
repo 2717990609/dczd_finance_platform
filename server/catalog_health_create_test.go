@@ -178,17 +178,21 @@ func verifyHealthScenarioRecognition(t *testing.T, namedOwner bool) {
 		t.Fatalf("expected the referral-only version before publishing organization benefits: %+v %v", sheet, err)
 	}
 	fixed, poolRate := int64(20000), int64(200)
-	poolTarget := catalogBenefitTarget{Target: "pool", Organization: pool, Role: "TEAM_LEAD"}
+	actualOwner := int64(0)
+	if err := s.db.QueryRow(ctx, "SELECT id FROM people WHERE name='原团队池负责人'").Scan(&actualOwner); err != nil {
+		t.Fatal(err)
+	}
+	registered, err := s.createConfiguredTeamPool(ctx, createPracticePoolInput{
+		ProductID: creatorID, UnitID: pool, Name: "登记交付团队池", OwnerID: actualOwner,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	poolTarget := catalogBenefitTarget{Target: "pool", PoolID: registered.(teamPool).ID, MemberRole: "DELIVERY_TEAM"}
+	expectedOwner := ""
 	if namedOwner {
-		registered, err := s.createCatalogTeamPool(ctx, createPracticePoolInput{ProductID: creatorID, UnitID: pool, Name: "登记交付团队池"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		poolTarget.PoolID, poolTarget.Organization = registered.(teamPool).ID, ""
-		poolTarget.Role, poolTarget.MemberRole = "", "DELIVERY_TEAM"
-		if err := s.db.QueryRow(ctx, "SELECT id FROM people WHERE name='原团队池负责人'").Scan(&poolTarget.OwnerPersonID); err != nil {
-			t.Fatal(err)
-		}
+		poolTarget.OwnerPersonID = actualOwner
+		expectedOwner = "原团队池负责人"
 	}
 	organizationRule, err := s.publishCatalogRates(ctx, publishCatalogRatesInput{
 		BaseID: independent.ID, EffectiveFrom: cut.Add(72 * time.Hour), RemovedItems: []string{sheet.Components[0].ItemKey},
@@ -243,7 +247,7 @@ func verifyHealthScenarioRecognition(t *testing.T, namedOwner bool) {
 	if match.RecognizedMinor == nil || *match.RecognizedMinor != half || len(match.BenefitParts) != 2 ||
 		match.BenefitParts[0].Kind != "company" || match.BenefitParts[0].Amount != 10000 ||
 		match.BenefitParts[1].Kind != "pool" || match.BenefitParts[1].Amount != 16800 ||
-		match.BenefitParts[1].OwnerName != "原团队池负责人" {
+		match.BenefitParts[1].OwnerName != expectedOwner {
 		t.Fatalf("first quote should use the net payment and the configured recipients: %+v", match)
 	}
 	for _, tc := range []struct{ period, total int64 }{
@@ -311,11 +315,11 @@ func verifyHealthScenarioRecognition(t *testing.T, namedOwner bool) {
 	var owner string
 	if err := s.db.QueryRow(ctx, `SELECT min(r.amount_minor) FILTER(WHERE l.beneficiary_unit_id=$2),
 	 min(r.amount_minor) FILTER(WHERE l.beneficiary_unit_id=$3),
-	 min(p.name) FILTER(WHERE l.beneficiary_unit_id=$3)
+	 coalesce(min(p.name) FILTER(WHERE l.beneficiary_unit_id=$3),'')
 	 FROM calculation_draft_refunds r JOIN calculation_draft_lines l ON l.id=r.original_line_id
 	 LEFT JOIN people p ON p.id=l.allocation_owner_id WHERE r.period_id=$1 AND l.catalog_rule_id=$4`,
 		posting, company, pool, organizationRule.ID).Scan(&companyDebit, &poolDebit, &owner); err != nil ||
-		companyDebit != -10000 || poolDebit != -16800 || owner != "原团队池负责人" {
+		companyDebit != -10000 || poolDebit != -16800 || owner != expectedOwner {
 		t.Fatalf("refund must reverse the original company and pool owner: %d %d %s %v", companyDebit, poolDebit, owner, err)
 	}
 	if namedOwner {

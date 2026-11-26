@@ -1,9 +1,10 @@
 <script setup>
 import { computed, watch } from 'vue'
 import DraftPoolAllocations from './DraftPoolAllocations.vue'
+import TeamPoolLedger from './TeamPoolLedger.vue'
 
 const props = defineProps({periods:Array, loading:Boolean, requestedPeriod:Number, requestedPool:String, api:Function,
-  formatMoney:Function, canConfigure:Boolean, periodLink:Function})
+  formatMoney:Function, formatTime:Function, productId:Number, canConfigure:Boolean, periodLink:Function})
 const selected = defineModel({type:Number})
 const candidates = computed(() => props.periods.filter(period => period.poolDraftVersion))
 const options = computed(() => candidates.value.map(period => ({
@@ -22,6 +23,7 @@ watch([candidates, () => props.requestedPeriod], ([available, requested], previo
 </script>
 
 <template>
+  <TeamPoolLedger :api="api" :product-id="productId" :format-money="formatMoney" :format-time="formatTime" :period-link="periodLink"/>
   <section class="records workbench-controls">
     <div class="workbench-selection workbench-toolbar">
       <div class="workbench-period">

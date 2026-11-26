@@ -3,7 +3,7 @@ import { computed } from 'vue'
 import RuleOrderScope from './RuleOrderScope.vue'
 import RuleScopeSelect from './RuleScopeSelect.vue'
 
-const props = defineProps({row:Object,index:Number,companies:Array,categories:Array,units:Array,people:Array})
+const props = defineProps({row:Object,index:Number,companies:Array,categories:Array,units:Array,people:Array,allowSourceCompany:Boolean})
 const flexibleScope = computed(() => !props.row.retrainSplits?.length)
 const field = name => 'practice-personal-'+props.index+'-'+name
 const mode = computed(() => {
@@ -15,6 +15,7 @@ const matchKind = computed(() => {
   const {row} = props
   const hasOrganization = row.salesCompanies?.length || row.saleScope?.salesUnits?.length
   const hasCategory = row.saleScope?.salesCategoryIds?.length
+  if (props.allowSourceCompany && (row.saleScope?.kind==='company' || !row.saleScope && row.salesCompanies?.length)) return 'source_company'
   if (row.saleScope?.kind) return row.saleScope.kind==='company' ? 'organization' : row.saleScope.kind
   if (hasOrganization && hasCategory) return 'legacy'
   return hasCategory ? 'category' : 'organization'
@@ -34,7 +35,7 @@ function changeScope(next) {
 
 function changeMatchKind(kind) {
   props.row.salesCompanies = []
-  props.row.saleScope = {kind}
+  props.row.saleScope = {kind:kind==='source_company' ? 'company' : kind}
 }
 
 function selectOrganizations({ids,legacyValues}) {
@@ -72,6 +73,7 @@ function exceptionOptions(group, current) {
       <a-radio-group :value="matchKind" role="radiogroup" aria-label="按什么筛选订单" @update:value="changeMatchKind">
         <a-radio value="organization">销售组织</a-radio>
         <a-radio value="category">销售类别</a-radio>
+        <a-radio v-if="allowSourceCompany" value="source_company">订单来源销售公司</a-radio>
       </a-radio-group>
     </a-form-item>
     <a-form-item v-if="matchKind==='legacy'" class="practice-legacy-scope" label="已保存的组合范围">
@@ -84,6 +86,8 @@ function exceptionOptions(group, current) {
     <RuleScopeSelect v-if="matchKind==='category'" :id="field('categories')" label="适用销售类别"
       :model-value="row.saleScope?.salesCategoryIds" :options="categories" placeholder="选择类别"
       @update:model-value="selectCategories"/>
+    <RuleScopeSelect v-if="matchKind==='source_company'" :id="field('source-companies')" label="订单来源销售公司"
+      v-model="row.salesCompanies" :options="companies" placeholder="选择订单来源销售公司"/>
     <section v-if="matchKind==='category' && row.saleScope?.salesCategoryIds?.length && ['rate','fixed'].includes(row.mode)"
       class="practice-scope-exceptions" :aria-labelledby="field('exceptions-title')">
       <div class="practice-exception-heading">

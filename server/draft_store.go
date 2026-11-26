@@ -227,7 +227,7 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 		if err := row.Scan(&rule.ID, &rule.Version, &rule.From, &rule.Through, &rule.Components); err != nil {
 			return rule, err
 		}
-		return rule, validateComponents(rule.Components)
+		return rule, validateComponentsForProduct(rule.Components, mode == "class")
 	})
 	if err != nil {
 		return window, nil, err
@@ -601,6 +601,10 @@ var draftLinePageScope = `l.period_id=d.period_id AND l.id>$2 AND NOT l.practice
 
 const draftPostingLabelSQL = `CASE WHEN rv.id IS NOT NULL AND starts_with(l.component_type,'period:')
      THEN CASE split_part(l.component_type,':',2)
+       WHEN 'sales' THEN coalesce(rv.components->(split_part(l.component_type,':',3)::int)->>'label',
+        rv.components->(split_part(l.component_type,':',3)::int)->>'salesLabel')
+       WHEN 'referral' THEN coalesce(rv.components->(split_part(l.component_type,':',3)::int)->>'label',
+        rv.components->(split_part(l.component_type,':',3)::int)->>'salesLabel')
        WHEN 'company_sales' THEN rv.components->(split_part(l.component_type,':',3)::int)->'companySales'->>'label'
        WHEN 'retrain_service' THEN (
         SELECT split->>'serviceLabel'
@@ -631,7 +635,7 @@ const draftDetailFromSQL = `
 var draftDetailLinesSQL = `
  'lines',coalesce((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM (
   SELECT l.id,coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name) AS "personName",
-   CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
+   CASE WHEN (l.practice_pool_id IS NOT NULL OR l.catalog_pool_id IS NOT NULL OR l.allocation_owner_id IS NOT NULL) THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    l.component_type AS "component", beneficiary.kind AS "beneficiaryUnitKind",
    ` + draftPostingLabelSQL + ` AS "componentLabel",nullif(split_part(l.component_type,':',2),'') AS "componentRole",
    l.base_minor AS "baseMinor",l.amount_minor AS "amountMinor",l.aggregate_group_key AS "aggregateGroupKey",o.source,o.order_id AS "orderId",
@@ -667,7 +671,7 @@ var draftDetailRefundsSQL = `
   SELECT a.id,a.amount_minor AS "amountMinor",a.tier_credit AS "tierCredit",event.fact->>'refundId' AS "refundId",event.version AS "refundVersion",
    event.id AS "refundSourceVersionId",
    coalesce(p.name,practice_pool.name,action.definition->>'pool_name',beneficiary.name) AS "personName",
-   CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
+   CASE WHEN (l.practice_pool_id IS NOT NULL OR l.catalog_pool_id IS NOT NULL OR l.allocation_owner_id IS NOT NULL) THEN 'pool' WHEN l.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    o.order_id AS "originalOrderId",o.fact->>'orderNo' AS "originalOrderNo",o.id AS "sourceVersionId",coalesce(rv.version,cv.version_no) AS "ruleVersion",
    CASE WHEN l.practice_enrollment_id IS NOT NULL AND event.order_id<>o.order_id THEN event.order_id END AS "replayTriggerOrderId",
    coalesce(package.name,rv.label) AS "ruleLabel",
@@ -706,7 +710,7 @@ var draftDetailCorrectionsSQL = `
    paid.fact->>'orderNo' AS "originalOrderNo",v.id AS "correctionSourceVersionId",v.version AS "sourceVersion",
    paid.id AS "sourceVersionId",coalesce(p.name,pool.name,recipient.name) AS "personName",
    coalesce(old_person.name,pool.name,old_recipient.name) AS "originalPersonName",
-   CASE WHEN l.allocation_owner_id IS NOT NULL THEN 'pool' WHEN c.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
+   CASE WHEN (l.practice_pool_id IS NOT NULL OR l.catalog_pool_id IS NOT NULL OR l.allocation_owner_id IS NOT NULL) THEN 'pool' WHEN c.beneficiary_unit_id IS NOT NULL THEN 'company' ELSE 'person' END AS "beneficiaryKind",
    CASE WHEN paid.order_id<>v.order_id THEN v.order_id END AS "triggerOrderId",v.fact->>'refundId' AS "triggerRefundId",
    original_period.name AS "originalPeriod",coalesce(r.version,cv.version_no) AS "ruleVersion",
    coalesce(package.name,r.label) AS "ruleLabel"

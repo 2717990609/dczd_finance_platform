@@ -2,7 +2,7 @@
 import { computed } from 'vue'
 import PracticeRetrainSplitFields from './PracticeRetrainSplitFields.vue'
 
-const props = defineProps({ component:Object, index:Number, companies:Array, pools:Array, people:Array, units:Array, createPool:Function, formatMoney:Function })
+const props = defineProps({ component:Object, index:Number, companies:Array, pools:Array, people:Array, units:Array,  formatMoney:Function })
 const field = (name,index) => 'practice-retrain-'+props.index+'-'+index+'-'+name
 const eligibleCompanies = computed(() => props.component.salesCompanies?.length
   ? props.companies.filter(company=>props.component.salesCompanies.includes(company.value))
@@ -20,7 +20,7 @@ const eligibleCompanies = computed(() => props.component.salesCompanies?.length
             show-search option-filter-prop="label"/>
         </a-form-item>
         <PracticeRetrainSplitFields :split="split" :prefix="'practice-retrain-'+index+'-'+i" :amount="component.mode==='fixed' ? component.amount : undefined"
-          :pools="pools" :people="people" :units="units" :create-pool="createPool" :format-money="formatMoney"/>
+          :pools="pools" :people="people" :units="units" :format-money="formatMoney"/>
         <a-button type="link" danger @click="component.retrainSplits.splice(i,1)">移除公司拆分</a-button>
       </section>
     </div>

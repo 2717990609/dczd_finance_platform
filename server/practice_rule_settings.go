@@ -33,6 +33,7 @@ type practiceRuleSettings struct {
 }
 
 type practiceCountArrangement struct {
+	Index         int                        `json:"index"`
 	Member        string                     `json:"member"`
 	Label         string                     `json:"label,omitempty"`
 	Starts        []practicePersonCountStart `json:"personCountStarts,omitempty"`
@@ -77,12 +78,12 @@ func readPracticeRuleSettings(ctx context.Context, db *pgxpool.Pool, productID i
 			&setting.FromOrdinal, &setting.ActivityType, &setting.EffectiveFrom, &parts); err != nil {
 			return nil, err
 		}
-		for _, part := range parts {
+		for i, part := range parts {
 			switch {
 			case hasPracticeCountSettings(part):
 				setting.CountArrangements = append(setting.CountArrangements,
 					practiceCountArrangement{
-						Member: part.ClassMember, Label: part.arrangementLabel(), Starts: part.Tiers.PersonCountStarts,
+						Index: i, Member: part.ClassMember, Label: part.arrangementLabel(), Starts: part.Tiers.PersonCountStarts,
 						DefaultStart: practiceDefaultCountStart{practiceCountStart: part.Tiers.defaultCountStart(), OpeningID: part.Tiers.OpeningID},
 						CanUseOpening: part.Tiers.CumulativeMetric == "" && (part.SaleScope == nil ||
 							len(part.SaleScope.SalesCategoryIDs)+len(part.SaleScope.SalesUnits) == 0),
@@ -149,6 +150,7 @@ type savePracticeRuleSettingsInput struct {
 	DefaultStart      *practiceDefaultCountStart
 	CountStart        *practicePersonCountStart
 	CountMember       *string
+	CountIndex        *int
 	ExistingPersonID  int64
 	RetrainSplit      *practiceRetrainSplit
 	ExistingCompanyID string
@@ -224,8 +226,9 @@ func replacePracticeRuleSetting[T any](rows []T, next *T, matches func(T) bool, 
 func editPracticeRuleSettings(pub *publishRuleInput, input savePracticeRuleSettingsInput, countChange bool) error {
 	if countChange {
 		var tiers *practiceSalesTiers
-		for _, part := range pub.Components {
-			if !hasPracticeCountSettings(part) || input.CountMember != nil && part.ClassMember != *input.CountMember {
+		for i, part := range pub.Components {
+			if !hasPracticeCountSettings(part) || input.CountMember != nil && part.ClassMember != *input.CountMember ||
+				input.CountIndex != nil && i != *input.CountIndex {
 				continue
 			}
 			if tiers != nil {

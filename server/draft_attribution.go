@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -366,7 +367,7 @@ func attachReportOrganizations(ctx context.Context, tx pgx.Tx, draft *paymentDra
 		}
 		f := byVersion[line.FactID]
 		var company identityKey
-		if line.Component == "sales" {
+		if line.Component == "sales" || strings.HasPrefix(line.Component, "period:sales:") {
 			company = identityKey{f.Source, f.SalesCompanyID}
 		}
 		line.organization = index.resolve(line.PersonID, f.OccurredAt, company)

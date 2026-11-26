@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref } from 'vue'
 import PracticePoolFields from './PracticePoolFields.vue'
 import PracticePeriodRateStandards from './PracticePeriodRateStandards.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
@@ -14,15 +14,11 @@ import { hasPracticePaymentScope, practiceStandardRateScope, practiceTierSelecti
 const props = defineProps({
   component:Object, index:Number, people:Array, units:Array, companies:Array, salesCategories:Array,
   registrationCompanies:Array, registrationLoading:Boolean, registrationError:String,
-  recipientTypes:Array, referralCompanies:Array, appointmentKinds:Array, sourceRoles:Array, payeeRoles:Array, salesUnits:Array, pools:Array, createPool:Function,
-  memberChoices:Array,
+  recipientTypes:Array, referralCompanies:Array, appointmentKinds:Array, payeeRoles:Array, salesUnits:Array, pools:Array,
+  memberChoices:Array, allowSignupFixed:Boolean,
 })
 const config = computed(() => props.component.periodBenefit)
 const usesStandardRates = computed(() => config.value.method==='rate' && Array.isArray(config.value.standardRates))
-const usesOrganizationRates = computed(() => usesStandardRates.value && config.value.standardRates.some(row=>row.salesUnits?.length))
-watch(usesOrganizationRates, uses => {
-  if (uses) props.component.sourceRole ||= props.sourceRoles[0]?.value
-})
 const registration = computed(() => config.value.registrationScope)
 const registrationOption = [{value:'registration',label:'签到报名归属'}]
 const scopeMode = computed(() => registration.value ? 'registration' : config.value.ownSales ? 'own' :
@@ -48,9 +44,6 @@ const fixedTeamOptions = computed(() => fixedScopeDimensions.value.length>1
   ? [...fixedScopeOptions,{value:'team',label:'已配置的组合范围'}] : fixedScopeOptions)
 const fixedScopeUses = dimension => fixedScopeMode.value===dimension ||
   (fixedScopeMode.value==='team' && fixedScopeDimensions.value.includes(dimension))
-const showSalesRole = computed(() => config.value.recipient!=='order_appointment' &&
-  (usesOrganizationRates.value || scopeMode.value==='own' ||
-    scopeMode.value==='team' && (config.value.salesPeople?.length || config.value.salesUnits?.length)))
 const rateScopeGroup = computed(() => {
   const scope = config.value
   if (scopeMode.value!=='team') return 'general'
@@ -94,7 +87,6 @@ function changeScope(mode) {
     benefit.salesUnits = []
     benefit.joinSalesOrganizations = false
   }
-  if (mode==='own' || mode==='team') props.component.sourceRole ||= props.sourceRoles[0]?.value
 }
 function changeFixedScope(mode) {
   if (!fixedScopeOptions.some(option=>option.value===mode)) {
@@ -115,7 +107,6 @@ function changeFixedScope(mode) {
 function setRecipient(recipient) {
   config.value.recipient = recipient
   if (recipient!=='person' && config.value.ownSales) changeScope('all')
-  if (recipient==='order_appointment') props.component.sourceRole ||= props.sourceRoles[0]?.value
   if (recipient==='order_appointment' && config.value.method==='class_fixed') config.value.method = 'order_fixed'
   if (recipient!=='order_appointment' && config.value.method==='order_fixed') config.value.method = 'class_fixed'
 }
@@ -123,14 +114,24 @@ const registrationCompanies = computed(() => (props.registrationCompanies ?? pro
 const byName = (text, option) => (option?.label || '').toLowerCase().includes(text.trim().toLowerCase())
 const field = name => 'practice-benefit-'+props.index+'-'+name
 const tierColumns = ['净实收下限（元）','净实收上限（元）','比例（%）']
+const orderAppointmentRecipient = computed(() => config.value.recipient==='order_appointment')
 const calculationMethods = computed(() => [
   {value:'rate',label:'比例'},
-  config.value.recipient==='order_appointment' ? {value:'order_fixed',label:'固定金额'} : {value:'class_fixed',label:'固定金额'},
-  {value:'tiers',label:'阶梯'},
-  ...(config.value.recipient==='order_appointment' && config.value.method==='class_fixed'
+  orderAppointmentRecipient.value
+    ? {value:'order_fixed',label:props.allowSignupFixed ? '每笔付款固定金额' : '固定金额'}
+    : {value:'class_fixed',label:props.allowSignupFixed ? '整班固定金额' : '固定金额'},
+  ...(props.allowSignupFixed || config.value.method==='fixed'
+    ? [{value:'fixed',label:props.allowSignupFixed ? '按报名固定金额' : '按报名计提固定金额'}] : []),
+  ...(orderAppointmentRecipient.value && config.value.method==='class_fixed'
     ? [{value:'class_fixed',label:'按组织整班计提'}] : []),
-  ...(config.value.method==='fixed' ? [{value:'fixed',label:'按报名计提固定金额'}] : []),
+  {value:'tiers',label:'阶梯'},
 ])
+const fixedAmountLabel = computed(() => {
+  if (config.value.method==='order_fixed') return '每笔符合条件的订单金额（元）'
+  if (config.value.method==='class_fixed' && orderAppointmentRecipient.value) return '每个组织整班金额（元）'
+  if (!props.allowSignupFixed) return undefined
+  return config.value.method==='fixed' ? '每个合格报名金额（元）' : '整班金额（元）'
+})
 </script>
 
 <template>
@@ -162,16 +163,13 @@ const calculationMethods = computed(() => [
     <template v-if="config.recipient==='order_appointment'">
       <CatalogOrganizationAppointmentFields :prefix="field('recipient')" :roles="appointmentKinds"
         v-model:level="config.orderAppointmentLevel" v-model:role="config.orderAppointmentKind"/>
-      <a-form-item label="订单上的销售角色" :html-for="field('role')" required>
-        <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
-      </a-form-item>
     </template>
     <a-form-item v-if="config.recipient==='referral_company'" label="限定收款公司" :html-for="field('referral-companies')">
       <a-select :id="field('referral-companies')" v-model:value="config.referralCompanyIds" :options="referralCompanies"
         mode="multiple" :max-tag-count="1" allow-clear :filter-option="byName" placeholder="按推荐关系结算"/>
     </a-form-item>
     <PracticePoolFields v-if="config.recipient==='pool'" :target="config.pool" :prefix="field('target')"
-      :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
+      :pools="pools"/>
     <template #calculation>
       <a-form-item label="计提方式" :html-for="field('method')">
         <a-select :id="field('method')" v-model:value="config.method" :options="calculationMethods"/>
@@ -180,16 +178,12 @@ const calculationMethods = computed(() => [
     <template #scope>
       <RuleOrderScope v-if="config.method==='tiers'" :id="field('sales-source')" :model-value="scopeMode" :can-own="config.recipient==='person'"
         :additional="registrationOption" @update:model-value="changeScope"/>
-      <div v-if="registration || (!fixedMethod && showSalesRole) || config.method==='tiers' && scopeMode==='team'" class="rule-scope-filters">
+      <div v-if="registration || config.method==='tiers' && scopeMode==='team'" class="rule-scope-filters">
         <RuleSalesScopeFields v-if="scopeMode==='team' && config.method==='tiers'" :organization-id="field('sales-units')" :category-id="field('categories')" :person-id="field('sales')"
           v-model:organization-ids="config.salesUnits" v-model:source-company-ids="config.salesCompanies"
           v-model:category-ids="config.salesCategoryIds" v-model:person-ids="config.salesPeople"
           :organizations="salesUnits" :source-companies="companies" :categories="salesCategories" :people="people"
           @organizations-change="setOrganizationMapping"/>
-        <a-form-item v-if="!fixedMethod && showSalesRole"
-          label="订单上的销售角色" :html-for="field('role')" required>
-          <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
-        </a-form-item>
         <template v-if="registration">
           <a-form-item label="本人销售账号" :html-for="field('registration-seller')">
             <a-input :id="field('registration-seller')" v-model:value="registration.sellerId" inputmode="numeric"
@@ -243,12 +237,8 @@ const calculationMethods = computed(() => [
               :organizations="salesUnits" :source-companies="companies" :categories="salesCategories" :people="people"
               @organizations-change="setOrganizationMapping"/>
           </div>
-          <a-form-item v-if="showSalesRole" class="period-fixed-role" label="订单上的销售角色" :html-for="field('role')" required>
-            <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles"/>
-          </a-form-item>
           <RuleStandardValue class="period-fixed-amount" :id="field('fixed')" v-model="config.fixedAmount" method="fixed" :max="1000000000"
-            :label="config.method==='order_fixed' ? '每笔符合条件的订单金额（元）'
-              : config.recipient==='order_appointment' && config.method==='class_fixed' ? '每个组织整班金额（元）' : undefined"/>
+            :label="fixedAmountLabel"/>
         </div>
       </RuleCommissionStandards>
   <RuleCommissionStandards v-else-if="config.method==='tiers'" class="period-tier-editor">
@@ -293,7 +283,7 @@ const calculationMethods = computed(() => [
 .period-arrangement :deep(.pool-create) {grid-column:1 / -1}
 .period-fields {display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,175px),1fr));gap:0 10px;align-items:start}
 .period-fixed-standard {display:flex;flex-wrap:wrap;gap:4px 8px;align-items:end}
-.period-fixed-standard > :deep(.rule-order-scope), .period-fixed-role {flex:0 1 min(100%,220px)}
+.period-fixed-standard > :deep(.rule-order-scope) {flex:0 1 min(100%,220px)}
 .period-fixed-standard > .period-fields {flex:1 1 min(100%,240px)}
 .period-fixed-amount {flex:0 1 auto;min-width:115px}
 .period-fixed-standard :deep(.ant-form-item) {margin:0;min-width:0}

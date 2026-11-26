@@ -243,9 +243,11 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 		roleAllowed := func(role, previous string) bool {
 			return role != "" && (role == previous || catalogStructureOptionFor(options.Roles, role).Organization)
 		}
-		validDestination := registered && edit.OrganizationKey == "" && edit.PoolName == "" ||
-			edit.PoolID == 0 && org.UnitID != "" && textOK(edit.PoolName, 80)
-		if !validDestination || edit.OwnerPersonID < 0 || (edit.OwnerPersonID > 0) == (edit.OwnerRole != "") ||
+		legacyDestination := edit.PoolID == 0 && before.TargetKind == "pool" && before.PoolID == 0 &&
+			edit.OrganizationKey == before.OrganizationKey && edit.PoolName == before.PoolName && org.UnitID != ""
+		validDestination := legacyDestination || registered && edit.OrganizationKey == "" && edit.PoolName == ""
+		usesDirectoryOwner := registered && edit.OwnerRole == "" && edit.OwnerPersonID == 0
+		if !validDestination || edit.OwnerPersonID < 0 || !usesDirectoryOwner && (edit.OwnerPersonID > 0) == (edit.OwnerRole != "") ||
 			edit.OwnerRole != "" && !roleAllowed(edit.OwnerRole, before.OwnerRole) ||
 			!roleAllowed(edit.MemberRole, before.MemberRole) {
 			return errCatalogPeriodRecipient

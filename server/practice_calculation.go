@@ -6,6 +6,32 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+func (part component) isPracticePersonalArrangement() bool {
+	return (part.Type == "sales" || part.Type == "referral") && part.SourceRole != "" && part.PeriodBenefit == nil
+}
+
+// Keep the original posting key for the first applicable arrangement. Further
+// arrangements of the same type are identified by their position in the immutable rule version.
+func practicePersonalComponentKey(parts []component, index int, member string) string {
+	part := parts[index]
+	for _, prior := range parts[:index] {
+		if prior.Type == part.Type && prior.isPracticePersonalArrangement() && prior.matchesPracticeMember(member) {
+			return practicePeriodComponentKey(part, index)
+		}
+	}
+	return part.Type
+}
+
+func practicePersonalComponent(parts []component, code, member string) (component, bool) {
+	for i, part := range parts {
+		if (part.Type == "sales" || part.Type == "referral") && part.PeriodBenefit == nil &&
+			part.matchesPracticeMember(member) && practicePersonalComponentKey(parts, i, member) == code {
+			return part, true
+		}
+	}
+	return component{}, false
+}
+
 func classMember(kind int) string {
 	if kind == 3 {
 		return "new"
@@ -147,7 +173,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			}
 		}
 	}
-	var tierResults map[string]practiceTierResult
+	var tierResults map[int]practiceTierResult
 	tierCount := 0
 	for _, part := range rule.Components {
 		if part.Tiers != nil {
@@ -155,17 +181,18 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		}
 	}
 	if tierCount != 0 {
-		tierResults = make(map[string]practiceTierResult, tierCount)
+		tierResults = make(map[int]practiceTierResult, tierCount)
 	}
 	if tierCount > 1 {
 		draft.practiceFrozenTiers = make(map[string]practiceFrozenTier, tierCount)
 	}
-	for _, part := range rule.Components {
+	for i, part := range rule.Components {
 		if part.Tiers == nil {
 			continue
 		}
 		state := history
-		if configured, ok := history.arrangements[part.ClassMember]; ok {
+		key := practiceTierArrangementKey(rule.Components, i)
+		if configured, ok := history.arrangements[key]; ok {
 			state = configured
 			state.replaying, state.bookedRefunds, state.liveCategories = history.replaying, history.bookedRefunds, history.liveCategories
 			state.legacyMeasures = history.legacyMeasures
@@ -175,11 +202,11 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		if err != nil {
 			return draft, err
 		}
-		tierResults[part.ClassMember] = practiceTierResult{awards, issues}
+		tierResults[i] = practiceTierResult{awards, issues}
 		if tierCount == 1 {
 			draft.practicePriorCounts, draft.practiceTierAmounts = issues.priorCounts, issues.amounts
 		} else {
-			draft.practiceFrozenTiers[part.ClassMember] = practiceFrozenTier{PriorCounts: issues.priorCounts, Amounts: issues.amounts}
+			draft.practiceFrozenTiers[key] = practiceFrozenTier{PriorCounts: issues.priorCounts, Amounts: issues.amounts}
 		}
 	}
 	for _, purchase := range purchases {
@@ -239,8 +266,9 @@ type practiceTierResult struct {
 }
 
 func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purchase practicePurchase,
-	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime, tierResults map[string]practiceTierResult) error {
+	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime, tierResults map[int]practiceTierResult) error {
 	member := purchase.member
+	memberKind := classMember(member.MembershipType)
 	var err error
 	if purchase.companyRoutingIssue != "" {
 		draft.Issues = append(draft.Issues, purchase.salesIssue(purchase.companyRoutingIssue, rule, "company_sales"))
@@ -251,7 +279,7 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		}
 	}
 	for index, part := range rule.Components {
-		if !part.matchesPracticeMember(classMember(member.MembershipType)) {
+		if !part.matchesPracticeMember(memberKind) {
 			continue
 		}
 		if part.CompanySales != nil || part.PeriodBenefit != nil || part.Mode == directorRateMode {
@@ -263,20 +291,21 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		if part.Type == "sales" && (purchase.companyAward != nil || purchase.companyRoutingIssue != "") {
 			continue
 		}
+		componentKey := practicePersonalComponentKey(rule.Components, index, memberKind)
 		inScope, issue := purchase.matchesSalesCompanies(part.legacySalesCompanyFilter())
 		if issue != "" {
-			draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
+			draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, componentKey))
 		}
 		if !inScope {
 			continue
 		}
 		if (part.Type != "sales" && part.Type != "referral") || part.SourceRole == "" {
-			draft.Issues = append(draft.Issues, practiceIssue("UNCONFIGURED_COMPONENT", member, rule, part.Type))
+			draft.Issues = append(draft.Issues, practiceIssue("UNCONFIGURED_COMPONENT", member, rule, componentKey))
 			continue
 		}
 		sale, scopeIssue := purchase.scopedSale(part, identities, runtime)
 		if scopeIssue != "" {
-			draft.Issues = append(draft.Issues, purchase.salesIssue(scopeIssue, rule, part.Type))
+			draft.Issues = append(draft.Issues, purchase.salesIssue(scopeIssue, rule, componentKey))
 			continue
 		}
 		if len(sale.payments) == 0 {
@@ -285,14 +314,14 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		payments, base := sale.payments, sale.base
 		assignments, issue := practiceBeneficiaries(payments, part.SourceRole, identities)
 		if issue != "" {
-			draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
+			draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, componentKey))
 			continue
 		}
 		salesOwner := assignments[0].PersonID
 		if part.SaleScope.hasExceptions() {
 			terms, issue := purchase.saleTerms(sale, part, salesOwner, identities, runtime)
 			if issue != "" {
-				draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, part.Type))
+				draft.Issues = append(draft.Issues, purchase.salesIssue(issue, rule, componentKey))
 				continue
 			}
 			part.Mode, part.Value = terms.Mode, terms.Value
@@ -304,7 +333,7 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		}
 		split, issue := purchase.retrainSplit(part.retrainSplits())
 		if issue != "" {
-			draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+			draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, componentKey))
 			continue
 		}
 		if split != nil {
@@ -339,12 +368,12 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 			}
 			amounts, valid := activeSplit.amounts(commission, base)
 			if !valid {
-				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_RETRAIN_SPLIT_EXCEEDS_COMMISSION", member, rule, part.Type))
+				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_RETRAIN_SPLIT_EXCEEDS_COMMISSION", member, rule, componentKey))
 				continue
 			}
 			unit := runtime.poolUnits[split.Pool.PoolID]
 			if !unit.Valid {
-				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_POOL_MISSING", member, rule, part.Type))
+				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_POOL_MISSING", member, rule, componentKey))
 				continue
 			}
 			if err := appendPracticeRetrainSplit(draft, purchase, rule, index, amounts, assignments, *split, unit, part.Mode == "rate", reduceFixedShares, serviceMatches); err != nil {
@@ -354,14 +383,14 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		}
 		isTiered := part.Mode == "tiered"
 		if isTiered {
-			result := tierResults[part.ClassMember]
+			result := tierResults[index]
 			if issue := result.issues.forPurchase(salesOwner, member.ID); issue != "" {
-				draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+				draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, componentKey))
 				continue
 			}
 			tier, ok := result.awards[member.ID]
 			if !ok {
-				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_TIER_NOT_MATCHED", member, rule, part.Type))
+				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_TIER_NOT_MATCHED", member, rule, componentKey))
 				continue
 			}
 			part.Mode, part.Value = tier.Mode, tier.Value
@@ -386,11 +415,11 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 			amount, issue = sale.commissionAmount(part)
 		}
 		if issue != "" {
-			draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
+			draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, componentKey))
 			continue
 		}
 		if isTiered && amount > base {
-			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_TIER_EXCEEDS_PAYMENT", member, rule, part.Type))
+			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_TIER_EXCEEDS_PAYMENT", member, rule, componentKey))
 			continue
 		}
 		draft.Total, err = addMinor(draft.Total, amount)
@@ -410,7 +439,7 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 			payee := assignments[index]
 			draft.Lines = append(draft.Lines, draftLine{
 				FactID: payment.ID, RuleID: rule.ID, EnrollmentID: member.ID, PersonID: payee.PersonID,
-				IdentityID: payee.ID, Component: part.Type, Base: net, Amount: paymentAmount,
+				IdentityID: payee.ID, Component: componentKey, Base: net, Amount: paymentAmount,
 				practiceProportionalRefund: !isTiered && (part.Mode == "rate" || part.Mode == "fixed"),
 				practiceTierRefund:         isTiered,
 				practiceArrangementLabel:   part.arrangementLabel(),

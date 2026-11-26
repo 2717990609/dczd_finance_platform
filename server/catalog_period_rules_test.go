@@ -99,13 +99,18 @@ func TestCatalogPeriodRulesUseOrganizationDirectoryWithoutImportedAliases(t *tes
 	 ($1,NULL,'新公司','COMPANY','ACTIVE'),($2,$1,'新交付组','TEAM','ACTIVE'),($3,$1,'旧组','TEAM','INACTIVE')`, company, team, disabled); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(ctx, `INSERT INTO products(code,name,period_mode) VALUES('DIRECTORY_POOL','团队池测试','calendar');`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO practice_pools(product_id,unit_id,name) VALUES (1,$1,'交付池'),(1,$2,'停用组织池')`, team, disabled); err != nil {
+		t.Fatal(err)
+	}
 	base := json.RawMessage(twoTierPeriodRule)
 	edits := []catalogPeriodComponentEdit{
 		{Label: "公司收款", TargetKind: "company", OrganizationKey: "unit:" + company, Tiers: []catalogPeriodTier{{Rate: 250}}},
-		{Label: "团队收款", TargetKind: "pool", OrganizationKey: "unit:" + team, PoolName: "交付池",
-			OwnerRole: "SERVICE_DELIVERY", MemberRole: "DELIVERY_TEAM", Tiers: []catalogPeriodTier{{Rate: 125}}},
+		{Label: "团队收款", TargetKind: "pool", PoolID: 1, MemberRole: "DELIVERY_TEAM", Tiers: []catalogPeriodTier{{Rate: 125}}},
 	}
-	updated, err := applyCatalogPeriodChanges(ctx, db, 0, base, base, nil, edits)
+	updated, err := applyCatalogPeriodChanges(ctx, db, 1, base, base, nil, edits)
 	if err != nil {
 		t.Fatalf("active organizations from the directory must be configurable: %v", err)
 	}
@@ -125,8 +130,8 @@ func TestCatalogPeriodRulesUseOrganizationDirectoryWithoutImportedAliases(t *tes
 		if _, key, issue := directory.groupTarget(rule.Items[0], at); key.Unit != company || issue != "" {
 			t.Fatalf("wrong company payout: %+v %s", key, issue)
 		}
-		if _, key, issue := directory.groupTarget(rule.Items[1], at); key.Unit != team || issue != "BENEFIT_POOL_OWNER_MISSING" {
-			t.Fatalf("the team resolves by ID and still needs a dated owner: %+v %s", key, issue)
+		if _, key, issue := directory.groupTarget(rule.Items[1], at); key.Unit != team || issue != "BENEFIT_POOL_MEMBERS_MISSING" {
+			t.Fatalf("the named pool resolves by ID and still needs eligible members: %+v %s", key, issue)
 		}
 		return nil
 	}); err != nil {
@@ -152,29 +157,29 @@ func TestCatalogPeriodRulesUseOrganizationDirectoryWithoutImportedAliases(t *tes
 			return err
 		}
 		_, key, issue := directory.groupTarget(rule.Items[1], at)
-		if key.Unit != team || key.Owner != 9101 || len(key.Members) != 1 || key.Members[0] != 9102 || issue != "" {
+		if key.Unit != team || key.Owner != 0 || len(key.Members) != 1 || key.Members[0] != 9102 || issue != "" {
 			t.Fatalf("the selected team uses payment-date membership even without a source alias: %+v %s", key, issue)
 		}
 		return nil
 	}); err != nil {
 		t.Fatal(err)
 	}
-	edits[1].OrganizationKey = "unit:" + disabled
-	if _, err := applyCatalogPeriodChanges(ctx, db, 0, base, base, nil, edits); !errors.Is(err, errCatalogPeriodRecipient) {
+	edits[1].PoolID = 2
+	if _, err := applyCatalogPeriodChanges(ctx, db, 1, base, base, nil, edits); !errors.Is(err, errCatalogPeriodRecipient) {
 		t.Fatalf("accepted a disabled organization: %v", err)
 	}
 }
 
 func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t *testing.T) {
 	choices := catalogStructureOptions{
-		Organizations: []catalogStructureOption{{Value: "company", UnitID: "company-unit", Kind: "COMPANY"}, {Value: "pool", UnitID: "pool-unit", Kind: "TEAM"}},
+		Organizations: []catalogStructureOption{{Value: "company", UnitID: "company-unit", Kind: "COMPANY"}, {Value: "pool", UnitID: "41000000-0000-4000-8000-000000000119", Kind: "TEAM"}},
 		Roles:         []catalogStructureOption{{Value: "OWNER", Organization: true}, {Value: "MEMBER", Organization: true}},
 		Duties:        []catalogStructureOption{{Value: "TEAM_DUTY"}},
+		TeamPools:     []teamPool{{ID: 9, UnitID: "41000000-0000-4000-8000-000000000119", Name: "交付池"}},
 	}
 	raw := json.RawMessage(twoTierPeriodRule)
 	edits := []catalogPeriodComponentEdit{
-		{ItemKey: "operations", Label: "交付", TargetKind: "pool", OrganizationKey: "pool", PoolName: "交付池",
-			OwnerRole: "OWNER", MemberRole: "MEMBER", Tiers: []catalogPeriodTier{{Rate: 125}}},
+		{ItemKey: "operations", Label: "交付", TargetKind: "pool", PoolID: 9, MemberRole: "MEMBER", Tiers: []catalogPeriodTier{{Rate: 125}}},
 		{Label: "技术公司", TargetKind: "company", OrganizationKey: "company", Tiers: []catalogPeriodTier{{Rate: 250}}},
 		{Label: "个人分润", TargetKind: "person", PersonID: 22, Tiers: []catalogPeriodTier{{Rate: 210}}},
 		{Label: "在任负责人", TargetKind: "appointment", AppointmentLevel: "TEAM", AppointmentRole: "OWNER",
@@ -188,8 +193,8 @@ func TestCatalogPeriodComponentChangesPreserveOriginalAndUseSelectedRecipient(t 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(parsed.Items) != 4 || parsed.Items[0].ItemKey != "operations" || parsed.Items[0].unit != "pool-unit" ||
-		parsed.Items[0].PoolName != "交付池" || parsed.Items[0].OwnerRole != "OWNER" || parsed.Items[0].MemberRole != "MEMBER" ||
+	if len(parsed.Items) != 4 || parsed.Items[0].ItemKey != "operations" || parsed.Items[0].unit != "41000000-0000-4000-8000-000000000119" ||
+		parsed.Items[0].PoolName != "交付池" || parsed.Items[0].OwnerRole != "" || parsed.Items[0].PoolID != 9 || parsed.Items[0].MemberRole != "MEMBER" ||
 		parsed.Items[1].OrganizationKey != "company" || parsed.Items[1].TargetKind != "company" ||
 		parsed.Items[2].PersonID != 22 || parsed.Items[2].TargetKind != "person" ||
 		parsed.Items[3].TargetKind != "appointment" || parsed.Items[3].AppointmentRole != "OWNER" || parsed.Items[3].RecipientDuty != "TEAM_DUTY" {

@@ -11,7 +11,7 @@ import { practiceCompanyMatchLabels, practiceCompanyRatePriority,
   practiceCompanyScopes } from './rule-component-form'
 
 const props = defineProps({component:Object,index:Number,companies:Array,organizations:Array,salesCategories:Array,recipients:Array,amounts:Array,
-  sourceRoles:Array,payeeRoles:Array,people:Array,units:Array,pools:Array,createPool:Function,memberChoices:Array})
+  payeeRoles:Array,people:Array,units:Array,pools:Array,memberChoices:Array})
 const emit = defineEmits(['member-change'])
 const sales = computed(() => props.component.companySales)
 const categories = computed(() => sales.value.categories)
@@ -171,7 +171,7 @@ watch(amounts, choices => {
       <a-select :id="field('payee-company')" v-model:value="payee.companyId" :options="recipients" show-search :filter-option="byName"/>
     </a-form-item>
     <PracticePoolFields v-if="payee.kind==='pool'" :target="payee.pool" :prefix="field('payee')"
-      :pools="pools" :people="people" :units="units" :create-pool="createPool"/>
+      :pools="pools"/>
     <template #calculation>
       <a-form-item label="计提方式" :html-for="field('method')">
         <a-select :id="field('method')" :value="activeMethod" :options="amounts"
@@ -249,13 +249,10 @@ watch(amounts, choices => {
     <a-select :id="field('referral-recipients')" v-model:value="component.companySales.recommendationRecipients"
       :options="recipients" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
   </a-form-item>
-  <a-collapse ghost class="company-advanced">
+  <a-collapse v-if="component.companySales.internalCompanies?.length" ghost class="company-advanced">
     <a-collapse-panel key="advanced" header="订单归属设置">
       <div class="rule-basics">
-        <a-form-item label="订单上的销售角色" :html-for="field('role')" required>
-          <a-select :id="field('role')" v-model:value="component.sourceRole" :options="sourceRoles" size="small"/>
-        </a-form-item>
-        <a-form-item v-if="component.companySales.internalCompanies?.length" label="已配置的个人提成组织" :html-for="field('internal')">
+        <a-form-item label="已配置的个人提成组织" :html-for="field('internal')">
           <a-select :id="field('internal')" v-model:value="component.companySales.internalCompanies" :options="internalOptions"
             mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName" size="small"/>
         </a-form-item>

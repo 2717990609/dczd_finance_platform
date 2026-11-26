@@ -45,7 +45,7 @@ const unitName = id => {
 }
 const poolName = target => {
   const name = directory.value?.pools.find(pool=>pool.id===target.poolId)?.name || '资金池 '+target.poolId
-  return name+' · 分配负责人 '+personName(target.ownerId)
+  return target.ownerId ? name+' · 原规则负责人 '+personName(target.ownerId) : name
 }
 const companyName = key => label('practiceSalesCompany', key)
 const categoryName = id => directory.value?.categories?.[id] || label('practiceSalesCategory',id)
@@ -218,7 +218,7 @@ onMounted(async () => {
         <a-descriptions-item label="生效时间">{{ rule.effectiveFrom ? formatTime(rule.effectiveFrom) : '范围默认' }}<template v-if="rule.effectiveTo"> 至 {{ formatTime(rule.effectiveTo) }}</template></a-descriptions-item>
         <a-descriptions-item v-if="rule.retiredFrom" label="停用时间">{{ formatTime(rule.retiredFrom) }}</a-descriptions-item>
       </a-descriptions>
-      <section v-for="part in countArrangements" :key="part.classMember" class="rule-block practice-count-starts" aria-label="累计起点">
+      <section v-for="(part,index) in countArrangements" :key="index" class="rule-block practice-count-starts" aria-label="累计起点">
         <h3 class="form-subhead">累计起点<template v-if="countArrangements.length>1"> · {{ ruleComponentLabel(part,label) }}</template></h3>
         <a-descriptions size="small" :column="1">
           <a-descriptions-item label="默认累计起点">{{ countStart(part.tiers) }}</a-descriptions-item>

@@ -20,7 +20,7 @@ const form = ref()
 const directory = ref()
 const query = computed(() => '?'+new URLSearchParams({productId:props.productId}))
 const arrangements = computed(() => result.value.rules.filter(rule=>rule.hasCount).flatMap(rule=>
-  rule.countArrangements.map(part=>({rule,part,id:rule.id+':'+part.member,
+  rule.countArrangements.map(part=>({rule,part,id:rule.id+':'+(part.index ?? part.member),
     label:rule.countArrangements.length>1 ? part.label || props.optionLabel('classMember',part.member) : ''}))))
 const arrangementsByID = computed(() => new Map(arrangements.value.map(row=>[row.id,row])))
 const personNames = computed(() => new Map((result.value.directory?.people || []).map(person=>[person.id,person.name])))
@@ -106,7 +106,7 @@ async function save(remove = false) {
   try {
     const arrangement = currentArrangement.value
     if (!arrangement) throw new Error('请选择适用规则')
-    const body = {productId:props.productId,ruleId:arrangement.rule.id,countMember:arrangement.part.member}
+    const body = {productId:props.productId,ruleId:arrangement.rule.id,countMember:arrangement.part.member,countIndex:arrangement.part.index}
     if (isDefault) body.defaultStart = practiceCountStartBody(entry)
     else {
       if (!remove && !entry.personId) throw new Error('请选择人员')

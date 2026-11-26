@@ -30,19 +30,20 @@ type poolOwner struct {
 
 type poolDraftItem struct {
 	poolScope
-	Name        string                `json:"name"`
-	UnitName    string                `json:"unitName"`
-	Owners      []poolOwner           `json:"owners,omitempty"`
-	Opening     int64                 `json:"openingMinor"`
-	Income      int64                 `json:"incomeMinor"`
-	Refund      int64                 `json:"refundMinor"`
-	Correction  int64                 `json:"correctionMinor"`
-	Confirmed   int64                 `json:"confirmedMinor"`
-	Balance     int64                 `json:"balanceMinor"`
-	Revision    int64                 `json:"revision"`
-	PlanCurrent bool                  `json:"planCurrent"`
-	Shares      []poolAllocationShare `json:"shares"`
-	Members     []poolMember          `json:"members"`
+	Name           string                `json:"name"`
+	UnitName       string                `json:"unitName"`
+	Owners         []poolOwner           `json:"owners,omitempty"`
+	DirectoryOwner string                `json:"ownerName,omitempty"`
+	Opening        int64                 `json:"openingMinor"`
+	Income         int64                 `json:"incomeMinor"`
+	Refund         int64                 `json:"refundMinor"`
+	Correction     int64                 `json:"correctionMinor"`
+	Confirmed      int64                 `json:"confirmedMinor"`
+	Balance        int64                 `json:"balanceMinor"`
+	Revision       int64                 `json:"revision"`
+	PlanCurrent    bool                  `json:"planCurrent"`
+	Shares         []poolAllocationShare `json:"shares"`
+	Members        []poolMember          `json:"members"`
 }
 
 type poolStage struct {
@@ -101,7 +102,7 @@ const poolAggregateMembersSQL = `SELECT member.id
  CROSS JOIN LATERAL jsonb_to_recordset(g.targets) target("Item" text,"Unit" text,"Owner" bigint,"Members" bigint[])
  CROSS JOIN LATERAL unnest(target."Members") member(id)
  WHERE (g.period_id,g.group_key)=(l.period_id,l.aggregate_group_key)
-  AND (target."Item",target."Unit",target."Owner")=(l.component_type,l.beneficiary_unit_id::text,l.allocation_owner_id)`
+  AND (target."Item",target."Unit",coalesce(target."Owner",0))=(l.component_type,l.beneficiary_unit_id::text,coalesce(l.allocation_owner_id,0))`
 
 const poolAllocationCurrentSQL = `(a.draft_version=d.version AND
  (EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=a.period_id) OR (
@@ -464,25 +465,37 @@ func readPoolDraftLabels(ctx context.Context, tx pgx.Tx, items []poolDraftItem, 
 	}
 	var units []string
 	var owners []int64
+	var registered []int64
 	for _, item := range items {
 		units = append(units, item.Unit)
+		if item.Scenario == "class" || item.Scenario == "team-pool" {
+			if id := catalogPoolID(catalogPoolPrefix + item.Item); id > 0 {
+				registered = append(registered, id)
+			}
+		}
 		for owner := range states[item.poolScope].ownerIncome {
 			owners = append(owners, owner)
 		}
 	}
 	var unitNames map[string]string
 	var ownerNames map[int64]string
+	var registeredOwners map[string]string
 	err := tx.QueryRow(ctx, `SELECT
 	 (SELECT jsonb_object_agg(u.id,concat_ws(' / ',grandparent.name,parent.name,u.name))
 	  FROM organization_units u LEFT JOIN organization_units parent ON parent.id=u.parent_id
 	  LEFT JOIN organization_units grandparent ON grandparent.id=parent.parent_id WHERE u.id=ANY($1::uuid[])),
-	 (SELECT jsonb_object_agg(id,name) FROM people WHERE id=ANY($2::bigint[]))`, units, owners).Scan(&unitNames, &ownerNames)
+	 (SELECT jsonb_object_agg(id,name) FROM people WHERE id=ANY($2::bigint[])),
+	 (SELECT jsonb_object_agg(pool.id,owner.name) FROM practice_pools pool JOIN people owner ON owner.id=pool.owner_person_id
+	  WHERE pool.id=ANY($3::bigint[]))`, units, owners, registered).Scan(&unitNames, &ownerNames, &registeredOwners)
 	if err != nil {
 		return err
 	}
 	for i := range items {
 		item := &items[i]
 		item.UnitName = unitNames[item.Unit]
+		if item.Scenario == "class" || item.Scenario == "team-pool" {
+			item.DirectoryOwner = registeredOwners[item.Item]
+		}
 		for owner, income := range states[item.poolScope].ownerIncome {
 			item.Owners = append(item.Owners, poolOwner{ID: owner, Name: ownerNames[owner], Income: income})
 		}

@@ -664,7 +664,7 @@ function publicationInput() {
       .map(([itemKey,newOnly])=>({itemKey,newOnly})),
     changes,
     targetChanges:Array.from(targetEdits.value,([itemKey, {personName,ownerName,organization,...payee}])=>
-      ({itemKey,...payee,organization:payee.poolId ? undefined : organization}))
+      ({itemKey,...payee,...(payee.poolId ? {role:undefined,ownerPersonId:undefined} : {organization})}))
       .filter(({itemKey})=>!removedItems.value.has(itemKey)),
     teamChanges:splitRemoved.value ? [] : Array.from(teamEdits.value,([teamKey,changes])=>({
       teamKey,headPersonId:changes.head?.id,servicePersonId:serviceRemoved.value ? undefined : changes.service?.id,
@@ -786,7 +786,7 @@ async function publish() {
               :order-types="catalogMembershipTypes" :order-type="memberValue(item)" @update:order-type="selectMemberType(item,$event)"
               :disabled="!editable || structureEditing" @update:name="setLabel(item,$event)">
               <CatalogPayeeFields v-if="canEditArrangement" :model-value="targetEdits.get(item.itemKey) || originalTarget(item)"
-                prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters" :product-id="sheet.productId"
+                prefix="catalog-edit" :options="sheet.structureOptions" :api="api" :people-filters="peopleFilters"
                 :unit-names="sheet.scopeUnitNames" :sales-available="item.canChooseSalesTable && (!selectedCalculation || !!selectedCalculation.rows?.length)"
                 :saved-pool-label="item.targetLabel" :existing-pool="item.targetKind==='pool' && !item.poolId"
                 :disabled="!editable || structureEditing" @update:model-value="setTarget(item,$event)"/>
@@ -1006,7 +1006,7 @@ async function publish() {
           <template v-if="sheet.mayPublish && !applied">
             <Teleport v-if="sheet.structureOptions" defer :disabled="!editorInCard"
               :to="editorInCard ? rateEditorTarget : 'body'">
-              <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id" :product-id="sheet.productId"
+              <CatalogRuleStructureEditor ref="structureEditor" :key="rule.id"
                 :order-type-text="orderTypeText" :membership-sku="sheet.membershipSku" :default-membership-new-only="sheet.membershipNewOnly"
                 :replacement-item-key="selected===serviceItemKey && serviceReplacement ? serviceItemKey : undefined"
                 v-model="structure" v-model:editing="structureEditing" :options="sheet.structureOptions" :component="editedComponent"

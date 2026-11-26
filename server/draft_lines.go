@@ -48,14 +48,14 @@ func storeDraftLines(ctx context.Context, tx pgx.Tx, summary *draftSummary, line
 	// Recreate that ordered set when a pool credit changes or moves in it.
 	var replacePools bool
 	if err := tx.QueryRow(ctx, `SELECT coalesce((SELECT array_agg(id ORDER BY id)
-	 FROM calculation_draft_lines WHERE period_id=$1 AND allocation_owner_id IS NOT NULL),'{}'::bigint[])
+	 FROM calculation_draft_lines WHERE period_id=$1 AND (practice_pool_id IS NOT NULL OR catalog_pool_id IS NOT NULL OR allocation_owner_id IS NOT NULL)),'{}'::bigint[])
 	 IS DISTINCT FROM coalesce((SELECT array_agg(stored.id ORDER BY incoming.input_position)
 	 FROM pg_temp.`+draftLineInput+` incoming LEFT JOIN calculation_draft_lines stored ON `+same+`
-	 WHERE incoming.allocation_owner_id IS NOT NULL),'{}'::bigint[])`, summary.PeriodID).Scan(&replacePools); err != nil {
+	 WHERE (incoming.practice_pool_id IS NOT NULL OR incoming.catalog_pool_id IS NOT NULL OR incoming.allocation_owner_id IS NOT NULL)),'{}'::bigint[])`, summary.PeriodID).Scan(&replacePools); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM calculation_draft_lines stored WHERE stored.period_id=$1
-	 AND ($2 AND stored.allocation_owner_id IS NOT NULL OR NOT EXISTS (
+	 AND ($2 AND (stored.practice_pool_id IS NOT NULL OR stored.catalog_pool_id IS NOT NULL OR stored.allocation_owner_id IS NOT NULL) OR NOT EXISTS (
 	 SELECT 1 FROM pg_temp.`+draftLineInput+` incoming WHERE `+same+`))`, summary.PeriodID, replacePools); err != nil {
 		return err
 	}

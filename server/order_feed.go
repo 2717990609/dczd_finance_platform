@@ -128,7 +128,7 @@ func (c orderFeedClient) getWithContract(ctx context.Context, action, contract s
 	if contract != "" {
 		req.Header.Set("X-"+c.source+"-Finance-Contract", contract)
 	}
-	if contract == practiceRosterReadContract {
+	if contract == practiceRosterReadContract || contract == practicePeriodReadContract {
 		req.Header.Set("Cache-Control", "no-cache")
 	}
 	res, err := pullClient.Do(req)

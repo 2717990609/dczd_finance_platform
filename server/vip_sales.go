@@ -328,7 +328,7 @@ func resolveVIPRateRows(rows []vipRateRow, company, relationship string, categor
 		case row.Company != "ANY":
 			tier = 2
 		}
-		if row.hasCategory() && (category == nil || row.Category != *category && !slices.Contains(row.CategoryIDs, *category)) {
+		if row.hasCategory() && (category == nil || !slices.Contains(row.categories(), *category)) {
 			if categoryIssue != "" {
 				score := row.specificity()
 				if tier < pendingTier || tier == pendingTier && score > pendingScore {

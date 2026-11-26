@@ -9,7 +9,7 @@ import RuleStandardValue from './RuleStandardValue.vue'
 import { catalogAppointmentLevels, catalogFlatMethods, catalogMembershipTypes, catalogOrderSalesPayees, catalogOrderScope, catalogPayeeComplete, catalogPercent, catalogRateConditionBody, catalogRateConditionScope, catalogRateIndicators, catalogRateOrderScopeLabel, commissionRatePriority, catalogSalesPayees, emptyCatalogOrderScope, moneyAsMinor, newCatalogRateCondition } from './rule-component-form'
 
 const props = defineProps({options:Object,component:Object,api:Function,peopleFilters:Object,parseRate:Function,salesAvailable:Boolean,
-  orderTypeText:String,productId:Number,membershipSku:Boolean,defaultMembershipNewOnly:Boolean,replacementItemKey:String})
+  orderTypeText:String,membershipSku:Boolean,defaultMembershipNewOnly:Boolean,replacementItemKey:String})
 const draft = defineModel({type:Object,required:true})
 const editing = defineModel('editing', {type:Boolean,default:false})
 const form = ref()
@@ -172,10 +172,10 @@ function stage() {
         cancel()
         return
       }
-      const item = {label,target:staged.target,role:staged.role,personId:staged.personId,ownSales,membershipNewOnly,
+      const item = {label,target:staged.target,role:staged.poolId ? undefined : staged.role,personId:staged.personId,ownSales,membershipNewOnly,
         replacesItemKey:staged.replacesItemKey,appointmentUnitId:staged.appointmentUnitId,appointmentLevel:staged.appointmentLevel,
         personName:staged.personName,organization:staged.poolId ? undefined : staged.organization,memberRole:staged.memberRole,poolId:staged.poolId,
-        ownerPersonId:staged.ownerPersonId,ownerName:staged.ownerName,...scope,...calculationBody(staged)}
+        ownerPersonId:staged.poolId ? undefined : staged.ownerPersonId,ownerName:staged.poolId ? undefined : staged.ownerName,...scope,...calculationBody(staged)}
       if (staged.itemIndex==null) draft.value.items.push(item)
       else draft.value.items.splice(staged.itemIndex,1,item)
     }
@@ -202,7 +202,7 @@ defineExpose({addRecipient,editRecipient,editCalculation,cancel})
         :order-types="catalogMembershipTypes" :order-type="(form.membershipNewOnly ?? defaultMembershipNewOnly) ? 'new' : 'all'"
         @update:order-type="form.membershipNewOnly=$event==='new'">
         <CatalogPayeeFields v-if="form.kind==='item'" :model-value="form" prefix="catalog-add" :options="options" :api="api"
-          :product-id="productId" :people-filters="peopleFilters"
+          :people-filters="peopleFilters"
           :sales-available="!form.editingSales && form.itemIndex==null && salesAvailable" @update:model-value="changePayee"/>
         <template #calculation>
           <a-form-item v-if="form.kind==='item' && !isSales" label="计提方式" html-for="catalog-add-format">

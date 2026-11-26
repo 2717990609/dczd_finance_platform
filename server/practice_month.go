@@ -93,35 +93,30 @@ func practiceMonthlyRefundPolicy(parts []component, original refundObligation, l
 			return replay
 		}
 	}
-	if original.ComponentType == "sales" || original.ComponentType == "referral" {
-		for _, part := range parts {
-			if part.Type != original.ComponentType || !part.matchesPracticeMember(member) {
-				continue
-			}
-			if len(part.salesCompanies()) != 0 && !slices.Contains(part.salesCompanies(), company) {
-				return replay
-			}
-			if len(part.retrainSplits()) != 0 {
-				return replay
-			}
-			switch part.Mode {
-			case "rate":
-				if calculatePaymentAmount(original.Base, part) == original.Accrued {
-					part.RefundPolicy = "proportional"
-					return part
-				}
-			case "fixed":
-				if part.usesFixedPersonalPaymentShares() {
-					part.RefundPolicy = "proportional"
-					return part
-				}
-				if part.Value == original.Accrued {
-					part.RefundPolicy = "proportional"
-					return part
-				}
-			}
+	if part, ok := practicePersonalComponent(parts, original.ComponentType, member); ok {
+		if len(part.salesCompanies()) != 0 && !slices.Contains(part.salesCompanies(), company) {
 			return replay
 		}
+		if len(part.retrainSplits()) != 0 {
+			return replay
+		}
+		switch part.Mode {
+		case "rate":
+			if calculatePaymentAmount(original.Base, part) == original.Accrued {
+				part.RefundPolicy = "proportional"
+				return part
+			}
+		case "fixed":
+			if part.usesFixedPersonalPaymentShares() {
+				part.RefundPolicy = "proportional"
+				return part
+			}
+			if part.Value == original.Accrued {
+				part.RefundPolicy = "proportional"
+				return part
+			}
+		}
+		return replay
 	}
 	key := strings.Split(original.ComponentType, ":")
 	if len(key) != 3 || key[0] != "period" || (key[1] != "company_sales" && key[1] != "company_referral") {

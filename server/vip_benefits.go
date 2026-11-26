@@ -180,7 +180,8 @@ func (a vipBenefitAction) validTarget() bool {
 		return !poolFields && a.Designated == "" && a.Company == ""
 	case "TEAM_POOL":
 		return a.Designated == "" && a.Company == "" && a.PoolParty != "" && a.PoolUnit != "" &&
-			a.PoolCode != "" && a.PoolName != "" && (a.OwnerRole != "") != (a.OwnerParty != "")
+			a.PoolCode != "" && a.PoolName != "" && ((a.OwnerRole != "") != (a.OwnerParty != "") ||
+			catalogPoolID(a.PoolCode) > 0 && a.OwnerRole == "" && a.OwnerParty == "")
 	default:
 		return false
 	}
@@ -373,6 +374,9 @@ func bindVIPBenefit(line *vipBenefitPart, a vipBenefitAction, req vipSalesReques
 		return
 	}
 	line.Pool, line.Name = a.PoolCode, a.PoolName
+	if catalogPoolID(a.PoolCode) > 0 && a.OwnerRole == "" && a.OwnerParty == "" {
+		return
+	}
 	holder, ambiguous := vipPoolOwner(a, req, data.Roles)
 	switch {
 	case ambiguous:

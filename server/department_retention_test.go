@@ -46,8 +46,9 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 		api.HandleFunc(route.Method+" "+route.Path, route.Handler)
 	}
 	type account struct {
-		UnitID, Name                            string
-		OpeningMinor, IncomeMinor, BalanceMinor int64
+		UnitID, Name                                           string
+		OpeningMinor, IncomeMinor, BalanceMinor                int64
+		CurrentBalanceMinor, TotalIncomeMinor, TotalSpentMinor int64
 	}
 	type entry struct {
 		PeriodID, AmountMinor                         int64
@@ -73,7 +74,7 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 		return report
 	}
 	report := read("month=2026-08&unitId=" + company + "&accountId=" + department)
-	if len(report.Items) != 1 || report.Items[0] != (account{department, "共有业务部", 5000, 12000, 17000}) {
+	if len(report.Items) != 1 || report.Items[0] != (account{department, "共有业务部", 5000, 12000, 17000, 17600, 17600, 0}) {
 		t.Fatalf("expected one cross-product account for the selected company: %+v", report.Items)
 	}
 	if len(report.Entries) != 2 || report.Entries[0] != (entry{2, 12000, "实战班", "2026-08", department, "pool2", "class"}) ||
@@ -127,7 +128,7 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 	expenseID := post(expense, http.StatusOK)
 	expense.RequestID = "52100000-0000-4000-8000-000000000008"
 	post(expense, http.StatusConflict)
-	if got := read(august); got.Items[0].BalanceMinor != -3000 {
+	if got := read(august); got.Items[0].BalanceMinor != -3000 || got.Items[0].CurrentBalanceMinor != -2400 || got.Items[0].TotalSpentMinor != 35000 {
 		t.Fatalf("recorded expense can result in a negative balance: %+v", got.Items)
 	}
 	post(retentionEntryInput{Kind: "correction", Month: "2026-08", AmountMinor: 300, Note: "月度更正",
@@ -140,7 +141,7 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 	}
 	reversal.RequestID = "52100000-0000-4000-8000-000000000007"
 	post(reversal, http.StatusConflict)
-	if got := read(august); got.Items[0].BalanceMinor != 32300 || len(got.Entries) != 5 {
+	if got := read(august); got.Items[0].BalanceMinor != 32300 || got.Items[0].TotalSpentMinor != 0 || len(got.Entries) != 5 {
 		t.Fatalf("the original expense and its reversal must both remain visible: %+v", got)
 	}
 	if _, err := s.db.Exec(ctx, "UPDATE department_retention_entries SET amount_minor=0 WHERE id=$1", expenseID); err == nil {

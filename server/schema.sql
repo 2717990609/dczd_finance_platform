@@ -1181,23 +1181,7 @@ BEGIN
  END IF;
 END $$;
 
--- Make named catalog pools selectable without changing the accounting keys
--- of already published arrangements or their settlement lines.
-WITH latest AS (
- SELECT DISTINCT ON (p.source_id) p.product_id,v.definition
- FROM product_rule_packages p JOIN product_rule_versions v ON v.package_id=p.source_id
- WHERE v.source_status='PUBLISHED'
- ORDER BY p.source_id,v.effective_from DESC,v.version_no DESC
-)
-INSERT INTO practice_pools(product_id,unit_id,name)
- SELECT DISTINCT latest.product_id,u.id,btrim(a->>'pool_name')
- FROM latest CROSS JOIN LATERAL jsonb_path_query(latest.definition,
-  '$.benefit_actions[*] ? (@.beneficiary_mode == "TEAM_POOL")') a
- JOIN organization_units u ON u.id::text=coalesce(nullif(a->>'pool_organization_unit_id',''),
-  CASE WHEN starts_with(a->>'pool_party_id','unit:') THEN substring(a->>'pool_party_id' FROM 6) END)
-  AND u.status='ACTIVE'
- WHERE length(btrim(a->>'pool_name')) BETWEEN 1 AND 80
- ON CONFLICT(product_id,unit_id,name) DO NOTHING;
+ALTER TABLE practice_pools ADD COLUMN IF NOT EXISTS owner_person_id bigint REFERENCES people(id);
 
 ALTER TABLE calculation_draft_lines
  ALTER COLUMN rule_id DROP NOT NULL,
@@ -1207,15 +1191,22 @@ ALTER TABLE calculation_draft_lines
  ADD COLUMN IF NOT EXISTS beneficiary_unit_id uuid REFERENCES organization_units(id),
  ADD COLUMN IF NOT EXISTS allocation_owner_id bigint REFERENCES people(id),
  ADD COLUMN IF NOT EXISTS practice_pool_id bigint REFERENCES practice_pools(id),
- ADD COLUMN IF NOT EXISTS catalog_pool_id bigint REFERENCES practice_pools(id)
-  CHECK (catalog_pool_id IS NULL OR (catalog_rule_id IS NOT NULL AND beneficiary_unit_id IS NOT NULL AND allocation_owner_id IS NOT NULL)),
+ ADD COLUMN IF NOT EXISTS catalog_pool_id bigint REFERENCES practice_pools(id),
  ADD COLUMN IF NOT EXISTS applied_rate_bps integer
   CHECK (applied_rate_bps IS NULL OR (applied_rate_bps BETWEEN 0 AND 10000 AND catalog_rule_id IS NOT NULL));
 
 DO $$
+DECLARE old_check text;
 BEGIN
  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass
-   AND conname='draft_line_rule_and_recipient_check' AND strpos(pg_get_constraintdef(oid),'''referral''')>0) THEN
+   AND conname='draft_line_fixed_pool_check') THEN
+  FOR old_check IN SELECT conname FROM pg_constraint WHERE conrelid='calculation_draft_lines'::regclass AND contype='c'
+    AND pg_get_constraintdef(oid) LIKE '%catalog_pool_id IS NULL%'
+    AND pg_get_constraintdef(oid) LIKE '%allocation_owner_id IS NOT NULL%' LOOP
+   EXECUTE format('ALTER TABLE calculation_draft_lines DROP CONSTRAINT %I', old_check);
+  END LOOP;
+  ALTER TABLE calculation_draft_lines ADD CONSTRAINT draft_line_fixed_pool_check
+    CHECK (catalog_pool_id IS NULL OR (catalog_rule_id IS NOT NULL AND beneficiary_unit_id IS NOT NULL AND person_id IS NULL));
   ALTER TABLE calculation_draft_lines DROP CONSTRAINT IF EXISTS draft_line_rule_and_recipient_check;
   ALTER TABLE calculation_draft_lines ADD CONSTRAINT draft_line_rule_and_recipient_check CHECK (
    (catalog_rule_id IS NULL AND rule_id IS NOT NULL AND identity_id IS NOT NULL AND person_id IS NOT NULL
@@ -1225,7 +1216,7 @@ BEGIN
      AND (starts_with(component_type,'period:') OR (component_type IN ('sales','referral') AND person_id IS NOT NULL))
      AND ((person_id IS NOT NULL) <> (beneficiary_unit_id IS NOT NULL))
      AND ((practice_pool_id IS NULL AND allocation_owner_id IS NULL)
-      OR (practice_pool_id IS NOT NULL AND allocation_owner_id IS NOT NULL AND beneficiary_unit_id IS NOT NULL)))
+      OR (practice_pool_id IS NOT NULL AND beneficiary_unit_id IS NOT NULL)))
    OR
    (catalog_rule_id IS NOT NULL AND rule_id IS NULL AND identity_id IS NULL AND practice_enrollment_id IS NULL
      AND practice_pool_id IS NULL
@@ -1300,7 +1291,7 @@ CREATE OR REPLACE VIEW pool_line_accounts AS
   CASE WHEN l.practice_pool_id IS NOT NULL THEN 'class' WHEN l.catalog_pool_id IS NOT NULL THEN 'team-pool' ELSE p.scope_id END AS scenario_key
  FROM calculation_draft_lines l LEFT JOIN product_rule_versions v ON v.source_id=l.catalog_rule_id
  LEFT JOIN product_rule_packages p ON p.source_id=v.package_id
- WHERE l.allocation_owner_id IS NOT NULL;
+ WHERE l.practice_pool_id IS NOT NULL OR l.catalog_pool_id IS NOT NULL OR l.allocation_owner_id IS NOT NULL;
 
 CREATE OR REPLACE VIEW pool_account_activity AS
  SELECT a.period_id,a.unit_id,a.item_key,a.scenario_key FROM pool_line_accounts a
