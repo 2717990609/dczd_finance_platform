@@ -549,7 +549,7 @@ const syncStreams = computed(() => data.value.sources
 const sourceLabel = key => optionLabel('source',key)?.split(' · ')[0]
 const periodPullProducts = computed(() => data.value.products.filter(product=>product.practicePeriodPull &&
   (!productScope.value || product.id===productScope.value)).map(product=>({label:product.name,value:product.id})))
-const titles = {product:'新增产品',mapping:'添加来源映射',periodRoster:'更正签到关联',periodPull:'同步来源期次',
+const titles = {product:'新增产品',mapping:'添加来源映射',periodRoster:'关联签到名单',periodPull:'同步来源期次',
   reportMonth:'设置报表月份',refundCutoff:'设置退款截止时间',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
 const actions = computed(() => {
   if (current.value === 'products') return tab.value === 'mapping' ? 'mapping' : 'product'
@@ -1358,8 +1358,7 @@ function open(kind, row, edit = false) {
   if (kind === 'refundCutoff') draft.value = {periodId:row.id, periodName:row.name,
     cutoffAt:row.refundCutoffAt ? refundCutoffInput.format(new Date(row.refundCutoffAt)).replace(' ','T') : ''}
   if (kind === 'periodRoster') {
-    draft.value = {periodId:row.id, periodName:row.name, sourcePeriodKey:row.sourcePeriodKey,
-      expectedSourcePeriodKey:row.sourcePeriodKey}
+    draft.value = {periodId:row.id, periodName:row.name, sourcePeriodKey:''}
   }
   if (kind === 'identity' && row) {
     draft.value = {source:row.source,externalId:row.externalId,previousOwner:row}
@@ -1739,8 +1738,7 @@ function bodyFor(kind,f) {
   if (kind === 'mapping') return {productId:must(f.productId),source:f.source,domain:must(f.domain),sourceKey:must(f.sourceKey)}
   if (kind === 'reportMonth') return {periodId:f.periodId,month:f.reportMonth || ''}
   if (kind === 'refundCutoff') return {periodId:f.periodId,cutoffAt:f.cutoffAt ? new Date(f.cutoffAt+'+08:00').toISOString() : null}
-  if (kind === 'periodRoster') return {periodId:f.periodId,sourcePeriodKey:f.sourcePeriodKey?.trim() || '',
-    expectedSourcePeriodKey:f.expectedSourcePeriodKey || ''}
+  if (kind === 'periodRoster') return {periodId:f.periodId,sourcePeriodKey:must(f.sourcePeriodKey?.trim(),'请选择签到名单。')}
   if (kind === 'rule') {
     if (!f.components.length) throw new Error('请添加至少一项收款安排')
     const components = f.components.map(ruleComponentBody)
@@ -1790,7 +1788,7 @@ async function save() {
     notice.value = kind === 'pull' ? orderPullNotice(result)
       : kind === 'periodPull' ? periodPullNotice(result)
       : kind === 'rule' ? '规则 v'+result.version+' 已保存。'
-      : kind === 'periodRoster' ? result.changed ? '签到名单关联已更新，待重新试算。' : '签到名单关联无变化。'
+      : kind === 'periodRoster' ? result.changed ? '已关联签到名单，待试算。' : '签到名单已关联。'
       : kind === 'identity' ? '来源账号归属已保存。' : '保存成功。'
     drawer.value = ''
     rulePreview.value = undefined
@@ -2102,7 +2100,7 @@ function periodPullNotice(result) {
                     <span v-else>{{ record.sourcePeriodKey ? '待拉取' : '未关联' }}</span>
                     <small v-if="record.classStartsAt" class="order-version">{{ formatTime(record.classStartsAt) }}</small>
                     <div v-if="record.practiceRosterEditable">
-                      <a-button type="link" size="small" @click="open('periodRoster',record)">{{ record.sourcePeriodKey ? '更正签到关联' : '关联签到名单' }}</a-button>
+                      <a-button type="link" size="small" @click="open('periodRoster',record)">关联签到名单</a-button>
                     </div>
                   </template>
                   <span v-else>—</span>
@@ -2197,7 +2195,6 @@ function periodPullNotice(result) {
     :root-class-name="drawer==='rule' ? 'finance-rule-editor' : undefined"
     :title="rulePreview ? '预览分润规则' : drawer==='rule' && draft.editBaseId ? '编辑分润规则'
       : drawer==='rule' && draft.copiedFrom ? '复制分润规则'
-      : drawer==='periodRoster' && !draft.expectedSourcePeriodKey ? '关联签到名单'
       : drawer==='identity' && draft.previousOwner ? '变更来源账号归属' : titles[drawer]"
     :width="drawer==='rule' ? 'min(1260px, 100vw)' : 'min(510px, 100vw)'"
     :closable="!saving" :mask-closable="!saving" :keyboard="!saving" @close="close">
@@ -2240,7 +2237,6 @@ function periodPullNotice(result) {
         <a-form-item>
           <PracticeRosterSelect v-model:value="draft.sourcePeriodKey" :api="api" :format-time="formatTime" :period-id="draft.periodId"/>
         </a-form-item>
-        <p class="workbench-scope-note">更正关联后需要重新试算。</p>
       </template>
       <template v-if="drawer==='refundCutoff'">
         <a-form-item label="核算期次"><span>{{ draft.periodName }}</span></a-form-item>

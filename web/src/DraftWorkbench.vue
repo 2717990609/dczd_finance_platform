@@ -44,7 +44,7 @@ const options = computed(() => props.periods.map(period => ({
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
 const linkedPeriod = computed(() => props.periods.find(period => period.id === props.requestedPeriod)?.id)
 const canPullRoster = computed(() => selectedPeriod.value?.periodMode === 'class' && selectedPeriod.value.sourcePeriodKey && !draft.value?.settlement)
-const needsRosterEdit = computed(() => selectedPeriod.value?.practiceRosterEditable && !selectedPeriod.value.sourcePeriodKey)
+const needsRosterLink = computed(() => selectedPeriod.value?.practiceRosterEditable)
 const canReviewRecovery = computed(() => !draft.value?.settlement && props.recoveryOptions?.length &&
   (props.localSettlement || props.settlementProducts?.includes(selectedPeriod.value?.productId)))
 const recoveryChoices = person => (props.recoveryOptions || []).filter(option =>
@@ -313,9 +313,9 @@ async function loadMore(section, cursorName) {
             show-search option-filter-prop="label" :disabled="calculating || pullingRoster || savingRecovery" />
         </div>
         <div v-if="selected" class="workbench-actions">
-          <a-button v-if="needsRosterEdit" :href="relatedPeriodLink()">查看期次映射</a-button>
-          <a-button v-if="needsRosterEdit" :disabled="!rosterEditReady || loading || pullingRoster || calculating"
-            @click="emit('show-roster',selectedPeriod)">{{ selectedPeriod.sourcePeriodKey ? '更正签到关联' : '关联签到名单' }}</a-button>
+          <a-button v-if="needsRosterLink" :href="relatedPeriodLink()">查看期次映射</a-button>
+          <a-button v-if="needsRosterLink" :disabled="!rosterEditReady || loading || pullingRoster || calculating"
+            @click="emit('show-roster',selectedPeriod)">关联签到名单</a-button>
           <a-button v-if="canPullRoster && (view!=='review' || !draft)" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
           <a-button v-if="ruleSetupLink && draft && !draft.settlement" :href="ruleSetupLink">配置本期规则</a-button>
           <a-button v-if="!matchingOnly && !ruleSetupLink && !draft?.settlement && (view!=='review' || !draft)"

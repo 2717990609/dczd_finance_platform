@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func TestPracticeRosterBindingUsesSourceKeyAndQueuesBothSeries(t *testing.T) {
+func TestPracticeRosterBindingAllowsOnlyInitialAssociation(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
 	const fixture = `
@@ -20,7 +20,8 @@ func TestPracticeRosterBindingUsesSourceKeyAndQueuesBothSeries(t *testing.T) {
 	 INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,source_period_key) VALUES
 	  (1,'待更正期次',158,'2026-11-14','2026-11-15','PRACTICE:1:1:158'),
 	  (1,'旧班型后续期次',159,'2026-11-21','2026-11-22','PRACTICE:1:1:159'),
-	  (1,'新班型后续期次',162,'2026-11-25','2026-11-26','PRACTICE:1:2:162');
+	  (1,'新班型后续期次',162,'2026-11-25','2026-11-26','PRACTICE:1:2:162'),
+	  (1,'未关联期次',160,'2026-11-14','2026-11-15',NULL);
 	 INSERT INTO practice_rosters(period_key,source_version,source_hash,starts_at,confirmed_at,attendance_count) VALUES
 	  ('PRACTICE:1:1:158',1,'a','2026-11-14 09:00+08',now(),1),
 	  ('PRACTICE:1:1:158',2,'b','2026-11-14 09:00+08',now(),2),
@@ -52,7 +53,15 @@ func TestPracticeRosterBindingUsesSourceKeyAndQueuesBothSeries(t *testing.T) {
 	if got := options("periodId=1&q=2026-11-14"); len(got) != 1 || got[0].Key != "PRACTICE:1:1:158" || got[0].Version != 2 {
 		t.Fatalf("edit options should pin current latest version: %+v", got)
 	}
-	input := periodPracticeRosterInput{PeriodID: 1, SourcePeriodKey: "PRACTICE:1:2:160", ExpectedSourcePeriodKey: "PRACTICE:1:1:158"}
+	rebind := periodPracticeRosterInput{PeriodID: 1, SourcePeriodKey: "PRACTICE:1:2:160", ExpectedSourcePeriodKey: "PRACTICE:1:1:158"}
+	if _, err := s.setPeriodPracticeRoster(ctx, rebind); !errors.Is(err, conflict) {
+		t.Fatalf("an existing association cannot be replaced: %v", err)
+	}
+	rebind.SourcePeriodKey = ""
+	if _, err := s.setPeriodPracticeRoster(ctx, rebind); !errors.Is(err, invalid) {
+		t.Fatalf("an existing association cannot be cleared: %v", err)
+	}
+	input := periodPracticeRosterInput{PeriodID: 4, SourcePeriodKey: "PRACTICE:1:2:160"}
 	occupied := input
 	occupied.SourcePeriodKey = "PRACTICE:1:1:159"
 	var duplicate *pgconn.PgError
@@ -64,12 +73,12 @@ func TestPracticeRosterBindingUsesSourceKeyAndQueuesBothSeries(t *testing.T) {
 		t.Fatalf("correct association: %v %v", changed, err)
 	}
 	var sameDates bool
-	if err := s.db.QueryRow(ctx, `SELECT starts_on='2026-11-14' AND ends_on='2026-11-15' FROM periods WHERE id=1`).Scan(&sameDates); err != nil || !sameDates {
+	if err := s.db.QueryRow(ctx, `SELECT starts_on='2026-11-14' AND ends_on='2026-11-15' FROM periods WHERE id=4`).Scan(&sameDates); err != nil || !sameDates {
 		t.Fatalf("binding must preserve the accounting period dates: %t %v", sameDates, err)
 	}
 	var pending []int64
-	if err := s.db.QueryRow(ctx, "SELECT array_agg(period_id ORDER BY period_id) FROM draft_refresh_queue").Scan(&pending); err != nil || !reflect.DeepEqual(pending, []int64{1, 2, 3}) {
-		t.Fatalf("queue must include old and new series: %v %v", pending, err)
+	if err := s.db.QueryRow(ctx, "SELECT array_agg(period_id ORDER BY period_id) FROM draft_refresh_queue").Scan(&pending); err != nil || !reflect.DeepEqual(pending, []int64{3, 4}) {
+		t.Fatalf("queue must include both periods in the linked series: %v %v", pending, err)
 	}
 	retry, err := s.setPeriodPracticeRoster(ctx, input)
 	if err != nil || retry.(map[string]bool)["changed"] {
@@ -79,8 +88,20 @@ func TestPracticeRosterBindingUsesSourceKeyAndQueuesBothSeries(t *testing.T) {
 	if _, err := s.setPeriodPracticeRoster(ctx, input); !errors.Is(err, conflict) {
 		t.Fatalf("stale editor: %v", err)
 	}
+	var periods []struct {
+		ID                     int64
+		PracticeRosterEditable bool
+	}
+	if err := s.db.QueryRow(ctx, periodsSQL, nil).Scan(&periods); err != nil || len(periods) != 4 {
+		t.Fatalf("period list: %+v %v", periods, err)
+	}
+	for _, period := range periods {
+		if period.PracticeRosterEditable {
+			t.Fatalf("linked period %d must not offer association editing", period.ID)
+		}
+	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at)
-	 VALUES(1,1,1,'\x01',0,0,0,now()); INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixture');`); err != nil {
+	 VALUES(4,1,1,'\x01',0,0,0,now()); INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(4,1,'fixture');`); err != nil {
 		t.Fatal(err)
 	}
 	input.ExpectedSourcePeriodKey = "PRACTICE:1:2:160"

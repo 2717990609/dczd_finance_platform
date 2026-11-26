@@ -482,7 +482,7 @@ const periodListColumnsSQL = `SELECT p.id,p.product_id AS "productId",pro.name A
  p.refund_cutoff_at AS "refundCutoffAt",
  to_char(` + periodReportMonthSQL + `,'YYYY-MM') AS "reportMonth",to_char(p.report_month,'YYYY-MM') AS "reportMonthOverride",
  (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL) AS "reportMonthEditable",
- (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL) AS "practiceRosterEditable",
+ (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL AND p.source_period_key IS NULL) AS "practiceRosterEditable",
  (pro.period_mode='class' AND p.calendar_month IS NOT NULL) AS "practiceRefundMonth",
  (final.period_id IS NOT NULL) AS settled,
  CASE WHEN draft.rule_id IS NULL AND draft.catalog_refunds_ready OR p.aggregate_package_id IS NOT NULL

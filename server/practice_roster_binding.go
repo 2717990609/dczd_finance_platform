@@ -99,7 +99,7 @@ type periodPracticeRosterInput struct {
 
 func (s workspace) setPeriodPracticeRoster(ctx context.Context, input periodPracticeRosterInput) (any, error) {
 	key := strings.TrimSpace(input.SourcePeriodKey)
-	if input.PeriodID < 1 || key != "" && !validPracticeKey(key) {
+	if input.PeriodID < 1 || !validPracticeKey(key) {
 		return nil, invalid
 	}
 	changed := false
@@ -120,28 +120,17 @@ func (s workspace) setPeriodPracticeRoster(ctx context.Context, input periodPrac
 		if oldKey == key {
 			return nil
 		}
-		if oldKey != input.ExpectedSourcePeriodKey {
+		if oldKey != "" || input.ExpectedSourcePeriodKey != "" {
 			return conflict
 		}
-		if key != "" {
-			if err := checkPracticeRosterProduct(ctx, tx, productID, key); err != nil {
-				return err
-			}
+		if err := checkPracticeRosterProduct(ctx, tx, productID, key); err != nil {
+			return err
 		}
-		if oldKey != "" && oldKey != key {
-			// Enqueue classmates sharing payments and later tiers while the old series is still linked.
-			if err := enqueueDraftPeriods(ctx, tx, draftRefreshRoster, oldKey, nil); err != nil {
-				return err
-			}
-		}
-		if _, err := tx.Exec(ctx, `UPDATE periods SET source_period_key=nullif($2,'') WHERE id=$1`,
+		if _, err := tx.Exec(ctx, `UPDATE periods SET source_period_key=$2 WHERE id=$1`,
 			input.PeriodID, key); err != nil {
 			return err
 		}
 		changed = true
-		if key == "" {
-			return enqueueDraftConfiguration(ctx, tx, `SELECT $1::bigint`, input.PeriodID)
-		}
 		return enqueueDraftConfiguration(ctx, tx, draftRefreshRoster, key, nil)
 	})
 	return map[string]bool{"changed": changed}, err
