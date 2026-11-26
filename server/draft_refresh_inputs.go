@@ -12,14 +12,13 @@ const draftRefreshNewCalendarPeriod = `SELECT $1::bigint UNION SELECT period_id 
  UNION SELECT issue.period_id FROM periods created JOIN periods open ON open.product_id=created.product_id
  JOIN calculation_draft_issues issue ON issue.period_id=open.id AND issue.code='REFUND_MONTH_MISSING'
  JOIN source_order_versions refund ON refund.id=issue.source_version_id
- WHERE created.id=$1 AND refund.occurred_at>=created.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
-  AND refund.occurred_at<(created.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'`
+ WHERE created.id=$1 AND refund.occurred_at>=refund_period_start(created) AND refund.occurred_at<refund_period_end(created)`
 
 const draftRefreshNewAggregatePeriod = `SELECT $1::bigint
  UNION SELECT issue.period_id FROM periods created JOIN periods pending USING(aggregate_package_id)
  JOIN calculation_draft_issues issue ON issue.period_id=pending.id AND issue.code='AGGREGATE_REFUND_MONTH_MISSING'
  JOIN source_order_versions refund ON refund.id=issue.source_version_id
- WHERE created.id=$1 AND (refund.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN created.starts_on AND created.ends_on`
+ WHERE created.id=$1 AND refund.occurred_at>=refund_period_start(created) AND refund.occurred_at<refund_period_end(created)`
 
 const draftFinancialFactChanged = `(current.fact-` + draftDisplayFactFields + `,current.occurred_at,
  cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,cv.company_id,cv.recommendation_company_id,cv.recommendation_conflict,
@@ -67,12 +66,14 @@ var draftRefreshFacts = `WITH keys AS (
  JOIN catalog_business_routes m ON ` + catalogRouteFactSQL + `
  JOIN product_catalog_settings c ON c.product_id=m.product_id AND c.captured_at=m.observed_at
 ), calendar AS (
- SELECT p.id,p.product_id,p.starts_on,p.ends_on FROM periods p JOIN products pro ON pro.id=p.product_id
+ SELECT p AS period_row,p.id,p.product_id,p.starts_on,p.ends_on
+ FROM periods p JOIN products pro ON pro.id=p.product_id
  WHERE pro.period_mode='calendar' AND p.aggregate_package_id IS NULL
 ), origin AS (
  SELECT p.id,p.product_id,v.id AS event_id,v.kind FROM mapped v JOIN calendar p USING(product_id)
- WHERE v.occurred_at>=p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
- AND v.occurred_at<(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
+ JOIN source_order_versions event ON event.id=v.id
+ WHERE (v.kind='ORDER_PAID' AND (v.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on)
+ OR (v.kind<>'ORDER_PAID' AND refund_calendar_contains(p.period_row,event))
 ), practice_events AS (
  SELECT order_id,fact FROM events WHERE source='DCZD' AND fact->>'domain'='PRACTICE' AND kind='ORDER_PAID'
  UNION ALL SELECT v.order_id,v.fact FROM source_order_versions v JOIN refund_versions changed USING(id)
@@ -83,9 +84,9 @@ var draftRefreshFacts = `WITH keys AS (
  JOIN products pro ON pro.id=m.product_id AND pro.period_mode='class'
  JOIN periods p ON p.product_id=pro.id AND p.calendar_month IS NOT NULL
  LEFT JOIN periods origin ON origin.product_id=pro.id AND origin.calendar_month IS NOT NULL
-  AND (v.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN origin.starts_on AND origin.ends_on
+  AND v.occurred_at>=refund_period_start(origin) AND v.occurred_at<refund_period_end(origin)
  WHERE v.source='DCZD' AND m.domain='PRACTICE' AND (
-  p.id=origin.id OR ((origin.id IS NULL AND v.occurred_at<p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
+  p.id=origin.id OR ((origin.id IS NULL AND v.occurred_at<refund_period_start(p)
    OR EXISTS(SELECT 1 FROM settlements st WHERE st.period_id=origin.id))
    AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on))
 ), practice_order AS (
@@ -149,13 +150,15 @@ var draftRefreshFacts = `WITH keys AS (
 )
 SELECT id FROM origin WHERE kind<>'REFUND_ADJUSTED'
 UNION SELECT p.id FROM mapped events JOIN product_catalog_settings source ON source.product_id=events.product_id
+ JOIN source_order_versions event ON event.id=events.id
  JOIN product_catalog_settings anchor ON (anchor.project_code,anchor.source_system)=(source.project_code,source.source_system)
  JOIN periods p ON p.product_id=anchor.product_id AND p.aggregate_package_id IS NOT NULL
- WHERE ((events.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
+ WHERE ((events.kind='ORDER_PAID' AND (events.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on)
+  OR (events.kind IN ('REFUND_SUCCEEDED','REFUND_ADJUSTED') AND refund_calendar_contains(p,event))
   OR (events.kind IN ('REFUND_SUCCEEDED','REFUND_ADJUSTED') AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
    AND EXISTS(SELECT 1 FROM periods earlier JOIN settlements final ON final.period_id=earlier.id
     WHERE earlier.aggregate_package_id=p.aggregate_package_id
-     AND (events.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN earlier.starts_on AND earlier.ends_on)))
+     AND refund_calendar_contains(earlier,event))))
  AND (events.kind<>'ORDER_PAID' OR events.sku_code IS NULL OR EXISTS(
   SELECT 1 FROM product_rule_versions rule WHERE rule.package_id=p.aggregate_package_id AND rule.source_status='PUBLISHED'
    AND rule.effective_from<(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
@@ -233,8 +236,8 @@ SELECT p.id FROM closing original JOIN periods p ON p.product_id=original.produc
 WHERE (original.period_mode='class' AND p.calendar_month IS NOT NULL OR original.period_mode<>'class' AND p.ordinal>original.ordinal)
  AND (
  (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on
- OR EXISTS(SELECT 1 FROM related_refunds r WHERE r.occurred_at>=p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
-  AND r.occurred_at<(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
+ OR EXISTS(SELECT 1 FROM related_refunds r WHERE r.occurred_at>=refund_period_start(p)
+  AND r.occurred_at<refund_period_end(p))
  OR original.period_mode='class' AND EXISTS(SELECT 1 FROM calculation_draft_performance refund
   JOIN payments paid ON paid.source_version_id=refund.payment_version_id WHERE refund.period_id=p.id))
 UNION SELECT period_id FROM practice_payment_dependents($1)

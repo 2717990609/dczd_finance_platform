@@ -64,6 +64,7 @@ export const draftIssueLabels = {
   PRACTICE_PAYMENT_ALREADY_SETTLED: '报名中的付款已结算，请核对原班次和延期记录',
   PRACTICE_REFUND_PENDING: '对应付款已有退款，请重新试算',
   PRACTICE_REFUND_AFTER_ROSTER: '名单确认后发生退款，按退款账期办理',
+  PRACTICE_REFUND_AFTER_CUTOFF: '退款在截止时间后成功，计入后续退款账期',
   PRACTICE_REFUND_PRODUCT_MISMATCH: '退款与原付款的产品归属不一致，请在子系统核对',
   PRACTICE_REFUND_PAYMENT_TIME: '退款时间早于原付款，请在子系统核对',
   PRACTICE_REFUND_ROSTER_CHANGED: '付款已全退，但报名仍在名单中，请核对并更新确认名单',

@@ -177,7 +177,7 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 
 	rows, err := tx.Query(ctx, `SELECT p.ordinal,p.ends_on,roster.starts_at,
 	 CASE WHEN roster.starts_at<$4 THEN roster.id ELSE 0 END, selected.components, settlement.period_id IS NOT NULL,
-	  closed.practice_replay_inputs->'companyClassifications',NOT timing.earlier
+	  closed.practice_replay_inputs->'companyClassifications',NOT timing.earlier,p.refund_cutoff_at
 	 FROM periods current JOIN periods p ON p.product_id=current.product_id AND p.id<>current.id AND p.calendar_month IS NULL
 	  AND (p.source_period_key IS NULL OR split_part(p.source_period_key,':',3)=split_part(current.source_period_key,':',3))
 	 LEFT JOIN settlements settlement ON settlement.period_id=p.id
@@ -204,7 +204,7 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 		var period practiceHistoryPeriod
 		var components []component
 		err := row.Scan(&period.ordinal, &period.endsOn, &period.startsAt, &period.rosterID, &components, &period.settled, &period.categories,
-			&period.notEarlierInTime)
+			&period.notEarlierInTime, &period.refundCutoff)
 		period.ruleKnown = len(components) != 0
 		period.companyOffers = practiceCompanyStandards(paymentRule{Components: components})
 		newSale := historicalPracticeSale(components, arrangement, "new")
@@ -413,7 +413,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if err != nil {
 		return paymentDraft{}, nil, err
 	}
-	runtime := practiceDraftRuntime{appointments: appointments, orderAppointments: orderAppointments, salesOrganizations: salesOrganizations, companyOffers: companyOffers,
+	runtime := practiceDraftRuntime{refundCutoff: summary.RefundCutoffAt, appointments: appointments, orderAppointments: orderAppointments, salesOrganizations: salesOrganizations, companyOffers: companyOffers,
 		companyClassifications: companyClassifications, internalSalesCategories: internalSalesCategories,
 		companyRecipients: companyRecipients, recommendations: recommendations, poolUnits: pools}
 	if usesDirectorRegistry(rule.Components) {
@@ -456,7 +456,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	for _, member := range members {
 		result.PracticeEnrollments = append(result.PracticeEnrollments, member.ID)
 	}
-	linkedRefunds := hasPracticeReplayDependencies(rule, members)
+	linkedRefunds := summary.RefundCutoffAt != nil || hasPracticeReplayDependencies(rule, members)
 	if result.blockingIssues() == 0 && (linkedRefunds || hasPracticeConfiguredPayees(rule)) {
 		result.practiceReplay = capturePracticeReplayInputs(rule, result, facts, identities, runtime)
 		result.practiceReplay.IndependentRefunds = !linkedRefunds

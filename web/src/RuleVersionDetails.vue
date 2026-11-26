@@ -185,6 +185,7 @@ function calculationText(part) {
   return (part.mode==='fixed' || part.periodBenefit?.fixedMinor != null ? '固定金额' : '比例')+' · '+value
 }
 function refundPolicyLabel(part) {
+  if (part.practiceSignupBasis && !part.refundPolicy && part.classMember==='retrain' && part.mode==='fixed') return '部分退款保留固定分润，整笔退款扣回'
   if (part.refundPolicy) return '按实际退款比例扣回'
   if (props.classProduct && part.mode==='fixed' && ['sales','referral'].includes(part.type) && !part.retrainSplits?.length) {
     return label('refundPolicy','proportional')
@@ -256,6 +257,7 @@ onMounted(async () => {
         <a-descriptions size="small" :column="{xs:1,sm:2}">
           <a-descriptions-item label="收款对象">{{ recipient(part) }}</a-descriptions-item>
           <a-descriptions-item label="计提方式">{{ calculationText(part) }}</a-descriptions-item>
+          <a-descriptions-item v-if="part.practiceSignupBasis" label="计提口径">按报名计提</a-descriptions-item>
           <a-descriptions-item v-if="classProduct" label="计提订单类型">{{ orderType(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="fullOrderScope(part)" label="计提订单范围">{{ fullOrderScope(part) }}</a-descriptions-item>
           <a-descriptions-item v-if="part.salesPersonId" label="业绩归属">{{ roleName(part.sourceRole) }}</a-descriptions-item>

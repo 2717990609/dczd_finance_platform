@@ -23,7 +23,7 @@ const practiceRefundsSQL = `WITH wanted AS (SELECT DISTINCT unnest($1::text[]) A
   WHERE v.source='DCZD' AND v.kind='REFUND_SUCCEEDED' AND v.fact->>'domain'='PRACTICE'
  ), matched AS (
   SELECT v.id,v.fact,v.fact->>'refundId' AS refund_id,v.occurred_at,v.record_key
-  FROM candidates c JOIN source_order_versions v USING(id) WHERE ` + latestPracticeRefund + `
+  FROM candidates c JOIN source_order_versions v USING(id) WHERE v.occurred_at<=CURRENT_TIMESTAMP AND ` + latestPracticeRefund + `
   ORDER BY v.occurred_at,v.fact->>'refundId',v.record_key,v.id LIMIT $2
  ), duplicate AS (
   SELECT w.refund_id FROM (SELECT DISTINCT refund_id FROM matched WHERE refund_id<>'') w
@@ -119,7 +119,11 @@ func (p *practicePurchase) applyRefunds(matches map[int64][]practiceRefundMatch)
 		remaining := net
 		for _, match := range matches[payment.ID] {
 			f := match.event.Fact
-			late := !p.replaying && f.OccurredAt.After(p.member.ConfirmedAt)
+			late := f.OccurredAt.After(p.member.ConfirmedAt)
+			if p.refundCutoff != nil {
+				late = !f.OccurredAt.Before(*p.refundCutoff)
+			}
+			late = late && !p.replaying
 			if match.issue != "" {
 				p.issue, p.issueFactID = match.issue, match.event.ID
 				return
@@ -129,7 +133,7 @@ func (p *practicePurchase) applyRefunds(matches map[int64][]practiceRefundMatch)
 				p.issue = "PRACTICE_REFUND_PAYMENT_TIME"
 			case *f.AmountMinor > remaining:
 				p.issue = "REFUND_AMOUNT_EXCEEDS_PAYMENT"
-			case *f.AmountMinor == net && !p.replaying && !late:
+			case *f.AmountMinor == net && !p.replaying && !late && p.refundCutoff == nil:
 				p.issue = "PRACTICE_REFUND_ROSTER_CHANGED"
 			}
 			if p.issue != "" {
@@ -150,7 +154,7 @@ func (p *practicePurchase) applyRefunds(matches map[int64][]practiceRefundMatch)
 			p.refunds[payment.ID] = append(p.refunds[payment.ID], match.event)
 			p.netPayments[payment.ID] = net
 		}
-		if p.replaying && net == 0 {
+		if (p.replaying || p.refundCutoff != nil) && net == 0 {
 			if p.originalPayments == nil {
 				p.originalPayments = slices.Clone(p.payments)
 			}
@@ -175,27 +179,33 @@ func (part component) usesFixedPersonalPaymentShares() bool {
 }
 
 func (p practicePurchase) fixedPaymentShares(sale practicePurchase, part component,
-	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) ([2]int64, string) {
+	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) ([2]int64, [2]string, string) {
 	original := sale.payments
 	if len(p.originalPayments) != 0 {
 		p.payments = p.originalPayments
 		scoped, issue := p.scopedSale(part, identities, runtime)
 		if issue != "" {
-			return [2]int64{}, issue
+			return [2]int64{}, [2]string{}, issue
 		}
 		original = scoped.payments
 	}
 	amounts := practiceFixedSignupShares(original, part.Value)
 	var active [2]int64
+	var precise [2]string
+	var gross int64
+	for _, payment := range original {
+		gross += *payment.Fact.AmountMinor
+	}
 	for i, payment := range original {
 		for index, current := range sale.payments {
 			if current.ID == payment.ID {
 				active[index] = p.remainingFixedShare(payment, amounts[i])
+				precise[index] = preciseYuan(exactMinor(part.Value, p.netAmount(payment), gross))
 				break
 			}
 		}
 	}
-	return active, ""
+	return active, precise, ""
 }
 
 func practiceFixedSignupShares(payments []paymentInput, award int64) [2]int64 {

@@ -63,11 +63,11 @@ const settlementSourceStatusSQL = `CASE
  ELSE 'READY' END`
 
 const settlementSourceCoverageSQL = `WITH scope AS (
- SELECT p.product_id,p.ordinal,least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',(
+ SELECT p.product_id,p.ordinal,least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',refund_period_start(p),(
   SELECT min(v.occurred_at) FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id
   WHERE a.period_id=p.id AND a.completion_version_id IS NOT NULL
  )) AS from_time,
-  (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai' AS through_time
+  greatest((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',p.refund_cutoff_at) AS through_time
  FROM periods p WHERE p.id=$1
 ), required AS (
  SELECT DISTINCT CASE WHEN r.source='DCAI' AND r.domain='VIP' THEN 'VIP_ORDERS'
@@ -106,7 +106,7 @@ FROM scope p CROSS JOIN (VALUES ('` + dczdOrderStream + `')) r(stream) JOIN sour
 LEFT JOIN dcai_order_sync s ON s.stream=r.stream LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream`
 
 const practiceMonthSettlementSourceSQL = `WITH scope AS (
- SELECT least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',(
+ SELECT least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',refund_period_start(p),(
    SELECT min(v.occurred_at) FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id
    WHERE a.period_id=p.id AND a.payment_version_id IS NOT NULL
   ),(
@@ -116,15 +116,15 @@ const practiceMonthSettlementSourceSQL = `WITH scope AS (
   ),(
    SELECT min(v.occurred_at) FROM (` + practiceSettlementPaymentVersionsSQL + `) related
    JOIN source_order_versions v ON v.id=related.source_version_id
-  )) AS from_time,(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai' AS through_time
+  )) AS from_time,greatest((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',p.refund_cutoff_at) AS through_time
  FROM periods p WHERE p.id=$1 AND EXISTS(
   SELECT 1 FROM source_mappings m WHERE m.product_id=p.product_id AND m.source='DCZD' AND m.domain='PRACTICE'
  )
 )` + practiceSettlementCoverageSQL
 
 const catalogAggregateSettlementSourceSQL = `WITH accounting AS (
- SELECT p.id,p.product_id,p.aggregate_package_id,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai' AS start_at,
-  (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai' AS through_time
+ SELECT p.id,p.product_id,p.aggregate_package_id,least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',refund_period_start(p)) AS start_at,
+  greatest((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',p.refund_cutoff_at) AS through_time
  FROM periods p WHERE p.id=$1
 ), p AS (
  SELECT a.*,least(a.start_at,(

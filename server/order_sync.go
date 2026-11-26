@@ -22,20 +22,22 @@ var (
 )
 
 type orderSyncState struct {
-	Stream    string     `json:"stream"`
-	From      time.Time  `json:"initialFrom"`
-	Completed *time.Time `json:"completedThrough"`
-	Target    *time.Time `json:"targetThrough"`
-	Pages     int64      `json:"pages"`
-	Scanned   int64      `json:"scannedOrders"`
-	Versions  int64      `json:"newVersions"`
-	Failed    bool       `json:"lastFailed"`
-	origin    string
-	next      orderCursor
+	Stream          string     `json:"stream"`
+	From            time.Time  `json:"initialFrom"`
+	Completed       *time.Time `json:"completedThrough"`
+	Target          *time.Time `json:"targetThrough"`
+	Pages           int64      `json:"pages"`
+	Scanned         int64      `json:"scannedOrders"`
+	Versions        int64      `json:"newVersions"`
+	Failed          bool       `json:"lastFailed"`
+	origin          string
+	next            orderCursor
+	completedOutbox *time.Time
+	targetCoverage  *time.Time
 }
 
 const readOrderSyncSQL = `SELECT stream,initial_from,completed_through,target_through,pages,scanned,versions,failed,
- source_key,next_updated_at,next_id FROM dcai_order_sync WHERE stream=$1`
+ source_key,next_updated_at,next_id,completed_outbox_through,target_source_through FROM dcai_order_sync WHERE stream=$1`
 
 type syncQueryer interface {
 	QueryRow(context.Context, string, ...any) pgx.Row
@@ -44,7 +46,7 @@ type syncQueryer interface {
 func readOrderSync(ctx context.Context, conn syncQueryer, stream string) (orderSyncState, error) {
 	var state orderSyncState
 	err := conn.QueryRow(ctx, readOrderSyncSQL, stream).Scan(&state.Stream, &state.From, &state.Completed, &state.Target,
-		&state.Pages, &state.Scanned, &state.Versions, &state.Failed, &state.origin, &state.next.UpdatedAt, &state.next.ID)
+		&state.Pages, &state.Scanned, &state.Versions, &state.Failed, &state.origin, &state.next.UpdatedAt, &state.next.ID, &state.completedOutbox, &state.targetCoverage)
 	return state, err
 }
 
@@ -164,29 +166,41 @@ func runOrderSync(ctx context.Context, conn *pgxpool.Conn, client orderFeedClien
 		return err
 	}
 	if state.Target == nil {
-		through, err := client.cutoff(ctx)
+		cutoff, err := client.cutoff(ctx)
 		if err != nil {
 			return err
 		}
-		if through.Before(state.From) || state.Completed != nil && through.Before(*state.Completed) {
+		previousOutbox := state.completedOutbox
+		if previousOutbox == nil {
+			previousOutbox = state.Completed
+		}
+		if cutoff.Through.Before(state.From) || previousOutbox != nil && cutoff.Through.Before(*previousOutbox) ||
+			state.Completed != nil && cutoff.SourceThrough.Before(*state.Completed) {
 			return errSourceRead
 		}
-		// Back up to the contract's overlap boundary and include all row IDs at it.
+		// Page by outbox time. Only a completed source sweep establishes business coverage.
 		start := state.From
-		if !backfill && state.Completed != nil && state.Completed.Add(-24*time.Hour).After(start) {
-			start = state.Completed.Add(-24 * time.Hour)
+		if !backfill && previousOutbox != nil && previousOutbox.Add(-24*time.Hour).After(start) {
+			start = previousOutbox.Add(-24 * time.Hour)
 		}
-		state.Target, state.next = &through, orderCursor{UpdatedAt: start, ID: "0"}
+		state.Target, state.targetCoverage = &cutoff.Through, &cutoff.SourceThrough
+		state.next = orderCursor{UpdatedAt: start, ID: "0"}
 		state.Pages, state.Scanned, state.Versions, state.Failed = 0, 0, 0, false
 		err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-			return updateOrderSync(ctx, tx, client, *state, `INSERT INTO dcai_order_sync(stream,source_key,initial_from,target_through,next_updated_at,next_id)
-			 VALUES($1,$2,$3,$4,$5,'0') ON CONFLICT(stream) DO UPDATE SET initial_from=excluded.initial_from,target_through=excluded.target_through,
-			 next_updated_at=excluded.next_updated_at,next_id='0',pages=0,scanned=0,versions=0,failed=false`,
-				state.origin, state.From, through, start)
+			return updateOrderSync(ctx, tx, client, *state, `INSERT INTO dcai_order_sync(stream,source_key,initial_from,target_through,next_updated_at,next_id,target_source_through)
+			 VALUES($1,$2,$3,$4,$5,'0',$6) ON CONFLICT(stream) DO UPDATE SET initial_from=excluded.initial_from,target_through=excluded.target_through,
+			 target_source_through=excluded.target_source_through,next_updated_at=excluded.next_updated_at,next_id='0',pages=0,scanned=0,versions=0,failed=false`,
+				state.origin, state.From, cutoff.Through, start, cutoff.SourceThrough)
 		})
 		if err != nil {
 			return err
 		}
+	}
+	if state.targetCoverage == nil {
+		if client.practiceOnly {
+			return errSourceRead
+		}
+		state.targetCoverage = state.Target
 	}
 	for {
 		page, err := client.page(ctx, state.Stream, state.next, *state.Target, limit)
@@ -209,7 +223,10 @@ func runOrderSync(ctx context.Context, conn *pgxpool.Conn, client orderFeedClien
 		updated.Scanned += int64(len(page.Rows))
 		updated.next, updated.Failed = page.Next, false
 		if !page.HasMore {
-			updated.Completed, updated.Target = state.Target, nil
+			updated.completedOutbox, updated.Target, updated.targetCoverage = state.Target, nil, nil
+			if !state.targetCoverage.Before(state.From) {
+				updated.Completed = state.targetCoverage
+			}
 		}
 		err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			inserted, err := storeSourceFactsFrom(ctx, tx, facts, state.origin)
@@ -228,9 +245,9 @@ func runOrderSync(ctx context.Context, conn *pgxpool.Conn, client orderFeedClien
 			}
 			updated.Versions += inserted
 			_, err = tx.Exec(ctx, `UPDATE dcai_order_sync SET next_updated_at=$2,next_id=$3,pages=$4,scanned=$5,versions=$6,
-			 completed_through=$7,target_through=$8,failed=false,
+			 completed_through=$7,target_through=$8,completed_outbox_through=$9,target_source_through=$10,failed=false,
 			 last_success_at=CASE WHEN $8::timestamptz IS NULL THEN clock_timestamp() ELSE last_success_at END WHERE stream=$1`, state.Stream, updated.next.UpdatedAt,
-				updated.next.ID, updated.Pages, updated.Scanned, updated.Versions, updated.Completed, updated.Target)
+				updated.next.ID, updated.Pages, updated.Scanned, updated.Versions, updated.Completed, updated.Target, updated.completedOutbox, updated.targetCoverage)
 			if err == nil && !page.HasMore && jobID != 0 {
 				return finishOrderSyncJob(ctx, tx, jobID, "SUCCEEDED", "")
 			}

@@ -28,22 +28,23 @@ var schema = baseSchema + "\n" + organizationDispatchSchema
 const schemaLockSQL = "SELECT pg_advisory_xact_lock(637619238)"
 
 type component struct {
-	Type             string                  `json:"type"`
-	Mode             string                  `json:"mode"`
-	Value            int64                   `json:"value"`
-	SourceRole       string                  `json:"sourceRole,omitempty"`
-	RefundPolicy     string                  `json:"refundPolicy,omitempty"`
-	ClassMember      string                  `json:"classMember,omitempty"`
-	ArrangementLabel string                  `json:"label,omitempty"`
-	SalesLabel       string                  `json:"salesLabel,omitempty"`
-	SalesPersonID    int64                   `json:"salesPersonId,omitempty"`
-	RecipientDuty    string                  `json:"recipientDuty,omitempty"`
-	SalesCompanies   *[]string               `json:"salesCompanies,omitempty"`
-	SaleScope        *practiceSaleScope      `json:"saleScope,omitempty"`
-	Tiers            *practiceSalesTiers     `json:"tiers,omitempty"`
-	PeriodBenefit    *practicePeriodBenefit  `json:"periodBenefit,omitempty"`
-	CompanySales     *practiceCompanySales   `json:"companySales,omitempty"`
-	RetrainSplits    *[]practiceRetrainSplit `json:"retrainSplits,omitempty"`
+	Type                string                  `json:"type"`
+	Mode                string                  `json:"mode"`
+	Value               int64                   `json:"value"`
+	SourceRole          string                  `json:"sourceRole,omitempty"`
+	RefundPolicy        string                  `json:"refundPolicy,omitempty"`
+	PracticeSignupBasis bool                    `json:"practiceSignupBasis,omitempty"`
+	ClassMember         string                  `json:"classMember,omitempty"`
+	ArrangementLabel    string                  `json:"label,omitempty"`
+	SalesLabel          string                  `json:"salesLabel,omitempty"`
+	SalesPersonID       int64                   `json:"salesPersonId,omitempty"`
+	RecipientDuty       string                  `json:"recipientDuty,omitempty"`
+	SalesCompanies      *[]string               `json:"salesCompanies,omitempty"`
+	SaleScope           *practiceSaleScope      `json:"saleScope,omitempty"`
+	Tiers               *practiceSalesTiers     `json:"tiers,omitempty"`
+	PeriodBenefit       *practicePeriodBenefit  `json:"periodBenefit,omitempty"`
+	CompanySales        *practiceCompanySales   `json:"companySales,omitempty"`
+	RetrainSplits       *[]practiceRetrainSplit `json:"retrainSplits,omitempty"`
 }
 
 func (c component) arrangementLabel() string {
@@ -87,6 +88,9 @@ func validateComponentsForProduct(items []component, practice bool) error {
 	}
 	seen := make(map[string]uint8)
 	for _, c := range items {
+		if c.PracticeSignupBasis && !practice {
+			return invalid
+		}
 		switch c.Type {
 		case "sales", "referral", "manager", "delivery", "service", "company_sales":
 		default:
@@ -108,12 +112,17 @@ func validateComponentsForProduct(items []component, practice bool) error {
 		}
 		if c.Mode == directorRateMode {
 			if c.Type != "manager" || c.Value < 0 || c.Value > periodRateScale ||
-				c != (component{Type: "manager", Mode: directorRateMode, Value: c.Value, ClassMember: c.ClassMember}) {
+				c != (component{Type: "manager", Mode: directorRateMode, Value: c.Value, ClassMember: c.ClassMember,
+					PracticeSignupBasis: c.PracticeSignupBasis}) {
 				return invalid
 			}
 			continue
 		}
 		if c.Value < 0 || (c.SourceRole != "" && !validSourceRole(c.SourceRole)) || !validRefundPolicy(c.RefundPolicy) || !validPracticeRetrainSplits(c) {
+			return invalid
+		}
+		if c.PracticeSignupBasis && c.PeriodBenefit == nil && c.CompanySales == nil &&
+			(c.Type != "sales" && c.Type != "referral" || c.SourceRole == "") {
 			return invalid
 		}
 		if c.ArrangementLabel != "" || c.SalesLabel != "" || c.SalesPersonID != 0 {
@@ -219,12 +228,13 @@ func migrate(ctx context.Context, db *pgxpool.Pool) error {
 }
 
 type workspace struct {
-	db                   *pgxpool.Pool
-	draftQuotes          *draftCalculationCaches
-	sources              map[string]sourceConfig
-	ruleAuth             catalogRuleAuth
-	development          bool
-	settlementSyncMaxAge time.Duration
+	db                                           *pgxpool.Pool
+	draftQuotes                                  *draftCalculationCaches
+	sources                                      map[string]sourceConfig
+	ruleAuth                                     catalogRuleAuth
+	development                                  bool
+	settlementSyncMaxAge                         time.Duration
+	dcaiOrderSyncInterval, dczdOrderSyncInterval time.Duration
 }
 
 func (s workspace) routes() []rest.Route {
@@ -240,7 +250,10 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.listForAuthorizedProducts(periodsSQL, true)},
 		{Method: http.MethodPost, Path: "/api/v1/periods", Handler: submit(s.createAccountingMonth)},
 		{Method: http.MethodPost, Path: "/api/v1/periods/pull", Handler: submitJSON(8<<10, s.pullPracticePeriods)},
+		{Method: http.MethodGet, Path: "/api/v1/periods/source-products", Handler: s.list(practiceSourceProductsSQL)},
+		{Method: http.MethodPost, Path: "/api/v1/orders/sync-periods", Handler: submitJSON(8<<10, s.pullPracticePeriods)},
 		{Method: http.MethodPost, Path: "/api/v1/period-report-month", Handler: submit(s.setPeriodReportMonth)},
+		{Method: http.MethodPost, Path: "/api/v1/period-refund-cutoff", Handler: submit(s.setPeriodRefundCutoff)},
 		{Method: http.MethodPost, Path: "/api/v1/period-practice-roster", Handler: submit(s.setPeriodPracticeRoster)},
 		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.getComponentRules},
 		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.listForAuthorizedProducts(catalogRulesSQL, false)},
@@ -314,6 +327,8 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/orders/version", Handler: s.orderVersion},
 		{Method: http.MethodPost, Path: "/api/v1/orders/pull", Handler: submit(s.pullOrder)},
 		{Method: http.MethodGet, Path: "/api/v1/orders/sync", Handler: s.getOrderSyncJobs},
+		{Method: http.MethodGet, Path: "/api/v1/orders/sync-settings", Handler: s.getOrderSyncSettings},
+		{Method: http.MethodPost, Path: "/api/v1/orders/sync-settings", Handler: submit(s.saveOrderSyncSettings)},
 		{Method: http.MethodPost, Path: "/api/v1/orders/sync", Handler: submit(s.requestOrderSync)},
 		{Method: http.MethodPost, Path: "/api/v1/practice-rosters/pull", Handler: submit(s.pullPracticeRoster)},
 		{Method: http.MethodGet, Path: "/api/v1/practice-rosters/options", Handler: s.listPracticeRosterOptions},
@@ -383,9 +398,9 @@ func respond(w http.ResponseWriter, result any, err error) {
 		code, message = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, errDispatchCategoryName), errors.Is(err, errDispatchCompanyName), errors.Is(err, errDispatchPersonName), errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope), errors.Is(err, errCatalogPeriodResumeDate), errors.Is(err, errCatalogPeriodQuoteItem),
 		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany),
-		errors.Is(err, errPracticeServiceSeparate),
+		errors.Is(err, errPracticeServiceSeparate), errors.Is(err, errPracticePeriodMappingMissing),
 		errors.Is(err, errDirectorRateScope), errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap), errors.Is(err, errRuleOrderRole),
-		errors.Is(err, errAccountingMonthRequired), errors.Is(err, errCatalogPeriodQuoteOrders):
+		errors.Is(err, errAccountingMonthRequired), errors.Is(err, errRefundCutoffRange), errors.Is(err, errCatalogPeriodQuoteOrders):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod), errors.Is(err, errCatalogPeriodResumeState), errors.Is(err, errCatalogPeriodResumeTarget),
@@ -473,6 +488,7 @@ const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[
   WHERE m.product_id=p.product_id AND m.observed_at=c.captured_at)) AS "ruleMatchingAvailable",
  (p.aggregate_package_id IS NOT NULL OR ` + catalogDraftAvailableSQL + `) AS "catalogDraftAvailable",
  p.starts_on AS "startsOn",p.ends_on AS "endsOn",to_char(p.calendar_month,'YYYY-MM') AS "settlementMonth",
+ p.refund_cutoff_at AS "refundCutoffAt",
  to_char(` + periodReportMonthSQL + `,'YYYY-MM') AS "reportMonth",to_char(p.report_month,'YYYY-MM') AS "reportMonthOverride",
  (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL) AS "reportMonthEditable",
  (pro.period_mode='class' AND p.calendar_month IS NULL AND final.period_id IS NULL) AS "practiceRosterEditable",
@@ -1120,7 +1136,7 @@ func startHTTP(ctx context.Context, cfg config, db *pgxpool.Pool) error {
 	defer server.Stop()
 	health := newHandler(db.Ping)
 	api := workspace{db: db, draftQuotes: &draftCalculationCaches{}, sources: readSources(), ruleAuth: cfg.ruleAuth, development: cfg.development,
-		settlementSyncMaxAge: cfg.settlementSyncMaxAge}
+		settlementSyncMaxAge: cfg.settlementSyncMaxAge, dcaiOrderSyncInterval: cfg.dcaiSyncInterval, dczdOrderSyncInterval: cfg.dczdSyncInterval}
 	stopHealth, err := api.startOrganizationHealth(ctx)
 	if err != nil {
 		return err

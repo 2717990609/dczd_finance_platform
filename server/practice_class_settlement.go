@@ -86,7 +86,7 @@ const practiceClassSettlementSourceSQL = `WITH scope AS (
  SELECT least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',(
    SELECT min(v.occurred_at) FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id
    WHERE a.period_id=p.id AND a.payment_version_id IS NULL
-  )) AS from_time,greatest((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',roster.confirmed_at) AS through_time
+  )) AS from_time,greatest((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',roster.confirmed_at,p.refund_cutoff_at) AS through_time
  FROM periods p JOIN calculation_drafts d ON d.period_id=p.id JOIN practice_rosters roster ON roster.id=d.practice_roster_id
  WHERE p.id=$1 AND EXISTS(
   SELECT 1 FROM source_mappings m WHERE m.product_id=p.product_id AND m.source='DCZD' AND m.domain='PRACTICE'

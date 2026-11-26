@@ -482,6 +482,8 @@ type practiceBenefitShare struct {
 	rates         []int64
 	company       pgtype.UUID
 	fixed         [2]int64
+	exact         [2]*big.Rat
+	rate          int64
 	key           string
 	net           int64
 	amount        int64
@@ -654,7 +656,8 @@ func scopePracticeBenefitPurchase(part component, p practicePurchase, assignment
 		return practiceBenefitShare{}, append(issues, issue), true
 	}
 	payments := p.payments
-	if b.FixedMinor != nil && len(p.originalPayments) != 0 {
+	fixedSignup := part.PracticeSignupBasis && b.FixedMinor != nil && !b.FixedPerClass && !b.FixedPerOrder
+	if b.FixedMinor != nil && !fixedSignup && len(p.originalPayments) != 0 {
 		payments = p.originalPayments
 	}
 	share := practiceBenefitShare{purchase: p}
@@ -760,6 +763,7 @@ func allocatePracticePeriodRate(shares []practiceBenefitShare, rate int64) (int6
 	var net, assigned int64
 	for i := range shares {
 		s := &shares[i]
+		s.rate = rate
 		var err error
 		net, err = addMinor(net, s.net)
 		if err != nil {
@@ -796,9 +800,13 @@ func practicePeriodComponentKey(part component, index int) string {
 }
 
 func allocatePracticeFixedBenefit(shares []practiceBenefitShare, award int64, perClass, perOrder bool) (int64, error) {
+	var classGross int64
 	if perClass {
 		if err := splitPracticeFixedClass(shares, award); err != nil {
 			return 0, err
+		}
+		for _, share := range shares {
+			classGross += practicePaidTotal(share.payments)
 		}
 	}
 	var total int64
@@ -809,7 +817,15 @@ func allocatePracticeFixedBenefit(shares []practiceBenefitShare, award int64, pe
 		} else if !perClass {
 			share.fixed = practiceFixedSignupShares(share.payments, award)
 		}
+		gross := classGross
+		if !perClass && !perOrder {
+			gross = practicePaidTotal(share.payments)
+		}
 		for n, payment := range share.payments {
+			if perOrder {
+				gross = *payment.Fact.AmountMinor
+			}
+			share.exact[n] = exactMinor(award, share.purchase.netAmount(payment), gross)
 			share.fixed[n] = share.purchase.remainingFixedShare(payment, share.fixed[n])
 			var err error
 			total, err = addMinor(total, share.fixed[n])
@@ -906,6 +922,7 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		}
 		for _, benefit := range runtime.directorBenefits {
 			benefit.Value, benefit.ClassMember = part.Value, part.ClassMember
+			benefit.PracticeSignupBasis = part.PracticeSignupBasis
 			parts = append(parts, benefit)
 			directorIndexes = append(directorIndexes, i)
 		}
@@ -967,8 +984,21 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 			continue
 		}
 		var total int64
+		fixedSignup := part.PracticeSignupBasis && b.FixedMinor != nil && !b.FixedPerClass && !b.FixedPerOrder
 		if len(b.StandardRates) != 0 {
 			shares, total, err = allocatePracticeStandardRates(shares)
+		} else if fixedSignup {
+			for i := range shares {
+				if shares[i].net == 0 {
+					continue
+				}
+				shares[i].fixed = practiceFixedSignupShares(shares[i].payments, *b.FixedMinor)
+				shares[i].exact = shares[i].purchase.exactBenefitShares(shares[i].payments, big.NewRat(*b.FixedMinor, 1), false)
+				total, err = addMinor(total, *b.FixedMinor)
+				if err != nil {
+					return err
+				}
+			}
 		} else if b.FixedPerClass && b.OrderAppointmentLevel != "" {
 			shares, total, err = allocatePracticeOrganizationFixedBenefit(shares, *b.FixedMinor)
 		} else if b.FixedMinor != nil {
@@ -982,6 +1012,7 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 			if b.ReferralCompanyRecipient {
 				// The company referral standard rounds each enrollment's entitlement.
 				for i := range shares {
+					shares[i].rate = rate
 					shares[i].amount = practiceCompanyRate(shares[i].net, rate)
 					total, err = addMinor(total, shares[i].amount)
 					if err != nil {
@@ -1017,13 +1048,15 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		for _, share := range shares {
 			base := draftLine{PersonID: b.PersonID, RuleID: rule.ID, EnrollmentID: share.purchase.member.ID,
 				Component: key, BeneficiaryUnit: unit, reportUnit: reportUnit, PracticePool: b.Pool,
-				practiceProportionalRefund: len(b.Tiers) == 0, practiceTierRefund: len(b.Tiers) != 0}
+				practiceProportionalRefund: len(b.Tiers) == 0, practiceTierRefund: len(b.Tiers) != 0, practiceFixedSignup: fixedSignup}
 			if share.company.Valid {
 				base.BeneficiaryUnit = &share.company
 			}
 			amounts := share.fixed
 			if b.FixedMinor == nil {
-				amounts = share.purchase.benefitShares(share.payments, share.amount, !runtime.legacyGrossRateShares)
+				useNet := !part.PracticeSignupBasis && !runtime.legacyGrossRateShares
+				amounts = share.purchase.benefitShares(share.payments, share.amount, useNet)
+				share.exact = share.purchase.exactBenefitShares(share.payments, exactMinor(share.net, share.rate, periodRateScale), useNet)
 			}
 			appendPracticePeriodShare(draft, base, share, amounts)
 		}
@@ -1038,6 +1071,7 @@ func appendPracticePeriodShare(draft *paymentDraft, line draftLine, share practi
 			continue
 		}
 		line.FactID, line.Base, line.Amount = payment.ID, net, amounts[i]
+		line.PreciseAmount = preciseYuan(share.exact[i])
 		if share.people != nil {
 			line.PersonID, line.IdentityID = share.people[i].PersonID, share.people[i].ID
 		}
@@ -1058,6 +1092,32 @@ func (p practicePurchase) benefitShares(payments []paymentInput, amount int64, u
 	}
 	tail := p.netAmount(payments[1])
 	return practiceSplitShares(p.netAmount(payments[0])+tail, tail, amount)
+}
+
+func practicePaidTotal(payments []paymentInput) int64 {
+	var gross int64
+	for _, payment := range payments {
+		gross += *payment.Fact.AmountMinor
+	}
+	return gross
+}
+
+func (p practicePurchase) exactBenefitShares(payments []paymentInput, amount *big.Rat, useNet bool) [2]*big.Rat {
+	var weights [2]int64
+	var total int64
+	for i, payment := range payments {
+		weight := *payment.Fact.AmountMinor
+		if useNet {
+			weight = p.netAmount(payment)
+		}
+		weights[i] = weight
+		total += weight
+	}
+	var result [2]*big.Rat
+	for i := range payments {
+		result[i] = exactProportion(amount, weights[i], total)
+	}
+	return result
 }
 
 func practiceGrossShares(gross int64, payments []paymentInput, amount int64) [2]int64 {

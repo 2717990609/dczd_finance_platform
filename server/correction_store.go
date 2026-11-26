@@ -22,6 +22,7 @@ type correctionInput struct {
 }
 
 type correctionLine struct {
+	PreciseAmount                   string `json:"preciseAmount,omitempty"`
 	OriginalLineID, SourceVersionID int64
 	PersonID, Amount                int64
 	Unit                            pgtype.UUID `json:"-"`
@@ -36,6 +37,19 @@ type correctionEvaluation struct {
 	lines   []correctionLine
 	pending []recipientDelta
 	issue   string
+}
+
+func (e correctionEvaluation) withPreciseTarget(target draftLine, balance *correctionBalance) correctionEvaluation {
+	for i := range e.lines {
+		line := &e.lines[i]
+		switch {
+		case target.PersonID > 0 && line.PersonID == target.PersonID:
+			line.PreciseAmount = preciseLessPosted(target.PreciseAmount, balance.recorded[line.PersonID])
+		case target.BeneficiaryUnit != nil && line.Unit == *target.BeneficiaryUnit:
+			line.PreciseAmount = preciseLessPosted(target.PreciseAmount, balance.organizations[line.Unit])
+		}
+	}
+	return e
 }
 
 type correctionBalance struct {
@@ -349,7 +363,15 @@ func computeRecommendationCorrection(input correctionInput, b *correctionBalance
 		}
 		expected += negative
 	}
-	return evaluateRecipientCorrection(input, b, assignment.PersonID, expected)
+	result, err := evaluateRecipientCorrection(input, b, assignment.PersonID, expected)
+	if err != nil || base == 0 {
+		return result, err
+	}
+	amount := exactMinor(part.Value, base-b.refunded, base)
+	if part.Mode == "rate" {
+		amount = exactMinor(base-b.refunded, part.Value, 10000)
+	}
+	return result.withPreciseTarget(draftLine{PersonID: assignment.PersonID, PreciseAmount: preciseYuan(amount)}, b), nil
 }
 
 func evaluateRecipientCorrection(input correctionInput, b *correctionBalance, recipientID, expected int64) (correctionEvaluation, error) {

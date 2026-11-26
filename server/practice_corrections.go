@@ -210,6 +210,7 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 	if replay.independent {
 		for i, line := range original {
 			target[i].Amount = line.amount - balances[line.id].refundDebit
+			target[i].PreciseAmount = ""
 			if target[i].Amount < 0 {
 				return issue("CORRECTION_REFUND_CONFLICT")
 			}
@@ -234,7 +235,7 @@ func (b practiceCorrectionBatch) apply(ctx context.Context, tx pgx.Tx, classID i
 		if err != nil {
 			return err
 		}
-		if err := appendCorrection(draft, inputs[i], line.component, key, result); err != nil {
+		if err := appendCorrection(draft, inputs[i], line.component, key, result.withPreciseTarget(after, balances[line.id])); err != nil {
 			return err
 		}
 	}
@@ -299,14 +300,23 @@ func (r practiceReplay) calculateCorrectionLines(ctx context.Context, tx pgx.Tx,
 	if err != nil {
 		return nil, err
 	}
-	lines := slices.DeleteFunc(revised.Lines, func(line draftLine) bool { return line.practiceProportionalRefund })
+	lines := slices.DeleteFunc(revised.Lines, func(line draftLine) bool {
+		return line.practiceProportionalRefund || line.practiceFixedSignup
+	})
 	for _, line := range baseline.Lines {
-		if !line.practiceProportionalRefund {
+		if !line.practiceProportionalRefund && !line.practiceFixedSignup {
 			continue
 		}
-		line.Amount, err = practiceRefundRemaining(line.Base, line.Amount, r.lateRefunded[line.FactID])
+		principal := r.lateRefunded[line.FactID]
+		accrued := line.Amount
+		line.Amount, err = practiceRefundRemaining(line.Base, accrued, principal, line.practiceFixedSignup)
 		if err != nil {
 			return nil, err
+		}
+		if principal != 0 && !line.practiceFixedSignup {
+			line.PreciseAmount = preciseYuan(exactMinor(accrued, line.Base-principal, line.Base))
+		} else if line.Amount == 0 {
+			line.PreciseAmount = ""
 		}
 		lines = append(lines, line)
 	}
@@ -338,6 +348,11 @@ func applyIndependentPracticeCorrectionRefunds(replay practiceReplay, original [
 		debit, err := refundDelta(terms, after.Base, after.Amount, principal, 0)
 		if err != nil {
 			return err
+		}
+		if terms.RefundPolicy == "proportional" {
+			after.PreciseAmount = preciseYuan(exactMinor(after.Amount, after.Base-principal, after.Base))
+		} else if debit != 0 {
+			after.PreciseAmount = ""
 		}
 		after.Amount += debit
 	}

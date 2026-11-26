@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math/big"
 	"net/http"
 	"slices"
 	"strconv"
@@ -245,6 +246,7 @@ func (r *practiceRetrainRate) amount(commission, net, fixed int64) int64 {
 
 type practiceRetrainAmounts struct {
 	commission, sales, service int64
+	exact                      [3]*big.Rat
 }
 
 func (r practiceRetrainSplit) amounts(commission, net int64) (practiceRetrainAmounts, bool) {
@@ -258,7 +260,17 @@ func (r practiceRetrainSplit) amounts(commission, net int64) (practiceRetrainAmo
 		combined := practiceRetrainRate{Basis: a.Basis, Value: a.Value + b.Value}
 		service = combined.amount(commission, net, 0) - sales
 	}
-	return practiceRetrainAmounts{commission, sales, service}, sales <= commission-service
+	return practiceRetrainAmounts{commission: commission, sales: sales, service: service}, sales <= commission-service
+}
+
+func (r *practiceRetrainRate) exactAmount(commission *big.Rat, net, fixed int64) *big.Rat {
+	if r == nil {
+		return big.NewRat(fixed, 1)
+	}
+	if r.Basis == practiceRetrainReceiptsBasis {
+		return exactMinor(net, r.Value, periodRateScale)
+	}
+	return exactProportion(commission, r.Value, periodRateScale)
 }
 
 func (part component) retrainSplits() []practiceRetrainSplit {
@@ -326,27 +338,44 @@ func (p practicePurchase) retrainSplit(splits []practiceRetrainSplit) (*practice
 }
 
 func appendPracticeRetrainSplit(draft *paymentDraft, p practicePurchase, rule paymentRule, index int, amounts practiceRetrainAmounts,
-	sellers []identityAssignment, split practiceRetrainSplit, unit pgtype.UUID, proportional, reduceFixedShares bool, serviceMatches [2]bool) error {
+	sellers []identityAssignment, split practiceRetrainSplit, unit pgtype.UUID, fixed, reduceFixedShares bool, serviceMatches [2]bool) error {
 	var totalAccrued int64
-	total := p.benefitShares(p.payments, amounts.commission, proportional)
-	personal := p.benefitShares(p.payments, amounts.sales, proportional)
-	cumulative := p.benefitShares(p.payments, amounts.sales+amounts.service, proportional)
+	bySignup := rule.Components[index].PracticeSignupBasis
+	useNet := !fixed && !bySignup
+	total := p.benefitShares(p.payments, amounts.commission, useNet)
+	personal := p.benefitShares(p.payments, amounts.sales, useNet)
+	cumulative := p.benefitShares(p.payments, amounts.sales+amounts.service, useNet)
+	totalExact := p.exactBenefitShares(p.payments, amounts.exact[0], useNet)
+	salesExact := p.exactBenefitShares(p.payments, amounts.exact[1], useNet)
+	serviceExact := p.exactBenefitShares(p.payments, amounts.exact[2], useNet)
 	for i, payment := range p.payments {
 		if !serviceMatches[i] {
 			cumulative[i] = personal[i]
+			serviceExact[i] = new(big.Rat)
 		}
 		sales, service, pool := personal[i], cumulative[i]-personal[i], total[i]-cumulative[i]
+		poolExact := new(big.Rat).Sub(totalExact[i], salesExact[i])
+		poolExact.Sub(poolExact, serviceExact[i])
+		if poolExact.Sign() < 0 {
+			poolExact.SetInt64(0)
+		}
 		if reduceFixedShares {
 			sales = p.remainingFixedShare(payment, sales)
 			service = p.remainingFixedShare(payment, service)
 			pool = p.remainingFixedShare(payment, pool)
+			paid, net := *payment.Fact.AmountMinor, p.netAmount(payment)
+			salesExact[i] = exactProportion(salesExact[i], net, paid)
+			serviceExact[i] = exactProportion(serviceExact[i], net, paid)
+			poolExact = exactProportion(poolExact, net, paid)
 		}
 		totalAccrued += sales + service + pool
-		line := draftLine{FactID: payment.ID, RuleID: rule.ID, EnrollmentID: p.member.ID, Base: p.netAmount(payment), practiceProportionalRefund: true}
+		line := draftLine{FactID: payment.ID, RuleID: rule.ID, EnrollmentID: p.member.ID, Base: p.netAmount(payment),
+			practiceProportionalRefund: true, practiceFixedSignup: bySignup && fixed}
 		if sales > 0 {
 			sale := line
 			sale.Component = practicePersonalComponentKey(rule.Components, index, classMember(p.member.MembershipType))
 			sale.PersonID, sale.IdentityID, sale.Amount = sellers[i].PersonID, sellers[i].ID, sales
+			sale.PreciseAmount = preciseYuan(salesExact[i])
 			sale.practiceArrangementLabel = rule.Components[index].arrangementLabel()
 			draft.Lines = append(draft.Lines, sale)
 		}
@@ -354,12 +383,14 @@ func appendPracticeRetrainSplit(draft *paymentDraft, p practicePurchase, rule pa
 			serviceLine := line
 			serviceLine.Component = practicePeriodComponentKey(component{Type: "retrain_service"}, index)
 			serviceLine.PersonID, serviceLine.Amount = split.ServicePersonID, service
+			serviceLine.PreciseAmount = preciseYuan(serviceExact[i])
 			serviceLine.practiceArrangementLabel = split.ServiceLabel
 			draft.Lines = append(draft.Lines, serviceLine)
 		}
 		if pool > 0 {
 			line.Component = practicePeriodComponentKey(component{Type: "retrain_pool"}, index)
 			line.PracticePool, line.BeneficiaryUnit, line.Amount = &split.Pool, &unit, pool
+			line.PreciseAmount = preciseYuan(poolExact)
 			draft.Lines = append(draft.Lines, line)
 		}
 	}

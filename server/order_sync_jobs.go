@@ -115,7 +115,14 @@ func queueOrderSyncJob(ctx context.Context, tx pgx.Tx, stream, key string, from 
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		if from == nil {
-			return job, errSyncInitialFrom
+			err := tx.QueryRow(ctx, `SELECT initial_date::timestamp AT TIME ZONE 'Asia/Shanghai'
+			  FROM order_sync_settings WHERE stream=$1`, stream).Scan(&from)
+			if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+				return job, err
+			}
+			if from == nil {
+				return job, errSyncInitialFrom
+			}
 		}
 	case err != nil:
 		return job, err
@@ -129,7 +136,7 @@ func queueOrderSyncJob(ctx context.Context, tx pgx.Tx, stream, key string, from 
 	err = tx.QueryRow(ctx, `INSERT INTO dcai_sync_jobs(stream,source_key,initial_from,status) VALUES($1,$2,$3,'QUEUED')
 	 ON CONFLICT(stream) DO UPDATE SET id=excluded.id,source_key=excluded.source_key,initial_from=excluded.initial_from,
 	 status='QUEUED',requested_at=clock_timestamp(),started_at=NULL,finished_at=NULL,message=''
-	 RETURNING id,status,message`, stream, key, from).Scan(&job.ID, &job.Status, &job.Message)
+	 RETURNING id,status,message,source_key,initial_from`, stream, key, from).Scan(&job.ID, &job.Status, &job.Message, &job.provider, &job.from)
 	return job, err
 }
 
@@ -154,21 +161,13 @@ func (s workspace) runOrderSyncJob(ctx context.Context, stream string, interval 
 	if expectedID != 0 && job.ID != expectedID {
 		return errSyncJobReplaced
 	}
-	if !job.active() && interval > 0 {
-		var due bool
-		err = conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM dcai_order_sync d
-		 JOIN configuration_options c ON c.group_key=$4 AND c.option_key=d.stream AND c.enabled
-		 LEFT JOIN dcai_sync_jobs j USING(stream)
-		 WHERE d.stream=$1 AND d.source_key=$2
-		 AND greatest(coalesce(d.last_success_at,d.completed_through),j.finished_at, '-infinity'::timestamptz)
-		 <= clock_timestamp()-($3::bigint * interval '1 microsecond'))`,
-			stream, client.sourceKey(), interval.Microseconds(), group).Scan(&due)
+	if !job.active() && expectedID == 0 {
+		due, from, err := scheduledOrderSync(ctx, conn, stream, group, client.sourceKey(), interval)
 		if err != nil {
 			return err
 		}
 		if due {
-			var from *time.Time
-			if job.Status == "FAILED" && job.provider == client.sourceKey() {
+			if from == nil && job.Status == "FAILED" && job.provider == client.sourceKey() {
 				from = job.from
 			}
 			if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
@@ -261,7 +260,7 @@ func (s workspace) getOrderSyncJobs(w http.ResponseWriter, r *http.Request) {
 	 ) SELECT coalesce(jsonb_agg(jsonb_build_object(
 	 'source',s.source,'stream',s.stream,'initialFrom',d.initial_from,'completedThrough',d.completed_through,'targetThrough',d.target_through,
 	 'requestedFromDate',to_char(j.initial_from AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD'),
-	 'scannedOrders',d.scanned,'newVersions',d.versions,'taskId',j.id,'status',coalesce(j.status,'IDLE'),'message',coalesce(j.message,''),
+	 'lastSuccessAt',d.last_success_at,'scannedOrders',d.scanned,'newVersions',d.versions,'taskId',j.id,'status',coalesce(j.status,'IDLE'),'message',coalesce(j.message,''),
 	 'sourceMatches',coalesce(ws.provider_key=s.provider,true) AND coalesce(d.source_key=s.provider,true)
 	   AND (j.status IS NULL OR j.status NOT IN ('QUEUED','RUNNING') OR j.source_key=s.provider),
 	 'unverifiedSource',ws.provider_key IS NULL AND EXISTS(SELECT 1 FROM source_order_versions v WHERE v.source=s.source),

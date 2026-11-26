@@ -189,6 +189,8 @@ CREATE TABLE IF NOT EXISTS dcai_order_sync (
  CHECK (target_through IS NULL OR target_through>=coalesce(completed_through,initial_from))
 );
 ALTER TABLE dcai_order_sync ADD COLUMN IF NOT EXISTS last_success_at timestamptz;
+ALTER TABLE dcai_order_sync ADD COLUMN IF NOT EXISTS completed_outbox_through timestamptz;
+ALTER TABLE dcai_order_sync ADD COLUMN IF NOT EXISTS target_source_through timestamptz;
 
 CREATE TABLE IF NOT EXISTS dcai_order_blockers (
  stream text NOT NULL,
@@ -204,6 +206,13 @@ ALTER TABLE dcai_order_blockers ADD COLUMN IF NOT EXISTS completion_observed boo
 CREATE INDEX IF NOT EXISTS dcai_current_completion ON dcai_order_blockers(completion_version_id) WHERE completion_version_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS dcai_completed_order_dates ON source_order_versions(occurred_at,id)
  WHERE source='DCAI' AND kind='ORDER_COMPLETED';
+
+CREATE TABLE IF NOT EXISTS order_sync_settings (
+ stream text PRIMARY KEY CHECK (stream IN ('VIP_ORDERS','HEALTH_IDENTITY_ORDERS','ORDER_FACTS')),
+ auto boolean NOT NULL,
+ interval_minutes integer NOT NULL CHECK (interval_minutes BETWEEN 1 AND 10080),
+ initial_date date
+);
 
 CREATE TABLE IF NOT EXISTS dcai_sync_jobs (
  stream text PRIMARY KEY,
@@ -1628,3 +1637,51 @@ CREATE INDEX IF NOT EXISTS organization_health_conflicts_resolution ON organizat
 
 -- Only an assignment created from an AI membership can be closed by its native disable event.
 ALTER TABLE organization_assignments ADD COLUMN IF NOT EXISTS health_member_id text;
+
+ALTER TABLE periods ADD COLUMN IF NOT EXISTS refund_cutoff_at timestamptz;
+ALTER TABLE calculation_draft_lines ADD COLUMN IF NOT EXISTS precise_amount numeric(32,10);
+ALTER TABLE calculation_draft_refunds ADD COLUMN IF NOT EXISTS precise_amount numeric(32,10);
+ALTER TABLE calculation_draft_corrections ADD COLUMN IF NOT EXISTS precise_amount numeric(32,10);
+
+INSERT INTO draft_refresh_queue(period_id)
+SELECT d.period_id FROM calculation_drafts d
+WHERE NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=d.period_id)
+ AND (EXISTS(SELECT 1 FROM calculation_draft_lines l WHERE l.period_id=d.period_id AND l.precise_amount IS NULL)
+  OR EXISTS(SELECT 1 FROM calculation_draft_refunds r WHERE r.period_id=d.period_id AND r.precise_amount IS NULL)
+  OR EXISTS(SELECT 1 FROM calculation_draft_corrections c WHERE c.period_id=d.period_id AND c.precise_amount IS NULL))
+ON CONFLICT(period_id) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION refund_period_end(p periods) RETURNS timestamptz
+LANGUAGE sql STABLE STRICT AS $$
+ SELECT coalesce(p.refund_cutoff_at,(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
+$$;
+
+CREATE OR REPLACE FUNCTION refund_period_start(p periods) RETURNS timestamptz
+LANGUAGE sql STABLE STRICT AS $$
+ SELECT coalesce((SELECT previous.refund_cutoff_at FROM periods previous
+  WHERE previous.product_id=p.product_id AND previous.ends_on=p.starts_on-1
+   AND previous.aggregate_package_id IS NOT DISTINCT FROM p.aggregate_package_id
+   AND (previous.calendar_month IS NULL)=(p.calendar_month IS NULL)
+   AND previous.refund_cutoff_at IS NOT NULL
+  ORDER BY previous.id DESC LIMIT 1),p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')
+$$;
+
+CREATE OR REPLACE FUNCTION refund_payment_on_or_after(v source_order_versions, boundary timestamptz) RETURNS boolean
+LANGUAGE sql STABLE STRICT AS $$
+ SELECT EXISTS(SELECT 1 FROM source_order_versions paid
+  WHERE paid.source=v.source AND paid.kind='ORDER_PAID' AND paid.fact->>'domain'=v.fact->>'domain'
+   AND paid.order_id=v.fact#>>'{refundsPayment,0,orderId}' AND paid.occurred_at>=boundary AND paid.occurred_at<=v.occurred_at
+   AND (coalesce(v.fact#>>'{refundsPayment,0,lineId}','')='' OR paid.line_id=v.fact#>>'{refundsPayment,0,lineId}')
+   AND (coalesce(v.fact#>>'{refundsPayment,0,recordId}','')='' OR
+    strpos(paid.record_key,':')>0 AND substr(paid.record_key,strpos(paid.record_key,':')+1)=v.fact#>>'{refundsPayment,0,recordId}'))
+$$;
+
+CREATE OR REPLACE FUNCTION refund_calendar_contains(p periods, v source_order_versions) RETURNS boolean
+LANGUAGE sql STABLE STRICT AS $$
+ SELECT v.occurred_at<refund_period_end(p)
+  AND CASE WHEN v.occurred_at>=refund_period_start(p) THEN
+   v.occurred_at<(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
+    OR NOT refund_payment_on_or_after(v,(p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
+  ELSE v.occurred_at>=p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
+   AND refund_payment_on_or_after(v,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai') END
+$$;

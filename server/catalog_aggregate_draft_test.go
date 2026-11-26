@@ -317,10 +317,25 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 	september := open()
 	var refundID int64
 	if err := db.QueryRow(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,fact,occurred_at)
-	 VALUES('DCAI','101','','vip:101','1','REFUND_SUCCEEDED','2026-09-05',
+	 VALUES('DCAI','101','','vip:101','1','REFUND_SUCCEEDED','2026-09-07',
 	  '{"domain":"VIP","sourceKey":"fixture","refundId":"refund-101","amountMinor":5000,"refundsPayment":[{"orderId":"101","recordId":"101"}]}','2026-09-05')
 	 RETURNING id`).Scan(&refundID); err != nil {
 		t.Fatal(err)
+	}
+	cutoff := time.Date(2026, 9, 6, 18, 0, 0, 0, shanghai)
+	if _, err := s.setPeriodRefundCutoff(ctx, periodRefundCutoffInput{PeriodID: periodID, CutoffAt: &cutoff}); err != nil {
+		t.Fatal(err)
+	}
+	extended, err := s.calculateCurrentDraft(ctx, periodID, 0)
+	if err != nil || extended.Total != 4400 || extended.IssueCount != 0 {
+		t.Fatalf("the open DCAI draft must include the refund that arrived after cutoff: %+v %v", extended, err)
+	}
+	if _, err := s.setPeriodRefundCutoff(ctx, periodRefundCutoffInput{PeriodID: periodID}); err != nil {
+		t.Fatal(err)
+	}
+	draft, err = s.calculateCurrentDraft(ctx, periodID, 0)
+	if err != nil || draft.Total != 5400 || draft.IssueCount != 0 {
+		t.Fatalf("restoring default cutoff must return the refund to the September draft: %+v %v", draft, err)
 	}
 	if result, err := s.calculateCurrentDraft(ctx, september, 0); err != nil || result.IssueCount != 1 {
 		t.Fatalf("an unconfirmed preceding month must be visible for review: %+v %v", result, err)

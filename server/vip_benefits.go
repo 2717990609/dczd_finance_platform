@@ -51,19 +51,20 @@ type vipBenefitOrganization struct {
 }
 
 type vipBenefitPart struct {
-	Item      string `json:"itemKey"`
-	Label     string `json:"label"`
-	Role      string `json:"-"`
-	Kind      string `json:"kind,omitempty"`
-	Party     string `json:"-"`
-	Unit      string `json:"-"`
-	Owner     string `json:"-"`
-	Pool      string `json:"-"`
-	Name      string `json:"beneficiaryName,omitempty"`
-	OwnerName string `json:"ownerName,omitempty"`
-	Amount    int64  `json:"amountMinor"`
-	Rate      int64  `json:"-"`
-	Status    string `json:"status"`
+	Item          string `json:"itemKey"`
+	Label         string `json:"label"`
+	Role          string `json:"-"`
+	Kind          string `json:"kind,omitempty"`
+	Party         string `json:"-"`
+	Unit          string `json:"-"`
+	Owner         string `json:"-"`
+	Pool          string `json:"-"`
+	Name          string `json:"beneficiaryName,omitempty"`
+	OwnerName     string `json:"ownerName,omitempty"`
+	Amount        int64  `json:"amountMinor"`
+	preciseAmount string
+	Rate          int64  `json:"-"`
+	Status        string `json:"status"`
 }
 
 func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
@@ -229,6 +230,7 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 			bindVIPBenefit(&line, a, req, data)
 			if line.Status == "CALCULATED" {
 				line.Rate, line.Amount = rate, amount
+				line.preciseAmount = a.preciseAmount(req, rate)
 			}
 		}
 		out = append(out, line)
@@ -295,6 +297,16 @@ func (a vipBenefitAction) quote(req vipSalesRequest, sourceIssue string) (rate, 
 		rate = row.Rate
 	}
 	return rate, calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: rate}), issue
+}
+
+func (a vipBenefitAction) preciseAmount(req vipSalesRequest, rate int64) string {
+	if a.Fixed == nil {
+		return preciseYuan(exactMinor(req.Paid, rate, 10000))
+	}
+	if req.OriginalPaid > req.Paid {
+		return preciseYuan(exactMinor(*a.Fixed, req.Paid, req.OriginalPaid))
+	}
+	return ""
 }
 
 func bindVIPBenefit(line *vipBenefitPart, a vipBenefitAction, req vipSalesRequest, data vipRuntimeData) {

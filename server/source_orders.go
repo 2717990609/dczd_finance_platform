@@ -23,7 +23,10 @@ var errSourceLookupTimeout = errors.New("子系统单笔查询超时，可稍后
 
 const sourceSchema = "source.order-fact/1.0"
 
-type sourceConfig struct{ BaseURL, Token string }
+type sourceConfig struct {
+	BaseURL, Token string
+	PracticeOnly   bool
+}
 
 type pullInput struct{ Source, Stream, OrderID string }
 
@@ -255,7 +258,7 @@ func readSources() map[string]sourceConfig {
 	for _, name := range sourcesList {
 		base, token := strings.TrimSpace(os.Getenv("FINANCE_"+name+"_URL")), strings.TrimSpace(os.Getenv("FINANCE_"+name+"_TOKEN"))
 		if base != "" && token != "" {
-			cfg[name] = sourceConfig{base, token}
+			cfg[name] = sourceConfig{BaseURL: base, Token: token, PracticeOnly: name == "DCZD"}
 		}
 	}
 	return cfg
@@ -281,6 +284,11 @@ func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) (sourceOr
 		return lookup, errSourceRead
 	}
 	endpoint = endpoint.JoinPath("/internal/v1/finance/source-orders/lookup")
+	practiceOnly := req.Source == "DCZD" && cfg.PracticeOnly
+	stream := req.Stream
+	if practiceOnly {
+		stream = dczdPracticeStream
+	}
 	method := http.MethodGet
 	var body io.Reader
 	if req.Source == "DCJK" {
@@ -289,7 +297,7 @@ func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) (sourceOr
 		body = bytes.NewReader(raw)
 	} else {
 		q := endpoint.Query()
-		q.Set("stream", req.Stream)
+		q.Set("stream", stream)
 		q.Set("source_order_id", req.OrderID)
 		endpoint.RawQuery = q.Encode()
 	}
@@ -351,9 +359,11 @@ func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) (sourceOr
 		}
 		return sourceOrderLookup{Facts: row.Facts, DCAI: &row}, nil
 	}
-	if req.Source == "DCZD" && (result.Stream != req.Stream || positiveSourceID(result.Item.Cursor.ID) == 0 ||
-		!validOrderWatermark(result.Item.Cursor.UpdatedAt) || result.Item.Gates == nil || len(result.Item.Gates) != 0) {
-		return lookup, errSourceRead
+	if req.Source == "DCZD" {
+		if result.Stream != stream || positiveSourceID(result.Item.Cursor.ID) == 0 ||
+			!validOrderWatermark(result.Item.Cursor.UpdatedAt) || result.Item.Gates == nil || len(result.Item.Gates) != 0 {
+			return lookup, errSourceRead
+		}
 	}
 	if len(items) == 0 {
 		return lookup, pgx.ErrNoRows
@@ -363,6 +373,12 @@ func lookupOrder(ctx context.Context, cfg sourceConfig, req pullInput) (sourceOr
 	}
 	facts := make([]sourceFact, 0, len(items))
 	for _, raw := range items {
+		if practiceOnly {
+			var doc sourceDocument
+			if json.Unmarshal(raw, &doc) != nil || !isEnrollmentPracticeFact(doc) {
+				return lookup, errSourceRead
+			}
+		}
 		fact, e := normalizeFact(req.Source, req.OrderID, raw)
 		if e != nil {
 			return lookup, e

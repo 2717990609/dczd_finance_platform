@@ -74,7 +74,7 @@ type practiceRegistrationInput struct {
 	Issue     string
 }
 
-const practiceRegistrationInputsSQL = `SELECT e.id,coalesce(v.id,0),coalesce(v.fact->>'referrerId',''),coalesce(v.practice_registration->>'companyId',''),
+var practiceRegistrationInputsSQL = `SELECT e.id,coalesce(v.id,0),coalesce(v.fact->>'referrerId',''),coalesce(v.practice_registration->>'companyId',''),
  CASE WHEN v.id IS NULL THEN 'PRACTICE_REGISTRATION_ATTENDANCE_MISSING'
   WHEN v.fact->>'domain' IS DISTINCT FROM 'PRACTICE' OR NOT(v.order_id=ANY(e.paid_order_ids))
    THEN 'PRACTICE_REGISTRATION_ORDER_MISMATCH'
@@ -88,7 +88,7 @@ const practiceRegistrationInputsSQL = `SELECT e.id,coalesce(v.id,0),coalesce(v.f
   SELECT v.id,v.fact,v.order_id,v.occurred_at,v.practice_registration FROM source_order_versions v
   WHERE v.source='DCZD' AND v.kind='DELIVERY_COMPLETED' AND v.record_key='dc_offline_order_log_t:'||e.source_enrollment_id
    AND ($2 OR v.id=($3::jsonb->>e.id::text)::bigint)
-  ORDER BY v.updated_at DESC,v.id DESC LIMIT 1
+  ORDER BY ` + practicePaymentRevision("v") + ` DESC,v.updated_at DESC,v.id DESC LIMIT 1
  ) v ON true
  WHERE member.roster_id=$1 AND e.commission_eligible AND ($2 OR v.id IS NOT NULL)`
 

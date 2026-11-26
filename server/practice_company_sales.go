@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"maps"
+	"math/big"
 	"slices"
 	"strconv"
 	"strings"
@@ -291,6 +292,7 @@ type practiceCompanyAward struct {
 	role, key                string
 	internal                 bool
 	ownSales                 bool
+	signupBasis              bool
 	componentIndex           int
 	payee                    *practiceCompanyPayee
 	recommendationRate       int64
@@ -335,6 +337,7 @@ func practiceCompanyStandards(rule paymentRule) *practiceCompanyOffers {
 		key := practicePeriodComponentKey(part, i)
 		awardBase := practiceCompanyAward{role: part.SourceRole, key: key, componentIndex: i,
 			payee: part.CompanySales.Payee, ownSales: part.CompanySales.OwnSales,
+			signupBasis:              part.PracticeSignupBasis,
 			recommendationRecipients: part.CompanySales.RecommendationRecipients}
 		for member, standards := range offers.companies {
 			if !part.matchesPracticeMember(member) {
@@ -769,10 +772,11 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 		draft.Issues = append(draft.Issues, practiceIssue(issue, p.member, rule, award.key))
 		return nil
 	}
-	proportionalFixed := award.Mode == "fixed" && (!runtime.legacyFixedRefundPolicy ||
-		award.proratesFixedRefunds(classMember(p.member.MembershipType)))
+	member := classMember(p.member.MembershipType)
+	fixedSignup := award.Mode == "fixed" && award.signupBasis && member == "retrain" && award.RefundPolicy == ""
+	proportionalFixed := award.Mode == "fixed" && !fixedSignup && (!runtime.legacyFixedRefundPolicy || award.proratesFixedRefunds(member))
 	line := draftLine{RuleID: rule.ID, EnrollmentID: p.member.ID, Component: award.key,
-		practiceProportionalRefund: true}
+		practiceProportionalRefund: true, practiceFixedSignup: fixedSignup}
 	var salesCompany pgtype.UUID
 	var companyIssue string
 	kind := award.payee.kind()
@@ -824,13 +828,19 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 	} else if award.Mode == "rate" {
 		amount = practiceCompanyRate(p.base, award.Value)
 	}
-	if amount > p.base {
+	if amount > p.base && !fixedSignup {
 		draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_COMPANY_AWARD_EXCEEDS_PAYMENT", p.member, rule, award.key))
 		return nil
 	}
 	amounts := share.fixed
 	if !proportionalFixed {
-		amounts = p.benefitShares(p.payments, amount, !runtime.legacyGrossRateShares && award.Mode == "rate")
+		useNet := !award.signupBasis && !runtime.legacyGrossRateShares && award.Mode == "rate"
+		amounts = p.benefitShares(p.payments, amount, useNet)
+		exact := big.NewRat(amount, 1)
+		if award.Mode == "rate" {
+			exact = exactMinor(p.base, award.Value, periodRateScale)
+		}
+		share.exact = p.exactBenefitShares(p.payments, exact, useNet)
 	}
 	if err := appendPracticeCompanyShare(draft, line, share, amount, amounts); err != nil {
 		return err
@@ -853,7 +863,9 @@ func appendPracticeCompanySale(draft *paymentDraft, rule paymentRule, p practice
 				practiceProportionalRefund: true}
 			amount := practiceCompanyRate(p.base, award.recommendationRate)
 			referralShare := practiceBenefitShare{purchase: p, payments: p.payments}
-			return appendPracticeCompanyShare(draft, referral, referralShare, amount, p.benefitShares(p.payments, amount, !runtime.legacyGrossRateShares))
+			useNet := !award.signupBasis && !runtime.legacyGrossRateShares
+			referralShare.exact = p.exactBenefitShares(p.payments, exactMinor(p.base, award.recommendationRate, periodRateScale), useNet)
+			return appendPracticeCompanyShare(draft, referral, referralShare, amount, p.benefitShares(p.payments, amount, useNet))
 		}
 	}
 	return nil

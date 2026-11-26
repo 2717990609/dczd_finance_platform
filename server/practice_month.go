@@ -42,16 +42,16 @@ const practiceRefundMonthFromSQL = ` FROM periods target
  JOIN source_mappings m ON m.product_id=target.product_id AND m.source='DCZD' AND m.domain='PRACTICE'
  JOIN source_order_versions v ON v.source=m.source AND v.fact->>'domain'=m.domain AND v.fact->>'sourceKey'=m.source_key
   AND v.kind='REFUND_SUCCEEDED' AND v.occurred_at<=CURRENT_TIMESTAMP
-  AND v.occurred_at<(target.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
+  AND v.occurred_at<refund_period_end(target)
  LEFT JOIN periods origin ON origin.product_id=target.product_id AND origin.calendar_month IS NOT NULL
-  AND v.occurred_at>=origin.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
-  AND v.occurred_at<(origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'
+  AND v.occurred_at>=refund_period_start(origin)
+  AND v.occurred_at<refund_period_end(origin)
 ` + refundPostingHistorySQL
 
 const practiceRefundMonthRoutingSQL = ` AND (NOT history.booked OR history.changed)
   AND ` + latestPracticeRefund + `
   AND (origin.id=target.id OR (
-   (origin.id IS NULL AND v.occurred_at<target.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
+   (origin.id IS NULL AND v.occurred_at<refund_period_start(target)
     OR EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=origin.id))
    AND (history.reserved_period=target.id OR (history.reserved_period IS NULL
     AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN target.starts_on AND target.ends_on))))`

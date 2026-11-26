@@ -22,27 +22,28 @@ var (
 type calculateDraftInput struct{ PeriodID int64 }
 
 type draftSummary struct {
-	ProductID             int64     `json:"-"`
-	Catalog               bool      `json:"catalog,omitempty"`
-	PracticeRefundMonth   bool      `json:"practiceRefundMonth,omitempty"`
-	PracticeRosterID      *int64    `json:"-"`
-	PracticeStartsAt      time.Time `json:"-"`
-	AggregatePackage      *string   `json:"aggregatePackageId,omitempty"`
-	PeriodOrdinal         int       `json:"-"`
-	PracticeRosterVersion int64     `json:"practiceRosterVersion,omitempty"`
-	PeriodID              int64     `json:"periodId"`
-	RuleID                int64     `json:"ruleId"`
-	RuleVersion           int       `json:"ruleVersion"`
-	Version               int64     `json:"version"`
-	Total                 int64     `json:"totalMinor"`
-	Accrued               int64     `json:"accruedMinor"`
-	RefundTotal           int64     `json:"refundMinor"`
-	RefundCount           int       `json:"refundCount"`
-	CorrectionTotal       int64     `json:"correctionMinor"`
-	CorrectionCount       int       `json:"correctionCount"`
-	LineCount             int       `json:"lineCount"`
-	IssueCount            int       `json:"issueCount"`
-	CalculatedAt          time.Time `json:"calculatedAt"`
+	ProductID             int64      `json:"-"`
+	Catalog               bool       `json:"catalog,omitempty"`
+	PracticeRefundMonth   bool       `json:"practiceRefundMonth,omitempty"`
+	PracticeRosterID      *int64     `json:"-"`
+	PracticeStartsAt      time.Time  `json:"-"`
+	RefundCutoffAt        *time.Time `json:"refundCutoffAt,omitempty"`
+	AggregatePackage      *string    `json:"aggregatePackageId,omitempty"`
+	PeriodOrdinal         int        `json:"-"`
+	PracticeRosterVersion int64      `json:"practiceRosterVersion,omitempty"`
+	PeriodID              int64      `json:"periodId"`
+	RuleID                int64      `json:"ruleId"`
+	RuleVersion           int        `json:"ruleVersion"`
+	Version               int64      `json:"version"`
+	Total                 int64      `json:"totalMinor"`
+	Accrued               int64      `json:"accruedMinor"`
+	RefundTotal           int64      `json:"refundMinor"`
+	RefundCount           int        `json:"refundCount"`
+	CorrectionTotal       int64      `json:"correctionMinor"`
+	CorrectionCount       int        `json:"correctionCount"`
+	LineCount             int        `json:"lineCount"`
+	IssueCount            int        `json:"issueCount"`
+	CalculatedAt          time.Time  `json:"calculatedAt"`
 }
 
 const maxDraftPayments = 100000
@@ -50,7 +51,7 @@ const maxDraftPayments = 100000
 const draftScopeSQL = `SELECT pro.id,pro.period_mode, p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',
  (p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',coalesce(p.source_period_key,''),p.ordinal,
  EXISTS(SELECT 1 FROM product_catalog_settings l WHERE l.product_id=pro.id),` + catalogDraftAvailableSQL + `,
- (pro.period_mode='class' AND p.calendar_month IS NOT NULL),p.aggregate_package_id::text
+ (pro.period_mode='class' AND p.calendar_month IS NOT NULL),p.aggregate_package_id::text,p.refund_cutoff_at
  FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1`
 
 const draftRulesSQL = `SELECT rv.id,rv.version,rv.effective_from,stopped.at,rv.components FROM periods p
@@ -183,7 +184,7 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 	var mode, sourceKey string
 	var productID int64
 	var scenarioRules bool
-	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&productID, &mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &scenarioRules, &summary.Catalog, &summary.PracticeRefundMonth, &summary.AggregatePackage)
+	err := tx.QueryRow(ctx, draftScopeSQL, summary.PeriodID).Scan(&productID, &mode, &window.Start, &window.Through, &sourceKey, &summary.PeriodOrdinal, &scenarioRules, &summary.Catalog, &summary.PracticeRefundMonth, &summary.AggregatePackage, &summary.RefundCutoffAt)
 	if err != nil {
 		return window, nil, err
 	}
@@ -458,6 +459,9 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	  aggregate_predecessor_id=excluded.aggregate_predecessor_id,director_version_id=excluded.director_version_id
 	  WHERE NOT calculation_drafts.performance_ready OR calculation_drafts.input_digest<>excluded.input_digest
 	   OR calculation_drafts.catalog_refunds_ready<>excluded.catalog_refunds_ready
+	   OR EXISTS(SELECT 1 FROM calculation_draft_lines l WHERE l.period_id=excluded.period_id AND l.precise_amount IS NULL)
+	   OR EXISTS(SELECT 1 FROM calculation_draft_refunds r WHERE r.period_id=excluded.period_id AND r.precise_amount IS NULL)
+	   OR EXISTS(SELECT 1 FROM calculation_draft_corrections c WHERE c.period_id=excluded.period_id AND c.precise_amount IS NULL)
 	  RETURNING version,total_minor,line_count,issue_count,calculated_at,refund_minor,refund_count,correction_minor,correction_count,practice_roster_id`,
 		summary.PeriodID, summary.RuleID, digest, result.Total, lineCount, result.blockingIssues(), result.RefundTotal, len(result.Refunds), result.CorrectionTotal, len(result.Corrections),
 		summary.PracticeRosterID, summary.Catalog, result.practiceReplay, optionalDraftID(result.aggregatePredecessor), optionalDraftID(result.directorVersionID)).
@@ -535,11 +539,15 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	}
 	if len(result.Corrections) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_corrections"},
-			[]string{"period_id", "original_line_id", "source_version_id", "person_id", "amount_minor", "company_id", "department_id", "beneficiary_unit_id", "group_id"},
+			[]string{"period_id", "original_line_id", "source_version_id", "person_id", "amount_minor", "company_id", "department_id", "beneficiary_unit_id", "group_id", "precise_amount"},
 			pgx.CopyFromSlice(len(result.Corrections), func(i int) ([]any, error) {
 				c := result.Corrections[i]
+				precise, err := preciseDraftAmount(c.PreciseAmount, c.Amount)
+				if err != nil {
+					return nil, err
+				}
 				return []any{summary.PeriodID, c.OriginalLineID, c.SourceVersionID, optionalDraftID(c.PersonID),
-					c.Amount, c.organization.Company, c.organization.Department, c.Unit, c.organization.groupID()}, nil
+					c.Amount, c.organization.Company, c.organization.Department, c.Unit, c.organization.groupID(), precise}, nil
 			}))
 	}
 	return err
@@ -581,7 +589,7 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 		}
 	}
 	_, err := tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_refunds"},
-		[]string{"period_id", "original_line_id", "refund_period_id", "refund_source_version_id", "amount_minor", "tier_credit"},
+		[]string{"period_id", "original_line_id", "refund_period_id", "refund_source_version_id", "amount_minor", "tier_credit", "precise_amount"},
 		pgx.CopyFromSlice(len(refunds), func(i int) ([]any, error) {
 			refund := refunds[i]
 			lineID := refund.OriginalLineID
@@ -591,7 +599,11 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 			if lineID == 0 {
 				return nil, errRefundAmount
 			}
-			return []any{periodID, lineID, refund.RefundPeriodID, refund.RefundSourceVersionID, refund.Amount, refund.TierCredit}, nil
+			precise, err := preciseDraftAmount(refund.PreciseAmount, refund.Amount)
+			if err != nil {
+				return nil, err
+			}
+			return []any{periodID, lineID, refund.RefundPeriodID, refund.RefundSourceVersionID, refund.Amount, refund.TierCredit, precise}, nil
 		}))
 	return err
 }
