@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-func TestPracticeRosterBindingChecksDatesAndQueuesBothSeries(t *testing.T) {
+func TestPracticeRosterBindingUsesSourceKeyAndQueuesBothSeries(t *testing.T) {
 	ctx := context.Background()
 	s := workspace{db: integrationDB(t)}
 	const fixture = `
@@ -25,7 +25,7 @@ func TestPracticeRosterBindingChecksDatesAndQueuesBothSeries(t *testing.T) {
 	  ('PRACTICE:1:1:158',1,'a','2026-11-14 09:00+08',now(),1),
 	  ('PRACTICE:1:1:158',2,'b','2026-11-14 09:00+08',now(),2),
 	  ('PRACTICE:1:1:159',1,'c','2026-11-21 09:00+08',now(),3),
-	  ('PRACTICE:1:2:160',1,'d','2026-11-14 09:00+08',now(),4),
+	  ('PRACTICE:1:2:160',1,'d','2026-11-20 09:00+08',now(),4),
 	  ('PRACTICE:1:2:161',1,'e','2026-11-24 16:00+00',now(),5);
 	 INSERT INTO rule_versions(product_id,version,label,components) VALUES(1,1,'累计规则','[{"mode":"tiered"}]');`
 	if _, err := s.db.Exec(ctx, fixture); err != nil {
@@ -49,24 +49,23 @@ func TestPracticeRosterBindingChecksDatesAndQueuesBothSeries(t *testing.T) {
 	if got := options(""); len(got) != 2 || got[0].Key != "PRACTICE:1:2:161" || got[0].StartsOn != "2026-11-25" {
 		t.Fatalf("unassociated options or Shanghai date: %+v", got)
 	}
-	if got := options("periodId=1&q=2026-11-14"); len(got) != 2 || got[0].Key != "PRACTICE:1:1:158" || got[0].Version != 2 {
+	if got := options("periodId=1&q=2026-11-14"); len(got) != 1 || got[0].Key != "PRACTICE:1:1:158" || got[0].Version != 2 {
 		t.Fatalf("edit options should pin current latest version: %+v", got)
 	}
-	input := periodPracticeRosterInput{PeriodID: 1, SourcePeriodKey: "PRACTICE:1:2:161", StartsOn: "2026-11-14", EndsOn: "2026-11-15",
-		ExpectedSourcePeriodKey: "PRACTICE:1:1:158", ExpectedStartsOn: "2026-11-14", ExpectedEndsOn: "2026-11-15"}
-	if _, err := s.setPeriodPracticeRoster(ctx, input); !errors.Is(err, errPracticeStart) {
-		t.Fatalf("wrong date: %v", err)
-	}
+	input := periodPracticeRosterInput{PeriodID: 1, SourcePeriodKey: "PRACTICE:1:2:160", ExpectedSourcePeriodKey: "PRACTICE:1:1:158"}
 	occupied := input
-	occupied.SourcePeriodKey, occupied.StartsOn, occupied.EndsOn = "PRACTICE:1:1:159", "2026-11-21", "2026-11-22"
+	occupied.SourcePeriodKey = "PRACTICE:1:1:159"
 	var duplicate *pgconn.PgError
 	if _, err := s.setPeriodPracticeRoster(ctx, occupied); !errors.As(err, &duplicate) || duplicate.Code != "23505" {
 		t.Fatalf("duplicate association: %v", err)
 	}
-	input.SourcePeriodKey = "PRACTICE:1:2:160"
 	changed, err := s.setPeriodPracticeRoster(ctx, input)
 	if err != nil || !changed.(map[string]bool)["changed"] {
 		t.Fatalf("correct association: %v %v", changed, err)
+	}
+	var sameDates bool
+	if err := s.db.QueryRow(ctx, `SELECT starts_on='2026-11-14' AND ends_on='2026-11-15' FROM periods WHERE id=1`).Scan(&sameDates); err != nil || !sameDates {
+		t.Fatalf("binding must preserve the accounting period dates: %t %v", sameDates, err)
 	}
 	var pending []int64
 	if err := s.db.QueryRow(ctx, "SELECT array_agg(period_id ORDER BY period_id) FROM draft_refresh_queue").Scan(&pending); err != nil || !reflect.DeepEqual(pending, []int64{1, 2, 3}) {
@@ -121,8 +120,7 @@ func TestPracticeRosterOptionsAndBindingFollowProductStrategy(t *testing.T) {
 			t.Fatalf("%s should only show %s: %d %s", item.query, item.key, w.Code, w.Body)
 		}
 	}
-	input := periodPracticeRosterInput{PeriodID: 4241, SourcePeriodKey: "PRACTICE:2:1:96", StartsOn: "2026-06-08", EndsOn: "2026-06-08",
-		ExpectedStartsOn: "2026-06-08", ExpectedEndsOn: "2026-06-08"}
+	input := periodPracticeRosterInput{PeriodID: 4241, SourcePeriodKey: "PRACTICE:2:1:96"}
 	if _, err := s.setPeriodPracticeRoster(ctx, input); !errors.Is(err, errPracticeRosterProduct) {
 		t.Fatalf("a healthy practice roster was accepted on a family period: %v", err)
 	}

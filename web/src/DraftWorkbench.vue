@@ -44,8 +44,7 @@ const options = computed(() => props.periods.map(period => ({
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
 const linkedPeriod = computed(() => props.periods.find(period => period.id === props.requestedPeriod)?.id)
 const canPullRoster = computed(() => selectedPeriod.value?.periodMode === 'class' && selectedPeriod.value.sourcePeriodKey && !draft.value?.settlement)
-const needsRosterEdit = computed(() => selectedPeriod.value?.practiceRosterEditable &&
-  (!selectedPeriod.value.sourcePeriodKey || selectedPeriod.value.classStartOutsidePeriod))
+const needsRosterEdit = computed(() => selectedPeriod.value?.practiceRosterEditable && !selectedPeriod.value.sourcePeriodKey)
 const canReviewRecovery = computed(() => !draft.value?.settlement && props.recoveryOptions?.length &&
   (props.localSettlement || props.settlementProducts?.includes(selectedPeriod.value?.productId)))
 const recoveryChoices = person => (props.recoveryOptions || []).filter(option =>
@@ -320,7 +319,7 @@ async function loadMore(section, cursorName) {
           <a-button v-if="canPullRoster && (view!=='review' || !draft)" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
           <a-button v-if="ruleSetupLink && draft && !draft.settlement" :href="ruleSetupLink">配置本期规则</a-button>
           <a-button v-if="!matchingOnly && !ruleSetupLink && !draft?.settlement && (view!=='review' || !draft)"
-            :disabled="loading || pullingRoster || periodsLoading || selectedPeriod?.classStartOutsidePeriod" :loading="calculating"
+            :disabled="loading || pullingRoster || periodsLoading" :loading="calculating"
             :type="draft ? 'default' : 'primary'" @click="calculate">{{ draft ? '重新试算' : '生成草稿' }}</a-button>
           <a-button v-if="!matchingOnly && (view!=='review' || !draft)" :disabled="loading || calculating || pullingRoster" @click="load()">刷新结果</a-button>
           <a-button v-if="hasSettlementReview && !draft?.settlement && view!=='review'" type="primary" :disabled="loading || calculating || pullingRoster" @click="view='review'">去结算核对</a-button>
@@ -361,8 +360,6 @@ async function loadMore(section, cursorName) {
   </section>
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
   <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon />
-  <a-alert v-if="selectedPeriod?.classStartOutsidePeriod" class="feedback" type="warning" show-icon
-    :message="'开班时间超出本期 · 来源开班时间 ' + formatTime(selectedPeriod.classStartsAt)" />
   <a-alert v-if="!draft?.settlement && refreshStatus?.message" class="feedback" type="warning" :message="refreshStatus.message" show-icon/>
   <p v-if="unitId && draft" class="workbench-scope-note">明细与汇总按组织筛选，合计及结算核对为全期</p>
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney" :unit-id="unitId"/>

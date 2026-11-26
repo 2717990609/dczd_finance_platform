@@ -203,6 +203,7 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 	if scenarioRules && mode != "class" {
 		return window, nil, errProductRuleUnavailable
 	}
+	ruleWindow := window
 	var classStart time.Time
 	if mode == "class" {
 		if sourceKey != "" {
@@ -215,11 +216,9 @@ func readDraftScope(ctx context.Context, tx pgx.Tx, summary *draftSummary) (peri
 			return window, nil, err
 		}
 		summary.PracticeStartsAt = classStart
-		if classStart.Before(window.Start) || !classStart.Before(window.Through) {
-			return window, nil, errPracticeStart
-		}
+		ruleWindow = periodWindow{Start: classStart, Through: classStart.Add(time.Microsecond)}
 	}
-	rows, err := tx.Query(ctx, draftRulesSQL, summary.PeriodID, window.Through, window.Start)
+	rows, err := tx.Query(ctx, draftRulesSQL, summary.PeriodID, ruleWindow.Through, ruleWindow.Start)
 	if err != nil {
 		return window, nil, err
 	}

@@ -180,8 +180,6 @@ func (s workspace) pullPracticePeriods(ctx context.Context, input practicePeriod
 				} else {
 					result.Conflicts = append(result.Conflicts, row.PeriodKey)
 				}
-			case errors.Is(err, errPracticeStart):
-				result.Conflicts = append(result.Conflicts, row.PeriodKey)
 			default:
 				return err
 			}

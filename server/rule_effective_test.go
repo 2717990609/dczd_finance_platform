@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -58,7 +57,7 @@ func TestPracticePeriodListUsesValidAndConfirmedRule(t *testing.T) {
 	product := createID(s.createProduct(ctx, createProductInput{Code: "CLASS_RULE_LIST", Name: "实战班", PeriodMode: "class"}))
 	const key = "PRACTICE:2:1:157"
 	period := createID(s.createPeriod(ctx, createPeriodInput{ProductID: product, Ordinal: 157, Name: "157 期",
-		StartsOn: "2026-11-08", EndsOn: "2026-11-09", SourcePeriodKey: key}))
+		StartsOn: "2026-11-06", EndsOn: "2026-11-07", SourcePeriodKey: key}))
 	cut := time.Date(2026, 11, 8, 14, 30, 0, 0, shanghai)
 	publish := func(label string, at *time.Time) {
 		t.Helper()
@@ -81,10 +80,9 @@ func TestPracticePeriodListUsesValidAndConfirmedRule(t *testing.T) {
 		}
 	}
 	type periodRule struct {
-		RuleVersion             *int
-		RuleLabel               string
-		ClassStartsAt           time.Time
-		ClassStartOutsidePeriod bool
+		RuleVersion   *int
+		RuleLabel     string
+		ClassStartsAt time.Time
 	}
 	read := func() periodRule {
 		t.Helper()
@@ -95,14 +93,14 @@ func TestPracticePeriodListUsesValidAndConfirmedRule(t *testing.T) {
 		return records[0]
 	}
 	store(1, cut.AddDate(0, 0, -18))
-	if got := read(); !got.ClassStartOutsidePeriod || got.RuleVersion != nil {
-		t.Fatalf("an out-of-period roster should display a warning without selecting a rule: %+v", got)
+	if got := read(); got.RuleVersion == nil || *got.RuleVersion != 1 {
+		t.Fatalf("a linked roster should select the rule at its own class time: %+v", got)
 	}
-	if _, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period}); !errors.Is(err, errPracticeStart) {
-		t.Fatalf("out-of-period roster was not blocked in calculation: %v", err)
+	if _, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period}); err != nil {
+		t.Fatalf("a linked roster should calculate without matching the accounting dates: %v", err)
 	}
 	store(2, cut)
-	if got := read(); got.ClassStartOutsidePeriod || got.RuleVersion == nil || *got.RuleVersion != 2 || got.RuleLabel != "本班确认规则" {
+	if got := read(); got.RuleVersion == nil || *got.RuleVersion != 2 || got.RuleLabel != "本班确认规则" {
 		t.Fatalf("the actual class time should select rule v2: %+v", got)
 	}
 	d, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: period})
@@ -116,7 +114,7 @@ func TestPracticePeriodListUsesValidAndConfirmedRule(t *testing.T) {
 	updated := cut.Add(30 * time.Minute)
 	publish("后续生效规则", &updated)
 	store(3, updated)
-	if got := read(); got.ClassStartOutsidePeriod || !got.ClassStartsAt.Equal(cut) || got.RuleVersion == nil ||
+	if got := read(); !got.ClassStartsAt.Equal(cut) || got.RuleVersion == nil ||
 		*got.RuleVersion != 2 || got.RuleLabel != "本班确认规则" {
 		t.Fatalf("confirmed listing should keep the frozen roster and rule: %+v", got)
 	}

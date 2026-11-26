@@ -194,7 +194,7 @@ onBeforeUnmount(() => { sequence++ })
               <p v-if="!review.draftStale && !review.issueCount">草稿 v{{ review.version }} · 待核项 0 条</p>
               <div v-if="review.draftStale || review.issueCount" class="review-actions">
                 <a-button v-if="review.issueCount" size="small" @click="emit('show-issues')">查看 {{ review.issueCount }} 条待核项</a-button>
-                <a-button v-if="review.draftStale" size="small" :disabled="working || period?.classStartOutsidePeriod" @click="emit('recalculate')">重新试算</a-button>
+                <a-button v-if="review.draftStale" size="small" :disabled="working" @click="emit('recalculate')">重新试算</a-button>
               </div>
             </section>
             <section v-if="draft.poolAllocationAvailable || review.pools.length || review.laterPoolActivity" class="settlement-check">

@@ -16,7 +16,6 @@ import (
 
 var errPracticeRoster = errors.New("实战班名单格式或源版本不正确")
 var errPracticeNotReady = errors.New("请关联实际开班的来源期次并导入确认名单")
-var errPracticeStart = errors.New("来源开班日期超出配置期次，请核对")
 
 type practiceRosterWire struct {
 	ContractVersion string                   `json:"contract_version"`

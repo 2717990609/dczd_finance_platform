@@ -394,7 +394,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errDirectorRateScope), errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap), errors.Is(err, errRuleOrderRole),
 		errors.Is(err, errRefundCutoffRange), errors.Is(err, errCatalogPeriodQuoteOrders):
 		code, message = 400, err.Error()
-	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
+	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeSettlementUnavailable),
 		errors.Is(err, errCatalogMixedPeriodStarted), errors.Is(err, errCatalogMixedRuleOverlap), errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod), errors.Is(err, errCatalogPeriodResumeState), errors.Is(err, errCatalogPeriodResumeTarget),
 		errors.Is(err, errPracticeRosterSource), errors.Is(err, errPracticeRosterRoute), errors.Is(err, errPracticeRosterAccess),
 		errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap), errors.Is(err, errPracticeRosterProduct),
@@ -490,13 +490,13 @@ const periodListColumnsSQL = `SELECT p.id,p.product_id AS "productId",pro.name A
  THEN draft.version END AS "poolDraftVersion",
  p.source_period_key AS "sourcePeriodKey",roster.starts_at AS "classStartsAt",
  roster.source_version AS "practiceRosterVersion",roster.attendance_count AS "practiceRosterAttendance",
- coalesce(NOT roster.in_period,false) AS "classStartOutsidePeriod",rule.version AS "ruleVersion",rule.label AS "ruleLabel"`
+ rule.version AS "ruleVersion",rule.label AS "ruleLabel"`
 
 const periodListJoinsSQL = `JOIN products pro ON pro.id=p.product_id
  LEFT JOIN settlements final ON final.period_id=p.id
  LEFT JOIN calculation_drafts draft ON draft.period_id=p.id
  LEFT JOIN LATERAL (
-  SELECT r.starts_at,r.source_version,r.attendance_count,(r.starts_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN p.starts_on AND p.ends_on AS in_period
+  SELECT r.starts_at,r.source_version,r.attendance_count
   FROM practice_rosters r WHERE r.period_key=p.source_period_key AND (final.period_id IS NULL OR r.id=draft.practice_roster_id)
   ORDER BY r.source_version DESC LIMIT 1
  ) roster ON pro.period_mode='class'
@@ -504,7 +504,7 @@ const periodListJoinsSQL = `JOIN products pro ON pro.id=p.product_id
   SELECT rv.version,rv.label FROM rule_versions rv
   CROSS JOIN LATERAL (SELECT ` + componentRulePeriodEndSQL + ` AS at) stopped WHERE ` + matchingRuleScope + `
   AND CASE WHEN final.period_id IS NOT NULL THEN rv.id=draft.rule_id
-    WHEN pro.period_mode='class' THEN roster.in_period AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
+    WHEN pro.period_mode='class' THEN roster.starts_at IS NOT NULL AND (rv.effective_from IS NULL OR rv.effective_from<=roster.starts_at)
       AND (stopped.at IS NULL OR roster.starts_at<stopped.at)
     ELSE (rv.effective_from IS NULL OR rv.effective_from < ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai'))
       AND (stopped.at IS NULL OR greatest(rv.effective_from,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')<stopped.at) END

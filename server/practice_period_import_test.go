@@ -29,13 +29,8 @@ func TestPracticePeriodImportUsesSourceStrategyAndKeepsExistingMappings(t *testi
 		})
 		return inserted, err
 	}
-	health := practicePeriodMapping{PeriodKey: "PRACTICE:2:1:101", Name: "Health 157", Ordinal: 157, StartsOn: "2026-11-08", EndsOn: "2026-11-12"}
+	health := practicePeriodMapping{PeriodKey: "PRACTICE:2:1:101", Name: "Health 157", Ordinal: 157, StartsOn: "2026-11-09", EndsOn: "2026-11-12"}
 	family := practicePeriodMapping{PeriodKey: "PRACTICE:2:4:95", Name: "Family 20", Ordinal: 20, StartsOn: "2026-11-08", EndsOn: "2026-11-09"}
-	wrongDates := health
-	wrongDates.StartsOn = "2026-11-09"
-	if _, err := run(wrongDates); !errors.Is(err, errPracticeStart) {
-		t.Fatalf("must check the actual start of the imported roster: %v", err)
-	}
 	unknown := family
 	unknown.PeriodKey = "PRACTICE:2:99:95"
 	if _, err := run(health, unknown); !errors.Is(err, errPracticePeriodMappingMissing) {

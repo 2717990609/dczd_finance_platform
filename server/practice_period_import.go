@@ -58,22 +58,13 @@ func storePracticePeriodMapping(ctx context.Context, tx pgx.Tx, row practicePeri
 		return false, err
 	}
 	args := []any{productID, row.Name, row.Ordinal, row.StartsOn, row.EndsOn, row.PeriodKey}
-	var dateMatches bool
-	err = tx.QueryRow(ctx, `SELECT coalesce((SELECT (starts_at AT TIME ZONE 'Asia/Shanghai')::date
-	 BETWEEN $2::text::date AND $3::text::date FROM practice_rosters
-	 WHERE period_key=$1 ORDER BY source_version DESC LIMIT 1),true)`, row.PeriodKey, row.StartsOn, row.EndsOn).Scan(&dateMatches)
+	tag, err := tx.Exec(ctx, `INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,source_period_key)
+	 VALUES($1,$2,$3,$4::text::date,$5::text::date,$6) ON CONFLICT DO NOTHING`, args...)
 	if err != nil {
 		return false, err
 	}
-	if dateMatches {
-		tag, err := tx.Exec(ctx, `INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,source_period_key)
-		 VALUES($1,$2,$3,$4::text::date,$5::text::date,$6) ON CONFLICT DO NOTHING`, args...)
-		if err != nil {
-			return false, err
-		}
-		if tag.RowsAffected() == 1 {
-			return true, enqueueDraftConfiguration(ctx, tx, draftRefreshRoster, row.PeriodKey, nil)
-		}
+	if tag.RowsAffected() == 1 {
+		return true, enqueueDraftConfiguration(ctx, tx, draftRefreshRoster, row.PeriodKey, nil)
 	}
 	var same bool
 	err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM periods
@@ -82,8 +73,6 @@ func storePracticePeriodMapping(ctx context.Context, tx pgx.Tx, row practicePeri
 	switch {
 	case err != nil || same:
 		return false, err
-	case !dateMatches:
-		return false, errPracticeStart
 	default:
 		return false, errPracticePeriodMappingConflict
 	}

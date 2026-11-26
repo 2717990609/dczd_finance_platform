@@ -287,7 +287,7 @@ function practiceRulesLink(tab) {
   return '#rules?'+params
 }
 function classRuleSetupLink(period, fromWorkbench = false) {
-  if (period?.periodMode==='class' && period.classStartsAt && !period.classStartOutsidePeriod
+  if (period?.periodMode==='class' && period.classStartsAt
       && !period.ruleVersion && canPublishRule(period.productId)) {
     const params = new URLSearchParams({productId:period.productId,periodId:period.id})
     if (fromWorkbench) params.set('from','settlement')
@@ -365,7 +365,7 @@ const previewPeriods = computed(() => {
     && !period.settled && !period.practiceRefundMonth && (!rule.periodId || period.id===rule.periodId)
     && (!rule.fromOrdinal || period.ordinal>=rule.fromOrdinal)
     && (!rule.activityType || Number(period.sourcePeriodKey?.split(':')[1])===rule.activityType)
-    && (period.periodMode!=='class' || !period.classStartOutsidePeriod && Date.parse(period.classStartsAt)>=effective))
+    && (period.periodMode!=='class' || Date.parse(period.classStartsAt)>=effective))
 })
 const selectedProduct = computed(() => data.value.products.find(p => p.id === draft.value.productId))
 const calculationPeriods = computed(() => data.value.periods.filter(p =>
@@ -1359,8 +1359,7 @@ function open(kind, row, edit = false) {
     cutoffAt:row.refundCutoffAt ? refundCutoffInput.format(new Date(row.refundCutoffAt)).replace(' ','T') : ''}
   if (kind === 'periodRoster') {
     draft.value = {periodId:row.id, periodName:row.name, sourcePeriodKey:row.sourcePeriodKey,
-      expectedSourcePeriodKey:row.sourcePeriodKey, startsOn:row.startsOn, endsOn:row.endsOn,
-      expectedStartsOn:row.startsOn, expectedEndsOn:row.endsOn, reportMonthOverride:row.reportMonthOverride}
+      expectedSourcePeriodKey:row.sourcePeriodKey}
   }
   if (kind === 'identity' && row) {
     draft.value = {source:row.source,externalId:row.externalId,previousOwner:row}
@@ -1741,8 +1740,7 @@ function bodyFor(kind,f) {
   if (kind === 'reportMonth') return {periodId:f.periodId,month:f.reportMonth || ''}
   if (kind === 'refundCutoff') return {periodId:f.periodId,cutoffAt:f.cutoffAt ? new Date(f.cutoffAt+'+08:00').toISOString() : null}
   if (kind === 'periodRoster') return {periodId:f.periodId,sourcePeriodKey:f.sourcePeriodKey?.trim() || '',
-    expectedSourcePeriodKey:f.expectedSourcePeriodKey || '', startsOn:must(f.startsOn), endsOn:must(f.endsOn),
-    expectedStartsOn:f.expectedStartsOn,expectedEndsOn:f.expectedEndsOn}
+    expectedSourcePeriodKey:f.expectedSourcePeriodKey || ''}
   if (kind === 'rule') {
     if (!f.components.length) throw new Error('请添加至少一项收款安排')
     const components = f.components.map(ruleComponentBody)
@@ -2111,7 +2109,6 @@ function periodPullNotice(result) {
                 </template>
                 <template v-else-if="column.key==='ruleVersion'">
                   <a-tag v-if="record.practiceRefundMonth" color="blue">按结算时规则</a-tag>
-                  <a-tag v-else-if="record.classStartOutsidePeriod" color="orange" :title="formatTime(record.classStartsAt)">开班时间超出本期</a-tag>
                   <a-tag v-else-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag>
                   <a v-else-if="classRuleSetupLink(record)" :href="classRuleSetupLink(record)">
                     待配规则
@@ -2243,13 +2240,7 @@ function periodPullNotice(result) {
         <a-form-item>
           <PracticeRosterSelect v-model:value="draft.sourcePeriodKey" :api="api" :format-time="formatTime" :period-id="draft.periodId"/>
         </a-form-item>
-        <div class="field-grid">
-          <a-form-item label="开始日期" required><a-input v-model:value="draft.startsOn" aria-label="开始日期" type="date"/></a-form-item>
-          <a-form-item label="结束日期" required><a-input v-model:value="draft.endsOn" aria-label="结束日期" type="date"/></a-form-item>
-        </div>
-        <p class="workbench-scope-note">已同步名单的开班日期须在期次起止日期内。保存后重新试算。</p>
-        <p v-if="!draft.reportMonthOverride && draft.endsOn && draft.endsOn.slice(0,7)!==draft.expectedEndsOn.slice(0,7)"
-          class="workbench-scope-note">保存后报表月份将改为 {{ draft.endsOn.slice(0,7) }}。</p>
+        <p class="workbench-scope-note">更正关联后需要重新试算。</p>
       </template>
       <template v-if="drawer==='refundCutoff'">
         <a-form-item label="核算期次"><span>{{ draft.periodName }}</span></a-form-item>
