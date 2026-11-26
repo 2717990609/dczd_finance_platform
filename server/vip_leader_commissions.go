@@ -218,6 +218,7 @@ func quoteVIPLeader(a vipBenefitAction, req vipSalesRequest, sourceIssue string,
 		return line
 	}
 	line.Rate, line.Amount, _ = a.quote(req, "")
+	line.preciseAmount = a.preciseAmount(req, line.Rate)
 	line.Status, line.Party, line.Name = "CALCULATED", holder, data.People[holder]
 	return line
 }
@@ -277,6 +278,7 @@ func quoteVIPIndependentTeamShares(req vipSalesRequest, sourceIssue string, poli
 			part.Status = "CALCULATED"
 			part.Rate = split.Service
 			part.Amount = calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: split.Service})
+			part.preciseAmount = preciseYuan(exactMinor(req.Paid, part.Rate, 10000))
 		}
 	}
 	return append(parts, part)

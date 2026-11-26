@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"math/big"
 	"slices"
 	"strconv"
 	"time"
@@ -80,26 +81,27 @@ type catalogPeriodTargetIssue struct {
 }
 
 type catalogPeriodGroup struct {
-	ID              string                     `json:"id"`
-	RuleID          string                     `json:"ruleId"`
-	Version         int                        `json:"version"`
-	Targets         []catalogPeriodGroupTarget `json:"targets"`
-	Receipts        int64                      `json:"receiptsMinor"`
-	Refunds         int64                      `json:"refundsMinor"`
-	Net             int64                      `json:"netMinor"`
-	Payments        int                        `json:"paymentCount"`
-	FixedOnly       bool                       `json:"fixedOnly,omitempty"`
-	FixedPerOrder   bool                       `json:"fixedPerOrder,omitempty"`
-	EventToken      string                     `json:"eventToken,omitempty"`
-	BeforeCarry     catalogPeriodQuote         `json:"beforeCarry"`
-	CarryIn         int64                      `json:"carryInMinor,omitempty"`
-	AfterCarry      *catalogPeriodQuote        `json:"afterCarry,omitempty"`
-	posting         catalogAggregateGroupInput
-	items           []catalogPeriodItem
-	fixedPoolKey    string
-	orderFixedMinor int64
-	originalLineID  int64
-	orderRefunds    []refundLine
+	ID               string                     `json:"id"`
+	RuleID           string                     `json:"ruleId"`
+	Version          int                        `json:"version"`
+	Targets          []catalogPeriodGroupTarget `json:"targets"`
+	Receipts         int64                      `json:"receiptsMinor"`
+	Refunds          int64                      `json:"refundsMinor"`
+	Net              int64                      `json:"netMinor"`
+	Payments         int                        `json:"paymentCount"`
+	FixedOnly        bool                       `json:"fixedOnly,omitempty"`
+	FixedPerOrder    bool                       `json:"fixedPerOrder,omitempty"`
+	EventToken       string                     `json:"eventToken,omitempty"`
+	BeforeCarry      catalogPeriodQuote         `json:"beforeCarry"`
+	CarryIn          int64                      `json:"carryInMinor,omitempty"`
+	AfterCarry       *catalogPeriodQuote        `json:"afterCarry,omitempty"`
+	posting          catalogAggregateGroupInput
+	items            []catalogPeriodItem
+	fixedPoolKey     string
+	orderFixedMinor  int64
+	orderExactCredit *big.Rat
+	originalLineID   int64
+	orderRefunds     []refundLine
 }
 
 func (g catalogPeriodGroup) quote() catalogPeriodQuote {
@@ -547,6 +549,10 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 			var amount int64
 			if payment.paidHere {
 				amount = award - prorateMinor(award, payment.refunds, payment.original)
+				if group.orderExactCredit == nil {
+					group.orderExactCredit = new(big.Rat)
+				}
+				group.orderExactCredit.Add(group.orderExactCredit, exactMinor(award, payment.original-payment.refunds, payment.original))
 			} else {
 				refundPrincipal := payment.priorRefunds
 				deducted := prorateMinor(award, refundPrincipal, payment.original)
@@ -554,12 +560,15 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					refundPrincipal += event.Amount
 					next := prorateMinor(award, refundPrincipal, payment.original)
 					delta := deducted - next
+					precise := preciseRefundAmount(component{RefundPolicy: "proportional"},
+						refundObligation{Base: payment.original, Accrued: award}, refundPrincipal, deducted, delta)
 					deducted = next
 					amount += delta
 					if delta != 0 && event.EventID != 0 {
 						origin := frozen[catalogFrozenGroupReference{PeriodID: event.frozenPeriod, Key: group.ID}]
 						group.orderRefunds = append(group.orderRefunds, refundLine{OriginalLineID: origin.originalLineID,
-							RefundSourceVersionID: event.EventID, Amount: delta, Principal: event.Amount, OccurredAt: event.OccurredAt})
+							RefundSourceVersionID: event.EventID, Amount: delta, Principal: event.Amount, OccurredAt: event.OccurredAt,
+							PreciseAmount: precise})
 					}
 				}
 			}

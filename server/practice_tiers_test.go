@@ -77,6 +77,10 @@ func TestPracticeFixedRetrainSalesRefundDefaultsToPaymentShares(t *testing.T) {
 	t.Run("legacy settlement", func(t *testing.T) {
 		checkPracticeFixedRefundPaymentShares(t, part, practiceReplayFixedPersonalPaymentShares, 500, 1501)
 	})
+	t.Run("signup basis", func(t *testing.T) {
+		part.PracticeSignupBasis = true
+		checkPracticeFixedRefundPaymentShares(t, part, 0, 801, 1200)
+	})
 }
 
 func checkPracticeFixedRefundPaymentShares(t *testing.T, part component, replayVersion int, depositShare, tailShare int64) {
@@ -135,8 +139,12 @@ func checkPracticeFixedRefundPaymentShares(t *testing.T, part component, replayV
 		t.Fatal(err)
 	}
 	class, err := s.calculateCurrentDraft(ctx, period, 0)
-	if err != nil || class.IssueCount != 0 || class.Total != 1600 || class.LineCount != 2 {
-		t.Fatalf("a 50%% refund of a 40-yuan deposit must leave 4 and 12 yuan in the two original shares: %+v %v", class, err)
+	total := int64(1600)
+	if part.PracticeSignupBasis {
+		total = depositShare + tailShare
+	}
+	if err != nil || class.IssueCount != 0 || class.Total != total || class.LineCount != 2 {
+		t.Fatalf("expected class total %d after the partial deposit refund: %+v %v", total, class, err)
 	}
 	if replayVersion != 0 {
 		// Recreate the posted allocations and replay version from the old calculation.
@@ -179,8 +187,19 @@ func checkPracticeFixedRefundPaymentShares(t *testing.T, part component, replayV
 	}
 	post(refund("2", "13", 3000, september.Add(time.Hour)))
 	booked, err = s.calculateCurrentDraft(ctx, refundPeriod, 0)
-	if err != nil || booked.IssueCount != 0 || booked.RefundTotal != -depositShare-(tailShare+1)/2 || booked.RefundCount != 2 {
-		t.Fatalf("halving the balance must reverse half of its original share: %+v %v", booked, err)
+	wantRefund, wantCount := -depositShare-(tailShare+1)/2, 2
+	if part.PracticeSignupBasis {
+		wantRefund, wantCount = -depositShare, 1
+	}
+	if err != nil || booked.IssueCount != 0 || booked.RefundTotal != wantRefund || booked.RefundCount != wantCount {
+		t.Fatalf("expected monthly total %d and %d deductions after the balance partial refund: %+v %v", wantRefund, wantCount, booked, err)
+	}
+	if part.PracticeSignupBasis {
+		post(refund("2", "14", 3000, september.Add(2*time.Hour)))
+		booked, err = s.calculateCurrentDraft(ctx, refundPeriod, 0)
+		if err != nil || booked.IssueCount != 0 || booked.RefundTotal != -depositShare-tailShare || booked.RefundCount != 2 {
+			t.Fatalf("a fully refunded balance must reverse its entire original share: %+v %v", booked, err)
+		}
 	}
 	verifyShares()
 }

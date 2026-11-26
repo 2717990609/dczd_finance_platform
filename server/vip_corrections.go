@@ -267,18 +267,20 @@ func (p vipCorrectionPayment) append(draft *paymentDraft, old, latest catalogPay
 		}
 		input := p.input(posting)
 		line := after[posting.Line.Component]
+		line.PreciseAmount = preciseLessPosted(line.PreciseAmount, balance.refundDebit)
 		expected := line.Amount - balance.refundDebit
 		var result correctionEvaluation
 		var err error
 		if posting.Line.PersonID != 0 {
 			result, err = evaluateRecipientCorrection(input, balance, line.PersonID, expected)
 		} else {
+			line.BeneficiaryUnit = &line.Catalog.Unit
 			result, err = evaluateOrganizationCorrection(input, balance, &line.Catalog.Unit, expected)
 		}
 		if err != nil {
 			return err
 		}
-		if err := appendCorrection(draft, input, line.Component, string(signature), result); err != nil {
+		if err := appendCorrection(draft, input, line.Component, string(signature), result.withPreciseTarget(line, balance)); err != nil {
 			return err
 		}
 	}

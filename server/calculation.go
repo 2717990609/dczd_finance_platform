@@ -44,10 +44,12 @@ type draftLine struct {
 	organization                         reportOrganization
 	reportUnit                           pgtype.UUID
 	practiceProportionalRefund           bool
+	practiceFixedSignup                  bool
 	practiceTierRefund                   bool
 	practiceArrangementLabel             string
 	PracticeTierReference                bool `json:",omitempty"`
 	Base, Amount                         int64
+	PreciseAmount                        string               `json:"preciseAmount,omitempty"`
 	Catalog                              *catalogDraftBenefit `json:",omitempty"`
 	BeneficiaryUnit                      *pgtype.UUID         `json:",omitempty"`
 	PracticePool                         *practicePoolTarget  `json:",omitempty"`
@@ -168,13 +170,17 @@ func calculatePaymentDraft(window periodWindow, rules []paymentRule, facts []pay
 				continue
 			}
 			amount := calculatePaymentAmount(*fact.AmountMinor, c)
+			precise := ""
+			if c.Mode == "rate" {
+				precise = preciseYuan(exactMinor(*fact.AmountMinor, c.Value, 10000))
+			}
 			if amount > math.MaxInt64-result.Total {
 				return paymentDraft{}, errCalculationOverflow
 			}
 			result.Total += amount
 			result.Lines = append(result.Lines, draftLine{
 				FactID: input.ID, PersonID: assignment.PersonID, IdentityID: assignment.ID, RuleID: rule.ID, Component: c.Type,
-				Base: *fact.AmountMinor, Amount: amount,
+				Base: *fact.AmountMinor, Amount: amount, PreciseAmount: precise,
 			})
 		}
 	}

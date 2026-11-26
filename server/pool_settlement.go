@@ -56,7 +56,7 @@ func (r settlementReview) isPracticeClass() bool {
 
 func readSettlementScope(ctx context.Context, tx pgx.Tx, periodID int64, lock bool) (settlementReview, error) {
 	query := `SELECT pro.id,pro.settlement_enabled,
-	 ((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')<=CURRENT_TIMESTAMP,pro.period_mode,
+	 greatest((p.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai',p.refund_cutoff_at)<=CURRENT_TIMESTAMP,pro.period_mode,
 	 pro.period_mode='class' AND p.calendar_month IS NOT NULL,
 	 coalesce(d.version,0),coalesce(d.input_digest,''::bytea),coalesce(d.issue_count,0),
 	 coalesce(d.rule_id IS NULL AND d.catalog_refunds_ready,false),

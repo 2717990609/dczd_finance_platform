@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"math/big"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -26,6 +27,7 @@ type practiceReplayOriginal struct {
 	practiceReplayLineKey
 	id, base, amount, adjusted int64
 	proportionalRefund         bool
+	fixedSignup                bool
 	tierRefund                 bool
 }
 
@@ -109,8 +111,8 @@ func replayPracticeRefunds(ctx context.Context, tx pgx.Tx, classID int64, events
 		for i := range originals {
 			line := &originals[i]
 			remaining := target[line.practiceReplayLineKey].Amount
-			if line.proportionalRefund {
-				remaining, err = practiceRefundRemaining(line.base, line.amount, replay.lateRefunded[line.payment])
+			if line.proportionalRefund || line.fixedSignup {
+				remaining, err = practiceRefundRemaining(line.base, line.amount, replay.lateRefunded[line.payment], line.fixedSignup)
 				if err != nil {
 					return nil, err
 				}
@@ -127,10 +129,19 @@ func replayPracticeRefunds(ctx context.Context, tx pgx.Tx, classID int64, events
 			if !found {
 				anchor = group[len(group)-1]
 			}
+			precise := ""
+			if line.proportionalRefund && !line.fixedSignup {
+				precise = preciseRefundAmount(component{RefundPolicy: "proportional"},
+					refundObligation{Base: line.base, Accrued: line.amount}, replay.lateRefunded[line.payment], -line.adjusted, change)
+			} else if !line.fixedSignup {
+				if targetYuan, ok := new(big.Rat).SetString(target[line.practiceReplayLineKey].PreciseAmount); ok {
+					precise = targetYuan.Sub(targetYuan, big.NewRat(settledAmount, 100)).FloatString(draftPrecision)
+				}
+			}
 			lines = append(lines, refundLine{
 				OriginalLineID: line.id, RefundPeriodID: anchor.RefundPeriodID, RefundSourceVersionID: anchor.ID,
 				Amount: change, Principal: *anchor.Fact.AmountMinor, RefundID: anchor.Fact.RefundID, OccurredAt: anchor.Fact.OccurredAt.UTC(),
-				TierCredit: change > 0,
+				TierCredit: change > 0, PreciseAmount: precise,
 			})
 			line.adjusted = remaining - line.amount
 		}
@@ -172,6 +183,7 @@ func readVerifiedPracticeReplay(ctx context.Context, tx pgx.Tx, classID int64) (
 			return replay, nil, errPracticeRefundReplay
 		}
 		line.proportionalRefund = value.practiceProportionalRefund
+		line.fixedSignup = value.practiceFixedSignup
 		line.tierRefund = value.practiceTierRefund
 		delete(before, line.practiceReplayLineKey)
 	}
@@ -223,13 +235,16 @@ func readPracticeReplayOriginals(ctx context.Context, tx pgx.Tx, classID int64) 
 
 // Late refunds use the net payment and benefit that were valid at settlement.
 // Class-internal refunds have already reduced both amounts in that baseline.
-func practiceRefundRemaining(base, amount, principal int64) (int64, error) {
+func practiceRefundRemaining(base, amount, principal int64, fixedSignup bool) (int64, error) {
 	if principal == 0 {
 		return amount, nil
 	}
 	change, err := refundDelta(component{RefundPolicy: "proportional"}, base, amount, principal, 0)
 	if err != nil {
 		return 0, errors.Join(errPracticeRefundReplay, err)
+	}
+	if fixedSignup && principal < base {
+		return amount, nil
 	}
 	return amount + change, nil
 }

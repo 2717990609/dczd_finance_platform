@@ -91,7 +91,7 @@ const catalogActivityEventColumns = `v.id,v.source,v.kind,v.occurred_at,v.fact,v
 func catalogAggregateMissingRefundMonthSQL(packageID string) string {
 	return `v.kind='REFUND_SUCCEEDED' AND NOT EXISTS(
   SELECT 1 FROM periods origin WHERE origin.aggregate_package_id=` + packageID + `
-   AND (v.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN origin.starts_on AND origin.ends_on
+   AND refund_calendar_contains(origin,v)
  ) AND EXISTS(
   SELECT 1 FROM source_order_versions original JOIN catalog_aggregate_draft_events paid
    ON original.id=paid.source_version_id AND paid.source_version_id=paid.payment_version_id
@@ -115,8 +115,11 @@ draft_scope AS (
   ($4::timestamptz AT TIME ZONE 'Asia/Shanghai')::date-1 AS ends_on WHERE $6=0 AND $8<>'') preview
  LEFT JOIN periods opened ON opened.aggregate_package_id=preview.aggregate_package_id
   AND (opened.starts_on,opened.ends_on)=(preview.starts_on,preview.ends_on)
-),
-closed_windows AS MATERIALIZED (
+), refund_bounds AS (
+ SELECT (SELECT period_id FROM draft_scope) AS period_id,
+  coalesce((SELECT refund_period_start(p) FROM periods p JOIN draft_scope d ON d.period_id=p.id),$3) AS from_at,
+  coalesce((SELECT refund_period_end(p) FROM periods p JOIN draft_scope d ON d.period_id=p.id),$4) AS through_at
+), closed_windows AS MATERIALIZED (
  SELECT p.id,p.starts_on,p.ends_on FROM draft_scope draft JOIN periods p USING(aggregate_package_id)
  JOIN settlements final ON final.period_id=p.id
 ),
@@ -175,7 +178,7 @@ recognition_rules AS MATERIALIZED (
 ), dated_events AS MATERIALIZED (
  SELECT ` + catalogActivityEventColumns + `,true AS in_scope,coalesce(booked.changed,false) AS booked_changed,
   missing.in_scope AS missing_refund_month
- FROM source_order_versions v
+ FROM source_order_versions v CROSS JOIN refund_bounds bounds
  LEFT JOIN LATERAL (
   SELECT min(a.period_id) FILTER(WHERE final.id IS NULL) AS reserved_period,
    bool_or((original.order_id,original.line_id,original.occurred_at,original.fact->'amountMinor',
@@ -189,7 +192,7 @@ recognition_rules AS MATERIALIZED (
    AND (original.fact->>'domain',original.fact->>'refundId')=(v.fact->>'domain',v.fact->>'refundId')
  ) booked ON true
  CROSS JOIN LATERAL (
-  SELECT booked.changed IS NULL AND booked.reserved_period IS NULL AND v.occurred_at<$3 AND EXISTS(
+  SELECT booked.changed IS NULL AND booked.reserved_period IS NULL AND v.occurred_at<bounds.from_at AND EXISTS(
    SELECT 1 FROM draft_scope draft
    WHERE draft.aggregate_package_id IS NOT NULL
     AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN draft.starts_on AND draft.ends_on
@@ -197,18 +200,21 @@ recognition_rules AS MATERIALIZED (
   ) AS in_scope
  ) missing
  WHERE v.source='DCAI' AND v.kind IN ('ORDER_PAID','REFUND_SUCCEEDED','REFUND_ADJUSTED')
-  AND v.occurred_at<$4 AND v.occurred_at<=CURRENT_TIMESTAMP AND booked.changed IS DISTINCT FROM false
+  AND v.occurred_at<CASE WHEN v.kind='ORDER_PAID' THEN $4 ELSE bounds.through_at END
+  AND v.occurred_at<=CURRENT_TIMESTAMP AND booked.changed IS DISTINCT FROM false
   AND ($7::timestamptz IS NULL OR v.kind<>'ORDER_PAID' OR v.occurred_at<$7)
-  AND v.occurred_at>=least($3,(
-   SELECT min(earlier.starts_on)::timestamp AT TIME ZONE 'Asia/Shanghai'
+  AND v.occurred_at>=least($3,bounds.from_at,(
+   SELECT min(refund_period_start(earlier))
    FROM draft_scope draft JOIN periods earlier USING(aggregate_package_id) JOIN settlements final ON final.period_id=earlier.id
    WHERE earlier.starts_on<draft.starts_on
   ))
-  AND (v.occurred_at>=$3 OR missing.in_scope OR (v.kind IN ('REFUND_SUCCEEDED','REFUND_ADJUSTED') AND EXISTS(
+  AND (CASE WHEN v.kind='ORDER_PAID' THEN v.occurred_at>=$3
+   ELSE coalesce((SELECT refund_calendar_contains(p,v) FROM periods p WHERE p.id=bounds.period_id),v.occurred_at>=bounds.from_at) END
+   OR missing.in_scope OR (v.kind IN ('REFUND_SUCCEEDED','REFUND_ADJUSTED') AND EXISTS(
    SELECT 1 FROM draft_scope draft JOIN periods earlier USING(aggregate_package_id) JOIN settlements final ON final.period_id=earlier.id
    WHERE (booked.reserved_period=draft.period_id OR (booked.reserved_period IS NULL AND
      (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN draft.starts_on AND draft.ends_on))
-    AND (v.occurred_at AT TIME ZONE 'Asia/Shanghai')::date BETWEEN earlier.starts_on AND earlier.ends_on
+    AND refund_calendar_contains(earlier,v)
   )))
   AND (EXISTS(SELECT 1 FROM routes m WHERE m.sku_code=ANY($2) AND ` + catalogRouteFactSQL + `)
    OR v.kind='REFUND_SUCCEEDED' AND EXISTS(
@@ -241,7 +247,7 @@ recognition_rules AS MATERIALIZED (
  SELECT ` + catalogActivityEventColumns + `,false,false,false
  FROM refund_orders original JOIN source_order_versions v
   ON v.source='DCAI' AND v.kind='REFUND_SUCCEEDED' AND v.fact#>>'{refundsPayment,0,orderId}'=original.order_id
- WHERE v.occurred_at<$3 AND NOT EXISTS(SELECT 1 FROM current_events incoming WHERE incoming.id=v.id) AND ` + catalogActivityLatest + `
+ WHERE v.occurred_at<(SELECT from_at FROM refund_bounds) AND NOT EXISTS(SELECT 1 FROM current_events incoming WHERE incoming.id=v.id) AND ` + catalogActivityLatest + `
 ), linked AS MATERIALIZED (
  SELECT v.*,v.fact->'refundsPayment'->0 AS reference,
   count(*) OVER (PARTITION BY v.kind,v.fact->>'domain',v.event_id)>1 OR (` + duplicateRefundSQL + `) AS duplicate

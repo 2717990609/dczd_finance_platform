@@ -1,7 +1,9 @@
 package main
 
 import (
+	"math/big"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -34,6 +36,7 @@ type practicePurchase struct {
 	companyRoutingIssue string
 	noReferrer          bool
 	replaying           bool
+	refundCutoff        *time.Time
 }
 
 func (p practicePurchase) salesIssue(code string, rule paymentRule, part string) draftIssue {
@@ -48,6 +51,7 @@ func (p practicePurchase) salesIssue(code string, rule paymentRule, part string)
 }
 
 type practiceDraftRuntime struct {
+	refundCutoff                *time.Time
 	directorVersionID           int64
 	directorBenefits            []component
 	directorPending             bool
@@ -72,7 +76,7 @@ type practiceDraftRuntime struct {
 }
 
 func preparePracticePurchases(members []practiceEnrollment, orders map[string][]paymentInput, blocked map[int64]string,
-	refunds map[int64][]practiceRefundMatch, replaying bool) ([]practicePurchase, error) {
+	refunds map[int64][]practiceRefundMatch, replaying bool, refundCutoffs map[int64]*time.Time) ([]practicePurchase, error) {
 	counts := make(map[string]int)
 	for _, member := range members {
 		if member.CommissionEligible {
@@ -86,7 +90,7 @@ func preparePracticePurchases(members []practiceEnrollment, orders map[string][]
 		if !member.CommissionEligible {
 			continue
 		}
-		purchase := practicePurchase{member: member, issue: blocked[member.ID], replaying: replaying}
+		purchase := practicePurchase{member: member, issue: blocked[member.ID], replaying: replaying, refundCutoff: refundCutoffs[member.RosterID]}
 		if purchase.issue == "" {
 			var err error
 			purchase.payments, purchase.base, purchase.issue, err = practicePayments(member, orders, counts)
@@ -107,12 +111,19 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 	identities map[identityKey][]identityAssignment, blocked map[int64]string, history practiceTierHistory,
 	refunds map[int64][]practiceRefundMatch, runtime practiceDraftRuntime) (paymentDraft, error) {
 	var draft paymentDraft
-	purchases, err := preparePracticePurchases(members, orders, blocked, refunds, history.replaying)
+	var cutoffs map[int64]*time.Time
+	if runtime.refundCutoff != nil {
+		cutoffs = make(map[int64]*time.Time)
+		for _, member := range members {
+			cutoffs[member.RosterID] = runtime.refundCutoff
+		}
+	}
+	purchases, err := preparePracticePurchases(members, orders, blocked, refunds, history.replaying, cutoffs)
 	if err != nil {
 		return draft, err
 	}
 	var fullyRefunded []practicePurchase
-	if history.replaying {
+	if history.replaying && runtime.refundCutoff == nil {
 		keepForClassFixed := slices.ContainsFunc(rule.Components, func(part component) bool {
 			return part.PeriodBenefit != nil && part.PeriodBenefit.FixedPerClass
 		})
@@ -128,7 +139,7 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 		})
 	}
 	for i := range purchases {
-		if !purchases[i].noReferrer {
+		if !purchases[i].noReferrer && len(purchases[i].payments) != 0 {
 			purchases[i].classifyCompanyWithOrganizations(runtime.companyOffers, runtime.companyClassifications, identities, runtime)
 		}
 	}
@@ -191,10 +202,17 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 			continue
 		}
 		for _, refund := range purchase.lateRefunds {
-			issue := practiceIssue("PRACTICE_REFUND_AFTER_ROSTER", member, rule, "")
+			code := "PRACTICE_REFUND_AFTER_ROSTER"
+			if runtime.refundCutoff != nil {
+				code = "PRACTICE_REFUND_AFTER_CUTOFF"
+			}
+			issue := practiceIssue(code, member, rule, "")
 			issue.FactID = refund.ID
 			issue.Advisory = true
 			draft.Issues = append(draft.Issues, issue)
+		}
+		if runtime.refundCutoff != nil && len(purchase.originalPayments) != 0 {
+			payments = purchase.originalPayments
 		}
 		for _, payment := range payments {
 			fact := payment.Fact
@@ -214,6 +232,9 @@ func calculatePracticeDraft(members []practiceEnrollment, rule paymentRule, orde
 					Refund: &performanceRefundKey{f.Source, f.Domain, f.RefundID, f.OccurredAt.UTC()},
 				})
 			}
+		}
+		if len(purchase.payments) == 0 {
+			continue
 		}
 		if runtime.enrollmentQuotes != nil {
 			err = runtime.enrollmentQuotes.append(&draft, rule, purchase, identities, runtime)
@@ -324,14 +345,16 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 					continue
 				}
 			}
-			reduceFixedShares := part.Mode == "fixed" && !runtime.legacyFixedRefundPolicy
+			reduceFixedShares := part.Mode == "fixed" && !part.PracticeSignupBasis && !runtime.legacyFixedRefundPolicy
 			base := purchase.base
 			if reduceFixedShares {
 				base = purchase.gross
 			}
 			commission := part.Value
+			exactCommission := big.NewRat(commission, 1)
 			if part.Mode == "rate" {
 				commission = calculatePaymentAmount(base, part)
+				exactCommission = exactMinor(base, part.Value, 10000)
 			}
 			activeSplit := *split
 			if !slices.Contains(serviceMatches[:len(payments)], true) {
@@ -342,12 +365,15 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_RETRAIN_SPLIT_EXCEEDS_COMMISSION", member, rule, part.Type))
 				continue
 			}
+			amounts.exact = [3]*big.Rat{exactCommission,
+				activeSplit.SalesRate.exactAmount(exactCommission, base, activeSplit.PersonalMinor),
+				activeSplit.ServiceRate.exactAmount(exactCommission, base, activeSplit.ServiceMinor)}
 			unit := runtime.poolUnits[split.Pool.PoolID]
 			if !unit.Valid {
 				draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_POOL_MISSING", member, rule, part.Type))
 				continue
 			}
-			if err := appendPracticeRetrainSplit(draft, purchase, rule, index, amounts, assignments, *split, unit, part.Mode == "rate", reduceFixedShares, serviceMatches); err != nil {
+			if err := appendPracticeRetrainSplit(draft, purchase, rule, index, amounts, assignments, *split, unit, part.Mode == "fixed", reduceFixedShares, serviceMatches); err != nil {
 				return err
 			}
 			continue
@@ -368,20 +394,25 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		}
 		var amount int64
 		var fixedShares [2]int64
+		var preciseShares [2]string
 		if !runtime.legacyFixedRefundPolicy && (part.Mode == "fixed" || isTiered) && part.RefundPolicy != "" {
 			part.RefundPolicy = "proportional"
 		}
-		proportionalFixed := !isTiered && part.usesFixedPersonalPaymentShares()
+		fixedSignup := part.PracticeSignupBasis && part.Mode == "fixed" && part.RefundPolicy == "" &&
+			classMember(member.MembershipType) == "retrain"
+		proportionalFixed := !fixedSignup && !isTiered && part.usesFixedPersonalPaymentShares()
 		fixedTierByPayment := isTiered && part.Mode == "fixed" && !runtime.legacyFixedTierRefund &&
-			(part.RefundPolicy == "" || part.RefundPolicy == "proportional")
+			!fixedSignup && (part.RefundPolicy == "" || part.RefundPolicy == "proportional")
 		// Older settlements still replay the original allocation. Late
 		// refunds can then use the amounts actually booked on each payment.
 		fixedPersonalByPayment := proportionalFixed && !runtime.legacyFixedPersonalRefund &&
 			(part.RefundPolicy != "" || !runtime.legacyImplicitFixedRefund)
 		fixedByPayment := fixedPersonalByPayment || fixedTierByPayment
 		if fixedByPayment {
-			fixedShares, issue = purchase.fixedPaymentShares(sale, part, identities, runtime)
+			fixedShares, preciseShares, issue = purchase.fixedPaymentShares(sale, part, identities, runtime)
 			amount = fixedShares[0] + fixedShares[1]
+		} else if fixedSignup {
+			amount = part.Value
 		} else {
 			amount, issue = sale.commissionAmount(part)
 		}
@@ -389,7 +420,7 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 			draft.Issues = append(draft.Issues, practiceIssue(issue, member, rule, part.Type))
 			continue
 		}
-		if isTiered && amount > base {
+		if isTiered && !fixedSignup && amount > base {
 			draft.Issues = append(draft.Issues, practiceIssue("PRACTICE_TIER_EXCEEDS_PAYMENT", member, rule, part.Type))
 			continue
 		}
@@ -397,11 +428,24 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 		if err != nil {
 			return err
 		}
+		grossShares := part.PracticeSignupBasis && !fixedByPayment
+		if grossShares {
+			fixedShares = sale.benefitShares(payments, amount, false)
+		}
+		if !fixedByPayment {
+			exact := big.NewRat(amount, 1)
+			if part.Mode == "rate" {
+				exact = exactMinor(base, part.Value, 10000)
+			}
+			for i, value := range sale.exactBenefitShares(payments, exact, !grossShares) {
+				preciseShares[i] = preciseYuan(value)
+			}
+		}
 		var cumulativeBase, previousShare int64
 		for index, payment := range payments {
 			net := sale.netAmount(payment)
 			paymentAmount := fixedShares[index]
-			if !fixedByPayment {
+			if !fixedByPayment && !grossShares {
 				cumulativeBase += net
 				cumulativeShare := prorateMinor(amount, cumulativeBase, base)
 				paymentAmount = cumulativeShare - previousShare
@@ -410,8 +454,9 @@ func appendPracticeEnrollmentAwards(draft *paymentDraft, rule paymentRule, purch
 			payee := assignments[index]
 			draft.Lines = append(draft.Lines, draftLine{
 				FactID: payment.ID, RuleID: rule.ID, EnrollmentID: member.ID, PersonID: payee.PersonID,
-				IdentityID: payee.ID, Component: part.Type, Base: net, Amount: paymentAmount,
+				IdentityID: payee.ID, Component: part.Type, Base: net, Amount: paymentAmount, PreciseAmount: preciseShares[index],
 				practiceProportionalRefund: !isTiered && (part.Mode == "rate" || part.Mode == "fixed"),
+				practiceFixedSignup:        fixedSignup,
 				practiceTierRefund:         isTiered,
 				practiceArrangementLabel:   part.arrangementLabel(),
 			})
@@ -483,7 +528,7 @@ func practiceTierAwards(part component, current []practicePurchase, orders map[s
 		retrain := kind == "retrain"
 		pays := part.matchesPracticeMember(kind)
 		measures := config.CumulativeMetric.includes(kind) || !pays && config.measuresUnpaidMember(kind)
-		if !pays && !measures || purchase.noReferrer || purchase.issue == practicePaymentAlreadySettled ||
+		if !pays && !measures || purchase.noReferrer || purchase.issue == "" && len(purchase.payments) == 0 || purchase.issue == practicePaymentAlreadySettled ||
 			retrain && !measures && (purchase.issue != "" || purchase.companyRoutingIssue != "") {
 			continue
 		}

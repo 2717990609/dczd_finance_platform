@@ -20,6 +20,7 @@ type refundInput struct {
 type refundLine struct {
 	OriginalLineID, RefundPeriodID, RefundSourceVersionID int64
 	Amount, Principal                                     int64
+	PreciseAmount                                         string `json:"preciseAmount,omitempty"`
 	CurrentPaymentVersion                                 int64
 	ComponentType                                         string
 	RefundID                                              string
@@ -84,8 +85,7 @@ var catalogRefundInputsSQL = refundInputSelectionSQL + `
 
 const refundPeriodSQL = `
  LEFT JOIN periods origin ON origin.product_id=target.product_id AND origin.aggregate_package_id IS NULL
-  AND v.occurred_at >= (origin.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai')
-  AND v.occurred_at < ((origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai')
+  AND refund_calendar_contains(origin,v)
 ` + refundPostingHistorySQL + `
  WHERE target.id=$1 AND v.kind='REFUND_SUCCEEDED' AND v.occurred_at<=CURRENT_TIMESTAMP`
 
@@ -135,7 +135,7 @@ var refundEligibilitySQL = `
    history.reserved_period IS NULL AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN target.starts_on AND target.ends_on
   ))
  ) OR (
-  origin.id IS NULL AND v.occurred_at<target.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
+  origin.id IS NULL AND v.occurred_at<refund_period_start(target)
   AND (CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Shanghai')::date BETWEEN target.starts_on AND target.ends_on
   AND ` + refundHasSettledCalendarPaymentSQL("target.product_id") + `
  ))
@@ -457,6 +457,7 @@ func applyHistoricalRefund(draft *paymentDraft, event refundInput, originals []r
 		line := refundLine{
 			OriginalLineID: original.ID, RefundPeriodID: event.RefundPeriodID, RefundSourceVersionID: event.ID,
 			Amount: delta, Principal: principal, RefundID: f.RefundID, OccurredAt: f.OccurredAt.UTC(),
+			PreciseAmount: preciseRefundAmount(original.Policy, original, h.principal+principal, h.deducted, delta),
 		}
 		if original.ID == 0 {
 			line.CurrentPaymentVersion = original.PaymentVersion

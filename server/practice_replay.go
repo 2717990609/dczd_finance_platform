@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -14,6 +15,7 @@ import (
 // supply when a later refund changes the outcome for the class.
 type practiceReplayInputs struct {
 	Version                 int                                  `json:"version"`
+	RefundCutoff            *time.Time                           `json:"refundCutoff,omitempty"`
 	IndependentRefunds      bool                                 `json:"independentRefunds,omitempty"`
 	PriorCounts             map[int64]int64                      `json:"priorCounts,omitempty"`
 	TierAmounts             map[int64]int64                      `json:"tierAmounts,omitempty"`
@@ -61,7 +63,7 @@ type practiceReplayCompany struct {
 
 func hasPracticeReplayDependencies(rule paymentRule, members []practiceEnrollment) bool {
 	for _, part := range rule.Components {
-		if part.Mode == directorRateMode || part.Tiers != nil || part.PeriodBenefit != nil || part.CompanySales.usesOrganizationStandards() || part.CompanySales != nil && part.CompanySales.OwnSales || part.SaleScope != nil || len(part.salesCompanies()) != 0 || len(part.retrainSplits()) != 0 {
+		if part.PracticeSignupBasis || part.Mode == directorRateMode || part.Tiers != nil || part.PeriodBenefit != nil || part.CompanySales.usesOrganizationStandards() || part.CompanySales != nil && part.CompanySales.OwnSales || part.SaleScope != nil || len(part.salesCompanies()) != 0 || len(part.retrainSplits()) != 0 {
 			return true
 		}
 	}
@@ -76,7 +78,8 @@ func hasPracticeReplayDependencies(rule paymentRule, members []practiceEnrollmen
 func capturePracticeReplayInputs(rule paymentRule, draft paymentDraft, facts []paymentInput,
 	identities map[identityKey][]identityAssignment, runtime practiceDraftRuntime) *practiceReplayInputs {
 	inputs := &practiceReplayInputs{
-		Version: practiceReplayNetRateShares, PriorCounts: draft.practicePriorCounts,
+		RefundCutoff: runtime.refundCutoff,
+		Version:      practiceReplayNetRateShares, PriorCounts: draft.practicePriorCounts,
 		TierAmounts: draft.practiceTierAmounts, TierArrangements: draft.practiceFrozenTiers,
 		Identities: make(map[string][]identityAssignment), Appointments: make(map[int][]practiceAppointment),
 		PaymentCompanies: make(map[string]practiceReplayCompany), Recommendations: make(map[string]pgtype.UUID),
@@ -286,6 +289,7 @@ func readPracticeReplay(ctx context.Context, tx pgx.Tx, periodID int64) (practic
 		recommendations: practiceCompanyRecommendations{
 			directory: make(map[pgtype.UUID]pgtype.UUID), explicit: values.ReferrerCompanies,
 		},
+		refundCutoff:                values.RefundCutoff,
 		legacyGrossRateShares:       values.Version == 1,
 		legacyBenefitSalesAgreement: values.Version < practiceReplayIndependentBenefits,
 		legacyBenefitAttribution:    values.Version < practiceReplayConfiguredBenefitRole,

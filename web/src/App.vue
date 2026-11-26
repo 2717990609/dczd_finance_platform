@@ -24,6 +24,7 @@ const OrganizationDirectory = defineAsyncComponent(() => import('./OrganizationD
 const OrganizationPersonDetail = defineAsyncComponent(() => import('./OrganizationPersonDetail.vue'))
 const OrderDetails = defineAsyncComponent(() => import('./OrderDetails.vue'))
 const OrderSyncPanel = defineAsyncComponent(() => import('./OrderSyncPanel.vue'))
+const OrderSyncSettings = defineAsyncComponent(() => import('./OrderSyncSettings.vue'))
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogRuleRates = defineAsyncComponent(() => import('./CatalogRuleRates.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
@@ -49,6 +50,7 @@ const navigation = [
   {key:'periods', area:'config', title:'核算期次'},
   {key:'rules', area:'config', title:'产品规则'},
   {key:'pool-config', area:'config', title:'团队池配置'},
+  {key:'sync-config', area:'config', title:'数据同步配置'},
   {key:'organization', area:'data', title:'组织与人员'},
   {key:'people', area:'data', title:'人员映射'},
 ]
@@ -193,6 +195,7 @@ const personReportOrigin = ref()
 const monthlyReturn = ref()
 const monthlyResume = ref()
 const orderSync = ref()
+const orderSyncSettings = ref()
 const orderDetails = ref()
 const rateRule = ref()
 const periodRule = ref()
@@ -554,13 +557,14 @@ const syncStreams = computed(() => data.value.sources
   .flatMap(entry => options(entry.source.toLowerCase()+'OrderStream')))
 const sourceLabel = key => optionLabel('source',key)?.split(' · ')[0]
 const titles = {product:'新增产品',mapping:'添加来源映射',periodRoster:'更正签到关联',
-  reportMonth:'设置报表月份',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
+  reportMonth:'设置报表月份',refundCutoff:'设置退款截止时间',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
 const actions = computed(() => {
   if (current.value === 'products') return tab.value === 'mapping' ? 'mapping' : 'product'
   if (current.value === 'people') return tab.value === 'identity' ? 'identity' : 'person'
   return {periods:'period',rules:'rule',orders:'pull'}[current.value]
 })
 const formatTime = value => value ? new Intl.DateTimeFormat('zh-CN',{dateStyle:'short',timeStyle:'short',timeZone:'Asia/Shanghai'}).format(new Date(value)) : '—'
+const refundCutoffInput = new Intl.DateTimeFormat('sv-SE',{dateStyle:'short',timeStyle:'medium',timeZone:'Asia/Shanghai'})
 const identityTimeFormat = new Intl.DateTimeFormat('zh-CN',{dateStyle:'short',timeStyle:'medium',timeZone:'Asia/Shanghai'})
 const formatIdentityTime = value => value ? identityTimeFormat.format(new Date(value)) : '—'
 const formatMoney = minor => minor == null ? '—' : new Intl.NumberFormat('zh-CN',{style:'currency',currency:'CNY'}).format(minor/100)
@@ -693,7 +697,7 @@ const columns = computed(() => {
     product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['业务 SKU / 报名类型','businessSkus',290],['操作','productAction',160]],
     mapping:[['产品名称','productName'],['业务来源','source'],['业务域','domain'],['来源标识','sourceKey']],
     period:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],
-      ['报表月份','reportMonth',115],['来源期次','sourcePeriodKey',148],['签到名单','practiceRoster',150],['适用规则','ruleVersion',200]],
+      ['退款截止时间','refundCutoff',158],['报表月份','reportMonth',115],['来源期次','sourcePeriodKey',148],['签到名单','practiceRoster',150],['适用规则','ruleVersion',200]],
     rule:[['规则名称','label',210],['所属产品','productName',128],['版本','version',68],
       ['适用订单','scope',188],['生效时间','effectiveFrom',165],['状态','components',112],['操作','ruleAction',240]],
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136]],
@@ -727,7 +731,7 @@ async function refresh(reloadOptions = false) {
   if (orderQuery.value) params.set('orderId',orderQuery.value)
   if (olderThan.value) params.set('beforeId',olderThan.value)
   if (unitScope.value) params.set('unitId',unitScope.value)
-  const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], pools:['products','periods'], retention:[], 'pool-config':['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:tab.value==='identity'?['people','identities']:[]}
+  const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], pools:['products','periods'], retention:[], 'sync-config':[], 'pool-config':['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:tab.value==='identity'?['people','identities']:[]}
   const requests = Object.fromEntries(sections[current.value].map(key => [key, key === 'orders' ? '/orders?' + params : '/'+key]))
   if (requests.identities && identityAccount.value) {
     const {source,externalId} = identityAccount.value
@@ -789,6 +793,7 @@ function refreshWorkspace() {
   retention.value?.refresh()
   poolDirectory.value?.refresh()
   orderSync.value?.reload()
+  orderSyncSettings.value?.reload()
 }
 function settlementLink(periodId, view, origin, rootPeriodId, fromPerson = personReportOrigin.value) {
   const params = new URLSearchParams({periodId})
@@ -1281,6 +1286,8 @@ function open(kind, row, edit = false) {
     draft.value.sourceConfigured = row?.sourceConfigured
   }
   if (kind === 'reportMonth') draft.value = {periodId:row.id, periodName:row.name, reportMonth:row.reportMonthOverride || ''}
+  if (kind === 'refundCutoff') draft.value = {periodId:row.id, periodName:row.name,
+    cutoffAt:row.refundCutoffAt ? refundCutoffInput.format(new Date(row.refundCutoffAt)).replace(' ','T') : ''}
   if (kind === 'periodRoster') {
     draft.value = {periodId:row.id, periodName:row.name, sourcePeriodKey:row.sourcePeriodKey,
       expectedSourcePeriodKey:row.sourcePeriodKey, startsOn:row.startsOn, endsOn:row.endsOn,
@@ -1411,14 +1418,18 @@ function initialPracticeCountStart() {
   return {countFromOrdinal:ordinals.length ? Math.min(...ordinals) : 1}
 }
 function ruleComponentBody(row) {
+  const signupBasis = classRule.value && row.practiceSignupBasis
+  const refundPolicy = signupBasis && row.classMember==='retrain' ? undefined : row.refundPolicy
   if (row.mode==='director_rate') {
     return {type:'manager',mode:'director_rate',value:periodRate(must(row.amount,'请填写总监提成比例')),
-      ...(row.classMember ? {classMember:row.classMember} : {})}
+      ...(row.classMember ? {classMember:row.classMember} : {}),
+      ...(signupBasis ? {practiceSignupBasis:true} : {})}
   }
   const sourceRole = row.sourceRole?.trim().toUpperCase()
   if (['sales','referral'].includes(row.type)) must(sourceRole,'请选择销售或推荐分项的订单角色。')
   const component = {type:must(row.type),mode:must(row.mode,'请选择计提方式'),value:0,
-    ...(sourceRole ? {sourceRole} : {}), ...(row.refundPolicy && !['period_rate','company_sales'].includes(row.mode) ? {refundPolicy:row.refundPolicy} : {}),
+    ...(sourceRole ? {sourceRole} : {}), ...(refundPolicy && !['period_rate','company_sales'].includes(row.mode) ? {refundPolicy} : {}),
+    ...(signupBasis ? {practiceSignupBasis:true} : {}),
     ...(row.classMember ? {classMember:row.classMember} : {})}
   if (classRule.value && ['sales','referral'].includes(row.type)) {
     component.label = must(row.label?.trim(),'请填写收款安排名称')
@@ -1660,6 +1671,7 @@ function bodyFor(kind,f) {
     return {productId, settlementMonth, name:f.name?.trim() || settlementMonth+(classRule.value ? ' 退款账期' : ' 账期')}
   }
   if (kind === 'reportMonth') return {periodId:f.periodId,month:f.reportMonth || ''}
+  if (kind === 'refundCutoff') return {periodId:f.periodId,cutoffAt:f.cutoffAt ? new Date(f.cutoffAt+'+08:00').toISOString() : null}
   if (kind === 'periodRoster') return {periodId:f.periodId,sourcePeriodKey:f.sourcePeriodKey?.trim() || '',
     expectedSourcePeriodKey:f.expectedSourcePeriodKey || '', startsOn:must(f.startsOn), endsOn:must(f.endsOn),
     expectedStartsOn:f.expectedStartsOn,expectedEndsOn:f.expectedEndsOn}
@@ -1701,7 +1713,7 @@ async function save() {
   const issuedFor = sessionRequest
   const kind = drawer.value
   const paths = {product:'/products',mapping:'/mappings',period:'/periods',periodRoster:'/period-practice-roster',
-    reportMonth:'/period-report-month',rule:'/rules',person:'/people',identity:'/identities',pull:'/orders/pull'}
+    reportMonth:'/period-report-month',refundCutoff:'/period-refund-cutoff',rule:'/rules',person:'/people',identity:'/identities',pull:'/orders/pull'}
   formError.value = ''
   saving.value = true
   try {
@@ -1881,6 +1893,7 @@ async function save() {
             :requested-pool="poolContext.get('pool')" :loading="loading" :api="api" :format-money="formatMoney"
             :can-configure="poolProducts.length>0" :period-link="id=>settlementLink(id,'detail','pools')"/>
         </template>
+        <OrderSyncSettings v-else-if="current==='sync-config'" ref="orderSyncSettings" :api="api" :format-time="formatTime"/>
         <template v-else-if="current==='pool-config'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <PoolDirectory ref="poolDirectory" v-model="poolConfigProduct" :products="poolProducts" :api="api" :can-publish="canPublishRule"/>
@@ -1984,6 +1997,11 @@ async function save() {
                     <a :href="'#periods?productId='+record.id" :aria-label="record.name+' 的核算期次'">核算期次</a>
                     <a v-if="canReadRules(record.id)" :href="'#rules?productId='+record.id" :aria-label="record.name+' 的产品规则'">产品规则</a>
                   </div>
+                </template>
+                <template v-else-if="column.key==='refundCutoff'">
+                  <a-button v-if="!record.settled" type="link" size="small" :aria-label="'设置 '+record.name+' 的退款截止时间'"
+                    @click="open('refundCutoff',record)">{{ record.refundCutoffAt ? formatTime(record.refundCutoffAt) : '设置截止时间' }}</a-button>
+                  <span v-else>{{ record.refundCutoffAt ? formatTime(record.refundCutoffAt) : '默认' }}</span>
                 </template>
                 <template v-else-if="column.key==='reportMonth'">
                   <a-button v-if="record.reportMonthEditable" type="link" size="small" :title="'设置 '+record.name+' 的报表月份'" @click="open('reportMonth',record)">{{ text }}</a-button>
@@ -2139,6 +2157,13 @@ async function save() {
         <p v-if="!draft.reportMonthOverride && draft.endsOn && draft.endsOn.slice(0,7)!==draft.expectedEndsOn.slice(0,7)"
           class="workbench-scope-note">保存后报表月份将改为 {{ draft.endsOn.slice(0,7) }}。</p>
       </template>
+      <template v-if="drawer==='refundCutoff'">
+        <a-form-item label="核算期次"><span>{{ draft.periodName }}</span></a-form-item>
+        <a-form-item label="退款截止时间（北京时间）" html-for="refund-cutoff-at"
+          extra="截止前成功的退款可补进仍未确认的本期草稿。到达截止时间后成功的退款计入后续账期。留空使用默认时间。">
+          <a-input id="refund-cutoff-at" v-model:value="draft.cutoffAt" type="datetime-local" step="1"/>
+        </a-form-item>
+      </template>
       <template v-if="drawer==='reportMonth'">
         <p>{{ draft.periodName }}</p>
         <a-form-item label="报表月份" extra="留空按班次结束日期归月。">
@@ -2273,6 +2298,14 @@ async function save() {
             :source-roles="options('practicePeriodSourceRole')" :payee-roles="componentSourceRoles(c.companySales.payee.role)"
             :people="classPeopleOptions" :units="unitOptions" :pools="practicePoolOptions" :create-pool="createPracticePool"
             :member-choices="classMemberChoices(c)" @member-change="resetAmountMode(c)"/>
+          <a-form-item v-if="classRule" :html-for="'practice-signup-basis-'+i" label="计提口径"
+            :extra="c.practiceSignupBasis ? (c.mode==='tiered'
+              ? '累计新报人数按同一人已确认的报名统计。比例分润按净实收计算，再按定金和尾款原实付金额拆分。'
+              : '比例分润按净实收计算，再按定金和尾款原实付金额拆分。适用的固定分润在部分退款时全额保留。') : undefined">
+            <a-select :id="'practice-signup-basis-'+i" :value="c.practiceSignupBasis ? 'signup' : 'net'"
+              :options="[{value:'net',label:'按净实收拆分'},{value:'signup',label:'按报名计提'}]"
+              @update:value="c.practiceSignupBasis=$event==='signup'"/>
+          </a-form-item>
           <div v-if="draft.components.length>1" class="form-actions">
             <a-button type="link" size="small" danger class="rule-remove"
               @click="draft.components.splice(i,1); activeRuleComponent=Math.min(i,draft.components.length-1)">移除此安排</a-button>

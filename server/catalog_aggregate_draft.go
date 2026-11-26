@@ -403,8 +403,15 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 			if err != nil {
 				return result, nil, err
 			}
+			precise := ""
+			if !award.Fixed {
+				precise = preciseYuan(exactMinor(quote.Basis, award.Rate, 10000))
+			}
+			if group.orderExactCredit != nil {
+				precise = preciseYuan(group.orderExactCredit)
+			}
 			result.Lines = append(result.Lines, draftLine{Component: award.ItemKey, PersonID: target.Person,
-				AggregateGroup: group.ID, Catalog: benefit, Amount: award.Amount, Base: quote.Basis,
+				AggregateGroup: group.ID, Catalog: benefit, Amount: award.Amount, Base: quote.Basis, PreciseAmount: precise,
 				organization: organizations.ancestors(reportUnit)})
 		}
 	}

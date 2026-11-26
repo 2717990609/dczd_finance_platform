@@ -20,6 +20,7 @@ const (
 	dcaiVIPStream         = "VIP_ORDERS"
 	dcaiHealthStream      = "HEALTH_IDENTITY_ORDERS"
 	dczdOrderStream       = "ORDER_FACTS"
+	dczdPracticeStream    = "PRACTICE_ORDER_FACTS"
 	dczdOrderPageContract = "dczd.finance-order-pull-page/1.0"
 	orderPageSize         = 200
 )
@@ -70,9 +71,10 @@ type orderPage struct {
 }
 
 type orderFeedClient struct {
-	endpoint *url.URL
-	token    string
-	source   string
+	endpoint     *url.URL
+	token        string
+	source       string
+	practiceOnly bool
 }
 
 type orderFeedHTTPStatus int
@@ -91,7 +93,7 @@ func newOrderFeedClient(source string, cfg sourceConfig) (orderFeedClient, error
 	if err != nil || base.Host == "" || (base.Scheme != "https" && base.Scheme != "http") || base.User != nil || base.RawQuery != "" || base.Fragment != "" {
 		return orderFeedClient{}, errSourceRead
 	}
-	return orderFeedClient{endpoint: base.JoinPath("/internal/v1/finance/source-orders"), token: cfg.Token, source: source}, nil
+	return orderFeedClient{endpoint: base.JoinPath("/internal/v1/finance/source-orders"), token: cfg.Token, source: source, practiceOnly: source == "DCZD" && cfg.PracticeOnly}, nil
 }
 
 func (c orderFeedClient) contract() string {
@@ -102,7 +104,18 @@ func (c orderFeedClient) contract() string {
 }
 
 func (c orderFeedClient) sourceKey() string {
-	return fmt.Sprintf("%x", sha256.Sum256([]byte(c.endpoint.String())))
+	key := c.endpoint.String()
+	if c.practiceOnly {
+		key += "#" + dczdPracticeStream
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(key)))
+}
+
+func (c orderFeedClient) remoteStream(stream string) string {
+	if c.practiceOnly {
+		return dczdPracticeStream
+	}
+	return stream
 }
 
 func (c orderFeedClient) get(ctx context.Context, action string, query url.Values, result any) error {
@@ -128,7 +141,7 @@ func (c orderFeedClient) getWithContract(ctx context.Context, action, contract s
 	if contract != "" {
 		req.Header.Set("X-"+c.source+"-Finance-Contract", contract)
 	}
-	if contract == practiceRosterReadContract {
+	if contract == practiceRosterReadContract || contract == practiceSourcePeriodContract {
 		req.Header.Set("Cache-Control", "no-cache")
 	}
 	res, err := pullClient.Do(req)
@@ -149,23 +162,29 @@ func (c orderFeedClient) getWithContract(ctx context.Context, action, contract s
 
 func (c orderFeedClient) readiness(ctx context.Context, stream string) (int, error) {
 	var body struct {
-		Status    string            `json:"status"`
-		Version   string            `json:"contract_version"`
-		Schema    string            `json:"source_fact_schema_version"`
-		FactHash  string            `json:"source_fact_schema_sha256"`
-		PageHash  string            `json:"pull_page_schema_sha256"`
-		Streams   map[string]string `json:"streams"`
-		PageSize  int               `json:"max_page_size"`
-		Conflicts *int64            `json:"conflict_count"`
+		Status            string            `json:"status"`
+		Version           string            `json:"contract_version"`
+		Schema            string            `json:"source_fact_schema_version"`
+		FactHash          string            `json:"source_fact_schema_sha256"`
+		PageHash          string            `json:"pull_page_schema_sha256"`
+		Streams           map[string]string `json:"streams"`
+		PageSize          int               `json:"max_page_size"`
+		Conflicts         *int64            `json:"conflict_count"`
+		PracticeConflicts *int64            `json:"practice_conflict_count"`
 	}
 	if err := c.get(ctx, "readiness", nil, &body); err != nil {
 		return 0, err
 	}
-	if body.Status != "READY" || body.Streams[stream] != "READY" || body.Version != c.contract() || body.Schema != sourceSchema {
+	if (!c.practiceOnly && body.Status != "READY") || body.Streams[c.remoteStream(stream)] != "READY" ||
+		body.Version != c.contract() || body.Schema != sourceSchema {
 		return 0, errSourceRead
 	}
 	if c.source == "DCZD" {
-		if body.PageSize < 1 || body.Conflicts == nil || *body.Conflicts != 0 {
+		count := body.Conflicts
+		if c.practiceOnly {
+			count = body.PracticeConflicts
+		}
+		if body.PageSize < 1 || count == nil || *count != 0 {
 			return 0, errSourceRead
 		}
 		return min(orderPageSize, body.PageSize), nil
@@ -176,16 +195,30 @@ func (c orderFeedClient) readiness(ctx context.Context, stream string) (int, err
 	return orderPageSize, nil
 }
 
-func (c orderFeedClient) cutoff(ctx context.Context) (time.Time, error) {
-	var body struct {
-		Version string    `json:"contract_version"`
-		Through time.Time `json:"through"`
+type orderFeedCutoff struct {
+	Version       string    `json:"contract_version"`
+	Through       time.Time `json:"through"`
+	SourceThrough time.Time `json:"source_through"`
+}
+
+func (c orderFeedClient) cutoff(ctx context.Context) (orderFeedCutoff, error) {
+	var body orderFeedCutoff
+	var query url.Values
+	if c.practiceOnly {
+		query = url.Values{"stream": {dczdPracticeStream}}
 	}
-	err := c.get(ctx, "cutoff", nil, &body)
+	err := c.get(ctx, "cutoff", query, &body)
 	if err != nil || body.Version != c.contract() || !validOrderWatermark(body.Through) {
-		return time.Time{}, errSourceRead
+		return orderFeedCutoff{}, errSourceRead
 	}
-	return body.Through, nil
+	if c.practiceOnly {
+		if !validOrderWatermark(body.SourceThrough) || body.SourceThrough.After(body.Through) {
+			return orderFeedCutoff{}, errSourceRead
+		}
+	} else {
+		body.SourceThrough = body.Through
+	}
+	return body, nil
 }
 
 type orderWireRow struct {
@@ -196,7 +229,7 @@ type orderWireRow struct {
 
 func (c orderFeedClient) page(ctx context.Context, stream string, after orderCursor, through time.Time, limit int) (orderPage, error) {
 	query := url.Values{
-		"stream": {stream}, "after_updated_at": {after.UpdatedAt.UTC().Format(time.RFC3339Nano)},
+		"stream": {c.remoteStream(stream)}, "after_updated_at": {after.UpdatedAt.UTC().Format(time.RFC3339Nano)},
 		"after_id": {after.ID}, "through": {through.UTC().Format(time.RFC3339Nano)}, "limit": {strconv.Itoa(limit)},
 	}
 	var body struct {
@@ -209,7 +242,7 @@ func (c orderFeedClient) page(ctx context.Context, stream string, after orderCur
 		HasMore *bool          `json:"has_more"`
 	}
 	err := c.get(ctx, "", query, &body)
-	if err != nil || body.Version != c.contract() || body.Schema != sourceSchema || body.Stream != stream ||
+	if err != nil || body.Version != c.contract() || body.Schema != sourceSchema || body.Stream != c.remoteStream(stream) ||
 		!body.Through.Equal(through) || body.Rows == nil || body.HasMore == nil || len(body.Rows) > limit ||
 		*body.HasMore && len(body.Rows) == 0 {
 		return orderPage{}, errSourceRead
@@ -241,6 +274,9 @@ func (c orderFeedClient) normalizeRow(stream string, through time.Time, wire ord
 	}
 	var doc sourceDocument
 	if json.Unmarshal(wire.Facts[0], &doc) != nil || !textOK(doc.Order.ID, 128) || strings.TrimSpace(doc.Order.ID) != doc.Order.ID {
+		return orderPageRow{}, errSourceRead
+	}
+	if c.practiceOnly && !isEnrollmentPracticeFact(doc) {
 		return orderPageRow{}, errSourceRead
 	}
 	fact, err := normalizeFact(c.source, doc.Order.ID, wire.Facts[0])

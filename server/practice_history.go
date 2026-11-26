@@ -21,6 +21,7 @@ type practiceHistoryPeriod struct {
 	scopedTierCompanies []string
 	retrainCompanies    []string
 	ruleKnown           bool
+	refundCutoff        *time.Time
 }
 
 type practiceTierHistory struct {
@@ -96,19 +97,24 @@ func indexPracticePrior(history practiceTierHistory, part component, orders map[
 		incompleteSeller: make(map[practicePriorSeller]bool),
 		enrollmentFrom:   make(map[string]int64), paymentFrom: make(map[string]int64),
 	}
-	past, err := preparePracticePurchases(history.members, orders, blocked, refunds, false)
+	historical := make(map[int64]practiceHistoryPeriod, len(history.periods))
+	cutoffs := make(map[int64]*time.Time)
+	for _, period := range history.periods {
+		historical[period.rosterID] = period
+		if period.refundCutoff != nil {
+			cutoffs[period.rosterID] = period.refundCutoff
+		}
+	}
+	past, err := preparePracticePurchases(history.members, orders, blocked, refunds, false, cutoffs)
 	if err != nil {
 		return index, err
 	}
-	historical := make(map[int64]practiceHistoryPeriod, len(history.periods))
-	for _, period := range history.periods {
-		historical[period.rosterID] = period
-	}
 	arrangementCompanies := part.legacySalesCompanyFilter()
+	countAllNewSignups := part.PracticeSignupBasis && history.cumulative == ""
 	for _, purchase := range past {
 		member := purchase.member
 		kind := classMember(member.MembershipType)
-		if purchase.noReferrer || purchase.issue == practicePaymentAlreadySettled ||
+		if purchase.noReferrer || purchase.issue == "" && len(purchase.payments) == 0 || purchase.issue == practicePaymentAlreadySettled ||
 			history.cumulative == "" && kind != "new" ||
 			history.cumulative != "" && !history.cumulative.includes(kind) {
 			continue
@@ -120,31 +126,37 @@ func indexPracticePrior(history practiceTierHistory, part component, orders map[
 			categories = history.liveCategories
 		}
 		purchase.classifyCompanyWithOrganizations(period.companyOffers, categories, identities, runtime)
-		if purchase.companyAward != nil {
+		if purchase.companyAward != nil && !countAllNewSignups {
 			continue
 		}
 		companies, periodRole := period.scopedTierCompanies, period.personalRole
 		if kind == "retrain" {
 			companies, periodRole = period.retrainCompanies, period.retrainRole
 		}
-		inScope, scopeIssue := purchase.matchesSalesCompanies(companies)
-		if inScope {
-			inScope, scopeIssue = purchase.matchesSalesCompanies(arrangementCompanies)
-		}
-		if scopeIssue != "" {
-			index.incomplete[roster] = true
-		}
-		if !inScope {
-			continue
+		if countAllNewSignups {
+			if purchase.companyAward != nil {
+				periodRole = purchase.companyAward.role
+			}
+		} else {
+			inScope, scopeIssue := purchase.matchesSalesCompanies(companies)
+			if inScope {
+				inScope, scopeIssue = purchase.matchesSalesCompanies(arrangementCompanies)
+			}
+			if scopeIssue != "" {
+				index.incomplete[roster] = true
+			}
+			if !inScope {
+				continue
+			}
 		}
 		if periodRole == "" {
-			if runtime.companyOffers != nil && (!period.ruleKnown || period.companyOffers != nil) {
+			if !countAllNewSignups && runtime.companyOffers != nil && (!period.ruleKnown || period.companyOffers != nil) {
 				index.incomplete[roster] = true
 				continue
 			}
 			periodRole = part.SourceRole
 		}
-		if part.SaleScope != nil && purchase.issue == "" {
+		if !countAllNewSignups && part.SaleScope != nil && purchase.issue == "" {
 			historicalPart := part
 			historicalPart.SourceRole = periodRole
 			selected, scopeIssue := purchase.scopedSale(historicalPart, identities, runtime)
@@ -162,7 +174,7 @@ func indexPracticePrior(history practiceTierHistory, part component, orders map[
 			purchase = selected
 		}
 		person := practicePurchaseOwner(purchase, periodRole, identities)
-		if person == 0 || purchase.companyRoutingIssue != "" {
+		if person == 0 || !countAllNewSignups && purchase.companyRoutingIssue != "" {
 			index.incomplete[roster] = true
 			continue
 		}
