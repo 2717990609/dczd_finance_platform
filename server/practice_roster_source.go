@@ -18,8 +18,8 @@ var (
 	errPracticeRosterSource      = errors.New("暂时无法核验签到名单，请检查大春之道名单接口")
 	errPracticeRosterRoute       = errors.New("签到名单读取接口未接通，请核对大春之道的接口部署或网关路由")
 	errPracticeRosterAccess      = errors.New("签到名单读取未通过授权，请核对大春之道服务凭证和权限")
-	errPracticeRosterUnconfirmed = errors.New("签到名单尚未确认或已有变更，请在大春之道确认后重新拉取")
-	errPracticeRosterNeedsPull   = errors.New("签到名单版本已变化，请重新拉取并试算")
+	errPracticeRosterUnconfirmed = errors.New("历史签到名单尚未同步或已有变更，请同步来源订单")
+	errPracticeRosterNeedsPull   = errors.New("签到记录已变更，请同步来源订单后试算")
 	errPracticeRosterOverlap     = errors.New("报名付款同时出现在多个期次，请在大春之道核对延期")
 )
 
@@ -156,10 +156,11 @@ func (s workspace) pullPracticeRoster(ctx context.Context, input calculateDraftI
 			return err
 		}
 		var currentVersion int64
-		if err := tx.QueryRow(ctx, `SELECT coalesce(max(source_version),0) FROM practice_rosters WHERE period_key=$1`, key).Scan(&currentVersion); err != nil {
+		var fromRegistrationSync bool
+		if err := tx.QueryRow(ctx, `SELECT coalesce(max(source_version),0),coalesce(bool_or(from_registration_sync),false) FROM practice_rosters WHERE period_key=$1`, key).Scan(&currentVersion, &fromRegistrationSync); err != nil {
 			return err
 		}
-		if currentVersion > snapshot.Version {
+		if fromRegistrationSync || currentVersion > snapshot.Version {
 			return errPracticeRosterNeedsPull
 		}
 		for _, roster := range rosters {

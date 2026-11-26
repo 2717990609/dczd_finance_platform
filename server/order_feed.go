@@ -141,7 +141,7 @@ func (c orderFeedClient) getWithContract(ctx context.Context, action, contract s
 	if contract != "" {
 		req.Header.Set("X-"+c.source+"-Finance-Contract", contract)
 	}
-	if contract == practiceRosterReadContract || contract == practicePeriodReadContract {
+	if contract == practiceRosterReadContract || contract == practicePeriodReadContract || contract == practiceRegistrationsContract {
 		req.Header.Set("Cache-Control", "no-cache")
 	}
 	res, err := pullClient.Do(req)
@@ -160,24 +160,35 @@ func (c orderFeedClient) getWithContract(ctx context.Context, action, contract s
 	return nil
 }
 
+type orderFeedCapabilities struct {
+	PageSize              int
+	PracticeRegistrations bool
+}
+
 func (c orderFeedClient) readiness(ctx context.Context, stream string) (int, error) {
+	capabilities, err := c.capabilities(ctx, stream)
+	return capabilities.PageSize, err
+}
+
+func (c orderFeedClient) capabilities(ctx context.Context, stream string) (orderFeedCapabilities, error) {
 	var body struct {
-		Status            string            `json:"status"`
-		Version           string            `json:"contract_version"`
-		Schema            string            `json:"source_fact_schema_version"`
-		FactHash          string            `json:"source_fact_schema_sha256"`
-		PageHash          string            `json:"pull_page_schema_sha256"`
-		Streams           map[string]string `json:"streams"`
-		PageSize          int               `json:"max_page_size"`
-		Conflicts         *int64            `json:"conflict_count"`
-		PracticeConflicts *int64            `json:"practice_conflict_count"`
+		Status                string            `json:"status"`
+		Version               string            `json:"contract_version"`
+		Schema                string            `json:"source_fact_schema_version"`
+		FactHash              string            `json:"source_fact_schema_sha256"`
+		PageHash              string            `json:"pull_page_schema_sha256"`
+		Streams               map[string]string `json:"streams"`
+		PageSize              int               `json:"max_page_size"`
+		Conflicts             *int64            `json:"conflict_count"`
+		PracticeConflicts     *int64            `json:"practice_conflict_count"`
+		PracticeRegistrations string            `json:"practice_registrations_contract"`
 	}
 	if err := c.get(ctx, "readiness", nil, &body); err != nil {
-		return 0, err
+		return orderFeedCapabilities{}, err
 	}
 	if (!c.practiceOnly && body.Status != "READY") || body.Streams[c.remoteStream(stream)] != "READY" ||
 		body.Version != c.contract() || body.Schema != sourceSchema {
-		return 0, errSourceRead
+		return orderFeedCapabilities{}, errSourceRead
 	}
 	if c.source == "DCZD" {
 		count := body.Conflicts
@@ -185,14 +196,15 @@ func (c orderFeedClient) readiness(ctx context.Context, stream string) (int, err
 			count = body.PracticeConflicts
 		}
 		if body.PageSize < 1 || count == nil || *count != 0 {
-			return 0, errSourceRead
+			return orderFeedCapabilities{}, errSourceRead
 		}
-		return min(orderPageSize, body.PageSize), nil
+		return orderFeedCapabilities{PageSize: min(orderPageSize, body.PageSize),
+			PracticeRegistrations: body.PracticeRegistrations == practiceRegistrationsContract}, nil
 	}
 	if body.FactHash != dcaiFactSchemaHash || body.PageHash != dcaiPageSchemaHash {
-		return 0, errSourceRead
+		return orderFeedCapabilities{}, errSourceRead
 	}
-	return orderPageSize, nil
+	return orderFeedCapabilities{PageSize: orderPageSize}, nil
 }
 
 type orderFeedCutoff struct {

@@ -25,7 +25,8 @@ function nextTask(row, metadata, currentDate) {
   if (row.status==='SETTLED') return {label:'已结算',color:'green',action:'查看结算'}
   if (row.kind==='class' && metadata) {
     if (!metadata.sourcePeriodKey) return {label:'待关联来源期次',color:'orange',pending:true}
-    if (!metadata.practiceRosterVersion) return {label:'待拉取签到名单',color:'orange',pending:true}
+    if (!metadata.practiceRosterVersion) return {label:'待同步签到记录',color:'orange',pending:true}
+    if (metadata.practiceRosterAttendance === 0) return {label:'暂无已签到学员',color:'orange',pending:true}
     if (!metadata.ruleVersion) return {label:'待配置规则',color:'orange',pending:true}
   }
   if (metadata?.ruleMatchingAvailable && !metadata.catalogDraftAvailable) {

@@ -60,7 +60,10 @@ LEFT JOIN periods p ON p.source_period_key=e.period_key
 JOIN LATERAL (SELECT id FROM practice_rosters r WHERE r.period_key=e.period_key ORDER BY r.source_version DESC LIMIT 1) roster ON true
 JOIN practice_roster_members m ON m.roster_id=roster.id AND m.enrollment_id=e.id
 WHERE v.month_id=$1 AND (p.id IS NULL OR p.product_id=v.product_id) AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id)
- AND v.occurred_at>(SELECT confirmed_at FROM practice_rosters first WHERE first.period_key=e.period_key ORDER BY source_version LIMIT 1)
+ AND CASE WHEN p.refund_cutoff_at IS NOT NULL THEN v.occurred_at>=p.refund_cutoff_at
+   ELSE coalesce((SELECT first.from_registration_sync OR v.occurred_at>first.confirmed_at
+    FROM practice_rosters first WHERE first.period_key=e.period_key ORDER BY source_version LIMIT 1),false)
+ END
  AND NOT EXISTS (
   SELECT 1 FROM source_order_versions paid
   JOIN calculation_draft_performance a ON a.source_version_id=paid.id AND a.payment_version_id IS NULL

@@ -602,6 +602,12 @@ CREATE TABLE IF NOT EXISTS practice_rosters (
  attendance_count int NOT NULL CHECK(attendance_count>=0),
  UNIQUE(period_key,source_version)
 );
+ALTER TABLE practice_rosters ADD COLUMN IF NOT EXISTS from_registration_sync boolean NOT NULL DEFAULT false;
+CREATE TABLE IF NOT EXISTS practice_registrations (
+ period_key text PRIMARY KEY,
+ registrations jsonb NOT NULL CHECK(jsonb_typeof(registrations)='array'),
+ valid_payment_links boolean NOT NULL
+);
 CREATE TABLE IF NOT EXISTS practice_enrollments (
  id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
  period_key text NOT NULL,

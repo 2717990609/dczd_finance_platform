@@ -161,7 +161,7 @@ func syncOrdersLocked(ctx context.Context, conn *pgxpool.Conn, client orderFeedC
 }
 
 func runOrderSync(ctx context.Context, conn *pgxpool.Conn, client orderFeedClient, state *orderSyncState, backfill bool, jobID int64) error {
-	limit, err := client.readiness(ctx, state.Stream)
+	capabilities, err := client.capabilities(ctx, state.Stream)
 	if err != nil {
 		return err
 	}
@@ -203,15 +203,24 @@ func runOrderSync(ctx context.Context, conn *pgxpool.Conn, client orderFeedClien
 		state.targetCoverage = state.Target
 	}
 	for {
-		page, err := client.page(ctx, state.Stream, state.next, *state.Target, limit)
+		page, err := client.page(ctx, state.Stream, state.next, *state.Target, capabilities.PageSize)
 		if err != nil {
 			return err
 		}
 		if !page.HasMore && client.source == "DCZD" {
 			// The source can suppress conflicting rows from a page. Check its
 			// reported health again before promoting the completed watermark.
-			if _, err := client.readiness(ctx, state.Stream); err != nil {
+			readiness, err := client.capabilities(ctx, state.Stream)
+			if err != nil {
 				return err
+			}
+			if capabilities.PracticeRegistrations && !readiness.PracticeRegistrations {
+				return errPracticeRegistrationSync
+			}
+			if readiness.PracticeRegistrations {
+				if err := syncPracticeRegistrations(ctx, conn, client); err != nil {
+					return err
+				}
 			}
 		}
 		var facts []sourceFact

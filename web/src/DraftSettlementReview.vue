@@ -3,8 +3,8 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Modal } from 'ant-design-vue'
 
 const props = defineProps({draft:Object, period:Object, api:Function, formatMoney:Function, formatTime:Function, sourceStreams:Array,
-  working:Boolean, canPullRoster:Boolean, relatedPeriodLink:Function})
-const emit = defineEmits(['show-pools', 'show-issues', 'recalculate', 'pull-roster', 'refresh-draft', 'confirmed'])
+  working:Boolean, relatedPeriodLink:Function})
+const emit = defineEmits(['show-pools', 'show-issues', 'recalculate', 'refresh-draft', 'confirmed'])
 const review = ref()
 const loading = ref(false)
 const error = ref('')
@@ -32,11 +32,12 @@ const rosterStatus = {
   ROUTE_MISSING:'签到名单读取接口未接通，请核对大春之道的接口部署或网关路由',
   ACCESS_DENIED:'签到名单读取未通过授权，请核对大春之道服务凭证和权限',
   UNAVAILABLE:'暂时无法核验大春之道的签到名单',
-  UNCONFIRMED:'签到名单尚未确认或已有变更，请在大春之道确认后重新拉取',
+  UNCONFIRMED:'签到记录尚未同步或已有变更，请同步来源订单',
   PAYMENT_CONFLICT:'报名付款同时出现在多个期次，请在大春之道核对延期',
-  NEEDS_PULL:'签到名单版本已变化，请重新拉取并试算',
-  NEEDS_DRAFT:'已拉取新版签到名单，请重新试算',
-  READY:'签到名单已核对',
+  NEEDS_PULL:'签到记录已变更，请同步来源订单后试算',
+  NEEDS_DRAFT:'签到记录已更新，请重新试算',
+  REFUND_CUTOFF_REQUIRED:'请在核算期次中设置本期退款截止时间',
+  READY:'签到记录已同步',
 }
 const resumableSources = new Set(['NOT_STARTED', 'FAILED', 'INCOMPLETE', 'OUTSIDE_RANGE', 'STALE'])
 const sourcesReady = computed(() => review.value?.sources?.every(source => source.status==='READY' && !source.refundGap))
@@ -148,7 +149,7 @@ onBeforeUnmount(() => { sequence++ })
           </p>
           <div class="settlement-checklist">
             <section v-if="review.sources?.length" class="settlement-check">
-              <div class="settlement-check-head"><h3>订单同步</h3><a-tag :color="sourcesReady ? 'green' : 'orange'">{{ sourcesReady ? '已核对' : '待处理' }}</a-tag></div>
+              <div class="settlement-check-head"><h3>订单同步</h3><a-tag :color="sourcesReady ? 'green' : 'orange'">{{ sourcesReady ? '已同步' : '待处理' }}</a-tag></div>
               <ul class="review-list">
                 <li v-for="source in review.sources" :key="source.stream">
                   <div>
@@ -163,18 +164,17 @@ onBeforeUnmount(() => { sequence++ })
               </ul>
             </section>
             <section v-if="review.practiceRoster" class="settlement-check">
-              <div class="settlement-check-head"><h3>签到名单</h3>
-                <a-tag :color="review.practiceRoster.sourceStatus==='READY' ? 'green' : 'orange'">{{ review.practiceRoster.sourceStatus==='READY' ? '已核对' : '待处理' }}</a-tag>
+              <div class="settlement-check-head"><h3>签到记录</h3>
+                <a-tag :color="review.practiceRoster.sourceStatus==='READY' ? 'green' : 'orange'">{{ review.practiceRoster.sourceStatus==='READY' ? '已同步' : '待处理' }}</a-tag>
               </div>
               <p v-if="review.practiceRoster.sourceStatus!=='READY'">{{ rosterStatus[review.practiceRoster.sourceStatus] || rosterStatus.NOT_CONFIGURED }}</p>
               <p class="review-meta">
                 试算名单 v{{ review.practiceRoster.version }} · 到课 {{ review.practiceRoster.attendance }} 人
                 <template v-if="review.practiceRoster.latestVersion !== review.practiceRoster.version"> · 已导入 v{{ review.practiceRoster.latestVersion }}</template>
                 <template v-if="review.practiceRoster.sourceVersion && review.practiceRoster.sourceVersion !== review.practiceRoster.latestVersion"> · 来源 v{{ review.practiceRoster.sourceVersion }}</template>
-                · 开班 {{ formatTime(review.practiceRoster.startsAt) }} · 名单确认 {{ formatTime(review.practiceRoster.confirmedAt) }}
-                <template v-if="review.practiceRoster.refundCutoff !== review.practiceRoster.confirmedAt"> · 班次退款截至 {{ formatTime(review.practiceRoster.refundCutoff) }}</template>
+                · 开班 {{ formatTime(review.practiceRoster.startsAt) }}
+                <template v-if="review.practiceRoster.refundCutoff"> · 退款截止 {{ formatTime(review.practiceRoster.refundCutoff) }}</template>
               </p>
-              <a-button v-if="canPullRoster && review.practiceRoster.sourceStatus==='NEEDS_PULL'" size="small" :disabled="working" @click="emit('pull-roster')">拉取签到名单</a-button>
             </section>
             <section v-if="review.practiceDependencies?.length" class="settlement-check">
               <div class="settlement-check-head"><h3>关联班次与退款账期</h3><a-tag color="orange">待处理</a-tag></div>
@@ -221,7 +221,7 @@ onBeforeUnmount(() => { sequence++ })
     :ok-button-props="{disabled:confirmationChanged}" :cancel-button-props="{disabled:confirming}" @ok="closePeriod" @cancel="confirmation=undefined">
     <p>{{ period?.productName }} · {{ period?.name }}</p>
     <p>草稿 v{{ confirmation?.expectedVersion }} · 合计 <strong>{{ formatMoney(review?.totalMinor) }}</strong></p>
-    <p v-if="review?.practiceRoster">签到名单 v{{ review.practiceRoster.version }} · 首次确认 {{ formatTime(review.practiceRoster.refundCutoff) }}</p>
+    <p v-if="review?.practiceRoster">签到名单 v{{ review.practiceRoster.version }} <template v-if="review.practiceRoster.refundCutoff"> · 退款截止 {{ formatTime(review.practiceRoster.refundCutoff) }}</template></p>
     <p>确认后锁定本期结算与分配结果。</p>
     <a-alert v-if="confirmationError" :message="confirmationError" type="error" show-icon>
       <template v-if="confirmationChanged" #action><a-button size="small" @click="refreshAfterConflict">读取最新结果</a-button></template>

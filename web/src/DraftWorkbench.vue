@@ -12,7 +12,7 @@ import { draftIssueLabels } from './draft-issue-labels'
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
   recoveryOptions: Array, settlementProducts: Array, localSettlement: Boolean, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
   requestedPeriod:Number, requestedView:String, ruleSetupLink:String, issueRuleLink:String, relatedOrderLink:Function, relatedPeriodLink:Function,
-  periodsLoading:Boolean, refreshWorkspace:Function, month:String, rosterEditReady:Boolean })
+  periodsLoading:Boolean, month:String, rosterEditReady:Boolean })
 const emit = defineEmits(['show-order', 'show-issue-order', 'show-applied-rule', 'show-roster'])
 const selected = defineModel('periodId', {type:Number})
 const view = defineModel('view', {type:String})
@@ -21,7 +21,6 @@ const draft = ref()
 const aggregateGroup = ref()
 const loading = ref(false)
 const calculating = ref(false)
-const pullingRoster = ref(false)
 const notice = ref('')
 const recovery = ref()
 const recoveryOutcome = ref()
@@ -43,7 +42,6 @@ const options = computed(() => props.periods.map(period => ({
 })))
 const selectedPeriod = computed(() => props.periods.find(period => period.id === selected.value))
 const linkedPeriod = computed(() => props.periods.find(period => period.id === props.requestedPeriod)?.id)
-const canPullRoster = computed(() => selectedPeriod.value?.periodMode === 'class' && selectedPeriod.value.sourcePeriodKey && !draft.value?.settlement)
 const needsRosterLink = computed(() => selectedPeriod.value?.practiceRosterEditable)
 const canReviewRecovery = computed(() => !draft.value?.settlement && props.recoveryOptions?.length &&
   (props.localSettlement || props.settlementProducts?.includes(selectedPeriod.value?.productId)))
@@ -230,27 +228,6 @@ async function calculate() {
   }
 }
 
-async function pullRoster() {
-  const periodId = selected.value
-  if (!canPullRoster.value || pullingRoster.value || calculating.value) return
-  pullingRoster.value = true
-  error.value = ''
-  notice.value = ''
-  try {
-    const result = await props.api('/practice-rosters/pull', { method: 'POST', body: JSON.stringify({ periodId }) })
-    if (selected.value !== periodId || unmounted) return
-    await props.refreshWorkspace()
-    if (selected.value !== periodId || unmounted) return
-    notice.value = result.changed ? `已读取签到名单 v${result.version}。` : `签到名单已是 v${result.version}。`
-    if (result.changed && view.value === 'review') await load()
-    await checkRefresh()
-  } catch (err) {
-    if (selected.value === periodId && !unmounted) error.value = err.message
-  } finally {
-    pullingRoster.value = false
-  }
-}
-
 function openRecovery(record) {
   recoveryOutcome.value = undefined
   recoveryError.value = ''
@@ -310,19 +287,18 @@ async function loadMore(section, cursorName) {
         <div class="workbench-period">
           <label for="draft-period">产品和核算期</label>
           <a-select id="draft-period" v-model:value="selected" :options="options" placeholder="选择产品和核算期" :loading="periodsLoading"
-            show-search option-filter-prop="label" :disabled="calculating || pullingRoster || savingRecovery" />
+            show-search option-filter-prop="label" :disabled="calculating || savingRecovery" />
         </div>
         <div v-if="selected" class="workbench-actions">
           <a-button v-if="needsRosterLink" :href="relatedPeriodLink()">查看期次映射</a-button>
-          <a-button v-if="needsRosterLink" :disabled="!rosterEditReady || loading || pullingRoster || calculating"
-            @click="emit('show-roster',selectedPeriod)">关联签到名单</a-button>
-          <a-button v-if="canPullRoster && (view!=='review' || !draft)" :disabled="loading || calculating" :loading="pullingRoster" @click="pullRoster">拉取签到名单</a-button>
+          <a-button v-if="needsRosterLink" :disabled="!rosterEditReady || loading || calculating"
+            @click="emit('show-roster',selectedPeriod)">关联来源期次</a-button>
           <a-button v-if="ruleSetupLink && draft && !draft.settlement" :href="ruleSetupLink">配置本期规则</a-button>
           <a-button v-if="!matchingOnly && !ruleSetupLink && !draft?.settlement && (view!=='review' || !draft)"
-            :disabled="loading || pullingRoster || periodsLoading" :loading="calculating"
+            :disabled="loading || periodsLoading" :loading="calculating"
             :type="draft ? 'default' : 'primary'" @click="calculate">{{ draft ? '重新试算' : '生成草稿' }}</a-button>
-          <a-button v-if="!matchingOnly && (view!=='review' || !draft)" :disabled="loading || calculating || pullingRoster" @click="load()">刷新结果</a-button>
-          <a-button v-if="hasSettlementReview && !draft?.settlement && view!=='review'" type="primary" :disabled="loading || calculating || pullingRoster" @click="view='review'">去结算核对</a-button>
+          <a-button v-if="!matchingOnly && (view!=='review' || !draft)" :disabled="loading || calculating" @click="load()">刷新结果</a-button>
+          <a-button v-if="hasSettlementReview && !draft?.settlement && view!=='review'" type="primary" :disabled="loading || calculating" @click="view='review'">去结算核对</a-button>
         </div>
       </div>
       <p v-if="selectedPeriod" class="draft-context">
@@ -365,9 +341,9 @@ async function loadMore(section, cursorName) {
   <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney" :unit-id="unitId"/>
   <DraftPoolAllocations v-if="draft?.poolAllocationAvailable && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
   <DraftSettlementReview v-if="hasSettlementReview && view==='review'" :draft="draft" :period="selectedPeriod" :api="api" :format-money="formatMoney"
-    :format-time="formatTime" :source-streams="sourceStreams" :working="calculating || pullingRoster" :can-pull-roster="canPullRoster"
+    :format-time="formatTime" :source-streams="sourceStreams" :working="calculating"
     :related-period-link="relatedPeriodLink"
-    @show-pools="view='pools'" @show-issues="view='issues'" @recalculate="calculate" @pull-roster="pullRoster" @refresh-draft="load()" @confirmed="load()"/>
+    @show-pools="view='pools'" @show-issues="view='issues'" @recalculate="calculate" @refresh-draft="load()" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">
   <section v-if="draft.aggregateGroups?.length" class="records" :aria-label="draft.mixedArrangements ? '收退款明细' : '整期分组'">
     <div class="records-head"><h2>{{ draft.mixedArrangements ? '收退款明细' : '整期分组' }}</h2></div>
@@ -539,7 +515,7 @@ async function loadMore(section, cursorName) {
   <CatalogRuleMatches v-if="hasMatching && (!draft || view==='matching')" :period-id="selected" :draft-available="selectedPeriod.catalogDraftAvailable"
     :api="api" :format-money="formatMoney" :format-time="formatTime" @show-order="emit('show-issue-order',$event)"/>
   <section v-if="!draft && !error && !hasMatching" class="records empty">
-    <a-empty :description="periodsLoading || loading ? '正在读取核算期' : ruleSetupLink ? '本期签到名单已就绪，待配置规则' : selected ? '本期暂无草稿' : options.length ? '请选择核算期' : month ? '所选月份暂无核算期' : '暂无核算期'" />
+    <a-empty :description="periodsLoading || loading ? '正在读取核算期' : ruleSetupLink ? '本期签到记录已同步，待配置规则' : selected ? '本期暂无草稿' : options.length ? '请选择核算期' : month ? '所选月份暂无核算期' : '暂无核算期'" />
     <a-button v-if="!periodsLoading && !loading && ruleSetupLink" type="primary" :href="ruleSetupLink">配置本期规则</a-button>
     <a-button v-if="!periodsLoading && !loading && !options.length" href="#periods">查看核算期次</a-button>
   </section>

@@ -77,10 +77,17 @@ func readPracticeHeader(ctx context.Context, tx pgx.Tx, periodKey string, summar
 		return time.Time{}, errPracticeNotReady
 	}
 	var startsAt time.Time
-	err := tx.QueryRow(ctx, `SELECT id,source_version,starts_at FROM practice_rosters
-	 WHERE period_key=$1 ORDER BY source_version DESC LIMIT 1`, periodKey).Scan(&summary.PracticeRosterID, &summary.PracticeRosterVersion, &startsAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		err = errPracticeNotReady
+	var signed int
+	var latestSynced, validPayments bool
+	err := tx.QueryRow(ctx, `SELECT roster.id,roster.source_version,roster.starts_at,roster.attendance_count,roster.from_registration_sync,coalesce(registrations.valid_payment_links,true)
+	 FROM practice_rosters roster LEFT JOIN practice_registrations registrations ON registrations.period_key=roster.period_key
+	 WHERE roster.period_key=$1 ORDER BY roster.source_version DESC LIMIT 1`, periodKey).
+		Scan(&summary.PracticeRosterID, &summary.PracticeRosterVersion, &startsAt, &signed, &latestSynced, &validPayments)
+	if err == nil && latestSynced && !validPayments {
+		return startsAt, errPracticeRegistrationPayment
+	}
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && latestSynced && signed == 0 {
+		return startsAt, errPracticeNotReady
 	}
 	return startsAt, err
 }
@@ -125,9 +132,10 @@ SELECT e.id,CASE WHEN booked.id IS NOT NULL THEN '` + practicePaymentAlreadySett
  )`
 
 func readPracticeMembers(ctx context.Context, tx pgx.Tx, rosterIDs []int64, eligibleOnly bool) ([]practiceEnrollment, error) {
-	rows, err := tx.Query(ctx, `SELECT e.id,e.source_enrollment_id,e.participant_id,e.membership_type,e.commission_eligible,e.signed_at,e.paid_order_ids,m.roster_id,first_roster.confirmed_at,e.period_key
+	rows, err := tx.Query(ctx, `SELECT e.id,e.source_enrollment_id,e.participant_id,e.membership_type,e.commission_eligible,e.signed_at,e.paid_order_ids,m.roster_id,first_roster.confirmed_at,first_roster.from_registration_sync,e.period_key
 	 FROM practice_roster_members m JOIN practice_enrollments e ON e.id=m.enrollment_id
-	 JOIN LATERAL (SELECT r.confirmed_at FROM practice_rosters r WHERE r.period_key=e.period_key ORDER BY r.source_version LIMIT 1) first_roster ON true
+	 JOIN LATERAL (SELECT CASE WHEN NOT r.from_registration_sync THEN r.confirmed_at END AS confirmed_at,r.from_registration_sync
+	  FROM practice_rosters r WHERE r.period_key=e.period_key ORDER BY r.source_version LIMIT 1) first_roster ON true
 	 WHERE m.roster_id=ANY($1::bigint[]) AND (NOT $2 OR e.commission_eligible)
 	 ORDER BY m.roster_id,e.source_enrollment_id::bigint LIMIT $3`, rosterIDs, eligibleOnly, maxDraftPayments+1)
 	if err != nil {
@@ -135,7 +143,12 @@ func readPracticeMembers(ctx context.Context, tx pgx.Tx, rosterIDs []int64, elig
 	}
 	members, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (practiceEnrollment, error) {
 		var e practiceEnrollment
-		err := row.Scan(&e.ID, &e.SourceEnrollmentID, &e.ParticipantID, &e.MembershipType, &e.CommissionEligible, &e.SignedAt, &e.PaidOrderIDs, &e.RosterID, &e.ConfirmedAt, &e.PeriodKey)
+		var confirmedAt *time.Time
+		err := row.Scan(&e.ID, &e.SourceEnrollmentID, &e.ParticipantID, &e.MembershipType, &e.CommissionEligible,
+			&e.SignedAt, &e.PaidOrderIDs, &e.RosterID, &confirmedAt, &e.NeedsRefundCutoff, &e.PeriodKey)
+		if confirmedAt != nil {
+			e.ConfirmedAt = *confirmedAt
+		}
 		return e, err
 	})
 	if len(members) > maxDraftPayments {

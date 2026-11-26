@@ -127,6 +127,10 @@ func preparePracticePurchases(members []practiceEnrollment, orders map[string][]
 			}
 		}
 		if purchase.issue == "" {
+			if member.NeedsRefundCutoff && purchase.refundCutoff == nil && !replaying &&
+				slices.ContainsFunc(purchase.payments, func(payment paymentInput) bool { return len(refunds[payment.ID]) != 0 }) {
+				return nil, errPracticeRefundCutoffRequired
+			}
 			purchase.noReferrer = len(purchase.payments) == 1 && purchase.payments[0].Fact.PracticeNoReferrer.matches(member)
 			purchase.applyRefunds(refunds)
 		}

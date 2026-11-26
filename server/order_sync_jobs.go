@@ -210,7 +210,7 @@ func finishOrderSyncJob(ctx context.Context, tx pgx.Tx, id int64, status, messag
 }
 
 func orderSyncFailureMessage(err error) string {
-	for _, known := range []error{errSyncOrigin, errSyncInitialFrom, errSyncLaterStart, errUnverifiedSource, errBoundSourceImport} {
+	for _, known := range []error{errPracticeRegistrationSync, errSyncOrigin, errSyncInitialFrom, errSyncLaterStart, errUnverifiedSource, errBoundSourceImport} {
 		if errors.Is(err, known) {
 			return known.Error()
 		}

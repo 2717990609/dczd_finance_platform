@@ -15,7 +15,7 @@ import (
 )
 
 var errPracticeRoster = errors.New("实战班名单格式或源版本不正确")
-var errPracticeNotReady = errors.New("请关联实际开班的来源期次并导入确认名单")
+var errPracticeNotReady = errors.New("请确认已关联实际开班的来源期次，并等待已签到的报名记录同步")
 
 type practiceRosterWire struct {
 	ContractVersion string                   `json:"contract_version"`
@@ -53,6 +53,7 @@ type practiceEnrollment struct {
 	CommissionEligible bool      `json:"commission_eligible"`
 	SignedAt           time.Time `json:"signed_at"`
 	ConfirmedAt        time.Time `json:"-"`
+	NeedsRefundCutoff  bool      `json:"-"`
 	PaidOrderIDs       []string  `json:"paid_order_ids"`
 	ContentHash        string    `json:"hash,omitempty"`
 }
@@ -62,6 +63,7 @@ type practiceRoster struct {
 	SourceVersion         int64
 	StartsAt, ConfirmedAt time.Time
 	Enrollments           []practiceEnrollment
+	FromRegistrationSync  bool
 }
 
 func practiceRosterHash(items []practiceEnrollmentWire) string {
@@ -101,16 +103,24 @@ func validPracticeKey(key string) bool {
 }
 
 func normalizePracticeRoster(w practiceRosterWire) (practiceRoster, error) {
+	return normalizePracticeRosterWire(w, false)
+}
+
+func normalizePracticeRosterFromSync(w practiceRosterWire) (practiceRoster, error) {
+	return normalizePracticeRosterWire(w, true)
+}
+
+func normalizePracticeRosterWire(w practiceRosterWire, fromRegistrationSync bool) (practiceRoster, error) {
 	starts, startError := time.Parse(time.RFC3339Nano, w.PeriodStartAt)
 	confirmed, confirmedError := time.Parse(time.RFC3339Nano, w.ConfirmedAt)
 	if w.ContractVersion != "dczd.practice-roster/1.0" || w.SourceSystem != "DCZD" ||
 		!validPracticeKey(w.PeriodKey) || w.PeriodKey != fmt.Sprintf("PRACTICE:%d:%d:%d", w.ActivityType, w.StrategyID, w.ActivityID) ||
 		w.RosterVersion < 1 || w.RosterVersion > 1000 || startError != nil || confirmedError != nil ||
-		!textOK(w.ConfirmedBy, 64) || len(w.Enrollments) == 0 || len(w.Enrollments) > 10000 ||
+		!textOK(w.ConfirmedBy, 64) || !fromRegistrationSync && len(w.Enrollments) == 0 || len(w.Enrollments) > 10000 ||
 		w.RosterHash != practiceRosterHash(w.Enrollments) {
 		return practiceRoster{}, errPracticeRoster
 	}
-	result := practiceRoster{Key: w.PeriodKey, Hash: w.RosterHash, SourceVersion: w.RosterVersion, StartsAt: starts.UTC(), ConfirmedAt: confirmed.UTC()}
+	result := practiceRoster{Key: w.PeriodKey, Hash: w.RosterHash, SourceVersion: w.RosterVersion, StartsAt: starts.UTC(), ConfirmedAt: confirmed.UTC(), FromRegistrationSync: fromRegistrationSync}
 	previous := int64(0)
 	for _, e := range w.Enrollments {
 		signedAt, err := time.Parse(time.RFC3339Nano, e.SignedAt)
@@ -160,13 +170,13 @@ const practiceIncomingRows = `jsonb_to_recordset($2::jsonb) AS input(
 
 func storePracticeRoster(ctx context.Context, tx pgx.Tx, roster practiceRoster) (bool, error) {
 	var id int64
-	err := tx.QueryRow(ctx, `INSERT INTO practice_rosters(period_key,source_version,source_hash,starts_at,confirmed_at,attendance_count)
-	 VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(period_key,source_version) DO NOTHING RETURNING id`,
-		roster.Key, roster.SourceVersion, roster.Hash, roster.StartsAt, roster.ConfirmedAt, len(roster.Enrollments)).Scan(&id)
+	err := tx.QueryRow(ctx, `INSERT INTO practice_rosters(period_key,source_version,source_hash,starts_at,confirmed_at,attendance_count,from_registration_sync)
+	 VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(period_key,source_version) DO NOTHING RETURNING id`,
+		roster.Key, roster.SourceVersion, roster.Hash, roster.StartsAt, roster.ConfirmedAt, len(roster.Enrollments), roster.FromRegistrationSync).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var same bool
-		err = tx.QueryRow(ctx, `SELECT source_hash=$3 AND starts_at=$4 AND confirmed_at=$5 FROM practice_rosters
-		 WHERE period_key=$1 AND source_version=$2`, roster.Key, roster.SourceVersion, roster.Hash, roster.StartsAt, roster.ConfirmedAt).Scan(&same)
+		err = tx.QueryRow(ctx, `SELECT source_hash=$3 AND starts_at=$4 AND confirmed_at=$5 AND from_registration_sync=$6 FROM practice_rosters
+		 WHERE period_key=$1 AND source_version=$2`, roster.Key, roster.SourceVersion, roster.Hash, roster.StartsAt, roster.ConfirmedAt, roster.FromRegistrationSync).Scan(&same)
 		if err == nil && !same {
 			return false, conflict
 		}
@@ -174,6 +184,10 @@ func storePracticeRoster(ctx context.Context, tx pgx.Tx, roster practiceRoster) 
 	}
 	if err != nil {
 		return false, err
+	}
+	if len(roster.Enrollments) == 0 {
+		err = enqueueDraftConfiguration(ctx, tx, draftRefreshRoster, roster.Key, roster.SourceVersion)
+		return err == nil, err
 	}
 	if _, err = tx.Exec(ctx, `INSERT INTO practice_enrollments(period_key,source_enrollment_id,participant_id,membership_type,
 	 commission_eligible,signed_at,paid_order_ids,hash) SELECT $1,source_enrollment_id,participant_id,membership_type,

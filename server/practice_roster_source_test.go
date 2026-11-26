@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -210,4 +211,79 @@ func TestPracticeRosterPullAndSettlementUseCurrentSourceVersion(t *testing.T) {
 		t.Fatal("repeating confirmation must return the existing final result")
 	}
 	pull(http.StatusConflict)
+}
+
+func TestPracticeRegistrationSyncUsesBusinessStateWithoutConfirmation(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	const key = "PRACTICE:2:4:20"
+	start := time.Date(2026, 8, 8, 1, 0, 0, 0, time.UTC).Format(time.RFC3339)
+	product, err := s.createProduct(ctx, createProductInput{Code: "REGISTRATION_SYNC", Name: "家庭教育", PeriodMode: "class"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	productID := product.(map[string]int64)["id"]
+	period, err := s.createPeriod(ctx, createPeriodInput{ProductID: productID, Name: "第20期", Ordinal: 20,
+		StartsOn: "2026-08-08", EndsOn: "2026-08-09", SourcePeriodKey: key})
+	if err != nil {
+		t.Fatal(err)
+	}
+	periodID := period.(map[string]int64)["id"]
+	if _, err = s.createMapping(ctx, createMappingInput{ProductID: productID, Source: "DCZD", Domain: "PRACTICE", SourceKey: "4"}); err != nil {
+		t.Fatal(err)
+	}
+	registration := map[string]any{"source_enrollment_id": "19", "source_participant_id": "3", "membership_type": 1,
+		"enabled": true, "state": 1, "referrer_id": "40", "referrer_company_id": "50"}
+	signed := []practiceEnrollmentWire{}
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/internal/v1/finance/source-orders/practice-registrations" ||
+			r.URL.Query().Get("period_key") != key || r.Header.Get("X-DCZD-Finance-Contract") != practiceRegistrationsContract {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"contract_version": practiceRegistrationsContract,
+			"source_system": "DCZD", "period_key": key, "activity_type": 2, "strategy_id": 4, "activity_id": 20,
+			"period_start_at": start, "enrollments": signed, "roster_hash": practiceRosterHash(signed),
+			"valid_payment_links": true, "registrations": []any{registration}})
+	}))
+	defer provider.Close()
+	client, err := newOrderFeedClient("DCZD", sourceConfig{BaseURL: provider.URL, Token: "fixture"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := s.db.Acquire(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Release()
+	check := func(version int64, attendance int, referrer string) {
+		t.Helper()
+		if err := syncPracticeRegistrations(ctx, conn, client); err != nil {
+			t.Fatal(err)
+		}
+		var gotVersion int64
+		var gotAttendance int
+		var gotReferrer string
+		err := conn.QueryRow(ctx, `SELECT roster.source_version,roster.attendance_count,s.registrations->0->>'referrer_id'
+		 FROM practice_registrations s JOIN practice_rosters roster ON roster.period_key=s.period_key
+		 WHERE s.period_key=$1 ORDER BY roster.source_version DESC LIMIT 1`, key).Scan(&gotVersion, &gotAttendance, &gotReferrer)
+		if err != nil || gotVersion != version || gotAttendance != attendance || gotReferrer != referrer {
+			t.Fatalf("version %d attendance %d referrer %s: %v", gotVersion, gotAttendance, gotReferrer, err)
+		}
+	}
+	check(1, 0, "40")
+	registration["state"], registration["signed_at"] = 2, start
+	signed = []practiceEnrollmentWire{{SourceEnrollmentID: "19", ParticipantID: "3", MembershipType: 1, SignedAt: start}}
+	check(2, 1, "40")
+	registration["referrer_id"] = "41"
+	check(3, 1, "41")
+	registration["state"], registration["signed_at"], signed = 4, nil, []practiceEnrollmentWire{}
+	check(4, 0, "41")
+	var oldAttendance int
+	if err := conn.QueryRow(ctx, "SELECT attendance_count FROM practice_rosters WHERE period_key=$1 AND source_version=2", key).Scan(&oldAttendance); err != nil || oldAttendance != 1 {
+		t.Fatalf("old signed version was changed: %d %v", oldAttendance, err)
+	}
+	if _, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: periodID}); !errors.Is(err, errPracticeNotReady) {
+		t.Fatalf("empty attendance draft: %v", err)
+	}
 }

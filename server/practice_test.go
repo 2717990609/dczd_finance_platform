@@ -706,6 +706,28 @@ func TestPracticeDraftUsesLatestPartialRefundForConfirmedEnrollment(t *testing.T
 	}
 }
 
+func TestSynchronizedPracticeRefundUsesConfiguredCutoff(t *testing.T) {
+	cutoff := time.Date(2026, 8, 8, 7, 0, 0, 0, time.UTC)
+	paid, early, late := int64(1000), int64(200), int64(100)
+	members := []practiceEnrollment{{RosterID: 1, CommissionEligible: true, PaidOrderIDs: []string{"31"}, NeedsRefundCutoff: true}}
+	orders := map[string][]paymentInput{"31": {{ID: 3, Fact: sourceFact{PaymentID: "31", AmountMinor: &paid, OccurredAt: cutoff.Add(-2 * time.Hour)}}}}
+	refunds := map[int64][]practiceRefundMatch{3: {
+		{event: paymentInput{ID: 4, Fact: sourceFact{AmountMinor: &early, OccurredAt: cutoff.Add(-time.Hour)}}},
+		{event: paymentInput{ID: 5, Fact: sourceFact{AmountMinor: &late, OccurredAt: cutoff}}},
+	}}
+	if _, err := preparePracticePurchases(members, orders, nil, refunds, false, nil); !errors.Is(err, errPracticeRefundCutoffRequired) {
+		t.Fatalf("the sync timestamp must not be used as a cutoff: %v", err)
+	}
+	if _, err := preparePracticePurchases(members, orders, nil, nil, false, nil); err != nil {
+		t.Fatalf("no refund needs to be routed: %v", err)
+	}
+	purchases, err := preparePracticePurchases(members, orders, nil, refunds, false, map[int64]*time.Time{1: &cutoff})
+	if err != nil || len(purchases) != 1 || purchases[0].issue != "" || purchases[0].base != 800 ||
+		len(purchases[0].lateRefunds) != 1 || purchases[0].lateRefunds[0].ID != 5 {
+		t.Fatalf("expected the early refund in the current period and the cutoff refund later: %+v, %v", purchases, err)
+	}
+}
+
 func TestPracticeRefundCutoffDoesNotCountLatePrincipalWithinTimestampTie(t *testing.T) {
 	paid, late, onTime := int64(1000), int64(100), int64(900)
 	cutoff := time.Date(2026, 8, 8, 7, 0, 0, 0, time.UTC)

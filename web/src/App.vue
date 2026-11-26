@@ -697,7 +697,7 @@ const columns = computed(() => {
     product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['业务 SKU / 报名类型','businessSkus',290],['操作','productAction',160]],
     mapping:[['产品名称','productName'],['业务来源','source'],['业务域','domain'],['来源标识','sourceKey']],
     periodPull:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],
-      ['退款截止时间','refundCutoff',158],['报表月份','reportMonth',115],['来源期次','sourcePeriodKey',148],['签到名单','practiceRoster',150],['适用规则','ruleVersion',200]],
+      ['退款截止时间','refundCutoff',158],['报表月份','reportMonth',115],['来源期次','sourcePeriodKey',148],['签到记录','practiceRoster',150],['适用规则','ruleVersion',200]],
     rule:[['规则名称','label',210],['所属产品','productName',128],['版本','version',68],
       ['适用订单','scope',188],['生效时间','effectiveFrom',165],['状态','components',112],['操作','ruleAction',240]],
     pull:[['原订单','orderNo',250],['订单来源','source',112],['业务状态','kind',104],['来源金额','amountMinor',116],['归属产品','productName',142],['业务时间','occurredAt',136],['手机号','contactPhones',195]],
@@ -1949,7 +1949,7 @@ function periodPullNotice(result) {
             :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" :requested-period="requestedPeriod"
             :rule-setup-link="classRuleSetupLink(selectedWorkbenchPeriod, true)" :issue-rule-link="issueRuleLink"
             :related-order-link="orderRecordsLink" :related-period-link="relatedPeriodLink"
-            :periods-loading="loading" :refresh-workspace="refresh" :month="workspaceMonth" :requested-view="requestedView" :roster-edit-ready="configurationReady"
+            :periods-loading="loading" :month="workspaceMonth" :requested-view="requestedView" :roster-edit-ready="configurationReady"
             @show-order="orderDetails={versionId:$event,allowPull:true}" @show-issue-order="orderDetails={versionId:$event,allowPull:true}"
             @show-roster="open('periodRoster',$event)"
             @show-applied-rule="showAppliedRule" />
@@ -2097,10 +2097,10 @@ function periodPullNotice(result) {
                 <template v-else-if="column.key==='practiceRoster'">
                   <template v-if="record.periodMode==='class' && !record.practiceRefundMonth">
                     <span v-if="record.practiceRosterVersion">v{{ record.practiceRosterVersion }} · {{ record.practiceRosterAttendance }} 人</span>
-                    <span v-else>{{ record.sourcePeriodKey ? '待拉取' : '未关联' }}</span>
+                    <span v-else>{{ record.sourcePeriodKey ? '待同步' : '未关联' }}</span>
                     <small v-if="record.classStartsAt" class="order-version">{{ formatTime(record.classStartsAt) }}</small>
                     <div v-if="record.practiceRosterEditable">
-                      <a-button type="link" size="small" @click="open('periodRoster',record)">关联签到名单</a-button>
+                      <a-button type="link" size="small" @click="open('periodRoster',record)">关联来源期次</a-button>
                     </div>
                   </template>
                   <span v-else>—</span>
@@ -2111,7 +2111,7 @@ function periodPullNotice(result) {
                   <a v-else-if="classRuleSetupLink(record)" :href="classRuleSetupLink(record)">
                     待配规则
                   </a>
-                  <a-tag v-else color="orange">{{ record.ruleMatchingAvailable ? '按订单匹配' : record.periodMode==='class' && !record.classStartsAt ? '待签到名单' : '待配规则' }}</a-tag>
+                  <a-tag v-else color="orange">{{ record.ruleMatchingAvailable ? '按订单匹配' : record.periodMode==='class' && !record.classStartsAt ? '待同步签到记录' : '待配规则' }}</a-tag>
                 </template>
                 <template v-else-if="column.key==='version'"><a-tag color="green">v{{ text }}</a-tag></template>
                 <template v-else-if="column.key==='effectiveFrom'">
