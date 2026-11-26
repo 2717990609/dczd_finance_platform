@@ -160,7 +160,11 @@ const ruleBusinessOptions = computed(() => {
     const choices = (product.businessSkus || []).map(sku=>({
       value:product.id+':sku:'+sku.code,label:sku.label.startsWith(product.name) ? sku.label : prefix+sku.label,code:sku.code,
     }))
-    if (data.value.catalogRules.some(rule=>rule.productId===product.id && rule.scopeType==='CROSS_SCENARIO_AGGREGATE')) {
+    const productRules = data.value.catalogRules.filter(rule=>rule.productId===product.id)
+    if (productRules.some(rule=>rule.mixedArrangements)) {
+      choices.push({value:product.id+':mixed',label:prefix+'统一规则'})
+    }
+    if (productRules.some(rule=>!rule.mixedArrangements && rule.scopeType==='CROSS_SCENARIO_AGGREGATE')) {
       choices.push({value:product.id+':aggregate',label:prefix+'跨 SKU 汇总'})
     }
     if (product.periodMode==='class') {
@@ -301,12 +305,16 @@ const ruleTargetPeriod = computed(() => {
 })
 const ruleProductOptions = computed(() => data.value.products.filter(p=>(!p.catalogPending || p.periodMode==='class') && canPublishRule(p.id))
   .map(p=>({value:p.id,label:p.name})))
-const catalogScenarioProducts = computed(() => current.value==='rules' ? data.value.products
-  .filter(p=>(!productScope.value || p.id===productScope.value) && canPublishRule(p.id) && p.businessSkus?.some(sku=>sku.paymentRule))
-  .map(p=>({value:p.id,label:p.name})) : [])
-const catalogPeriodProducts = computed(() => current.value==='rules' ? data.value.products
-  .filter(p=>(!productScope.value || p.id===productScope.value) && canPublishRule(p.id) && p.catalogPeriodRule)
-  .map(p=>({value:p.id,label:p.name})) : [])
+const editableCatalogProducts = computed(() => current.value==='rules' ? data.value.products
+  .filter(p=>(!productScope.value || p.id===productScope.value) && canPublishRule(p.id)) : [])
+const catalogScenarioProducts = computed(() => editableCatalogProducts.value
+  .filter(p=>p.code!=='DCAI_VIP' && p.businessSkus?.some(sku=>sku.paymentRule)).map(p=>({value:p.id,label:p.name})))
+const catalogPeriodProducts = computed(() => editableCatalogProducts.value
+  .filter(p=>p.code!=='DCAI_VIP' && p.catalogPeriodRule).map(p=>({value:p.id,label:p.name})))
+const mixedCatalogProducts = computed(() => editableCatalogProducts.value
+  .filter(p=>p.code==='DCAI_VIP' && p.catalogPeriodRule).map(p=>({value:p.id,label:p.name})))
+const canCreateMixedRule = computed(() => mixedCatalogProducts.value.some(product=>
+  !data.value.catalogRules.some(rule=>rule.productId===product.value && rule.mixedArrangements)))
 const visibleProducts = computed(() => {
   const term = scopeSearch.value.trim().toLowerCase()
   return term ? scopedProducts.value.filter(p => (p.name+' '+p.code).toLowerCase().includes(term)) : scopedProducts.value
@@ -640,6 +648,10 @@ function openCatalogPeriodCreation() {
   const selected = catalogPeriodProducts.value.find(option=>option.value===Number(id))
   periodRule.value = {create:true,productId:selected?.value || productScope.value,sku:selected && kind==='sku' ? sku.join(':') : undefined}
 }
+function openMixedCatalogRule() {
+  const productId = mixedCatalogProducts.value[0]?.value
+  if (productId) periodRule.value = {create:true,productId,mixedArrangements:true}
+}
 function copyCatalogPeriodRule(source) {
   periodRule.value = {create:true,productId:source.productId,copiedFrom:source}
 }
@@ -647,7 +659,7 @@ function showCatalogPeriodIssueVersion({ruleId,itemKey,month}) {
   periodRule.value = {...periodRule.value,id:ruleId,focusItemKey:itemKey,reviewMonth:month}
 }
 function periodRulePublished(result, product) {
-  if (product) ruleBusinessScope.value = product+':aggregate'
+  if (product) ruleBusinessScope.value = product+(periodRule.value?.mixedArrangements ? ':mixed' : ':aggregate')
   ratePublished(result)
 }
 function periodRuleResumed(result) {
@@ -666,7 +678,8 @@ const mainRows = computed(() => {
     const businessKey = scope.join(':')
     rows = rows.filter(row=>row.productId===Number(product) && (
       kind==='sku' && row.scopeType==='BUSINESS_SCENARIO' && row.scopeId===businessKey ||
-      kind==='aggregate' && row.scopeType==='CROSS_SCENARIO_AGGREGATE' ||
+      kind==='mixed' && row.mixedArrangements ||
+      kind==='aggregate' && !row.mixedArrangements && row.scopeType==='CROSS_SCENARIO_AGGREGATE' ||
       kind==='member' && row.classMembers?.includes(businessKey)
     ))
   }
@@ -1886,9 +1899,10 @@ function periodPullNotice(result) {
             <a v-if="retentionPoolReturn" class="workspace-return" :href="retentionPoolReturn"><LeftOutlined aria-hidden="true"/>返回部门留存金</a>
             <a v-if="configurationReturn" class="workspace-return" :href="configurationReturn.href"><LeftOutlined aria-hidden="true"/>{{ configurationReturn.label }}</a>
             <a v-else-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
-            <div v-if="!practiceSettingsView && actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length) && !identityAccount" class="topbar-actions">
+            <div v-if="!practiceSettingsView && actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length || canCreateMixedRule) && !identityAccount" class="topbar-actions">
               <a v-if="orderReturn" class="workspace-return" :href="orderReturn.href"><LeftOutlined aria-hidden="true"/>{{ orderReturn.label }}</a>
               <a-button v-if="canOpenAction && actions!=='person'" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="['pull','periodPull'].includes(actions) ? CloudSyncOutlined : PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : titles[actions] }}</a-button>
+              <a-button v-if="canCreateMixedRule" :type="canOpenAction ? 'default' : 'primary'" :disabled="!configurationReady" @click="openMixedCatalogRule">新增产品规则</a-button>
               <a-button v-if="catalogScenarioProducts.length" :type="canOpenAction ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogScenarioCreation">新增逐单规则</a-button>
               <a-button v-if="catalogPeriodProducts.length" :type="canOpenAction || catalogScenarioProducts.length ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogPeriodCreation">新增整期规则</a-button>
             </div>
@@ -2112,7 +2126,7 @@ function periodPullNotice(result) {
                 </template>
                 <template v-else-if="column.key==='scope'">
                   <template v-if="record.catalogPending">
-                    {{ record.scopeType==='CROSS_SCENARIO_AGGREGATE' ? '跨 SKU 汇总' : record.scopeLabel || catalogScopeLabels[record.scopeType] || '未细分范围' }}
+                    {{ record.mixedArrangements ? '统一规则' : record.scopeType==='CROSS_SCENARIO_AGGREGATE' ? '跨 SKU 汇总' : record.scopeLabel || catalogScopeLabels[record.scopeType] || '未细分范围' }}
                   </template>
                   <template v-else>
                     {{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}
@@ -2126,7 +2140,7 @@ function periodPullNotice(result) {
                   <a-button v-if="record.catalogPending && record.rateConfigAvailable && record.projectMatches && (!session.user || session.user.rules.some(grant=>grant.productId===record.productId))"
                     type="link" size="small" @click="rateRule=record">分润配置</a-button>
                   <a-button v-else-if="record.periodConfigAvailable && canReadRules(record.productId)" type="link" size="small"
-                    @click="periodRule=record">整期分润</a-button>
+                    @click="periodRule=record">{{ record.mixedArrangements ? '分润配置' : '整期分润' }}</a-button>
                   <template v-else-if="!record.catalogPending">
                     <a-button type="link" size="small" :loading="loadingRule?.id===record.id && loadingRule.action==='view'"
                       @click="loadRuleVersion(record,'view')">查看规则</a-button>
@@ -2490,7 +2504,7 @@ function periodPullNotice(result) {
   <CatalogPeriodRule v-if="(periodRule || appliedRule?.aggregate) && active && !sessionError && !sessionChecking && !loginRequested"
     :key="periodRule?.create ? 'create' : periodRule?.id || 'applied'"
     :rule="periodRule" :applied="appliedRule?.aggregate" :focus-item-key="appliedRule?.component"
-    :products="catalogPeriodProducts" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
+    :products="periodRule?.mixedArrangements ? mixedCatalogProducts : catalogPeriodProducts" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
     :can-review-activity="wholeWorkspace && !appliedRule?.aggregate"
     @close="periodRule=undefined; appliedRule=undefined" @published="periodRulePublished" @open-draft="openAggregateDraft"
     @copy="copyCatalogPeriodRule" @open-version="showCatalogPeriodIssueVersion" @resumed="periodRuleResumed"

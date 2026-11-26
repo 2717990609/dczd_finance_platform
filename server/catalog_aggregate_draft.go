@@ -113,7 +113,7 @@ func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []c
 	if len(periods) == 0 {
 		return nil, nil
 	}
-	rows, err := tx.Query(ctx, `SELECT membership.period_id,membership.source_version_id,membership.group_key,g.fixed_only,
+	rows, err := tx.Query(ctx, `SELECT membership.period_id,membership.source_version_id,membership.group_key,(g.fixed_only OR membership.fixed_accrued_minor IS NOT NULL),
 	  membership.fixed_accrued_minor,coalesce(initial.refunded,0),coalesce(history.deducted,0)
 	 FROM unnest($1::bigint[],$2::bigint[]) AS payment(period_id,source_version_id)
 	 JOIN catalog_aggregate_event_groups membership USING(period_id,source_version_id)
@@ -121,7 +121,7 @@ func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []c
 	 LEFT JOIN LATERAL (
 	  SELECT sum((v.fact->>'amountMinor')::bigint)::bigint AS refunded
 	  FROM catalog_aggregate_draft_events event JOIN source_order_versions v ON v.id=event.source_version_id
-	  WHERE g.fixed_only AND event.period_id=membership.period_id AND event.payment_version_id=membership.source_version_id
+	  WHERE (g.fixed_only OR membership.fixed_accrued_minor IS NOT NULL) AND event.period_id=membership.period_id AND event.payment_version_id=membership.source_version_id
 	   AND v.kind='REFUND_SUCCEEDED'
 	 ) initial ON true
 	 LEFT JOIN LATERAL (
@@ -130,7 +130,7 @@ func readFrozenCatalogAggregateGroups(ctx context.Context, tx pgx.Tx, events []c
 	  JOIN settlements final ON final.period_id=r.period_id
 	  JOIN periods booked ON booked.id=r.period_id
 	  JOIN catalog_aggregate_draft_events event ON event.period_id=r.period_id AND event.source_version_id=r.refund_source_version_id
-	  WHERE g.fixed_only AND l.period_id=membership.period_id AND l.aggregate_group_key=membership.group_key
+	  WHERE (g.fixed_only OR membership.fixed_accrued_minor IS NOT NULL) AND l.period_id=membership.period_id AND l.aggregate_group_key=membership.group_key
 	   AND event.payment_version_id=membership.source_version_id AND booked.ends_on<($3::timestamptz AT TIME ZONE 'Asia/Shanghai')::date
 	 ) history ON true
 	 ORDER BY membership.period_id,membership.source_version_id,membership.group_key`, periods, payments, before)
@@ -219,6 +219,7 @@ func readCatalogAggregateGroupsByReference(ctx context.Context, tx pgx.Tx, refs 
 		}
 		group.FixedOnly = len(group.items) == 1 && group.items[0].FixedMinor != nil
 		group.FixedPerOrder = len(group.items) == 1 && group.items[0].FixedPerOrder
+		group.PerOrder = len(group.items) == 1 && group.items[0].PerOrder
 		key, err := group.fixedPoolSettlementKey(definition)
 		if err != nil {
 			return err
@@ -422,7 +423,7 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 				}
 			}
 			reportUnit := benefit.Unit
-			if group.FixedPerOrder && target.AppointmentUnit != "" {
+			if group.countsOrders() && target.AppointmentUnit != "" {
 				if err := reportUnit.Scan(target.AppointmentUnit); err != nil {
 					return result, nil, err
 				}
@@ -438,7 +439,7 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 			if group.orderExactCredit != nil {
 				precise = preciseYuan(group.orderExactCredit)
 			}
-			result.Lines = append(result.Lines, draftLine{Component: award.ItemKey, PersonID: target.Person,
+			result.Lines = append(result.Lines, draftLine{Component: award.ItemKey, PersonID: target.Person, FactID: group.paymentID,
 				AggregateGroup: group.ID, Catalog: benefit, Amount: award.Amount, Base: quote.Basis, PreciseAmount: precise,
 				organization: organizations.ancestors(reportUnit)})
 		}
@@ -487,7 +488,7 @@ func applyCatalogAggregateCarry(ctx context.Context, tx pgx.Tx, prior, confirmed
 	byArrangement := make(map[string]carryDestination, len(groups))
 	for i, group := range groups {
 		index[group.ID] = i
-		if confirmed != 0 || group.Receipts == 0 || group.FixedPerOrder {
+		if confirmed != 0 || group.Receipts == 0 || group.countsOrders() {
 			continue
 		}
 		rule := byRule[group.RuleID]

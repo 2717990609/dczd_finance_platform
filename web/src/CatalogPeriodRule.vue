@@ -21,6 +21,9 @@ const ruleName = ref('')
 const creationCycle = ref()
 const sheet = ref()
 const rows = ref([])
+const mixed = computed(() => Boolean(props.rule?.mixedArrangements || sheet.value?.mixedArrangements))
+const title = computed(() => mixed.value ? creating.value ? '新增产品分润规则' : '产品分润配置'
+  : copiedFrom.value ? '复制整期规则' : creating.value ? '新增整期规则' : props.applied ? '计提使用的整期规则' : '整期分润配置')
 const activeComponent = ref()
 const scenarioCodes = ref([])
 const editingScenarios = ref(false)
@@ -94,7 +97,20 @@ function nextStart(stamp, cycle) {
   if (start<=from) start = new Date(Date.UTC(from.getUTCFullYear(),from.getUTCMonth()+1,day))
   return start.toISOString().slice(0,10)
 }
-const firstStart = computed(() => sheet.value && !creating.value ? nextStart(sheet.value.effectiveFrom,sheet.value.cycle) : undefined)
+function accountingMonthAt(time, cycle) {
+  const date = new Date(Date.parse(time)+8*3600000)
+  if (cycle==='MONTHLY_25_TO_24' && date.getUTCDate()>=25) {
+    return new Date(Date.UTC(date.getUTCFullYear(),date.getUTCMonth()+1,1)).toISOString().slice(0,7)
+  }
+  return date.toISOString().slice(0,7)
+}
+const firstStart = computed(() => {
+  if (!sheet.value || creating.value) return
+  const afterPrevious = nextStart(sheet.value.effectiveFrom,sheet.value.cycle)
+  if (!mixed.value) return afterPrevious
+  const next = nextStart(new Date().toISOString(),sheet.value.cycle)
+  return next > afterPrevious ? next : afterPrevious
+})
 const cutoff = computed(() => sheet.value?.effectiveTo
   ? localDate(new Date(Date.parse(sheet.value.effectiveTo)-86400000).toISOString()) : undefined)
 const canSave = computed(() => sheet.value?.mayPublish && (!cutoff.value || firstStart.value<=cutoff.value))
@@ -162,14 +178,14 @@ function editableRows(items) {
       appointment:item.appointment ? {...item.appointment} : undefined,
       appointmentLevel:item.appointmentLevel,appointmentRole:item.appointmentRole,
       method:item.fixedMinor!=null ? 'fixed' : tiers.length===1 ? 'rate' : 'tiers',
-      fixedAmount:item.fixedMinor==null ? undefined : item.fixedMinor/100,fixedPerOrder:item.fixedPerOrder,
+      fixedAmount:item.fixedMinor==null ? undefined : item.fixedMinor/100,fixedPerOrder:item.fixedPerOrder,perOrder:Boolean(item.perOrder),
       uniformRate:tiers.length===1 ? tiers[0].rate_bps/100 : undefined,
       tiers:tiers.length===1 ? [] : tiers.map(row=>({from:(row.min_inclusive || 0)/100,rate:row.rate_bps/100}))}
   })
 }
 function componentTarget(item) {
   return {itemKey:item.itemKey,label:item.label.trim(),targetKind:item.targetKind,organizationKey:item.poolId ? undefined : item.organizationKey,
-    personId:item.personId,poolId:item.poolId,poolName:item.poolId ? undefined : item.poolName,
+    personId:item.personId,perOrder:item.perOrder || undefined,poolId:item.poolId,poolName:item.poolId ? undefined : item.poolName,
     ownerRole:item.poolId ? undefined : item.ownerRole,ownerPersonId:item.poolId ? undefined : item.ownerPersonId,
     appointmentLevel:item.appointmentLevel,appointmentRole:item.appointmentRole,
     memberRole:item.memberRole,scenarioCodes:[...item.scenarioCodes].sort(),membershipNewOnly:Boolean(item.membershipNewOnly),
@@ -213,6 +229,12 @@ function orderScopeBody(item) {
 }
 const methodLabels = {rate:'比例',fixed:'固定金额',tiers:'阶梯'}
 const methodOptions = Object.entries(methodLabels).map(([value,label])=>({value,label}))
+const calculationBasisOptions = [{value:'order',label:'逐单'},{value:'period',label:'整期'}]
+function setCalculationBasis(item, basis) {
+  item.perOrder = basis==='order'
+  if (item.perOrder && item.method==='tiers') setMethod(item,'rate')
+  if (!item.perOrder && item.targetKind==='order_seller') setTarget(item,'company')
+}
 function setMethod(item, method) {
   if (method==='tiers' && !item.tiers.length) item.tiers = [{from:0,rate:item.uniformRate}]
   if (method==='rate' && item.uniformRate==null && item.tiers.length===1) item.uniformRate = item.tiers[0].rate
@@ -220,7 +242,7 @@ function setMethod(item, method) {
 }
 function methodSummary(item) {
   if (item.method==='fixed') {
-    const unit = item.targetKind==='appointment' ? (item.fixedPerOrder || canSave.value ? '笔' : '组织 / 期') : '期'
+    const unit = item.perOrder || item.fixedPerOrder || !mixed.value && item.targetKind==='appointment' && canSave.value ? '笔' : '期'
     return item.fixedAmount==null ? methodLabels.fixed : props.formatMoney(Math.round(item.fixedAmount*100))+' / '+unit
   }
   if (item.method==='tiers') return item.tiers.length+' 档阶梯'
@@ -228,7 +250,8 @@ function methodSummary(item) {
 }
 const targetTypes = [{value:'person',label:'指定个人'},{value:'company',label:'指定公司'},{value:'pool',label:'团队池'},
   {value:'appointment',label:'销售组织的在任人员'}]
-const targetLabels = {person:'个人',company:'公司',pool:'团队池',appointment:'在任人员'}
+const orderSeller = {value:'order_seller',label:'订单上的成交销售'}
+const targetLabels = {person:'个人',company:'公司',pool:'团队池',appointment:'在任人员',order_seller:'成交销售'}
 const peopleFilters = computed(() => creating.value ? {productId:productId.value,scope:'period'} : {ruleId:props.rule?.id,scope:'period'})
 const unitOptions = computed(() => (sheet.value?.options?.organizations || [])
   .map(unit=>({value:unit.unitId,label:unit.label,kind:unit.kind})))
@@ -236,6 +259,7 @@ function targetLabel(item) {
   const duty = item.recipientDuty && props.optionLabel('organizationDuty',item.recipientDuty)
   if (item.targetKind==='appointment') return [catalogAppointmentLevels.find(option=>option.value===item.appointmentLevel)?.label,
     item.appointmentRole && props.optionLabel('catalogAppointmentRole',item.appointmentRole),duty].filter(Boolean).join(' · ') || '待选择岗位'
+  if (item.targetKind==='order_seller') return orderSeller.label
   if (item.targetKind==='person') return [item.personName || '待选择收款人',duty].filter(Boolean).join(' · ')
   const pool = item.poolId && sheet.value.options?.teamPools?.find(pool=>pool.id===item.poolId)
   const name = pool?.unitName || availableOrganizations(item).find(org=>org.value===item.organizationKey)?.label ||
@@ -295,6 +319,13 @@ function initializeCreation(data, product) {
   const selected = product===props.rule.productId && options.find(option=>option.code===props.rule.sku)
   scenarioCodes.value = selected ? [selected.code] : options.length===1 ? [options[0].code] : []
   addComponent()
+  if (mixed.value) {
+    const sale = rows.value[0]
+    sale.label = '销售提成'
+    sale.perOrder = true
+    sale.membershipNewOnly = true
+    setTarget(sale,'order_seller')
+  }
 }
 function removeComponent(row) {
   const index = rows.value.indexOf(row)
@@ -329,7 +360,7 @@ function componentChanges() {
   return {components:rows.value.map(item=>{
     if (!item.label.trim() ||
       (item.targetKind==='person' ? !item.personId : item.targetKind==='appointment'
-        ? !item.appointmentRole || !item.appointmentLevel : !item.organizationKey && !item.poolId)) {
+        ? !item.appointmentRole || !item.appointmentLevel : item.targetKind==='order_seller' ? !item.perOrder : !item.organizationKey && !item.poolId)) {
       throw new Error('请填写收款安排名称并选择收款对象。')
     }
     if (item.targetKind==='pool' && (!(item.poolId || item.legacyPool && item.poolName?.trim()) || !item.memberRole)) {
@@ -338,7 +369,7 @@ function componentChanges() {
     if (emptyCatalogOrderScope(item.salesScope)) throw new Error('请为「'+item.label+'」选择适用的销售组织或销售类别。')
     if (item.appointment && (!item.appointment.unitId || !item.appointment.role)) throw new Error('请为「'+item.label+'」选择任职组织和岗位。')
     const target = componentTarget(item)
-    if (item.method==='fixed') return {...target,fixedMinor:minor(item.fixedAmount,'请输入整期固定金额。')}
+    if (item.method==='fixed') return {...target,fixedMinor:minor(item.fixedAmount,'请输入固定金额。')}
     const {tiers} = configuredRow(item)
     const starts = tiers.map(row=>minor(row.from,'请输入每档净额起点。'))
     if (starts.some((from,index)=>index && from<=starts[index-1])) throw new Error('每一档净额起点须高于上一档。')
@@ -370,7 +401,13 @@ watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,pro
     editingScenarios.value = false
     activeComponent.value = rows.value.length===1 ? rows.value[0].uid : undefined
     if (creating.value) initializeCreation(data,product)
-    else effectiveDate.value = canSave.value ? defaultEffectiveDate() : ''
+    else {
+      effectiveDate.value = canSave.value ? defaultEffectiveDate() : ''
+      if (mixed.value && !props.rule?.reviewMonth && !applied) {
+        const now = new Date().toISOString()
+        activityMonth.value = accountingMonthAt(now>data.effectiveFrom ? now : data.effectiveFrom,data.cycle)
+      }
+    }
     const focus = props.focusItemKey || props.rule?.focusItemKey
     if (focus) void openArrangement(focus)
   } catch (err) {
@@ -473,12 +510,12 @@ async function preview() {
   }
 }
 const scopedQuote = computed(() => !!sharedScope.value || rows.value.some(item=>item.salesScope!=null || item.appointment || item.appointmentLevel || item.scenarioCodes?.length || item.membershipNewOnly))
-const quoteUsesOrders = computed(() => rows.value.some(item=>item.uid===quoteItem.value && item.method==='fixed' && item.targetKind==='appointment'))
+const quoteUsesOrders = computed(() => rows.value.some(item=>item.uid===quoteItem.value && (item.perOrder || !mixed.value && item.method==='fixed' && item.targetKind==='appointment')))
 function creationInput() {
   if (!changed.value || !effectiveDate.value) throw new Error('请填写规则名称、生效日期，并选择参与场景。')
   const selectable = new Set(sheet.value.options.scenarios.map(sku=>sku.code))
   if (scenarioCodes.value.some(code=>!selectable.has(code))) throw new Error('请移除当前不可选的 SKU，并核对参与场景。')
-  return {create:{productId:productId.value,label:ruleName.value.trim(),cycle:creationCycle.value},
+  return {create:{productId:productId.value,label:ruleName.value.trim(),cycle:creationCycle.value,mixedArrangements:mixed.value || undefined},
     effectiveFrom:new Date(effectiveDate.value+'T00:00:00+08:00').toISOString(),scenarioCodes:scenarioCodes.value,
     performanceScope:copiedFrom.value?.performanceScope,
     ...componentChanges()}
@@ -526,7 +563,7 @@ async function resumeRule() {
 </script>
 
 <template>
-  <a-drawer open :title="copiedFrom ? '复制整期规则' : creating ? '新增整期规则' : applied ? '计提使用的整期规则' : '整期分润配置'" width="min(1260px, 100vw)" root-class-name="finance-rule-editor"
+  <a-drawer open :title="title" width="min(1260px, 100vw)" root-class-name="finance-rule-editor"
     :closable="!saving && !savingDraft" :mask-closable="!saving && !savingDraft" :keyboard="!saving && !savingDraft" @close="emit('close')">
     <a-alert v-if="error" class="feedback" :message="error" type="error" show-icon/>
     <a-form v-if="creating" layout="vertical" size="small" class="rule-basics" :disabled="saving">
@@ -537,7 +574,7 @@ async function resumeRule() {
         <a-input id="period-create-name" v-model:value="ruleName" :maxlength="80"/>
       </a-form-item>
       <a-form-item label="结算周期" html-for="period-create-cycle" required>
-        <a-select id="period-create-cycle" v-model:value="creationCycle" :options="cycleOptions" :disabled="!sheet"/>
+        <a-select id="period-create-cycle" v-model:value="creationCycle" :options="cycleOptions" :disabled="!sheet || mixed"/>
       </a-form-item>
       <a-form-item label="生效账期起点" html-for="period-rule-effective" required>
         <a-input id="period-rule-effective" v-model:value="effectiveDate" type="date" :disabled="!sheet"/>
@@ -548,7 +585,7 @@ async function resumeRule() {
         <header v-if="!creating" class="period-component-heading">
           <h2>{{ sheet.label }} <a-tag>v{{ sheet.version }}</a-tag></h2>
           <a-space wrap>
-            <a-button v-if="sheet.mayPublish && !applied" size="small" :disabled="changed || saving || savingDraft" @click="emit('copy',sheet)">
+            <a-button v-if="sheet.mayPublish && !applied && !mixed" size="small" :disabled="changed || saving || savingDraft" @click="emit('copy',sheet)">
               复制为新规则
             </a-button>
             <a-button v-if="canResume" size="small" :disabled="changed || saving || savingDraft" @click="openResume">恢复执行</a-button>
@@ -591,6 +628,7 @@ async function resumeRule() {
             <DownOutlined aria-hidden="true"/>
             <strong>{{ item.label || '新收款安排' }}</strong>
             <span class="rule-block-badge">{{ targetLabels[item.targetKind] }}</span>
+            <span v-if="mixed" class="rule-block-badge">{{ item.perOrder ? '逐单' : '整期' }}</span>
             <span class="rule-block-recipient" :title="itemOrderTypes(item)">{{ itemOrderTypes(item,2) }}</span>
             <span class="rule-block-recipient" :title="orderScopeText(item)">{{ orderScopeText(item) }}</span>
             <small>{{ targetLabel(item) }} · {{ methodSummary(item) }}</small>
@@ -599,7 +637,7 @@ async function resumeRule() {
           <a-form v-if="canSave" layout="vertical" size="small">
             <RuleArrangementFields name-id="period-benefit-label" v-model:name="item.label" :disabled="saving">
               <a-form-item label="收款对象" html-for="period-benefit-target" required>
-                <a-select id="period-benefit-target" :value="item.targetKind" :options="targetTypes" :disabled="saving" @change="setTarget(item,$event)"/>
+                <a-select id="period-benefit-target" :value="item.targetKind" :options="item.perOrder ? [orderSeller,...targetTypes] : targetTypes" :disabled="saving" @change="setTarget(item,$event)"/>
               </a-form-item>
               <a-form-item v-if="item.targetKind==='person'" label="指定收款人" html-for="period-benefit-person" required>
                 <AppointmentPersonSelect id="period-benefit-person" v-model:value="item.personId" :api="api" endpoint="/catalog-rule-people"
@@ -640,8 +678,12 @@ async function resumeRule() {
                 </a-form-item>
               </template>
               <template #calculation>
+                <a-form-item v-if="mixed" label="计提单位" html-for="period-benefit-basis" required>
+                  <a-select id="period-benefit-basis" :value="item.perOrder ? 'order' : 'period'" :options="calculationBasisOptions"
+                    :disabled="saving" @change="setCalculationBasis(item,$event)"/>
+                </a-form-item>
                 <a-form-item label="计提方式" html-for="period-benefit-method" required>
-                  <a-select id="period-benefit-method" :value="item.method" :options="methodOptions" :disabled="saving"
+                  <a-select id="period-benefit-method" :value="item.method" :options="item.perOrder ? methodOptions.filter(option=>option.value!=='tiers') : methodOptions" :disabled="saving"
                     @update:value="setMethod(item,$event)"/>
                 </a-form-item>
               </template>
@@ -665,7 +707,7 @@ async function resumeRule() {
                   <RuleStandardValue v-if="item.method==='rate'" id="period-benefit-uniform-rate" v-model="item.uniformRate" :disabled="saving"/>
                   <RuleStandardValue v-else-if="item.method==='fixed'" id="period-benefit-fixed-amount" method="fixed"
                     v-model="item.fixedAmount" :disabled="saving"
-                    :label="item.targetKind==='appointment' ? '每笔符合条件的订单金额（元）' : undefined"/>
+                    :label="item.perOrder || !mixed && item.targetKind==='appointment' ? '每笔订单金额（元）' : '整期金额（元）'"/>
                   <CatalogPeriodTiers v-else :tiers="item.tiers" :disabled="saving" :format-money="formatMoney"
                     @remove="removeTier(item.tiers,$event)"/>
                 </RuleCommissionStandards>
@@ -698,7 +740,7 @@ async function resumeRule() {
               <a-button v-if="activity?.settlement" @click="emit('open-draft',activity.settlement)">查看结算</a-button>
               <a-button v-else-if="!creating && sheet.paused" :disabled="!activityMonth || reviewingActivity"
                 :loading="reviewingActivity && activityMode==='paused'" @click="readActivity('paused')">试算暂停规则</a-button>
-              <a-button v-else-if="!creating" :disabled="!activityMonth || reviewingActivity" :loading="savingDraft" @click="openDraft">打开整期草稿</a-button>
+              <a-button v-else-if="!creating" :disabled="!activityMonth || reviewingActivity" :loading="savingDraft" @click="openDraft">{{ mixed ? '打开账期草稿' : '打开整期草稿' }}</a-button>
               <a-button v-if="canSave" :disabled="!changed || !effectiveDate || saving || savingDraft || reviewingActivity"
                 :loading="reviewingActivity && activityMode==='edits'" @click="readActivity('edits')">用订单试算</a-button>
             </a-form-item>
@@ -766,7 +808,7 @@ async function resumeRule() {
                     <tbody>
                       <tr v-for="group in activity.grouping.groups" :key="group.id">
                         <td>{{ group.ruleId ? 'v'+group.version : '待发布' }}
-                          <small v-if="group.fixedOnly" class="order-version">{{ group.fixedPerOrder ? '按订单固定金额' : '整期固定' }}</small></td>
+                          <small v-if="group.perOrder || group.fixedOnly" class="order-version">{{ group.perOrder ? '逐单计提' : group.fixedPerOrder ? '按订单固定金额' : '整期固定' }}</small></td>
                         <td>
                           <div v-for="target in group.targets" :key="target.itemKey">
                             {{ target.name }}
@@ -779,7 +821,7 @@ async function resumeRule() {
                         <td>{{ formatMoney(group.netMinor) }}</td>
                         <td v-if="showsPriorCarry">{{ formatMoney(-(group.carryInMinor || 0)) }}</td>
                         <td>
-                          <small v-if="group.fixedOnly && !group.fixedPerOrder" class="order-version">
+                          <small v-if="group.fixedOnly && !group.fixedPerOrder && !group.perOrder" class="order-version">
                             可计提净额 {{ formatMoney((group.afterCarry || group.beforeCarry).basisMinor) }}
                           </small>
                           <div v-for="award in (group.afterCarry || group.beforeCarry).awards" :key="award.itemKey">
@@ -832,7 +874,7 @@ async function resumeRule() {
             </a-form-item>
             </template>
           </div>
-          <p v-if="quoteUsesOrders" class="rule-formula">按订单计提固定金额，请使用订单试算。</p>
+          <p v-if="quoteUsesOrders" class="rule-formula">按订单计提，请使用订单试算。</p>
           <a-button v-else :loading="previewing" @click="preview">演算金额</a-button>
         </a-form>
         <a-descriptions v-if="quote" size="small" :column="1" bordered class="period-quote-result" aria-label="金额演算结果">

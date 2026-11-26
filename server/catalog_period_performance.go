@@ -135,6 +135,7 @@ type catalogPerformanceDecision struct {
 type catalogPerformanceDirectory struct {
 	claims       map[int64]vipClaim
 	claimIssues  map[int64]string
+	people       map[int64]string
 	categories   map[int64]catalogPaymentCategory
 	users        [2]map[string][]vipLink
 	companies    [2]map[string][]vipLink
@@ -163,7 +164,7 @@ const catalogPerformanceLinksSQL = `WITH snapshot AS (SELECT captured_at FROM ca
  FROM organization_company_sources c WHERE c.source='DCAI' AND c.source_company_id=ANY($2)`
 
 func (item catalogPeriodItem) needsSalesDirectory() bool {
-	return item.OwnSales || len(item.CommissionUnits) != 0 || item.AppointmentLevel != ""
+	return item.OwnSales || len(item.CommissionUnits) != 0 || item.AppointmentLevel != "" || item.TargetKind == "order_seller"
 }
 
 func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []catalogActivityEvent) (catalogPerformanceDirectory, error) {
@@ -171,7 +172,7 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 		duties: map[catalogPerformanceDuty][]vipInterval{}}
 	var payments []int64
 	var categoryPayments []catalogActivityEvent
-	needsSalesDirectory := false
+	needsSalesDirectory, needsSellerNames := false, false
 	seen := make(map[int64]bool)
 	wanted := make(map[catalogPerformanceDuty]bool)
 	for _, event := range events {
@@ -187,6 +188,9 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 			payments = append(payments, event.PaymentID)
 		}
 		needsSalesDirectory = needsSalesDirectory || needsSales
+		needsSellerNames = needsSellerNames || slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool {
+			return item.TargetKind == "order_seller"
+		})
 		if needsCategories {
 			categoryPayments = append(categoryPayments, event)
 		}
@@ -295,6 +299,10 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 		ids = append(ids, id)
 	}
 	dir.organization, err = loadReportAttribution(ctx, tx, ids, nil)
+	if err != nil || !needsSellerNames {
+		return dir, err
+	}
+	err = tx.QueryRow(ctx, `SELECT coalesce(jsonb_object_agg(id,name),'{}') FROM people WHERE id=ANY($1::bigint[])`, ids).Scan(&dir.people)
 	return dir, err
 }
 
@@ -359,6 +367,25 @@ func (d catalogPerformanceDirectory) match(event catalogActivityEvent) catalogPe
 		return decision
 	}
 	return appointment
+}
+
+func (d catalogPerformanceDirectory) orderSellerTarget(event catalogActivityEvent, item catalogPeriodItem) (catalogPeriodGroupTarget, catalogGroupTargetKey, string) {
+	target := catalogPeriodGroupTarget{ItemKey: item.ItemKey}
+	key := catalogGroupTargetKey{Item: item.ItemKey}
+	if issue := d.claimIssues[event.PaymentID]; issue != "" {
+		return target, key, issue
+	}
+	claim := d.claims[event.PaymentID]
+	value, conflict := catalogPerformanceLinkAt(d.users, claim.User, event.PaidAt)
+	if conflict {
+		return target, key, "SALES_PERSON_CONFLICT"
+	}
+	person, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || person <= 0 || d.people[person] == "" {
+		return target, key, "SALES_PERSON_MISSING"
+	}
+	key.Person, target.Name = person, d.people[person]
+	return target, key, ""
 }
 
 func (d catalogPerformanceDirectory) matchItem(event catalogActivityEvent, item catalogPeriodItem) catalogPerformanceDecision {

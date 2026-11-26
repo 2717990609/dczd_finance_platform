@@ -77,6 +77,7 @@ const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(result) ORDER BY res
  v.published_at AS "publishedAt",
  ` + catalogRateConfigurationSQL + ` AS "rateConfigAvailable",
  (` + catalogPeriodRuleScope + `) AS "periodConfigAvailable",
+ (v.definition @> '{"mixed_arrangements":true}') AS "mixedArrangements",
  CASE WHEN p.scope_type='CROSS_SCENARIO_AGGREGATE' THEN v.definition->'settlement_policy'->>'cycle' END AS "aggregateCycle",
  (scope.source_system='DCAI' AND p.project_code=scope.project_code AND p.policy_kind='COMPONENT_RULE'
   AND p.scope_type IN ('BUSINESS_SCENARIO','CROSS_SCENARIO_AGGREGATE') AND v.source_status='PUBLISHED'

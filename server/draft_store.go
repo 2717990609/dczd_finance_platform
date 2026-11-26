@@ -781,6 +781,8 @@ var draftDetailTemplateSQL = draftDetailPrefixSQL + `
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
  'catalog',d.rule_id IS NULL AND NOT (` + practiceRefundMonthScope + `),
  'aggregatePackageId',period.aggregate_package_id,
+  'mixedArrangements',EXISTS(SELECT 1 FROM product_rule_versions v
+  WHERE v.package_id=period.aggregate_package_id AND v.definition @> '{"mixed_arrangements":true}'),
  'aggregatePredecessorId',d.aggregate_predecessor_id,
  'aggregateGroups',CASE WHEN period.aggregate_package_id IS NOT NULL AND {{unit}} IS NULL THEN (
   SELECT coalesce(jsonb_agg(jsonb_build_object('key',g.group_key,'ruleVersion',v.version_no,'receiptsMinor',g.receipts_minor,

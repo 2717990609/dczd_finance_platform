@@ -25,6 +25,7 @@ type catalogPeriodComponentEdit struct {
 	MemberRole        string                  `json:"memberRole,omitempty"`
 	Tiers             []catalogPeriodTier     `json:"tiers"`
 	FixedMinor        *int64                  `json:"fixedMinor,omitempty"`
+	PerOrder          bool                    `json:"perOrder,omitempty"`
 	ScenarioCodes     []string                `json:"scenarioCodes"`
 	MembershipNewOnly *bool                   `json:"membershipNewOnly"`
 	CommissionUnits   []string                `json:"salesScopeUnitIds,omitempty"`
@@ -54,6 +55,7 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 	if json.Unmarshal(raw, &root) != nil || json.Unmarshal(root["benefit_actions"], &actions) != nil {
 		return nil, invalid
 	}
+	mixed := string(root["mixed_arrangements"]) == "true"
 	positions := make(map[string]int, len(original))
 	for i, item := range original {
 		positions[item.ItemKey] = i
@@ -66,6 +68,10 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 		edit.PoolName = strings.TrimSpace(edit.PoolName)
 		if !textOK(edit.Label, 80) {
 			return nil, invalid
+		}
+		if edit.PerOrder && (!mixed || edit.FixedMinor == nil && len(edit.Tiers) != 1) ||
+			edit.TargetKind == "order_seller" && !edit.PerOrder {
+			return nil, errCatalogPeriodRecipient
 		}
 		if edit.FixedMinor != nil && (!validCatalogPeriodFixed(edit.FixedMinor) || len(edit.Tiers) != 0) {
 			return nil, invalid
@@ -181,7 +187,15 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 			}
 			changed = true
 		}
-		fixedPerOrder := edit.FixedMinor != nil && edit.TargetKind == "appointment"
+		if edit.PerOrder != before.PerOrder {
+			if edit.PerOrder {
+				fields["per_order"] = json.RawMessage("true")
+			} else {
+				delete(fields, "per_order")
+			}
+			changed = true
+		}
+		fixedPerOrder := !mixed && edit.FixedMinor != nil && edit.TargetKind == "appointment"
 		if fixedPerOrder != before.FixedPerOrder {
 			if fixedPerOrder {
 				fields["fixed_per_order"] = json.RawMessage("true")
@@ -222,7 +236,7 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 			return errCatalogPeriodRecipient
 		}
 	} else if edit.AppointmentLevel != "" || edit.AppointmentRole != "" ||
-		edit.TargetKind != "person" && (org.Value == "" && !registered || edit.PersonID != 0) {
+		edit.TargetKind != "person" && edit.TargetKind != "order_seller" && (org.Value == "" && !registered || edit.PersonID != 0) {
 		return errCatalogPeriodRecipient
 	}
 	action := vipBenefitAction{Item: edit.ItemKey, Mode: "PARTY", Role: "COMPANY", Company: org.Value}
@@ -230,6 +244,11 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 	case "appointment":
 		action.Mode, action.Role, action.Company = vipOrganizationAppointmentMode, edit.AppointmentRole, ""
 		action.AppointmentLevel = edit.AppointmentLevel
+	case "order_seller":
+		if edit.PersonID != 0 || edit.OrganizationKey != "" || edit.PoolName != "" || edit.OwnerRole != "" || edit.MemberRole != "" {
+			return errCatalogPeriodRecipient
+		}
+		action.Mode, action.Role, action.Company = vipOrderSellerMode, vipOrderSellerMode, ""
 	case "person":
 		if edit.PersonID <= 0 || edit.OrganizationKey != "" || edit.PoolName != "" || edit.OwnerRole != "" || edit.MemberRole != "" {
 			return errCatalogPeriodRecipient

@@ -69,6 +69,12 @@ func copyCatalogScenarioDefinition(body json.RawMessage, source, target string) 
 func insertCatalogScenarioRule(ctx context.Context, tx pgx.Tx, product int64, target catalogScenarioCopy,
 	from time.Time, actor, hash string, body json.RawMessage) (catalogPublication, error) {
 	var result catalogPublication
+	if _, err := tx.Exec(ctx, `SELECT id FROM products WHERE id=$1 FOR UPDATE`, product); err != nil {
+		return result, err
+	}
+	if err := validateCatalogRuleOverlap(ctx, tx, product, from, false); err != nil {
+		return result, err
+	}
 	err := tx.QueryRow(ctx, `WITH package AS (
 	 INSERT INTO product_rule_packages(source_id,product_id,code,name,project_code,policy_kind,scope_type,scope_id,paused)
 	 SELECT id,s.product_id,'local-'||id::text,$2,s.project_code,'COMPONENT_RULE','BUSINESS_SCENARIO',$3,false

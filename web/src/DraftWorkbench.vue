@@ -72,7 +72,7 @@ function showAppliedRule(section, record) {
   emit('show-applied-rule', {periodId:selected.value, section, rowId:record.id})
 }
 const lineColumns = computed(() => [
-  { title: draft.value?.aggregatePackageId ? '计提范围' : '原订单', key: 'order', width: 190 },
+  { title: draft.value?.mixedArrangements ? '订单 / 计提范围' : draft.value?.aggregatePackageId ? '计提范围' : '原订单', key: 'order', width: 190 },
   { title: '受益对象', key: 'beneficiary', width: 135 },
   { title: '分项', key: 'component', width: 115 },
   { title: '规则版本', key: 'rule', width: 100 },
@@ -343,10 +343,10 @@ async function loadMore(section, cursorName) {
     </div>
     <div v-if="draft" class="workbench-totals">
       <div v-if="draft.refundsReady || draft.aggregatePackageId" class="workbench-net">
-        <small>{{ draft.aggregatePackageId ? '整期计提' : draft.practiceRosterVersion ? (draft.issueCount ? '已核算净分润' : '本班净分润') : '本期净分润' }}</small><strong>{{ formatMoney(draft.totalMinor) }}</strong>
+        <small>{{ draft.aggregatePackageId && !draft.mixedArrangements ? '整期计提' : draft.practiceRosterVersion ? (draft.issueCount ? '已核算净分润' : '本班净分润') : '本期净分润' }}</small><strong>{{ formatMoney(draft.totalMinor) }}</strong>
       </div>
-      <div v-if="!draft.aggregatePackageId && !draft.practiceRefundMonth && (!draft.practiceRosterVersion || draft.correctionCount || !draft.refundsReady)"><small>计提分润</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div>
-      <div v-if="!draft.aggregatePackageId && !draft.practiceRosterVersion"><small>{{ draft.practiceRefundMonth ? '退款调整' : '退款扣减' }}</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div>
+      <div v-if="(!draft.aggregatePackageId || draft.mixedArrangements) && !draft.practiceRefundMonth && (!draft.practiceRosterVersion || draft.correctionCount || !draft.refundsReady)"><small>计提分润</small><strong>{{ formatMoney(draft.accruedMinor) }}</strong></div>
+      <div v-if="(!draft.aggregatePackageId || draft.mixedArrangements) && !draft.practiceRosterVersion"><small>{{ draft.practiceRefundMonth ? '退款调整' : '退款扣减' }}</small><strong>{{ draft.refundsReady ? formatMoney(draft.refundMinor) : '待重新试算' }}</strong></div>
       <div v-if="draft.correctionCount"><small>受益人更正</small><strong>{{ formatMoney(draft.correctionMinor) }}</strong></div>
       <div><small>{{ draft.practiceRefundMonth ? '退款及更正' : '计提明细' }}</small><strong>{{ draft.practiceRefundMonth ? draft.refundCount + draft.correctionCount : draft.lineCount }} <span>条</span></strong></div>
     </div>
@@ -372,10 +372,10 @@ async function loadMore(section, cursorName) {
     :related-period-link="relatedPeriodLink"
     @show-pools="view='pools'" @show-issues="view='issues'" @recalculate="calculate" @pull-roster="pullRoster" @refresh-draft="load()" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">
-  <section v-if="draft.aggregateGroups?.length" class="records" aria-label="整期分组">
-    <div class="records-head"><h2>整期分组</h2></div>
+  <section v-if="draft.aggregateGroups?.length" class="records" :aria-label="draft.mixedArrangements ? '收退款明细' : '整期分组'">
+    <div class="records-head"><h2>{{ draft.mixedArrangements ? '收退款明细' : '整期分组' }}</h2></div>
     <div class="table-container">
-      <a-table :data-source="draft.aggregateGroups" row-key="key" :pagination="false" :scroll="{x:650}" :columns="[
+      <a-table :data-source="draft.aggregateGroups" row-key="key" :pagination="draft.mixedArrangements ? {pageSize:15,hideOnSinglePage:true,showSizeChanger:false} : false" :scroll="{x:650}" :columns="[
         {title:'规则版本',key:'ruleVersion'},{title:'本期收款',key:'receiptsMinor'},
         {title:'本期退款',key:'refundsMinor'},{title:'上期转入退款',key:'carryInMinor'},
         {title:'转出到下期',key:'carryOutMinor'},{title:'明细',key:'events'}]">
@@ -411,7 +411,7 @@ async function loadMore(section, cursorName) {
       <a-table :columns="lineColumns" :data-source="draft.lines" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: 755 }">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
-            <button v-if="record.aggregateGroupKey" type="button" class="order-link"
+            <button v-if="record.aggregateGroupKey && !(draft.mixedArrangements && record.sourceVersionId)" type="button" class="order-link"
               @click="aggregateGroup=record.aggregateGroupKey">查看本组收退款</button>
             <template v-else>
             <button type="button" class="order-link" @click="emit('show-order', record.sourceVersionId)">{{ record.orderNo || record.orderId }}</button>

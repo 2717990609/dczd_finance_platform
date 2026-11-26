@@ -96,27 +96,29 @@ type catalogPeriodTargetIssue struct {
 }
 
 type catalogPeriodGroup struct {
-	ID               string                     `json:"id"`
-	RuleID           string                     `json:"ruleId"`
-	Version          int                        `json:"version"`
-	Targets          []catalogPeriodGroupTarget `json:"targets"`
-	Receipts         int64                      `json:"receiptsMinor"`
-	Refunds          int64                      `json:"refundsMinor"`
-	Net              int64                      `json:"netMinor"`
-	Payments         int                        `json:"paymentCount"`
-	FixedOnly        bool                       `json:"fixedOnly,omitempty"`
-	FixedPerOrder    bool                       `json:"fixedPerOrder,omitempty"`
-	EventToken       string                     `json:"eventToken,omitempty"`
-	BeforeCarry      catalogPeriodQuote         `json:"beforeCarry"`
-	CarryIn          int64                      `json:"carryInMinor,omitempty"`
-	AfterCarry       *catalogPeriodQuote        `json:"afterCarry,omitempty"`
-	posting          catalogAggregateGroupInput
-	items            []catalogPeriodItem
-	fixedPoolKey     string
-	orderFixedMinor  int64
-	orderExactCredit *big.Rat
-	originalLineID   int64
-	orderRefunds     []refundLine
+	ID                string                     `json:"id"`
+	RuleID            string                     `json:"ruleId"`
+	Version           int                        `json:"version"`
+	Targets           []catalogPeriodGroupTarget `json:"targets"`
+	Receipts          int64                      `json:"receiptsMinor"`
+	Refunds           int64                      `json:"refundsMinor"`
+	Net               int64                      `json:"netMinor"`
+	Payments          int                        `json:"paymentCount"`
+	FixedOnly         bool                       `json:"fixedOnly,omitempty"`
+	FixedPerOrder     bool                       `json:"fixedPerOrder,omitempty"`
+	PerOrder          bool                       `json:"perOrder,omitempty"`
+	paymentID         int64
+	EventToken        string              `json:"eventToken,omitempty"`
+	BeforeCarry       catalogPeriodQuote  `json:"beforeCarry"`
+	CarryIn           int64               `json:"carryInMinor,omitempty"`
+	AfterCarry        *catalogPeriodQuote `json:"afterCarry,omitempty"`
+	posting           catalogAggregateGroupInput
+	items             []catalogPeriodItem
+	fixedPoolKey      string
+	orderAccruedMinor int64
+	orderExactCredit  *big.Rat
+	originalLineID    int64
+	orderRefunds      []refundLine
 }
 
 func (g catalogPeriodGroup) quote() catalogPeriodQuote {
@@ -126,13 +128,19 @@ func (g catalogPeriodGroup) quote() catalogPeriodQuote {
 	return g.BeforeCarry
 }
 
+func (g catalogPeriodGroup) countsOrders() bool { return g.FixedPerOrder || g.PerOrder }
+
 func (g catalogPeriodGroup) calculateQuote(carry int64) (catalogPeriodQuote, error) {
-	if !g.FixedPerOrder {
+	if !g.countsOrders() {
 		return quoteCatalogPeriod(g.items, g.Receipts, g.Refunds, carry)
 	}
 	item := g.items[0]
-	return catalogPeriodQuote{Basis: max(g.Net, 0), Total: g.orderFixedMinor,
-		Awards: []catalogPeriodAward{{ItemKey: item.ItemKey, Label: item.Label, Fixed: true, Amount: g.orderFixedMinor}}}, nil
+	var rate int64
+	if item.FixedMinor == nil {
+		rate = item.Tiers[0].Rate
+	}
+	return catalogPeriodQuote{Basis: max(g.Net, 0), Total: g.orderAccruedMinor,
+		Awards: []catalogPeriodAward{{ItemKey: item.ItemKey, Label: item.Label, Fixed: item.FixedMinor != nil, Rate: rate, Amount: g.orderAccruedMinor}}}, nil
 }
 
 type catalogPeriodGroupTarget struct {
@@ -211,7 +219,7 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 }
 
 func (g catalogPeriodGroup) fixedPoolSettlementKey(definition catalogPeriodDefinition) (string, error) {
-	if !g.FixedOnly || g.FixedPerOrder || g.items[0].TargetKind != "pool" || g.posting.Targets[0].PoolID <= 0 {
+	if !g.FixedOnly || g.countsOrders() || g.items[0].TargetKind != "pool" || g.posting.Targets[0].PoolID <= 0 {
 		return "", nil
 	}
 	return catalogAggregateCarryKey(definition, g.posting.Targets)
@@ -429,14 +437,16 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 						continue
 					}
 					at := event.PaidAt
-					if item.FixedMinor != nil && !item.FixedPerOrder && !periodEnd.IsZero() {
+					if item.FixedMinor != nil && !item.FixedPerOrder && !item.PerOrder && !periodEnd.IsZero() {
 						at = periodEnd
 					}
 					var target catalogPeriodGroupTarget
 					var key catalogGroupTargetKey
 					issue := decision.issue
 					if issue == "" {
-						if item.AppointmentLevel == "" {
+						if item.TargetKind == "order_seller" {
+							target, key, issue = performance.orderSellerTarget(event, item)
+						} else if item.AppointmentLevel == "" {
 							target, key, issue = directory.groupTarget(item, at)
 						} else {
 							unit, lookupIssue := performance.appointmentOrganization(event, item.AppointmentLevel)
@@ -470,10 +480,15 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 						// New items receive random keys during every preview rebuild.
 						groupTarget.Item = strconv.Itoa(index)
 					}
+					var paymentID int64
+					if item.PerOrder {
+						paymentID = event.PaymentID
+					}
 					raw, err := json.Marshal(struct {
-						Rule   string
-						Target catalogGroupTargetKey
-					}{rule.ID, groupTarget})
+						Rule      string
+						Target    catalogGroupTargetKey
+						PaymentID int64 `json:",omitempty"`
+					}{rule.ID, groupTarget, paymentID})
 					if err != nil {
 						return report, err
 					}
@@ -483,7 +498,7 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					if group == nil {
 						group = &catalogPeriodGroup{ID: id, RuleID: rule.ID, Version: rule.Version, Targets: []catalogPeriodGroupTarget{target},
 							posting: catalogAggregateGroupInput{Targets: []catalogGroupTargetKey{key}}, items: []catalogPeriodItem{item},
-							FixedOnly: item.FixedMinor != nil, FixedPerOrder: item.FixedPerOrder}
+							FixedOnly: item.FixedMinor != nil, FixedPerOrder: item.FixedPerOrder, PerOrder: item.PerOrder, paymentID: paymentID}
 						group.fixedPoolKey, err = group.fixedPoolSettlementKey(rule.Definition)
 						if err != nil {
 							return report, err
@@ -529,7 +544,7 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 				return report, err
 			}
 		}
-		if slices.ContainsFunc(applied.groups, func(group *catalogPeriodGroup) bool { return group.FixedPerOrder }) {
+		if slices.ContainsFunc(applied.groups, func(group *catalogPeriodGroup) bool { return group.countsOrders() }) {
 			payment := fixedPayments[event.PaymentID]
 			if event.Refund {
 				if payment.original == 0 {
@@ -557,13 +572,27 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 			return cmp.Or(a.OccurredAt.Compare(b.OccurredAt), cmp.Compare(a.EventID, b.EventID))
 		})
 		for _, group := range byPayment[paymentID].groups {
-			if !group.FixedPerOrder {
+			if !group.countsOrders() {
 				continue
 			}
-			award := *group.items[0].FixedMinor
+			item := group.items[0]
+			var award int64
+			if item.FixedMinor != nil {
+				award = *item.FixedMinor
+			} else {
+				award = truncatePosting.rate(payment.original, item.Tiers[0].Rate, 10000)
+			}
 			var amount int64
 			if payment.paidHere {
-				amount = truncatePosting.unpostedNet(award, payment.refunds, payment.original)
+				base := payment.original - payment.refunds
+				var precise *big.Rat
+				if item.FixedMinor != nil {
+					amount = truncatePosting.unpostedNet(award, payment.refunds, payment.original)
+					precise = exactMinor(award, base, payment.original)
+				} else {
+					amount = truncatePosting.rate(base, item.Tiers[0].Rate, 10000)
+					precise = exactMinor(base, item.Tiers[0].Rate, 10000)
+				}
 				if group.posting.FixedAccruals == nil {
 					group.posting.FixedAccruals = make(map[int64]int64)
 				}
@@ -571,7 +600,7 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 				if group.orderExactCredit == nil {
 					group.orderExactCredit = new(big.Rat)
 				}
-				group.orderExactCredit.Add(group.orderExactCredit, exactMinor(award, payment.original-payment.refunds, payment.original))
+				group.orderExactCredit.Add(group.orderExactCredit, precise)
 			} else {
 				history, known := payment.refundEvents[0].fixedHistory[group.ID]
 				original := history.original(award, payment.original)
@@ -601,7 +630,7 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					}
 				}
 			}
-			if err := addCatalogActivityAmount(amount, &group.orderFixedMinor); err != nil {
+			if err := addCatalogActivityAmount(amount, &group.orderAccruedMinor); err != nil {
 				return report, err
 			}
 		}

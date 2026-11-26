@@ -34,6 +34,7 @@ type catalogPeriodItem struct {
 	Tiers             []catalogPeriodTier     `json:"tiers,omitempty"`
 	FixedMinor        *int64                  `json:"fixedMinor,omitempty"`
 	FixedPerOrder     bool                    `json:"fixedPerOrder,omitempty"`
+	PerOrder          bool                    `json:"perOrder,omitempty"`
 	ScenarioCodes     []string                `json:"scenarioCodes,omitempty"`
 	MembershipNewOnly bool                    `json:"membershipNewOnly,omitempty"`
 	CommissionUnits   []string                `json:"salesScopeUnitIds,omitempty"`
@@ -52,6 +53,7 @@ type catalogPeriodDefinition struct {
 	Items              []catalogPeriodItem
 	Performance        *catalogPerformanceScope
 	ProductRecognition bool
+	Mixed              bool
 }
 
 const catalogPeriodUnitPrefix = "unit:"
@@ -76,6 +78,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		Refund      string                   `json:"refund_policy"`
 		Stacking    string                   `json:"stacking_policy"`
 		Performance *catalogPerformanceScope `json:"performance_scope"`
+		Mixed       bool                     `json:"mixed_arrangements"`
 		Rounding    struct {
 			Mode  string `json:"mode"`
 			Scale int    `json:"scale"`
@@ -97,6 +100,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			ScenarioCodes     []string                `json:"business_sku_codes"`
 			MembershipNewOnly bool                    `json:"vip_new_membership_only"`
 			FixedPerOrder     bool                    `json:"fixed_per_order"`
+			PerOrder          bool                    `json:"per_order"`
 			EligibilityRole   string                  `json:"eligibility_role"`
 			Appointment       *catalogPerformanceDuty `json:"recipient_appointment"`
 		} `json:"benefit_actions"`
@@ -111,7 +115,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		return result, errCatalogRateUnavailable
 	}
 	result.Cycle, result.Scenarios = stored.Settlement.Cycle, stored.Scope.Scenarios
-	result.Performance = stored.Performance
+	result.Performance, result.Mixed = stored.Performance, stored.Mixed
 	result.ProductRecognition = stored.Recognition == catalogPeriodProductRecognition
 	for i, scenario := range result.Scenarios {
 		if !textOK(scenario, 256) || slices.Contains(result.Scenarios[:i], scenario) {
@@ -135,7 +139,9 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			}
 		}
 		if action.Item == "" || items[action.Item] || action.Label == "" ||
-			(action.Mode != "PARTY" && action.Mode != "TEAM_POOL" && action.Mode != vipOrganizationAppointmentMode) ||
+			(action.Mode != "PARTY" && action.Mode != "TEAM_POOL" && action.Mode != vipOrganizationAppointmentMode &&
+				!(action.Mode == vipOrderSellerMode && action.PerOrder)) ||
+			action.PerOrder && (!stored.Mixed || action.FixedPerOrder) ||
 			action.Leader != nil || !validUniqueScopeIDs(action.CommissionUnits) ||
 			!validUniqueScopeIDs(action.ScopeCategories) ||
 			!action.validTarget() {
@@ -148,7 +154,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		}
 		switch action.Type {
 		case "TIER_RATE":
-			if action.FixedPerOrder || action.Fixed != nil || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" || !validCatalogPeriodTiers(action.Tiers) {
+			if action.FixedPerOrder || action.PerOrder && len(action.Tiers) != 1 || action.Fixed != nil || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" || !validCatalogPeriodTiers(action.Tiers) {
 				return result, errCatalogRateUnavailable
 			}
 		case "FIXED":
@@ -194,7 +200,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OwnerPersonID: ownerID, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
 			PoolID:     catalogPoolID(action.PoolCode),
 			MemberRole: memberRole, FixedMinor: action.Fixed, ScenarioCodes: action.ScenarioCodes, MembershipNewOnly: action.MembershipNewOnly,
-			unit: unit, OwnSales: action.OwnSales, FixedPerOrder: action.FixedPerOrder,
+			unit: unit, OwnSales: action.OwnSales, FixedPerOrder: action.FixedPerOrder, PerOrder: action.PerOrder,
 			CommissionUnits: action.CommissionUnits, ScopeCategories: action.ScopeCategories, RecipientDuty: action.RecipientDuty,
 			Appointment: action.Appointment, AppointmentLevel: action.AppointmentLevel, AppointmentRole: appointmentRole})
 	}

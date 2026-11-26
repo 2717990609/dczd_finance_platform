@@ -124,7 +124,7 @@ func TestCatalogPeriodPublishesSalesOrganizationAppointmentTarget(t *testing.T) 
 	ref := catalogFrozenGroupReference{PeriodID: 7, Key: originalFixed.ID}
 	refund.OriginalAmount, refund.PriorBookedRefunds, refund.Amount = 10000, 2500, 1000
 	refund.frozenGroups = []catalogFrozenGroupReference{ref}
-	originalFixed.Receipts, originalFixed.Payments, originalFixed.orderFixedMinor = 0, 0, 0
+	originalFixed.Receipts, originalFixed.Payments, originalFixed.orderAccruedMinor = 0, 0, 0
 	originalFixed.posting.Events = nil
 	frozen = map[catalogFrozenGroupReference]catalogPeriodGroup{ref: originalFixed}
 	report, err = groupCatalogPeriodEvents([]catalogActivityEvent{refund}, nil, catalogAggregateDirectory{}, frozen, catalogPerformanceDirectory{}, time.Time{})

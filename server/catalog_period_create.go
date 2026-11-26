@@ -13,12 +13,14 @@ import (
 )
 
 var errCatalogPeriodName = errors.New("该产品已有同名整期规则，请编辑已有规则或填写其他名称")
+var errCatalogMixedRuleOverlap = errors.New("该产品已有同期规则，请在统一规则生效前结束旧规则，并继续编辑已有统一规则")
 var errCatalogPeriodFirstStart = errors.New("请选择所选结算周期的账期起点")
 
 type catalogPeriodCreate struct {
 	ProductID int64  `json:"productId"`
 	Label     string `json:"label"`
 	Cycle     string `json:"cycle"`
+	Mixed     bool   `json:"mixedArrangements,omitempty"`
 }
 
 func (s workspace) catalogPeriodSetup(ctx context.Context, raw string, actor financeRuleActor) (catalogPeriodVersion, error) {
@@ -49,6 +51,35 @@ func (s workspace) catalogPeriodSetup(ctx context.Context, raw string, actor fin
 	return rule, err
 }
 
+func validateCatalogRuleOverlap(ctx context.Context, db catalogPeriodReader, productID int64, at time.Time, mixed bool) error {
+	var overlaps bool
+	err := db.QueryRow(ctx, `SELECT EXISTS(
+	 SELECT 1 FROM product_rule_packages p JOIN product_catalog_settings scope ON scope.product_id=p.product_id
+	 JOIN product_rule_versions v ON v.package_id=p.source_id AND `+catalogVersionVisible+`
+	 WHERE p.product_id=$1 AND p.project_code=scope.project_code AND p.policy_kind='COMPONENT_RULE'
+	  AND p.scope_type IN ('BUSINESS_SCENARIO','CROSS_SCENARIO_AGGREGATE') AND v.source_status='PUBLISHED'
+	  AND ($3 AND v.definition @> '{"mixed_arrangements":true}' OR
+	   `+catalogRuleExecutionThrough+` IS NULL OR `+catalogRuleExecutionThrough+`>$2)
+	  AND ($3 OR v.definition @> '{"mixed_arrangements":true}'))`, productID, at, mixed).Scan(&overlaps)
+	if err == nil && overlaps {
+		return errCatalogMixedRuleOverlap
+	}
+	return err
+}
+
+func validateMixedCatalogSKUs(ctx context.Context, db catalogPeriodReader, productID int64, scenarios []string, at time.Time) error {
+	for _, sku := range scenarios {
+		ok, err := catalogMembershipScopeAvailable(ctx, db, productID, sku, at)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errCatalogScenarioTarget
+		}
+	}
+	return nil
+}
+
 func buildCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, create catalogPeriodCreate, at time.Time,
 	scenarios []string, components []catalogPeriodComponentEdit, performance *catalogPerformanceScope, actor financeRuleActor) (json.RawMessage, error) {
 	if !actor.permits(create.ProductID, true) {
@@ -60,14 +91,31 @@ func buildCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, create 
 	if (create.Cycle != "MONTHLY" && create.Cycle != "MONTHLY_25_TO_24") || at.IsZero() || !validCatalogPeriodStart(at.In(shanghai), create.Cycle) {
 		return nil, errCatalogPeriodFirstStart
 	}
-	initial, err := json.Marshal(map[string]any{
+	if create.Mixed {
+		var supported bool
+		if err := db.QueryRow(ctx, `SELECT code='DCAI_VIP' AND cycle_start_day=CASE WHEN $2='MONTHLY_25_TO_24' THEN 25 ELSE 1 END
+		 FROM products WHERE id=$1`, create.ProductID, create.Cycle).Scan(&supported); err != nil {
+			return nil, err
+		}
+		if !supported {
+			return nil, errCatalogPeriodFirstStart
+		}
+		if err := validateMixedCatalogSKUs(ctx, db, create.ProductID, scenarios, at); err != nil {
+			return nil, err
+		}
+	}
+	definition := map[string]any{
 		"schema_version": "1.1", "recognition_trigger": catalogPeriodProductRecognition, "amount_basis": "ACTUAL_RECEIVED",
 		"stacking_policy": "SUM", "refund_policy": "PROPORTIONAL",
 		"rounding_policy":   map[string]any{"mode": postingModeTruncate, "scale": 2},
 		"settlement_policy": map[string]string{"cycle": create.Cycle, "negative_balance_policy": "CARRY_FORWARD"},
 		"policy_scope":      map[string][]string{"sales_systems": {"DCAI"}, "financial_event_types": {"order.paid"}},
 		"benefit_actions":   []any{},
-	})
+	}
+	if create.Mixed {
+		definition["mixed_arrangements"] = true
+	}
+	initial, err := json.Marshal(definition)
 	if err != nil {
 		return nil, err
 	}
@@ -106,6 +154,9 @@ func createCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriod
 	}
 	create.Label = strings.TrimSpace(create.Label)
 	at := input.EffectiveFrom.UTC().Truncate(time.Microsecond)
+	if err := validateCatalogRuleOverlap(ctx, tx, product, at, create.Mixed); err != nil {
+		return result, err
+	}
 	var occupied bool
 	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM product_rule_packages p
 	 JOIN product_catalog_settings scope ON scope.product_id=p.product_id

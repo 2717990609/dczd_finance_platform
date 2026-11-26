@@ -395,7 +395,7 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errRefundCutoffRange), errors.Is(err, errCatalogPeriodQuoteOrders):
 		code, message = 400, err.Error()
 	case errors.Is(err, errProductRuleUnavailable), errors.Is(err, errDraftRule), errors.Is(err, errDraftLimit), errors.Is(err, errPracticeNotReady), errors.Is(err, errPracticeStart), errors.Is(err, errPracticeSettlementUnavailable),
-		errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod), errors.Is(err, errCatalogPeriodResumeState), errors.Is(err, errCatalogPeriodResumeTarget),
+		errors.Is(err, errCatalogMixedPeriodStarted), errors.Is(err, errCatalogMixedRuleOverlap), errors.Is(err, errCatalogAggregatePaused), errors.Is(err, errCatalogAggregatePeriod), errors.Is(err, errCatalogPeriodResumeState), errors.Is(err, errCatalogPeriodResumeTarget),
 		errors.Is(err, errPracticeRosterSource), errors.Is(err, errPracticeRosterRoute), errors.Is(err, errPracticeRosterAccess),
 		errors.Is(err, errPracticeRosterUnconfirmed), errors.Is(err, errPracticeRosterNeedsPull), errors.Is(err, errPracticeRosterOverlap), errors.Is(err, errPracticeRosterProduct),
 		errors.Is(err, errPracticeMonthSettlementDependency), errors.Is(err, errPracticeRuleImpactNoMatch), errors.Is(err, errRuleImpactAggregatePeriod),

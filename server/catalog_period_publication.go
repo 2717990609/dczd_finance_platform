@@ -16,9 +16,10 @@ import (
 )
 
 var errCatalogPeriodTiers = errors.New("档位须从零开始、连续衔接，最后一档无上限")
+var errCatalogMixedPeriodStarted = errors.New("统一规则按期固定，新版本须从尚未开始的账期生效")
 var errCatalogPeriodStart = errors.New("请选择原规则有效范围内、晚于原版本的完整账期起点")
 var errCatalogPeriodQuoteItem = errors.New("请选择一项收款安排，并填写该安排适用订单的收退款金额")
-var errCatalogPeriodQuoteOrders = errors.New("该收款安排按订单计提固定金额，请用订单试算")
+var errCatalogPeriodQuoteOrders = errors.New("该收款安排按订单计提，请用订单试算")
 
 const catalogPeriodRuleScope = `scope.source_system='DCAI' AND p.project_code=scope.project_code
  AND p.policy_kind='COMPONENT_RULE' AND p.scope_type='CROSS_SCENARIO_AGGREGATE'`
@@ -32,6 +33,7 @@ type catalogPeriodVersion struct {
 	Through     *time.Time                `json:"effectiveTo"`
 	MayPublish  bool                      `json:"mayPublish"`
 	Paused      bool                      `json:"paused"`
+	Mixed       bool                      `json:"mixedArrangements,omitempty"`
 	ResumeFrom  *time.Time                `json:"resumeFrom,omitempty"`
 	Cycle       string                    `json:"cycle"`
 	Scenarios   []catalogPeriodSKU        `json:"scenarios"`
@@ -159,7 +161,7 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 }
 
 func describeCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, rule *catalogPeriodVersion, period catalogPeriodDefinition) error {
-	rule.Cycle, rule.Items = period.Cycle, period.Items
+	rule.Cycle, rule.Items, rule.Mixed = period.Cycle, period.Items, period.Mixed
 	rule.Performance = period.Performance
 	scope := catalogPerformanceScope{}
 	if period.Performance != nil {
@@ -281,7 +283,7 @@ func quoteCatalogPeriodDefinition(raw json.RawMessage, input catalogPeriodQuoteI
 	}) {
 		return catalogPeriodQuote{}, errCatalogPeriodQuoteItem
 	}
-	if slices.ContainsFunc(period.Items, func(item catalogPeriodItem) bool { return item.FixedPerOrder }) {
+	if slices.ContainsFunc(period.Items, func(item catalogPeriodItem) bool { return item.FixedPerOrder || item.PerOrder }) {
 		return catalogPeriodQuote{}, errCatalogPeriodQuoteOrders
 	}
 	return quoteCatalogPeriod(period.Items, input.Receipts, input.Refunds, input.CarryIn)
@@ -374,6 +376,9 @@ func prepareCatalogPeriodRevision(ctx context.Context, db catalogPeriodReader, b
 		!validCatalogPeriodStart(at, period.Cycle) || !at.After(base.From) || base.Through != nil && !at.Before(*base.Through) {
 		return nil, errCatalogPeriodStart
 	}
+	if period.Mixed && !at.After(time.Now()) {
+		return nil, errCatalogMixedPeriodStarted
+	}
 	active, err := catalogPeriodVersionAt(ctx, db, base.packageID, at)
 	if errors.Is(err, pgx.ErrNoRows) || err == nil && active != input.BaseID {
 		return nil, errCatalogRateStale
@@ -391,6 +396,11 @@ func prepareCatalogPeriodRevision(ctx context.Context, db catalogPeriodReader, b
 		return nil, errSettlementClosed
 	}
 	body := base.raw
+	if period.Mixed && input.ScenarioCodes != nil {
+		if err := validateMixedCatalogSKUs(ctx, db, base.ProductID, input.ScenarioCodes, at); err != nil {
+			return nil, err
+		}
+	}
 	if input.ScenarioCodes != nil {
 		body, err = editCatalogPeriodScenarioScope(ctx, db, body, base, period.Scenarios, input.ScenarioCodes, at, actor)
 		if err != nil {
