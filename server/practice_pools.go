@@ -70,29 +70,36 @@ func readCatalogTeamPools(ctx context.Context, db catalogPeriodReader, productID
 }
 
 func (s workspace) listPracticePools(w http.ResponseWriter, r *http.Request) {
-	product, err := strconv.ParseInt(r.URL.Query().Get("productId"), 10, 64)
-	if err != nil || product <= 0 {
+	product, ok := optionalPositiveInteger(r.URL.Query().Get("productId"), 0)
+	if !ok {
 		respond(w, nil, invalid)
 		return
 	}
-	actor := financeUser(r.Context())
-	if actor != nil && !actor.permitsRule(product, false) {
+	ctx := r.Context()
+	actor := financeUser(ctx)
+	if product != 0 && actor != nil && !actor.permitsRule(product, false) {
 		respond(w, nil, errFinanceForbidden)
 		return
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), `SELECT jsonb_build_object(
+	err := s.db.QueryRow(ctx, `WITH scoped_products AS (
+	 SELECT id,name FROM products WHERE period_mode IN ('class','calendar')
+	  AND ($1::bigint=0 OR id=$1) AND ($2::bigint[] IS NULL OR id=ANY($2))
+	 )
+	 SELECT jsonb_build_object(
 	 'items',coalesce((SELECT jsonb_agg(jsonb_build_object('id',p.id,'name',p.name,
-	  'unitId',u.id,'unitName',concat_ws(' / ',parent.name,u.name),'unitStatus',u.status,
-	  'ownerPersonId',owner.id,'ownerName',owner.name) ORDER BY parent.name,u.name,p.name,p.id)
-	  FROM practice_pools p JOIN organization_units u ON u.id=p.unit_id
+	  'productId',product.id,'productName',product.name,'unitId',u.id,
+	  'unitName',concat_ws(' / ',parent.name,u.name),'unitStatus',u.status,
+	  'ownerPersonId',owner.id,'ownerName',owner.name) ORDER BY product.name,parent.name,u.name,p.name,p.id)
+	  FROM practice_pools p JOIN scoped_products product ON product.id=p.product_id
+	  JOIN organization_units u ON u.id=p.unit_id
 	  LEFT JOIN people owner ON owner.id=p.owner_person_id
-	  LEFT JOIN organization_units parent ON parent.id=u.parent_id WHERE p.product_id=$1),'[]'),
+	  LEFT JOIN organization_units parent ON parent.id=u.parent_id),'[]'),
 	 'units',coalesce((SELECT jsonb_agg(jsonb_build_object('id',u.id,'name',concat_ws(' / ',parent.name,u.name)) ORDER BY parent.name,u.name,u.id)
 	  FROM organization_units u LEFT JOIN organization_units parent ON parent.id=u.parent_id
-	  WHERE u.status='ACTIVE' AND $2),'[]'))
-	 FROM products WHERE id=$1 AND period_mode IN ('class','calendar')`, product,
-		actor == nil || actor.permitsRule(product, true)).Scan(&result)
+	  WHERE u.status='ACTIVE' AND $3),'[]'))
+	 WHERE $1=0 OR EXISTS (SELECT 1 FROM scoped_products)`, product, authorizedProductScope(ctx, false),
+		product != 0 && (actor == nil || actor.permitsRule(product, true))).Scan(&result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = invalid
 	}

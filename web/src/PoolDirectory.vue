@@ -12,25 +12,25 @@ const editor = ref()
 const editorError = ref('')
 const saving = ref(false)
 let sequence = 0
-const options = computed(() => props.products.map(row => ({value:row.id,label:row.name})))
+const options = computed(() => [{value:0,label:'全部产品'}, ...props.products.map(row => ({value:row.id,label:row.name}))])
 const units = computed(() => directory.value?.units.map(row => ({value:row.id,label:row.name})) || [])
 const columns = [
   {title:'团队池名称', dataIndex:'name', width:230},
+  {title:'所属产品', dataIndex:'productName', width:170},
   {title:'归集组织', dataIndex:'unitName', width:200},
   {title:'团队池负责人', dataIndex:'ownerName', key:'owner', width:150},
   {title:'组织状态', key:'status', width:110},
   {title:'操作', key:'action', width:110},
 ]
 watch(options, choices => {
-  if (!choices.some(item=>item.value===product.value)) product.value = choices.length===1 ? choices[0].value : undefined
+  if (product.value && !choices.some(item=>item.value===product.value)) product.value = undefined
 }, {immediate:true})
 async function load() {
   const request = ++sequence
   error.value = ''
-  if (!product.value) return
   loading.value = true
   try {
-    const result = await props.api('/team-pools?productId='+product.value)
+    const result = await props.api(product.value ? '/team-pools?productId='+product.value : '/team-pools')
     if (request===sequence) directory.value = result
   } catch (err) {
     if (request===sequence) error.value = err.message
@@ -40,7 +40,6 @@ async function load() {
 }
 watch(product, () => {
   directory.value = undefined
-  loading.value = false
   load()
 }, {immediate:true})
 onBeforeUnmount(() => { sequence++ })
@@ -49,7 +48,7 @@ defineExpose({refresh:load})
 function openEditor(pool) {
   editorError.value = ''
   editor.value = pool
-    ? {...pool,poolId:pool.id,productId:product.value,originalOwner:pool.ownerName ? {id:pool.ownerPersonId,name:pool.ownerName} : undefined}
+    ? {...pool,poolId:pool.id,originalOwner:pool.ownerName ? {id:pool.ownerPersonId,name:pool.ownerName} : undefined}
     : {productId:product.value,name:'',unitId:undefined,ownerPersonId:undefined}
 }
 async function save() {
@@ -83,22 +82,23 @@ async function save() {
     <div class="records-head pool-directory-head">
       <div class="topbar-actions">
         <label for="pool-config-product">产品</label>
-        <a-select id="pool-config-product" v-model:value="product" :options="options" placeholder="选择产品" style="min-width: 180px"/>
+        <a-select id="pool-config-product" :value="product ?? 0" :options="options" style="min-width: 180px"
+          @change="product=$event || undefined"/>
       </div>
       <div class="topbar-actions">
-        <a-button v-if="product" :loading="loading" @click="load">刷新</a-button>
+        <a-button :loading="loading" @click="load">刷新</a-button>
         <a-button v-if="product && canPublish(product)" type="primary" :disabled="!directory" @click="openEditor()">新增团队池</a-button>
       </div>
     </div>
     <a-alert v-if="error" type="error" :message="error" show-icon/>
-    <a-table :columns="columns" :data-source="directory?.items || []" row-key="id" :loading="loading"
-      :pagination="{pageSize:15,showSizeChanger:false,hideOnSinglePage:true}" :scroll="{x:800}">
+    <a-table :key="product ?? 'all'" :columns="columns" :data-source="directory?.items || []" row-key="id" :loading="loading"
+      :pagination="{pageSize:15,showSizeChanger:false,hideOnSinglePage:true}" :scroll="{x:970}">
       <template #bodyCell="{column,record}">
         <a-tag v-if="column.key==='status'" :color="record.unitStatus==='ACTIVE' ? 'green' : 'default'">{{ record.unitStatus==='ACTIVE' ? '正常' : '已停用' }}</a-tag>
         <span v-else-if="column.key==='owner'">{{ record.ownerName || '待指定' }}</span>
-        <a-button v-else-if="column.key==='action' && canPublish(product)" type="link" size="small" @click="openEditor(record)">设置负责人</a-button>
+        <a-button v-else-if="column.key==='action' && canPublish(record.productId)" type="link" size="small" @click="openEditor(record)">设置负责人</a-button>
       </template>
-      <template #emptyText>{{ product ? '本产品暂无团队池' : '请选择可配置团队池的产品' }}</template>
+      <template #emptyText>{{ product ? '本产品暂无团队池' : '暂无团队池' }}</template>
     </a-table>
   </section>
   <Modal v-if="editor" :open="true" :title="editor.poolId ? '设置团队池负责人' : '新增团队池'" ok-text="保存" cancel-text="取消" :confirm-loading="saving"

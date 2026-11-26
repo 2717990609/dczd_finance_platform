@@ -88,6 +88,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .records-head .ant-tabs-nav::before { display: none; }
 .search { display: flex; gap: 8px; margin-left: auto; min-width: 145px; }
 .search .ant-input-search { width: 224px; }
+.period-product-filter { flex: none; width: 190px; }
 .table-container .ant-table-thead > tr > th { background: #f5f7fa; color: #47556d; font-size: 13px; font-weight: 630; white-space: nowrap; }
 .table-container .ant-table-cell { padding: 9px 13px !important; }
 .table-container .ant-pagination { margin-right: 15px; }
@@ -135,8 +136,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .rule-block-body, .rule-block-body.component-editor { padding:12px; }
   .rule-scope-bar > .ant-select { width:100%; }
 }
-.period-window-preview { display: flex; flex-wrap: wrap; gap: 5px 10px; padding: 9px 11px; margin: 0 0 16px; background: var(--accent-soft); border-radius: 5px; }
-.period-window-preview span { color: var(--muted); }
 .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .form-subhead { margin: 0 0 10px; font-size: 15px; }
 .component-editor { padding: 12px; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 6px; background: #fcfdff; }
@@ -283,6 +282,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
   .records-head { flex-wrap: wrap; padding: 8px 11px; gap: 7px; }
   .search { width: 100%; }
   .search .ant-input-search { width: 100%; min-width: 0; }
+  .period-filters { flex-wrap: wrap; }
+  .period-product-filter { width: 100%; }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }

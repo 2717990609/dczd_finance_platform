@@ -1,65 +1,32 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/zeromicro/go-zero/rest/router"
 )
 
-func TestPeriodEndpointCreatesAccountingMonthsOnly(t *testing.T) {
-	ctx := context.Background()
-	s := workspace{db: integrationDB(t), development: true}
-	day := 25
-	addProduct := func(code, mode string, startDay *int) int64 {
-		t.Helper()
-		result, err := s.createProduct(ctx, createProductInput{Code: code, Name: code, PeriodMode: mode, CycleStartDay: startDay})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return result.(map[string]int64)["id"]
-	}
-	class := addProduct("PERIOD_TEST_CLASS", "class", nil)
-	calendar := addProduct("PERIOD_TEST_CALENDAR", "calendar", &day)
+func TestPeriodEndpointRejectsManualCreation(t *testing.T) {
 	const path = "/api/v1/periods"
-	create := func(payload string) *httptest.ResponseRecorder {
-		t.Helper()
-		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(payload))
-		request.Header.Set("Content-Type", "application/json")
-		response := httptest.NewRecorder()
-		for _, route := range s.routes() {
-			if route.Path == path && route.Method == request.Method {
-				route.Handler(response, request)
-				return response
+	routes := router.NewRouter()
+	s := workspace{development: true}
+	for _, route := range s.routes() {
+		if route.Path == path {
+			if err := routes.Handle(route.Method, route.Path, route.Handler); err != nil {
+				t.Fatal(err)
 			}
 		}
-		t.Fatal("period route missing")
-		return nil
 	}
-	manual := create(fmt.Sprintf(`{"productId":%d,"name":"手填开班","ordinal":156,"startsOn":"2026-10-08","endsOn":"2026-10-09"}`, class))
-	if manual.Code != http.StatusBadRequest || !strings.Contains(manual.Body.String(), "开班期次") {
-		t.Fatalf("the accounting endpoint must reject a manually invented class: %d %s", manual.Code, manual.Body.String())
-	}
-	for _, product := range []int64{class, calendar} {
-		payload := fmt.Sprintf(`{"productId":%d,"name":"2026-10 账期","settlementMonth":"2026-10"}`, product)
-		response := create(payload)
-		if response.Code != http.StatusOK {
-			t.Fatalf("configured accounting month should be created: %d %s", response.Code, response.Body.String())
-		}
-		var from, to, month string
-		if err := s.db.QueryRow(ctx, `SELECT starts_on::text,ends_on::text,calendar_month::text
-			FROM periods WHERE product_id=$1`, product).Scan(&from, &to, &month); err != nil {
-			t.Fatal(err)
-		}
-		if from != "2026-09-25" || to != "2026-10-24" || month != "2026-10-01" {
-			t.Fatalf("accounting month uses the configured 25–24 cycle: got %s through %s (%s)", from, to, month)
-		}
-		if repeated := create(payload); repeated.Code != http.StatusConflict {
-			t.Fatalf("duplicate accounting month accepted: %d %s", repeated.Code, repeated.Body.String())
-		}
+	request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"productId":1,"name":"2026-10 账期"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	routes.ServeHTTP(response, request)
+	if response.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("manual creation must be unavailable: got %d %s", response.Code, response.Body.String())
 	}
 }
 

@@ -31,7 +31,8 @@ func TestFinanceAccountLoginScopesRulesAndRevokesSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(ctx, `INSERT INTO practice_pools(product_id,unit_id,name)
-	 VALUES ($1,'44444444-0000-4000-8000-000000000002','历史团队池')`, allowed); err != nil {
+	 VALUES ($1,'44444444-0000-4000-8000-000000000002','历史团队池'),
+	 ($2,'44444444-0000-4000-8000-000000000001','其他产品团队池')`, allowed, denied); err != nil {
 		t.Fatal(err)
 	}
 	grant := financeAccountConfig{Login: "rule.operator", PersonID: person.(map[string]int64)["id"], Enabled: true,
@@ -84,6 +85,21 @@ func TestFinanceAccountLoginScopesRulesAndRevokesSession(t *testing.T) {
 	}
 	if w := poolDirectory(denied); w.Code != http.StatusForbidden {
 		t.Fatalf("directory outside product scope: %d %s", w.Code, w.Body)
+	}
+	const allPools = "/api/v1/team-pools"
+	w = call(http.MethodGet, allPools, "", cookie)
+	var directory struct {
+		Items []struct {
+			ProductID   int64
+			ProductName string
+			Name        string
+		}
+		Units []json.RawMessage
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &directory); err != nil || w.Code != http.StatusOK ||
+		len(directory.Items) != 1 || directory.Items[0].ProductID != allowed ||
+		directory.Items[0].ProductName != "ALLOWED" || directory.Items[0].Name != "历史团队池" || len(directory.Units) != 0 {
+		t.Fatalf("unfiltered directory must show only authorized pools with product information: %d %s", w.Code, w.Body)
 	}
 	postRule := func(product int64) *httptest.ResponseRecorder {
 		payload, _ := json.Marshal(publishRuleInput{ProductID: product, Label: "样本", Components: []component{
@@ -141,5 +157,9 @@ func TestFinanceAccountLoginScopesRulesAndRevokesSession(t *testing.T) {
 	}
 	if w := call(http.MethodGet, "/api/v1/rules", "", cookie); w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != "[]" {
 		t.Fatalf("workspace access leaked configuration outside rule grants: %d %s", w.Code, w.Body)
+	}
+	w = call(http.MethodGet, allPools, "", cookie)
+	if err := json.Unmarshal(w.Body.Bytes(), &directory); err != nil || w.Code != http.StatusOK || len(directory.Items) != 0 || len(directory.Units) != 0 {
+		t.Fatalf("workspace access without rule grants leaked team pools: %d %s", w.Code, w.Body)
 	}
 }
