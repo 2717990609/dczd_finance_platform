@@ -118,7 +118,7 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 	}
 	ctx := r.Context()
 	if raw := r.URL.Query().Get("productId"); raw != "" {
-		setup, err := s.catalogPeriodSetup(ctx, raw, actor)
+		setup, err := s.catalogPeriodSetup(ctx, raw, actor, r.URL.Query().Get("mixedArrangements") == "1")
 		respond(w, setup, err)
 		return
 	}
@@ -144,6 +144,9 @@ func (s workspace) getCatalogPeriodRule(w http.ResponseWriter, r *http.Request) 
 			var eligible []catalogPeriodScenarioOption
 			eligible, err = readCatalogPeriodScenarioOptions(ctx, s.db, rule.ProductID, &first, rule.Through)
 			for _, sku := range eligible {
+				if period.Mixed && !sku.forMixedProduct(rule.ProductID) {
+					continue
+				}
 				if sku.canChange(actor) {
 					sku.RequiresCompletion = sku.RequiresCompletion && period.ProductRecognition
 					rule.Options.Scenarios = append(rule.Options.Scenarios, sku.catalogPeriodSKU)

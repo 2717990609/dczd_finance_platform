@@ -23,18 +23,23 @@ type catalogPeriodCreate struct {
 	Mixed     bool   `json:"mixedArrangements,omitempty"`
 }
 
-func (s workspace) catalogPeriodSetup(ctx context.Context, raw string, actor financeRuleActor) (catalogPeriodVersion, error) {
+func (s workspace) catalogPeriodSetup(ctx context.Context, raw string, actor financeRuleActor, mixed bool) (catalogPeriodVersion, error) {
 	rule := catalogPeriodVersion{MayPublish: true, Cycle: "MONTHLY", Items: []catalogPeriodItem{}, Scenarios: []catalogPeriodSKU{}}
 	product, err := s.catalogScenarioProduct(ctx, raw, actor)
 	if err != nil {
 		return rule, err
 	}
 	var day int
-	err = s.db.QueryRow(ctx, `SELECT id,name,cycle_start_day FROM products WHERE id=$1`, product).
-		Scan(&rule.ProductID, &rule.ProductName, &day)
+	var code string
+	err = s.db.QueryRow(ctx, `SELECT id,name,cycle_start_day,code FROM products WHERE id=$1`, product).
+		Scan(&rule.ProductID, &rule.ProductName, &day, &code)
 	if err != nil {
 		return rule, err
 	}
+	if mixed && code != "DCAI_VIP" {
+		return rule, errCatalogScenarioTarget
+	}
+	rule.Mixed = mixed
 	if day == 25 {
 		rule.Cycle = "MONTHLY_25_TO_24"
 	}
@@ -44,7 +49,7 @@ func (s workspace) catalogPeriodSetup(ctx context.Context, raw string, actor fin
 	}
 	skus, err := readCatalogPeriodScenarioOptions(ctx, s.db, product, nil, nil)
 	for _, sku := range skus {
-		if sku.canChange(actor) {
+		if (!mixed || sku.forMixedProduct(product)) && sku.canChange(actor) {
 			rule.Options.Scenarios = append(rule.Options.Scenarios, sku.catalogPeriodSKU)
 		}
 	}

@@ -392,7 +392,9 @@ watch(()=>[props.rule?.id,props.applied,productId.value], async ([id,applied,pro
   if (creating.value && !product) return
   loading.value = true
   try {
-    const params = creating.value ? {productId:product} : {ruleId:id}
+    const params = creating.value
+      ? {productId:product,...(mixed.value ? {mixedArrangements:'1'} : {})}
+      : {ruleId:id}
     const data = applied || await props.api('/catalog-period-rules?'+new URLSearchParams(params))
     if (request !== versionRequest) return
     sheet.value = data

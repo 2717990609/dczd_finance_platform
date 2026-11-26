@@ -26,6 +26,10 @@ type catalogPeriodScenarioOption struct {
 	Products []int64 `json:"products"`
 }
 
+func (sku catalogPeriodScenarioOption) forMixedProduct(productID int64) bool {
+	return sku.MembershipSKU && slices.Contains(sku.Products, productID)
+}
+
 func (sku catalogPeriodScenarioOption) canChange(actor financeRuleActor) bool {
 	for _, product := range sku.Products {
 		if !actor.permits(product, true) {

@@ -62,12 +62,16 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
 	}}
 	_, err := db.Exec(ctx, `
  INSERT INTO products(id,code,name,period_mode,cycle_start_day,settlement_enabled) OVERRIDING SYSTEM VALUE
- VALUES(501,'DCAI_VIP','AI软件499会员','calendar',25,true);
+ VALUES(501,'DCAI_VIP','AI软件499会员','calendar',25,true),
+ (502,'DCAI_HEALTH_AMBASSADOR','健康大使','calendar',25,true);
  INSERT INTO product_catalog_settings(product_id,source_id,source_environment,project_code,source_system,source_key,captured_at,snapshot_digest)
- VALUES(501,gen_random_uuid(),'test','DCAI','DCAI','vip','2025-11-01',sha256('fixture'::bytea));
+ VALUES(501,gen_random_uuid(),'test','DCAI','DCAI','vip','2025-11-01',sha256('fixture'::bytea)),
+ (502,gen_random_uuid(),'test','DCAI','DCAI','ambassador','2025-11-01',sha256('other'::bytea));
  INSERT INTO catalog_business_routes(source_id,product_id,source,domain,entity_type,record_table,business_key,classifier,
-  sku_code,sku_label,mapping_version,effective_from,observed_at)
- VALUES(gen_random_uuid(),501,'DCAI','VIP','VIP_ORDER','ai_vip_order','vip','vip','VIP499','会员',1,'2025-09-01','2025-11-01');
+  sku_code,sku_label,mapping_version,effective_from,observed_at,source_product_code)
+ VALUES(gen_random_uuid(),501,'DCAI','VIP','VIP_ORDER','ai_vip_order','vip','vip','VIP499','会员',1,'2025-09-01','2025-11-01',NULL),
+ (gen_random_uuid(),502,'DCAI','HEALTH_IDENTITY','HEALTH_IDENTITY','ai_health_ambassador_order','ambassador','ambassador',
+  'AMBASSADOR','健康大使',1,'2025-09-01','2025-11-01','HEALTH_AMBASSADOR');
  INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES (5011,'成交销售'),(5012,'交付'),(5013,'期中到岗负责人');
  INSERT INTO identity_mappings(person_id,source,external_id,valid_from) VALUES (5011,'DCAI','seller','2025-09-01');
  INSERT INTO organization_units(id,kind,name,status) VALUES ('51000499-0000-4000-8000-000000000001','COMPANY','验收组织','ACTIVE');
@@ -85,6 +89,18 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
  SELECT id,'VIP_ORDER','vip','vip','[{"role":"PID_USER","user":"seller","relationship":"DIRECT"}]'::jsonb FROM payment;`)
 	if err != nil {
 		t.Fatal(err)
+	}
+	options, err := readCatalogPeriodScenarioOptions(ctx, db, 501, nil, nil)
+	if err != nil || len(options) != 2 {
+		t.Fatalf("fixture must offer both project SKUs to the legacy editor: %+v (%v)", options, err)
+	}
+	wSetup := httptest.NewRecorder()
+	s.getCatalogPeriodRule(wSetup, httptest.NewRequest(http.MethodGet,
+		"/api/v1/catalog-period-rules?productId=501&mixedArrangements=1", nil))
+	var setup catalogPeriodVersion
+	if err := json.Unmarshal(wSetup.Body.Bytes(), &setup); err != nil || wSetup.Code != http.StatusOK ||
+		!setup.Mixed || setup.Options == nil || len(setup.Options.Scenarios) != 1 || setup.Options.Scenarios[0].Code != "VIP499" {
+		t.Fatalf("499 editor must only offer the product's membership SKU: %d %s (%v)", wSetup.Code, wSetup.Body, err)
 	}
 	if _, err := db.Exec(ctx, `UPDATE source_write_state SET provider_key=$1 WHERE source='DCAI'`, s.dcaiSourceKey()); err != nil {
 		t.Fatal(err)
