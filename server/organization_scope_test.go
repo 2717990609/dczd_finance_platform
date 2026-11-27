@@ -198,3 +198,94 @@ func storeScopeOrderFixture(ctx context.Context, s workspace, facts []sourceFact
 		return err
 	})
 }
+
+func TestFinanceReportsGroupByActualOrganizationTree(t *testing.T) {
+	ctx := context.Background()
+	s := workspace{db: integrationDB(t)}
+	const company = "51000000-0000-4000-8000-000000000001"
+	const department = "51000000-0000-4000-8000-000000000002"
+	const directTeam = "51000000-0000-4000-8000-000000000003"
+	const seed = `
+ INSERT INTO products(code,name,period_mode,cycle_start_day) VALUES('TREE_REPORT','组织汇总样本','calendar',1);
+ INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month)
+ VALUES(1,'八月账期',202608,'2026-08-01','2026-08-31','2026-08-01');
+ INSERT INTO organization_units(id,parent_id,kind,name,status) VALUES
+ ('51000000-0000-4000-8000-000000000001',NULL,'COMPANY','公司','ACTIVE'),
+ ('51000000-0000-4000-8000-000000000002','51000000-0000-4000-8000-000000000001','DEPARTMENT','部门','ACTIVE'),
+ ('51000000-0000-4000-8000-000000000003','51000000-0000-4000-8000-000000000001','TEAM','直属组','ACTIVE'),
+ ('51000000-0000-4000-8000-000000000004','51000000-0000-4000-8000-000000000002','TEAM','部门组','ACTIVE');
+ INSERT INTO people(name) VALUES('销售');
+ INSERT INTO identity_mappings(person_id,source,external_id,valid_from) VALUES(1,'DCAI','seller','2026-01-01');
+ INSERT INTO rule_versions(product_id,version,label,components) VALUES(1,1,'销售规则','[]');
+ INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
+ SELECT 'DCAI',i::text,'','paid:'||i,'1','ORDER_PAID','2026-08-04','2026-08-04',
+   jsonb_build_object('domain','VIP','paymentId',i::text,'amountMinor',i*1000) FROM generate_series(1,4) AS i;
+ INSERT INTO calculation_drafts(period_id,rule_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,performance_ready)
+ VALUES(1,1,1,'\x01',1000,4,0,now(),true);
+ INSERT INTO calculation_draft_lines(period_id,source_version_id,rule_id,component_type,identity_id,person_id,base_minor,amount_minor,company_id,group_id)
+ VALUES (1,1,1,'sales',1,1,1000,100,'51000000-0000-4000-8000-000000000001','51000000-0000-4000-8000-000000000003'),
+ (1,2,1,'sales',1,1,2000,200,NULL,'51000000-0000-4000-8000-000000000004'),
+ (1,3,1,'sales',1,1,3000,300,'51000000-0000-4000-8000-000000000001',NULL),
+ (1,4,1,'sales',1,1,4000,400,NULL,NULL);
+ INSERT INTO calculation_draft_performance(period_id,source_version_id,person_id,company_id,group_id)
+ SELECT period_id,source_version_id,person_id,company_id,group_id FROM calculation_draft_lines;
+ `
+	if _, err := s.db.Exec(ctx, seed); err != nil {
+		t.Fatal(err)
+	}
+
+	type amount struct{ PerformanceMinor, TotalMinor int64 }
+	check := func(dimension, view, unit string, expected map[string]amount) {
+		t.Helper()
+		endpoints := []struct {
+			handler http.HandlerFunc
+			path    string
+		}{
+			{s.draftReport, "/api/v1/draft-report?periodId=1&version=1"},
+			{s.monthlyReport, "/api/v1/monthly-report?month=2026-08&view=" + view},
+		}
+		for _, endpoint := range endpoints {
+			w := httptest.NewRecorder()
+			endpoint.handler(w, httptest.NewRequest(http.MethodGet, endpoint.path+"&dimension="+dimension+"&unitId="+unit, nil))
+			var report struct {
+				Items []struct {
+					Name string
+					amount
+				}
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &report); err != nil || w.Code != http.StatusOK {
+				t.Fatalf("%s: %d %v %s", endpoint.path, w.Code, err, w.Body)
+			}
+			for _, item := range report.Items {
+				if got, ok := expected[item.Name]; !ok || got != item.amount {
+					t.Errorf("%s %s: unexpected row %+v", endpoint.path, dimension, item)
+				}
+			}
+			if len(report.Items) != len(expected) {
+				t.Errorf("%s %s: expected %d rows, got %+v", endpoint.path, dimension, len(expected), report.Items)
+			}
+		}
+	}
+	check("department", "current", "", map[string]amount{"公司 · 直属": {4000, 400}, "部门": {2000, 200}, "归属待核": {4000, 400}})
+	check("department", "current", department, map[string]amount{"部门": {2000, 200}})
+	check("company", "current", company, map[string]amount{"公司": {6000, 600}})
+
+	// Freeze the resolved department before moving the other team. Historical
+	// company-direct rows retain their saved path when the current tree changes.
+	for _, statement := range []string{
+		"UPDATE calculation_draft_lines SET company_id=$1,department_id=$2 WHERE source_version_id=2",
+		"UPDATE calculation_draft_performance SET company_id=$1,department_id=$2 WHERE source_version_id=2",
+	} {
+		if _, err := s.db.Exec(ctx, statement, company, department); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.Exec(ctx, "INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixture')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(ctx, "UPDATE organization_units SET parent_id=$1 WHERE id=$2", department, directTeam); err != nil {
+		t.Fatal(err)
+	}
+	check("department", "settled", "", map[string]amount{"公司 · 直属": {4000, 400}, "部门": {2000, 200}, "归属待核": {4000, 400}})
+	check("department", "settled", department, map[string]amount{"部门": {2000, 200}})
+}

@@ -377,10 +377,34 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 	slices.SortFunc(result.Issues, func(a, b draftIssue) int {
 		return cmp.Or(cmp.Compare(a.FactID, b.FactID), cmp.Compare(a.Code, b.Code), cmp.Compare(a.Component, b.Component))
 	})
-	organizations, err := loadReportAttribution(ctx, tx, nil, nil)
+	var organizations reportAttribution
+	var reportPayments map[int64]catalogAggregateReportPayment
+	if definition.Mixed {
+		organizations, reportPayments, err = loadCatalogAggregateReporting(ctx, tx, rule.packageID, result.aggregateEvents, activity.Grouping.Groups)
+	} else {
+		organizations, err = loadReportAttribution(ctx, tx, nil, nil)
+	}
 	if err != nil {
 		return result, nil, err
 	}
+	if definition.Mixed {
+		for _, event := range result.aggregateEvents {
+			payment, ok := reportPayments[event.PaymentID]
+			if !ok {
+				return result, nil, errProductConfigConflict
+			}
+			posting := payment.posting
+			posting.SourceVersionID = event.EventID
+			posting.CompletionVersionID = event.CompletionVersionID
+			if event.EventID == event.PaymentID {
+				posting.Principal = payment.principal
+			} else {
+				posting.PaymentVersionID = event.PaymentID
+			}
+			result.Performance = append(result.Performance, posting)
+		}
+	}
+	periodEnd := window.Through.Add(-time.Microsecond)
 	for _, group := range activity.Grouping.Groups {
 		posting := group.posting
 		quote := group.quote()
@@ -439,9 +463,29 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 			if group.orderExactCredit != nil {
 				precise = preciseYuan(group.orderExactCredit)
 			}
+			organization := organizations.ancestors(reportUnit)
+			if definition.Mixed && target.Person != 0 && !reportUnit.Valid {
+				item := group.items[i]
+				at := periodEnd
+				if payment, ok := reportPayments[group.paymentID]; ok {
+					at = payment.paidAt
+					if item.TargetKind == "order_seller" && payment.posting.PersonID == target.Person {
+						organization = payment.posting.Organization
+					}
+				}
+				if item.Appointment != nil && item.Appointment.PersonID == target.Person && item.Appointment.UnitID != "" {
+					var unit pgtype.UUID
+					if err := unit.Scan(item.Appointment.UnitID); err != nil {
+						return result, nil, err
+					}
+					organization = organizations.ancestors(unit)
+				} else if item.TargetKind != "order_seller" || group.paymentID == 0 {
+					organization = organizations.resolve(target.Person, at, identityKey{})
+				}
+			}
 			result.Lines = append(result.Lines, draftLine{Component: award.ItemKey, PersonID: target.Person, FactID: group.paymentID,
 				AggregateGroup: group.ID, Catalog: benefit, Amount: award.Amount, Base: quote.Basis, PreciseAmount: precise,
-				organization: organizations.ancestors(reportUnit)})
+				organization: organization})
 		}
 	}
 	slices.SortFunc(result.Refunds, func(a, b refundLine) int {

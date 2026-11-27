@@ -75,6 +75,10 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
  INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES (5011,'成交销售'),(5012,'交付'),(5013,'期中到岗负责人');
  INSERT INTO identity_mappings(person_id,source,external_id,valid_from) VALUES (5011,'DCAI','seller','2025-09-01');
  INSERT INTO organization_units(id,kind,name,status) VALUES ('51000499-0000-4000-8000-000000000001','COMPANY','验收组织','ACTIVE');
+ INSERT INTO organization_units(id,kind,name,status) VALUES ('51000499-0000-4000-8000-000000000002','COMPANY','销售公司','ACTIVE');
+ INSERT INTO organization_assignments(id,person_id,unit_id,kind,valid_from) VALUES
+  (gen_random_uuid(),5011,'51000499-0000-4000-8000-000000000002','PRIMARY','2025-09-01'),
+  (gen_random_uuid(),5012,'51000499-0000-4000-8000-000000000001','PRIMARY','2025-09-01');
  INSERT INTO catalog_sales_context(source,captured_at,snapshot_digest) VALUES('DCAI','2025-11-01',sha256('fixture'::bytea));
  INSERT INTO catalog_sales_appointments(id,source,person_id,role,scope,scope_key,valid_from,observed_at)
  VALUES(gen_random_uuid(),'DCAI',5013,'TEAM_LEAD','ORGANIZATION_UNIT','51000499-0000-4000-8000-000000000001','2025-10-03T00:00Z','2025-11-01');
@@ -158,11 +162,42 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
 	if err != nil || sales != 3000 || delivery != 1500 || leader != 600 {
 		t.Fatalf("seller, delivery and time-limited leader: %d %d %d (%v)", sales, delivery, leader, err)
 	}
+	var salesOrganizationLines, otherOrganizationLines int
+	err = db.QueryRow(ctx, `SELECT
+	 count(*) FILTER(WHERE person_id=5011 AND company_id='51000499-0000-4000-8000-000000000002'),
+	 count(*) FILTER(WHERE person_id IN (5012,5013) AND company_id='51000499-0000-4000-8000-000000000001')
+	 FROM calculation_draft_lines WHERE period_id=$1`, draft.PeriodID).Scan(&salesOrganizationLines, &otherOrganizationLines)
+	if err != nil || salesOrganizationLines != 2 || otherOrganizationLines != 2 {
+		t.Errorf("seller and designated recipients need company attribution: %d, %d (%v)", salesOrganizationLines, otherOrganizationLines, err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
+	 VALUES('DCAI','102','','ai_vip_order:refund-102','1','REFUND_SUCCEEDED','2025-10-18','2025-10-18',
+	  '{"domain":"VIP","sourceKey":"vip","refundId":"refund-102","amountMinor":2000,
+	   "refundsPayment":[{"orderId":"102","recordId":"102"}]}')`); err != nil {
+		t.Fatal(err)
+	}
+	draft, err = s.calculateCurrentDraft(ctx, draft.PeriodID, 0)
+	if err != nil || draft.Total != 4740 || draft.RefundCount != 0 {
+		t.Fatalf("same-period refund should net into current commissions: %+v (%v)", draft, err)
+	}
+	var performanceCount int
+	var netPerformance int64
+	err = db.QueryRow(ctx, `SELECT count(*),coalesce(sum(`+performancePostingMinorSQL+`),0)
+	 FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id
+	 LEFT JOIN source_order_versions prior ON prior.id=a.prior_refund_version_id
+	 WHERE a.period_id=$1 AND a.person_id=5011 AND a.company_id='51000499-0000-4000-8000-000000000002'`,
+		draft.PeriodID).Scan(&performanceCount, &netPerformance)
+	if err != nil || performanceCount != 3 || netPerformance != 28000 {
+		t.Errorf("payment/refund performance must post once per event: %d rows, %d net (%v)", performanceCount, netPerformance, err)
+	}
+	if retry, err := s.calculateCurrentDraft(ctx, draft.PeriodID, 0); err != nil || retry.Version != draft.Version {
+		t.Errorf("retry changed the unchanged draft version from %d to %d", draft.Version, retry.Version)
+	}
 	w = httptest.NewRecorder()
 	s.getSettlementReview(w, httptest.NewRequest(http.MethodGet,
 		fmt.Sprintf("/api/v1/settlement-review?periodId=%d&version=%d", draft.PeriodID, draft.Version), nil))
 	var review settlementReview
-	if err := json.Unmarshal(w.Body.Bytes(), &review); err != nil || w.Code != 200 || review.Token == "" || review.Total != 5100 {
+	if err := json.Unmarshal(w.Body.Bytes(), &review); err != nil || w.Code != 200 || review.Token == "" || review.Total != 4740 {
 		t.Fatalf("combined settlement review: %d %s (%v)", w.Code, w.Body, err)
 	}
 	inputConfirm := confirmSettlementInput{PeriodID: draft.PeriodID, ExpectedVersion: draft.Version, ReviewToken: review.Token}
@@ -174,6 +209,11 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
 	if err != nil || repeated.ID != confirmed.ID {
 		t.Fatalf("confirmation retry: %+v %v", repeated, err)
 	}
+	// Correcting an assignment after confirmation must not move a later refund.
+	if _, err := db.Exec(ctx, `UPDATE organization_assignments SET unit_id='51000499-0000-4000-8000-000000000001'
+	 WHERE person_id=5011`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
  VALUES('DCAI','101','','refund:101','1','REFUND_SUCCEEDED','2025-10-28','2025-10-28',
  '{"domain":"VIP","sourceKey":"vip","refundId":"refund-101","amountMinor":5000,
@@ -183,6 +223,14 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
 	next := open("2025-11")
 	if next.Total != -500 || next.RefundCount != 1 || next.IssueCount != 0 {
 		t.Fatalf("later refund did not recover the original seller exactly once: %+v", next)
+	}
+	var refundPerformanceCompany string
+	var refundPerformancePerson int64
+	err = db.QueryRow(ctx, `SELECT company_id::text,person_id FROM calculation_draft_performance
+	 WHERE period_id=$1 AND payment_version_id IS NOT NULL`, next.PeriodID).Scan(&refundPerformanceCompany, &refundPerformancePerson)
+	if err != nil || refundPerformanceCompany != "51000499-0000-4000-8000-000000000002" || refundPerformancePerson != 5011 {
+		t.Errorf("cross-period refund performance should use the original seller and company: %q, %d (%v)",
+			refundPerformanceCompany, refundPerformancePerson, err)
 	}
 	var originalPeriod, originalSeller, paymentID, adjustment int64
 	err = db.QueryRow(ctx, `SELECT l.period_id,l.person_id,l.source_version_id,r.amount_minor

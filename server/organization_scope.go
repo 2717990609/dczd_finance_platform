@@ -34,8 +34,11 @@ func organizationPostingInScope(alias string) string {
 	return strings.ReplaceAll(organizationPostingMatch, "{{posting}}", alias)
 }
 
+// Saved company-direct postings remain outside department filters if the
+// current tree later moves their group under a department.
 var reportInOrganization = `({{unit}} IS NULL OR EXISTS (
  SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("") + `
+ AND NOT (org.root_kind='DEPARTMENT' AND organization_frozen AND company_id IS NOT NULL AND department_id IS NULL)
 ))`
 
 const orderPostingKey = `observed.source,observed.order_id,observed.line_id,observed.record_key,observed.kind`

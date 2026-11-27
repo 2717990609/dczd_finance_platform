@@ -40,21 +40,22 @@ var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, ` +
   (SELECT array_agg(id ORDER BY id) FROM organization_scope),
   (SELECT jsonb_agg(jsonb_build_array(period_id,product_name,name,starts_on,ends_on,version,calculated_at,issue_count,settlement_id,generation)
    ORDER BY period_id) FROM scopes),
-  (SELECT jsonb_agg(jsonb_build_array(id,revision) ORDER BY id) FROM current_pool_allocations))
+  (SELECT jsonb_agg(jsonb_build_array(id,revision) ORDER BY id) FROM current_pool_allocations),
+  (SELECT jsonb_agg(jsonb_build_array(unit_id,company_id,department_id) ORDER BY unit_id) FROM report_organization_paths))
   || CASE WHEN $9='' THEN '[]'::jsonb ELSE jsonb_build_array($9::text,(SELECT array_agg(id ORDER BY id) FROM directory_matches)) END
  )::text) AS snapshot
 ), performance_events AS MATERIALIZED (
  SELECT d.period_id,v.source,v.fact->>'domain' AS domain,v.kind,v.line_id,
   coalesce(nullif(CASE WHEN a.payment_version_id IS NULL THEN v.fact->>'paymentId' ELSE v.fact->>'refundId' END,''),'') AS financial_id,
   v.order_id,v.record_key,a.person_id,a.company_id,a.department_id,a.group_id,
-  ` + performancePostingMinorSQL + ` AS principal
+  ` + performancePostingMinorSQL + ` AS principal,` + reportPerformanceOrganizationFrozenSQL + ` AS organization_frozen
  FROM calculation_draft_performance a JOIN selected_draft d USING(period_id)
  JOIN source_order_versions v ON v.id=a.source_version_id
  LEFT JOIN source_order_versions prior ON prior.id=a.prior_refund_version_id
 ), performance_groups AS MATERIALIZED (
  SELECT min(person_id) AS person_id,min(company_id::text)::uuid AS company_id,min(department_id::text)::uuid AS department_id,
   CASE WHEN count(DISTINCT group_id)=1 THEN min(group_id::text)::uuid END AS group_id,min(period_id) AS period_id,
-  min(principal) AS performance,count(*) AS entries,count(DISTINCT (person_id,company_id,department_id,principal)) AS choices
+  min(principal) AS performance,bool_or(organization_frozen) AS organization_frozen,count(*) AS entries,count(DISTINCT (person_id,company_id,department_id,principal)) AS choices
  FROM performance_events GROUP BY source,domain,kind,financial_id,
   CASE WHEN financial_id='' THEN order_id END,CASE WHEN financial_id='' THEN line_id END,CASE WHEN financial_id='' THEN record_key END
 ), performance_status AS (
@@ -70,10 +71,10 @@ var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, ` +
  FROM performance_status
 ), postings AS (` + commissionReportPostingsSQL + `
  UNION ALL
- SELECT period_id,person_id,company_id,department_id,group_id,performance,0,0,0,0,'person'
+ SELECT period_id,person_id,company_id,department_id,group_id,performance,0,0,0,0,'person',organization_frozen
  FROM performance_groups CROSS JOIN coverage WHERE coverage.performance_ready
-), scoped_postings AS (
- SELECT * FROM postings WHERE (` + reportInOrganization + `) AND ($8::bigint IS NULL OR person_id=$8)
+), ` + reportOrganizationCTEs + `, scoped_postings AS (
+ SELECT * FROM organized_postings WHERE (` + reportInOrganization + `) AND ($8::bigint IS NULL OR person_id=$8)
  AND ($9='' OR coalesce(company_id,department_id,group_id) IN (SELECT id FROM directory_matches))
 ), period_amounts AS (
  SELECT period_id,sum(amount_minor+refund+correction+allocation) AS commission FROM scoped_postings GROUP BY period_id
@@ -83,7 +84,8 @@ var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, ` +
   WHEN 'company' THEN company_id::text
   WHEN 'department' THEN coalesce(department_id::text,CASE
    WHEN company_id IS NOT NULL AND beneficiary_kind='company' THEN 'company-direct/'||company_id
-   WHEN company_id IS NOT NULL AND (beneficiary_kind IN ('pool','retained') OR allocation<>0) THEN 'pool-direct/'||company_id END)
+   WHEN company_id IS NOT NULL AND (beneficiary_kind IN ('pool','retained') OR allocation<>0) THEN 'pool-direct/'||company_id
+   WHEN company_id IS NOT NULL THEN 'direct/'||company_id ELSE group_id::text END)
   END AS id,company_id,performance,amount_minor,refund,correction,allocation
  FROM scoped_postings WHERE performance<>0 OR amount_minor<>0 OR refund<>0 OR correction<>0 OR allocation<>0
 ), totals AS MATERIALIZED (
@@ -96,7 +98,8 @@ var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, ` +
  SELECT * FROM totals ORDER BY performance_minor DESC,net_minor DESC,id LIMIT 25 OFFSET $5
 ), labeled AS (
  SELECT coalesce(page.id,'') AS id,coalesce(person.name,unit.name,
-  CASE WHEN direct.id IS NOT NULL THEN direct.name||CASE WHEN starts_with(page.id,'company-direct/') THEN ' · 直属分润' ELSE ' · 直属团队池' END
+  CASE WHEN direct.id IS NOT NULL THEN direct.name||CASE split_part(page.id,'/',1)
+   WHEN 'company-direct' THEN ' · 直属分润' WHEN 'pool-direct' THEN ' · 直属团队池' ELSE ' · 直属' END
    WHEN page.id='pool' THEN '团队池归集' WHEN page.id='company' THEN '公司分润'
    WHEN page.id='retained' THEN '团队留存' ELSE '归属待核' END) AS name,
   CASE WHEN coverage.performance_ready THEN page.performance_minor END AS "performanceMinor",
