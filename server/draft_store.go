@@ -118,6 +118,16 @@ func (s workspace) calculateCurrentDraft(ctx context.Context, periodID, wantedGe
 		if !errors.Is(err, pgx.ErrNoRows) {
 			return err
 		}
+		rosterChanged, err := refreshPracticeLateRefundRoster(ctx, tx, periodID)
+		if err != nil {
+			return err
+		}
+		if rosterChanged {
+			// The newly stored roster also enqueues this period and its dependents.
+			if err := tx.QueryRow(ctx, `SELECT generation FROM draft_refresh_queue WHERE period_id=$1`, periodID).Scan(&generation); err != nil {
+				return err
+			}
+		}
 		window, rules, err := readDraftScope(ctx, tx, &summary)
 		if err != nil {
 			return err

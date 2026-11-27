@@ -153,15 +153,22 @@ func normalizePracticeRosterWire(w practiceRosterWire, fromRegistrationSync bool
 		}
 		row := practiceEnrollment{SourceEnrollmentID: e.SourceEnrollmentID, ParticipantID: e.ParticipantID, MembershipType: e.MembershipType,
 			CommissionEligible: e.CommissionEligible, SignedAt: signedAt.UTC(), PaidOrderIDs: ids}
-		data, err := json.Marshal(row)
-		if err != nil {
+		if err := hashPracticeEnrollment(&row); err != nil {
 			return practiceRoster{}, err
 		}
-		hash := sha256.Sum256(data)
-		row.ContentHash = hex.EncodeToString(hash[:])
 		result.Enrollments = append(result.Enrollments, row)
 	}
 	return result, nil
+}
+
+func hashPracticeEnrollment(row *practiceEnrollment) error {
+	data, err := json.Marshal(row)
+	if err != nil {
+		return err
+	}
+	hash := sha256.Sum256(data)
+	row.ContentHash = hex.EncodeToString(hash[:])
+	return nil
 }
 
 const practiceIncomingRows = `jsonb_to_recordset($2::jsonb) AS input(

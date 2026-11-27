@@ -980,10 +980,13 @@ func TestPracticeExternalCompanyDefaultRequiresATypeAtPayment(t *testing.T) {
 				OccurredAt: time.Date(2026, month, 1, 0, 0, 0, 0, time.UTC)}}
 		}
 		facts := []paymentInput{input("old", time.February), input("new", time.March)}
-		classifications, _, err := loadPracticeCompanyClassifications(ctx, tx, facts, false, true)
+		scopes, err := loadPracticeCompanyClassifications(ctx, tx, map[int64]practiceCompanyClassificationScope{
+			1: {at: input("class", time.March).Fact.OccurredAt, payments: facts},
+		}, false, true)
 		if err != nil {
 			return err
 		}
+		classifications := scopes[1].sales
 		if award, ok := offers.match("new", "source-company", classifications["old"]); ok {
 			t.Fatalf("the current company type must not fill a gap before the source snapshot: %+v", award)
 		}

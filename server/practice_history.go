@@ -12,10 +12,11 @@ type practiceHistoryPeriod struct {
 	rosterID            int64
 	ordinal             int
 	startsAt            *time.Time
+	categoryAt          time.Time
 	endsOn              time.Time
 	notEarlierInTime    bool
 	companyOffers       *practiceCompanyOffers
-	categories          map[string]string
+	categories          practiceCompanyClassifications
 	settled             bool
 	personalRole        string
 	retrainRole         string
@@ -36,7 +37,7 @@ type practiceTierHistory struct {
 	frozenPrior    map[int64]int64
 	frozenAmounts  map[int64]int64
 	repriceAmounts bool
-	liveCategories map[string]string
+	liveCategories map[int64]practiceCompanyClassifications
 	cumulative     practiceAmountMetric
 	bookedRefunds  map[int64]int64
 }
@@ -151,9 +152,16 @@ func indexPracticePrior(history practiceTierHistory, part component, orders map[
 		period := historical[roster]
 		categories := period.categories
 		if !period.settled {
-			categories = history.liveCategories
+			categories = history.liveCategories[roster]
 		}
-		purchase.classifyCompanyWithOrganizations(period.companyOffers, categories, identities, runtime)
+		periodRuntime := runtime
+		if categories.sales != nil || categories.internal != nil {
+			periodRuntime.companyClassifications = categories.sales
+			periodRuntime.internalSalesCategories = categories.internal
+		}
+		purchase.replaying = period.settled
+		purchase.classifyCompanyWithOrganizations(period.companyOffers, categories.sales, identities, periodRuntime)
+		purchase.replaying = false
 		if purchase.companyAward != nil && !countAllNewSignups {
 			continue
 		}
@@ -187,7 +195,7 @@ func indexPracticePrior(history practiceTierHistory, part component, orders map[
 		if !countAllNewSignups && part.SaleScope != nil && purchase.issue == "" {
 			historicalPart := part
 			historicalPart.SourceRole = periodRole
-			selected, scopeIssue := purchase.scopedSale(historicalPart, identities, runtime)
+			selected, scopeIssue := purchase.scopedSale(historicalPart, identities, periodRuntime)
 			if scopeIssue != "" {
 				if person := practicePurchaseOwner(purchase, periodRole, identities); person != 0 {
 					index.incompleteSeller[practicePriorSeller{roster, person}] = true

@@ -190,7 +190,7 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 
 	rows, err := tx.Query(ctx, `SELECT p.ordinal,p.ends_on,roster.starts_at,
 	 CASE WHEN roster.starts_at<$4 THEN roster.id ELSE 0 END, selected.components, settlement.period_id IS NOT NULL,
-	  closed.practice_replay_inputs->'companyClassifications',NOT timing.earlier,p.refund_cutoff_at
+	  closed.practice_replay_inputs->'companyClassifications',closed.practice_replay_inputs->'internalSalesCategories',NOT timing.earlier,p.refund_cutoff_at
 	 FROM periods current JOIN periods p ON p.product_id=current.product_id AND p.id<>current.id AND p.calendar_month IS NULL
 	  AND (p.source_period_key IS NULL OR split_part(p.source_period_key,':',3)=split_part(current.source_period_key,':',3))
 	 LEFT JOIN settlements settlement ON settlement.period_id=p.id
@@ -216,9 +216,12 @@ func readPracticeTierHistory(ctx context.Context, tx pgx.Tx, summary draftSummar
 	history.periods, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (practiceHistoryPeriod, error) {
 		var period practiceHistoryPeriod
 		var components []component
-		err := row.Scan(&period.ordinal, &period.endsOn, &period.startsAt, &period.rosterID, &components, &period.settled, &period.categories,
-			&period.notEarlierInTime, &period.refundCutoff)
+		err := row.Scan(&period.ordinal, &period.endsOn, &period.startsAt, &period.rosterID, &components, &period.settled, &period.categories.sales,
+			&period.categories.internal, &period.notEarlierInTime, &period.refundCutoff)
 		period.ruleKnown = len(components) != 0
+		if period.startsAt != nil {
+			period.categoryAt = practiceCompanyCategoryAt(components, *period.startsAt)
+		}
 		period.companyOffers = practiceCompanyStandards(paymentRule{Components: components})
 		newSale := historicalPracticeSale(components, arrangement, "new")
 		period.personalRole = newSale.SourceRole
@@ -401,11 +404,32 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	if includeInternalCategories || includeExternalDefaults || companyOffers.needsClassifications() || slices.ContainsFunc(history.periods, func(period practiceHistoryPeriod) bool {
 		return !period.settled && period.companyOffers.needsClassifications()
 	}) {
-		companyClassifications, internalSalesCategories, err = loadPracticeCompanyClassifications(ctx, tx, facts, includeInternalCategories, includeExternalDefaults)
+		scopes := make(map[int64]practiceCompanyClassificationScope)
+		currentRoster := *summary.PracticeRosterID
+		scopes[currentRoster] = practiceCompanyClassificationScope{at: practiceCompanyCategoryAt(rule.Components, summary.PracticeStartsAt)}
+		for _, period := range history.periods {
+			if !period.settled && period.startsAt != nil {
+				scopes[period.rosterID] = practiceCompanyClassificationScope{at: period.categoryAt}
+			}
+		}
+		for _, group := range [][]practiceEnrollment{members, history.members} {
+			for _, member := range group {
+				scope, ok := scopes[member.RosterID]
+				if !ok {
+					continue
+				}
+				for _, order := range member.PaidOrderIDs {
+					scope.payments = append(scope.payments, orders[order]...)
+				}
+				scopes[member.RosterID] = scope
+			}
+		}
+		history.liveCategories, err = loadPracticeCompanyClassifications(ctx, tx, scopes, includeInternalCategories, includeExternalDefaults)
 		if err != nil {
 			return paymentDraft{}, nil, err
 		}
-		history.liveCategories = companyClassifications
+		current := history.liveCategories[currentRoster]
+		companyClassifications, internalSalesCategories = current.sales, current.internal
 	}
 	var orderCompanyMembers []practiceEnrollment
 	if practiceBenefitPaysOrderCompany(rule) {

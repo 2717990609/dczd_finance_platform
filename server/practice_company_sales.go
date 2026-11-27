@@ -514,9 +514,14 @@ func (p *practicePurchase) classifyCompany(offers *practiceCompanyOffers, catego
 		return
 	}
 	terms, exists := standards[company]
+	var classificationIssue string
 	if fallback, hasDefault := offers.defaults[member]; !exists &&
 		(len(offers.categories[member]) != 0 || hasDefault || offers.needsClassifications() && offers.personal[member]) {
 		category, issue := practicePurchaseCompanyClassification(p.payments, categories, nil)
+		classificationIssue = issue
+		if category == practiceUncategorizedCompany {
+			classificationIssue = "PRACTICE_TIER_SALES_CATEGORY_MISSING"
+		}
 		if issue == "" {
 			if category == practiceInternalCompany && offers.personal[member] {
 				return
@@ -535,6 +540,13 @@ func (p *practicePurchase) classifyCompany(offers *practiceCompanyOffers, catego
 		terms, exists = general, true
 	}
 	if !exists {
+		if !p.replaying && classificationIssue != "" && len(offers.categories[member]) != 0 && slices.ContainsFunc(p.payments, func(payment paymentInput) bool {
+			category := categories[payment.Fact.PaymentID]
+			return category != "" && category != practiceInternalCompany
+		}) {
+			p.companyRoutingIssue = classificationIssue
+			return
+		}
 		// An explicit personal scope can qualify orders without a separate company award.
 		if !offers.personalScope[member] && len(offers.organizationStandards[member]) == 0 {
 			p.companyRoutingIssue = "PRACTICE_COMPANY_SCOPE_MISSING"
@@ -575,15 +587,16 @@ func externalCompanyDefaultEligible(classification string) bool {
 }
 
 const practiceCompanyClassificationsSQL = `WITH matched AS (
- SELECT p.payment,c.company_id,
+ SELECT p.roster,p.payment,c.company_id,
   CASE WHEN coalesce(change.previous_type,u.sales_company_type)='INTERNAL' THEN '` + practiceInternalCompany + `'
   WHEN $5 AND coalesce(change.previous_type,u.sales_company_type)='EXTERNAL' THEN
    CASE WHEN coalesce(change.version-1,u.sales_company_type_version)=1 OR recorded.version IS NOT NULL
       OR snapshot.captured_at<=p.paid_at THEN coalesce(h.category_id::text,'` + practiceUncategorizedCompany + `')
     ELSE coalesce('` + practiceUnverifiedExternalPrefix + `'||h.category_id::text,'') END
+  WHEN coalesce(change.previous_type,u.sales_company_type)='EXTERNAL' THEN coalesce(h.category_id::text,'` + practiceUncategorizedCompany + `')
   ELSE coalesce(h.category_id::text,'') END AS scope,
   CASE WHEN coalesce(change.previous_type,u.sales_company_type)='INTERNAL' THEN h.category_id::text END AS internal_category
- FROM unnest($1::text[],$2::text[],$3::timestamptz[]) p(payment,company,paid_at)
+ FROM unnest($1::text[],$2::text[],$3::timestamptz[],$6::bigint[],$7::timestamptz[]) p(payment,company,paid_at,roster,category_at)
  JOIN organization_company_sources c ON c.source='DCZD' AND c.source_company_id=p.company
   AND c.valid_from<=p.paid_at AND (c.valid_to IS NULL OR c.valid_to>p.paid_at)
  JOIN organization_units u ON u.id=c.company_id
@@ -597,43 +610,78 @@ const practiceCompanyClassificationsSQL = `WITH matched AS (
  LEFT JOIN organization_sales_category_history h ON h.unit_id=c.company_id
   AND (coalesce(change.previous_type,u.sales_company_type)='EXTERNAL'
     OR ($4 AND coalesce(change.previous_type,u.sales_company_type)='INTERNAL'))
-  AND h.valid_from<=p.paid_at AND (h.valid_to IS NULL OR h.valid_to>p.paid_at)
+  AND h.valid_from<=p.category_at AND (h.valid_to IS NULL OR h.valid_to>p.category_at)
 )
- SELECT payment,min(scope),coalesce(min(internal_category),'') FROM matched GROUP BY payment
+ SELECT roster,payment,min(scope),coalesce(min(internal_category),'') FROM matched GROUP BY roster,payment
  HAVING count(DISTINCT (company_id,scope,internal_category))=1`
 
-func loadPracticeCompanyClassifications(ctx context.Context, tx pgx.Tx, facts []paymentInput,
-	includeInternalCategories, includeExternalDefaults bool) (map[string]string, map[string]string, error) {
+// A company arrangement calculated per enrollment uses one category for that
+// enrollment. Historical per-payment rules retain their original category dates.
+func practiceCompanyCategoryAt(parts []component, classStart time.Time) time.Time {
+	if slices.ContainsFunc(parts, func(part component) bool {
+		return part.CompanySales != nil && part.PracticeSignupBasis
+	}) {
+		return classStart
+	}
+	return time.Time{}
+}
+
+type practiceCompanyClassificationScope struct {
+	at       time.Time
+	payments []paymentInput
+}
+
+type practiceCompanyClassifications struct {
+	sales, internal map[string]string
+}
+
+func loadPracticeCompanyClassifications(ctx context.Context, tx pgx.Tx, scopes map[int64]practiceCompanyClassificationScope,
+	includeInternalCategories, includeExternalDefaults bool) (map[int64]practiceCompanyClassifications, error) {
 	var payments, companies []string
-	var paidAt []time.Time
-	for _, p := range facts {
-		f := p.Fact
-		if f.SalesCompanyID != "" {
-			payments = append(payments, f.PaymentID)
-			companies = append(companies, f.SalesCompanyID)
-			paidAt = append(paidAt, f.OccurredAt)
+	var paidAt, categoryAt []time.Time
+	var rosters []int64
+	for roster, scope := range scopes {
+		for _, payment := range scope.payments {
+			f := payment.Fact
+			if f.SalesCompanyID != "" {
+				payments = append(payments, f.PaymentID)
+				companies = append(companies, f.SalesCompanyID)
+				paidAt = append(paidAt, f.OccurredAt)
+				at := scope.at
+				if at.IsZero() {
+					at = f.OccurredAt
+				}
+				categoryAt = append(categoryAt, at)
+				rosters = append(rosters, roster)
+			}
 		}
 	}
 	if len(payments) == 0 {
-		return nil, nil, nil
+		return nil, nil
 	}
-	rows, err := tx.Query(ctx, practiceCompanyClassificationsSQL, payments, companies, paidAt, includeInternalCategories, includeExternalDefaults)
+	rows, err := tx.Query(ctx, practiceCompanyClassificationsSQL, payments, companies, paidAt, includeInternalCategories,
+		includeExternalDefaults, rosters, categoryAt)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	result := make(map[string]string)
-	internalCategories := make(map[string]string)
+	result := make(map[int64]practiceCompanyClassifications, len(scopes))
+	var roster int64
 	var payment, category, internal string
-	_, err = pgx.ForEachRow(rows, []any{&payment, &category, &internal}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&roster, &payment, &category, &internal}, func() error {
+		values, exists := result[roster]
+		if !exists {
+			values = practiceCompanyClassifications{sales: make(map[string]string), internal: make(map[string]string)}
+			result[roster] = values
+		}
 		if category != "" {
-			result[payment] = category
+			values.sales[payment] = category
 		}
 		if internal != "" {
-			internalCategories[payment] = internal
+			values.internal[payment] = internal
 		}
 		return nil
 	})
-	return result, internalCategories, err
+	return result, err
 }
 
 func (offers *practiceCompanyOffers) hasDefault() bool {

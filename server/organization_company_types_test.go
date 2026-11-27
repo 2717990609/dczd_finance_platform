@@ -87,8 +87,10 @@ func TestOrganizationCompanyTypeMaintainsIdentityAndHistory(t *testing.T) {
 		payment := func(id string, at time.Time) paymentInput {
 			return paymentInput{Fact: sourceFact{SalesCompanyID: "company-type-fixture", PaymentID: id, OccurredAt: at}}
 		}
-		category, _, err := loadPracticeCompanyClassifications(ctx, tx,
-			[]paymentInput{payment("before", effectiveAt.Add(-time.Microsecond)), payment("after", effectiveAt)}, false, true)
+		contexts, err := loadPracticeCompanyClassifications(ctx, tx, map[int64]practiceCompanyClassificationScope{
+			1: {at: effectiveAt, payments: []paymentInput{payment("before", effectiveAt.Add(-time.Microsecond)), payment("after", effectiveAt)}},
+		}, false, true)
+		category := contexts[1].sales
 		if err != nil {
 			return err
 		}

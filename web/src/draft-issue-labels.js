@@ -78,7 +78,7 @@ export const draftIssueLabels = {
   PRACTICE_SALES_COMPANY_INACTIVE: '原销售公司在付款前已停用，请在大春之道核对后重新拉取',
   PRACTICE_SALE_STANDARD_CONFLICT: '同一报名的订金和尾款命中了不同提成标准',
   PRACTICE_TIER_COMPANY_CONFLICT: '订金和尾款的销售公司不一致',
-  PRACTICE_TIER_SALES_CATEGORY_MISSING: '付款时的销售公司缺少销售类别',
+  PRACTICE_TIER_SALES_CATEGORY_MISSING: '销售公司缺少本期适用的销售类别',
   PRACTICE_TIER_SALES_CATEGORY_CONFLICT: '订金和尾款的销售类别不一致',
   PRACTICE_COMPANY_RECIPIENT_MISSING: '付款时的收款公司映射缺失',
   PRACTICE_COMPANY_RECIPIENT_CONFLICT: '付款时的收款公司映射有冲突',

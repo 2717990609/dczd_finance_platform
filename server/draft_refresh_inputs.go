@@ -92,12 +92,20 @@ var draftRefreshFacts = `WITH keys AS (
 ), practice_order AS (
  SELECT order_id FROM practice_events
  UNION SELECT a->>'orderId' FROM practice_events v JOIN LATERAL jsonb_array_elements(v.fact->'refundsPayment') a ON true
+), signed_refunded_registrations AS MATERIALIZED (
+ SELECT p.id,row->>'registration_order_id' AS order_id
+ FROM periods p JOIN practice_registrations s ON s.period_key=p.source_period_key AND s.valid_payment_links
+ CROSS JOIN LATERAL jsonb_array_elements(s.registrations) row
+ WHERE p.calendar_month IS NULL AND p.refund_cutoff_at IS NOT NULL
+  AND row->>'enabled'='true' AND row->>'state'='3' AND row->>'signed_at' IS NOT NULL
+  AND EXISTS(SELECT 1 FROM practice_order)
 ), classes AS (
  SELECT DISTINCT p.id
  FROM practice_order o JOIN practice_enrollments e ON e.paid_order_ids @> ARRAY[o.order_id]
  JOIN periods p ON p.source_period_key=e.period_key
  JOIN LATERAL (SELECT id FROM practice_rosters r WHERE r.period_key=e.period_key ORDER BY source_version DESC LIMIT 1) latest ON true
  JOIN practice_roster_members member ON member.roster_id=latest.id AND member.enrollment_id=e.id
+ UNION SELECT r.id FROM signed_refunded_registrations r JOIN practice_order o USING(order_id)
 ), practice_changed_classes AS (
  SELECT DISTINCT class.id,class.product_id FROM changed c
  JOIN source_order_versions latest ON latest.id=c.current_id

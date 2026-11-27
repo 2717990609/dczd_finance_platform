@@ -90,14 +90,28 @@ func (snapshot practiceRegistrationSnapshot) signature() string {
 		CompanyID  *string
 	}
 	refs := make([]attribution, 0, len(snapshot.Enrollments))
+	var refunded []practiceRegistrationSnapshotRow
 	for _, row := range snapshot.Registrations {
-		if *row.Enabled && row.State == 2 && row.SignedAt != nil {
+		if !*row.Enabled || row.SignedAt == nil {
+			continue
+		}
+		switch row.State {
+		case 2:
 			refs = append(refs, attribution{ReferrerID: row.ReferrerID, CompanyID: row.CompanyID})
+		case 3:
+			if row.OrderID != nil && (row.MembershipType == 2 || row.MembershipType == 3) {
+				refunded = append(refunded, row)
+			}
 		}
 	}
 	encoded, _ := json.Marshal(refs)
 	payload := fmt.Appendf(nil, "%t:%s:", *snapshot.ValidPaymentLinks, snapshot.RosterHash)
-	return fmt.Sprintf("sha256:%x", sha256.Sum256(append(payload, encoded...)))
+	payload = append(payload, encoded...)
+	if len(refunded) != 0 {
+		data, _ := json.Marshal(refunded)
+		payload = append(payload, data...)
+	}
+	return fmt.Sprintf("sha256:%x", sha256.Sum256(payload))
 }
 
 func validRegistrationSourceID(value *string) bool {
@@ -160,9 +174,9 @@ func storePracticeRegistrationSnapshot(ctx context.Context, tx pgx.Tx, snapshot 
 	key := snapshot.PeriodKey
 	signature := snapshot.signature()
 	err := tx.QueryRow(ctx, `SELECT source_version,
-	 from_registration_sync AND source_hash=$2 AND starts_at=$3::timestamptz
+	 from_registration_sync AND split_part(source_hash,$4,1)=$2 AND starts_at=$3::timestamptz
 	 FROM practice_rosters WHERE period_key=$1 ORDER BY source_version DESC LIMIT 1`,
-		key, signature, snapshot.PeriodStartAt).Scan(&latest, &same)
+		key, signature, snapshot.PeriodStartAt, practiceLateRefundRosterSuffix).Scan(&latest, &same)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return err
 	}
