@@ -40,6 +40,7 @@ type poolDraftItem struct {
 	Correction     int64                 `json:"correctionMinor"`
 	Confirmed      int64                 `json:"confirmedMinor"`
 	Balance        int64                 `json:"balanceMinor"`
+	Allocatable    int64                 `json:"allocatableMinor"`
 	Revision       int64                 `json:"revision"`
 	PlanCurrent    bool                  `json:"planCurrent"`
 	Shares         []poolAllocationShare `json:"shares"`
@@ -164,10 +165,13 @@ const poolEntriesSQL = `WITH scope AS (
 ), lines AS MATERIALIZED (
  SELECT l.id,account.unit_id::text AS unit,account.item_key AS item,account.scenario_key AS scenario,
   coalesce(pool.name,a.name,l.component_type) AS name,l.period_id,l.amount_minor,scope.seq,l.allocation_owner_id,
-  coalesce(v.occurred_at,(origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai') AS occurred_at
+  coalesce(v.occurred_at,(origin.ends_on+1)::timestamp AT TIME ZONE 'Asia/Shanghai') AS occurred_at,
+  CASE WHEN l.catalog_pool_id IS NOT NULL AND origin.aggregate_package_id IS NOT NULL
+   AND product.code IN ('DCAI_VIP','DCAI_HEALTH_AMBASSADOR') THEN l.component_type ELSE '' END AS arrangement
  FROM required_lines needed JOIN pool_line_accounts account ON account.line_id=needed.line_id
  JOIN calculation_draft_lines l ON l.id=account.line_id
  JOIN periods origin ON origin.id=l.period_id
+ JOIN products product ON product.id=origin.product_id
  LEFT JOIN scope ON scope.id=l.period_id
  LEFT JOIN product_rule_versions r ON r.source_id=l.catalog_rule_id
  LEFT JOIN practice_pools pool ON pool.id=coalesce(l.practice_pool_id,l.catalog_pool_id)
@@ -184,12 +188,12 @@ const poolEntriesSQL = `WITH scope AS (
 ), entries AS (
  SELECT l.unit,l.item,l.scenario,l.name,l.period_id,l.seq,l.id AS source_id,l.amount_minor,
   0 AS kind,l.occurred_at,l.id AS sort_id,false AS practice_distribution,
-  0::bigint AS refunded,0::bigint AS corrected,coalesce(l.allocation_owner_id,0) AS owner_id
+  0::bigint AS refunded,0::bigint AS corrected,coalesce(l.allocation_owner_id,0) AS owner_id,l.arrangement
  FROM lines l WHERE l.seq IS NOT NULL AND l.amount_minor>0
  UNION ALL
  SELECT l.unit,l.item,l.scenario,l.name,r.period_id,r.seq,
   CASE WHEN r.amount_minor<0 AND r.practice AND (l.seq IS NULL OR l.seq>r.seq) THEN 0 ELSE l.id END,r.amount_minor,1,v.occurred_at,r.id,false,
-  r.amount_minor,0,0
+  r.amount_minor,0,0,l.arrangement
  FROM refunds r
  JOIN lines l ON l.id=r.original_line_id JOIN source_order_versions v ON v.id=r.refund_source_version_id
  WHERE NOT EXISTS(SELECT 1 FROM corrections c WHERE c.period_id=r.period_id AND c.original_line_id=r.original_line_id)
@@ -197,17 +201,17 @@ const poolEntriesSQL = `WITH scope AS (
  SELECT l.unit,l.item,l.scenario,l.name,c.period_id,c.seq,
   CASE WHEN c.amount_minor+coalesce(r.refunded,0)<0 AND c.practice AND (l.seq IS NULL OR l.seq>c.seq) THEN 0 ELSE l.id END,
   c.amount_minor+coalesce(r.refunded,0),1,coalesce(r.occurred_at,v.received_at),c.id,false,
-  coalesce(r.refunded,0),c.amount_minor,0
+  coalesce(r.refunded,0),c.amount_minor,0,l.arrangement
  FROM corrections c
  JOIN lines l ON l.id=c.original_line_id JOIN source_order_versions v ON v.id=c.source_version_id
  LEFT JOIN corrected_refunds r ON r.id=c.id
  UNION ALL
- SELECT l.unit,l.item,l.scenario,l.name,a.period_id,p.seq,l.id,-f.amount_minor,2,s.confirmed_at,sh.id,p.practice,0,0,0
+ SELECT l.unit,l.item,l.scenario,l.name,a.period_id,p.seq,l.id,-f.amount_minor,2,s.confirmed_at,sh.id,p.practice,0,0,0,l.arrangement
  FROM scope p JOIN settlements s ON s.period_id=p.id JOIN monthly_pool_allocations a ON a.period_id=p.id AND a.draft_version=s.draft_version
  JOIN monthly_pool_allocation_shares sh ON sh.allocation_id=a.id
  JOIN monthly_pool_allocation_funding f ON f.share_id=sh.id JOIN lines l ON l.id=f.source_line_id
 )
-SELECT unit,item,scenario,name,period_id,source_id,amount_minor,kind,practice_distribution,refunded,corrected,owner_id FROM entries
+SELECT unit,item,scenario,name,period_id,source_id,amount_minor,kind,practice_distribution,refunded,corrected,owner_id,arrangement FROM entries
 ORDER BY seq,kind,occurred_at,sort_id,source_id`
 
 // Expand the referenced versions once before checking lots and their members.
@@ -252,12 +256,12 @@ func readPoolStages(ctx context.Context, tx pgx.Tx, periodID int64) (map[poolSco
 		return nil, err
 	}
 	var scope poolScope
-	var name string
+	var name, arrangement string
 	var postingPeriod, source, amount, refunded, corrected, owner int64
 	var kind int
 	var practiceDistribution bool
 	_, err = pgx.ForEachRow(rows, []any{&scope.Unit, &scope.Item, &scope.Scenario, &name, &postingPeriod, &source, &amount, &kind,
-		&practiceDistribution, &refunded, &corrected, &owner}, func() error {
+		&practiceDistribution, &refunded, &corrected, &owner, &arrangement}, func() error {
 		a := states[scope]
 		if a == nil {
 			a = &poolStage{poolDraftItem: poolDraftItem{poolScope: scope, Shares: []poolAllocationShare{}, Members: []poolMember{}}, poolAccount: newPoolAccount()}
@@ -269,7 +273,7 @@ func readPoolStages(ctx context.Context, tx pgx.Tx, periodID int64) (map[poolSco
 		}
 		switch kind {
 		case 0:
-			if err := a.credit(source, amount); err != nil {
+			if err := a.credit(source, amount, arrangement); err != nil {
 				return err
 			}
 			if postingPeriod == periodID {
@@ -285,9 +289,9 @@ func readPoolStages(ctx context.Context, tx pgx.Tx, periodID int64) (map[poolSco
 			// Apply the net to the original payment lot. A refund and its
 			// offset must not take availability from unrelated payments.
 			if amount > 0 {
-				err = a.credit(source, amount)
+				err = a.credit(source, amount, arrangement)
 			} else if amount < 0 {
-				err = a.debit(source, -amount)
+				err = a.debit(source, -amount, arrangement)
 			}
 			if err == nil && postingPeriod == periodID {
 				a.Refund, err = addMinor(a.Refund, refunded)
@@ -299,7 +303,7 @@ func readPoolStages(ctx context.Context, tx pgx.Tx, periodID int64) (map[poolSco
 			// A backdated refund may reduce the lot that funded an already
 			// confirmed distribution. Retain the payment and carry the deficit.
 			if practiceDistribution {
-				err = a.debit(source, -amount)
+				err = a.debit(source, -amount, arrangement)
 			} else {
 				err = a.distribute(source, -amount)
 			}
@@ -317,6 +321,10 @@ func readPoolStages(ctx context.Context, tx pgx.Tx, periodID int64) (map[poolSco
 	}
 	for _, state := range states {
 		state.Balance = state.balance
+		state.Allocatable, err = state.allocatable()
+		if err != nil {
+			return nil, err
+		}
 		if !state.current {
 			state.Opening = state.balance
 		}
@@ -413,10 +421,20 @@ func readPoolSavedPlans(ctx context.Context, tx pgx.Tx, periodID int64, states m
 	return err
 }
 
+var scopedPoolUnitsSQL = bindDirectoryScope(organizationScopeQuery(`WITH RECURSIVE `+organizationScopeCTE+`,`+directoryMatchesCTE+`
+ SELECT id::text FROM organization_units WHERE `+unitInOrganizationScope("id"), "$1"), "$2")
+
 func (s workspace) draftPools(w http.ResponseWriter, r *http.Request) {
 	period, version, _, err := draftReportPage(r)
 	if err != nil {
 		respond(w, nil, err)
+		return
+	}
+	query := r.URL.Query()
+	unit, err := parseOrganizationScope(query.Get("unitId"))
+	scope := query.Get("scope")
+	if err != nil || !validOrganizationDirectoryScope(scope) {
+		respond(w, nil, invalid)
 		return
 	}
 	report := poolDraftReport{Version: version, Items: []poolDraftItem{}}
@@ -442,6 +460,25 @@ func (s workspace) draftPools(w http.ResponseWriter, r *http.Request) {
 		}
 		if err = readPoolSavedPlans(ctx, tx, period, states); err != nil {
 			return err
+		}
+		if unit.Valid || scope != "" {
+			rows, err := tx.Query(ctx, scopedPoolUnitsSQL, unit, scope)
+			if err != nil {
+				return err
+			}
+			ids, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				return err
+			}
+			units := make(map[string]bool, len(ids))
+			for _, id := range ids {
+				units[id] = true
+			}
+			for key := range states {
+				if !units[key.Unit] {
+					delete(states, key)
+				}
+			}
 		}
 		for _, item := range states {
 			if item.current || item.Balance != 0 || len(item.Shares) != 0 {

@@ -9,7 +9,7 @@ import (
 
 const periodPageSQL = `WITH candidates AS MATERIALIZED (
  SELECT p.* FROM periods p JOIN products pro ON pro.id=p.product_id
- WHERE ($1::bigint[] IS NULL OR p.product_id=ANY($1))
+ WHERE pro.code` + activeFinanceProductCodeSQL + ` AND ($1::bigint[] IS NULL OR p.product_id=ANY($1))
   AND ($2::bigint=0 OR p.product_id=$2)
   AND ($3::bigint=0 OR p.id<$3)
   AND ($4='' OR strpos(lower(concat_ws(' ',p.name,pro.name,p.ordinal::text,p.starts_on::text,p.ends_on::text,
@@ -55,6 +55,7 @@ const workflowPeriodsSQL = `WITH candidates AS MATERIALIZED (
 )
 SELECT coalesce(jsonb_agg(to_jsonb(selected) ORDER BY selected.id DESC),'[]') FROM (
  ` + periodListColumnsSQL + ` FROM candidates p ` + periodListJoinsSQL + `
+ WHERE pro.code` + activeFinanceProductCodeSQL + `
 ) selected`
 
 func (s workspace) periods(w http.ResponseWriter, r *http.Request) {

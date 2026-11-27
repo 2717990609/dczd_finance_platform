@@ -21,9 +21,9 @@ const draftRefreshNewAggregatePeriod = `SELECT $1::bigint
  WHERE created.id=$1 AND refund.occurred_at>=refund_period_start(created) AND refund.occurred_at<refund_period_end(created)`
 
 const draftFinancialFactChanged = `(current.fact-` + draftDisplayFactFields + `,current.occurred_at,
- cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,cv.company_id,cv.recommendation_company_id,cv.recommendation_conflict,
+ cc.entity_type,cc.business_key,cc.classifier,cc.sales_claims,cc.dcai_order_details,cv.company_id,cv.recommendation_company_id,cv.recommendation_conflict,
  current.practice_registration) IS DISTINCT FROM (previous.fact-` + draftDisplayFactFields + `,previous.occurred_at,
- pc.entity_type,pc.business_key,pc.classifier,pc.sales_claims,pv.company_id,pv.recommendation_company_id,pv.recommendation_conflict,
+ pc.entity_type,pc.business_key,pc.classifier,pc.sales_claims,pc.dcai_order_details,pv.company_id,pv.recommendation_company_id,pv.recommendation_conflict,
  previous.practice_registration)`
 
 var draftRefreshFacts = `WITH keys AS (
@@ -57,6 +57,12 @@ var draftRefreshFacts = `WITH keys AS (
  WHERE changed.source='DCZD' AND changed.kind='REFUND_SUCCEEDED'
 ), affected_events AS (
  SELECT id FROM events UNION SELECT id FROM refund_versions
+ UNION SELECT vip.id FROM events parent
+ JOIN source_order_classifications c ON c.source_version_id=parent.id
+ JOIN source_order_versions vip ON vip.source='DCAI' AND vip.kind='ORDER_PAID'
+  AND vip.record_key='ai_vip_order:'||(c.dcai_order_details->>'ambassadorGiftVIP')
+  AND vip.fact->>'amountMinor'='0'
+ WHERE c.dcai_order_details ? 'ambassadorGiftVIP'
 ), mapped AS (
  SELECT v.id,m.product_id,v.occurred_at,v.kind,NULL::text AS sku_code FROM affected_events a JOIN source_order_versions v USING(id) JOIN source_mappings m
   ON m.source=v.source AND m.domain=v.fact->>'domain' AND m.source_key=v.fact->>'sourceKey'

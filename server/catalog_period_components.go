@@ -69,8 +69,7 @@ func writeCatalogPeriodComponents(raw json.RawMessage, original []catalogPeriodI
 		if !textOK(edit.Label, 80) {
 			return nil, invalid
 		}
-		if edit.PerOrder && (!mixed || edit.FixedMinor == nil && len(edit.Tiers) != 1) ||
-			edit.TargetKind == "order_seller" && !edit.PerOrder {
+		if !mixed && (edit.PerOrder || edit.TargetKind == "order_seller") {
 			return nil, errCatalogPeriodRecipient
 		}
 		if edit.FixedMinor != nil && (!validCatalogPeriodFixed(edit.FixedMinor) || len(edit.Tiers) != 0) {
@@ -268,11 +267,14 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 		usesDirectoryOwner := registered && edit.OwnerRole == "" && edit.OwnerPersonID == 0
 		if !validDestination || edit.OwnerPersonID < 0 || !usesDirectoryOwner && (edit.OwnerPersonID > 0) == (edit.OwnerRole != "") ||
 			edit.OwnerRole != "" && !roleAllowed(edit.OwnerRole, before.OwnerRole) ||
-			!roleAllowed(edit.MemberRole, before.MemberRole) {
+			!(registered && edit.MemberRole == "") && !roleAllowed(edit.MemberRole, before.MemberRole) {
 			return errCatalogPeriodRecipient
 		}
 		action.Mode, action.Company = "TEAM_POOL", ""
 		action.Role, action.OwnerRole = edit.MemberRole, edit.OwnerRole
+		if action.Role == "" {
+			action.Role = "TEAM_POOL"
+		}
 		if edit.OwnerPersonID != 0 {
 			action.OwnerParty = "person:" + strconv.FormatInt(edit.OwnerPersonID, 10)
 		}
@@ -304,7 +306,7 @@ func setCatalogPeriodTarget(fields map[string]json.RawMessage, before catalogPer
 			fields[key], _ = json.Marshal(value)
 		}
 	}
-	if action.Mode == "TEAM_POOL" {
+	if action.Mode == "TEAM_POOL" && edit.MemberRole != "" {
 		fields["eligibility_role"], _ = json.Marshal(edit.MemberRole)
 	}
 	return nil

@@ -2,11 +2,24 @@
 
 ## 随订单同步报名与签到
 
-大春之道通过订单就绪接口的 `practice_registrations_contract` 字段声明报名读取协议。财务在实战班订单批次完成前，按开放班次的来源期次键调用 `GET /internal/v1/finance/source-orders/practice-registrations`。凭证沿用订单读取配置，契约头为 `dczd.finance-practice-registrations-read/1.0`，请求参数为 `period_key`。
+大春之道通过订单就绪接口的 `practice_registrations_contract` 字段声明报名读取协议。财务按开放班次的来源期次键调用 `GET /internal/v1/finance/source-orders/practice-registrations`。凭证沿用订单读取配置，契约头为 `dczd.finance-practice-registrations-read/1.0`，请求参数为 `period_key`。
 
 响应包含实际开班时点、已签到报名集合 `enrollments` 及其哈希，还有包含停用、退款、延期和未签到状态的 `registrations`。推荐人及其公司取自每条报名记录。有效签到的付款关联有问题时，`valid_payment_links=false`，原始报名仍可同步，该班次暂不可试算。读取全程使用同一源端数据视图。
 
 财务按期次保存最新报名状态，并在签到范围、开班时间或签到报名归属变化时保存新版本。开放草稿读取最新版本。财务确认结算时复验最新来源事实，正式账继续绑定原版本。新同步班次使用财务配置的退款截止时间，历史已归档班次仍可使用原来的截止口径。
+
+## 按报表月份同步付款与退款
+
+财务在任务首次启动时取北京时间的月份，自动选择有效报表月份大于等于该月的未结算班次。手动设置的报表月份优先，未设置时取期次结束日期所在月。结算核对入口可按指定期次补拉。期次选择以财务期次和来源产品映射为准。
+
+财务通过 `GET /internal/v1/finance/source-orders/readiness?stream=PRACTICE_ORDER_FACTS` 查询实战班专用能力。商城就绪响应同时提供 `practice_facts_contract`、`practice_refunds_contract` 和 `practice_orders_through` 后，财务从已有完整历史覆盖接续，启用以下读取。凭证和契约头沿用报名接口的传递方式。
+
+| 路径 | 契约 | 范围 |
+| --- | --- | --- |
+| `POST /internal/v1/finance/source-orders/practice-facts` | `dczd.finance-practice-facts/1.0` | 请求为最多 200 条 `kind`、来源记录 `id` 和可选 `known_version`，按报名关联查询付款和签到。响应返回版本有变化的 `facts` 和来源缺失的 `missing`。 |
+| `GET /internal/v1/finance/source-orders/practice-refunds` | `dczd.finance-practice-refunds/1.0` | 按退款表的 `refund_success_time,id,order_code` 分页。首次响应给出 `through`，续页沿用同一个上界。原单的期次和付款时间均可早于当前报表月。 |
+
+退款分页每页在同一财务事务内保存订单、退款事实和游标。缺少原付款时只按订单 ID 补查。发生来源错误时从最后落库的游标续拉。退款成功时间只用于同步进度，事实中的原有退款时间继续供结算使用。历史无成功时间的记录沿用初始历史同步。付款及签到按期次记录覆盖，退款单独记录覆盖进度。
 
 ## 历史确认名单接口
 

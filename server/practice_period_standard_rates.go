@@ -159,3 +159,23 @@ func allocatePracticeStandardRates(shares []practiceBenefitShare) ([]practiceBen
 	}
 	return result, total, nil
 }
+
+func allocatePracticeSinglePaymentStandardRates(shares []practiceBenefitShare) ([]practiceBenefitShare, int64, error) {
+	var result []practiceBenefitShare
+	var total int64
+	for _, share := range shares {
+		for i, rate := range share.rates {
+			parts := []practiceBenefitShare{share.paymentShare(i)}
+			amount, err := allocatePracticePeriodRate(parts, rate)
+			if err != nil {
+				return nil, 0, err
+			}
+			total, err = addMinor(total, amount)
+			if err != nil {
+				return nil, 0, err
+			}
+			result = append(result, parts[0])
+		}
+	}
+	return result, total, nil
+}

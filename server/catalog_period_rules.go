@@ -44,6 +44,9 @@ type catalogPeriodItem struct {
 	Appointment       *catalogPerformanceDuty `json:"appointment,omitempty"`
 	AppointmentLevel  string                  `json:"appointmentLevel,omitempty"`
 	AppointmentRole   string                  `json:"appointmentRole,omitempty"`
+	rateOverrides     []rulePluginRateOverride
+	orderAppointment  *rulePluginOrderAppointment
+	posting           postingRounding
 	unit              string
 }
 
@@ -73,13 +76,14 @@ func catalogPeriodUnit(key string) (string, bool) {
 
 func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error) {
 	var stored struct {
-		Basis       string                   `json:"amount_basis"`
-		Recognition string                   `json:"recognition_trigger"`
-		Refund      string                   `json:"refund_policy"`
-		Stacking    string                   `json:"stacking_policy"`
-		Performance *catalogPerformanceScope `json:"performance_scope"`
-		Mixed       bool                     `json:"mixed_arrangements"`
-		Rounding    struct {
+		PeriodRulePlugin bool                     `json:"period_rule_plugin"`
+		Basis            string                   `json:"amount_basis"`
+		Recognition      string                   `json:"recognition_trigger"`
+		Refund           string                   `json:"refund_policy"`
+		Stacking         string                   `json:"stacking_policy"`
+		Performance      *catalogPerformanceScope `json:"performance_scope"`
+		Mixed            bool                     `json:"mixed_arrangements"`
+		Rounding         struct {
 			Mode  string `json:"mode"`
 			Scale int    `json:"scale"`
 		} `json:"rounding_policy"`
@@ -94,15 +98,17 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		} `json:"settlement_policy"`
 		Actions []struct {
 			vipBenefitAction
-			Metric            string                  `json:"metric_code"`
-			Unit              string                  `json:"metric_unit"`
-			Tiers             []catalogPeriodTier     `json:"tier_table"`
-			ScenarioCodes     []string                `json:"business_sku_codes"`
-			MembershipNewOnly bool                    `json:"vip_new_membership_only"`
-			FixedPerOrder     bool                    `json:"fixed_per_order"`
-			PerOrder          bool                    `json:"per_order"`
-			EligibilityRole   string                  `json:"eligibility_role"`
-			Appointment       *catalogPerformanceDuty `json:"recipient_appointment"`
+			Metric            string                      `json:"metric_code"`
+			Unit              string                      `json:"metric_unit"`
+			RateOverrides     []rulePluginRateOverride    `json:"sales_rate_overrides"`
+			OrderAppointment  *rulePluginOrderAppointment `json:"order_appointment_scope"`
+			Tiers             []catalogPeriodTier         `json:"tier_table"`
+			ScenarioCodes     []string                    `json:"business_sku_codes"`
+			MembershipNewOnly bool                        `json:"vip_new_membership_only"`
+			FixedPerOrder     bool                        `json:"fixed_per_order"`
+			PerOrder          bool                        `json:"per_order"`
+			EligibilityRole   string                      `json:"eligibility_role"`
+			Appointment       *catalogPerformanceDuty     `json:"recipient_appointment"`
 		} `json:"benefit_actions"`
 	}
 	var result catalogPeriodDefinition
@@ -140,7 +146,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		}
 		if action.Item == "" || items[action.Item] || action.Label == "" ||
 			(action.Mode != "PARTY" && action.Mode != "TEAM_POOL" && action.Mode != vipOrganizationAppointmentMode &&
-				!(action.Mode == vipOrderSellerMode && action.PerOrder)) ||
+				!(action.Mode == vipOrderSellerMode && stored.Mixed)) ||
 			action.PerOrder && (!stored.Mixed || action.FixedPerOrder) ||
 			action.Leader != nil || !validUniqueScopeIDs(action.CommissionUnits) ||
 			!validUniqueScopeIDs(action.ScopeCategories) ||
@@ -154,7 +160,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		}
 		switch action.Type {
 		case "TIER_RATE":
-			if action.FixedPerOrder || action.PerOrder && len(action.Tiers) != 1 || action.Fixed != nil || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" || !validCatalogPeriodTiers(action.Tiers) {
+			if action.FixedPerOrder || action.Fixed != nil || action.Metric != "MONTHLY_NET_RECEIPTS" || action.Unit != "AMOUNT_MINOR" || !validCatalogPeriodTiers(action.Tiers) {
 				return result, errCatalogRateUnavailable
 			}
 		case "FIXED":
@@ -188,7 +194,7 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 			!(&catalogPerformanceScope{Appointment: duty}).valid()) {
 			return result, errCatalogRateUnavailable
 		}
-		if action.Mode == "TEAM_POOL" {
+		if action.Mode == "TEAM_POOL" && (action.Role != "TEAM_POOL" || catalogPoolID(action.PoolCode) == 0) {
 			memberRole = catalogAggregateMemberRole(action.Role, action.EligibilityRole)
 		}
 		targetKind := action.targetKind()
@@ -196,13 +202,27 @@ func parseCatalogPeriodRule(raw json.RawMessage) (catalogPeriodDefinition, error
 		if action.AppointmentLevel != "" {
 			targetKind, appointmentRole = "appointment", action.Role
 		}
+		if len(action.RateOverrides) != 0 && (!stored.PeriodRulePlugin || !action.PerOrder || targetKind != "order_seller" ||
+			len(action.Tiers) != 1 || !validPluginRateOverrides(action.RateOverrides)) {
+			return result, errCatalogRateUnavailable
+		}
+		if duty := action.OrderAppointment; duty != nil &&
+			(!stored.PeriodRulePlugin || duty.Level != action.AppointmentLevel ||
+				duty.Role != appointmentRole || !duty.valid()) {
+			return result, errCatalogRateUnavailable
+		}
+		posting := truncatePosting
+		if stored.PeriodRulePlugin && stored.Rounding.Mode == postingModeLegacy && !action.PerOrder {
+			posting = legacyPosting
+		}
 		result.Items = append(result.Items, catalogPeriodItem{ItemKey: action.Item, Label: action.Label, TargetKind: targetKind,
 			PoolName: action.PoolName, OwnerRole: action.OwnerRole, OwnerPersonID: ownerID, OrganizationKey: org, PersonID: personID, Tiers: action.Tiers,
 			PoolID:     catalogPoolID(action.PoolCode),
 			MemberRole: memberRole, FixedMinor: action.Fixed, ScenarioCodes: action.ScenarioCodes, MembershipNewOnly: action.MembershipNewOnly,
 			unit: unit, OwnSales: action.OwnSales, FixedPerOrder: action.FixedPerOrder, PerOrder: action.PerOrder,
 			CommissionUnits: action.CommissionUnits, ScopeCategories: action.ScopeCategories, RecipientDuty: action.RecipientDuty,
-			Appointment: action.Appointment, AppointmentLevel: action.AppointmentLevel, AppointmentRole: appointmentRole})
+			Appointment: action.Appointment, AppointmentLevel: action.AppointmentLevel, AppointmentRole: appointmentRole,
+			rateOverrides: action.RateOverrides, orderAppointment: action.OrderAppointment, posting: posting})
 	}
 	return result, nil
 }
@@ -338,7 +358,7 @@ func quoteCatalogPeriod(items []catalogPeriodItem, received, refunds, carry int6
 				return result, errCatalogPeriodTiers
 			}
 			award.Rate = item.Tiers[i].Rate
-			award.Amount = calculatePaymentAmount(result.Basis, component{Mode: "rate", Value: award.Rate})
+			award.Amount = item.posting.paymentAmount(result.Basis, component{Mode: "rate", Value: award.Rate})
 		}
 		result.Total, err = addMinor(result.Total, award.Amount)
 		if err != nil {

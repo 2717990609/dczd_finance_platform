@@ -7,6 +7,7 @@ export const organizationScopeOptions = [
 export function organizationTree(units, label, activeOnly = false) {
   const nodes = new Map(units.map(unit => [unit.id, {
     value:unit.id,
+    status:unit.status,
     title:unit.name + ' · ' + label(unit.kind) + (unit.status==='INACTIVE' ? '（已停用）' : ''),
     selectable:!activeOnly || unit.status==='ACTIVE',
     children:[],
@@ -19,4 +20,11 @@ export function organizationTree(units, label, activeOnly = false) {
     else roots.push(node)
   }
   return roots
+}
+
+export function hideInactiveOrganizations(nodes) {
+  return nodes.flatMap(node => {
+    const children = hideInactiveOrganizations(node.children)
+    return node.status==='INACTIVE' ? children : [{...node,children}]
+  })
 }

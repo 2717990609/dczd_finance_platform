@@ -27,7 +27,7 @@ type catalogPeriodScenarioOption struct {
 }
 
 func (sku catalogPeriodScenarioOption) forMixedProduct(productID int64) bool {
-	return sku.MembershipSKU && slices.Contains(sku.Products, productID)
+	return slices.Contains(sku.Products, productID)
 }
 
 func (sku catalogPeriodScenarioOption) canChange(actor financeRuleActor) bool {

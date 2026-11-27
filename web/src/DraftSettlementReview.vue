@@ -26,7 +26,8 @@ const coverageStatus = {
   CLOCK_GAP:'来源水位晚于同步完成时间，请核对来源时钟',
   READY:'已覆盖本账期',
 }
-const streamLabel = stream => props.sourceStreams?.find(option => option.value === stream)?.label || '订单来源'
+const practiceSyncStreams = {PRACTICE_PERIOD_ORDERS:'本期付款及签到', PRACTICE_REFUNDS:'实战班退款'}
+const streamLabel = stream => practiceSyncStreams[stream] || props.sourceStreams?.find(option => option.value === stream)?.label || '订单来源'
 const rosterStatus = {
   NOT_CONFIGURED:'签到名单接口未配置，请联系维护人员检查连接',
   ROUTE_MISSING:'签到名单读取接口未接通，请核对大春之道的接口部署或网关路由',
@@ -51,8 +52,10 @@ const settlementStatus = computed(() => {
   return {label:'还有事项待处理', tone:'pending'}
 })
 function orderSyncLink(source) {
-  const params = new URLSearchParams({stream:source.stream,returnPeriodId:props.draft.periodId})
-  if (source.requiredFrom && (!source.initialFrom || Date.parse(source.requiredFrom) < Date.parse(source.initialFrom))) {
+  const scopedPractice = !!practiceSyncStreams[source.stream]
+  const params = new URLSearchParams({stream:scopedPractice ? 'ORDER_FACTS' : source.stream,returnPeriodId:props.draft.periodId})
+  if (source.stream === 'PRACTICE_PERIOD_ORDERS') params.set('syncPeriodId',props.draft.periodId)
+  if (!scopedPractice && source.requiredFrom && (!source.initialFrom || Date.parse(source.requiredFrom) < Date.parse(source.initialFrom))) {
     const date = new Intl.DateTimeFormat('sv-SE',{timeZone:'Asia/Shanghai',year:'numeric',month:'2-digit',day:'2-digit'})
     params.set('fromDate',date.format(new Date(source.requiredFrom)))
   }
@@ -156,6 +159,7 @@ onBeforeUnmount(() => { sequence++ })
                     <p>{{ streamLabel(source.stream) }} · {{ coverageStatus[source.status] || '待核对' }}</p>
                     <small v-if="source.completedThrough">同步至 {{ formatTime(source.completedThrough) }}</small>
                     <small v-if="source.lastSuccessAt">同步完成于 {{ formatTime(source.lastSuccessAt) }}</small>
+                    <small v-if="source.clockSkewWarning">来源时钟略快，按较早时间核对仍已覆盖本账期。</small>
                     <small v-if="source.status==='OUTSIDE_RANGE' && source.requiredFrom">需覆盖 {{ formatTime(source.requiredFrom) }} 至 {{ formatTime(source.requiredThrough) }}</small>
                     <small v-if="source.refundGap">{{ source.refundGap }} 笔退款缺少金额或时间，请在子系统更正后重新拉取。</small>
                   </div>

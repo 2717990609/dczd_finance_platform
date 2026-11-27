@@ -386,3 +386,31 @@ func TestVIPOrderReferrerComesFromReferralRoles(t *testing.T) {
 		}
 	}
 }
+
+func TestVIPRecommendationCompanyPayee(t *testing.T) {
+	action := vipBenefitAction{Item: "company-recommendation", Mode: "ORDER_RECOMMENDATION_COMPANY"}
+	for _, tc := range []struct {
+		name, order, directory, status, unit string
+	}{
+		{"same company", "source-1", "finance-1", "CALCULATED", "finance-1"},
+		{"source only", "source-1", "", "CALCULATED", "finance-1"},
+		{"finance only", "", "finance-1", "CALCULATED", "finance-1"},
+		{"different companies", "source-1", "finance-2", "RECOMMENDATION_COMPANY_CONFLICT", ""},
+		{"no relationship", "", "", "RECOMMENDATION_COMPANY_MISSING", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			at := time.Date(2026, 9, 25, 4, 0, 0, 0, time.UTC)
+			data := vipRuntimeData{DirectoryCompanies: []vipLink{{Key: "source-1", Unit: "finance-1"}},
+				CompanyNames: map[string]string{"finance-1": "来源推荐公司", "finance-2": "财务推荐公司"}}
+			if tc.directory != "" {
+				data.RecommendationCompanies = map[string]string{"sales-company": tc.directory}
+			}
+			req := vipSalesRequest{At: at, CompanyUnit: "sales-company", RecommendationCompany: data.recommendationCompany("sales-company", tc.order, false, at)}
+			var line vipBenefitPart
+			bindVIPBenefit(&line, action, req, data)
+			if line.Status != tc.status || line.Unit != tc.unit || tc.status == "RECOMMENDATION_COMPANY_CONFLICT" && line.Detail != "源订单：来源推荐公司，财务目录：财务推荐公司" {
+				t.Fatalf("line=%+v", line)
+			}
+		})
+	}
+}

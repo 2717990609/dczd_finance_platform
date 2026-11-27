@@ -231,6 +231,27 @@ CREATE TABLE IF NOT EXISTS dcai_sync_jobs (
  message text NOT NULL DEFAULT ''
 );
 
+ALTER TABLE dcai_sync_jobs ADD COLUMN IF NOT EXISTS practice_period_id bigint NOT NULL DEFAULT 0;
+
+CREATE TABLE IF NOT EXISTS practice_refund_sync (
+ source_key text PRIMARY KEY,
+ initial_from timestamptz NOT NULL,
+ completed_through timestamptz,
+ target_through timestamptz,
+ next_success_at timestamptz NOT NULL,
+ next_id text NOT NULL,
+ next_code text NOT NULL,
+ last_success_at timestamptz
+);
+
+CREATE TABLE IF NOT EXISTS practice_period_sync (
+ period_id bigint PRIMARY KEY REFERENCES periods(id) ON DELETE CASCADE,
+ source_key text NOT NULL,
+ checked_at timestamptz NOT NULL,
+ covered_through timestamptz NOT NULL,
+ missing_facts int NOT NULL CHECK(missing_facts>=0)
+);
+
 CREATE TABLE IF NOT EXISTS calculation_drafts (
  period_id bigint PRIMARY KEY REFERENCES periods(id),
  rule_id bigint NOT NULL REFERENCES rule_versions(id),
@@ -269,6 +290,8 @@ CREATE TABLE IF NOT EXISTS draft_refresh_queue (
  retry_on_scan boolean NOT NULL DEFAULT true,
  message text NOT NULL DEFAULT ''
 );
+ALTER TABLE draft_refresh_queue ADD COLUMN IF NOT EXISTS manual_requested boolean NOT NULL DEFAULT false;
+CREATE INDEX IF NOT EXISTS draft_refresh_manual ON draft_refresh_queue(requested_at,period_id) WHERE manual_requested;
 CREATE INDEX IF NOT EXISTS calculation_draft_issues_page ON calculation_draft_issues(period_id, id);
 
 ALTER TABLE rule_versions ADD COLUMN IF NOT EXISTS effective_from timestamptz;
@@ -1068,6 +1091,15 @@ CREATE INDEX IF NOT EXISTS catalog_payment_record_scope
 
 ALTER TABLE source_order_classifications ADD COLUMN IF NOT EXISTS sales_claims jsonb;
 ALTER TABLE source_order_classifications ADD COLUMN IF NOT EXISTS sales_claims_completed_at timestamptz;
+ALTER TABLE source_order_classifications ADD COLUMN IF NOT EXISTS dcai_order_details jsonb;
+CREATE INDEX IF NOT EXISTS source_ambassador_gift_vip_record
+ ON source_order_classifications((dcai_order_details->>'ambassadorGiftVIP'))
+ WHERE dcai_order_details ? 'ambassadorGiftVIP';
+
+ALTER TABLE source_order_classifications
+ ADD COLUMN IF NOT EXISTS commission_seller jsonb,
+ ADD COLUMN IF NOT EXISTS order_recommendation jsonb;
+ALTER TABLE calculation_draft_issues ADD COLUMN IF NOT EXISTS detail text NOT NULL DEFAULT '';
 
 CREATE TABLE IF NOT EXISTS catalog_sales_context (
  source text PRIMARY KEY,
@@ -1423,6 +1455,21 @@ CREATE TABLE IF NOT EXISTS catalog_aggregate_draft_events (
  PRIMARY KEY(period_id,source_version_id)
 );
 ALTER TABLE catalog_aggregate_draft_events ADD COLUMN IF NOT EXISTS completion_version_id bigint REFERENCES source_order_versions(id);
+DO $$ BEGIN
+ IF NOT EXISTS(SELECT 1 FROM pg_attribute WHERE attrelid='catalog_aggregate_draft_events'::regclass
+   AND attname='recognized_amount_minor' AND NOT attisdropped) THEN
+  ALTER TABLE catalog_aggregate_draft_events ADD COLUMN recognized_amount_minor bigint CHECK(recognized_amount_minor>=0);
+  INSERT INTO draft_refresh_queue(period_id)
+  SELECT DISTINCT event.period_id FROM catalog_aggregate_draft_events event
+  JOIN periods p ON p.id=event.period_id JOIN products product ON product.id=p.product_id
+  JOIN source_order_versions payment ON payment.id=event.payment_version_id
+  WHERE product.code='DCAI_VIP' AND payment.source='DCAI' AND payment.fact->>'domain'='VIP'
+   AND payment.fact->'amountMinor' NOT IN ('0'::jsonb,'49900'::jsonb)
+   AND NOT EXISTS(SELECT 1 FROM settlements final WHERE final.period_id=p.id)
+  ON CONFLICT(period_id) DO UPDATE SET generation=excluded.generation,requested_at=excluded.requested_at,
+   retry_on_scan=true,message='';
+ END IF;
+END $$;
 CREATE TABLE IF NOT EXISTS catalog_aggregate_event_groups (
  period_id bigint NOT NULL,
  group_key text NOT NULL,
@@ -1704,3 +1751,17 @@ LANGUAGE sql STABLE STRICT AS $$
   ELSE v.occurred_at>=p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai'
    AND refund_payment_on_or_after(v,p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai') END
 $$;
+
+CREATE TABLE IF NOT EXISTS finance_rule_plugins (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS finance_rule_plugin_versions (
+ id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+ plugin_id bigint NOT NULL REFERENCES finance_rule_plugins(id),
+ version integer NOT NULL CHECK(version>0),
+ label text NOT NULL,
+ arrangements jsonb NOT NULL CHECK(jsonb_typeof(arrangements)='array'),
+ UNIQUE(plugin_id,version)
+);
+ALTER TABLE periods ADD COLUMN IF NOT EXISTS rule_plugin_version_id bigint REFERENCES finance_rule_plugin_versions(id);

@@ -38,14 +38,17 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .organization-more:hover, .organization-more[aria-expanded="true"] { color: var(--accent); }
 .organization-more.is-current { color: var(--accent); border-bottom-color: var(--accent); font-weight: 650; }
 .organization-more .anticon { font-size: 10px; }
-.workspace-body.with-scope { display: grid; grid-template-columns: 268px minmax(0, 1fr); min-height: calc(100vh - 103px); }
-.scope-panel { min-width: 0; padding: 16px 13px; background: var(--panel); border-right: 1px solid var(--line); }
+.workspace-body.with-scope { display: grid; grid-template-columns: var(--scope-panel-width, 268px) minmax(0, 1fr); min-height: calc(100vh - 103px); }
+.scope-panel { position: relative; min-width: 0; padding: 16px 13px; background: var(--panel); border-right: 1px solid var(--line); }
 .scope-panel h2 { margin: 0 0 13px; font-size: 14px; color: var(--muted); }
 .scope-title { display: block; font-size: 13px; font-weight: 600; color: var(--muted); margin-bottom: 8px; }
 .scope-organization { margin-bottom: 15px; }
 .scope-organization label { font-size: 13px; font-weight: 650; color: var(--muted); }
 .scope-organization .ant-select { width: 100%; min-width: 0; }
 .scope-organization.desktop-scope { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.with-organization-divider > .scope-organization.desktop-scope { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
+.scope-height-divider { height: 14px; margin: 6px 0 8px; }
+.scope-width-divider { position: absolute; inset: 0 -5px 0 auto; z-index: 2; width: 9px; }
 .scope-organization .scope-options { margin: 8px 0 4px; }
 .scope-organization .ant-tree { color: var(--ink); }
 .scope-organization .ant-tree .ant-tree-node-content-wrapper { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -160,6 +163,7 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .finance-rule-editor .rule-appointment-details > .ant-collapse-item > .ant-collapse-header,
 .finance-rule-editor .rule-appointment-details .ant-collapse-content-box { padding:4px 0; }
 .finance-rule-editor .form-actions { padding-top:0; }
+.rule-list-name.ant-btn { padding-inline:0; text-align:left; height:auto; white-space:normal; overflow-wrap:anywhere; }
 .finance-rate-toolbar { display:flex; flex-wrap:wrap; gap:4px 10px; align-items:center; margin-block:4px 6px; }
 .finance-rate-toolbar .ant-radio-group { display:flex; flex-wrap:wrap; }
 .finance-rate-toolbar .form-subhead { margin:0; }
@@ -244,9 +248,8 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 .draft-detail-fields > div:not(.draft-detail-actions) { flex: 1 1 205px; max-width: 255px; }
 .draft-detail-fields label { display: block; margin-bottom: 5px; }
 .draft-detail-actions { display: flex; gap: 8px; }
-.draft-issues { margin-top: 12px; }
+.draft-issues, .records + .draft-receipts { margin-top: 12px; }
 @media (max-width: 900px) {
-  .workspace-body.with-scope { grid-template-columns: 185px minmax(0,1fr); }
   .scope-panel { padding-inline: 12px; }
 }
 @media (max-width: 680px) {
@@ -287,6 +290,10 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outlin
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition-duration: 0s !important; animation-duration: 0s !important; }
+}
+@media (max-width: 480px) {
+  .workbench-controls .workbench-totals > div { flex-basis: 50%; }
+  .workbench-controls .workbench-totals > div:nth-child(odd) { border-left: 0; }
 }
 @media (max-width: 375px) {
   .topbar { flex-wrap: wrap; }

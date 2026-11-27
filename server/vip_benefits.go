@@ -45,6 +45,7 @@ type vipBenefitPolicy struct {
 const vipOrderReferrerMode = "ORDER_REFERRER"
 const vipOrderSellerMode = "ORDER_SELLER"
 const vipOrderSalesCompanyMode = "ORDER_SALES_COMPANY"
+const vipOrderRecommendationCompanyMode = "ORDER_RECOMMENDATION_COMPANY"
 
 type vipBenefitOrganization struct {
 	Party, Unit, Name string
@@ -65,6 +66,7 @@ type vipBenefitPart struct {
 	preciseAmount string
 	Rate          int64  `json:"-"`
 	Status        string `json:"status"`
+	Detail        string `json:"detail,omitempty"`
 }
 
 func readVIPBenefits(raw json.RawMessage) (vipBenefitPolicy, bool) {
@@ -177,7 +179,7 @@ func (a vipBenefitAction) validTarget() bool {
 	switch a.Mode {
 	case "PARTY":
 		return !poolFields && (a.Designated == "") != (a.Company == "")
-	case vipOrderReferrerMode, vipOrderSellerMode, vipOrderSalesCompanyMode:
+	case vipOrderReferrerMode, vipOrderSellerMode, vipOrderSalesCompanyMode, vipOrderRecommendationCompanyMode:
 		return !poolFields && a.Designated == "" && a.Company == ""
 	case "TEAM_POOL":
 		return a.Designated == "" && a.Company == "" && a.PoolParty != "" && a.PoolUnit != "" &&
@@ -202,6 +204,11 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 			continue
 		}
 		line := vipBenefitPart{Item: a.Item, Label: a.Label, Role: a.Role, Kind: a.targetKind()}
+		if req.sourceSellerAbsent && (a.Mode == vipOrderSellerMode || a.OwnSales) {
+			line.Status = vipCommissionOutsideScope
+			out = append(out, line)
+			continue
+		}
 		if req.Paid > 0 && (a.Rate == nil || *a.Rate > 0) && (a.Fixed == nil || *a.Fixed > 0) &&
 			!(a.Mode == vipOrderReferrerMode && req.Referrer.Party == "" && req.Referrer.Issue == "") {
 			if eligible, issue := a.eligibleSale(req, sourceIssue, data); !eligible {
@@ -214,7 +221,7 @@ func quoteVIPBenefits(req vipSalesRequest, sourceIssue string, policy vipBenefit
 			}
 		}
 		rate, amount, issue := a.quote(req, sourceIssue)
-		usesOrderPayee := a.Mode == vipOrderReferrerMode || a.Mode == vipOrderSellerMode || a.Mode == vipOrderSalesCompanyMode
+		usesOrderPayee := a.Mode == vipOrderReferrerMode || a.Mode == vipOrderSellerMode || a.Mode == vipOrderSalesCompanyMode || a.Mode == vipOrderRecommendationCompanyMode
 		switch {
 		case req.Paid == 0:
 			line.Status = "ZERO"
@@ -267,6 +274,8 @@ func (a vipBenefitAction) targetKind() string {
 		return "order_seller"
 	case vipOrderSalesCompanyMode:
 		return "order_sales_company"
+	case vipOrderRecommendationCompanyMode:
+		return "order_recommendation_company"
 	case "TEAM_POOL":
 		return "pool"
 	}
@@ -330,6 +339,19 @@ func bindVIPBenefit(line *vipBenefitPart, a vipBenefitAction, req vipSalesReques
 			line.Status = "SALES_COMPANY_MISSING"
 		} else {
 			line.Party, line.Unit, line.Name = req.Company, req.CompanyUnit, req.CompanyName
+		}
+		return
+	}
+	if a.Mode == vipOrderRecommendationCompanyMode {
+		line.Kind = "company"
+		recommendation := req.RecommendationCompany
+		switch {
+		case recommendation.Issue != "":
+			line.Status, line.Detail = recommendation.Issue, recommendation.Detail
+		case recommendation.Unit == "":
+			line.Status = "ZERO"
+		default:
+			line.Party, line.Unit, line.Name = recommendation.Unit, recommendation.Unit, data.CompanyNames[recommendation.Unit]
 		}
 		return
 	}

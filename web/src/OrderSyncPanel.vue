@@ -14,6 +14,7 @@ let readSequence = 0
 let timer
 let closed = false
 
+const targetPeriod = row => row?.stream === props.target?.stream ? props.target?.periodId : undefined
 const busy = row => row.status === 'QUEUED' || row.status === 'RUNNING'
 const label = stream => props.streams.find(item => item.value === stream)?.label || stream
 const visibleRows = computed(() => rows.value.filter(row => props.streams.some(option => option.value === row.stream))
@@ -67,7 +68,9 @@ async function submit() {
   formError.value = ''
   const stream = selected.value.stream
   try {
-    const job = await props.api('/orders/sync', {method:'POST', body:JSON.stringify({stream, fromDate:form.value.fromDate})})
+    const periodId = targetPeriod(selected.value)
+    const request = periodId ? {stream,periodId} : {stream,fromDate:form.value.fromDate}
+    const job = await props.api('/orders/sync', {method:'POST', body:JSON.stringify(request)})
     if (closed) return
     rows.value = rows.value.map(row => row.stream === stream ? {...row, status:job.status, taskId:job.id, message:''} : row)
     selected.value = undefined
@@ -107,29 +110,31 @@ defineExpose({reload})
           <div class="sync-detail">
             <strong>{{ label(row.stream) }}</strong>
             <a-tag :color="badge(row)[1]" aria-live="polite">{{ badge(row)[0] }}</a-tag>
-            <small v-if="row.completedThrough">同步至 {{ formatTime(row.completedThrough) }}</small>
+            <small v-if="row.practiceRefundThrough">退款覆盖至 {{ formatTime(row.practiceRefundThrough) }}</small>
+            <small v-else-if="row.completedThrough">同步至 {{ formatTime(row.completedThrough) }}</small>
             <small v-if="row.targetThrough && row.scannedOrders">已读取 {{ row.scannedOrders }} {{ row.source==='DCZD' ? '条业务记录' : '笔订单' }}</small>
             <small v-if="row.status === 'SUCCEEDED' && row.sourceMatches">{{ row.newVersions ? '新增 '+row.newVersions+' 个版本' : '订单版本无变化' }}</small>
             <small v-if="row.message" class="sync-message">{{ row.message }}</small>
           </div>
           <a-button :disabled="busy(row) || !row.sourceMatches || row.unverifiedSource" @click="open(row)">
-            {{ row.targetThrough || row.status === 'FAILED' || row.lastSyncFailed ? '继续同步' : '同步订单' }}
+            {{ targetPeriod(row) ? '补拉本期订单' : row.targetThrough || row.status === 'FAILED' || row.lastSyncFailed ? '继续同步' : '同步订单' }}
           </a-button>
         </li>
       </ul>
     </div>
   </section>
-  <a-drawer :open="!!selected" title="同步订单" :width="'min(440px, 100vw)'" @close="!submitting && (selected = undefined)">
+  <a-drawer :open="!!selected" :title="targetPeriod(selected) ? '补拉本期订单' : '同步订单'" :width="'min(440px, 100vw)'" @close="!submitting && (selected = undefined)">
     <div v-if="selected" role="dialog" aria-label="同步订单">
       <a-alert v-if="formError" class="feedback" type="error" :message="formError" show-icon/>
       <a-form :model="form" layout="vertical" @finish="submit">
         <p class="form-subhead">{{ label(selected.stream) }}</p>
-        <a-form-item v-if="!selected.targetThrough" name="fromDate" label="历史起点" html-for="sync-date" :required="!selected.initialFrom"
+        <p v-if="targetPeriod(selected)">仅补拉所选期次的付款和签到，退款按已有进度续拉。</p>
+        <a-form-item v-else-if="!selected.targetThrough" name="fromDate" label="历史起点" html-for="sync-date" :required="!selected.initialFrom"
           :extra="selected.initialFrom ? '填写更早日期可补拉历史。留空按已有进度同步。' : selected.source==='DCZD' ? '从北京时间当天零点起，读取进入来源接口的业务记录。' : '按北京时间从当天零点开始读取。'">
           <a-input type="date" id="sync-date" v-model:value="form.fromDate" :disabled="submitting"/>
         </a-form-item>
         <p v-else>继续读取上次同步范围。</p>
-        <div class="form-actions"><a-button type="primary" html-type="submit" :disabled="!selected.initialFrom && !form.fromDate" :loading="submitting">开始同步</a-button></div>
+        <div class="form-actions"><a-button type="primary" html-type="submit" :disabled="targetPeriod(selected) ? !selected.initialFrom || !!selected.targetThrough : !selected.initialFrom && !form.fromDate" :loading="submitting">开始同步</a-button></div>
       </a-form>
     </div>
   </a-drawer>

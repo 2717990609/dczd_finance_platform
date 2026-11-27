@@ -10,8 +10,8 @@ import RuleEditableTable from './RuleEditableTable.vue'
 import { practiceCompanyMatchLabels, practiceCompanyRatePriority,
   practiceCompanyScopes } from './rule-component-form'
 
-const props = defineProps({component:Object,index:Number,companies:Array,organizations:Array,salesCategories:Array,recipients:Array,amounts:Array,
-  payeeRoles:Array,people:Array,units:Array,pools:Array,memberChoices:Array})
+const props = defineProps({component:Object,index:[String,Number],companies:Array,organizations:Array,salesCategories:Array,recipients:Array,amounts:Array,
+  payeeRoles:Array,people:Array,units:Array,pools:Array,memberChoices:Array,manageRecommendations:Boolean})
 const emit = defineEmits(['member-change'])
 const sales = computed(() => props.component.companySales)
 const categories = computed(() => sales.value.categories)
@@ -50,8 +50,10 @@ const payeeKinds = [
 ]
 const hasRecommendations = computed(() => props.component.classMember==='new' && categories.value.some(category=>
   category.recommendationRate>0 || category.overrides.some(override=>override.recommendationRate>0)))
+const showRecommendations = ref(false)
 const legacyRecommendations = computed(() => props.component.classMember==='new' &&
-  (hasRecommendations.value || props.component.companySales.recommendationRecipients?.length))
+  (hasRecommendations.value || props.component.companySales.recommendationRecipients?.length ||
+    props.manageRecommendations && showRecommendations.value))
 const companyAssignments = computed(() => {
   const assignments = new Map()
   for (const row of categories.value) {
@@ -183,6 +185,8 @@ watch(amounts, choices => {
         @update:model-value="setScopeMode"/>
     </template>
     <template #standards>
+      <a-button v-if="manageRecommendations && component.classMember==='new' && !legacyRecommendations"
+        type="link" size="small" @click="showRecommendations=true">配置上游推荐提成</a-button>
       <RuleCommissionStandards v-model="scope" :groups="scopeOptions" :priority="priority">
         <template v-if="scope!=='general'" #tools>
           <a-button :disabled="scope==='category' && !salesCategories.length" size="small" @click="addStandard(scope)">
@@ -249,7 +253,7 @@ watch(amounts, choices => {
     <a-select :id="field('referral-recipients')" v-model:value="component.companySales.recommendationRecipients"
       :options="recipients" mode="multiple" :max-tag-count="3" allow-clear :filter-option="byName"/>
   </a-form-item>
-  <a-collapse v-if="component.companySales.internalCompanies?.length" ghost class="company-advanced">
+  <a-collapse v-if="manageRecommendations || component.companySales.internalCompanies?.length" ghost class="company-advanced">
     <a-collapse-panel key="advanced" header="订单归属设置">
       <div class="rule-basics">
         <a-form-item label="已配置的个人提成组织" :html-for="field('internal')">

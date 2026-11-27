@@ -15,6 +15,7 @@ import (
 type orderSyncRequest struct {
 	Stream   string `json:"stream"`
 	FromDate string `json:"fromDate"`
+	PeriodID int64  `json:"periodId"`
 }
 
 type orderSyncJob struct {
@@ -23,6 +24,7 @@ type orderSyncJob struct {
 	Status   string `json:"status"`
 	Message  string `json:"message,omitempty"`
 	from     *time.Time
+	periodID int64
 	provider string
 }
 
@@ -41,8 +43,8 @@ func (j orderSyncJob) active() bool { return j.Status == "QUEUED" || j.Status ==
 
 func readOrderSyncJob(ctx context.Context, db syncQueryer, stream string) (orderSyncJob, error) {
 	job := orderSyncJob{Stream: stream}
-	err := db.QueryRow(ctx, `SELECT id,status,initial_from,source_key,message FROM dcai_sync_jobs WHERE stream=$1`, stream).
-		Scan(&job.ID, &job.Status, &job.from, &job.provider, &job.Message)
+	err := db.QueryRow(ctx, `SELECT id,status,initial_from,source_key,message,practice_period_id FROM dcai_sync_jobs WHERE stream=$1`, stream).
+		Scan(&job.ID, &job.Status, &job.from, &job.provider, &job.Message, &job.periodID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = nil
 	}
@@ -62,12 +64,17 @@ func (s workspace) enqueueOrderSync(ctx context.Context, req orderSyncRequest) (
 		}
 		from = &date
 	}
-	return s.enqueueOrderSyncAt(ctx, req.Stream, from)
+	return s.enqueueOrderSyncRequest(ctx, req.Stream, from, req.PeriodID)
 }
 
 func (s workspace) enqueueOrderSyncAt(ctx context.Context, stream string, from *time.Time) (orderSyncJob, error) {
+	return s.enqueueOrderSyncRequest(ctx, stream, from, 0)
+}
+
+func (s workspace) enqueueOrderSyncRequest(ctx context.Context, stream string, from *time.Time, periodID int64) (orderSyncJob, error) {
 	source, _ := orderSyncSource(stream)
-	if source == "" || from != nil && (!validOrderWatermark(*from) || from.After(time.Now())) {
+	if source == "" || from != nil && (!validOrderWatermark(*from) || from.After(time.Now())) ||
+		periodID < 0 || periodID != 0 && (stream != dczdOrderStream || from != nil) {
 		return orderSyncJob{}, invalid
 	}
 	client, err := newOrderFeedClient(source, s.sources[source])
@@ -77,13 +84,13 @@ func (s workspace) enqueueOrderSyncAt(ctx context.Context, stream string, from *
 	var job orderSyncJob
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
 		var err error
-		job, err = queueOrderSyncJob(ctx, tx, stream, client.sourceKey(), from)
+		job, err = queueOrderSyncJob(ctx, tx, stream, client.sourceKey(), from, periodID)
 		return err
 	})
 	return job, err
 }
 
-func queueOrderSyncJob(ctx context.Context, tx pgx.Tx, stream, key string, from *time.Time) (orderSyncJob, error) {
+func queueOrderSyncJob(ctx context.Context, tx pgx.Tx, stream, key string, from *time.Time, periodID int64) (orderSyncJob, error) {
 	source, group := orderSyncSource(stream)
 	if err := touchSourceWrites(ctx, tx, []string{source}); err != nil {
 		return orderSyncJob{}, err
@@ -106,7 +113,7 @@ func queueOrderSyncJob(ctx context.Context, tx pgx.Tx, stream, key string, from 
 		if job.provider != key {
 			return job, errSyncOrigin
 		}
-		if from != nil && (job.from == nil || !from.Equal(*job.from)) {
+		if job.periodID != periodID || from != nil && (job.from == nil || !from.Equal(*job.from)) {
 			return job, errSyncInProgress
 		}
 		return job, nil
@@ -114,6 +121,9 @@ func queueOrderSyncJob(ctx context.Context, tx pgx.Tx, stream, key string, from 
 	state, err := readOrderSync(ctx, tx, stream)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
+		if periodID != 0 {
+			return job, errPracticePeriodSyncUnavailable
+		}
 		if from == nil {
 			err := tx.QueryRow(ctx, `SELECT initial_date::timestamp AT TIME ZONE 'Asia/Shanghai'
 			  FROM order_sync_settings WHERE stream=$1`, stream).Scan(&from)
@@ -133,10 +143,20 @@ func queueOrderSyncJob(ctx context.Context, tx pgx.Tx, stream, key string, from 
 	case from != nil && from.Before(state.From) && state.Target != nil:
 		return job, errSyncInProgress
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO dcai_sync_jobs(stream,source_key,initial_from,status) VALUES($1,$2,$3,'QUEUED')
+	if periodID != 0 {
+		if state.Completed == nil || state.Target != nil {
+			return job, errPracticePeriodSyncUnavailable
+		}
+		if _, err := readPracticeSyncPeriods(ctx, tx, 0, periodID); err != nil {
+			return job, err
+		}
+	}
+	err = tx.QueryRow(ctx, `INSERT INTO dcai_sync_jobs(stream,source_key,initial_from,practice_period_id,status) VALUES($1,$2,$3,$4,'QUEUED')
 	 ON CONFLICT(stream) DO UPDATE SET id=excluded.id,source_key=excluded.source_key,initial_from=excluded.initial_from,
+	 practice_period_id=excluded.practice_period_id,
 	 status='QUEUED',requested_at=clock_timestamp(),started_at=NULL,finished_at=NULL,message=''
-	 RETURNING id,status,message,source_key,initial_from`, stream, key, from).Scan(&job.ID, &job.Status, &job.Message, &job.provider, &job.from)
+	 RETURNING id,status,message,source_key,initial_from,practice_period_id`, stream, key, from, periodID).
+		Scan(&job.ID, &job.Status, &job.Message, &job.provider, &job.from, &job.periodID)
 	return job, err
 }
 
@@ -172,7 +192,7 @@ func (s workspace) runOrderSyncJob(ctx context.Context, stream string, interval 
 			}
 			if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 				var err error
-				job, err = queueOrderSyncJob(ctx, tx, stream, client.sourceKey(), from)
+				job, err = queueOrderSyncJob(ctx, tx, stream, client.sourceKey(), from, 0)
 				return err
 			}); err != nil {
 				return err
@@ -210,7 +230,7 @@ func finishOrderSyncJob(ctx context.Context, tx pgx.Tx, id int64, status, messag
 }
 
 func orderSyncFailureMessage(err error) string {
-	for _, known := range []error{errPracticeRegistrationSync, errSyncOrigin, errSyncInitialFrom, errSyncLaterStart, errUnverifiedSource, errBoundSourceImport} {
+	for _, known := range []error{errPracticeRegistrationSync, errPracticeScopedFactsMissing, errPracticeRefundOriginalMissing, errPracticePeriodSyncUnavailable, errPracticeNotReady, errSyncOrigin, errSyncInitialFrom, errSyncLaterStart, errUnverifiedSource, errBoundSourceImport} {
 		if errors.Is(err, known) {
 			return known.Error()
 		}
@@ -259,6 +279,7 @@ func (s workspace) getOrderSyncJobs(w http.ResponseWriter, r *http.Request) {
 	 VALUES ('DCAI','dcaiOrderStream',$1::text,$4::text),('DCAI','dcaiOrderStream',$2,$4),('DCZD','dczdOrderStream',$3,$5)
 	 ) SELECT coalesce(jsonb_agg(jsonb_build_object(
 	 'source',s.source,'stream',s.stream,'initialFrom',d.initial_from,'completedThrough',d.completed_through,'targetThrough',d.target_through,
+	 'practiceRefundThrough',pr.completed_through,
 	 'requestedFromDate',to_char(j.initial_from AT TIME ZONE 'Asia/Shanghai','YYYY-MM-DD'),
 	 'lastSuccessAt',d.last_success_at,'scannedOrders',d.scanned,'newVersions',d.versions,'taskId',j.id,'status',coalesce(j.status,'IDLE'),'message',coalesce(j.message,''),
 	 'sourceMatches',coalesce(ws.provider_key=s.provider,true) AND coalesce(d.source_key=s.provider,true)
@@ -268,6 +289,7 @@ func (s workspace) getOrderSyncJobs(w http.ResponseWriter, r *http.Request) {
 	 FROM streams s JOIN configuration_options c ON (c.group_key,c.option_key)=(s.group_key,s.stream) AND c.enabled
 	 LEFT JOIN dcai_order_sync d ON d.stream=s.stream
 	 LEFT JOIN dcai_sync_jobs j ON j.stream=s.stream
+	 LEFT JOIN practice_refund_sync pr ON s.source='DCZD' AND pr.source_key=s.provider
 	 JOIN source_write_state ws ON ws.source=s.source WHERE s.source='DCAI' OR s.provider<>''`,
 		dcaiVIPStream, dcaiHealthStream, dczdOrderStream, s.dcaiSourceKey(), s.orderSourceKey("DCZD")).Scan(&rows)
 	respond(w, rows, err)

@@ -64,6 +64,45 @@ func lockSettlementOperator(ctx context.Context, tx pgx.Tx, operator *financePri
 	return lockFinanceOperatorSession(ctx, tx, operator)
 }
 
+type setProductSettlementInput struct {
+	ProductID         int64 `json:"productId"`
+	SettlementEnabled *bool `json:"settlementEnabled"`
+}
+
+func (s workspace) setProductSettlement(ctx context.Context, req setProductSettlementInput) (any, error) {
+	if req.ProductID < 1 || req.SettlementEnabled == nil {
+		return nil, invalid
+	}
+	operator := financeUser(ctx)
+	if operator == nil && !s.development {
+		return nil, errFinanceLogin
+	}
+	if operator != nil && !operator.permitsSettlement(req.ProductID) {
+		return nil, errFinanceForbidden
+	}
+	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		// Match confirmation's lock order: product first, then account and session.
+		var enabled bool
+		if err := tx.QueryRow(ctx, `SELECT settlement_enabled FROM products WHERE id=$1 FOR NO KEY UPDATE`, req.ProductID).Scan(&enabled); err != nil {
+			return err
+		}
+		if operator != nil {
+			if err := lockSettlementOperator(ctx, tx, operator, req.ProductID); err != nil {
+				return err
+			}
+		}
+		if enabled == *req.SettlementEnabled {
+			return nil
+		}
+		_, err := tx.Exec(ctx, `UPDATE products SET settlement_enabled=$2 WHERE id=$1`, req.ProductID, *req.SettlementEnabled)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return map[string]int64{"id": req.ProductID}, nil
+}
+
 type settlement struct {
 	ID           int64     `json:"id"`
 	PeriodID     int64     `json:"periodId"`

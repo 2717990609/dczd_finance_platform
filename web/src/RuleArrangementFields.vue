@@ -1,7 +1,7 @@
 <script setup>
 import { useTemplateRef } from 'vue'
 
-defineProps({nameId:String,orderTypeId:String,orderTypes:Array,
+defineProps({nameId:String,nameLabel:{type:String,default:'收款安排名称'},orderTypeId:String,orderTypes:Array,
   calculationText:String,orderTypeText:String,scopeText:String,disabled:Boolean})
 const name = defineModel('name',{type:String})
 const orderType = defineModel('orderType',{type:String})
@@ -12,7 +12,7 @@ defineExpose({focus:()=>input.value?.focus()})
 <template>
   <div class="rule-arrangement-fields">
     <div v-if="nameId || $slots.default" class="rule-basics">
-      <a-form-item v-if="nameId" label="收款安排名称" :html-for="nameId" required>
+      <a-form-item v-if="nameId" :label="nameLabel" :html-for="nameId" required>
         <a-input :id="nameId" ref="input" v-model:value="name" :disabled="disabled" :maxlength="80"/>
       </a-form-item>
       <slot/>

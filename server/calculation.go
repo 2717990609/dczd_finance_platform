@@ -19,9 +19,10 @@ type identityKey struct{ Source, ExternalID string }
 type paymentKey struct{ Source, PaymentID string }
 
 type identityAssignment struct {
-	ID, PersonID int64
-	ValidFrom    time.Time
-	ValidTo      *time.Time
+	ID, PersonID            int64
+	ValidFrom               time.Time
+	ValidTo                 *time.Time
+	PracticeCurrentFallback bool `json:",omitempty"`
 }
 
 type paymentInput struct {
@@ -61,6 +62,7 @@ type draftIssue struct {
 	RuleID           int64                      `json:"ruleId,omitempty"`
 	Component        string                     `json:"component,omitempty"`
 	Code             string                     `json:"code"`
+	Detail           string                     `json:"detail,omitempty"`
 	EnrollmentID     int64                      `json:"enrollmentId,omitempty"`
 	Advisory         bool                       `json:"advisory,omitempty"`
 	Recovery         *pendingCorrectionRecovery `json:"recovery,omitempty"`
@@ -202,8 +204,10 @@ func selectPaymentRule(rules []paymentRule, at time.Time) *paymentRule {
 
 func paymentBeneficiary(fact sourceFact, role string, identities map[identityKey][]identityAssignment) (identityAssignment, string) {
 	var externalID string
+	practiceSeller := role == "SELLER" && fact.Source == "DCZD" && fact.Domain == "PRACTICE"
 	for _, party := range fact.Participants {
-		if party.Role != role || party.UserID == "" {
+		matchesPracticeSeller := practiceSeller && (party.Role == "DIRECT_REFERRER" || party.Role == "PROFESSOR")
+		if party.Role != role && !matchesPracticeSeller || party.UserID == "" {
 			continue
 		}
 		if externalID != "" && externalID != party.UserID {
@@ -211,14 +215,15 @@ func paymentBeneficiary(fact sourceFact, role string, identities map[identityKey
 		}
 		externalID = party.UserID
 	}
-	if externalID == "" && role == "DIRECT_REFERRER" {
+	if externalID == "" && (role == "DIRECT_REFERRER" || practiceSeller) {
 		externalID = fact.ReferrerID
 	}
 	if externalID == "" {
 		return identityAssignment{}, "MISSING_PARTICIPANT"
 	}
+	candidates := identities[identityKey{fact.Source, externalID}]
 	var selected identityAssignment
-	for _, candidate := range identities[identityKey{fact.Source, externalID}] {
+	for _, candidate := range candidates {
 		at := fact.OccurredAt
 		if at.Before(candidate.ValidFrom) || candidate.ValidTo != nil && !at.Before(*candidate.ValidTo) {
 			continue
@@ -227,6 +232,20 @@ func paymentBeneficiary(fact sourceFact, role string, identities map[identityKey
 			return identityAssignment{}, "AMBIGUOUS_IDENTITY"
 		}
 		selected = candidate
+	}
+	if selected.PersonID == 0 && fact.Source == "DCZD" && fact.Domain == "PRACTICE" &&
+		(role == "SELLER" || role == "DIRECT_REFERRER" || role == "PROFESSOR") {
+		// The payment-date mapping takes precedence. Older deposits may predate
+		// the directory entry for the same sales account.
+		for _, candidate := range candidates {
+			if !candidate.PracticeCurrentFallback {
+				continue
+			}
+			if selected.PersonID != 0 {
+				return identityAssignment{}, "AMBIGUOUS_IDENTITY"
+			}
+			selected = candidate
+		}
 	}
 	if selected.PersonID == 0 {
 		return identityAssignment{}, "MISSING_IDENTITY"

@@ -22,6 +22,11 @@ type vipRateRow struct {
 }
 
 const vipPayeeSalesCompany = "sales_company"
+const vipPayeeRecommendationCompany = "recommendation_company"
+
+func (r vipRateRow) companyPayee() bool {
+	return r.Payee == vipPayeeSalesCompany || r.Payee == vipPayeeRecommendationCompany
+}
 
 func (r vipRateRow) companies() []string {
 	if len(r.CompanyIDs) != 0 {
@@ -65,7 +70,7 @@ func (r vipRateRow) validScope() bool {
 
 func (r vipRateRow) validExternalDefault() bool {
 	return !r.ExternalDefault || r.Company == "ANY" && len(r.CompanyIDs) == 0 && !r.hasCategory() &&
-		!r.SnapshotDefault && r.Relationship == "ANY" && (r.Payee == "" || r.Payee == vipPayeeSalesCompany)
+		!r.SnapshotDefault && r.Relationship == "ANY" && (r.Payee == "" || r.companyPayee())
 }
 
 func (r vipRateRow) specificity() int {
@@ -247,7 +252,7 @@ func parseVIPSellerRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
 	rows, ok := parseVIPRateTable(rawRows)
 	// The combined sales arrangement chooses the payee per row.
 	if !ok || slices.ContainsFunc(rows, func(row vipRateRow) bool {
-		return row.ExternalDefault && row.Payee != vipPayeeSalesCompany
+		return row.ExternalDefault && !row.companyPayee()
 	}) {
 		return nil, false
 	}
@@ -264,7 +269,7 @@ func parseVIPRateTable(rawRows []json.RawMessage) ([]vipRateRow, bool) {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(raw, &row) != nil || json.Unmarshal(raw, &fields) != nil ||
 			len(fields["rate_bps"]) == 0 || string(fields["rate_bps"]) == "null" ||
-			!row.validScope() || !row.validExternalDefault() || row.Rate < 0 || row.Rate > 10000 || row.Payee != "" && row.Payee != vipPayeeSalesCompany ||
+			!row.validScope() || !row.validExternalDefault() || row.Rate < 0 || row.Rate > 10000 || row.Payee != "" && !row.companyPayee() ||
 			!slices.Contains([]string{"ANY", "DIRECT", "INDIRECT", "NONE"}, row.Relationship) {
 			return nil, false
 		}
@@ -408,9 +413,11 @@ type vipSalesRequest struct {
 	CompanyUnit, CompanyName, CompanyType                  string
 	Category                                               *string // Empty when explicitly unclassified, nil without a history record.
 	categoryIssue                                          string
+	sourceSellerAbsent                                     bool
 	Paid, OriginalPaid                                     int64
 	At                                                     time.Time
 	Referrer                                               vipOrderReferrer
+	RecommendationCompany                                  vipRecommendationCompany
 	commissionSalesOrg                                     *reportOrganization
 }
 
@@ -558,9 +565,20 @@ func calculateVIPSalesWithMembership(policy vipSalesPolicy, req vipSalesRequest,
 	amount := calculatePaymentAmount(req.Paid, component{Mode: "rate", Value: rate})
 	parts := []vipSalesPart{{Role: "SALES", Person: req.Seller, Name: sellerName, Rate: rate, Amount: amount}}
 	teamIdx := slices.IndexFunc(policy.Split.Teams, func(t vipInternalTeam) bool { return t.Company == req.Company })
-	if standard.Payee == vipPayeeSalesCompany {
+	if standard.companyPayee() {
 		if teamIdx >= 0 && !policy.Split.Independent {
 			return nil, "SALES_TEAM_PENDING"
+		}
+		if standard.Payee == vipPayeeRecommendationCompany {
+			if req.RecommendationCompany.Issue != "" {
+				return nil, req.RecommendationCompany.Issue
+			}
+			if req.RecommendationCompany.Unit == "" {
+				return nil, ""
+			}
+			parts[0].CompanyUnit = req.RecommendationCompany.Unit
+			parts[0].CompanyName = req.RecommendationCompany.Name
+			return parts, ""
 		}
 		if req.CompanyUnit == "" || req.CompanyName == "" {
 			return nil, "SALES_COMPANY_MISSING"
@@ -695,6 +713,21 @@ func vipSourceClaims(participants []sourceAttributionParticipant) []vipClaim {
 		return strings.Compare(a.Relationship, b.Relationship)
 	})
 	return claims
+}
+
+// An explicit absence of a seller still leaves the company claim available to
+// rules that identify the recipient from the company alone.
+func vipOrderClaim(claims []vipClaim, sellerAbsent bool) (vipClaim, string) {
+	claim, issue := vipSellerClaim(claims)
+	if sellerAbsent && issue == "SALES_PERSON_MISSING" {
+		for _, candidate := range claims {
+			if candidate.Role == "SALES_COMPANY" {
+				return candidate, ""
+			}
+		}
+		return vipClaim{}, ""
+	}
+	return claim, issue
 }
 
 func vipSellerClaim(claims []vipClaim) (vipClaim, string) {

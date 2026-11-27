@@ -83,6 +83,8 @@ const catalogActivityLatest = `NOT EXISTS (
  AND (newer.updated_at,newer.id)>(v.updated_at,v.id)
 )`
 
+const dcaiVIP499BasisMinor = 49900
+
 const catalogActivityEventColumns = `v.id,v.source,v.kind,v.occurred_at,v.fact,v.order_id,v.line_id,v.record_key,
   CASE WHEN v.kind='ORDER_PAID' THEN v.fact->>'paymentId' ELSE v.fact->>'refundId' END AS event_id,
   CASE WHEN jsonb_typeof(v.fact->'amountMinor')='number' THEN (v.fact->>'amountMinor')::bigint END AS amount`
@@ -278,11 +280,15 @@ recognition_rules AS MATERIALIZED (
 	  THEN coalesce(v.fact->>'transactionType','') END AS membership_type,
   CASE WHEN frozen.payment_version_id IS NOT NULL THEN 1 ELSE m.matches END AS matches,
   coalesce(frozen.sku_code,m.sku) AS sku,
-  CASE WHEN jsonb_typeof(coalesce(frozen.amount,v.fact->'amountMinor'))='number'
-   THEN (coalesce(frozen.amount,v.fact->'amountMinor')#>>'{}')::bigint END AS amount,
+  original.amount,
   v.fact->>'paymentId' AS identity,frozen.payment_version_id,frozen.period_id,
   recognition.required,completed.occurred_at AS completed_at,
   CASE WHEN frozen.payment_version_id IS NOT NULL THEN frozen.completion_version_id ELSE completed.id END AS completion_version_id,
+  CASE
+   WHEN frozen.payment_version_id IS NOT NULL THEN coalesce(frozen.recognized_amount_minor,original.amount)
+   WHEN v.source='DCAI' AND v.fact->>'domain'='VIP' AND original.amount>0
+    AND EXISTS(SELECT 1 FROM products WHERE id=$1 AND code='DCAI_VIP') THEN $10::bigint
+   ELSE original.amount END AS recognized_payment_minor,
   coalesce(frozen.completion_at,CASE WHEN frozen.payment_version_id IS NULL THEN completed.occurred_at END,v.occurred_at) AS recognized_at,
   frozen.payment_version_id IS NOT NULL AND frozen.amount IS DISTINCT FROM v.fact->'amountMinor' AS amount_changed
  FROM (SELECT DISTINCT payment_id FROM origins WHERE payment_id IS NOT NULL) ids
@@ -308,7 +314,7 @@ recognition_rules AS MATERIALIZED (
   AND completed.occurred_at>=v.occurred_at AND completed.occurred_at<=CURRENT_TIMESTAMP
  LEFT JOIN LATERAL (
   SELECT a.payment_version_id,a.sku_code,a.period_id,original.fact->'amountMinor' AS amount,
-   a.completion_version_id,saved_completion.occurred_at AS completion_at
+   a.completion_version_id,a.recognized_amount_minor,saved_completion.occurred_at AS completion_at
   FROM source_order_versions original JOIN catalog_aggregate_draft_events a
    ON original.id=a.source_version_id AND a.source_version_id=a.payment_version_id
   JOIN settlements closed USING(period_id) JOIN periods prior ON prior.id=closed.period_id
@@ -318,9 +324,13 @@ recognition_rules AS MATERIALIZED (
    (v.source,v.order_id,v.line_id,v.record_key,v.kind)
   ORDER BY closed.id LIMIT 1
  ) frozen ON true
+ CROSS JOIN LATERAL (
+  SELECT CASE WHEN jsonb_typeof(coalesce(frozen.amount,v.fact->'amountMinor'))='number'
+   THEN (coalesce(frozen.amount,v.fact->'amountMinor')#>>'{}')::bigint END AS amount
+ ) original
 ), assessed AS (
  SELECT e.*,CASE WHEN p.matches=1 THEN p.sku END AS sku,p.occurred_at AS paid_at,p.amount AS original_amount,
-  p.recognized_at,p.completion_version_id,p.membership_type,
+  p.recognized_at,p.completion_version_id,p.membership_type,p.recognized_payment_minor,
   p.payment_version_id AS frozen_payment_id,p.period_id AS frozen_period_id,
   p.payment_version_id IS NULL AND due.id IS NULL AND EXISTS(
    SELECT 1 FROM closed_windows prior
@@ -347,20 +357,35 @@ recognition_rules AS MATERIALIZED (
    ELSE p.completed_at IS NOT NULL AND (NOT e.in_scope OR e.kind<>'ORDER_PAID' AND e.occurred_at>=p.completed_at
     OR due.id IS NOT NULL) END)
 ), capped AS (
- SELECT *,sum(amount) FILTER(WHERE kind='REFUND_SUCCEEDED' AND issue='') OVER (PARTITION BY payment_id) AS linked_refunds
+ SELECT *,sum(amount) FILTER(WHERE kind='REFUND_SUCCEEDED' AND issue='') OVER (PARTITION BY payment_id) AS linked_refunds,
+  sum(amount) FILTER(WHERE kind='REFUND_SUCCEEDED' AND issue='') OVER (
+   PARTITION BY payment_id ORDER BY occurred_at,id ROWS UNBOUNDED PRECEDING) AS running_refunds
  FROM assessed
+), recognized AS (
+ SELECT *,CASE
+  WHEN issue<>'' OR recognized_payment_minor IS NOT DISTINCT FROM original_amount THEN amount
+  WHEN kind='ORDER_PAID' THEN recognized_payment_minor
+  -- Refund only the membership basis. A full financial refund offsets the entire basis.
+  WHEN kind='REFUND_SUCCEEDED' AND original_amount>0 AND linked_refunds<=original_amount THEN
+   (CASE WHEN running_refunds=original_amount THEN recognized_payment_minor
+       ELSE least(running_refunds,recognized_payment_minor) END
+    -CASE WHEN running_refunds-amount=original_amount THEN recognized_payment_minor
+       ELSE least(running_refunds-amount,recognized_payment_minor) END)::bigint
+  ELSE amount END AS recognized_amount
+ FROM capped
 )
-SELECT capped.id,coalesce(sku,''),kind,coalesce(amount,0),
+SELECT event.id,coalesce(sku,''),kind,coalesce(recognized_amount,0),
+ CASE WHEN amount IS DISTINCT FROM recognized_amount THEN recognized_amount END,
  coalesce(frozen_payment_id,payment_id,0),coalesce(completion_version_id,0),coalesce(paid_at,occurred_at),coalesce(recognized_at,occurred_at),
- coalesce(frozen_period_id,0),coalesce(origin_closed,false),membership_type,occurred_at,coalesce(original_amount,0),coalesce(booked.refunds,0),
+ coalesce(frozen_period_id,0),coalesce(origin_closed,false),membership_type,occurred_at,coalesce(recognized_payment_minor,0),coalesce(booked.refunds,0),
  CASE WHEN issue='' AND kind='REFUND_SUCCEEDED' AND linked_refunds>original_amount THEN 'REFUND_EXCEEDS_PAYMENT' ELSE issue END
-FROM capped
+FROM recognized event
 LEFT JOIN LATERAL (
- SELECT sum((v.fact->>'amountMinor')::bigint)::bigint AS refunds
+ SELECT sum(coalesce(saved.recognized_amount_minor,(v.fact->>'amountMinor')::bigint))::bigint AS refunds
  FROM catalog_aggregate_draft_events saved
  JOIN closed_windows prior ON prior.id=saved.period_id
  JOIN source_order_versions v ON v.id=saved.source_version_id
- WHERE capped.kind='REFUND_SUCCEEDED' AND saved.payment_version_id=capped.frozen_payment_id
+ WHERE event.kind='REFUND_SUCCEEDED' AND saved.payment_version_id=event.frozen_payment_id
   AND saved.source_version_id<>saved.payment_version_id AND prior.ends_on<($3::timestamptz AT TIME ZONE 'Asia/Shanghai')::date
   AND v.kind='REFUND_SUCCEEDED'
 ) booked ON true
@@ -642,13 +667,14 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 		}
 	}
 	rows, err = tx.Query(ctx, catalogActivityAmountsSQL, in.ProductID, in.Scenarios, in.Window.Start, in.Window.Through,
-		maxDraftPayments+1, in.DraftPeriodID, retiredFrom, packageID, recognition)
+		maxDraftPayments+1, in.DraftPeriodID, retiredFrom, packageID, recognition, dcaiVIP499BasisMinor)
 	if err != nil {
 		return result, err
 	}
 	var kind, issue string
 	var membershipType *string
 	var amount, originalAmount, priorBookedRefunds int64
+	var recognizedAmount *int64
 	var originClosed bool
 	var eventID, paymentID, completionVersionID int64
 	var paidAt, recognizedAt, occurredAt time.Time
@@ -657,7 +683,7 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 	selections := make(map[int64]*catalogAggregateMatch)
 	firstPayment := in.Window.Start
 	seen := 0
-	_, err = pgx.ForEachRow(rows, []any{&eventID, &code, &kind, &amount, &paymentID, &completionVersionID, &paidAt, &recognizedAt,
+	_, err = pgx.ForEachRow(rows, []any{&eventID, &code, &kind, &amount, &recognizedAmount, &paymentID, &completionVersionID, &paidAt, &recognizedAt,
 		&frozenPeriod, &originClosed, &membershipType, &occurredAt, &originalAmount, &priorBookedRefunds, &issue}, func() error {
 		seen++
 		if seen > maxDraftPayments {
@@ -668,7 +694,7 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 		completionVersionID = equivalent.reference(completionVersionID)
 		event := catalogActivityEvent{PaymentID: paymentID, CompletionVersionID: completionVersionID, PaidAt: paidAt,
 			RecognizedAt: recognizedAt, OccurredAt: occurredAt, Scenario: code, MembershipType: membershipType,
-			Amount: amount, OriginalAmount: originalAmount, PriorBookedRefunds: priorBookedRefunds,
+			Amount: amount, RecognizedAmount: recognizedAmount, OriginalAmount: originalAmount, PriorBookedRefunds: priorBookedRefunds,
 			Refund: kind != "ORDER_PAID", frozenPeriod: frozenPeriod, originClosed: originClosed}
 		if groupPayments {
 			event.EventID = eventID
@@ -703,11 +729,7 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 	}
 	var performance catalogPerformanceDirectory
 	var decisions map[int64]catalogPerformanceDecision
-	if groupPayments && slices.ContainsFunc(rules, func(rule catalogAggregateRule) bool {
-		return rule.Definition.Performance.active() || slices.ContainsFunc(rule.Definition.Items, func(item catalogPeriodItem) bool {
-			return item.needsSalesDirectory() || len(item.ScopeCategories) != 0 || item.Appointment != nil
-		})
-	}) {
+	if groupPayments {
 		performance, err = readCatalogPerformanceDirectory(ctx, tx, events)
 		if err != nil {
 			return result, err
@@ -716,6 +738,11 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 	}
 	selected := events[:0]
 	for _, event := range events {
+		treatment := performance.vipOrders[event.PaymentID]
+		zeroPayment := !event.Refund && event.Amount == 0 && event.frozenPeriod == 0
+		if zeroPayment && treatment.GiftOpening {
+			continue
+		}
 		if decisions != nil {
 			decision, known := decisions[event.PaymentID]
 			if !known {
@@ -740,6 +767,14 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 				continue
 			}
 			if decision.issue != "" {
+				if zeroPayment && treatment.BackOffice && isVIPSalesAttributionIssue(decision.issue) &&
+					event.selection != nil && event.selection.rule != nil &&
+					!slices.ContainsFunc(event.selection.rule.Definition.Items, func(item catalogPeriodItem) bool { return item.FixedMinor != nil }) {
+					if in.DraftPeriodID != 0 {
+						result.postingIssues = append(result.postingIssues, draftIssue{FactID: event.EventID, Code: dcaiZeroBackOfficeAttributionAdvisory, Advisory: true})
+					}
+					continue
+				}
 				result.Issues[decision.issue]++
 				if in.DraftPeriodID != 0 {
 					result.postingIssues = append(result.postingIssues, draftIssue{FactID: event.EventID, Code: decision.issue})
@@ -788,6 +823,9 @@ func readCatalogPeriodActivity(ctx context.Context, tx pgx.Tx, in catalogPeriodA
 			}
 			original, err := readFrozenCatalogAggregateGroups(ctx, tx, selected, in.Window.Start, in.DraftPeriodID == 0)
 			if err != nil {
+				return result, err
+			}
+			if err := readCatalogAmountRefunds(ctx, tx, selected); err != nil {
 				return result, err
 			}
 			grouping, err := groupCatalogPeriodEvents(selected, rules, directory, original, performance, in.Window.Through.Add(-time.Microsecond))

@@ -7,7 +7,7 @@ import RuleOrderScope from './RuleOrderScope.vue'
 import RuleSalesScopeFields from './RuleSalesScopeFields.vue'
 import { moneyAsMinor, practiceRetrainShareMethods, practiceRetrainSplitAmounts, practiceRetrainSplitEstimate } from './rule-component-form'
 
-const props = defineProps({split:Object,index:Number,people:Array,salesUnits:Array,total:Number,formatMoney:Function})
+const props = defineProps({split:Object,index:[Number,String],people:Array,salesUnits:Array,total:Number,formatMoney:Function})
 const emit = defineEmits(['remove'])
 const field = name => 'practice-retrain-service-'+props.index+'-'+name
 const estimate = computed(() => {

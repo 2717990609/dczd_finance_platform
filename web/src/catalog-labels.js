@@ -27,6 +27,8 @@ export const benefitStatus = {
   OUTSIDE_COMMISSION_SCOPE:'超出提成范围',
   MEMBERSHIP_TYPE_PENDING:'新购或续费待核',
   INACTIVE:'付款时未任职',
+  RECOMMENDATION_COMPANY_CONFLICT:'推荐公司归属不一致',
+  RECOMMENDATION_COMPANY_MISSING:'缺少可确认的推荐公司',
   REFERRER_SOURCE_CONFLICT:'订单直接推荐人和锁粉记录冲突',
   REFERRER_PERSON_CONFLICT:'推荐人账号关联到多个人员',
   REFERRER_PERSON_MISSING:'推荐人账号未关联到人员',

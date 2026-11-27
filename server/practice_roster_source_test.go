@@ -138,7 +138,11 @@ func TestPracticeRosterPullAndSettlementUseCurrentSourceVersion(t *testing.T) {
 	pull(http.StatusOK)
 	calculate := func() draftSummary {
 		t.Helper()
-		w := call(http.MethodPost, "/api/v1/drafts", calculateDraftInput{PeriodID: period}, http.StatusOK)
+		call(http.MethodPost, "/api/v1/drafts", calculateDraftInput{PeriodID: period}, http.StatusAccepted)
+		if err := s.refreshDrafts(ctx, true); err != nil {
+			t.Fatal(err)
+		}
+		w := call(http.MethodGet, fmt.Sprintf("/api/v1/drafts?periodId=%d", period), nil, http.StatusOK)
 		var d draftSummary
 		if err := json.Unmarshal(w.Body.Bytes(), &d); err != nil || d.Total != 1000 || d.IssueCount != 0 {
 			t.Fatalf("unexpected trial %s: %v", w.Body, err)
@@ -256,9 +260,14 @@ func TestPracticeRegistrationSyncUsesBusinessStateWithoutConfirmation(t *testing
 		t.Fatal(err)
 	}
 	defer conn.Release()
+	var jobID int64
+	if err := conn.QueryRow(ctx, `INSERT INTO dcai_sync_jobs(stream,source_key,status,started_at) VALUES($1,$2,'RUNNING',$3) RETURNING id`,
+		dczdOrderStream, client.sourceKey(), time.Date(2026, 8, 8, 1, 0, 0, 0, time.UTC)).Scan(&jobID); err != nil {
+		t.Fatal(err)
+	}
 	check := func(version int64, attendance int, referrer string) {
 		t.Helper()
-		if err := syncPracticeRegistrations(ctx, conn, client); err != nil {
+		if err := syncPracticeRegistrations(ctx, conn, client, jobID); err != nil {
 			t.Fatal(err)
 		}
 		var gotVersion int64

@@ -92,7 +92,7 @@ const catalogRulesSQL = `SELECT coalesce(jsonb_agg(to_jsonb(result) ORDER BY res
    AND (m.effective_to IS NULL OR v.effective_from<m.effective_to)
   HAVING count(DISTINCT m.sku_label)=1
  ) scenario ON true
- WHERE ($1::bigint[] IS NULL OR p.product_id=ANY($1))
+ WHERE p.code<>'` + periodRulePluginPackageCode + `' AND ($1::bigint[] IS NULL OR p.product_id=ANY($1))
 ) result`
 
 func normalizeProductConfig(input *productConfigFile) error {

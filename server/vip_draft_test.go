@@ -1373,3 +1373,86 @@ func TestVIPDraftReusesVersionAndReconcilesBeneficiaries(t *testing.T) {
 		}
 	})
 }
+
+func TestVIPDraftUsesSourcePayeeAndReportsBothRecommendationCompanies(t *testing.T) {
+	ctx := context.Background()
+	db := integrationDB(t)
+	s := workspace{db: db, development: true}
+	const saleCompany = "80900000-0000-4000-8000-000000000001"
+	const orderCompany = "80900000-0000-4000-8000-000000000002"
+	const directoryCompany = "80900000-0000-4000-8000-000000000003"
+	for _, statement := range []string{
+		`INSERT INTO products(id,code,name,period_mode,cycle_start_day) OVERRIDING SYSTEM VALUE VALUES(950,'DCAI_SALES','销售分润验收','calendar',25)`,
+		`INSERT INTO product_catalog_settings(product_id,source_id,source_environment,project_code,source_system,source_key,captured_at,snapshot_digest)
+		 VALUES(950,gen_random_uuid(),'test','DCAI','DCAI','new','2026-11-01',sha256('fixture'::bytea))`,
+		`INSERT INTO catalog_business_routes(source_id,product_id,source,domain,entity_type,record_table,business_key,classifier,
+		 sku_code,sku_label,mapping_version,effective_from,observed_at)
+		 VALUES(gen_random_uuid(),950,'DCAI','VIP','VIP_ORDER','ai_vip_order','dcai:vip:new','dcai.vip-lifecycle.v1','VIP','会员',1,'2026-09-01','2026-11-01')`,
+		`INSERT INTO periods(id,product_id,name,ordinal,starts_on,ends_on,calendar_month) OVERRIDING SYSTEM VALUE
+		 VALUES(951,950,'十月',202610,'2026-09-25','2026-10-24','2026-10-01')`,
+		`INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES(9501,'源端最终销售'),(9502,'直接推荐人')`,
+		`INSERT INTO identity_mappings(person_id,source,external_id,valid_from)
+		 VALUES(9501,'DCAI','confirmed-seller','2026-09-01'),(9502,'DCAI','referrer','2026-09-01')`,
+		`INSERT INTO organization_units(id,kind,name,status) VALUES
+		 ('` + saleCompany + `','COMPANY','成交公司','ACTIVE'),
+		 ('` + orderCompany + `','COMPANY','订单推荐公司','ACTIVE'),
+		 ('` + directoryCompany + `','COMPANY','目录推荐公司','ACTIVE')`,
+		`INSERT INTO organization_company_sources(source,source_company_id,company_id,valid_from) VALUES
+		 ('DCAI','sales-company','` + saleCompany + `','2026-09-01'),('DCAI','order-referral','` + orderCompany + `','2026-09-01')`,
+		`INSERT INTO organization_company_recommendations(company_id,referrer_company_id)
+		 VALUES('` + saleCompany + `','` + directoryCompany + `')`,
+	} {
+		if _, err := db.Exec(ctx, statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	at := time.Date(2026, 9, 25, 0, 0, 0, 0, shanghai)
+	rate := int64(1000)
+	input := publishCatalogRatesInput{
+		EffectiveFrom: at,
+		Create:        &catalogScenarioCreate{ProductID: 950, catalogScenarioCopy: catalogScenarioCopy{SKU: "VIP", Label: "销售分润"}},
+		NewItems: []catalogNewBenefitItem{
+			{Label: "个人提成", catalogBenefitTarget: catalogBenefitTarget{Target: "order_seller"}, catalogBenefitCalculation: catalogBenefitCalculation{Rate: &rate}},
+			{Label: "公司提成", catalogBenefitTarget: catalogBenefitTarget{Target: "order_recommendation_company"}, catalogBenefitCalculation: catalogBenefitCalculation{Rate: &rate}},
+		},
+	}
+	if _, err := s.publishCatalogRates(ctx, input, "fixture"); err != nil {
+		t.Fatal(err)
+	}
+	raw := json.RawMessage(`{"fact_schema_version":"source.order-fact/1.0","fact_type":"ORDER_PAID","occurred_at":"2026-10-02T00:00:00Z",
+	 "order":{"source_order_id":"101","order_no":"101"},"source_record":{"source_table":"ai_vip_order","record_id":"101","record_version":"1","updated_at":"2026-10-02T00:00:00Z"},
+	 "business":{"source_domain_code":"VIP","source_entity_type_code":"VIP_ORDER","source_product_code":"VIP"},
+	 "payment":{"source_payment_id":"101"},"amounts":{"paid_minor":"10000"},
+	 "attribution_snapshot":{"participants":[{"source_role_code":"DIRECT_PID_USER","source_user_id":"referrer"},
+	   {"source_role_code":"UPSTREAM_COMPANY","source_company_id":"order-referral"}]},
+	 "extensions":{"attributes":{"commission_seller":{"status":"RESOLVED","source_user_id":"confirmed-seller","source_company_id":"sales-company"}}}}`)
+	fact, err := normalizeFact("DCAI", "101", raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pgx.BeginFunc(ctx, db, func(tx pgx.Tx) error {
+		_, err := storeSourceFacts(ctx, tx, []sourceFact{fact})
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	trial, err := s.recalculateDraft(ctx, calculateDraftInput{PeriodID: 951})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := trial.(draftSummary); got.Total != 1000 || got.IssueCount != 1 || got.LineCount != 1 {
+		t.Fatalf("company conflict must block only the company commission: %+v", got)
+	}
+	w := httptest.NewRecorder()
+	s.getDraft(w, httptest.NewRequest(http.MethodGet, "/api/v1/drafts?periodId=951", nil))
+	var got struct {
+		Lines  []struct{ PersonName string }
+		Issues []struct{ OrderID, Code, Detail string }
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || w.Code != 200 ||
+		len(got.Lines) != 1 || got.Lines[0].PersonName != "源端最终销售" ||
+		len(got.Issues) != 1 || got.Issues[0].OrderID != "101" || got.Issues[0].Code != "RECOMMENDATION_COMPANY_CONFLICT" ||
+		got.Issues[0].Detail != "源订单：订单推荐公司，财务目录：目录推荐公司" {
+		t.Fatalf("draft must expose the confirmed individual and both company names: %d %s %v", w.Code, w.Body, err)
+	}
+}

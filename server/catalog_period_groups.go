@@ -24,6 +24,7 @@ type catalogActivityEvent struct {
 	Scenario            string
 	MembershipType      *string // nil for orders outside the membership source; empty for unmarked membership orders.
 	Amount              int64
+	RecognizedAmount    *int64
 	OriginalAmount      int64
 	PriorBookedRefunds  int64
 	Refund              bool
@@ -32,6 +33,7 @@ type catalogActivityEvent struct {
 	frozenPeriod        int64
 	frozenGroups        []catalogFrozenGroupReference
 	fixedHistory        map[string]catalogFixedRefundHistory
+	amountRefunds       map[string]refundLine
 }
 
 type catalogFixedRefundHistory struct {
@@ -116,9 +118,12 @@ type catalogPeriodGroup struct {
 	items             []catalogPeriodItem
 	fixedPoolKey      string
 	orderAccruedMinor int64
+	orderRate         int64
 	orderExactCredit  *big.Rat
 	originalLineID    int64
 	orderRefunds      []refundLine
+	amountRefundBasis int64
+	amountRefundTotal int64
 }
 
 func (g catalogPeriodGroup) quote() catalogPeriodQuote {
@@ -132,15 +137,15 @@ func (g catalogPeriodGroup) countsOrders() bool { return g.FixedPerOrder || g.Pe
 
 func (g catalogPeriodGroup) calculateQuote(carry int64) (catalogPeriodQuote, error) {
 	if !g.countsOrders() {
-		return quoteCatalogPeriod(g.items, g.Receipts, g.Refunds, carry)
+		quote, err := quoteCatalogPeriod(g.items, g.Receipts, g.Refunds-g.amountRefundBasis, carry)
+		if err == nil && g.amountRefundTotal != 0 {
+			err = addCatalogActivityAmount(g.amountRefundTotal, &quote.Total, &quote.Awards[0].Amount)
+		}
+		return quote, err
 	}
 	item := g.items[0]
-	var rate int64
-	if item.FixedMinor == nil {
-		rate = item.Tiers[0].Rate
-	}
 	return catalogPeriodQuote{Basis: max(g.Net, 0), Total: g.orderAccruedMinor,
-		Awards: []catalogPeriodAward{{ItemKey: item.ItemKey, Label: item.Label, Fixed: item.FixedMinor != nil, Rate: rate, Amount: g.orderAccruedMinor}}}, nil
+		Awards: []catalogPeriodAward{{ItemKey: item.ItemKey, Label: item.Label, Fixed: item.FixedMinor != nil, Rate: g.orderRate, Amount: g.orderAccruedMinor}}}, nil
 }
 
 type catalogPeriodGroupTarget struct {
@@ -168,11 +173,12 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 		Units             []string
 		OwnSales          bool
 		Appointment       *catalogPerformanceDuty
-		Categories        []string `json:",omitempty"`
-		SKUs              []string `json:",omitempty"`
-		MembershipNewOnly bool     `json:",omitempty"`
-		AppointmentLevel  string   `json:",omitempty"`
-		AppointmentRole   string   `json:",omitempty"`
+		Categories        []string                    `json:",omitempty"`
+		SKUs              []string                    `json:",omitempty"`
+		MembershipNewOnly bool                        `json:",omitempty"`
+		AppointmentLevel  string                      `json:",omitempty"`
+		AppointmentRole   string                      `json:",omitempty"`
+		OnOrderDuty       *rulePluginOrderAppointment `json:",omitempty"`
 	}
 	scopes := make([]orderScope, 0, len(targets))
 	canonicalTargets := slices.Clone(targets)
@@ -182,8 +188,9 @@ func catalogAggregateCarryKey(definition catalogPeriodDefinition, targets []cata
 			if item.ItemKey == target.Item {
 				scope := orderScope{Item: item.ItemKey, Units: slices.Sorted(slices.Values(item.CommissionUnits)),
 					OwnSales: item.OwnSales, Appointment: item.Appointment, Categories: slices.Sorted(slices.Values(item.ScopeCategories)),
-					MembershipNewOnly: item.MembershipNewOnly, AppointmentLevel: item.AppointmentLevel, AppointmentRole: item.AppointmentRole}
-				if target.PoolID > 0 && item.TargetKind == "pool" && item.FixedMinor != nil && !item.FixedPerOrder {
+					MembershipNewOnly: item.MembershipNewOnly, AppointmentLevel: item.AppointmentLevel,
+					AppointmentRole: item.AppointmentRole, OnOrderDuty: item.orderAppointment}
+				if target.PoolID > 0 && item.TargetKind == "pool" && (item.MemberRole == "" || item.FixedMinor != nil && !item.FixedPerOrder) {
 					// The pool receives the fixed award. Its distribution roster can change independently.
 					canonicalTargets[i].Owner = 0
 					canonicalTargets[i].Members = nil
@@ -327,7 +334,7 @@ func (d catalogAggregateDirectory) groupTarget(item catalogPeriodItem, at time.T
 		}
 	}
 	key.Members = d.members(key.Unit, item.MemberRole, at)
-	if len(key.Members) == 0 {
+	if len(key.Members) == 0 && (item.PoolID == 0 || item.MemberRole != "") {
 		return target, key, "BENEFIT_POOL_MEMBERS_MISSING"
 	}
 	target.MemberCount = len(key.Members)
@@ -347,6 +354,52 @@ func (d catalogAggregateDirectory) groupAppointmentTarget(item catalogPeriodItem
 		key.Person, target.Name, target.OrganizationName = duty.ID, duty.Name, duty.UnitName
 	}
 	return target, key, ""
+}
+
+func (d catalogAggregateDirectory) orderAppointmentTarget(event catalogActivityEvent, item catalogPeriodItem,
+	performance catalogPerformanceDirectory) (catalogPeriodGroupTarget, catalogGroupTargetKey, string) {
+	duty := item.orderAppointment
+	var unit, issue string
+	if duty == nil || duty.Level != "TEAM" || len(duty.Groups) == 0 && !duty.SkipSellerHead {
+		unit, issue = performance.appointmentOrganization(event, item.AppointmentLevel)
+	} else {
+		var company string
+		company, issue = performance.orderCompany(event)
+		var seller catalogGroupTargetKey
+		if issue == "" {
+			_, seller, issue = performance.orderSellerTarget(event, item)
+		}
+		if issue == "" && duty.SkipSellerHead {
+			headItem := item
+			headItem.AppointmentRole = "TEAM_LEAD"
+			headTarget, head, reason := d.groupAppointmentTarget(headItem, company, event.PaidAt)
+			issue = reason
+			if issue == "" && head.Person == 0 {
+				issue = "BENEFIT_APPOINTMENT_MISSING"
+			}
+			if issue == "" && head.Person == seller.Person {
+				if item.AppointmentRole == "GROUP_LEAD" {
+					return headTarget, head, ""
+				}
+				return catalogPeriodGroupTarget{}, catalogGroupTargetKey{}, ""
+			}
+		}
+		if issue == "" {
+			if len(duty.Groups) != 0 {
+				unit, issue = performance.paymentGroup(event, seller.Person, company, duty.Groups)
+			} else {
+				unit, issue = performance.appointmentOrganization(event, item.AppointmentLevel)
+			}
+		}
+	}
+	if issue != "" {
+		return catalogPeriodGroupTarget{}, catalogGroupTargetKey{}, issue
+	}
+	target, key, issue := d.groupAppointmentTarget(item, unit, event.PaidAt)
+	if issue == "" && duty != nil && key.Person == 0 {
+		issue = "BENEFIT_APPOINTMENT_MISSING"
+	}
+	return target, key, issue
 }
 
 type catalogAggregateMatch struct {
@@ -385,10 +438,11 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 	frozen map[catalogFrozenGroupReference]catalogPeriodGroup, performance catalogPerformanceDirectory, periodEnd time.Time) (catalogPeriodGroupReport, error) {
 	report := catalogPeriodGroupReport{Groups: []catalogPeriodGroup{}, Issues: map[string]int{}}
 	type assignment struct {
-		groups   []*catalogPeriodGroup
-		issues   []*catalogPeriodTargetIssue
-		issue    string
-		excluded bool
+		groups                  []*catalogPeriodGroup
+		issues                  []*catalogPeriodTargetIssue
+		issue                   string
+		excluded                bool
+		zeroAttributionAdvisory bool
 	}
 	type issueKey struct{ rule, item, code string }
 	targetIssues := make(map[issueKey]*catalogPeriodTargetIssue)
@@ -401,6 +455,11 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 	}
 	fixedPayments := make(map[int64]fixedPayment)
 	for _, event := range events {
+		treatment := performance.vipOrders[event.PaymentID]
+		zeroPayment := !event.Refund && event.Amount == 0 && event.frozenPeriod == 0
+		if zeroPayment && treatment.GiftOpening {
+			continue
+		}
 		applied, found := byPayment[event.PaymentID]
 		if !found && event.frozenPeriod != 0 {
 			for _, ref := range event.frozenGroups {
@@ -432,6 +491,9 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					if typedMembership && *event.MembershipType == "RENEWAL" {
 						continue
 					}
+					if treatment.SellerAbsent && !zeroPayment && (item.TargetKind == "order_seller" || item.OwnSales) {
+						continue
+					}
 					decision := performance.matchItem(event, item)
 					if decision.excluded {
 						continue
@@ -444,18 +506,17 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					var key catalogGroupTargetKey
 					issue := decision.issue
 					if issue == "" {
+						issue = performance.salesRateOverride(event, &item)
+					}
+					if issue == "" {
 						if item.TargetKind == "order_seller" {
 							target, key, issue = performance.orderSellerTarget(event, item)
 						} else if item.AppointmentLevel == "" {
 							target, key, issue = directory.groupTarget(item, at)
 						} else {
-							unit, lookupIssue := performance.appointmentOrganization(event, item.AppointmentLevel)
-							issue = lookupIssue
-							if issue == "" {
-								target, key, issue = directory.groupAppointmentTarget(item, unit, at)
-								if issue == "" && key.Person == 0 {
-									continue
-								}
+							target, key, issue = directory.orderAppointmentTarget(event, item, performance)
+							if issue == "" && key.Person == 0 {
+								continue
 							}
 						}
 					}
@@ -463,6 +524,10 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 						issue = "MEMBERSHIP_TYPE_PENDING"
 					}
 					if issue != "" {
+						if zeroPayment && treatment.BackOffice && item.FixedMinor == nil && isVIPSalesAttributionIssue(issue) {
+							applied.zeroAttributionAdvisory = true
+							continue
+						}
 						problemKey := issueKey{rule.ID, item.ItemKey, issue}
 						problem := targetIssues[problemKey]
 						if problem == nil {
@@ -476,6 +541,10 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 						continue
 					}
 					groupTarget := key
+					registeredPool := item.TargetKind == "pool" && item.PoolID > 0 && item.MemberRole == ""
+					if registeredPool {
+						groupTarget.Members = nil
+					}
 					if rule.ID == "" {
 						// New items receive random keys during every preview rebuild.
 						groupTarget.Item = strconv.Itoa(index)
@@ -504,6 +573,11 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 							return report, err
 						}
 						groups[id] = group
+					} else if registeredPool && !event.Refund {
+						members := append(group.posting.Targets[0].Members, key.Members...)
+						slices.Sort(members)
+						group.posting.Targets[0].Members = slices.Compact(members)
+						group.Targets[0].MemberCount = len(group.posting.Targets[0].Members)
 					}
 					applied.groups = append(applied.groups, group)
 				}
@@ -520,6 +594,9 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 			}
 			continue
 		}
+		if zeroPayment && applied.zeroAttributionAdvisory && event.EventID != 0 {
+			report.postingIssues = append(report.postingIssues, draftIssue{FactID: event.EventID, Code: dcaiZeroBackOfficeAttributionAdvisory, Advisory: true})
+		}
 		for _, problem := range applied.issues {
 			problem.Count++
 			report.Issues[problem.Code]++
@@ -529,7 +606,7 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 		}
 		if event.EventID != 0 {
 			report.events = append(report.events, catalogAggregateEventReference{EventID: event.EventID, PaymentID: event.PaymentID,
-				Scenario: event.Scenario, CompletionVersionID: event.CompletionVersionID})
+				Scenario: event.Scenario, CompletionVersionID: event.CompletionVersionID, RecognizedAmount: event.RecognizedAmount})
 		}
 		for _, group := range applied.groups {
 			if event.EventID != 0 {
@@ -542,6 +619,17 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 			}
 			if err := addCatalogActivityAmount(event.Amount, sum); err != nil {
 				return report, err
+			}
+			if refund, ok := event.amountRefunds[group.ID]; ok {
+				if err := addCatalogActivityAmount(event.Amount, &group.amountRefundBasis); err != nil {
+					return report, err
+				}
+				if refund.Amount != 0 {
+					if err := addCatalogActivityAmount(refund.Amount, &group.amountRefundTotal); err != nil {
+						return report, err
+					}
+					group.orderRefunds = append(group.orderRefunds, refund)
+				}
 			}
 		}
 		if slices.ContainsFunc(applied.groups, func(group *catalogPeriodGroup) bool { return group.countsOrders() }) {
@@ -580,7 +668,18 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 			if item.FixedMinor != nil {
 				award = *item.FixedMinor
 			} else {
-				award = truncatePosting.rate(payment.original, item.Tiers[0].Rate, 10000)
+				basis := payment.original
+				if payment.paidHere {
+					basis -= payment.refunds
+				}
+				index := slices.IndexFunc(item.Tiers, func(t catalogPeriodTier) bool {
+					return basis >= t.From && (t.Until == nil || basis < *t.Until)
+				})
+				if index < 0 {
+					return report, errCatalogPeriodTiers
+				}
+				group.orderRate = item.Tiers[index].Rate
+				award = item.posting.rate(payment.original, group.orderRate, 10000)
 			}
 			var amount int64
 			if payment.paidHere {
@@ -590,8 +689,8 @@ func groupCatalogPeriodEvents(events []catalogActivityEvent, rules []catalogAggr
 					amount = truncatePosting.unpostedNet(award, payment.refunds, payment.original)
 					precise = exactMinor(award, base, payment.original)
 				} else {
-					amount = truncatePosting.rate(base, item.Tiers[0].Rate, 10000)
-					precise = exactMinor(base, item.Tiers[0].Rate, 10000)
+					amount = item.posting.rate(base, group.orderRate, 10000)
+					precise = exactMinor(base, group.orderRate, 10000)
 				}
 				if group.posting.FixedAccruals == nil {
 					group.posting.FixedAccruals = make(map[int64]int64)
@@ -701,10 +800,13 @@ const catalogAggregateDutySQL = `SELECT a.scope_key,a.role,person.id,person.name
 
 func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catalogAggregateRule, from, through time.Time) (catalogAggregateDirectory, error) {
 	directory := catalogAggregateDirectory{Duties: map[catalogAggregateDutyKey][]catalogAggregateDuty{}, InactiveUnits: make(map[string]bool)}
-	var parties, units, directUnits, targetUnits, roles, appointmentRoles []string
+	var parties, units, directUnits, targetUnits, roles, appointmentRoles, poolMemberUnits []string
 	var people []int64
 	for _, version := range rules {
 		for _, item := range version.Definition.Items {
+			if item.orderAppointment != nil && item.orderAppointment.SkipSellerHead {
+				appointmentRoles = append(appointmentRoles, "TEAM_LEAD")
+			}
 			if item.AppointmentLevel != "" {
 				appointmentRoles = append(appointmentRoles, item.AppointmentRole)
 			} else if item.PersonID > 0 {
@@ -720,10 +822,30 @@ func readCatalogAggregateDirectory(ctx context.Context, tx pgx.Tx, rules []catal
 			if item.TargetKind == "pool" {
 				units = append(units, item.unit)
 				roles = append(roles, item.OwnerRole, item.MemberRole)
+				if item.PoolID > 0 && item.MemberRole == "" {
+					poolMemberUnits = append(poolMemberUnits, item.unit)
+				}
 				if item.OwnerPersonID != 0 {
 					people = append(people, item.OwnerPersonID)
 				}
 			}
+		}
+	}
+	if len(poolMemberUnits) != 0 {
+		rows, err := tx.Query(ctx, `SELECT m.unit_id::text,p.id,p.name,m.valid_from,m.valid_to
+		 FROM organization_assignments m JOIN people p ON p.id=m.person_id
+		 WHERE m.unit_id::text=ANY($1) AND m.valid_from<$3 AND (m.valid_to IS NULL OR m.valid_to>$2)`, poolMemberUnits, from, through)
+		if err != nil {
+			return directory, err
+		}
+		var unit string
+		var member catalogAggregateDuty
+		if _, err := pgx.ForEachRow(rows, []any{&unit, &member.ID, &member.Name, &member.From, &member.To}, func() error {
+			key := catalogAggregateDutyKey{Unit: unit}
+			directory.Duties[key] = append(directory.Duties[key], member)
+			return nil
+		}); err != nil {
+			return directory, err
 		}
 	}
 	if len(appointmentRoles) > 0 {

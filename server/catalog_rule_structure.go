@@ -155,12 +155,12 @@ func catalogStructureOptionFor(choices []catalogStructureOption, value string) c
 func (o catalogStructureOptions) condition(row catalogConditionInput) (json.RawMessage, error) {
 	rate := vipRateRow{Company: row.Company, CompanyIDs: row.CompanyIDs, Relationship: row.Relationship,
 		Category: row.Category, CategoryIDs: row.CategoryIDs, ExternalDefault: row.ExternalDefault, SnapshotDefault: row.CompanyFallback}
-	if row.Payee == vipPayeeSalesCompany {
+	if row.Payee == vipPayeeSalesCompany || row.Payee == vipPayeeRecommendationCompany {
 		rate.Payee = row.Payee
 	}
 	if row.Rate == nil || *row.Rate < 0 || *row.Rate > 10000 || !rate.validScope() ||
 		!rate.validExternalDefault() || row.CompanyFallback && (rate.Company == "ANY" || rate.hasCategory()) ||
-		row.Payee != "" && row.Payee != "seller" && row.Payee != vipPayeeSalesCompany ||
+		row.Payee != "" && row.Payee != "seller" && !rate.companyPayee() ||
 		catalogStructureOptionFor(o.Relationships, row.Relationship).Value == "" {
 		return nil, invalid
 	}
@@ -580,7 +580,7 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 			return invalid
 		}
 		action.Mode, action.Role = vipOrganizationAppointmentMode, role.Value
-	case "referrer", "order_seller", "order_sales_company":
+	case "referrer", "order_seller", "order_sales_company", "order_recommendation_company":
 		if target.PersonID != 0 || target.Role != "" || target.Organization != "" {
 			return invalid
 		}
@@ -589,7 +589,9 @@ func configureCatalogBenefitTarget(action *vipBenefitAction, target catalogBenef
 			action.Mode, action.Role = vipOrderSellerMode, vipOrderSellerMode
 		case "order_sales_company":
 			action.Mode, action.Role = vipOrderSalesCompanyMode, vipOrderSalesCompanyMode
-		default:
+		case "order_recommendation_company":
+			action.Mode, action.Role = vipOrderRecommendationCompanyMode, vipOrderRecommendationCompanyMode
+		case "referrer":
 			action.Mode, action.Role = vipOrderReferrerMode, "REFERRAL"
 		}
 	case "person":

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -30,14 +31,10 @@ func (s workspace) catalogPeriodSetup(ctx context.Context, raw string, actor fin
 		return rule, err
 	}
 	var day int
-	var code string
-	err = s.db.QueryRow(ctx, `SELECT id,name,cycle_start_day,code FROM products WHERE id=$1`, product).
-		Scan(&rule.ProductID, &rule.ProductName, &day, &code)
+	err = s.db.QueryRow(ctx, `SELECT id,name,cycle_start_day FROM products WHERE id=$1`, product).
+		Scan(&rule.ProductID, &rule.ProductName, &day)
 	if err != nil {
 		return rule, err
-	}
-	if mixed && code != "DCAI_VIP" {
-		return rule, errCatalogScenarioTarget
 	}
 	rule.Mixed = mixed
 	if day == 25 {
@@ -73,12 +70,14 @@ func validateCatalogRuleOverlap(ctx context.Context, db catalogPeriodReader, pro
 }
 
 func validateMixedCatalogSKUs(ctx context.Context, db catalogPeriodReader, productID int64, scenarios []string, at time.Time) error {
+	options, err := readCatalogPeriodScenarioOptions(ctx, db, productID, &at, nil)
+	if err != nil {
+		return err
+	}
 	for _, sku := range scenarios {
-		ok, err := catalogMembershipScopeAvailable(ctx, db, productID, sku, at)
-		if err != nil {
-			return err
-		}
-		if !ok {
+		if !slices.ContainsFunc(options, func(option catalogPeriodScenarioOption) bool {
+			return option.Code == sku && option.forMixedProduct(productID)
+		}) {
 			return errCatalogScenarioTarget
 		}
 	}
@@ -98,7 +97,7 @@ func buildCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, create 
 	}
 	if create.Mixed {
 		var supported bool
-		if err := db.QueryRow(ctx, `SELECT code='DCAI_VIP' AND cycle_start_day=CASE WHEN $2='MONTHLY_25_TO_24' THEN 25 ELSE 1 END
+		if err := db.QueryRow(ctx, `SELECT period_mode='calendar' AND cycle_start_day=CASE WHEN $2='MONTHLY_25_TO_24' THEN 25 ELSE 1 END
 		 FROM products WHERE id=$1`, create.ProductID, create.Cycle).Scan(&supported); err != nil {
 			return nil, err
 		}

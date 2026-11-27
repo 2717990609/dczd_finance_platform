@@ -14,6 +14,8 @@ import (
 
 var errCatalogPerformanceScope = errors.New("请选择有效的部门、小组或人员任职")
 
+const organizationMemberAppointment = "ORGANIZATION_MEMBER"
+
 type catalogPerformanceScope struct {
 	UnitIDs     []string                `json:"unitIds,omitempty"`
 	Appointment *catalogPerformanceDuty `json:"appointment,omitempty"`
@@ -21,8 +23,24 @@ type catalogPerformanceScope struct {
 
 type catalogPerformanceDuty struct {
 	PersonID int64  `json:"personId"`
-	UnitID   string `json:"unitId"`
+	UnitID   string `json:"unitId,omitempty"`
 	Role     string `json:"role"`
+	Scope    string `json:"scope,omitempty"`
+	ScopeKey string `json:"scopeKey,omitempty"`
+}
+
+func (a catalogPerformanceDuty) valid(resolved bool) bool {
+	if a.PersonID <= 0 || !textOK(a.Role, 128) {
+		return false
+	}
+	switch a.Scope {
+	case "", "ORGANIZATION_UNIT":
+		unit, ok := canonicalSourceUUID(a.UnitID)
+		return ok && unit == a.UnitID && a.ScopeKey == ""
+	case "PROJECT", "PRODUCT":
+		return a.Role != organizationMemberAppointment && a.UnitID == "" && (resolved && textOK(a.ScopeKey, 128) || !resolved && a.ScopeKey == "")
+	}
+	return false
 }
 
 func (s *catalogPerformanceScope) valid() bool {
@@ -38,7 +56,7 @@ func (s *catalogPerformanceScope) valid() bool {
 			return false
 		}
 	}
-	return s.Appointment == nil || s.Appointment.PersonID > 0 && validID(s.Appointment.UnitID) && textOK(s.Appointment.Role, 128)
+	return s.Appointment == nil || s.Appointment.valid(true)
 }
 
 func (s *catalogPerformanceScope) active() bool {
@@ -115,7 +133,9 @@ func nameCatalogPerformanceScope(ctx context.Context, db catalogPeriodReader, sc
 	units := scope.UnitIDs
 	var person int64
 	if a := scope.Appointment; a != nil {
-		units = append(slices.Clone(units), a.UnitID)
+		if a.UnitID != "" {
+			units = append(slices.Clone(units), a.UnitID)
+		}
 		person = a.PersonID
 	}
 	var labels catalogPerformanceLabels
@@ -135,6 +155,7 @@ type catalogPerformanceDecision struct {
 type catalogPerformanceDirectory struct {
 	claims       map[int64]vipClaim
 	claimIssues  map[int64]string
+	vipOrders    map[int64]catalogVIPOrderTreatment
 	people       map[int64]string
 	categories   map[int64]catalogPaymentCategory
 	users        [2]map[string][]vipLink
@@ -170,7 +191,7 @@ func (item catalogPeriodItem) needsSalesDirectory() bool {
 func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []catalogActivityEvent) (catalogPerformanceDirectory, error) {
 	dir := catalogPerformanceDirectory{claims: map[int64]vipClaim{}, claimIssues: map[int64]string{},
 		duties: map[catalogPerformanceDuty][]vipInterval{}}
-	var payments []int64
+	var payments, orderIDs []int64
 	var categoryPayments []catalogActivityEvent
 	needsSalesDirectory, needsSellerNames := false, false
 	seen := make(map[int64]bool)
@@ -180,16 +201,19 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 			continue
 		}
 		seen[event.PaymentID] = true
+		orderIDs = append(orderIDs, event.PaymentID)
 		definition := event.selection.rule.Definition
 		scope := definition.Performance
 		needsSales := scope.active() && len(scope.UnitIDs) != 0 || slices.ContainsFunc(definition.Items, catalogPeriodItem.needsSalesDirectory)
-		needsCategories := slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool { return len(item.ScopeCategories) != 0 })
+		needsCategories := slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool {
+			return len(item.ScopeCategories) != 0 || len(item.rateOverrides) != 0
+		})
 		if needsSales || needsCategories {
 			payments = append(payments, event.PaymentID)
 		}
 		needsSalesDirectory = needsSalesDirectory || needsSales
 		needsSellerNames = needsSellerNames || slices.ContainsFunc(definition.Items, func(item catalogPeriodItem) bool {
-			return item.TargetKind == "order_seller"
+			return item.TargetKind == "order_seller" || item.orderAppointment != nil && item.orderAppointment.Level == "TEAM"
 		})
 		if needsCategories {
 			categoryPayments = append(categoryPayments, event)
@@ -205,22 +229,35 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 			}
 		}
 	}
+	if len(orderIDs) > 0 {
+		var err error
+		dir.vipOrders, err = readCatalogVIPOrderTreatment(ctx, tx, orderIDs)
+		if err != nil {
+			return dir, err
+		}
+	}
 	if len(wanted) > 0 {
 		keys := make([]catalogPerformanceDuty, 0, len(wanted))
 		for duty := range wanted {
 			keys = append(keys, duty)
 		}
-		rows, err := tx.Query(ctx, `SELECT a.person_id,a.scope_key,a.role,a.valid_from,a.valid_to
-		 FROM jsonb_to_recordset($1::jsonb) AS q("personId" bigint,"unitId" text,role text)
-		 JOIN catalog_current_sales_appointments a
-		  ON (a.person_id,a.scope_key,a.role)=(q."personId",q."unitId",q.role)
-		 WHERE a.source='DCAI' AND a.scope='ORGANIZATION_UNIT'`, keys)
+		rows, err := tx.Query(ctx, `WITH wanted AS (
+		 SELECT * FROM jsonb_to_recordset($1::jsonb) AS q("personId" bigint,"unitId" text,role text,scope text,"scopeKey" text)
+		 )
+		 SELECT q."personId",coalesce(q."unitId",''),q.role,coalesce(q.scope,''),coalesce(q."scopeKey",''),a.valid_from,a.valid_to
+		 FROM wanted q JOIN catalog_current_sales_appointments a
+		  ON (a.person_id,a.scope_key,a.role)=(q."personId",coalesce(q."unitId",q."scopeKey"),q.role)
+		 WHERE a.source='DCAI' AND a.scope=coalesce(nullif(q.scope,''),'ORGANIZATION_UNIT') AND q.role<>$2
+		 UNION ALL
+		 SELECT q."personId",q."unitId",q.role,coalesce(q.scope,''),'',m.valid_from,m.valid_to
+		 FROM wanted q JOIN organization_assignments m ON (m.person_id,m.unit_id::text)=(q."personId",q."unitId")
+		 WHERE q.role=$2`, keys, organizationMemberAppointment)
 		if err != nil {
 			return dir, err
 		}
 		var duty catalogPerformanceDuty
 		var interval vipInterval
-		if _, err := pgx.ForEachRow(rows, []any{&duty.PersonID, &duty.UnitID, &duty.Role, &interval.From, &interval.To}, func() error {
+		if _, err := pgx.ForEachRow(rows, []any{&duty.PersonID, &duty.UnitID, &duty.Role, &duty.Scope, &duty.ScopeKey, &interval.From, &interval.To}, func() error {
 			dir.duties[duty] = append(dir.duties[duty], interval)
 			return nil
 		}); err != nil {
@@ -239,7 +276,7 @@ func readCatalogPerformanceDirectory(ctx context.Context, tx pgx.Tx, events []ca
 	var payment int64
 	var claims []vipClaim
 	_, err = pgx.ForEachRow(rows, []any{&payment, &claims}, func() error {
-		claim, issue := vipSellerClaim(claims)
+		claim, issue := vipOrderClaim(claims, dir.vipOrders[payment].SellerAbsent)
 		if issue != "" {
 			dir.claimIssues[payment] = issue
 		} else {
@@ -510,4 +547,83 @@ func (d catalogPerformanceDirectory) appointmentOrganization(event catalogActivi
 	}
 	org := d.organization.resolveAssignments(person, event.PaidAt, company, !company.Valid)
 	return vipSalesAppointmentOrganization(vipSalesRequest{commissionSalesOrg: &org}, level)
+}
+
+// A configured company override takes precedence, including explicit zero rates.
+func (d catalogPerformanceDirectory) salesRateOverride(event catalogActivityEvent, item *catalogPeriodItem) string {
+	if len(item.rateOverrides) == 0 {
+		return ""
+	}
+	claim, ok := d.claims[event.PaymentID]
+	if !ok {
+		return "SALES_SOURCE_MISSING"
+	}
+	company, conflict := catalogPerformanceLinkAt(d.companies, claim.Company, event.PaidAt)
+	if conflict {
+		return "SALES_COMPANY_CONFLICT"
+	}
+	if company == "" {
+		return "SALES_COMPANY_MISSING"
+	}
+	for _, entry := range item.rateOverrides {
+		if entry.CompanyID == company {
+			item.Tiers = []catalogPeriodTier{{Rate: entry.Rate / 100}}
+			return ""
+		}
+	}
+	category := d.categories[event.PaymentID]
+	for _, entry := range item.rateOverrides {
+		if entry.CategoryID == "" {
+			continue
+		}
+		if category.issue != "" {
+			return category.issue
+		}
+		if category.id != nil && *category.id == entry.CategoryID {
+			item.Tiers = []catalogPeriodTier{{Rate: entry.Rate / 100}}
+			return ""
+		}
+	}
+	return ""
+}
+
+// Split only against the company on the original payment. An inferred current
+// organization cannot determine a financial entitlement.
+func (d catalogPerformanceDirectory) orderCompany(event catalogActivityEvent) (string, string) {
+	if issue := d.claimIssues[event.PaymentID]; issue != "" {
+		return "", issue
+	}
+	claim, ok := d.claims[event.PaymentID]
+	if !ok {
+		return "", "SALES_SOURCE_MISSING"
+	}
+	company, conflict := catalogPerformanceLinkAt(d.companies, claim.Company, event.PaidAt)
+	if conflict {
+		return "", "SALES_COMPANY_CONFLICT"
+	}
+	if company == "" {
+		return "", "SALES_COMPANY_MISSING"
+	}
+	return company, ""
+}
+
+func (d catalogPerformanceDirectory) paymentGroup(event catalogActivityEvent, seller int64, company string, groups []string) (string, string) {
+	var group string
+	for _, assignment := range d.organization.Assignments[seller] {
+		key := assignment.Unit.String()
+		if event.PaidAt.Before(assignment.From) || assignment.To != nil && !event.PaidAt.Before(*assignment.To) || !slices.Contains(groups, key) {
+			continue
+		}
+		if unit := d.organization.ancestors(assignment.Unit); unit.Company.Valid && unit.Company.String() != company {
+			continue
+		}
+		if group != "" && group != key {
+			return "", "SALES_ORGANIZATION_SCOPE_CONFLICT"
+		}
+		group = key
+	}
+	if group == "" {
+		return "", "COMMISSION_SALES_ORGANIZATION_MISSING"
+	}
+	return group, ""
 }

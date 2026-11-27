@@ -5,7 +5,8 @@ export default defineConfig({
   plugins: [vue()],
   server: {
     proxy: {
-      '/api': 'http://127.0.0.1:8096',
+      // Keep the browser-facing Host for the API's same-origin write check.
+      '/api': { target: 'http://127.0.0.1:8096', changeOrigin: false },
       '/healthz': 'http://127.0.0.1:8096',
       '/readyz': 'http://127.0.0.1:8096',
     },

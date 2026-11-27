@@ -242,9 +242,12 @@ func finishPoolSettlementReview(ctx context.Context, tx pgx.Tx, periodID int64, 
 	states map[poolScope]*poolStage, stale map[poolScope]bool, token string) (settlementReview, error) {
 	var affected []poolScope
 	for key, stage := range states {
-		unallocated := stage.balance
+		unallocated, err := stage.allocatable()
+		if err != nil {
+			return review, err
+		}
 		if stale[key] {
-			unallocated = stage.Balance
+			unallocated = stage.Allocatable
 		}
 		if stale[key] || !review.practiceRefundMonth && unallocated > 0 {
 			review.Pools = append(review.Pools, settlementPoolGap{poolScope: key, Name: stage.Name, Unallocated: max(0, unallocated), Stale: stale[key]})

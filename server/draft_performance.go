@@ -22,8 +22,13 @@ type draftPerformance struct {
 }
 
 const performancePostingMinorSQL = `CASE WHEN a.payment_version_id IS NULL
- THEN (v.fact->>'amountMinor')::bigint-coalesce((prior.fact->>'amountMinor')::bigint,0)
- ELSE -(v.fact->>'amountMinor')::bigint END`
+ THEN ` + recognizedPerformanceAmountSQL + `-coalesce((prior.fact->>'amountMinor')::bigint,0)
+ ELSE -` + recognizedPerformanceAmountSQL + ` END`
+
+const recognizedPerformanceAmountSQL = `coalesce((
+ SELECT event.recognized_amount_minor FROM catalog_aggregate_draft_events event
+ WHERE (event.period_id,event.source_version_id)=(a.period_id,a.source_version_id)
+),(v.fact->>'amountMinor')::bigint)`
 
 func performanceOwner(fact sourceFact, rule *paymentRule, member string, identities map[identityKey][]identityAssignment) int64 {
 	if rule == nil {

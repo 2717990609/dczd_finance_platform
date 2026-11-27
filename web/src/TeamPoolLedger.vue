@@ -1,7 +1,8 @@
 <script setup>
 import { onBeforeUnmount, ref, watch } from 'vue'
 
-const props = defineProps({ api:Function, productId:Number, formatMoney:Function, formatTime:Function, periodLink:Function })
+const props = defineProps({ api:Function, productId:Number, unitId:String, directoryScope:String, formatMoney:Function,
+  formatTime:Function, periodLink:Function })
 const accounts = ref([])
 const account = ref()
 const period = ref()
@@ -35,13 +36,20 @@ const entryColumns = [
 ]
 const kindLabels = {income:'规则归集',refund:'退款扣回',correction:'计提更正',distribution:'分配到人',retention:'转入部门留存金'}
 
+function ledgerQuery() {
+  const query = new URLSearchParams()
+  if (props.productId) query.set('productId',props.productId)
+  if (props.unitId) query.set('unitId',props.unitId)
+  if (props.directoryScope) query.set('scope',props.directoryScope)
+  return query
+}
 async function loadAccounts() {
   const request = ++accountRequest
   loading.value = true
   error.value = ''
   try {
-    const query = props.productId ? '?productId='+props.productId : ''
-    const result = await props.api('/team-pool-ledger'+query)
+    const query = ledgerQuery()
+    const result = await props.api('/team-pool-ledger'+(query.size ? '?'+query : ''))
     if (request===accountRequest) accounts.value = result.items
   } catch (err) {
     if (request===accountRequest) error.value = err.message
@@ -58,8 +66,9 @@ async function loadDrawer() {
     return
   }
   drawerLoading.value = true
-  const query = new URLSearchParams({key:account.value.key,page:page.value})
-  if (props.productId) query.set('productId',props.productId)
+  const query = ledgerQuery()
+  query.set('key',account.value.key)
+  query.set('page',page.value)
   if (period.value) query.set('periodId',period.value.periodId)
   try {
     const result = await props.api('/team-pool-ledger?'+query)
@@ -78,7 +87,7 @@ function showPeriod(row) {
   period.value = row
   page.value = 1
 }
-watch(() => props.productId, () => {
+watch(() => [props.productId,props.unitId,props.directoryScope], () => {
   accounts.value = []
   showAccount()
   loadAccounts()

@@ -15,19 +15,21 @@ var (
 type poolFundingLot struct {
 	LineID, Remaining int64
 	Eligible          []int64
+	arrangement       string
 }
 
 type poolAccount struct {
 	balance int64
 	lots    []poolFundingLot
 	indices map[int64]int
+	debts   map[string]int64
 }
 
 func newPoolAccount() poolAccount {
-	return poolAccount{indices: make(map[int64]int)}
+	return poolAccount{indices: make(map[int64]int), debts: make(map[string]int64)}
 }
 
-func (a *poolAccount) credit(id, amount int64) error {
+func (a *poolAccount) credit(id, amount int64, arrangement string) error {
 	if id <= 0 || amount <= 0 {
 		return conflict
 	}
@@ -36,20 +38,22 @@ func (a *poolAccount) credit(id, amount int64) error {
 		return err
 	}
 	available := amount
-	if a.balance < 0 {
-		available = max(0, next)
+	for _, scope := range [2]string{"", arrangement} {
+		used := min(available, a.debts[scope])
+		a.debts[scope] -= used
+		available -= used
 	}
 	a.balance = next
 	if i, exists := a.indices[id]; exists {
 		a.lots[i].Remaining += available
 	} else {
 		a.indices[id] = len(a.lots)
-		a.lots = append(a.lots, poolFundingLot{LineID: id, Remaining: available})
+		a.lots = append(a.lots, poolFundingLot{LineID: id, Remaining: available, arrangement: arrangement})
 	}
 	return nil
 }
 
-func (a *poolAccount) debit(original, amount int64) error {
+func (a *poolAccount) debit(original, amount int64, arrangement string) error {
 	index, found := a.indices[original]
 	// A late-synced refund may belong to a month before the originating
 	// class was booked. Its debit starts before that income is available.
@@ -71,11 +75,30 @@ func (a *poolAccount) debit(original, amount int64) error {
 		if left == 0 {
 			break
 		}
+		if arrangement != "" && a.lots[i].arrangement != arrangement {
+			continue
+		}
 		used := min(left, a.lots[i].Remaining)
 		a.lots[i].Remaining -= used
 		left -= used
 	}
-	return nil
+	debt, err := addMinor(a.debts[arrangement], left)
+	if err == nil {
+		a.debts[arrangement] = debt
+	}
+	return err
+}
+
+func (a *poolAccount) allocatable() (int64, error) {
+	var total int64
+	for _, lot := range a.lots {
+		next, err := addMinor(total, lot.Remaining)
+		if err != nil {
+			return 0, err
+		}
+		total = next
+	}
+	return total, nil
 }
 
 func (a *poolAccount) distribute(source, amount int64) error {

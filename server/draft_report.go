@@ -42,7 +42,7 @@ const commissionReportPostingsSQL = `
    (sh.person_id,f.amount_minor,CASE WHEN sh.person_id IS NULL THEN 'retained' ELSE 'person' END),
    (NULL::bigint,-f.amount_minor,'pool')) target(person_id,amount,kind)`
 
-var draftReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, selected_draft AS (
+var draftReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, ` + directoryMatchesCTE + `, selected_draft AS (
  SELECT period_id,performance_ready,version FROM calculation_drafts WHERE period_id=$1 AND version=$2
 ), current_pool_allocations AS MATERIALIZED (` + currentReportPoolAllocationsSQL + `
 ), postings AS (` + commissionReportPostingsSQL + `
@@ -60,6 +60,7 @@ var draftReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, selec
    WHEN company_id IS NOT NULL THEN 'direct/'||company_id ELSE group_id::text END)
   END AS id,performance,amount_minor,refund,correction,allocation
  FROM organized_postings WHERE ` + reportInOrganization + `
+ AND ` + postingInDirectoryScope("") + `
  AND (performance<>0 OR amount_minor<>0 OR refund<>0 OR correction<>0 OR allocation<>0)
 ), totals AS (
  SELECT id,sum(performance) AS performance_minor,sum(amount_minor) AS accrued_minor,
@@ -85,8 +86,8 @@ SELECT jsonb_build_object('total',(SELECT count(*) FROM totals),'performanceRead
  'items',coalesce((SELECT jsonb_agg(to_jsonb(labeled) ORDER BY "performanceMinor" DESC,"totalMinor" DESC,id) FROM labeled),'[]'))
 FROM selected_draft`
 
-var draftReportSQL = organizationScopeQuery(draftReportTemplateSQL, "NULL")
-var scopedDraftReportSQL = organizationScopeQuery(draftReportTemplateSQL, "$5")
+var draftReportSQL = bindDirectoryScope(organizationScopeQuery(draftReportTemplateSQL, "NULL"), "''")
+var scopedDraftReportSQL = bindDirectoryScope(organizationScopeQuery(draftReportTemplateSQL, "$5"), "$6")
 
 func (s workspace) draftReport(w http.ResponseWriter, r *http.Request) {
 	dimension := r.URL.Query().Get("dimension")
@@ -99,13 +100,19 @@ func (s workspace) draftReport(w http.ResponseWriter, r *http.Request) {
 		respond(w, nil, err)
 		return
 	}
-	unit, err := parseOrganizationScope(r.URL.Query().Get("unitId"))
+	query := r.URL.Query()
+	scope := query.Get("scope")
+	if !validOrganizationDirectoryScope(scope) {
+		respond(w, nil, invalid)
+		return
+	}
+	unit, err := parseOrganizationScope(query.Get("unitId"))
 	if err != nil {
 		respond(w, nil, err)
 		return
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), scopedDraftReportSQL, period, version, dimension, offset, unit).Scan(&result)
+	err = s.db.QueryRow(r.Context(), scopedDraftReportSQL, period, version, dimension, offset, unit, scope).Scan(&result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = conflict
 	}

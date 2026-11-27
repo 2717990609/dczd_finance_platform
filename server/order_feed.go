@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -127,17 +128,28 @@ func (c orderFeedClient) get(ctx context.Context, action string, query url.Value
 }
 
 func (c orderFeedClient) getWithContract(ctx context.Context, action, contract string, query url.Values, result any) error {
+	return c.requestWithContract(ctx, http.MethodGet, action, contract, query, nil, result)
+}
+
+func (c orderFeedClient) requestWithContract(ctx context.Context, method, action, contract string, query url.Values, body []byte, result any) error {
 	endpoint := *c.endpoint
 	if action != "" {
 		endpoint = *endpoint.JoinPath(action)
 	}
 	endpoint.RawQuery = query.Encode()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	var payload io.Reader
+	if body != nil {
+		payload = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, endpoint.String(), payload)
 	if err != nil {
 		return errSourceRead
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("Accept", "application/json")
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if contract != "" {
 		req.Header.Set("X-"+c.source+"-Finance-Contract", contract)
 	}
@@ -163,6 +175,7 @@ func (c orderFeedClient) getWithContract(ctx context.Context, action, contract s
 type orderFeedCapabilities struct {
 	PageSize              int
 	PracticeRegistrations bool
+	PracticeOrdersThrough *time.Time
 }
 
 func (c orderFeedClient) readiness(ctx context.Context, stream string) (int, error) {
@@ -182,8 +195,15 @@ func (c orderFeedClient) capabilities(ctx context.Context, stream string) (order
 		Conflicts             *int64            `json:"conflict_count"`
 		PracticeConflicts     *int64            `json:"practice_conflict_count"`
 		PracticeRegistrations string            `json:"practice_registrations_contract"`
+		PracticeFacts         string            `json:"practice_facts_contract"`
+		PracticeRefunds       string            `json:"practice_refunds_contract"`
+		PracticeOrdersThrough *time.Time        `json:"practice_orders_through"`
 	}
-	if err := c.get(ctx, "readiness", nil, &body); err != nil {
+	var query url.Values
+	if c.practiceOnly {
+		query = url.Values{"stream": {dczdPracticeStream}}
+	}
+	if err := c.get(ctx, "readiness", query, &body); err != nil {
 		return orderFeedCapabilities{}, err
 	}
 	if (!c.practiceOnly && body.Status != "READY") || body.Streams[c.remoteStream(stream)] != "READY" ||
@@ -198,8 +218,15 @@ func (c orderFeedClient) capabilities(ctx context.Context, stream string) (order
 		if body.PageSize < 1 || count == nil || *count != 0 {
 			return orderFeedCapabilities{}, errSourceRead
 		}
-		return orderFeedCapabilities{PageSize: min(orderPageSize, body.PageSize),
-			PracticeRegistrations: body.PracticeRegistrations == practiceRegistrationsContract}, nil
+		capabilities := orderFeedCapabilities{PageSize: min(orderPageSize, body.PageSize),
+			PracticeRegistrations: body.PracticeRegistrations == practiceRegistrationsContract}
+		if c.practiceOnly && capabilities.PracticeRegistrations && body.PracticeFacts == practiceScopedFactsContract && body.PracticeRefunds == practiceRefundsContract {
+			if body.PracticeOrdersThrough == nil || !validOrderWatermark(*body.PracticeOrdersThrough) {
+				return orderFeedCapabilities{}, errSourceRead
+			}
+			capabilities.PracticeOrdersThrough = body.PracticeOrdersThrough
+		}
+		return capabilities, nil
 	}
 	if body.FactHash != dcaiFactSchemaHash || body.PageHash != dcaiPageSchemaHash {
 		return orderFeedCapabilities{}, errSourceRead

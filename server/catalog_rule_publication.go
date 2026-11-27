@@ -617,7 +617,7 @@ func internalTeamRatesChanged(before, after vipSalesPolicy) bool {
 				oldRate, oldIssue := selectVIPRateForCompany(before.Sales, team.Company, relationship, category, "INTERNAL")
 				newRate, newIssue := selectVIPRateForCompany(after.Sales, team.Company, relationship, category, "INTERNAL")
 				expected := oldRate.Rate
-				if oldIssue == "" && oldRate.Payee != vipPayeeSalesCompany && oldRate.Rate == before.Split.Total {
+				if oldIssue == "" && !oldRate.companyPayee() && oldRate.Rate == before.Split.Total {
 					expected = after.Split.Total
 				}
 				if expected != newRate.Rate || oldRate.Payee != newRate.Payee || oldIssue != newIssue {
@@ -711,7 +711,7 @@ func changeCatalogTeamStandards(actions []map[string]json.RawMessage, policy vip
 					external = append(external, company)
 				}
 			}
-			if len(internal) == 0 || standard.Rate != policy.Split.Total || standard.Payee == vipPayeeSalesCompany {
+			if len(internal) == 0 || standard.Rate != policy.Split.Total || standard.companyPayee() {
 				revised = append(revised, row)
 				continue
 			}

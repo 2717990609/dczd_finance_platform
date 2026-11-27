@@ -17,13 +17,13 @@ var errRetentionDuplicate = errors.New("已有该笔期初、报销或冲销记�
 
 // The retained share is the credit. Its funding rows only explain which
 // team pool amounts funded it, so joining them here would multiply the credit.
-var departmentRetentionSQL = organizationScopeQuery(`WITH RECURSIVE `+organizationScopeCTE+`,
+var departmentRetentionSQL = bindDirectoryScope(organizationScopeQuery(`WITH RECURSIVE `+organizationScopeCTE+`,`+directoryMatchesCTE+`,
 manual AS MATERIALIZED (
  SELECT entry.*, original.kind AS original_kind FROM department_retention_entries entry
  LEFT JOIN department_retention_entries original ON original.id=entry.original_id
- WHERE ({{unit}} IS NULL OR entry.unit_id IN (SELECT id FROM organization_scope))
+ WHERE `+unitInOrganizationScope("entry.unit_id")+`
 ), credits AS (
- SELECT share.id,a.unit_id,share.amount_minor,p.id AS period_id,p.name AS period_name,
+ SELECT share.id,a.unit_id,share.amount_minor,p.id AS period_id,p.name AS period_name,p.product_id,
   product.name AS product_name,a.item_key,a.scenario_key,settlement.confirmed_at,`+periodReportMonthSQL+` AS book_month
  FROM monthly_pool_allocation_shares share JOIN monthly_pool_allocations a ON a.id=share.allocation_id
  JOIN settlements settlement ON (settlement.period_id,settlement.draft_version)=(a.period_id,a.draft_version)
@@ -31,15 +31,15 @@ manual AS MATERIALIZED (
  LEFT JOIN manual opening ON opening.unit_id=a.unit_id AND opening.kind='opening'
  WHERE share.person_id IS NULL
   AND (opening.id IS NULL OR `+periodReportMonthSQL+`>opening.book_month)
-  AND ({{unit}} IS NULL OR a.unit_id IN (SELECT id FROM organization_scope))
+  AND `+unitInOrganizationScope("a.unit_id")+`
 ), entries AS MATERIALIZED (
  SELECT 'credit-'||id AS key,unit_id,amount_minor,'income' AS kind,'income' AS category,
-  period_id,period_name,product_name,item_key,scenario_key,confirmed_at AS recorded_at,book_month,NULL::bigint AS manual_id,
+  period_id,period_name,product_id,product_name,item_key,scenario_key,confirmed_at AS recorded_at,book_month,NULL::bigint AS manual_id,
   '' AS note,NULL::text AS reimbursement_no,false AS reversible
  FROM credits
  UNION ALL
  SELECT 'record-'||id,unit_id,amount_minor,kind,coalesce(original_kind,kind),
-  NULL,NULL,NULL,NULL,NULL,recorded_at,book_month,id,note,reimbursement_no,
+  NULL,NULL,NULL,NULL,NULL,NULL,recorded_at,book_month,id,note,reimbursement_no,
   kind IN ('expense','correction') AND NOT EXISTS(SELECT 1 FROM department_retention_entries r WHERE r.original_id=manual.id)
  FROM manual
 ), accounts AS (
@@ -52,12 +52,15 @@ manual AS MATERIALIZED (
   coalesce(sum(amount_minor) FILTER(WHERE category='income'),0) AS total_income_minor,
   -coalesce(sum(amount_minor) FILTER(WHERE category='expense'),0) AS total_spent_minor
  FROM entries GROUP BY unit_id
+ HAVING $9::bigint=0 OR bool_or(product_id=$9 AND ($7::boolean OR book_month<=$1))
+), statement_entries AS (
+ SELECT * FROM entries WHERE unit_id=$3::uuid AND ($7::boolean OR book_month<=$1) AND ($9=0 OR product_id=$9)
 ), statement AS (
  SELECT key AS id,period_id AS "periodId",period_name AS "periodName",product_name AS "productName",
   unit_id AS "unitId",item_key AS "itemKey",scenario_key AS scenario,
   amount_minor AS "amountMinor",recorded_at AS "confirmedAt",to_char(book_month,'YYYY-MM') AS month,
   kind,manual_id AS "manualId",note,reimbursement_no AS "reimbursementNo",reversible
- FROM entries WHERE unit_id=$3::uuid AND ($7::boolean OR book_month<=$1)
+ FROM statement_entries
  ORDER BY book_month DESC,recorded_at DESC,key DESC LIMIT $4 OFFSET $5
 )
 SELECT jsonb_build_object(
@@ -70,9 +73,9 @@ SELECT jsonb_build_object(
   JOIN organization_units u ON u.id=a.unit_id LEFT JOIN organization_units parent ON parent.id=u.parent_id
   LEFT JOIN organization_units grandparent ON grandparent.id=parent.parent_id),'[]'),
  'entries',coalesce((SELECT jsonb_agg(to_jsonb(statement) ORDER BY month DESC,"confirmedAt" DESC,id DESC) FROM statement),'[]'),
- 'totalEntries',(SELECT count(*) FROM entries WHERE unit_id=$3::uuid AND ($7::boolean OR book_month<=$1)),
+ 'totalEntries',(SELECT count(*) FROM statement_entries),
  'canRecord',$6::boolean
-)`, "$2")
+)`, "$2"), "$8")
 
 func (s workspace) departmentRetention(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -80,7 +83,9 @@ func (s workspace) departmentRetention(w http.ResponseWriter, r *http.Request) {
 	scope, scopeErr := parseOrganizationScope(q.Get("unitId"))
 	account, accountErr := parseOrganizationScope(q.Get("accountId"))
 	offset, pageErr := reportPageOffset(q.Get("page"))
-	if err != nil || scopeErr != nil || accountErr != nil || pageErr != nil {
+	directoryScope := q.Get("scope")
+	productID, productErr := optionalPoolLedgerID(q.Get("productId"))
+	if err != nil || scopeErr != nil || accountErr != nil || pageErr != nil || productErr != nil || !validOrganizationDirectoryScope(directoryScope) {
 		respond(w, nil, invalid)
 		return
 	}
@@ -90,7 +95,8 @@ func (s workspace) departmentRetention(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), departmentRetentionSQL, month, scope, account, retentionHistoryPageSize, offset, allowed, q.Get("history") == "all").Scan(&result)
+	err = s.db.QueryRow(r.Context(), departmentRetentionSQL, month, scope, account, retentionHistoryPageSize, offset, allowed,
+		q.Get("history") == "all", directoryScope, productID).Scan(&result)
 	respond(w, result, err)
 }
 

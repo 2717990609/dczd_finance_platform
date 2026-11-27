@@ -14,6 +14,7 @@ var errSettlementSourceStale = errors.New("来源同步已超过关账时效，�
 var errSettlementSourceClock = errors.New("来源水位晚于同步完成时间，请核对来源时钟后重新同步")
 
 const defaultSettlementSyncMaxAge = time.Hour
+const settlementSourceClockToleranceSQL = "interval '1 second'"
 
 type settlementSource struct {
 	Stream          string     `json:"stream"`
@@ -24,6 +25,8 @@ type settlementSource struct {
 	RefundGap       int        `json:"refundGap"`
 	RequiredFrom    *time.Time `json:"requiredFrom,omitempty"`
 	RequiredThrough *time.Time `json:"requiredThrough,omitempty"`
+
+	ClockSkewWarning bool `json:"clockSkewWarning,omitempty"`
 }
 
 func (s workspace) dcaiSourceKey() string {
@@ -49,6 +52,7 @@ func lockDraftInputs(ctx context.Context, tx pgx.Tx, periodID int64) error {
 	return err
 }
 
+// Allow small clock differences only after a full sync freshness window has elapsed past the cutoff.
 const settlementSourceStatusSQL = `CASE
  WHEN r.stream='' THEN 'UNSUPPORTED'
  WHEN $2='' THEN 'NOT_CONFIGURED'
@@ -58,7 +62,9 @@ const settlementSourceStatusSQL = `CASE
  WHEN s.failed THEN 'FAILED'
  WHEN s.target_through IS NOT NULL THEN 'INCOMPLETE'
  WHEN s.initial_from>p.from_time OR s.completed_through IS NULL OR s.completed_through<p.through_time THEN 'OUTSIDE_RANGE'
- WHEN s.completed_through>s.last_success_at THEN 'CLOCK_GAP'
+ WHEN s.completed_through>s.last_success_at
+  AND (s.completed_through>s.last_success_at+` + settlementSourceClockToleranceSQL + `
+   OR s.last_success_at<p.through_time+$3::interval) THEN 'CLOCK_GAP'
  WHEN s.last_success_at IS NULL OR least(s.last_success_at,s.completed_through)<clock_timestamp()-$3::interval THEN 'STALE'
  ELSE 'READY' END`
 
@@ -101,9 +107,48 @@ LEFT JOIN dcai_order_sync s ON s.stream=r.stream
 LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream ORDER BY r.stream`
 
 const practiceSettlementCoverageSQL = `
+, scoped_sync AS (
+ SELECT p.calendar_month,r.source_key,r.initial_from,r.completed_through,r.target_through,r.last_success_at,
+  c.checked_at,c.covered_through,c.missing_facts,
+  CASE WHEN legacy.source_key=r.source_key AND legacy.completed_through>=r.initial_from THEN least(legacy.initial_from,r.initial_from)
+   ELSE r.initial_from END AS refund_from
+ FROM periods p JOIN practice_refund_sync r ON r.source_key=$2
+ LEFT JOIN practice_period_sync c ON c.period_id=p.id AND c.source_key=r.source_key
+ LEFT JOIN dcai_order_sync legacy ON legacy.stream='` + dczdOrderStream + `'
+ WHERE p.id=$1
+)
 SELECT r.stream,` + settlementSourceStatusSQL + `,s.initial_from,s.completed_through,s.last_success_at,0,p.from_time,p.through_time
 FROM scope p CROSS JOIN (VALUES ('` + dczdOrderStream + `')) r(stream) JOIN source_write_state ws ON ws.source='DCZD'
-LEFT JOIN dcai_order_sync s ON s.stream=r.stream LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream`
+LEFT JOIN dcai_order_sync s ON s.stream=r.stream LEFT JOIN dcai_sync_jobs j ON j.stream=r.stream
+WHERE NOT EXISTS(SELECT 1 FROM scoped_sync)
+UNION ALL
+SELECT 'PRACTICE_PERIOD_ORDERS',CASE
+ WHEN ws.provider_key IS DISTINCT FROM s.source_key THEN 'SOURCE_CHANGED'
+ WHEN j.status IN ('QUEUED','RUNNING') AND j.source_key=s.source_key THEN 'INCOMPLETE'
+ WHEN s.checked_at IS NULL THEN 'NOT_STARTED'
+ WHEN s.missing_facts>0 THEN 'INCOMPLETE'
+ WHEN s.covered_through<p.through_time THEN 'OUTSIDE_RANGE'
+ WHEN s.covered_through>s.checked_at
+  AND (s.covered_through>s.checked_at+` + settlementSourceClockToleranceSQL + `
+   OR s.checked_at<p.through_time+$3::interval) THEN 'CLOCK_GAP'
+ WHEN least(s.checked_at,s.covered_through)<clock_timestamp()-$3::interval THEN 'STALE'
+ ELSE 'READY' END,NULL::timestamptz,s.covered_through,s.checked_at,0,p.from_time,p.through_time
+FROM scope p CROSS JOIN scoped_sync s JOIN source_write_state ws ON ws.source='DCZD'
+LEFT JOIN dcai_sync_jobs j ON j.stream='` + dczdOrderStream + `'
+WHERE s.calendar_month IS NULL
+UNION ALL
+SELECT 'PRACTICE_REFUNDS',CASE
+ WHEN ws.provider_key IS DISTINCT FROM s.source_key THEN 'SOURCE_CHANGED'
+ WHEN j.status IN ('QUEUED','RUNNING') AND j.source_key=s.source_key OR s.target_through IS NOT NULL THEN 'INCOMPLETE'
+ WHEN s.completed_through IS NULL THEN 'NOT_STARTED'
+ WHEN s.refund_from>p.from_time OR s.completed_through<p.through_time THEN 'OUTSIDE_RANGE'
+ WHEN s.completed_through>s.last_success_at
+  AND (s.completed_through>s.last_success_at+` + settlementSourceClockToleranceSQL + `
+   OR s.last_success_at<p.through_time+$3::interval) THEN 'CLOCK_GAP'
+ WHEN least(s.last_success_at,s.completed_through)<clock_timestamp()-$3::interval THEN 'STALE'
+ ELSE 'READY' END,s.refund_from,s.completed_through,s.last_success_at,0,p.from_time,p.through_time
+FROM scope p CROSS JOIN scoped_sync s JOIN source_write_state ws ON ws.source='DCZD'
+LEFT JOIN dcai_sync_jobs j ON j.stream='` + dczdOrderStream + `'`
 
 const practiceMonthSettlementSourceSQL = `WITH scope AS (
  SELECT least(p.starts_on::timestamp AT TIME ZONE 'Asia/Shanghai',refund_period_start(p),(
@@ -183,6 +228,7 @@ func readSettlementSourceCoverage(ctx context.Context, tx pgx.Tx, periodID int64
 	var result []settlementSource
 	_, err = pgx.ForEachRow(rows, []any{&source.Stream, &source.Status, &source.From, &source.Through, &source.LastSync, &source.RefundGap,
 		&source.RequiredFrom, &source.RequiredThrough}, func() error {
+		source.ClockSkewWarning = source.Status == "READY" && source.Through != nil && source.LastSync != nil && source.Through.After(*source.LastSync)
 		result = append(result, source)
 		return nil
 	})

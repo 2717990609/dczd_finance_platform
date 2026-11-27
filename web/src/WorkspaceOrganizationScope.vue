@@ -1,17 +1,19 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { RadioGroup, Tree, TreeSelect } from 'ant-design-vue'
-import { organizationScopeOptions } from './organization-tree'
+import { hideInactiveOrganizations, organizationScopeOptions } from './organization-tree'
 
 const props = defineProps({ nodes: Array, selected: String, loading: Boolean, fillHeight: Boolean, hideSearchLabel: Boolean,
   allLabel: { type:String, default:'全部组织' },
   directoryScope: String,
+  viewportHeight: Number,
 })
 const emit = defineEmits(['select','select-scope'])
 const scopeLabel = computed(() => organizationScopeOptions.find(option => option.value===props.directoryScope)?.allLabel || props.allLabel)
 const treeViewport = ref()
 const treeHeight = ref(264)
 const search = ref('')
+const showInactive = ref(false)
 const expanded = ref()
 const searchExpanded = ref()
 const fieldNames = { key:'value' }
@@ -34,10 +36,14 @@ function parentKeys(nodes, selected) {
     if (parents) return [node.value, ...parents]
   }
 }
-const visibleNodes = computed(() => term.value ? matchingNodes(props.nodes, term.value) : props.nodes)
-const rootKeys = computed(() => props.nodes.map(node=>node.value))
+const activeNodes = computed(() => hideInactiveOrganizations(props.nodes))
+const treeNodes = computed(() => showInactive.value ? props.nodes : activeNodes.value)
+const selectedInactive = computed(() => !!props.selected &&
+  !!parentKeys(props.nodes, props.selected) && !parentKeys(activeNodes.value, props.selected))
+const visibleNodes = computed(() => term.value ? matchingNodes(treeNodes.value, term.value) : treeNodes.value)
+const rootKeys = computed(() => treeNodes.value.map(node=>node.value))
 const defaultExpanded = computed(() => {
-  const parents = props.selected ? parentKeys(props.nodes, props.selected) || [] : []
+  const parents = props.selected ? parentKeys(treeNodes.value, props.selected) || [] : []
   return [...new Set([...rootKeys.value, ...parents])]
 })
 const expandedKeys = computed({
@@ -47,10 +53,15 @@ const expandedKeys = computed({
     else expanded.value = keys
   },
 })
-watch(term, () => { searchExpanded.value = undefined })
+function setShowInactive(value) {
+  showInactive.value = value
+  if (!value && selectedInactive.value) emit('select', undefined)
+}
+watch([term,treeNodes], () => { searchExpanded.value = undefined })
+watch(selectedInactive, value => { if (value) showInactive.value = true }, {immediate:true})
 watch(() => props.selected, unit => {
   if (!unit || !expanded.value) return
-  expanded.value = [...new Set([...expanded.value, ...(parentKeys(props.nodes,unit) || [])])]
+  expanded.value = [...new Set([...expanded.value, ...(parentKeys(treeNodes.value,unit) || [])])]
 })
 watch(treeViewport, (viewport, _, onCleanup) => {
   if (!props.fillHeight || !viewport) return
@@ -71,26 +82,32 @@ watch(treeViewport, (viewport, _, onCleanup) => {
       option-type="button" button-style="solid" @update:value="emit('select-scope',$event)"/>
     <a-input id="workspace-organization-search" v-model:value="search" aria-label="搜索组织"
       placeholder="搜索公司、部门或小组" allow-clear />
+    <a-checkbox class="scope-inactive-toggle" :checked="showInactive" @update:checked="setShowInactive">显示已停用</a-checkbox>
     <div class="scope-options">
       <button type="button" :aria-pressed="!selected" @click="emit('select', undefined)">{{scopeLabel}}</button>
     </div>
-    <div v-if="visibleNodes.length" ref="treeViewport" class="scope-tree-viewport">
-      <Tree v-model:expanded-keys="expandedKeys" :selected-keys="selected ? [selected] : []"
-        :tree-data="visibleNodes" :field-names="fieldNames" :height="treeHeight" block-node
+    <div ref="treeViewport" :id="viewportHeight ? 'workspace-scope-tree' : undefined"
+      :class="{ 'scope-tree-viewport':viewportHeight || visibleNodes.length }"
+      :style="viewportHeight ? { height:viewportHeight+'px' } : undefined">
+      <Tree v-if="visibleNodes.length" v-model:expanded-keys="expandedKeys" :selected-keys="selected ? [selected] : []"
+        :tree-data="visibleNodes" :field-names="fieldNames" :height="viewportHeight ?? treeHeight" block-node
         @select="keys=>keys.length && emit('select',keys[0])">
         <template #title="{title}"><span class="scope-node-title" :title="title">{{title}}</span></template>
       </Tree>
+      <p v-else class="organization-scope-status" role="status">{{ loading ? '正在读取组织' : term ? '未找到匹配组织' : '暂无组织' }}</p>
     </div>
-    <p v-else class="organization-scope-status" role="status">{{ loading ? '正在读取组织' : term ? '未找到匹配组织' : '暂无组织' }}</p>
   </section>
   <div v-if="directoryScope!==undefined" class="mobile-scope">
     <RadioGroup class="scope-type-filter" :value="directoryScope" :options="organizationScopeOptions"
       name="workspace-scope-mobile" role="radiogroup" aria-label="组织内外部筛选"
       option-type="button" button-style="solid" @update:value="emit('select-scope',$event)"/>
   </div>
+  <div class="mobile-scope">
+    <a-checkbox class="scope-inactive-toggle" :checked="showInactive" @update:checked="setShowInactive">显示已停用</a-checkbox>
+  </div>
   <div class="scope-organization mobile-scope">
     <label for="workspace-organization">组织范围</label>
-    <TreeSelect id="workspace-organization" :value="selected" :tree-data="nodes" :loading="loading"
+    <TreeSelect id="workspace-organization" :value="selected" :tree-data="treeNodes" :loading="loading"
       aria-label="组织范围" :placeholder="scopeLabel" tree-node-filter-prop="title" show-search allow-clear
       @change="emit('select', $event)" />
   </div>
@@ -99,4 +116,6 @@ watch(treeViewport, (viewport, _, onCleanup) => {
 <style scoped>
 .scope-type-filter {display:flex;width:100%;margin-bottom:8px}
 .scope-type-filter :deep(.ant-radio-button-wrapper) {flex:1;min-width:0;padding-inline:6px;text-align:center}
+.scope-inactive-toggle {align-self:flex-start;margin-top:8px}
+.mobile-scope .scope-inactive-toggle {margin:0 0 8px}
 </style>

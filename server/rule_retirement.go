@@ -85,6 +85,15 @@ func (s workspace) retireRule(ctx context.Context, input retireRuleInput) (any, 
 		if err != nil {
 			return err
 		}
+		if periodID != nil {
+			var bound bool
+			if err := tx.QueryRow(ctx, `SELECT rule_plugin_version_id IS NOT NULL FROM periods WHERE id=$1`, *periodID).Scan(&bound); err != nil {
+				return err
+			}
+			if bound {
+				return errPeriodRulePluginLocked
+			}
+		}
 		tag, err := tx.Exec(ctx, `INSERT INTO rule_scope_retirements(rule_id,effective_from,recorded_by)
 		 VALUES($1,$2,$3::uuid) ON CONFLICT(rule_id) DO NOTHING`, input.RuleID, at, account)
 		if err != nil {
@@ -103,16 +112,19 @@ func (s workspace) retireRule(ctx context.Context, input retireRuleInput) (any, 
 }
 
 func retireCatalogPackage(ctx context.Context, tx pgx.Tx, product int64, version string, at time.Time, account *string) error {
-	var packageID, scope string
+	var packageID, scope, code string
 	var raw json.RawMessage
-	err := tx.QueryRow(ctx, `SELECT p.source_id::text,p.scope_type,v.definition
+	err := tx.QueryRow(ctx, `SELECT p.source_id::text,p.scope_type,v.definition,p.code
 	 FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
 	 JOIN product_catalog_settings scope ON scope.product_id=p.product_id
 	 WHERE v.source_id=$1::uuid AND p.product_id=$2 AND scope.source_system='DCAI' AND p.project_code=scope.project_code
 	  AND p.policy_kind='COMPONENT_RULE' AND p.scope_type IN ('BUSINESS_SCENARIO','CROSS_SCENARIO_AGGREGATE')
-	  AND v.source_status='PUBLISHED' AND `+catalogVersionVisible+` FOR UPDATE OF p`, version, product).Scan(&packageID, &scope, &raw)
+	  AND v.source_status='PUBLISHED' AND `+catalogVersionVisible+` FOR UPDATE OF p`, version, product).Scan(&packageID, &scope, &raw, &code)
 	if err != nil {
 		return err
+	}
+	if code == periodRulePluginPackageCode {
+		return errPeriodRulePluginLocked
 	}
 	if scope == "CROSS_SCENARIO_AGGREGATE" {
 		period, err := parseCatalogPeriodRule(raw)

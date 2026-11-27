@@ -10,7 +10,8 @@ const teamPoolLedgerPageSize = 25
 
 // The ledger projects confirmed calculation rows and shares. A share is one
 // posting even when it was funded by several original calculation lines.
-const teamPoolLedgerSQL = `WITH fixed AS (
+var teamPoolLedgerSQL = bindDirectoryScope(organizationScopeQuery(`WITH RECURSIVE `+organizationScopeCTE+`,`+directoryMatchesCTE+`,
+fixed AS (
  SELECT 'pool:'||pool.id AS key,pool.id,pool.product_id,pool.unit_id,pool.name,owner.name AS owner_name
  FROM practice_pools pool LEFT JOIN people owner ON owner.id=pool.owner_person_id
  WHERE ($1::bigint=0 OR pool.product_id=$1)
@@ -54,7 +55,7 @@ const teamPoolLedgerSQL = `WITH fixed AS (
  SELECT key,name,product_id,unit_id,period_id,CASE WHEN person_id IS NULL THEN 'retention' ELSE 'distribution' END,
   id,-amount_minor,NULL,NULL,item_key,person_id FROM booked_shares
 ), entries AS MATERIALIZED (
- SELECT * FROM postings WHERE ($2::text='' OR key=$2)
+ SELECT * FROM postings WHERE ($2::text='' OR key=$2) AND `+unitInOrganizationScope("unit_id")+`
 ), account_totals AS (
  SELECT key,product_id,unit_id,max(name) FILTER(WHERE kind IN ('income','refund','correction')) AS source_name,
   max(name) AS fallback_name,sum(amount_minor) AS balance,
@@ -64,13 +65,13 @@ const teamPoolLedgerSQL = `WITH fixed AS (
  SELECT coalesce(f.key,t.key) AS key,f.id,coalesce(f.name,t.source_name,t.fallback_name) AS name,
   coalesce(f.product_id,t.product_id) AS product_id,coalesce(f.unit_id,t.unit_id) AS unit_id,f.owner_name,
   coalesce(t.balance,0) AS balance,coalesce(t.income,0) AS income,coalesce(t.spent,0) AS spent
- FROM fixed f FULL JOIN account_totals t USING(key)
+ FROM (SELECT * FROM fixed WHERE `+unitInOrganizationScope("unit_id")+`) f FULL JOIN account_totals t USING(key)
 ), period_totals AS (
  SELECT period_id,sum(amount_minor) AS net,sum(greatest(amount_minor,0)) AS income,sum(greatest(-amount_minor,0)) AS spent
  FROM entries GROUP BY period_id
 ), period_page AS (
  SELECT p.id AS "periodId",p.name AS "periodName",product.name AS "productName",
-  to_char(` + periodReportMonthSQL + `,'YYYY-MM') AS month,p.ends_on AS "endsOn",s.confirmed_at AS "confirmedAt",
+  to_char(`+periodReportMonthSQL+`,'YYYY-MM') AS month,p.ends_on AS "endsOn",s.confirmed_at AS "confirmedAt",
   t.net AS "netMinor",t.income AS "totalIncomeMinor",t.spent AS "totalSpentMinor"
  FROM period_totals t JOIN periods p ON p.id=t.period_id JOIN products product ON product.id=p.product_id
  JOIN settlements s ON s.period_id=p.id ORDER BY p.ends_on DESC,p.ordinal DESC,p.id DESC LIMIT $4 OFFSET $5
@@ -96,7 +97,7 @@ SELECT CASE
  ELSE jsonb_build_object(
   'entries',coalesce((SELECT jsonb_agg(to_jsonb(e)-'sortId' ORDER BY kind,"sortId") FROM entry_page e),'[]'),
   'total',(SELECT count(*) FROM entries WHERE period_id=$3))
- END`
+ END`, "$6"), "$7")
 
 func (s workspace) teamPoolLedger(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
@@ -104,12 +105,15 @@ func (s workspace) teamPoolLedger(w http.ResponseWriter, r *http.Request) {
 	productID, productErr := optionalPoolLedgerID(q.Get("productId"))
 	periodID, periodErr := optionalPoolLedgerID(q.Get("periodId"))
 	offset, pageErr := reportPageOffset(q.Get("page"))
-	if productErr != nil || periodErr != nil || pageErr != nil || key != "" && !textOK(key, 400) || key == "" && periodID > 0 {
+	unit, unitErr := parseOrganizationScope(q.Get("unitId"))
+	scope := q.Get("scope")
+	if productErr != nil || periodErr != nil || pageErr != nil || unitErr != nil || !validOrganizationDirectoryScope(scope) ||
+		key != "" && !textOK(key, 400) || key == "" && periodID > 0 {
 		respond(w, nil, invalid)
 		return
 	}
 	var result json.RawMessage
-	err := s.db.QueryRow(r.Context(), teamPoolLedgerSQL, productID, key, periodID, teamPoolLedgerPageSize, offset).Scan(&result)
+	err := s.db.QueryRow(r.Context(), teamPoolLedgerSQL, productID, key, periodID, teamPoolLedgerPageSize, offset, unit, scope).Scan(&result)
 	respond(w, result, err)
 }
 

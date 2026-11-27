@@ -27,7 +27,7 @@ func TestHealthCatalogSeparatesProductsInTheSharedOrderStream(t *testing.T) {
  "scopeType":"BUSINESS_SCENARIO","scopeId":%q,"versions":[{"sourceId":"10800000-0000-4000-8000-%012d","version":1,"status":"PUBLISHED",
  "from":"2026-06-01T00:00:00Z","hash":"fixture","definition":{%s"schema_version":"1.1","recognition_trigger":"PAID",
  "settlement_policy":{"cycle":"MONTHLY_25_TO_24"},"policy_scope":{"business_sku_codes":[%q],"sales_systems":["DCAI"],"financial_event_types":["order.paid"]}}}]}]}`,
-			id, "DCAI_"+code, code, "dcai."+slug, id+1, code, "dcai:"+slug+":new", code, code, id+2, code, code, code, id+3, recognition, code)
+			id, "FIXTURE_DCAI_"+code, code, "dcai."+slug, id+1, code, "dcai:"+slug+":new", code, code, id+2, code, code, code, id+3, recognition, code)
 	}
 	var input productConfigFile
 	if err := json.Unmarshal([]byte(fmt.Sprintf(raw, product(10, "HEALTH_AMBASSADOR", "health-ambassador"), product(20, "HEALTH_CREATOR", "health-creator"))), &input); err != nil {
@@ -113,7 +113,7 @@ func TestHealthCatalogSeparatesProductsInTheSharedOrderStream(t *testing.T) {
 	if err := s.db.QueryRow(ctx, "SELECT array_agg(period_id ORDER BY period_id) FROM draft_refresh_queue").Scan(&queued); err != nil {
 		t.Fatal(err)
 	}
-	if len(queued) != 1 || queued[0] != periods["DCAI_HEALTH_AMBASSADOR"] {
+	if len(queued) != 1 || queued[0] != periods["FIXTURE_DCAI_HEALTH_AMBASSADOR"] {
 		t.Fatalf("the reread enqueued the wrong periods: %v", queued)
 	}
 	store(
@@ -122,7 +122,7 @@ func TestHealthCatalogSeparatesProductsInTheSharedOrderStream(t *testing.T) {
 		fact("ambassador", "HEALTH_AMBASSADOR", "REFUND_SUCCEEDED", `{"refund_minor":"10000"}`),
 	)
 	if err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		for code, expected := range map[string]string{"DCAI_HEALTH_AMBASSADOR": "ambassador", "DCAI_HEALTH_CREATOR": "creator"} {
+		for code, expected := range map[string]string{"FIXTURE_DCAI_HEALTH_AMBASSADOR": "ambassador", "FIXTURE_DCAI_HEALTH_CREATOR": "creator"} {
 			period := periods[code]
 			report, err := readCatalogMatches(ctx, tx, period, 0, 25)
 			if err != nil {
@@ -146,7 +146,7 @@ func TestHealthCatalogSeparatesProductsInTheSharedOrderStream(t *testing.T) {
 				t.Fatalf("%s selected refunds outside its source product: %+v", code, refunds)
 			}
 		}
-		ambassadorPeriod := periods["DCAI_HEALTH_AMBASSADOR"]
+		ambassadorPeriod := periods["FIXTURE_DCAI_HEALTH_AMBASSADOR"]
 		if _, err := tx.Exec(ctx, `INSERT INTO calculation_drafts(period_id,version,input_digest,total_minor,line_count,issue_count,calculated_at)
 		 VALUES($1,1,'\x01'::bytea,0,0,0,now())`, ambassadorPeriod); err != nil {
 			return err
@@ -160,7 +160,7 @@ func TestHealthCatalogSeparatesProductsInTheSharedOrderStream(t *testing.T) {
 		}}); err != nil {
 			return err
 		}
-		for period, gaps := range map[int64]int{ambassadorPeriod: 1, periods["DCAI_HEALTH_CREATOR"]: 0} {
+		for period, gaps := range map[int64]int{ambassadorPeriod: 1, periods["FIXTURE_DCAI_HEALTH_CREATOR"]: 0} {
 			streams, err := s.settlementSources(ctx, tx, period, settlementReview{})
 			if err != nil {
 				return err

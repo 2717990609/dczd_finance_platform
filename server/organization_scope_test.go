@@ -120,6 +120,35 @@ func TestFinanceReportsFilterUsingOrganizationTree(t *testing.T) {
 		detail.LineCount != 2 || detail.TotalMinor != 300 || detail.ScopeLineCount != 1 || len(detail.Lines) != 1 || detail.Lines[0].OrderID != "one" {
 		t.Fatalf("scoped settlement detail and overall total: %d %v %s", details.Code, err, details.Body)
 	}
+	t.Run("both reports use the same organization type", func(t *testing.T) {
+		if _, err := s.db.Exec(ctx, "UPDATE organization_units SET sales_company_type='EXTERNAL' WHERE id=$1", company); err != nil {
+			t.Fatal(err)
+		}
+		defer func() {
+			if _, err := s.db.Exec(ctx, "UPDATE organization_units SET sales_company_type=NULL WHERE id=$1", company); err != nil {
+				t.Error(err)
+			}
+		}()
+		for _, endpoint := range []struct {
+			handler http.HandlerFunc
+			path    string
+		}{{s.draftReport, draftURL}, {s.monthlyReport, monthURL}} {
+			for _, test := range []struct {
+				query  string
+				rows   int
+				amount int64
+			}{{"&scope=INTERNAL", 0, 0}, {"&scope=EXTERNAL", 2, 3000}, {"&scope=EXTERNAL&unitId=" + team, 1, 1000}} {
+				w := call(endpoint.handler, endpoint.path+test.query)
+				var got struct {
+					Total            int
+					PerformanceMinor int64
+				}
+				if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil || w.Code != 200 || got.Total != test.rows || got.PerformanceMinor != test.amount {
+					t.Fatalf("%s%s: %d %v %s", endpoint.path, test.query, w.Code, err, w.Body)
+				}
+			}
+		}
+	})
 	// A newer source version can change its seller while the booked attribution
 	// still governs the organization view. Put it beyond the recent page scan.
 	revised := fixture[0]

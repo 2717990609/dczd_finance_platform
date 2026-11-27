@@ -49,7 +49,7 @@ func (s workspace) financeRoute(route rest.Route) rest.Route {
 		rulesAccess = route.Method == http.MethodGet
 	}
 	localSettlementWrite := route.Method == http.MethodPost &&
-		(route.Path == "/api/v1/settlements" || route.Path == "/api/v1/correction-recovery")
+		(route.Path == "/api/v1/settlements" || route.Path == "/api/v1/correction-recovery" || route.Path == "/api/v1/products/settlement")
 	handler := route.Handler
 	route.Handler = func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")

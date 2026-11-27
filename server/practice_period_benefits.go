@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"maps"
 	"math/big"
 	"math/bits"
@@ -18,6 +19,8 @@ import (
 )
 
 const periodRateScale = 1_000_000
+
+var errPracticePeriodTierMissing = errors.New("practice period benefit has no matching tier")
 
 func (s workspace) practiceRuleRecipients(w http.ResponseWriter, r *http.Request) {
 	if ruleID := r.URL.Query().Get("ruleId"); ruleID != "" {
@@ -183,6 +186,7 @@ type practicePeriodBenefit struct {
 	FixedMinor               *int64                     `json:"fixedMinor,omitempty"`
 	FixedPerClass            bool                       `json:"fixedPerClass,omitempty"`
 	FixedPerOrder            bool                       `json:"fixedPerOrder,omitempty"`
+	CalculationGrain         string                     `json:"calculationGrain,omitempty"`
 	TierOnWholeClass         bool                       `json:"tierOnWholeClass,omitempty"`
 	Tiers                    []practicePeriodRate       `json:"tiers,omitempty"`
 	Pool                     *practicePoolTarget        `json:"pool,omitempty"`
@@ -303,7 +307,22 @@ func validPracticePeriodBenefit(c component) bool {
 			return false
 		}
 	}
-	if b.FixedPerOrder && (b.FixedMinor == nil || b.FixedPerClass || b.OrderAppointmentLevel == "") {
+	if b.CalculationGrain != "" && b.CalculationGrain != "payment" && b.CalculationGrain != "period" {
+		return false
+	}
+	if b.CalculationGrain != "" {
+		if b.OrderRecipientRole != "" && b.OrderRecipientRole != "SELLER" ||
+			b.OrderAppointmentLevel != "" || b.SalesCompanyRecipient || b.ReferralCompanyRecipient ||
+			b.TierOnWholeClass && b.CalculationGrain != "period" {
+			return false
+		}
+		if b.FixedMinor != nil && (b.FixedPerClass != (b.CalculationGrain == "period") ||
+			b.FixedPerOrder != (b.CalculationGrain == "payment" && !c.PracticeSignupBasis)) {
+			return false
+		}
+	}
+	if b.FixedPerOrder && (b.FixedMinor == nil || b.FixedPerClass ||
+		b.OrderAppointmentLevel == "" && b.CalculationGrain != "payment") {
 		return false
 	}
 	if len(b.StandardRates) != 0 {
@@ -368,6 +387,8 @@ func loadPracticeAppointments(ctx context.Context, tx pgx.Tx, rule paymentRule) 
 	var appointment practiceAppointment
 	_, err = pgx.ForEachRow(rows, []any{&key.PersonID, &key.UnitID, &key.Kind, &appointment.From, &appointment.To}, func() error {
 		out[key] = append(out[key], appointment)
+		memberKey := practiceAppointmentKey{key.PersonID, key.UnitID, organizationMemberAppointment}
+		out[memberKey] = append(out[memberKey], appointment)
 		return nil
 	})
 	return out, err
@@ -705,7 +726,7 @@ func scopePracticeBenefitPurchase(part component, p practicePurchase, assignment
 	checkSalesAgreement := len(b.StandardRates) == 0 && b.OrderAppointmentLevel == "" &&
 		b.RegistrationScope == nil && (b.hasSalesScope() || runtime.legacyBenefitSalesAgreement)
 	checkConfiguredRole := b.usesSalesPerson() && !runtime.legacyBenefitAttribution
-	if len(payments) == 2 && checkSalesAgreement {
+	if len(payments) == 2 && checkSalesAgreement && b.CalculationGrain == "" {
 		left, right := payments[0].Fact, payments[1].Fact
 		if left.SalesCompanyID != right.SalesCompanyID ||
 			(!checkConfiguredRole && left.ReferrerID != "" && right.ReferrerID != "" && left.ReferrerID != right.ReferrerID) {
@@ -719,7 +740,17 @@ func scopePracticeBenefitPurchase(part component, p practicePurchase, assignment
 	}
 	var recipientIssue string
 	if b.OrderRecipientRole != "" {
-		share.people, recipientIssue = practiceBeneficiaries(share.payments, b.OrderRecipientRole, identities)
+		if b.CalculationGrain != "" && !fixedSignup {
+			for _, payment := range share.payments {
+				person, issue := paymentBeneficiary(payment.Fact, b.OrderRecipientRole, identities)
+				if issue != "" {
+					return blocked(issue, payment.ID)
+				}
+				share.people = append(share.people, person)
+			}
+		} else {
+			share.people, recipientIssue = practiceBeneficiaries(share.payments, b.OrderRecipientRole, identities)
+		}
 	}
 	if b.SalesCompanyRecipient || b.ReferralCompanyRecipient {
 		share.company, recipientIssue = practiceSalesCompanyUnit(share.payments, runtime.companyRecipients)
@@ -755,6 +786,65 @@ func (b practicePeriodBenefit) rate(configured, basis int64) (int64, bool) {
 		}
 	}
 	return 0, false
+}
+
+func allocatePracticeCalculationGrain(part component, shares []practiceBenefitShare, wholeClassBasis int64) ([]practiceBenefitShare, int64, error) {
+	benefit := part.PeriodBenefit
+	var groups [][]practiceBenefitShare
+	if benefit.CalculationGrain == "payment" {
+		for _, share := range shares {
+			for i := range share.payments {
+				groups = append(groups, []practiceBenefitShare{share.paymentShare(i)})
+			}
+		}
+	} else if benefit.OrderRecipientRole != "" {
+		byPerson := make(map[int64][]practiceBenefitShare)
+		for _, share := range shares {
+			for i, person := range share.people {
+				byPerson[person.PersonID] = append(byPerson[person.PersonID], share.paymentShare(i))
+			}
+		}
+		for _, id := range slices.Sorted(maps.Keys(byPerson)) {
+			groups = append(groups, byPerson[id])
+		}
+	} else {
+		groups = append(groups, shares)
+	}
+	var result []practiceBenefitShare
+	var total int64
+	for _, group := range groups {
+		var amount int64
+		var err error
+		if benefit.FixedMinor != nil {
+			amount, err = allocatePracticeFixedBenefit(group, *benefit.FixedMinor, benefit.FixedPerClass, benefit.FixedPerOrder)
+		} else {
+			var basis int64
+			if benefit.TierOnWholeClass {
+				basis = wholeClassBasis
+			} else {
+				for _, share := range group {
+					basis, err = addMinor(basis, share.net)
+					if err != nil {
+						return nil, 0, err
+					}
+				}
+			}
+			rate, found := benefit.rate(part.Value, basis)
+			if !found {
+				return nil, 0, errPracticePeriodTierMissing
+			}
+			amount, err = allocatePracticePeriodRate(group, rate)
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		total, err = addMinor(total, amount)
+		if err != nil {
+			return nil, 0, err
+		}
+		result = append(result, group...)
+	}
+	return result, total, nil
 }
 
 // Post once for the entitlement group, then assign leftover cents by the
@@ -989,7 +1079,9 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 		}
 		var total int64
 		fixedSignup := part.PracticeSignupBasis && b.FixedMinor != nil && !b.FixedPerClass && !b.FixedPerOrder
-		if len(b.StandardRates) != 0 {
+		if len(b.StandardRates) != 0 && b.CalculationGrain == "payment" {
+			shares, total, err = allocatePracticeSinglePaymentStandardRates(shares)
+		} else if len(b.StandardRates) != 0 {
 			shares, total, err = allocatePracticeStandardRates(shares)
 		} else if fixedSignup {
 			for i := range shares {
@@ -1002,6 +1094,12 @@ func appendPracticePeriodBenefits(draft *paymentDraft, rule paymentRule, purchas
 				if err != nil {
 					return err
 				}
+			}
+		} else if b.CalculationGrain != "" {
+			shares, total, err = allocatePracticeCalculationGrain(part, shares, basis)
+			if errors.Is(err, errPracticePeriodTierMissing) {
+				draft.Issues = append(draft.Issues, draftIssue{RuleID: rule.ID, Component: key, Code: "PRACTICE_PERIOD_BENEFIT_TIER_MISSING"})
+				continue
 			}
 		} else if b.FixedPerClass && b.OrderAppointmentLevel != "" {
 			shares, total, err = allocatePracticeOrganizationFixedBenefit(shares, *b.FixedMinor)

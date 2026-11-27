@@ -6,7 +6,9 @@ const configurationOptionsSQL = `SELECT coalesce(jsonb_object_agg(group_key,item
   || CASE WHEN o.enabled THEN '{}'::jsonb ELSE '{"disabled":true}'::jsonb END
   ORDER BY o.display_order,o.option_key) AS items
  FROM (
-  SELECT group_key,option_key,label,display_order,applies_to,enabled FROM configuration_options
+  SELECT group_key,option_key,
+   CASE WHEN group_key='dcaiOrderStream' AND option_key='` + dcaiHealthStream + `' THEN '健康大使' ELSE label END AS label,
+   display_order,applies_to,enabled FROM configuration_options
   WHERE enabled OR group_key='catalogAppointmentRole'
   UNION ALL
   SELECT 'practiceSalesCategory',id::text,name,0,'{}'::jsonb,true FROM organization_sales_categories WHERE active

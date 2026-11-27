@@ -95,11 +95,18 @@ func (s workspace) syncOrders(ctx context.Context, stream string, from *time.Tim
 }
 
 func acquireOrderSyncLock(ctx context.Context, db *pgxpool.Pool, stream string) (*pgxpool.Conn, func(), error) {
+	conn, release, err := tryFinanceAdvisoryLock(ctx, db, "finance:dcai-order-sync:"+stream)
+	if err == nil && conn == nil {
+		err = errSyncInProgress
+	}
+	return conn, release, err
+}
+
+func tryFinanceAdvisoryLock(ctx context.Context, db *pgxpool.Pool, lockKey string) (*pgxpool.Conn, func(), error) {
 	conn, err := db.Acquire(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
-	lockKey := "finance:dcai-order-sync:" + stream
 	var acquired bool
 	if err := conn.QueryRow(ctx, "SELECT pg_try_advisory_lock(hashtextextended($1,0))", lockKey).Scan(&acquired); err != nil {
 		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -109,7 +116,7 @@ func acquireOrderSyncLock(ctx context.Context, db *pgxpool.Pool, stream string) 
 	}
 	if !acquired {
 		conn.Release()
-		return nil, nil, errSyncInProgress
+		return nil, nil, nil
 	}
 	return conn, func() {
 		cleanup, cancel := context.WithTimeout(context.Background(), 2*time.Second)
@@ -165,6 +172,18 @@ func runOrderSync(ctx context.Context, conn *pgxpool.Conn, client orderFeedClien
 	if err != nil {
 		return err
 	}
+	var periodID int64
+	if jobID != 0 && state.Stream == dczdOrderStream {
+		if err := conn.QueryRow(ctx, "SELECT practice_period_id FROM dcai_sync_jobs WHERE id=$1", jobID).Scan(&periodID); err != nil {
+			return err
+		}
+	}
+	if capabilities.PracticeOrdersThrough != nil && !backfill && state.Target == nil && state.Completed != nil {
+		return finishScopedPracticeSync(ctx, conn, client, state, jobID, periodID, capabilities)
+	}
+	if periodID != 0 {
+		return errPracticePeriodSyncUnavailable
+	}
 	if state.Target == nil {
 		cutoff, err := client.cutoff(ctx)
 		if err != nil {
@@ -218,14 +237,10 @@ func runOrderSync(ctx context.Context, conn *pgxpool.Conn, client orderFeedClien
 				return errPracticeRegistrationSync
 			}
 			if readiness.PracticeRegistrations {
-				if err := syncPracticeRegistrations(ctx, conn, client); err != nil {
+				if err := syncPracticeRegistrations(ctx, conn, client, jobID); err != nil {
 					return err
 				}
 			}
-		}
-		var facts []sourceFact
-		for _, row := range page.Rows {
-			facts = append(facts, row.Facts...)
 		}
 		updated := *state
 		updated.Pages++
@@ -238,6 +253,18 @@ func runOrderSync(ctx context.Context, conn *pgxpool.Conn, client orderFeedClien
 			}
 		}
 		err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			rows := page.Rows
+			if state.Stream == dcaiHealthStream {
+				active, err := activeHealthRows(ctx, tx, rows)
+				if err != nil {
+					return err
+				}
+				rows = active
+			}
+			var facts []sourceFact
+			for _, row := range rows {
+				facts = append(facts, row.Facts...)
+			}
 			inserted, err := storeSourceFactsFrom(ctx, tx, facts, state.origin)
 			if err != nil {
 				return err
@@ -248,7 +275,7 @@ func runOrderSync(ctx context.Context, conn *pgxpool.Conn, client orderFeedClien
 				}
 			}
 			if client.source == "DCAI" {
-				if err := storeDCAIBlockers(ctx, tx, state.Stream, page.Rows); err != nil {
+				if err := storeDCAIBlockers(ctx, tx, state.Stream, rows); err != nil {
 					return err
 				}
 			}

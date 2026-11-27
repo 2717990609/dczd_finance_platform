@@ -158,7 +158,7 @@ func quoteVIPLeader(a vipBenefitAction, req vipSalesRequest, sourceIssue string,
 		if standard.Rate == 0 {
 			return line
 		}
-		if standard.Rate != policy.split.Total || standard.Payee == vipPayeeSalesCompany {
+		if standard.Rate != policy.split.Total || standard.companyPayee() {
 			line.Status = "SALES_TEAM_PENDING"
 			return line
 		}

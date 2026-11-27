@@ -71,9 +71,9 @@ const hasUniformRate = computed(() => {
   if (!item || hasRateTable.value || targetKind.value==='seller') return false
   return selectedCalculation.value ? selectedCalculation.value.fixedMinor == null : flatMethod(item)==='rate'
 })
-const targetKindLabels = {person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人',appointment:'销售组织的在任人员',...catalogOrderSalesPayees}
+const targetKindLabels = {person:'指定个人',company:'指定公司',pool:'团队池',referrer:'订单直接推荐人',appointment:'销售组织的在任人员',order_sales_company:'销售所属公司',...catalogOrderSalesPayees}
 const targetShortLabels = {seller:'销售比例表',person:'个人',company:'公司',pool:'团队池',referrer:'推荐人',appointment:'在任人员',
-  order_seller:'成交销售',order_sales_company:'销售公司'}
+  order_seller:'订单销售',order_sales_company:'销售所属公司',order_recommendation_company:'推荐公司'}
 const teamSplit = computed(() => component.value?.teamSplit)
 const serviceItemKey = 'internal-service'
 const splitValue = field => Object.hasOwn(splitEdits.value,field) ? splitEdits.value[field] : (splitItem.value.teamSplit[field]/100).toFixed(2)
@@ -271,8 +271,10 @@ function addStandard(item, scope) {
   structureEditor.value?.editCalculation({rows},'table',scope)
 }
 const pendingScope = (itemKey, row) => row && structure.value.rateRows.find(edit=>edit.itemKey===itemKey && edit.row===row)
+const existingSalesCompany = {value:'sales_company',label:'销售所属公司'}
+const salesPayeeOptions = row => row.payee==='sales_company' ? [...catalogSalesPayees,existingSalesCompany] : catalogSalesPayees
 const salesPayeeLabel = row => row.teamRate ? '团队岗位拆分'
-  : catalogSalesPayees.find(choice=>choice.value===(row.payee || 'seller'))?.label
+  : salesPayeeOptions(row).find(choice=>choice.value===(row.payee || 'seller'))?.label
 const cellKey = (item, row) => JSON.stringify([item,row || 0])
 function rowOptions(kind, values) {
   const missing = (values || []).filter(value=>value!=null && !rateNames.value[kind].has(value))
@@ -402,7 +404,7 @@ function targetName(item) {
   const edit = targetEdits.value.get(item.itemKey)
   const target = edit?.target || item.targetKind
   const duty = edit ? edit.recipientDuty : item.recipientDuty
-  const orderPayee = catalogOrderSalesPayees[target] || (target==='referrer' ? '订单直接推荐人' : '')
+  const orderPayee = catalogOrderSalesPayees[target] || (target==='order_sales_company' || target==='referrer' ? targetKindLabels[target] : '')
   const withDuty = (name,duty) => [name,duty && (props.optionLabel('organizationDuty',duty) || duty)].filter(Boolean).join(' · ')
   if (orderPayee) return withDuty(orderPayee,duty)
   if (target==='appointment') {
@@ -890,7 +892,7 @@ async function publish() {
                       <template v-if="rowEditable(record) && record.scope!=='external'">
                         <label class="sr-only" :for="rateFieldId(record,'payee')">收款方</label>
                         <a-select :id="rateFieldId(record,'payee')" size="small"
-                          :value="record.payee || 'seller'" :options="catalogSalesPayees" :disabled="!editable || structureEditing"
+                          :value="record.payee || 'seller'" :options="salesPayeeOptions(record)" :disabled="!editable || structureEditing"
                           @update:value="setInlineCondition(record,'payee',$event)"/>
                       </template>
                       <span v-else>{{ salesPayeeLabel(record) }}</span>

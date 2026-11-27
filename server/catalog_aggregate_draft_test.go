@@ -245,7 +245,7 @@ func TestCatalogAggregateDraftUsesAnIndependentPeriodAndLatestOrderReferences(t 
 		var detail struct {
 			Lines []struct{ AggregateGroupKey string }
 		}
-		err := db.QueryRow(ctx, filteredDraftDetailSQL, periodID, 0, 0, draft.Version, 0, 0, nil, order, "").Scan(&detail)
+		err := db.QueryRow(ctx, filteredDraftDetailSQL, periodID, 0, 0, draft.Version, 0, 0, nil, order, "", "").Scan(&detail)
 		if err != nil || len(detail.Lines) != count || count > 0 && detail.Lines[0].AggregateGroupKey == "" {
 			t.Fatalf("search by order %q should find its group awards: %+v %v", order, detail, err)
 		}

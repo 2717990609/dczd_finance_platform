@@ -14,7 +14,10 @@ func TestTeamPoolDirectoryAndLedgerUseRegisteredPools(t *testing.T) {
 	s := workspace{db: integrationDB(t), development: true}
 	if _, err := s.db.Exec(ctx, `
  INSERT INTO products(code,name,period_mode,cycle_start_day) VALUES('POOL_LEDGER','团队池产品','calendar',25);
- INSERT INTO organization_units(id,kind,name,status) VALUES('54000000-0000-4000-8000-000000000001','COMPANY','交付组织','ACTIVE');
+ INSERT INTO organization_units(id,kind,name,status,sales_company_type) VALUES
+ ('54000000-0000-4000-8000-000000000005','COMPANY','外部公司','ACTIVE','EXTERNAL');
+ INSERT INTO organization_units(id,kind,name,status,parent_id) VALUES
+ ('54000000-0000-4000-8000-000000000001','DEPARTMENT','交付组织','ACTIVE','54000000-0000-4000-8000-000000000005');
  INSERT INTO people(name) VALUES('池负责人'),('分配成员');`); err != nil {
 		t.Fatal(err)
 	}
@@ -55,8 +58,8 @@ func TestTeamPoolDirectoryAndLedgerUseRegisteredPools(t *testing.T) {
 	if _, err := s.db.Exec(ctx, `
  INSERT INTO periods(product_id,name,ordinal,starts_on,ends_on,calendar_month) VALUES
 	(1,'首期',202607,'2026-06-25','2026-07-24','2026-07-01'),(1,'次期',202608,'2026-07-25','2026-08-24','2026-08-01');
- INSERT INTO calculation_drafts(period_id,version,input_digest,total_minor,line_count,issue_count,calculated_at)
-	VALUES(1,1,'\x01',0,0,0,now()),(2,1,'\x02',0,0,0,now());
+ INSERT INTO calculation_drafts(period_id,version,input_digest,total_minor,line_count,issue_count,calculated_at,catalog_refunds_ready)
+	VALUES(1,1,'\x01',0,0,0,now(),true),(2,1,'\x02',0,0,0,now(),true);
  INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
  VALUES ('DCAI','ORDER-1','','payment:1','1','ORDER_PAID',now(),now(),'{}'),
  ('DCAI','ORDER-2','','payment:2','1','ORDER_PAID',now(),now(),'{}'),
@@ -102,6 +105,27 @@ func TestTeamPoolDirectoryAndLedgerUseRegisteredPools(t *testing.T) {
 	call(http.MethodGet, "/api/v1/team-pool-ledger?key=pool%3A1", "", &periods)
 	if len(periods.Periods) != 1 || periods.Periods[0].PeriodID != 1 || periods.Periods[0].TotalSpentMinor != 2000 {
 		t.Fatalf("should include only the booked period summary: %+v", periods)
+	}
+	call(http.MethodGet, "/api/v1/team-pool-ledger?productId=1&scope=EXTERNAL&unitId=54000000-0000-4000-8000-000000000005", "", &listing)
+	if len(listing.Items) != 1 || listing.Items[0].BalanceMinor != 4000 {
+		t.Fatalf("the parent and inherited external scope should include the pool: %+v", listing)
+	}
+	call(http.MethodGet, "/api/v1/team-pool-ledger?scope=INTERNAL", "", &listing)
+	if len(listing.Items) != 0 {
+		t.Fatalf("internal scope included an external pool: %+v", listing)
+	}
+	call(http.MethodGet, "/api/v1/team-pool-ledger?key=pool%3A1&periodId=1&scope=INTERNAL", "", &details)
+	if len(details.Entries) != 0 || details.Total != 0 {
+		t.Fatalf("the drawer should use the same organization scope as the list: %+v", details)
+	}
+	var draft poolDraftReport
+	call(http.MethodGet, "/api/v1/draft-pools?periodId=1&version=1", "", &draft)
+	if len(draft.Items) != 1 {
+		t.Fatalf("expected the pool in the unfiltered allocation report: %+v", draft)
+	}
+	call(http.MethodGet, "/api/v1/draft-pools?periodId=1&version=1&scope=INTERNAL", "", &draft)
+	if len(draft.Items) != 0 {
+		t.Fatalf("allocation report included an external pool: %+v", draft)
 	}
 
 	var retention struct {

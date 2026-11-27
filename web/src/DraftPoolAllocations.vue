@@ -2,7 +2,7 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { teamPoolKey } from './team-pool-key'
 
-const props = defineProps({ draft:Object, api:Function, formatMoney:Function, requestedPool:String })
+const props = defineProps({ draft:Object, api:Function, formatMoney:Function, requestedPool:String, unitId:String, directoryScope:String })
 const report = ref()
 const selected = ref()
 const rows = ref([])
@@ -26,7 +26,7 @@ const confirmedColumns = [
   {title:'确认金额',dataIndex:'amountMinor',key:'amount',align:'right',width:140},
 ]
 const missingRequestedPool = computed(() => Boolean(report.value && props.requestedPool &&
-  !options.value.some(option=>option.value===props.requestedPool)))
+  !props.unitId && !props.directoryScope && !options.value.some(option=>option.value===props.requestedPool)))
 function choosePool(preferred = selected.value || props.requestedPool) {
   selected.value = options.value.some(option=>option.value===preferred) ? preferred : options.value[0]?.value
 }
@@ -46,7 +46,7 @@ const toMinor = value => {
   return Number(whole)*100+Number(fraction.padEnd(2,'0'))
 }
 const memberTotal = computed(() => rows.value.reduce((sum,row) => sum+toMinor(row.amount),0))
-const remaining = computed(() => Math.max(0,pool.value?.balanceMinor || 0)-memberTotal.value-toMinor(retained.value))
+const remaining = computed(() => Math.max(0,pool.value?.allocatableMinor ?? pool.value?.balanceMinor ?? 0)-memberTotal.value-toMinor(retained.value))
 const memberOverLimit = row => row.personId && toMinor(row.amount)>(membersById.value.get(row.personId)?.availableMinor || 0)
 const overMemberLimit = computed(() => rows.value.some(memberOverLimit))
 
@@ -56,6 +56,8 @@ async function load() {
   error.value = ''
   try {
     const params = new URLSearchParams({periodId:props.draft.periodId,version:props.draft.version})
+    if (props.unitId) params.set('unitId',props.unitId)
+    if (props.directoryScope) params.set('scope',props.directoryScope)
     const result = await props.api('/draft-pools?'+params)
     if (request!==sequence) return
     report.value = result
@@ -75,7 +77,11 @@ watch(pool, item => {
   rows.value = shares.filter(row=>row.personId>0).map(row=>({personId:row.personId,amount:moneyInput(row.amountMinor)}))
   retained.value = shares.some(row=>row.personId===0) ? moneyInput(shares.find(row=>row.personId===0).amountMinor) : undefined
 })
-watch(() => [props.draft.periodId,props.draft.version,props.draft.settlement?.confirmedAt], () => { notice.value=''; load() }, {immediate:true})
+watch(() => [props.draft.periodId,props.draft.version,props.draft.settlement?.confirmedAt,props.unitId,props.directoryScope], () => {
+  notice.value = ''
+  report.value = undefined
+  load()
+}, {immediate:true})
 onBeforeUnmount(() => { sequence++ })
 
 async function save() {
@@ -122,7 +128,7 @@ async function save() {
       <a-alert v-if="error" type="error" :message="error" show-icon/>
       <a-alert v-if="notice" type="success" :message="notice" show-icon/>
       <a-alert v-if="missingRequestedPool" type="warning" message="本期未找到指定团队池，请核对池名称。" show-icon/>
-      <a-empty v-if="!loading && !error && !pool" description="本期没有团队池余额或流水"/>
+      <a-empty v-if="!loading && !error && !pool" :description="unitId || directoryScope ? '所选组织范围暂无团队池' : '本期没有团队池余额或流水'"/>
       <template v-if="pool">
         <div class="pool-control">
           <label for="draft-pool-select">团队池</label>

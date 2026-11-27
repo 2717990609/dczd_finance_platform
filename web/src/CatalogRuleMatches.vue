@@ -159,7 +159,7 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
                 <template v-if="part.kind==='pool'"> · 待分配（{{ part.ownerName }}）</template>
               </template>
               <template v-else-if="part.status==='ZERO'">{{ formatMoney(0) }}</template>
-              <template v-else>{{ benefitStatus[part.status] || salesStatus[part.status] || '分润分项待核' }}</template>
+              <template v-else>{{ benefitStatus[part.status] || salesStatus[part.status] || '分润分项待核' }}<span v-if="part.detail"> · {{ part.detail }}</span></template>
             </div>
           </details>
           <small v-else-if="record.benefitStatus" class="order-version">{{ benefitStatus[record.benefitStatus] }}</small>
@@ -175,7 +175,7 @@ onBeforeUnmount(() => { sequence++; poolSequence++ })
             </div>
           </details>
           <small v-else-if="record.salesStatus==='CALCULATED'" class="order-version">销售分润 {{ formatMoney(0) }}</small>
-          <small v-else-if="record.salesStatus" class="order-version">{{ salesStatus[record.salesStatus] || '销售分项待核' }}</small>
+          <small v-else-if="record.salesStatus" class="order-version">{{ salesStatus[record.salesStatus] || benefitStatus[record.salesStatus] || '销售分项待核' }}<span v-if="record.salesDetail"> · {{ record.salesDetail }}</span></small>
         </template>
         <a-tag v-else-if="column.key==='status'" :color="record.status==='MATCHED' ? 'green' : record.status==='MEMBERSHIP_RENEWAL_EXCLUDED' ? undefined : 'orange'">{{ statuses[record.status] || record.status }}</a-tag>
       </template>

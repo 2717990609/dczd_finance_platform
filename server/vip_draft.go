@@ -153,7 +153,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 	}
 	var missingSourceSeller, reportedSourceSeller bool
 	membershipIssue := -1
-	issue := func(component, code string) {
+	appendIssue := func(component, code, detail string) {
 		if missingSourceSeller && code == "SALES_PERSON_MISSING" {
 			if reportedSourceSeller {
 				return
@@ -171,8 +171,9 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 			}
 			membershipIssue = len(result.Issues)
 		}
-		result.Issues = append(result.Issues, draftIssue{FactID: row.SourceVersionID, Component: component, Code: code})
+		result.Issues = append(result.Issues, draftIssue{FactID: row.SourceVersionID, Component: component, Code: code, Detail: detail})
 	}
+	issue := func(component, code string) { appendIssue(component, code, "") }
 	if row.PaidMinor == nil || excludedVIPPayment(row.Status) || !row.PaidInWindow && row.Status != "MATCHED" {
 		issue("", row.Status)
 		return nil
@@ -219,7 +220,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 		issue("sales", "VIP_SALES_RULE_UNSUPPORTED")
 	} else if row.SalesStatus != "CALCULATED" && row.SalesStatus != vipSalesAppointmentInactive &&
 		row.SalesStatus != vipSalesNotConfigured && row.SalesStatus != vipCommissionOutsideScope {
-		issue("sales", row.SalesStatus)
+		appendIssue("sales", row.SalesStatus, row.SalesDetail)
 	}
 	var salesRate int64
 	for _, part := range row.SalesParts {
@@ -253,7 +254,7 @@ func addVIPDraftPayment(result *paymentDraft, row catalogPaymentMatch, data vipR
 			}
 		case "ZERO", "INACTIVE", vipCommissionOutsideScope:
 		default:
-			issue(part.Label, part.Status)
+			appendIssue(part.Label, part.Status, part.Detail)
 		}
 	}
 	return nil

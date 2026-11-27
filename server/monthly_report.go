@@ -16,9 +16,7 @@ const periodReportMonthSQL = `coalesce(p.report_month,p.calendar_month,date_trun
 
 // Read exactly one current or confirmed result per registered scope. Monetary
 // rows still come from the same postings used by the single-period report.
-var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, ` + organizationDirectoryScopes + `, directory_matches AS MATERIALIZED (
- SELECT id FROM directory_scopes WHERE scope=$9
-), scopes AS MATERIALIZED (
+var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, ` + directoryMatchesCTE + `, scopes AS MATERIALIZED (
  SELECT p.id AS period_id,pro.name AS product_name,p.name,p.starts_on,p.ends_on,
   CASE WHEN p.aggregate_package_id IS NOT NULL THEN 'aggregate' WHEN pro.period_mode='calendar' THEN 'calendar'
    WHEN p.calendar_month IS NOT NULL THEN 'refund_month' ELSE 'class' END AS kind,
@@ -30,7 +28,7 @@ var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, ` +
  LEFT JOIN calculation_drafts d ON d.period_id=p.id
  LEFT JOIN settlements st ON st.period_id=p.id
  LEFT JOIN draft_refresh_queue q ON q.period_id=p.id AND st.id IS NULL
- WHERE ` + periodReportMonthSQL + `=$1::date AND ($2::bigint IS NULL OR p.product_id=$2)
+ WHERE pro.code` + activeFinanceProductCodeSQL + ` AND ` + periodReportMonthSQL + `=$1::date AND ($2::bigint IS NULL OR p.product_id=$2)
   AND ($3::text='current' OR st.id IS NOT NULL)
 ), selected_draft AS MATERIALIZED (
  SELECT period_id,version,performance_ready FROM scopes WHERE version IS NOT NULL
@@ -75,7 +73,7 @@ var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, ` +
  FROM performance_groups CROSS JOIN coverage WHERE coverage.performance_ready
 ), ` + reportOrganizationCTEs + `, scoped_postings AS (
  SELECT * FROM organized_postings WHERE (` + reportInOrganization + `) AND ($8::bigint IS NULL OR person_id=$8)
- AND ($9='' OR coalesce(company_id,department_id,group_id) IN (SELECT id FROM directory_matches))
+ AND ` + postingInDirectoryScope("") + `
 ), period_amounts AS (
  SELECT period_id,sum(amount_minor+refund+correction+allocation) AS commission FROM scoped_postings GROUP BY period_id
 ), matching AS (
@@ -127,7 +125,7 @@ SELECT jsonb_build_object('snapshot',stamp.snapshot,'total',(SELECT count(*) FRO
  'items',coalesce((SELECT jsonb_agg(to_jsonb(labeled) ORDER BY "performanceMinor" DESC,"totalMinor" DESC,id) FROM labeled),'[]'))
 FROM stamp CROSS JOIN coverage WHERE $6='' OR stamp.snapshot=$6`
 
-var scopedMonthlyReportSQL = organizationScopeQuery(monthlyReportTemplateSQL, "$7")
+var scopedMonthlyReportSQL = bindDirectoryScope(organizationScopeQuery(monthlyReportTemplateSQL, "$7"), "$9")
 
 func parseReportMonth(value string) (time.Time, error) {
 	month, err := time.Parse("2006-01", value)

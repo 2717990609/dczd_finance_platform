@@ -16,6 +16,24 @@ func organizationScopeQuery(sql, parameter string) string {
 	return strings.ReplaceAll(sql, "{{unit}}", parameter+"::uuid")
 }
 
+const directoryMatchesCTE = organizationDirectoryScopes + `, directory_matches AS MATERIALIZED (
+ SELECT id FROM directory_scopes WHERE scope={{directoryScope}}
+)`
+
+func bindDirectoryScope(sql, parameter string) string {
+	return strings.ReplaceAll(sql, "{{directoryScope}}", parameter+"::text")
+}
+
+func postingInDirectoryScope(alias string) string {
+	return strings.ReplaceAll(`({{directoryScope}}='' OR coalesce({{posting}}company_id,{{posting}}department_id,{{posting}}group_id)
+  IN (SELECT id FROM directory_matches))`, "{{posting}}", alias)
+}
+
+func unitInOrganizationScope(column string) string {
+	return strings.ReplaceAll(`({{unit}} IS NULL OR {{column}} IN (SELECT id FROM organization_scope))
+ AND ({{directoryScope}}='' OR {{column}} IN (SELECT id FROM directory_matches))`, "{{column}}", column)
+}
+
 func parseOrganizationScope(value string) (unit pgtype.UUID, err error) {
 	if value != "" && unit.Scan(value) != nil {
 		return unit, invalid

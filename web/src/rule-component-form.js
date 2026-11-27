@@ -176,7 +176,7 @@ export function catalogRateConditionBody(row, scope = row.scope, salesPayee = fa
   const rateBps = rateAsBasisPoints(row.rate)
   if (rateBps===undefined) throw new Error('请填写有效比例。')
   if (scope==='external') {
-    return {company:'ANY',relationship:'ANY',rateBps,externalCompanyDefault:true,...(salesPayee ? {payee:'sales_company'} : {})}
+    return {company:'ANY',relationship:'ANY',rateBps,externalCompanyDefault:true,...(salesPayee ? {payee:row.payee==='sales_company' ? row.payee : 'recommendation_company'} : {})}
   }
   if (!row.relationship) throw new Error('请选择销售关系。')
   if (scope==='category' && !row.categoryIds.length) throw new Error('请选择销售类别。')
@@ -189,19 +189,20 @@ export function catalogRateConditionBody(row, scope = row.scope, salesPayee = fa
 }
 
 export const catalogSalesPayees = [
-  {value:'seller',label:'销售本人'},
-  {value:'sales_company',label:'销售所属公司'},
+  {value:'seller',label:'订单上的销售人员'},
+  {value:'recommendation_company',label:'订单上的推荐公司'},
 ]
 
 export const catalogOrderSalesPayees = {
-  order_seller:'订单上的成交销售',
-  order_sales_company:'销售所属公司',
+  order_seller:'订单上的销售人员',
+  order_recommendation_company:'订单上的推荐公司',
 }
 
 export function catalogPayeeComplete(payee, roles) {
   switch (payee.target) {
     case 'seller':
     case 'order_seller':
+    case 'order_recommendation_company':
     case 'order_sales_company':
     case 'referrer': return true
     case 'person': {
@@ -583,6 +584,63 @@ export function practiceRetrainServiceScopeText(split, names, limit = 2) {
 export function practiceRetrainShareText(fixed, rate, formatMoney) {
   if (!rate) return formatMoney(fixed || 0)+' / 份'
   return rate.value/10000+'% · '+(rate.basis==='commission' ? '按复训总提成' : '按报名净实收')
+}
+
+export function practiceCompanySalesBody(row) {
+  const must = (value, message) => {
+    if (value == null || String(value).trim()==='') throw new Error(message)
+    return value
+  }
+  const minor = value => Math.round(Number(value)*100)
+  const periodRate = value => Math.round(Number(must(value,'请填写班次计提比例'))*10000)
+  const practicePoolBody = pool => ({poolId:must(pool.poolId,'请选择团队池'),ownerId:pool.ownerId || undefined})
+  const sales = row.companySales
+  must(sales.label?.trim(),'请填写收款安排名称')
+  const scopeMode = sales.scopeMode || (sales.ownSales ? 'own' : sales.general ? 'all' : 'team')
+  if (scopeMode==='team' && !sales.categories.length && sales.defaultRate == null) {
+    throw new Error('请给「'+sales.label.trim()+'」配置销售组织或销售类别的计提标准。')
+  }
+  const payee = {kind:must(sales.payee?.kind,'请选择收款对象')}
+  if (payee.kind==='order_person') payee.role=must(sales.payee.role,'请选择从订单读取的收款人')
+  if (payee.kind==='person') {
+    payee.personId=must(sales.payee.personId,'请选择收款人员')
+  }
+  if (payee.kind==='company') payee.companyId=must(sales.payee.companyId,'请选择收款公司')
+  if (payee.kind==='pool') payee.pool=practicePoolBody(sales.payee.pool)
+  const value = item => {
+    const mode = must(item.mode,'请选择外部公司计算方式')
+    return {mode,value:mode==='rate' ? periodRate(item.value) : minor(must(item.value,'请填写计提金额')),
+      ...(mode==='fixed' && item.refundPolicy ? {refundPolicy:item.refundPolicy} : {}),
+      ...(row.classMember==='new' && item.recommendationRate != null ? {recommendationRate:periodRate(item.recommendationRate)} : {})}
+  }
+  const result = {label:sales.label.trim(),payee,
+    ...(sales.defaultRate == null ? {} : {defaultRate:periodRate(sales.defaultRate)}),
+    ...(scopeMode==='team' ? {} : {general:value(sales.general)}),
+    ...(scopeMode==='own' ? {ownSales:true} : {}),
+    internalCompanies:sales.internalCompanies,categories:sales.categories.map(category=>{
+    const byCategory = category.scope==='category'
+    const companies = byCategory ? [] : category.companies
+    if (byCategory ? !category.salesCategoryIds.length : !companies.length && !category.salesUnits?.length) {
+      throw new Error(byCategory ? '请选择销售类别' : '请选择指定组织')
+    }
+    return {
+      companies,
+      ...(category.label ? {label:category.label} : {}),
+      ...(!byCategory && category.salesUnits?.length ? {salesUnits:category.salesUnits} : {}),
+      ...(byCategory ? {salesCategoryIds:category.salesCategoryIds} : {}),
+      ...value(category),
+      ...(category.overrides.length ? {overrides:category.overrides.map(override=>{
+        if (!override.companyIds?.length && !override.salesUnits?.length) throw new Error('请选择采用单独标准的销售组织')
+        return {companyIds:override.companyIds,salesUnits:override.salesUnits,...value(override)}
+      })} : {}),
+    }
+  })}
+  if (result.categories.some(category=>category.recommendationRate>0 ||
+    category.overrides?.some(override=>override.recommendationRate>0))) {
+    if (!row.companySales.recommendationRecipients?.length) throw new Error('请选择可直接收取推荐分润的公司')
+    result.recommendationRecipients = row.companySales.recommendationRecipients
+  }
+  return result
 }
 
 export function copiedRuleComponents(savedComponents, optionLabel) {

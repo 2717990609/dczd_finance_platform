@@ -4,7 +4,7 @@ import DraftPoolAllocations from './DraftPoolAllocations.vue'
 import TeamPoolLedger from './TeamPoolLedger.vue'
 
 const props = defineProps({periods:Array, loading:Boolean, requestedPeriod:Number, requestedPool:String, api:Function,
-  formatMoney:Function, formatTime:Function, productId:Number, canConfigure:Boolean, periodLink:Function})
+  formatMoney:Function, formatTime:Function, productId:Number, unitId:String, directoryScope:String, canConfigure:Boolean, periodLink:Function})
 const selected = defineModel({type:Number})
 const candidates = computed(() => props.periods.filter(period => period.poolDraftVersion))
 const options = computed(() => candidates.value.map(period => ({
@@ -23,7 +23,8 @@ watch([candidates, () => props.requestedPeriod], ([available, requested], previo
 </script>
 
 <template>
-  <TeamPoolLedger :api="api" :product-id="productId" :format-money="formatMoney" :format-time="formatTime" :period-link="periodLink"/>
+  <TeamPoolLedger :api="api" :product-id="productId" :unit-id="unitId" :directory-scope="directoryScope"
+    :format-money="formatMoney" :format-time="formatTime" :period-link="periodLink"/>
   <section class="records workbench-controls">
     <div class="workbench-selection workbench-toolbar">
       <div class="workbench-period">
@@ -38,7 +39,7 @@ watch([candidates, () => props.requestedPeriod], ([available, requested], previo
     </div>
   </section>
   <DraftPoolAllocations v-if="draft" :key="selected" :draft="draft" :api="api" :format-money="formatMoney"
-    :requested-pool="requestedPool"/>
+    :requested-pool="requestedPool" :unit-id="unitId" :directory-scope="directoryScope"/>
   <section v-else class="records empty">
     <a-empty :description="loading ? '正在读取核算期' : options.length ? '选择核算期查看团队池' : '所选范围暂无可查询的团队池核算期'">
       <a-button v-if="!loading && !options.length" href="#tasks">查看待办</a-button>

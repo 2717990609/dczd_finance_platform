@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,7 +32,8 @@ func enqueueDraftConfiguration(ctx context.Context, tx pgx.Tx, selection string,
 func enqueueDraftPeriods(ctx context.Context, tx pgx.Tx, selection string, args ...any) error {
 	_, err := tx.Exec(ctx, `WITH affected(period_id) AS (`+selection+`)
 	 INSERT INTO draft_refresh_queue(period_id)
-	 SELECT DISTINCT period_id FROM affected a
+	 SELECT DISTINCT a.period_id FROM affected a JOIN periods p ON p.id=a.period_id
+	 JOIN products pro ON pro.id=p.product_id AND pro.code`+activeFinanceProductCodeSQL+`
 	 WHERE NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=a.period_id)
 	 ORDER BY period_id ON CONFLICT(period_id) DO UPDATE SET generation=excluded.generation,requested_at=excluded.requested_at,retry_on_scan=true,message=''`, args...)
 	return err
@@ -55,8 +57,48 @@ const draftRefreshClassRule = `WITH changed AS (` + draftRefreshRule + `
  SELECT p.id FROM changed JOIN periods p USING(id) WHERE p.calendar_month IS NULL
  UNION SELECT d.period_id FROM changed c CROSS JOIN LATERAL practice_tier_dependents(c.id) d`
 
+const (
+	manualDraftPollInterval = time.Second
+	manualDraftTimeout      = 5 * time.Minute
+)
+
+func (s workspace) requestDraftGeneration(ctx context.Context, input calculateDraftInput) (map[string]int64, error) {
+	if input.PeriodID < 1 {
+		return nil, invalid
+	}
+	var settled bool
+	var productCode string
+	err := s.db.QueryRow(ctx, `WITH target AS (
+	 SELECT p.id,pro.code,EXISTS(SELECT 1 FROM settlements f WHERE f.period_id=p.id) AS settled
+	 FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1
+	), queued AS (
+	 INSERT INTO draft_refresh_queue(period_id,manual_requested)
+	 SELECT id,true FROM target WHERE NOT settled AND code`+activeFinanceProductCodeSQL+`
+	  AND NOT EXISTS(SELECT 1 FROM draft_refresh_queue q WHERE q.period_id=target.id AND q.manual_requested)
+	 ON CONFLICT(period_id) DO UPDATE SET generation=excluded.generation,requested_at=excluded.requested_at,
+	  manual_requested=true,retry_on_scan=true,message='' WHERE NOT draft_refresh_queue.manual_requested
+	)
+	SELECT settled,code FROM target`, input.PeriodID).Scan(&settled, &productCode)
+	if err != nil {
+		return nil, err
+	}
+	if productCode == retiredHealthCreatorProduct {
+		return nil, errHealthCreatorRetired
+	}
+	if settled {
+		return nil, errSettlementClosed
+	}
+	return map[string]int64{"periodId": input.PeriodID}, nil
+}
+
 func (s workspace) refreshPendingDrafts(ctx context.Context) error {
-	rows, err := s.db.Query(ctx, `SELECT period_id,generation FROM draft_refresh_queue WHERE retry_on_scan ORDER BY requested_at,period_id`)
+	return s.refreshDrafts(ctx, false)
+}
+
+func (s workspace) refreshDrafts(ctx context.Context, manual bool) error {
+	rows, err := s.db.Query(ctx, `SELECT q.period_id,q.generation FROM draft_refresh_queue q
+	 JOIN periods p ON p.id=q.period_id JOIN products pro ON pro.id=p.product_id
+	 WHERE q.manual_requested=$1 AND ($1 OR q.retry_on_scan) AND pro.code`+activeFinanceProductCodeSQL+` ORDER BY q.requested_at,q.period_id`, manual)
 	if err != nil {
 		return err
 	}
@@ -70,24 +112,62 @@ func (s workspace) refreshPendingDrafts(ctx context.Context) error {
 		return err
 	}
 	for _, next := range work {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		_, err := s.calculateCurrentDraft(ctx, next.period, next.generation)
-		if err == nil {
-			continue
-		}
-		var dbErr *pgconn.PgError
-		if errors.As(err, &dbErr) && (dbErr.Code == "40001" || dbErr.Code == "55P03") {
-			continue
-		}
-		message, retry := draftRefreshFailure(err)
-		if _, err = s.db.Exec(ctx, `UPDATE draft_refresh_queue SET message=$3,retry_on_scan=$4 WHERE period_id=$1 AND generation=$2`,
-			next.period, next.generation, message, retry); err != nil {
+		if err := s.runDraftRefresh(ctx, next.period, next.generation, manual); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (s workspace) runDraftRefresh(ctx context.Context, period, generation int64, manual bool) error {
+	conn, release, err := tryFinanceAdvisoryLock(ctx, s.db, "finance:draft-refresh:"+strconv.FormatInt(period, 10))
+	if err != nil || conn == nil {
+		return err
+	}
+	defer release()
+
+	// Another instance may have completed the request after this worker read the queue.
+	var eligible bool
+	if err := conn.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM draft_refresh_queue WHERE period_id=$1 AND generation=$2
+	 AND manual_requested=$3 AND ($3 OR retry_on_scan))`, period, generation, manual).Scan(&eligible); err != nil || !eligible {
+		return err
+	}
+	workCtx := ctx
+	if manual {
+		var cancel context.CancelFunc
+		workCtx, cancel = context.WithTimeout(ctx, manualDraftTimeout)
+		defer cancel()
+	}
+	_, err = s.calculateDraftOn(workCtx, conn, period, generation)
+	if err == nil {
+		return nil
+	}
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	var dbErr *pgconn.PgError
+	if errors.As(err, &dbErr) && (dbErr.Code == "40001" || dbErr.Code == "55P03") {
+		return nil
+	}
+	message, retry := draftRefreshFailure(err)
+	if manual {
+		if errors.Is(workCtx.Err(), context.DeadlineExceeded) {
+			message = "试算超时，请重试"
+		} else if retry {
+			message = "试算未完成，请重试"
+		}
+		retry = false
+	}
+	const failed = `UPDATE draft_refresh_queue SET message=$3,retry_on_scan=$4,manual_requested=false
+	 WHERE period_id=$1 AND generation=$2`
+	// pgx can close the connection on deadline. Fence the fallback update by
+	// generation so it cannot overwrite a newer request or a completed draft.
+	if conn.Conn().IsClosed() {
+		_, err = s.db.Exec(ctx, failed, period, generation, message, retry)
+	} else {
+		_, err = conn.Exec(ctx, failed, period, generation, message, retry)
+	}
+	return err
 }
 
 func draftRefreshFailure(err error) (string, bool) {
@@ -100,18 +180,14 @@ func draftRefreshFailure(err error) (string, bool) {
 }
 
 func (s workspace) startDraftRefreshWorker(ctx context.Context, interval time.Duration) func() {
-	if interval == 0 {
-		return func() {}
-	}
 	ctx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
+	var workers sync.WaitGroup
+	run := func(interval time.Duration, manual bool) {
 		tick := time.NewTicker(interval)
 		defer tick.Stop()
 		for {
-			if err := s.refreshPendingDrafts(ctx); err != nil && ctx.Err() == nil {
-				log.Printf("could not refresh calculation drafts")
+			if err := s.refreshDrafts(ctx, manual); err != nil && ctx.Err() == nil {
+				log.Printf("could not refresh calculation drafts (manual=%t)", manual)
 			}
 			select {
 			case <-ctx.Done():
@@ -119,8 +195,12 @@ func (s workspace) startDraftRefreshWorker(ctx context.Context, interval time.Du
 			case <-tick.C:
 			}
 		}
-	}()
-	return func() { cancel(); <-done }
+	}
+	workers.Go(func() { run(manualDraftPollInterval, true) })
+	if interval != 0 {
+		workers.Go(func() { run(interval, false) })
+	}
+	return func() { cancel(); workers.Wait() }
 }
 
 func (s workspace) draftRefreshStatus(w http.ResponseWriter, r *http.Request) {
@@ -131,7 +211,8 @@ func (s workspace) draftRefreshStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	var status json.RawMessage
 	err = s.db.QueryRow(r.Context(), `SELECT jsonb_build_object('version',coalesce(d.version,0), 'pending',q.period_id IS NOT NULL AND f.id IS NULL,
-	 'message',CASE WHEN f.id IS NULL THEN coalesce(q.message,'') ELSE '' END, 'settled',f.id IS NOT NULL)
+	 'message',CASE WHEN f.id IS NULL THEN coalesce(q.message,'') ELSE '' END,
+	 'generating',coalesce(q.manual_requested,false) AND f.id IS NULL, 'settled',f.id IS NOT NULL)
 	 || CASE WHEN d.practice_roster_id IS NOT NULL THEN jsonb_build_object('calculatedAt',d.calculated_at) ELSE '{}'::jsonb END
 	 FROM periods p LEFT JOIN calculation_drafts d ON d.period_id=p.id LEFT JOIN draft_refresh_queue q ON q.period_id=p.id
 	 LEFT JOIN settlements f ON f.period_id=p.id WHERE p.id=$1`, period).Scan(&status)

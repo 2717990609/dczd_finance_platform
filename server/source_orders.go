@@ -31,30 +31,33 @@ type sourceConfig struct {
 type pullInput struct{ Source, Stream, OrderID string }
 
 type sourceFact struct {
-	Source            string                   `json:"source"`
-	OrderID           string                   `json:"orderId"`
-	OrderNo           string                   `json:"orderNo"`
-	LineID            string                   `json:"lineId"`
-	RecordKey         string                   `json:"recordKey"`
-	Version           string                   `json:"version"`
-	Kind              string                   `json:"kind"`
-	Domain            string                   `json:"domain"`
-	SourceKey         string                   `json:"sourceKey"`
-	TransactionType   string                   `json:"transactionType"`
-	SourceStatus      string                   `json:"sourceStatus"`
-	PaymentID         string                   `json:"paymentId,omitempty"`
-	RefundID          string                   `json:"refundId,omitempty"`
-	RefundsPayment    []sourcePaymentReference `json:"refundsPayment,omitempty"`
-	ReferrerID        string                   `json:"referrerId,omitempty"`
-	ReferrerCompanyID string                   `json:"-"`
-	ReferrerConflict  bool                     `json:"-"`
-	Participants      []sourceParticipant      `json:"participants,omitempty"`
-	SalesCompanyID    string                   `json:"-"`
-	Classification    sourceClassification     `json:"-"`
-	VIPClaims         []vipClaim               `json:"-"`
-	AmountMinor       *int64                   `json:"amountMinor"`
-	OccurredAt        time.Time                `json:"occurredAt"`
-	UpdatedAt         time.Time                `json:"updatedAt"`
+	Source              string                   `json:"source"`
+	OrderID             string                   `json:"orderId"`
+	OrderNo             string                   `json:"orderNo"`
+	LineID              string                   `json:"lineId"`
+	RecordKey           string                   `json:"recordKey"`
+	Version             string                   `json:"version"`
+	Kind                string                   `json:"kind"`
+	Domain              string                   `json:"domain"`
+	SourceKey           string                   `json:"sourceKey"`
+	TransactionType     string                   `json:"transactionType"`
+	SourceStatus        string                   `json:"sourceStatus"`
+	PaymentID           string                   `json:"paymentId,omitempty"`
+	RefundID            string                   `json:"refundId,omitempty"`
+	RefundsPayment      []sourcePaymentReference `json:"refundsPayment,omitempty"`
+	ReferrerID          string                   `json:"referrerId,omitempty"`
+	ReferrerCompanyID   string                   `json:"-"`
+	ReferrerConflict    bool                     `json:"-"`
+	Participants        []sourceParticipant      `json:"participants,omitempty"`
+	SalesCompanyID      string                   `json:"-"`
+	Classification      sourceClassification     `json:"-"`
+	DCAIOrderDetails    *dcaiOrderDetails        `json:"-"`
+	VIPClaims           []vipClaim               `json:"-"`
+	CommissionSeller    *sourceCommissionSeller  `json:"-"`
+	OrderRecommendation *vipOrderRecommendation  `json:"-"`
+	AmountMinor         *int64                   `json:"amountMinor"`
+	OccurredAt          time.Time                `json:"occurredAt"`
+	UpdatedAt           time.Time                `json:"updatedAt"`
 
 	Display                 orderDisplayFields          `json:"-"`
 	PracticeRegistration    *sourcePracticeRegistration `json:"-"`
@@ -74,6 +77,13 @@ type sourceAttributionParticipant struct {
 	CompanyID      string `json:"source_company_id"`
 	OrganizationID string `json:"source_organization_id"`
 	Relationship   string `json:"source_sales_relationship_code"`
+}
+
+type sourceCommissionSeller struct {
+	Status       string `json:"status"`
+	User         string `json:"source_user_id,omitempty"`
+	Company      string `json:"source_company_id,omitempty"`
+	Relationship string `json:"relationship,omitempty"`
 }
 
 type sourceDocument struct {
@@ -124,6 +134,11 @@ type sourceDocument struct {
 	Attribution struct {
 		Participants []sourceAttributionParticipant `json:"participants"`
 	} `json:"attribution_snapshot"`
+	Extensions struct {
+		Attributes struct {
+			CommissionSeller *sourceCommissionSeller `json:"commission_seller"`
+		} `json:"attributes"`
+	} `json:"extensions"`
 }
 
 func sourceSalesCompany(parties []sourceAttributionParticipant) (string, error) {
@@ -236,8 +251,28 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 	}
 	classification := classifySourcePayment(source, wire.Business.Domain, wire.Business.Entity, wire.Record.Table, wire.Business.Code)
 	var vipClaims []vipClaim
+	var seller *sourceCommissionSeller
+	var recommendation *vipOrderRecommendation
 	if classification.Key != "" && wire.Kind == "ORDER_PAID" {
 		vipClaims = vipSourceClaims(wire.Attribution.Participants)
+		if source == "DCAI" {
+			seller = wire.Extensions.Attributes.CommissionSeller
+			if seller != nil && !validCommissionSeller(*seller) {
+				return sourceFact{}, errSourceRead
+			}
+			for _, p := range wire.Attribution.Participants {
+				if p.Role != "UPSTREAM_COMPANY" {
+					continue
+				}
+				if recommendation == nil {
+					recommendation = &vipOrderRecommendation{Company: p.CompanyID}
+				}
+				if !textOK(p.CompanyID, 128) || p.CompanyID != recommendation.Company {
+					recommendation = &vipOrderRecommendation{Conflict: true}
+					break
+				}
+			}
+		}
 	}
 	noReferrer, inactiveCompany := readSourcePracticeSalesExceptions(source, wire)
 	return sourceFact{Source: source, OrderID: orderID, OrderNo: wire.Order.No, LineID: wire.Order.Line,
@@ -249,7 +284,22 @@ func normalizeFact(source, orderID string, raw json.RawMessage) (sourceFact, err
 		PracticeNoReferrer:      noReferrer,
 		PracticeInactiveCompany: inactiveCompany,
 		OccurredAt:              occurredAt, UpdatedAt: wire.Record.UpdatedAt,
-		Classification: classification, VIPClaims: vipClaims, Display: readOrderDisplay(source, wire, raw)}, nil
+		Classification: classification, VIPClaims: vipClaims, CommissionSeller: seller, OrderRecommendation: recommendation,
+		DCAIOrderDetails: readDCAIOrderDetails(wire, classification), Display: readOrderDisplay(source, wire, raw)}, nil
+}
+
+func validCommissionSeller(seller sourceCommissionSeller) bool {
+	if seller.Company != "" && !textOK(seller.Company, 128) {
+		return false
+	}
+	switch seller.Status {
+	case "RESOLVED":
+		return textOK(seller.User, 128) && (seller.Relationship == "" || seller.Relationship == "DIRECT" || seller.Relationship == "INDIRECT")
+	case "MISSING", "CONFLICT":
+		return seller.User == "" && seller.Relationship == ""
+	default:
+		return false
+	}
 }
 
 var sourcesList = []string{"DCAI", "DCZD", "DCJK"}
@@ -426,8 +476,20 @@ func (s workspace) pullOrder(ctx context.Context, p pullInput) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if p.Stream == dcaiHealthStream && retiredHealthOrder(*lookup.DCAI) {
+		return nil, errHealthCreatorRetired
+	}
 	var inserted int64
 	err = pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
+		if p.Stream == dcaiHealthStream && len(lookup.Facts) == 0 {
+			active, err := activeHealthRows(ctx, tx, []orderPageRow{*lookup.DCAI})
+			if err != nil {
+				return err
+			}
+			if len(active) == 0 {
+				return pgx.ErrNoRows
+			}
+		}
 		sourceKey := ""
 		if p.Source != "DCJK" {
 			sourceKey = s.orderSourceKey(p.Source)
@@ -528,11 +590,18 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 			created = true
 		}
 		if f.Classification.Key != "" {
-			changed, e := storeSourceClassification(ctx, tx, sourceVersion, f.Classification, f.VIPClaims, created)
+			changed, e := storeSourceClassification(ctx, tx, sourceVersion, f.Classification, f.VIPClaims, f.DCAIOrderDetails, created)
 			if e != nil {
 				return 0, e
 			}
 			metadataChanged = metadataChanged || changed
+			if f.CommissionSeller != nil || f.OrderRecommendation != nil {
+				changed, e = storeSourcePayeeMetadata(ctx, tx, sourceVersion, f)
+				if e != nil {
+					return 0, e
+				}
+				metadataChanged = metadataChanged || changed
+			}
 		}
 		if f.SalesCompanyID != "" {
 			changed, e := storeSourcePaymentCompany(ctx, tx, sourceVersion, f)
@@ -566,6 +635,27 @@ func storeSourceFactsFrom(ctx context.Context, tx pgx.Tx, facts []sourceFact, so
 		return 0, err
 	}
 	return int64(len(insertedIDs)), nil
+}
+
+func storeSourcePayeeMetadata(ctx context.Context, tx pgx.Tx, version int64, f sourceFact) (bool, error) {
+	tag, err := tx.Exec(ctx, `UPDATE source_order_classifications
+	 SET commission_seller=coalesce(commission_seller,$2::jsonb),order_recommendation=coalesce(order_recommendation,$3::jsonb)
+	 WHERE source_version_id=$1
+	   AND ($2::jsonb IS NULL OR commission_seller IS NULL OR commission_seller=$2)
+	   AND ($3::jsonb IS NULL OR order_recommendation IS NULL OR order_recommendation=$3)
+	   AND (commission_seller IS NULL AND $2::jsonb IS NOT NULL OR order_recommendation IS NULL AND $3::jsonb IS NOT NULL)`,
+		version, f.CommissionSeller, f.OrderRecommendation)
+	if err != nil || tag.RowsAffected() != 0 {
+		return err == nil, err
+	}
+	var same bool
+	err = tx.QueryRow(ctx, `SELECT ($2::jsonb IS NULL OR commission_seller=$2)
+	 AND ($3::jsonb IS NULL OR order_recommendation=$3) FROM source_order_classifications WHERE source_version_id=$1`,
+		version, f.CommissionSeller, f.OrderRecommendation).Scan(&same)
+	if err == nil && !same {
+		err = conflict
+	}
+	return false, err
 }
 
 func touchSourceWrites(ctx context.Context, tx pgx.Tx, sources []string) error {

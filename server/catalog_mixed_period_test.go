@@ -69,7 +69,7 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
  (502,gen_random_uuid(),'test','DCAI','DCAI','ambassador','2025-11-01',sha256('other'::bytea));
  INSERT INTO catalog_business_routes(source_id,product_id,source,domain,entity_type,record_table,business_key,classifier,
   sku_code,sku_label,mapping_version,effective_from,observed_at,source_product_code)
- VALUES(gen_random_uuid(),501,'DCAI','VIP','VIP_ORDER','ai_vip_order','vip','vip','VIP499','会员',1,'2025-09-01','2025-11-01',NULL),
+ VALUES(gen_random_uuid(),501,'DCAI','VIP','VIP_ORDER','ai_vip_order','vip','dcai.vip-lifecycle.v1','VIP499','会员',1,'2025-09-01','2025-11-01',NULL),
  (gen_random_uuid(),502,'DCAI','HEALTH_IDENTITY','HEALTH_IDENTITY','ai_health_ambassador_order','ambassador','ambassador',
   'AMBASSADOR','健康大使',1,'2025-09-01','2025-11-01','HEALTH_AMBASSADOR');
  INSERT INTO people(id,name) OVERRIDING SYSTEM VALUE VALUES (5011,'成交销售'),(5012,'交付'),(5013,'期中到岗负责人');
@@ -85,12 +85,22 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
  WITH payment AS (
   INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
   VALUES('DCAI','101','','ai_vip_order:101','1','ORDER_PAID','2025-10-02T00:00Z','2025-10-02T00:00Z',
-   '{"domain":"VIP","sourceKey":"vip","paymentId":"101","amountMinor":10000}'),
+   '{"domain":"VIP","sourceKey":"vip","paymentId":"101","amountMinor":55900}'),
    ('DCAI','102','','ai_vip_order:102','1','ORDER_PAID','2025-10-03T00:00Z','2025-10-03T00:00Z',
-    '{"domain":"VIP","sourceKey":"vip","paymentId":"102","amountMinor":20000}')
-  RETURNING id)
- INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier,sales_claims)
- SELECT id,'VIP_ORDER','vip','vip','[{"role":"PID_USER","user":"seller","relationship":"DIRECT"}]'::jsonb FROM payment;`)
+    '{"domain":"VIP","sourceKey":"vip","paymentId":"102","amountMinor":49900}'),
+   ('DCAI','103','','ai_vip_order:103','1','ORDER_PAID','2025-10-03T01:00Z','2025-10-03T01:00Z',
+    '{"domain":"VIP","sourceKey":"vip","paymentId":"103","amountMinor":0}'),
+   ('DCAI','104','','ai_vip_order:104','1','ORDER_PAID','2025-10-03T02:00Z','2025-10-03T02:00Z',
+    '{"domain":"VIP","sourceKey":"vip","paymentId":"104","amountMinor":0}'),
+   ('DCAI','105','','ai_vip_order:105','1','ORDER_PAID','2025-10-03T03:00Z','2025-10-03T03:00Z',
+    '{"domain":"VIP","sourceKey":"vip","paymentId":"105","amountMinor":0}')
+  RETURNING id,order_id)
+ INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier,sales_claims,dcai_order_details)
+ SELECT id,'VIP_ORDER','vip','dcai.vip-lifecycle.v1',
+  CASE WHEN order_id IN ('101','102') THEN '[{"role":"PID_USER","user":"seller","relationship":"DIRECT"}]'::jsonb ELSE '[]'::jsonb END,
+  CASE order_id WHEN '103' THEN '{"vipSource":1,"sellerAbsent":true}'::jsonb WHEN '104' THEN '{"vipSource":2,"sellerAbsent":true}'::jsonb
+   WHEN '105' THEN '{"vipSource":14}'::jsonb END
+ FROM payment;`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,14 +162,37 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
 		return result.(draftSummary)
 	}
 	draft := open("2025-10")
-	if draft.Total != 5100 || draft.LineCount != 4 || draft.IssueCount != 0 {
+	if draft.Total != 16467 || draft.LineCount != 4 || draft.IssueCount != 0 {
 		t.Fatalf("unexpected combined draft %+v", draft)
+	}
+	var advisories, storedZeroOrders int
+	if err := db.QueryRow(ctx, `SELECT
+	  (SELECT count(*) FROM calculation_draft_issues WHERE period_id=$1 AND advisory AND code=$2),
+	  (SELECT count(*) FROM catalog_aggregate_draft_events e JOIN source_order_versions v ON v.id=e.source_version_id
+	   WHERE e.period_id=$1 AND v.order_id IN ('103','104','105'))`, draft.PeriodID, dcaiZeroBackOfficeAttributionAdvisory).
+		Scan(&advisories, &storedZeroOrders); err != nil || advisories != 2 || storedZeroOrders != 2 {
+		t.Fatalf("draft should retain the back-office orders without blocking settlement and omit the claim: advisories=%d events=%d (%v)", advisories, storedZeroOrders, err)
+	}
+	w = httptest.NewRecorder()
+	s.getDraft(w, httptest.NewRequest(http.MethodGet, fmt.Sprintf("/api/v1/drafts?periodId=%d", draft.PeriodID), nil))
+	var details struct {
+		AggregateGroups []struct{ ArrangementName string }
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &details); err != nil || w.Code != http.StatusOK {
+		t.Fatalf("read mixed draft: %d %s (%v)", w.Code, w.Body, err)
+	}
+	names := map[string]int{}
+	for _, group := range details.AggregateGroups {
+		names[group.ArrangementName]++
+	}
+	if len(names) != 3 || names["销售"] != 2 || names["交付"] != 1 || names["负责人"] != 1 {
+		t.Fatalf("expected each collection group to show its rule arrangement name, got %v", names)
 	}
 	var sales, delivery, leader int64
 	err = db.QueryRow(ctx, `SELECT sum(amount_minor) FILTER(WHERE person_id=5011),
 	  sum(amount_minor) FILTER(WHERE person_id=5012),sum(amount_minor) FILTER(WHERE person_id=5013)
 	  FROM calculation_draft_lines WHERE period_id=$1`, draft.PeriodID).Scan(&sales, &delivery, &leader)
-	if err != nil || sales != 3000 || delivery != 1500 || leader != 600 {
+	if err != nil || sales != 9980 || delivery != 4990 || leader != 1497 {
 		t.Fatalf("seller, delivery and time-limited leader: %d %d %d (%v)", sales, delivery, leader, err)
 	}
 	var salesOrganizationLines, otherOrganizationLines int
@@ -177,7 +210,7 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
 		t.Fatal(err)
 	}
 	draft, err = s.calculateCurrentDraft(ctx, draft.PeriodID, 0)
-	if err != nil || draft.Total != 4740 || draft.RefundCount != 0 {
+	if err != nil || draft.Total != 16107 || draft.RefundCount != 0 {
 		t.Fatalf("same-period refund should net into current commissions: %+v (%v)", draft, err)
 	}
 	var performanceCount int
@@ -187,7 +220,7 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
 	 LEFT JOIN source_order_versions prior ON prior.id=a.prior_refund_version_id
 	 WHERE a.period_id=$1 AND a.person_id=5011 AND a.company_id='51000499-0000-4000-8000-000000000002'`,
 		draft.PeriodID).Scan(&performanceCount, &netPerformance)
-	if err != nil || performanceCount != 3 || netPerformance != 28000 {
+	if err != nil || performanceCount != 3 || netPerformance != 97800 {
 		t.Errorf("payment/refund performance must post once per event: %d rows, %d net (%v)", performanceCount, netPerformance, err)
 	}
 	if retry, err := s.calculateCurrentDraft(ctx, draft.PeriodID, 0); err != nil || retry.Version != draft.Version {
@@ -197,7 +230,7 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
 	s.getSettlementReview(w, httptest.NewRequest(http.MethodGet,
 		fmt.Sprintf("/api/v1/settlement-review?periodId=%d&version=%d", draft.PeriodID, draft.Version), nil))
 	var review settlementReview
-	if err := json.Unmarshal(w.Body.Bytes(), &review); err != nil || w.Code != 200 || review.Token == "" || review.Total != 4740 {
+	if err := json.Unmarshal(w.Body.Bytes(), &review); err != nil || w.Code != 200 || review.Token == "" || review.Total != 16107 {
 		t.Fatalf("combined settlement review: %d %s (%v)", w.Code, w.Body, err)
 	}
 	inputConfirm := confirmSettlementInput{PeriodID: draft.PeriodID, ExpectedVersion: draft.Version, ReviewToken: review.Token}
@@ -216,27 +249,48 @@ func TestMixed499RuleSettlesOneMonthAndRefundsOriginalSeller(t *testing.T) {
 	}
 	if _, err := db.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
  VALUES('DCAI','101','','refund:101','1','REFUND_SUCCEEDED','2025-10-28','2025-10-28',
- '{"domain":"VIP","sourceKey":"vip","refundId":"refund-101","amountMinor":5000,
+ '{"domain":"VIP","sourceKey":"vip","refundId":"refund-101","amountMinor":49900,
    "refundsPayment":[{"orderId":"101","recordId":"101"}]}')`); err != nil {
 		t.Fatal(err)
 	}
 	next := open("2025-11")
-	if next.Total != -500 || next.RefundCount != 1 || next.IssueCount != 0 {
-		t.Fatalf("later refund did not recover the original seller exactly once: %+v", next)
+	if next.Total != -7485 || next.RefundCount != 2 || next.IssueCount != 0 {
+		t.Fatalf("later refund must recover the original seller and delivery awards: %+v", next)
 	}
 	var refundPerformanceCompany string
-	var refundPerformancePerson int64
-	err = db.QueryRow(ctx, `SELECT company_id::text,person_id FROM calculation_draft_performance
-	 WHERE period_id=$1 AND payment_version_id IS NOT NULL`, next.PeriodID).Scan(&refundPerformanceCompany, &refundPerformancePerson)
-	if err != nil || refundPerformanceCompany != "51000499-0000-4000-8000-000000000002" || refundPerformancePerson != 5011 {
-		t.Errorf("cross-period refund performance should use the original seller and company: %q, %d (%v)",
-			refundPerformanceCompany, refundPerformancePerson, err)
+	var refundPerformancePerson, refundPerformanceMinor int64
+	err = db.QueryRow(ctx, `SELECT a.company_id::text,a.person_id,`+performancePostingMinorSQL+`
+	 FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id
+	 LEFT JOIN source_order_versions prior ON prior.id=a.prior_refund_version_id
+	 WHERE a.period_id=$1 AND a.payment_version_id IS NOT NULL`, next.PeriodID).Scan(&refundPerformanceCompany, &refundPerformancePerson, &refundPerformanceMinor)
+	if err != nil || refundPerformanceCompany != "51000499-0000-4000-8000-000000000002" || refundPerformancePerson != 5011 || refundPerformanceMinor != -49900 {
+		t.Errorf("cross-period refund performance should use the original seller and company: %q, %d, %d (%v)",
+			refundPerformanceCompany, refundPerformancePerson, refundPerformanceMinor, err)
 	}
 	var originalPeriod, originalSeller, paymentID, adjustment int64
 	err = db.QueryRow(ctx, `SELECT l.period_id,l.person_id,l.source_version_id,r.amount_minor
  FROM calculation_draft_refunds r JOIN calculation_draft_lines l ON l.id=r.original_line_id
- WHERE r.period_id=$1`, next.PeriodID).Scan(&originalPeriod, &originalSeller, &paymentID, &adjustment)
-	if err != nil || originalPeriod != draft.PeriodID || originalSeller != 5011 || paymentID == 0 || adjustment != -500 {
+	 WHERE r.period_id=$1 AND l.person_id=5011`, next.PeriodID).Scan(&originalPeriod, &originalSeller, &paymentID, &adjustment)
+	if err != nil || originalPeriod != draft.PeriodID || originalSeller != 5011 || paymentID == 0 || adjustment != -4990 {
 		t.Fatalf("refund did not reference the seller's original order: %d %d %d %d (%v)", originalPeriod, originalSeller, paymentID, adjustment, err)
+	}
+	// Refunding the remaining source payment amount cannot deduct the membership twice.
+	if _, err := db.Exec(ctx, `INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
+ VALUES('DCAI','101','','refund:101-extra','1','REFUND_SUCCEEDED','2025-10-29','2025-10-29',
+ '{"domain":"VIP","sourceKey":"vip","refundId":"refund-101-extra","amountMinor":6000,
+   "refundsPayment":[{"orderId":"101","recordId":"101"}]}')`); err != nil {
+		t.Fatal(err)
+	}
+	next, err = s.calculateCurrentDraft(ctx, next.PeriodID, 0)
+	if err != nil || next.Total != -7485 || next.RefundCount != 2 || next.IssueCount != 0 {
+		t.Fatalf("extra source refund changed the membership deduction: %+v (%v)", next, err)
+	}
+	var remainingRefundPerformance int64
+	err = db.QueryRow(ctx, `SELECT `+performancePostingMinorSQL+`
+	 FROM calculation_draft_performance a JOIN source_order_versions v ON v.id=a.source_version_id
+	 LEFT JOIN source_order_versions prior ON prior.id=a.prior_refund_version_id
+	 WHERE a.period_id=$1 AND v.record_key='refund:101-extra'`, next.PeriodID).Scan(&remainingRefundPerformance)
+	if err != nil || remainingRefundPerformance != 0 {
+		t.Fatalf("extra source refund changed membership performance: %d (%v)", remainingRefundPerformance, err)
 	}
 }

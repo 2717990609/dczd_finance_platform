@@ -10,15 +10,30 @@ import { salesRoles } from './catalog-labels'
 import { draftIssueLabels } from './draft-issue-labels'
 
 const props = defineProps({ periods: Array, componentOptions: Array, memberOptions: Array, reportDimensions: Array, sourceStreams: Array,
-  recoveryOptions: Array, settlementProducts: Array, localSettlement: Boolean, api: Function, formatMoney: Function, formatTime: Function, unitId: String,
+  recoveryOptions: Array, settlementProducts: Array, localSettlement: Boolean, api: Function, formatMoney: Function, formatTime: Function, unitId: String, directoryScope: String,
   requestedPeriod:Number, requestedView:String, ruleSetupLink:String, issueRuleLink:String, relatedOrderLink:Function, relatedPeriodLink:Function,
   periodsLoading:Boolean, month:String, rosterEditReady:Boolean })
 const emit = defineEmits(['show-order', 'show-issue-order', 'show-applied-rule', 'show-roster'])
 const selected = defineModel('periodId', {type:Number})
-const view = defineModel('view', {type:String})
+const selectedView = defineModel('view', {type:String})
+const view = computed({
+  get: () => {
+    const hasReport = props.reportDimensions.length > 0
+    if (selectedView.value) return selectedView.value==='report' && !hasReport ? 'detail' : selectedView.value
+    return hasReport ? 'report' : 'detail'
+  },
+  set: value => { selectedView.value = value },
+})
 const detailQuery = defineModel('detailQuery', {type:Object})
 const draft = ref()
 const aggregateGroup = ref()
+const linePageSize = 50
+const linePage = ref(1)
+const lineTotal = ref(0)
+const linePagination = computed(() => ({
+  current:linePage.value, pageSize:linePageSize, total:lineTotal.value,
+  hideOnSinglePage:true, showSizeChanger:false, disabled:loading.value || calculating.value,
+}))
 const loading = ref(false)
 const calculating = ref(false)
 const notice = ref('')
@@ -28,6 +43,7 @@ const recoveryError = ref('')
 const savingRecovery = ref(false)
 const error = ref('')
 const refreshStatus = ref()
+const generating = computed(() => calculating.value || refreshStatus.value?.generating === true)
 const orderInput = ref(detailQuery.value.orderQuery || '')
 const beneficiaryInput = ref(detailQuery.value.beneficiaryQuery || '')
 const hasDetailFilter = computed(() => Boolean(detailQuery.value.orderQuery || detailQuery.value.beneficiaryQuery))
@@ -102,6 +118,8 @@ const ruleIssues = new Set(['RULE_MISSING','RULE_CONFLICT','MISSING_EFFECTIVE_RU
   'PRACTICE_MEMBER_RULE_MISSING','PRACTICE_TIER_COMPANY_NOT_CONFIGURED','PRACTICE_PERIOD_BENEFIT_TIER_MISSING','AGGREGATE_REFUND_MONTH_MISSING'])
 
 function appendDetailFilters(params) {
+  if (props.unitId) params.set('unitId',props.unitId)
+  if (props.directoryScope) params.set('scope',props.directoryScope)
   for (const [name,value] of Object.entries(detailQuery.value)) {
     if (value) params.set(name,value)
   }
@@ -125,6 +143,33 @@ function hasMoreDetails(section,total) {
   return draft.value.detailHasMore?.[section] ?? total>draft.value[section].length
 }
 
+function readLinePage(page, result) {
+  const params = new URLSearchParams({periodId:result.periodId, version:result.version, section:'lines', page})
+  appendDetailFilters(params)
+  return props.api('/drafts?' + params)
+}
+
+async function changeLinePage(pagination) {
+  const page = pagination.current
+  if (page===linePage.value || loading.value || calculating.value) return
+  const request = ++sequence
+  loading.value = true
+  error.value = ''
+  try {
+    const result = await readLinePage(page, draft.value)
+    if (request !== sequence) return
+    draft.value.lines = result.lines
+    linePage.value = page
+    lineTotal.value = result.lineTotal
+  } catch (err) {
+    if (request !== sequence) return
+    if (err.status===409) await load()
+    else error.value = err.message
+  } finally {
+    if (request === sequence) loading.value = false
+  }
+}
+
 async function load(replace = false) {
   const request = ++sequence
   if (replace) draft.value = undefined
@@ -136,11 +181,17 @@ async function load(replace = false) {
   loading.value = true
   try {
     const params = new URLSearchParams({periodId:selected.value})
-    if (props.unitId) params.set('unitId',props.unitId)
     appendDetailFilters(params)
     const result = await props.api('/drafts?' + params)
+    if (request !== sequence) return
+    let total = result.scopeLineCount ?? result.lineCount
+    if (hasDetailFilter.value) {
+      total = result.detailHasMore?.lines ? (await readLinePage(1, result)).lineTotal : result.lines.length
+    }
     if (request === sequence) {
       draft.value = result
+      linePage.value = 1
+      lineTotal.value = total
       if (view.value==='matching' && !hasMatching.value || view.value==='review' && !hasSettlementReview.value ||
           view.value==='pools' && !result.poolAllocationAvailable) view.value = 'detail'
     }
@@ -158,18 +209,19 @@ async function checkRefresh() {
   try {
     const result = await props.api('/drafts/status?periodId=' + period)
     if (request !== statusSequence || unmounted) return
+    const finished = refreshStatus.value?.generating && !result.generating && !result.message
     refreshStatus.value = result
     const metadataChanged = result.calculatedAt && result.calculatedAt !== draft.value?.calculatedAt
-    if (!loading.value && !calculating.value && (result.settled || ((newerDraft.value || metadataChanged) && view.value !== 'pools'))) await load()
+    if (!loading.value && !calculating.value && (result.settled || finished || ((newerDraft.value || metadataChanged) && view.value !== 'pools'))) await load()
   } catch {
     // The current readable draft stays on screen if the status query fails.
   } finally {
     if (request === statusSequence && !unmounted && !draft.value?.settlement && document.visibilityState !== 'hidden') {
-      statusTimer = setTimeout(checkRefresh, 15000)
+      statusTimer = setTimeout(checkRefresh, refreshStatus.value?.generating ? 1200 : 15000)
     }
   }
 }
-defineExpose({ checkRefresh })
+defineExpose({ checkRefresh, view })
 
 function visibilityChanged() {
   if (document.visibilityState === 'hidden') clearTimeout(statusTimer)
@@ -190,7 +242,7 @@ watch(selected, async (period, previous) => {
   recovery.value = undefined
   if (previous !== undefined) {
     clearDetailInputs()
-    view.value = period===props.requestedPeriod && props.requestedView || 'detail'
+    selectedView.value = period===props.requestedPeriod ? props.requestedView : undefined
     await nextTick()
     if (request !== statusSequence || unmounted) return
   }
@@ -208,23 +260,23 @@ watch([linkedPeriod, () => props.requestedView], ([period, requestedView]) => {
     if (requestedView) view.value = requestedView
   }
 }, {immediate:true})
-watch(() => props.unitId, () => load())
+watch([() => props.unitId,() => props.directoryScope], () => load())
 
 async function calculate() {
-  if (!selected.value || calculating.value) return
+  if (!selected.value || generating.value) return
   const periodId = selected.value
   calculating.value = true
   error.value = ''
   try {
     await props.api('/drafts', { method: 'POST', body: JSON.stringify({ periodId }) })
-    if (selected.value === periodId) {
-      await load()
-      await checkRefresh()
+    if (selected.value === periodId && !unmounted) {
+      refreshStatus.value = { ...refreshStatus.value, generating: true, message: '' }
     }
   } catch (err) {
-    error.value = err.message
+    if (selected.value === periodId && !unmounted) error.value = err.message
   } finally {
     calculating.value = false
+    if (selected.value === periodId && !unmounted) await checkRefresh()
   }
 }
 
@@ -259,7 +311,6 @@ async function loadMore(section, cursorName) {
   const current = draft.value
   const cursor = current[section].at(-1).id
   const params = new URLSearchParams({ periodId: selected.value, version: current.version, section, [cursorName]: cursor })
-  if (props.unitId) params.set('unitId',props.unitId)
   appendDetailFilters(params)
   loading.value = true
   error.value = ''
@@ -293,10 +344,10 @@ async function loadMore(section, cursorName) {
           <a-button v-if="needsRosterLink" :href="relatedPeriodLink()">查看期次映射</a-button>
           <a-button v-if="needsRosterLink" :disabled="!rosterEditReady || loading || calculating"
             @click="emit('show-roster',selectedPeriod)">关联来源期次</a-button>
-          <a-button v-if="ruleSetupLink && draft && !draft.settlement" :href="ruleSetupLink">配置本期规则</a-button>
+          <a-button v-if="ruleSetupLink && !draft?.settlement" :href="ruleSetupLink">关联本期规则</a-button>
           <a-button v-if="!matchingOnly && !ruleSetupLink && !draft?.settlement && (view!=='review' || !draft)"
-            :disabled="loading || periodsLoading" :loading="calculating"
-            :type="draft ? 'default' : 'primary'" @click="calculate">{{ draft ? '重新试算' : '生成草稿' }}</a-button>
+            :disabled="loading || periodsLoading || generating" :loading="generating"
+            :type="draft ? 'default' : 'primary'" @click="calculate">{{ generating ? '正在生成' : draft ? '重新试算' : '生成草稿' }}</a-button>
           <a-button v-if="!matchingOnly && (view!=='review' || !draft)" :disabled="loading || calculating" @click="load()">刷新结果</a-button>
           <a-button v-if="hasSettlementReview && !draft?.settlement && view!=='review'" type="primary" :disabled="loading || calculating" @click="view='review'">去结算核对</a-button>
         </div>
@@ -312,7 +363,8 @@ async function loadMore(section, cursorName) {
         </span>
         <span v-if="draft?.settlement"> · 确认于 {{ formatTime(draft.settlement.confirmedAt) }}</span>
         <span v-else-if="draft"> · 试算于 {{ formatTime(draft.calculatedAt) }}</span>
-        <span v-if="!draft?.settlement && refreshStatus?.pending && !refreshStatus.message"> · 有变更待试算</span>
+        <span v-if="generating" role="status"> · 正在生成草稿</span>
+        <span v-else-if="!draft?.settlement && refreshStatus?.pending && !refreshStatus.message"> · 有变更待试算</span>
         <span v-if="view==='pools' && newerDraft"> · 草稿已更新，请刷新结果后核对分配</span>
       </p>
     </div>
@@ -326,8 +378,8 @@ async function loadMore(section, cursorName) {
       <div><small>{{ draft.practiceRefundMonth ? '退款及更正' : '计提明细' }}</small><strong>{{ draft.practiceRefundMonth ? draft.refundCount + draft.correctionCount : draft.lineCount }} <span>条</span></strong></div>
     </div>
     <a-tabs v-if="draft" v-model:active-key="view" :tab-bar-gutter="20" class="workbench-tabs">
-      <a-tab-pane key="detail" tab="分润明细"/>
       <a-tab-pane v-if="reportDimensions.length" key="report" tab="业绩与分润"/>
+      <a-tab-pane key="detail" tab="分润明细"/>
       <a-tab-pane key="issues" :tab="draft.issueCount ? '待核 '+draft.issueCount : draft.advisoryCount ? '处理提示 '+draft.advisoryCount : '待核'"/>
       <a-tab-pane v-if="draft.poolAllocationAvailable" key="pools" tab="团队池分配"/>
       <a-tab-pane v-if="hasSettlementReview" key="review" tab="结算核对"/>
@@ -337,29 +389,15 @@ async function loadMore(section, cursorName) {
   <a-alert v-if="error" class="feedback" type="error" :message="error" show-icon />
   <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon />
   <a-alert v-if="!draft?.settlement && refreshStatus?.message" class="feedback" type="warning" :message="refreshStatus.message" show-icon/>
-  <p v-if="unitId && draft" class="workbench-scope-note">明细与汇总按组织筛选，合计及结算核对为全期</p>
-  <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api" :format-money="formatMoney" :unit-id="unitId"/>
+  <p v-if="(unitId || directoryScope) && draft" class="workbench-scope-note">明细与汇总按组织筛选，合计、待核和结算核对为全期</p>
+  <DraftReport v-if="draft && view==='report' && reportDimensions.length" :draft="draft" :dimensions="reportDimensions" :api="api"
+    :format-money="formatMoney" :unit-id="unitId" :directory-scope="directoryScope"/>
   <DraftPoolAllocations v-if="draft?.poolAllocationAvailable && view==='pools'" :draft="draft" :api="api" :format-money="formatMoney"/>
   <DraftSettlementReview v-if="hasSettlementReview && view==='review'" :draft="draft" :period="selectedPeriod" :api="api" :format-money="formatMoney"
-    :format-time="formatTime" :source-streams="sourceStreams" :working="calculating"
+    :format-time="formatTime" :source-streams="sourceStreams" :working="generating"
     :related-period-link="relatedPeriodLink"
     @show-pools="view='pools'" @show-issues="view='issues'" @recalculate="calculate" @refresh-draft="load()" @confirmed="load()"/>
   <template v-if="draft && view==='detail'">
-  <section v-if="draft.aggregateGroups?.length" class="records" :aria-label="draft.mixedArrangements ? '收退款明细' : '整期分组'">
-    <div class="records-head"><h2>{{ draft.mixedArrangements ? '收退款明细' : '整期分组' }}</h2></div>
-    <div class="table-container">
-      <a-table :data-source="draft.aggregateGroups" row-key="key" :pagination="draft.mixedArrangements ? {pageSize:15,hideOnSinglePage:true,showSizeChanger:false} : false" :scroll="{x:650}" :columns="[
-        {title:'规则版本',key:'ruleVersion'},{title:'本期收款',key:'receiptsMinor'},
-        {title:'本期退款',key:'refundsMinor'},{title:'上期转入退款',key:'carryInMinor'},
-        {title:'转出到下期',key:'carryOutMinor'},{title:'明细',key:'events'}]">
-        <template #bodyCell="{column,record}">
-          <template v-if="column.key==='ruleVersion'">v{{ record.ruleVersion }}<small v-if="record.fixedOnly" class="order-version">固定金额</small></template>
-          <button v-else-if="column.key==='events'" type="button" class="order-link" @click="aggregateGroup=record.key">查看收退款</button>
-          <span v-else class="numeric">{{ formatMoney(Math.abs(record[column.key])) }}</span>
-        </template>
-      </a-table>
-    </div>
-  </section>
   <section v-if="draft.lineCount || draft.refundCount || draft.correctionCount"
     class="records draft-detail-search" aria-label="明细筛选">
     <form class="draft-detail-fields" @submit.prevent="searchDetails">
@@ -381,7 +419,8 @@ async function loadMore(section, cursorName) {
   <section v-if="!draft.practiceRefundMonth" class="records">
     <div class="records-head"><h2>{{ draft.settlement ? '结算明细' : '计提明细' }}</h2></div>
     <div class="table-container">
-      <a-table :columns="lineColumns" :data-source="draft.lines" :loading="loading" :pagination="false" row-key="id" :scroll="{ x: 755 }">
+      <a-table :columns="lineColumns" :data-source="draft.lines" :loading="loading" :pagination="linePagination"
+        row-key="id" :scroll="{ x: 755 }" @change="changeLinePage">
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'order'">
             <button v-if="record.aggregateGroupKey && !(draft.mixedArrangements && record.sourceVersionId)" type="button" class="order-link"
@@ -411,7 +450,6 @@ async function loadMore(section, cursorName) {
         <template #emptyText><a-empty :description="hasDetailFilter ? '未找到符合条件的计提明细' : '本期没有可计提明细'" /></template>
       </a-table>
     </div>
-    <div v-if="hasMoreDetails('lines', draft.scopeLineCount ?? draft.lineCount)" class="paging"><a-button :loading="loading" @click="loadMore('lines', 'afterLineId')">加载下一页</a-button></div>
   </section>
   <section v-if="draft.scopeRefundCount ?? draft.refundCount" class="records draft-issues">
     <div class="records-head"><h2>{{ draft.practiceRefundMonth ? '退款调整明细' : '退款扣减明细' }}</h2></div>
@@ -469,6 +507,23 @@ async function loadMore(section, cursorName) {
     </div>
     <div v-if="hasMoreDetails('corrections', draft.scopeCorrectionCount ?? draft.correctionCount)" class="paging"><a-button :loading="loading" @click="loadMore('corrections','afterCorrectionId')">加载下一页</a-button></div>
   </section>
+  <section v-if="draft.aggregateGroups?.length" class="records draft-receipts" :aria-label="draft.mixedArrangements ? '收退款明细' : '整期分组'">
+    <div class="records-head"><h2>{{ draft.mixedArrangements ? '收退款明细' : '整期分组' }}</h2></div>
+    <div class="table-container">
+      <a-table :data-source="draft.aggregateGroups" row-key="key" :pagination="draft.mixedArrangements ? {pageSize:15,hideOnSinglePage:true,showSizeChanger:false} : false" :scroll="{x:825}" :columns="[
+        {title:'分润名称',key:'arrangementName',width:175},
+        {title:'规则版本',key:'ruleVersion'},{title:'本期收款',key:'receiptsMinor'},
+        {title:'本期退款',key:'refundsMinor'},{title:'上期转入退款',key:'carryInMinor'},
+        {title:'转出到下期',key:'carryOutMinor'},{title:'明细',key:'events'}]">
+        <template #bodyCell="{column,record}">
+          <span v-if="column.key==='arrangementName'">{{ record.arrangementName || '—' }}</span>
+          <template v-else-if="column.key==='ruleVersion'">v{{ record.ruleVersion }}<small v-if="record.fixedOnly" class="order-version">固定金额</small></template>
+          <button v-else-if="column.key==='events'" type="button" class="order-link" @click="aggregateGroup=record.key">查看收退款</button>
+          <span v-else class="numeric">{{ formatMoney(Math.abs(record[column.key])) }}</span>
+        </template>
+      </a-table>
+    </div>
+  </section>
   </template>
   <section v-if="draft && view==='issues'" class="records">
     <div class="records-head"><h2>{{ draft.issueCount ? (draft.advisoryCount ? '待核项与处理提示' : '待核项') : '处理提示' }}</h2></div>
@@ -490,6 +545,7 @@ async function loadMore(section, cursorName) {
           <template v-else-if="column.key === 'component'">{{ record.componentLabel || componentLabel(record.component) || '—' }}</template>
           <template v-else-if="column.key === 'reason'">
             <a-tag v-if="record.advisory" color="blue">提示</a-tag>{{ draftIssueLabels[record.code] || record.code }}
+            <small v-if="record.detail" class="order-version">{{ record.detail }}</small>
             <small v-if="record.code==='SALES_COMPANY_REVIEW'" class="order-version">请在大春 AI 核对成交人和销售公司，更正后重新拉取。</small>
             <small v-if="record.code==='REFUND_MONTH_MISSING' && selectedPeriod" class="order-version">
               <a :href="'#periods?productId='+selectedPeriod.productId">查看产品账期</a>
@@ -516,7 +572,7 @@ async function loadMore(section, cursorName) {
     :api="api" :format-money="formatMoney" :format-time="formatTime" @show-order="emit('show-issue-order',$event)"/>
   <section v-if="!draft && !error && !hasMatching" class="records empty">
     <a-empty :description="periodsLoading || loading ? '正在读取核算期' : ruleSetupLink ? '本期签到记录已同步，待配置规则' : selected ? '本期暂无草稿' : options.length ? '请选择核算期' : month ? '所选月份暂无核算期' : '暂无核算期'" />
-    <a-button v-if="!periodsLoading && !loading && ruleSetupLink" type="primary" :href="ruleSetupLink">配置本期规则</a-button>
+    <a-button v-if="!periodsLoading && !loading && ruleSetupLink" type="primary" :href="ruleSetupLink">关联本期规则</a-button>
     <a-button v-if="!periodsLoading && !loading && !options.length" href="#periods">查看核算期次</a-button>
   </section>
   <Modal :open="!!recovery" title="登记扣回处理" ok-text="保存并试算" cancel-text="取消" :confirm-loading="savingRecovery"

@@ -83,15 +83,25 @@ func (s workspace) recalculateDraft(ctx context.Context, input calculateDraftInp
 }
 
 func (s workspace) calculateCurrentDraft(ctx context.Context, periodID, wantedGeneration int64) (draftSummary, error) {
+	return s.calculateDraftOn(ctx, s.db, periodID, wantedGeneration)
+}
+
+func (s workspace) calculateDraftOn(ctx context.Context, db interface {
+	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+}, periodID, wantedGeneration int64) (draftSummary, error) {
 	summary := draftSummary{PeriodID: periodID}
-	err := pgx.BeginTxFunc(ctx, s.db, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
-		lock := `SELECT id FROM periods WHERE id=$1 FOR NO KEY UPDATE`
+	err := pgx.BeginTxFunc(ctx, db, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(tx pgx.Tx) error {
+		lock := `SELECT p.id,pro.code FROM periods p JOIN products pro ON pro.id=p.product_id WHERE p.id=$1 FOR NO KEY UPDATE OF p`
 		if wantedGeneration != 0 {
 			lock += ` NOWAIT`
 		}
 		var locked int64
-		if err := tx.QueryRow(ctx, lock, periodID).Scan(&locked); err != nil {
+		var productCode string
+		if err := tx.QueryRow(ctx, lock, periodID).Scan(&locked, &productCode); err != nil {
 			return err
+		}
+		if productCode == retiredHealthCreatorProduct {
+			return errHealthCreatorRetired
 		}
 		var generation int64
 		err := tx.QueryRow(ctx, `SELECT generation FROM draft_refresh_queue WHERE period_id=$1`, periodID).Scan(&generation)
@@ -296,16 +306,26 @@ func readDraftInputs(ctx context.Context, tx pgx.Tx, periodID int64, window peri
 }
 
 func readIdentityAssignments(ctx context.Context, tx pgx.Tx, window periodWindow, keys map[identityKey]bool) (map[identityKey][]identityAssignment, error) {
+	return queryIdentityAssignments(ctx, tx, window, keys, false)
+}
+
+func readPracticeIdentityAssignments(ctx context.Context, tx pgx.Tx, window periodWindow, keys map[identityKey]bool) (map[identityKey][]identityAssignment, error) {
+	return queryIdentityAssignments(ctx, tx, window, keys, true)
+}
+
+func queryIdentityAssignments(ctx context.Context, tx pgx.Tx, window periodWindow, keys map[identityKey]bool, practiceFallback bool) (map[identityKey][]identityAssignment, error) {
 	sources := make([]string, 0, len(keys))
 	ids := make([]string, 0, len(keys))
 	for key := range keys {
 		sources, ids = append(sources, key.Source), append(ids, key.ExternalID)
 	}
-	rows, err := tx.Query(ctx, `SELECT i.source,i.external_id,i.id,i.person_id,i.valid_from,i.valid_to
+	rows, err := tx.Query(ctx, `SELECT i.source,i.external_id,i.id,i.person_id,i.valid_from,i.valid_to,fallback.enabled
 		FROM unnest($1::text[],$2::text[]) AS wanted(source,external_id)
 		JOIN identity_mappings i USING(source,external_id)
-		WHERE i.valid_from<$3 AND (i.valid_to IS NULL OR i.valid_to>$4)
-		ORDER BY i.source,i.external_id,i.valid_from,i.id`, sources, ids, window.Through, window.Start)
+		CROSS JOIN LATERAL (SELECT $5::boolean AND i.source='DCZD' AND i.valid_to IS NULL
+		 AND i.valid_from<=transaction_timestamp() AS enabled) fallback
+		WHERE (i.valid_from<$3 AND (i.valid_to IS NULL OR i.valid_to>$4)) OR fallback.enabled
+		ORDER BY i.source,i.external_id,i.valid_from,i.id`, sources, ids, window.Through, window.Start, practiceFallback)
 	if err != nil {
 		return nil, err
 	}
@@ -314,7 +334,7 @@ func readIdentityAssignments(ctx context.Context, tx pgx.Tx, window periodWindow
 	for rows.Next() {
 		var key identityKey
 		var value identityAssignment
-		if err = rows.Scan(&key.Source, &key.ExternalID, &value.ID, &value.PersonID, &value.ValidFrom, &value.ValidTo); err != nil {
+		if err = rows.Scan(&key.Source, &key.ExternalID, &value.ID, &value.PersonID, &value.ValidFrom, &value.ValidTo, &value.PracticeCurrentFallback); err != nil {
 			return nil, err
 		}
 		identities[key] = append(identities[key], value)
@@ -366,7 +386,7 @@ func digestDraft(ruleID int64, result paymentDraft, inputs []paymentInput) ([]by
 		}
 	}
 	for _, issue := range result.Issues {
-		if issue.Advisory && issue.Code != "PRACTICE_CORRECTION_LATER_TIERS" {
+		if issue.Advisory && issue.Code != "PRACTICE_CORRECTION_LATER_TIERS" && issue.Code != dcaiZeroBackOfficeAttributionAdvisory {
 			continue
 		}
 		fact := facts[issue.FactID]
@@ -531,7 +551,7 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 	if len(result.Issues) != 0 {
 		_, err = tx.CopyFrom(ctx, pgx.Identifier{"calculation_draft_issues"},
 			[]string{"period_id", "source_version_id", "component_type", "code", "practice_enrollment_id", "advisory",
-				"correction_line_id", "recovery_person_id", "recovery_minor"},
+				"correction_line_id", "recovery_person_id", "recovery_minor", "detail"},
 			pgx.CopyFromSlice(len(result.Issues), func(i int) ([]any, error) {
 				issue := result.Issues[i]
 				var recovery pendingCorrectionRecovery
@@ -539,7 +559,7 @@ func storeDraft(ctx context.Context, tx pgx.Tx, summary *draftSummary, digest []
 					recovery = *issue.Recovery
 				}
 				return []any{summary.PeriodID, optionalDraftID(issue.FactID), issue.Component, issue.Code, optionalDraftID(issue.EnrollmentID), issue.Advisory,
-					optionalDraftID(issue.CorrectionLineID), optionalDraftID(recovery.PersonID), optionalDraftID(recovery.Amount)}, nil
+					optionalDraftID(issue.CorrectionLineID), optionalDraftID(recovery.PersonID), optionalDraftID(recovery.Amount), issue.Detail}, nil
 			}))
 	}
 	if err != nil {
@@ -631,8 +651,12 @@ func storeDraftRefunds(ctx context.Context, tx pgx.Tx, periodID int64, refunds [
 	return err
 }
 
-var draftLinePageScope = `l.period_id=d.period_id AND l.id>$2 AND NOT l.practice_tier_reference
- AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `))`
+func draftPostingInScope(alias string) string {
+	return `({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` +
+		organizationPostingInScope(alias) + `)) AND ` + postingInDirectoryScope(alias)
+}
+
+var draftLinePageScope = `l.period_id=$1 AND l.id>$2 AND NOT l.practice_tier_reference AND ` + draftPostingInScope("l.")
 
 const draftPostingLabelSQL = `CASE WHEN rv.id IS NOT NULL AND starts_with(l.component_type,'period:')
      THEN CASE split_part(l.component_type,':',2)
@@ -659,13 +683,26 @@ const draftPostingLabelSQL = `CASE WHEN rv.id IS NOT NULL AND starts_with(l.comp
          OR (e.membership_type=2 AND part#>>'{tiers,includeRetrain}'='true')) LIMIT 1)
      ELSE action.definition->>'label' END`
 
-const draftDetailPrefixSQL = `WITH RECURSIVE ` + organizationScopeCTE + `{{lineDisplayCTE}}
+const draftDetailPrefixSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, ` + directoryMatchesCTE + `{{lineDisplayCTE}}
  SELECT jsonb_build_object(`
 
 const draftDetailFromSQL = `
 ) FROM calculation_drafts d JOIN periods period ON period.id=d.period_id JOIN products product ON product.id=period.product_id
  LEFT JOIN rule_versions r ON r.id=d.rule_id LEFT JOIN settlements st ON st.period_id=d.period_id
  LEFT JOIN practice_rosters roster ON roster.id=d.practice_roster_id WHERE d.period_id=$1 AND ($4::bigint=0 OR d.version=$4)`
+
+const draftLineSearchSourceSQL = `
+  FROM {{lineSource}} l LEFT JOIN source_order_versions o ON o.id=l.source_version_id
+  LEFT JOIN people p ON p.id=l.person_id LEFT JOIN organization_units beneficiary ON beneficiary.id=l.beneficiary_unit_id
+  LEFT JOIN practice_pools practice_pool ON practice_pool.id=l.practice_pool_id
+  LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
+  {{lineDisplayJoin}}
+  LEFT JOIN LATERAL (
+   SELECT b AS definition FROM jsonb_array_elements({{lineActions}}) b
+   WHERE b->>'item_key'=l.component_type OR
+    (b->>'item_key'={{lineSalesItem}} AND starts_with(l.component_type,(b->>'item_key')||':'))
+   ORDER BY (b->>'item_key'=l.component_type) DESC LIMIT 1
+  ) action ON true`
 
 var draftDetailLinesSQL = `
  'lines',coalesce((SELECT jsonb_agg(to_jsonb(l) ORDER BY l.id) FROM (
@@ -679,22 +716,12 @@ var draftDetailLinesSQL = `
    (completed.occurred_at AT TIME ZONE 'Asia/Shanghai')::date<period.starts_on AS "completionCarried",
    coalesce(l.catalog_rule_id::text,l.rule_id::text) AS "ruleId",coalesce(package.name,rv.label) AS "ruleLabel",
    e.source_enrollment_id AS "enrollmentId",e.membership_type AS "membershipType",coalesce(company_label.label,company.company_id) AS "salesCompany",
-   CASE WHEN e.id IS NOT NULL THEN (o.fact->>'amountMinor')::bigint-l.base_minor END AS "classRefundMinor"
-  FROM {{lineSource}} l LEFT JOIN source_order_versions o ON o.id=l.source_version_id
+   CASE WHEN e.id IS NOT NULL THEN (o.fact->>'amountMinor')::bigint-l.base_minor END AS "classRefundMinor"` + draftLineSearchSourceSQL + `
   LEFT JOIN calculation_draft_performance recognition ON recognition.period_id=l.period_id AND recognition.source_version_id=l.source_version_id
    AND recognition.completion_version_id IS NOT NULL
   LEFT JOIN source_order_versions completed ON completed.id=recognition.completion_version_id
-  LEFT JOIN people p ON p.id=l.person_id LEFT JOIN organization_units beneficiary ON beneficiary.id=l.beneficiary_unit_id
-  LEFT JOIN practice_pools practice_pool ON practice_pool.id=l.practice_pool_id
-  LEFT JOIN rule_versions rv ON rv.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
+  LEFT JOIN rule_versions rv ON rv.id=l.rule_id
   LEFT JOIN product_rule_packages package ON package.source_id=cv.package_id
-  {{lineDisplayJoin}}
-  LEFT JOIN LATERAL (
-   SELECT b AS definition FROM jsonb_array_elements({{lineActions}}) b
-   WHERE b->>'item_key'=l.component_type OR
-    (b->>'item_key'={{lineSalesItem}} AND starts_with(l.component_type,(b->>'item_key')||':'))
-   ORDER BY (b->>'item_key'=l.component_type) DESC LIMIT 1
-  ) action ON true
   LEFT JOIN practice_enrollments e ON e.id=l.practice_enrollment_id
   LEFT JOIN source_payment_companies company ON company.source_version_id=l.source_version_id AND e.id IS NOT NULL
   LEFT JOIN configuration_options company_label ON company_label.group_key='practiceSalesCompany' AND company_label.option_key=company.company_id
@@ -734,7 +761,7 @@ var draftDetailRefundsSQL = `
   JOIN periods original_period ON original_period.id=l.period_id JOIN periods refund_period ON refund_period.id=a.refund_period_id
   JOIN periods posting_period ON posting_period.id=a.period_id
   WHERE a.period_id=d.period_id AND a.id>$5
-  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `))
+  AND ` + draftPostingInScope("l.") + `
   {{refundSearch}} ORDER BY a.id LIMIT {{detailLimit}}
  ) a),'[]')`
 
@@ -759,13 +786,13 @@ var draftDetailCorrectionsSQL = `
   LEFT JOIN rule_versions r ON r.id=l.rule_id LEFT JOIN product_rule_versions cv ON cv.source_id=l.catalog_rule_id
   LEFT JOIN product_rule_packages package ON package.source_id=cv.package_id
   WHERE c.period_id=d.period_id AND c.id>$6
-  AND ({{unit}} IS NULL OR EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `))
+  AND ` + draftPostingInScope("c.") + `
   {{correctionSearch}} ORDER BY c.id LIMIT {{detailLimit}}
  ) c),'[]')`
 
 var draftDetailIssuesSQL = `
  'issues',coalesce((SELECT jsonb_agg(to_jsonb(i) ORDER BY i.id) FROM (
-  SELECT i.id,i.component_type AS "component",i.code,i.advisory,o.source,o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",
+  SELECT i.id,i.component_type AS "component",i.code,i.detail,i.advisory,o.source,o.order_id AS "orderId",o.fact->>'orderNo' AS "orderNo",
    o.id AS "sourceVersionId",o.version AS "sourceVersion",e.source_enrollment_id AS "enrollmentId",
    CASE WHEN o.id IS NULL THEN e.paid_order_ids END AS "enrollmentOrderIds",
    CASE WHEN r.id IS NOT NULL AND starts_with(i.component_type,'period:')
@@ -786,6 +813,9 @@ var draftDetailIssuesSQL = `
   WHERE i.period_id=d.period_id AND i.id>$3 ORDER BY i.id LIMIT 50
  ) i),'[]')`
 
+var draftScopedLineCountSQL = `(SELECT count(*) FROM calculation_draft_lines l
+  WHERE l.period_id=d.period_id AND NOT l.practice_tier_reference AND ` + draftPostingInScope("l.") + `)`
+
 var draftDetailTemplateSQL = draftDetailPrefixSQL + `
  'periodId',d.period_id,'ruleId',d.rule_id,'ruleVersion',r.version,'version',d.version,'calculatedAt',d.calculated_at,
  'catalog',d.rule_id IS NULL AND NOT (` + practiceRefundMonthScope + `),
@@ -793,11 +823,17 @@ var draftDetailTemplateSQL = draftDetailPrefixSQL + `
   'mixedArrangements',EXISTS(SELECT 1 FROM product_rule_versions v
   WHERE v.package_id=period.aggregate_package_id AND v.definition @> '{"mixed_arrangements":true}'),
  'aggregatePredecessorId',d.aggregate_predecessor_id,
- 'aggregateGroups',CASE WHEN period.aggregate_package_id IS NOT NULL AND {{unit}} IS NULL THEN (
-  SELECT coalesce(jsonb_agg(jsonb_build_object('key',g.group_key,'ruleVersion',v.version_no,'receiptsMinor',g.receipts_minor,
-   'refundsMinor',g.refunds_minor,'carryInMinor',g.carry_in_minor,'carryOutMinor',g.carry_out_minor,'fixedOnly',g.fixed_only)
-  ORDER BY v.version_no,g.group_key),'[]')
-  FROM catalog_aggregate_draft_groups g JOIN product_rule_versions v ON v.source_id=g.rule_id WHERE g.period_id=d.period_id
+ 'aggregateGroups',CASE WHEN period.aggregate_package_id IS NOT NULL AND {{unit}} IS NULL AND {{directoryScope}}='' THEN (
+  SELECT coalesce(jsonb_agg(jsonb_build_object('key',g.group_key,'ruleVersion',v.version_no,'arrangementName',arrangement.name,
+   'receiptsMinor',g.receipts_minor,'refundsMinor',g.refunds_minor,'carryInMinor',g.carry_in_minor,
+   'carryOutMinor',g.carry_out_minor,'fixedOnly',g.fixed_only) ORDER BY v.version_no,g.group_key),'[]')
+  FROM catalog_aggregate_draft_groups g JOIN product_rule_versions v ON v.source_id=g.rule_id
+  LEFT JOIN LATERAL (
+   SELECT string_agg(action->>'label','、' ORDER BY target.position) AS name
+   FROM jsonb_array_elements(g.targets) WITH ORDINALITY AS target(value,position)
+   JOIN jsonb_array_elements(v.definition->'benefit_actions') action ON action->>'item_key'=target.value->>'Item'
+  ) arrangement ON true
+  WHERE g.period_id=d.period_id
  ) END,
  'practiceRefundMonth',(` + practiceRefundMonthScope + `),
  'refundsReady',d.rule_id IS NOT NULL OR d.catalog_refunds_ready OR (` + practiceRefundMonthScope + `),
@@ -812,13 +848,12 @@ var draftDetailTemplateSQL = draftDetailPrefixSQL + `
    WHERE a.period_id=d.period_id))),
  'totalMinor',d.total_minor+d.refund_minor+d.correction_minor,'accruedMinor',d.total_minor,
  'refundMinor',d.refund_minor,'refundCount',d.refund_count,'correctionMinor',d.correction_minor,'correctionCount',d.correction_count,
- 'scopeLineCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_lines l
-  WHERE l.period_id=d.period_id AND NOT l.practice_tier_reference AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,
- 'scopeRefundCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_refunds a
+ 'scopeLineCount',CASE WHEN {{unit}} IS NOT NULL OR {{directoryScope}}<>'' THEN ` + draftScopedLineCountSQL + ` END,
+ 'scopeRefundCount',CASE WHEN {{unit}} IS NOT NULL OR {{directoryScope}}<>'' THEN (SELECT count(*) FROM calculation_draft_refunds a
   JOIN calculation_draft_lines l ON l.id=a.original_line_id WHERE a.period_id=d.period_id
-   AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("l.") + `)) END,
- 'scopeCorrectionCount',CASE WHEN {{unit}} IS NOT NULL THEN (SELECT count(*) FROM calculation_draft_corrections c
-  WHERE c.period_id=d.period_id AND EXISTS(SELECT 1 FROM organization_scope org WHERE ` + organizationPostingInScope("c.") + `)) END,
+   AND ` + draftPostingInScope("l.") + `) END,
+ 'scopeCorrectionCount',CASE WHEN {{unit}} IS NOT NULL OR {{directoryScope}}<>'' THEN (SELECT count(*) FROM calculation_draft_corrections c
+  WHERE c.period_id=d.period_id AND ` + draftPostingInScope("c.") + `) END,
  'lineCount',d.line_count,'issueCount',d.issue_count,'practiceRosterVersion',roster.source_version,'directorVersion',(SELECT version_no FROM practice_director_versions WHERE id=d.director_version_id),
  'advisoryCount',(SELECT count(*) FROM calculation_draft_issues i WHERE i.period_id=d.period_id AND i.advisory),
  'attendanceCount',roster.attendance_count,
@@ -840,8 +875,8 @@ var standardDraftDetails = strings.NewReplacer(
 	"{{lineSearch}}", "", "{{refundSearch}}", "",
 	"{{correctionSearch}}", "", "{{detailLimit}}", strconv.Itoa(draftDetailPageSize))
 var standardDraftDetailsSQL = standardDraftDetails.Replace(draftDetailTemplateSQL)
-var draftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "NULL")
-var scopedDraftDetailSQL = organizationScopeQuery(standardDraftDetailsSQL, "$7")
+var draftDetailSQL = bindDirectoryScope(organizationScopeQuery(standardDraftDetailsSQL, "NULL"), "''")
+var scopedDraftDetailSQL = bindDirectoryScope(organizationScopeQuery(standardDraftDetailsSQL, "$7"), "$8")
 
 const draftAggregateOrderMatch = `(l.aggregate_group_key IS NOT NULL AND EXISTS(
  SELECT 1 FROM catalog_aggregate_event_groups membership JOIN catalog_aggregate_draft_events e USING(period_id,source_version_id)
@@ -874,8 +909,8 @@ var filteredDraftDetails = strings.NewReplacer(
 		"coalesce(p.name,pool.name,recipient.name)", "coalesce(old_person.name,pool.name,old_recipient.name)"),
 	"{{detailLimit}}", strconv.Itoa(draftDetailPageSize+1),
 )
-var filteredDraftDetailSQL = organizationScopeQuery(filteredDraftDetails.Replace(
-	strings.ReplaceAll(draftDetailTemplateSQL, "{{lineDisplayCTE}}", draftFilteredLineDisplaySQL)), "$7")
+var filteredDraftDetailSQL = bindDirectoryScope(organizationScopeQuery(filteredDraftDetails.Replace(
+	strings.ReplaceAll(draftDetailTemplateSQL, "{{lineDisplayCTE}}", draftFilteredLineDisplaySQL)), "$7"), "$10")
 
 type draftSectionPage struct {
 	cursor             int
@@ -906,11 +941,34 @@ func makeDraftDetailPages() map[string]draftSectionPage {
 				display = draftFilteredLineDisplaySQL
 			}
 			search := filteredDraftDetails.Replace(strings.ReplaceAll(template, "{{lineDisplayCTE}}", display))
-			filtered = parameters.Replace(organizationScopeQuery(search, "$7"))
+			filtered = bindDirectoryScope(parameters.Replace(organizationScopeQuery(search, "$7")), "$7")
 		}
-		pages[section.name] = draftSectionPage{i, parameters.Replace(organizationScopeQuery(standard, "$7")), filtered}
+		pages[section.name] = draftSectionPage{i, bindDirectoryScope(parameters.Replace(organizationScopeQuery(standard, "$7")), "$5"), filtered}
 	}
 	return pages
+}
+
+var numberedDraftLinesSQL = makeNumberedDraftLinesSQL(false)
+var filteredNumberedDraftLinesSQL = makeNumberedDraftLinesSQL(true)
+
+func makeNumberedDraftLinesSQL(filtered bool) string {
+	window := " ORDER BY id LIMIT " + strconv.Itoa(draftDetailPageSize) + " OFFSET {{lineOffset}}"
+	source := "(SELECT * FROM calculation_draft_lines l WHERE " + draftLinePageScope + window + ")"
+	total := "CASE WHEN {{unit}} IS NOT NULL OR {{directoryScope}}<>'' THEN " + draftScopedLineCountSQL + " ELSE d.line_count END"
+	matches, scope, offset := "", "$5", "$6"
+	if filtered {
+		// Count matching IDs before limiting, then project only the requested page.
+		matches = draftFilteredLineDisplaySQL + ", matched_lines AS MATERIALIZED (SELECT l.id" +
+			filteredDraftDetails.Replace(draftLineSearchSourceSQL+" {{lineSearch}}") + ")"
+		source = "(SELECT l.* FROM (SELECT id FROM matched_lines" + window + ") page JOIN calculation_draft_lines l USING(id))"
+		total = "(SELECT count(*) FROM matched_lines)"
+		scope, offset = "$7", "$8"
+	}
+	template := draftDetailPrefixSQL + "'version',d.version,'lineTotal'," + total + "," + draftDetailLinesSQL + draftDetailFromSQL
+	template = strings.NewReplacer("{{lineDisplayCTE}}", matches, "{{lineSource}}", source).Replace(template)
+	sql := organizationScopeQuery(standardDraftDetails.Replace(template), "$7")
+	parameters := strings.NewReplacer("$4", "$3", "$7", "$4", "$8", "$5", "$9", "$6", "{{lineOffset}}", offset)
+	return bindDirectoryScope(parameters.Replace(sql), scope)
 }
 
 func draftDetailOrderMatch(orderAlias, orderName string) string {
@@ -1068,6 +1126,11 @@ func (s workspace) getDraftRule(w http.ResponseWriter, r *http.Request) {
 
 func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
+	scope := query.Get("scope")
+	if !validOrganizationDirectoryScope(scope) {
+		respond(w, nil, invalid)
+		return
+	}
 	periodID, err := strconv.ParseInt(query.Get("periodId"), 10, 64)
 	if err != nil || periodID < 1 {
 		respond(w, nil, invalid)
@@ -1105,7 +1168,22 @@ func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 	detailSQL := scopedDraftDetailSQL
 	args := []any{periodID, cursors[0], cursors[1], version, cursors[2], cursors[3], unit}
 	filtered := orderQuery != "" || beneficiaryQuery != ""
-	if section := query.Get("section"); section != "" {
+	section := query.Get("section")
+	rawPage := query.Get("page")
+	if rawPage != "" {
+		page, pageErr := strconv.ParseInt(rawPage, 10, 32)
+		if pageErr != nil || page < 1 || section != "lines" || cursors != [len(draftDetailSections)]int64{} {
+			respond(w, nil, invalid)
+			return
+		}
+		detailSQL = numberedDraftLinesSQL
+		args = []any{periodID, int64(0), version, unit}
+		if filtered {
+			detailSQL = filteredNumberedDraftLinesSQL
+			args = append(args, orderQuery, beneficiaryQuery)
+		}
+		args = append(args, scope, (page-1)*draftDetailPageSize)
+	} else if section != "" {
 		page, ok := draftDetailPages[section]
 		if !ok {
 			respond(w, nil, invalid)
@@ -1122,12 +1200,15 @@ func (s workspace) getDraft(w http.ResponseWriter, r *http.Request) {
 		detailSQL = filteredDraftDetailSQL
 		args = append(args, orderQuery, beneficiaryQuery)
 	}
+	if rawPage == "" {
+		args = append(args, scope)
+	}
 	var result json.RawMessage
 	err = s.db.QueryRow(r.Context(), detailSQL, args...).Scan(&result)
 	if version > 0 && errors.Is(err, pgx.ErrNoRows) {
 		err = conflict
 	}
-	if err == nil && filtered {
+	if err == nil && filtered && rawPage == "" {
 		result, err = withDraftDetailPagination(result)
 	}
 	respond(w, result, err)

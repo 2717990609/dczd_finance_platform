@@ -24,7 +24,8 @@ type catalogAggregatePeriodInput struct {
 type catalogAggregateEventReference struct {
 	EventID, PaymentID  int64
 	Scenario            string
-	CompletionVersionID int64 `json:",omitempty"`
+	CompletionVersionID int64  `json:",omitempty"`
+	RecognizedAmount    *int64 `json:",omitempty"`
 }
 
 type equivalentCatalogReferences map[int64]int64
@@ -401,6 +402,12 @@ func computeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, summary draftS
 			} else {
 				posting.PaymentVersionID = event.PaymentID
 			}
+			if event.RecognizedAmount != nil {
+				posting.Principal = *event.RecognizedAmount
+				if posting.PaymentVersionID != 0 {
+					posting.Principal = -posting.Principal
+				}
+			}
 			result.Performance = append(result.Performance, posting)
 		}
 	}
@@ -636,10 +643,10 @@ func storeCatalogAggregateDraft(ctx context.Context, tx pgx.Tx, periodID int64, 
 		return err
 	}
 	_, err := tx.CopyFrom(ctx, pgx.Identifier{"catalog_aggregate_draft_events"},
-		[]string{"period_id", "source_version_id", "payment_version_id", "sku_code", "completion_version_id"},
+		[]string{"period_id", "source_version_id", "payment_version_id", "sku_code", "completion_version_id", "recognized_amount_minor"},
 		pgx.CopyFromSlice(len(events), func(i int) ([]any, error) {
 			event := events[i]
-			return []any{periodID, event.EventID, event.PaymentID, event.Scenario, optionalDraftID(event.CompletionVersionID)}, nil
+			return []any{periodID, event.EventID, event.PaymentID, event.Scenario, optionalDraftID(event.CompletionVersionID), event.RecognizedAmount}, nil
 		}))
 	if err != nil || len(groups) == 0 {
 		return err

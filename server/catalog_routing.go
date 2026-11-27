@@ -44,14 +44,24 @@ func classifySourcePayment(source, domain, entity, table, productCode string) so
 	return sourceClassification{}
 }
 
-func storeSourceClassification(ctx context.Context, tx pgx.Tx, version int64, classification sourceClassification, claims []vipClaim, created bool) (bool, error) {
-	tag, err := tx.Exec(ctx, `INSERT INTO source_order_classifications(source_version_id,entity_type,business_key,classifier,sales_claims,sales_claims_completed_at)
-	 VALUES($1,$2,$3,$4,$5,CASE WHEN NOT $6 AND $5::jsonb IS NOT NULL THEN now() END)
-	  ON CONFLICT(source_version_id) DO UPDATE
-	  SET sales_claims=excluded.sales_claims,sales_claims_completed_at=now()
-	 WHERE source_order_classifications.sales_claims IS NULL AND excluded.sales_claims IS NOT NULL
-	 AND (source_order_classifications.entity_type,source_order_classifications.business_key,source_order_classifications.classifier)
-	 =(excluded.entity_type,excluded.business_key,excluded.classifier)`, version, classification.Entity, classification.Key, classification.Classifier, claims, created)
+func storeSourceClassification(ctx context.Context, tx pgx.Tx, version int64, classification sourceClassification, claims []vipClaim, details *dcaiOrderDetails, created bool) (bool, error) {
+	tag, err := tx.Exec(ctx, `INSERT INTO source_order_classifications AS saved
+	 (source_version_id,entity_type,business_key,classifier,sales_claims,sales_claims_completed_at,dcai_order_details)
+	 VALUES($1,$2,$3,$4,$5,CASE WHEN NOT $6 AND $5::jsonb IS NOT NULL THEN now() END,$7)
+	 ON CONFLICT(source_version_id) DO UPDATE SET
+	  sales_claims=coalesce(saved.sales_claims,excluded.sales_claims),
+	  sales_claims_completed_at=CASE WHEN saved.sales_claims IS NULL AND excluded.sales_claims IS NOT NULL
+	   THEN now() ELSE saved.sales_claims_completed_at END,
+	  dcai_order_details=CASE WHEN excluded.dcai_order_details IS NOT NULL
+	   AND NOT source_version_is_settled(saved.source_version_id,'ORDER_PAID')
+	   THEN excluded.dcai_order_details || coalesce(saved.dcai_order_details,'{}') ELSE saved.dcai_order_details END
+	 WHERE (saved.entity_type,saved.business_key,saved.classifier)=(excluded.entity_type,excluded.business_key,excluded.classifier)
+	  AND (saved.sales_claims IS NULL OR excluded.sales_claims IS NULL OR saved.sales_claims=excluded.sales_claims)
+	  AND (saved.sales_claims IS NULL AND excluded.sales_claims IS NOT NULL OR
+	   excluded.dcai_order_details IS NOT NULL AND
+	   (excluded.dcai_order_details || coalesce(saved.dcai_order_details,'{}')) IS DISTINCT FROM saved.dcai_order_details AND
+	   NOT source_version_is_settled(saved.source_version_id,'ORDER_PAID'))`,
+		version, classification.Entity, classification.Key, classification.Classifier, claims, created, details)
 	if err != nil || tag.RowsAffected() != 0 {
 		return err == nil, err
 	}

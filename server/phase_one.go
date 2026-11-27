@@ -237,16 +237,21 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodGet, Path: "/api/v1/configuration-options", Handler: s.list(configurationOptionsSQL)},
 		{Method: http.MethodGet, Path: "/api/v1/products", Handler: s.listForAuthorizedProducts(productsSQL, true)},
 		{Method: http.MethodPost, Path: "/api/v1/products", Handler: submit(s.createProduct)},
+		{Method: http.MethodPost, Path: "/api/v1/products/settlement", Handler: submit(s.setProductSettlement)},
 		{Method: http.MethodGet, Path: "/api/v1/mappings", Handler: s.list(mappingsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/mappings", Handler: submit(s.createMapping)},
 		{Method: http.MethodGet, Path: "/api/v1/periods", Handler: s.periods},
 		{Method: http.MethodGet, Path: "/api/v1/periods/page", Handler: s.periodPage},
-		{Method: http.MethodPost, Path: "/api/v1/periods/pull", Handler: submitJSON(8<<10, s.pullPracticePeriods)},
+		{Method: http.MethodPost, Path: "/api/v1/periods/pull", Handler: submitJSON(8<<10, s.activePeriodPull(s.pullSourcePeriods))},
 		{Method: http.MethodGet, Path: "/api/v1/periods/source-products", Handler: s.list(practiceSourceProductsSQL)},
 		{Method: http.MethodPost, Path: "/api/v1/orders/sync-periods", Handler: submitJSON(8<<10, s.pullPracticePeriods)},
 		{Method: http.MethodPost, Path: "/api/v1/period-report-month", Handler: submit(s.setPeriodReportMonth)},
 		{Method: http.MethodPost, Path: "/api/v1/period-refund-cutoff", Handler: submit(s.setPeriodRefundCutoff)},
 		{Method: http.MethodPost, Path: "/api/v1/period-practice-roster", Handler: submit(s.setPeriodPracticeRoster)},
+		{Method: http.MethodGet, Path: "/api/v1/rule-plugins", Handler: s.rulePluginList},
+		{Method: http.MethodGet, Path: "/api/v1/rule-plugins/options", Handler: s.rulePluginOptions},
+		{Method: http.MethodPost, Path: "/api/v1/rule-plugins", Handler: submitJSON(128<<10, s.saveRulePlugin)},
+		{Method: http.MethodPost, Path: "/api/v1/period-rule-plugin", Handler: submitJSON(8<<10, s.attachPeriodRulePlugin)},
 		{Method: http.MethodGet, Path: "/api/v1/rules", Handler: s.getComponentRules},
 		{Method: http.MethodGet, Path: "/api/v1/rule-catalog", Handler: s.listForAuthorizedProducts(catalogRulesSQL, false)},
 		{Method: http.MethodGet, Path: "/api/v1/catalog-rule-rates", Handler: s.getCatalogRuleRates},
@@ -341,7 +346,7 @@ func (s workspace) routes() []rest.Route {
 		{Method: http.MethodPost, Path: "/api/v1/settlements", Handler: submitJSON(32<<10, s.confirmAuthorizedSettlement)},
 		{Method: http.MethodPost, Path: "/api/v1/correction-recovery", Handler: submit(s.reviewCorrectionRecovery)},
 		{Method: http.MethodPost, Path: "/api/v1/draft-pool-allocations", Handler: submit(s.savePoolAllocation)},
-		{Method: http.MethodPost, Path: "/api/v1/drafts", Handler: submit(s.recalculateDraft)},
+		{Method: http.MethodPost, Path: "/api/v1/drafts", Handler: submitJSONStatus(32<<10, http.StatusAccepted, s.requestDraftGeneration)},
 	}
 	routes = append(routes, s.organizationDispatchRoutes()...)
 	for i := range routes {
@@ -355,6 +360,10 @@ func submit[T any](apply func(context.Context, T) (any, error)) http.HandlerFunc
 }
 
 func submitJSON[T, R any](size int64, apply func(context.Context, T) (R, error)) http.HandlerFunc {
+	return submitJSONStatus(size, http.StatusOK, apply)
+}
+
+func submitJSONStatus[T, R any](size int64, status int, apply func(context.Context, T) (R, error)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var input T
 		mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -370,6 +379,10 @@ func submitJSON[T, R any](size int64, apply func(context.Context, T) (R, error))
 			return
 		}
 		result, err := apply(r.Context(), input)
+		if err == nil && status != http.StatusOK {
+			httpx.WriteJson(w, status, result)
+			return
+		}
 		respond(w, result, err)
 	}
 }
@@ -382,6 +395,8 @@ func respond(w http.ResponseWriter, result any, err error) {
 	code, message := http.StatusInternalServerError, "处理失败，请稍后重试"
 	var dbErr *pgconn.PgError
 	switch {
+	case errors.Is(err, errHealthCreatorRetired):
+		code, message = http.StatusGone, err.Error()
 	case errors.Is(err, errRuleLogin), errors.Is(err, errFinanceLogin), errors.Is(err, errFinancePassword):
 		code, message = http.StatusUnauthorized, err.Error()
 	case errors.Is(err, errRulePermission), errors.Is(err, errFinanceForbidden):
@@ -389,7 +404,8 @@ func respond(w http.ResponseWriter, result any, err error) {
 	case errors.Is(err, errFinanceLoginBusy):
 		code, message = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, errDispatchCategoryName), errors.Is(err, errDispatchCompanyName), errors.Is(err, errDispatchPersonName), errors.Is(err, invalid), errors.Is(err, errCatalogPeriodTiers), errors.Is(err, errCatalogPeriodStart), errors.Is(err, errCatalogPeriodFirstStart), errors.Is(err, errCatalogPerformanceScope), errors.Is(err, errCatalogPeriodResumeDate), errors.Is(err, errCatalogPeriodQuoteItem),
-		errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany),
+		errors.Is(err, errCalendarPeriodUnavailable), errors.Is(err, errRulePluginInvalid), errors.Is(err, errRulePluginPeriodBasis),
+		errors.Is(err, errRulePluginLegacySplit), errors.Is(err, errRulePluginRatePrecision), errors.Is(err, errPracticeCountPerson), errors.Is(err, errPracticeOpeningScope), errors.Is(err, errPracticeTierCompany),
 		errors.Is(err, errPracticeServiceSeparate), errors.Is(err, errPracticePeriodMappingMissing),
 		errors.Is(err, errDirectorRateScope), errors.Is(err, errPracticeRegistrationOverlap), errors.Is(err, errPracticeCompanyScopeOverlap), errors.Is(err, errRuleOrderRole),
 		errors.Is(err, errRefundCutoffRange), errors.Is(err, errCatalogPeriodQuoteOrders):
@@ -407,12 +423,12 @@ func respond(w http.ResponseWriter, result any, err error) {
 		errors.Is(err, errCatalogScenarioTarget), errors.Is(err, errCatalogScenarioOccupied), errors.Is(err, errCatalogPeriodName),
 		errors.Is(err, errSettlementClosed), errors.Is(err, errSettlementStale), errors.Is(err, errSettlementPending),
 		errors.Is(err, errSettlementUnsupported), errors.Is(err, errCorrectionRecoveryStillAppointed),
-		errors.Is(err, errDraftChanged), errors.Is(err, errCatalogTrialEventsChanged),
+		errors.Is(err, errPeriodRulePluginLocked), errors.Is(err, errRulePluginChanged), errors.Is(err, errDraftChanged), errors.Is(err, errCatalogTrialEventsChanged),
 		errors.Is(err, errSettlementPools), errors.Is(err, errSettlementPoolHistory),
 		errors.Is(err, errSettlementSourceCoverage), errors.Is(err, errSettlementSourceRefund), errors.Is(err, errSettlementSourceStale),
 		errors.Is(err, errSettlementSourceClock),
 		errors.Is(err, errSyncOrigin), errors.Is(err, errUnverifiedSource), errors.Is(err, errBoundSourceImport),
-		errors.Is(err, errSyncInitialFrom), errors.Is(err, errSyncLaterStart), errors.Is(err, errSyncInProgress),
+		errors.Is(err, errSyncInitialFrom), errors.Is(err, errSyncLaterStart), errors.Is(err, errSyncInProgress), errors.Is(err, errPracticePeriodSyncUnavailable),
 		errors.Is(err, errSettlementOpen), errors.Is(err, errSettlementDisabled), errors.Is(err, errPoolStale),
 		errors.Is(err, errPoolAmount), errors.Is(err, errPoolEligibility), errors.Is(err, errRetentionDuplicate):
 		code, message = http.StatusConflict, err.Error()
@@ -456,6 +472,7 @@ func (s workspace) list(query string) http.HandlerFunc {
 
 const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT p.id,p.code,p.name,p.period_mode AS "periodMode",p.cycle_start_day AS "cycleStartDay",
+ p.settlement_enabled AS "settlementEnabled",
  EXISTS(SELECT 1 FROM products pro WHERE pro.id=p.id AND ` + directorFamilyProductSQL + `) AS "directorRulesAvailable",
  (l.product_id IS NOT NULL) AS "catalogPending",
  (p.period_mode='class' AND EXISTS(SELECT 1 FROM source_mappings m WHERE m.product_id=p.id AND ` + practicePeriodSourceMappings + `)) AS "practicePeriodPull",
@@ -470,12 +487,16 @@ const productsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'
   ) business
  ),'[]') AS "businessSkus"
  FROM products p LEFT JOIN product_catalog_settings l ON l.product_id=p.id
- WHERE ($1::bigint[] IS NULL OR p.id=ANY($1)) ORDER BY p.id DESC LIMIT 500) p`
+ WHERE p.code` + activeFinanceProductCodeSQL + ` AND ($1::bigint[] IS NULL OR p.id=ANY($1)) ORDER BY p.id DESC LIMIT 500) p`
 const mappingsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(p) ORDER BY p.id DESC),'[]') FROM
  (SELECT m.id,m.product_id AS "productId",p.name AS "productName",m.source,m.domain,m.source_key AS "sourceKey"
  FROM source_mappings m JOIN products p ON p.id=m.product_id ORDER BY m.id DESC LIMIT 500) p`
 const periodListColumnsSQL = `SELECT p.id,p.product_id AS "productId",pro.name AS "productName",pro.period_mode AS "periodMode",p.name,p.ordinal,
  p.aggregate_package_id AS "aggregatePackageId",
+ p.rule_plugin_version_id AS "rulePluginVersionId", plugin.label AS "rulePluginLabel", plugin.version AS "rulePluginVersion",
+ (p.aggregate_package_id IS NULL AND final.period_id IS NULL AND p.rule_plugin_version_id IS NULL AND
+  (pro.period_mode='class' AND p.calendar_month IS NULL OR pro.period_mode='calendar' AND p.calendar_month IS NOT NULL
+  AND EXISTS(SELECT 1 FROM product_catalog_settings c WHERE c.product_id=pro.id AND c.source_system='DCAI'))) AS "rulePluginEditable",
  (p.aggregate_package_id IS NULL AND pro.period_mode='calendar' AND EXISTS(SELECT 1 FROM catalog_business_routes m JOIN product_catalog_settings c USING(product_id)
   WHERE m.product_id=p.product_id AND m.observed_at=c.captured_at)) AS "ruleMatchingAvailable",
  (p.aggregate_package_id IS NOT NULL OR ` + catalogDraftAvailableSQL + `) AS "catalogDraftAvailable",
@@ -494,6 +515,7 @@ const periodListColumnsSQL = `SELECT p.id,p.product_id AS "productId",pro.name A
  rule.version AS "ruleVersion",rule.label AS "ruleLabel"`
 
 const periodListJoinsSQL = `JOIN products pro ON pro.id=p.product_id
+ LEFT JOIN finance_rule_plugin_versions plugin ON plugin.id=p.rule_plugin_version_id
  LEFT JOIN settlements final ON final.period_id=p.id
  LEFT JOIN calculation_drafts draft ON draft.period_id=p.id
  LEFT JOIN LATERAL (
@@ -514,7 +536,7 @@ const periodListJoinsSQL = `JOIN products pro ON pro.id=p.product_id
 
 const periodsSQL = `SELECT coalesce(jsonb_agg(to_jsonb(a) ORDER BY a.id DESC),'[]') FROM (` +
 	periodListColumnsSQL + ` FROM periods p ` + periodListJoinsSQL +
-	` WHERE ($1::bigint[] IS NULL OR p.product_id=ANY($1)) ORDER BY p.id DESC LIMIT 500) a`
+	` WHERE pro.code` + activeFinanceProductCodeSQL + ` AND ($1::bigint[] IS NULL OR p.product_id=ANY($1)) ORDER BY p.id DESC LIMIT 500) a`
 const matchingPracticeActivity = `(rv.activity_type=0 OR rv.activity_type::text=split_part(p.source_period_key,':',2))`
 const matchingRuleScope = `rv.product_id=p.product_id AND
   (rv.period_id=p.id OR (rv.period_id IS NULL AND (rv.from_ordinal IS NULL OR rv.from_ordinal<=p.ordinal))) AND ` + matchingPracticeActivity
@@ -608,7 +630,11 @@ func (s workspace) createProduct(ctx context.Context, p createProductInput) (any
 		(p.CycleStartDay != nil && (*p.CycleStartDay < 1 || *p.CycleStartDay > 28)) {
 		return nil, invalid
 	}
-	return s.insert(ctx, "INSERT INTO products(code,name,period_mode,cycle_start_day) VALUES($1,$2,$3,$4) RETURNING id", strings.ToUpper(strings.TrimSpace(p.Code)), strings.TrimSpace(p.Name), p.PeriodMode, p.CycleStartDay)
+	code := strings.ToUpper(strings.TrimSpace(p.Code))
+	if code == retiredHealthCreatorProduct {
+		return nil, errHealthCreatorRetired
+	}
+	return s.insert(ctx, "INSERT INTO products(code,name,period_mode,cycle_start_day) VALUES($1,$2,$3,$4) RETURNING id", code, strings.TrimSpace(p.Name), p.PeriodMode, p.CycleStartDay)
 }
 func (s workspace) createMapping(ctx context.Context, p createMappingInput) (any, error) {
 	if p.ProductID < 1 || !validSource(p.Source) || !textOK(p.Domain, 80) || !textOK(p.SourceKey, 128) {
@@ -629,10 +655,13 @@ func (s workspace) createPeriod(ctx context.Context, p createPeriodInput) (any, 
 	}
 	var id int64
 	err := pgx.BeginFunc(ctx, s.db, func(tx pgx.Tx) error {
-		var mode string
+		var mode, code string
 		var day *int
-		if err := tx.QueryRow(ctx, "SELECT period_mode,cycle_start_day FROM products WHERE id=$1 FOR UPDATE", p.ProductID).Scan(&mode, &day); err != nil {
+		if err := tx.QueryRow(ctx, "SELECT period_mode,cycle_start_day,code FROM products WHERE id=$1 FOR UPDATE", p.ProductID).Scan(&mode, &day, &code); err != nil {
 			return err
+		}
+		if code == retiredHealthCreatorProduct {
+			return errHealthCreatorRetired
 		}
 		if p.SourcePeriodKey != "" && (mode != "class" || p.SettlementMonth != "" || !validPracticeKey(p.SourcePeriodKey)) {
 			return invalid
@@ -788,10 +817,13 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 			return invalid
 		}
 		if p.PeriodID != nil && mode == "class" {
-			var month bool
-			if err := tx.QueryRow(ctx, `SELECT calendar_month IS NOT NULL FROM periods WHERE id=$1 AND product_id=$2`,
-				*p.PeriodID, p.ProductID).Scan(&month); err != nil {
+			var month, pinned bool
+			if err := tx.QueryRow(ctx, `SELECT calendar_month IS NOT NULL,rule_plugin_version_id IS NOT NULL FROM periods WHERE id=$1 AND product_id=$2`,
+				*p.PeriodID, p.ProductID).Scan(&month, &pinned); err != nil {
 				return err
+			}
+			if pinned {
+				return errPeriodRulePluginLocked
 			}
 			if month {
 				return invalid
@@ -921,7 +953,9 @@ func writeComponentRule(ctx context.Context, tx pgx.Tx, p publishRuleInput, refr
 				}
 				if benefit.AppointmentUnitID != "" {
 					unitIDs = append(unitIDs, benefit.AppointmentUnitID)
-					appointmentKinds = append(appointmentKinds, benefit.AppointmentKind)
+					if benefit.AppointmentKind != organizationMemberAppointment {
+						appointmentKinds = append(appointmentKinds, benefit.AppointmentKind)
+					}
 				}
 			}
 			if c.Tiers != nil {

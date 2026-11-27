@@ -214,6 +214,10 @@ func TestConfirmedDraftLinePageUsesOrganizationBeforeLimit(t *testing.T) {
 	 INSERT INTO organization_units(id,kind,name,status) VALUES
 	  ('20000000-0000-0000-0000-000000000001','DEPARTMENT','甲部门','ACTIVE'),
 	  ('20000000-0000-0000-0000-000000000002','DEPARTMENT','乙部门','ACTIVE');
+	 INSERT INTO organization_units(id,kind,name,status,sales_company_type)
+	  VALUES('20000000-0000-0000-0000-000000000003','COMPANY','乙公司','ACTIVE','EXTERNAL');
+	 UPDATE organization_units SET parent_id='20000000-0000-0000-0000-000000000003'
+	  WHERE id='20000000-0000-0000-0000-000000000002';
 	 INSERT INTO rule_versions(product_id,version,label,components) VALUES(1,1,'销售分润','[]');
 	 INSERT INTO source_order_versions(source,order_id,line_id,record_key,version,kind,updated_at,occurred_at,fact)
 	  SELECT 'DCAI','PAY-'||n,'','paid-'||n,'v1','ORDER_PAID','2026-06-05','2026-06-05',
@@ -234,7 +238,7 @@ func TestConfirmedDraftLinePageUsesOrganizationBeforeLimit(t *testing.T) {
 
 	get := func(after, order string) []string {
 		t.Helper()
-		query := url.Values{"periodId": {"1"}, "version": {"2"}, "unitId": {department}, "afterLineId": {after}, "orderQuery": {order}}
+		query := url.Values{"periodId": {"1"}, "version": {"2"}, "afterLineId": {after}, "orderQuery": {order}, "scope": {"EXTERNAL"}}
 		response := httptest.NewRecorder()
 		service.getDraft(response, httptest.NewRequest(http.MethodGet, "/api/v1/drafts?"+query.Encode(), nil))
 		if response.Code != http.StatusOK {
@@ -269,7 +273,7 @@ func TestConfirmedDraftLinePageUsesOrganizationBeforeLimit(t *testing.T) {
 	if page := get("", "PAY-120"); len(page) != 1 || page[0] != "显示订单 120" {
 		t.Fatalf("search did not reach past the first page: %v", page)
 	}
-	query := url.Values{"periodId": {"1"}, "version": {"2"}, "unitId": {department}, "afterLineId": {"110"}, "section": {"lines"}}
+	query := url.Values{"periodId": {"1"}, "version": {"2"}, "unitId": {department}, "afterLineId": {"110"}, "section": {"lines"}, "scope": {"EXTERNAL"}}
 	response := httptest.NewRecorder()
 	service.getDraft(response, httptest.NewRequest(http.MethodGet, "/api/v1/drafts?"+query.Encode(), nil))
 	var page struct {
@@ -278,5 +282,42 @@ func TestConfirmedDraftLinePageUsesOrganizationBeforeLimit(t *testing.T) {
 	if err := json.Unmarshal(response.Body.Bytes(), &page); response.Code != http.StatusOK || err != nil || len(page.Lines) != 10 ||
 		page.Lines[0].OrderNo != "显示订单 111" || page.Lines[9].OrderNo != "显示订单 120" || page.Lines[9].SourceVersion != "v1" {
 		t.Fatalf("line-only page must use the original draft version, cursor and organization scope: %d %s %v", response.Code, response.Body, err)
+	}
+
+	for _, tc := range []struct {
+		name, page, order, beneficiary, version, cursor string
+		status, total, rows                             int
+		first                                           string
+	}{
+		{"second page", "2", "", "", "2", "", http.StatusOK, 60, 10, "显示订单 111"},
+		{"filtered second page", "2", "PAY-", "受益人", "2", "", http.StatusOK, 60, 10, "显示订单 111"},
+		{"single matching order", "1", "PAY-120", "", "2", "", http.StatusOK, 1, 1, "显示订单 120"},
+		{"past last page", "3", "PAY-", "受益人", "2", "", http.StatusOK, 60, 0, ""},
+		{"changed version", "2", "", "", "1", "", http.StatusConflict, 0, 0, ""},
+		{"page zero", "0", "", "", "2", "", http.StatusBadRequest, 0, 0, ""},
+		{"page and cursor", "2", "", "", "2", "110", http.StatusBadRequest, 0, 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := url.Values{"periodId": {"1"}, "section": {"lines"}, "unitId": {department}, "scope": {"EXTERNAL"},
+				"page": {tc.page}, "version": {tc.version}, "orderQuery": {tc.order}, "beneficiaryQuery": {tc.beneficiary}, "afterLineId": {tc.cursor}}
+			response := httptest.NewRecorder()
+			service.getDraft(response, httptest.NewRequest(http.MethodGet, "/api/v1/drafts?"+params.Encode(), nil))
+			if response.Code != tc.status {
+				t.Fatalf("HTTP %d want %d: %s", response.Code, tc.status, response.Body)
+			}
+			if tc.status != http.StatusOK {
+				return
+			}
+			var result struct {
+				LineTotal int
+				Lines     []struct{ OrderNo, SourceVersion string }
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.LineTotal != tc.total || len(result.Lines) != tc.rows {
+				t.Fatalf("line count and total: got %d rows / %d total, want %d / %d (%v)", len(result.Lines), result.LineTotal, tc.rows, tc.total, err)
+			}
+			if tc.rows > 0 && (result.Lines[0].OrderNo != tc.first || result.Lines[0].SourceVersion != "v1") {
+				t.Fatalf("wrong first row: %+v", result.Lines[0])
+			}
+		})
 	}
 }

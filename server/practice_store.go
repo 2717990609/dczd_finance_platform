@@ -107,6 +107,7 @@ var practicePaymentsSQL = `SELECT v.id,v.fact,coalesce(company.company_id,''),
 
 const practicePaymentAlreadySettled = "PRACTICE_PAYMENT_ALREADY_SETTLED"
 
+// The lateral boundary keeps the indexed order lookup ahead of roster joins.
 const practiceDuplicatesSQL = `WITH candidates AS MATERIALIZED (
  SELECT e.id,e.period_key,e.paid_order_ids
  FROM practice_roster_members member JOIN practice_enrollments e ON e.id=member.enrollment_id
@@ -123,11 +124,14 @@ const practiceDuplicatesSQL = `WITH candidates AS MATERIALIZED (
 SELECT e.id,CASE WHEN booked.id IS NOT NULL THEN '` + practicePaymentAlreadySettled + `' ELSE 'PRACTICE_DUPLICATE_ENROLLMENT' END
  FROM candidates e LEFT JOIN booked USING(id)
  WHERE booked.id IS NOT NULL OR EXISTS(
-  SELECT 1 FROM practice_enrollments other JOIN practice_roster_members link ON link.enrollment_id=other.id
+  SELECT 1 FROM LATERAL (
+   SELECT other.id FROM practice_enrollments other
+   WHERE other.paid_order_ids&&e.paid_order_ids AND other.commission_eligible
+     AND other.period_key<>e.period_key AND split_part(other.period_key,':',3)=split_part(e.period_key,':',3)
+   OFFSET 0
+  ) other JOIN practice_roster_members link ON link.enrollment_id=other.id
   JOIN practice_rosters r ON r.id=link.roster_id
-  WHERE split_part(other.period_key,':',3)=split_part(e.period_key,':',3) AND other.period_key<>e.period_key
-    AND other.commission_eligible AND other.paid_order_ids&&e.paid_order_ids
-    AND NOT EXISTS(SELECT 1 FROM practice_rosters newer WHERE newer.period_key=r.period_key AND newer.source_version>r.source_version)
+  WHERE NOT EXISTS(SELECT 1 FROM practice_rosters newer WHERE newer.period_key=r.period_key AND newer.source_version>r.source_version)
     AND NOT EXISTS(SELECT 1 FROM periods p JOIN settlements s ON s.period_id=p.id WHERE p.source_period_key=r.period_key)
  )`
 
@@ -356,7 +360,7 @@ func computePracticeDraft(ctx context.Context, tx pgx.Tx, summary draftSummary, 
 	}
 	var identities map[identityKey][]identityAssignment
 	if len(keys) != 0 {
-		identities, err = readIdentityAssignments(ctx, tx, window, keys)
+		identities, err = readPracticeIdentityAssignments(ctx, tx, window, keys)
 		if err != nil {
 			return paymentDraft{}, nil, err
 		}

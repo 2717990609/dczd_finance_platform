@@ -23,10 +23,10 @@ type vipDraftQuoteInput struct {
 }
 
 type vipDraftQuote struct {
-	input                                 vipDraftQuoteInput
-	salesItem, salesStatus, benefitStatus string
-	sales                                 []vipSalesPart
-	benefits                              []vipBenefitPart
+	input                                              vipDraftQuoteInput
+	salesItem, salesStatus, salesDetail, benefitStatus string
+	sales                                              []vipSalesPart
+	benefits                                           []vipBenefitPart
 }
 
 func (c *vipDraftQuoteCache) apply(periodID int64, items []catalogPaymentMatch, data vipRuntimeData) {
@@ -68,10 +68,10 @@ func (c *vipDraftQuoteCache) apply(periodID int64, items []catalogPaymentMatch, 
 				policies = &parsed
 			}
 			policies.apply(row, data, req, issue)
-			quote = vipDraftQuote{input: input, salesItem: row.SalesItem, salesStatus: row.SalesStatus, benefitStatus: row.BenefitStatus,
+			quote = vipDraftQuote{input: input, salesItem: row.SalesItem, salesStatus: row.SalesStatus, salesDetail: row.SalesDetail, benefitStatus: row.BenefitStatus,
 				sales: row.SalesParts, benefits: row.BenefitParts}
 		} else {
-			row.SalesItem, row.SalesStatus, row.BenefitStatus = quote.salesItem, quote.salesStatus, quote.benefitStatus
+			row.SalesItem, row.SalesStatus, row.SalesDetail, row.BenefitStatus = quote.salesItem, quote.salesStatus, quote.salesDetail, quote.benefitStatus
 			row.SalesParts, row.BenefitParts = quote.sales, quote.benefits
 			if len(quote.benefits) != 0 {
 				row.FixedParts = row.FixedParts[:0]

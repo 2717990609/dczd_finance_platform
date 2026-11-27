@@ -9,12 +9,17 @@ const props = defineProps({options:Object,api:Function,peopleFilters:Object,pref
   savedPoolLabel:String,existingPool:Boolean,unitNames:Object})
 const payee = defineModel({type:Object,required:true})
 const seller = {value:'seller',label:'按销售比例表确定收款方'}
-const targets = computed(() => [
+const orderSalesOptions = Object.entries(catalogOrderSalesPayees).map(([value,label])=>({value,label}))
+const existingOrderSalesCompany = {value:'order_sales_company',label:'销售所属公司'}
+const targets = computed(() => payee.value.target==='order_sales_company'
+  ? [existingOrderSalesCompany,...orderSalesOptions]
+  : Object.hasOwn(catalogOrderSalesPayees,payee.value.target) ? orderSalesOptions
+  : [
   ...(props.salesAvailable || payee.value.target==='seller' ? [seller] : []),
   ...(!props.salesAvailable && payee.value.target==='seller' ? [] : [
     {value:'person',label:'个人'},{value:'company',label:'公司'},{value:'pool',label:'团队池'},
-    ...Object.entries(catalogOrderSalesPayees).map(([value,label])=>({value,label})),
-    {value:'referrer',label:'订单直接推荐人'},
+    ...orderSalesOptions,
+    ...(payee.value.target==='referrer' ? [{value:'referrer',label:'订单直接推荐人'}] : []),
     {value:'appointment',label:'销售组织的在任人员'},
   ]),
 ])

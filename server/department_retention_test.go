@@ -27,6 +27,7 @@ INSERT INTO organization_units(id,kind,name,status,parent_id) VALUES
  ('`+company+`','COMPANY','甲公司','ACTIVE',NULL),
  ('`+department+`','DEPARTMENT','共有业务部','ACTIVE','`+company+`'),
  ('`+otherCompany+`','COMPANY','乙公司','ACTIVE',NULL);
+UPDATE organization_units SET sales_company_type='EXTERNAL' WHERE id='`+company+`';
 INSERT INTO people(name) VALUES('分配成员');
 INSERT INTO calculation_drafts(period_id,version,input_digest,total_minor,line_count,issue_count,calculated_at)
  VALUES (1,1,'\x01',20000,0,0,now()),(2,1,'\x02',20000,0,0,now()),
@@ -84,6 +85,12 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 	if other := read("month=2026-08&unitId=" + otherCompany + "&accountId=" + department); len(other.Items) != 0 || len(other.Entries) != 0 {
 		t.Fatalf("a different organization scope must exclude the account: %+v", other)
 	}
+	if internal := read("month=2026-08&scope=INTERNAL&accountId=" + department); len(internal.Items) != 0 || len(internal.Entries) != 0 {
+		t.Fatalf("internal scope must exclude external balances and entries: %+v", internal)
+	}
+	if external := read("month=2026-08&scope=EXTERNAL&unitId=" + company + "&accountId=" + department); len(external.Items) != 1 || len(external.Entries) != 2 {
+		t.Fatalf("the external scope and its parent should include the department: %+v", external)
+	}
 	if july := read("month=2026-07"); len(july.Items) != 1 || july.Items[0].BalanceMinor != 5000 || july.Items[0].OpeningMinor != 0 {
 		t.Fatalf("the report must exclude postings in future business months: %+v", july)
 	}
@@ -130,6 +137,13 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 	post(expense, http.StatusConflict)
 	if got := read(august); got.Items[0].BalanceMinor != -3000 || got.Items[0].CurrentBalanceMinor != -2400 || got.Items[0].TotalSpentMinor != 35000 {
 		t.Fatalf("recorded expense can result in a negative balance: %+v", got.Items)
+	}
+	if got := read(august + "&productId=2"); len(got.Items) != 1 || got.Items[0].CurrentBalanceMinor != -2400 ||
+		got.Items[0].TotalSpentMinor != 35000 || len(got.Entries) != 1 || got.Entries[0].PeriodID != 2 {
+		t.Fatalf("product selection should filter entries while preserving department amounts: %+v", got)
+	}
+	if got := read(august + "&productId=1"); len(got.Items) != 0 || len(got.Entries) != 0 {
+		t.Fatalf("a credit covered by the opening or outside this statement must not match: %+v", got)
 	}
 	post(retentionEntryInput{Kind: "correction", Month: "2026-08", AmountMinor: 300, Note: "月度更正",
 		RequestID: "52100000-0000-4000-8000-000000000003"}, http.StatusOK)

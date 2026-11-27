@@ -190,11 +190,12 @@ defineExpose({reload})
         </a-button>
       </div>
       <div v-if="runDisabledReason(row) || jobFor(row)?.lastSuccessAt || jobFor(row)?.targetThrough ||
-        jobFor(row)?.message || jobFor(row)?.requestedFromDate && !jobFor(row)?.initialFrom" class="sync-state">
+        jobFor(row)?.practiceRefundThrough || jobFor(row)?.message || jobFor(row)?.requestedFromDate && !jobFor(row)?.initialFrom" class="sync-state">
         <span v-if="runDisabledReason(row)" :id="'sync-hint-'+row.stream">{{ runDisabledReason(row) }}</span>
         <span v-if="jobFor(row)?.requestedFromDate && !jobFor(row)?.initialFrom">上次起点 {{ jobFor(row).requestedFromDate }}</span>
         <span v-if="jobFor(row)?.lastSuccessAt">最近成功 {{ formatTime(jobFor(row).lastSuccessAt) }}</span>
-        <span v-if="jobFor(row)?.completedThrough">数据覆盖至 {{ formatTime(jobFor(row).completedThrough) }}</span>
+        <span v-if="jobFor(row)?.practiceRefundThrough">退款覆盖至 {{ formatTime(jobFor(row).practiceRefundThrough) }}</span>
+        <span v-else-if="jobFor(row)?.completedThrough">数据覆盖至 {{ formatTime(jobFor(row).completedThrough) }}</span>
         <span v-if="busy(jobFor(row)) && jobFor(row)?.scannedOrders">已读取 {{ jobFor(row).scannedOrders }} 条</span>
         <span v-else-if="jobFor(row)?.status==='SUCCEEDED' && jobFor(row).newVersions!=null">新增 {{ jobFor(row).newVersions }} 个版本</span>
         <span v-if="jobFor(row)?.message" class="sync-error" role="status">{{ jobFor(row).message }}</span>

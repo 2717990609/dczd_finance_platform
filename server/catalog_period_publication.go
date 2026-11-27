@@ -42,6 +42,7 @@ type catalogPeriodVersion struct {
 	Performance *catalogPerformanceScope  `json:"performanceScope,omitempty"`
 	ScopeLabels *catalogPerformanceLabels `json:"scopeLabels,omitempty"`
 	packageID   string
+	pluginBound bool
 	retiredFrom *time.Time
 	raw         json.RawMessage
 }
@@ -99,13 +100,13 @@ func readCatalogPeriodVersion(ctx context.Context, db catalogPeriodReader, id st
 		return rule, invalid
 	}
 	err := db.QueryRow(ctx, `SELECT p.product_id,pro.name,p.name,v.version_no,v.effective_from,`+catalogDisplayedThrough+`,
-	 v.package_id::text,v.definition,(v.source_status='PUBLISHED' AND `+catalogVersionVisible+`),p.paused,p.resume_from,`+catalogRuleRetiredAtSQL+`
+	 v.package_id::text,v.definition,(v.source_status='PUBLISHED' AND `+catalogVersionVisible+`),p.paused,p.resume_from,`+catalogRuleRetiredAtSQL+`,p.code=$2
 	 FROM product_rule_versions v JOIN product_rule_packages p ON p.source_id=v.package_id
 	 JOIN product_catalog_settings scope ON scope.product_id=p.product_id
 	 JOIN products pro ON pro.id=p.product_id
-	 WHERE v.source_id=$1::uuid AND `+catalogPeriodRuleScope, id).
+	 WHERE v.source_id=$1::uuid AND `+catalogPeriodRuleScope, id, periodRulePluginPackageCode).
 		Scan(&rule.ProductID, &rule.ProductName, &rule.Label, &rule.Version, &rule.From, &rule.Through, &rule.packageID,
-			&rule.raw, &rule.MayPublish, &rule.Paused, &rule.ResumeFrom, &rule.retiredFrom)
+			&rule.raw, &rule.MayPublish, &rule.Paused, &rule.ResumeFrom, &rule.retiredFrom, &rule.pluginBound)
 	return rule, err
 }
 
@@ -175,7 +176,7 @@ func describeCatalogPeriodRule(ctx context.Context, db catalogPeriodReader, rule
 	for _, item := range period.Items {
 		scope.UnitIDs = append(scope.UnitIDs, item.CommissionUnits...)
 		categoryIDs = append(categoryIDs, item.ScopeCategories...)
-		if item.Appointment != nil {
+		if item.Appointment != nil && item.Appointment.UnitID != "" {
 			scope.UnitIDs = append(scope.UnitIDs, item.Appointment.UnitID)
 		}
 	}
@@ -326,6 +327,9 @@ func writeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, input catalogPeriodP
 	if err != nil {
 		return result, err
 	}
+	if base.pluginBound {
+		return result, errPeriodRulePluginLocked
+	}
 	if !actor.permits(base.ProductID, true) {
 		return result, errRulePermission
 	}
@@ -464,11 +468,15 @@ func readCatalogPeriodComponentOptions(ctx context.Context, db catalogPeriodRead
 	if len(appointments) != 0 {
 		var missing bool
 		if err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1
-		 FROM jsonb_to_recordset($1::jsonb) AS wanted("personId" bigint,"unitId" text,role text)
-		 WHERE NOT EXISTS(SELECT 1 FROM catalog_current_sales_appointments a
-		  JOIN organization_units u ON u.id::text=a.scope_key AND u.status='ACTIVE'
-		  WHERE a.source='DCAI' AND a.scope='ORGANIZATION_UNIT'
-		   AND (a.person_id,a.scope_key,a.role)=(wanted."personId",wanted."unitId",wanted.role)))`, appointments).Scan(&missing); err != nil {
+		 FROM jsonb_to_recordset($1::jsonb) AS wanted("personId" bigint,"unitId" text,role text,scope text,"scopeKey" text)
+		 WHERE (wanted."unitId" IS NOT NULL AND NOT EXISTS(SELECT 1 FROM organization_units u
+		  WHERE u.id::text=wanted."unitId" AND u.status='ACTIVE')) OR NOT EXISTS(
+		 SELECT 1 FROM catalog_current_sales_appointments a
+		  WHERE a.source='DCAI' AND a.scope=coalesce(nullif(wanted.scope,''),'ORGANIZATION_UNIT') AND wanted.role<>$2
+		   AND (a.person_id,a.scope_key,a.role)=(wanted."personId",coalesce(wanted."unitId",wanted."scopeKey"),wanted.role)
+		 UNION ALL SELECT 1 FROM organization_assignments m
+		  WHERE wanted.role=$2 AND (m.person_id,m.unit_id::text)=(wanted."personId",wanted."unitId")))`,
+			appointments, organizationMemberAppointment).Scan(&missing); err != nil {
 			return catalogStructureOptions{}, err
 		}
 		if missing {

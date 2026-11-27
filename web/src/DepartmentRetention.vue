@@ -2,7 +2,8 @@
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { moneyAsMinor } from './rule-component-form'
 
-const props = defineProps({ api:Function, month:String, unitId:String, units:Array, formatMoney:Function, formatTime:Function, poolLink:Function, resume:Object })
+const props = defineProps({ api:Function, month:String, unitId:String, directoryScope:String, productId:Number, units:Array,
+  formatMoney:Function, formatTime:Function, poolLink:Function, resume:Object })
 const report = ref()
 const accountId = ref(props.resume?.accountId)
 const page = ref(props.resume?.page || 1)
@@ -53,6 +54,8 @@ async function load() {
   try {
     const query = new URLSearchParams({month:props.month,history:'all'})
     if (props.unitId) query.set('unitId',props.unitId)
+    if (props.directoryScope) query.set('scope',props.directoryScope)
+    if (props.productId) query.set('productId',props.productId)
     if (accountId.value) query.set('accountId',accountId.value)
     if (page.value>1) query.set('page',page.value)
     const result = await props.api('/department-retention?'+query)
@@ -104,11 +107,13 @@ async function saveEntry() {
     saving.value=false
   }
 }
-watch(() => [props.month, props.unitId], () => {
+const filters = [() => props.month, () => props.unitId, () => props.directoryScope, () => props.productId]
+watch(filters, () => {
+  report.value = undefined
   accountId.value = undefined
   page.value = 1
 }, {flush:'sync'})
-watch(() => [props.month, props.unitId, accountId.value, page.value], load, {immediate:true})
+watch([...filters,accountId,page], load, {immediate:true})
 onBeforeUnmount(() => { sequence++ })
 defineExpose({refresh:load})
 </script>
@@ -121,6 +126,7 @@ defineExpose({refresh:load})
       <h2>部门余额</h2>
       <a-button v-if="report?.canRecord" type="primary" :disabled="!month" @click="startEntry()">登记收支</a-button>
     </div>
+    <p v-if="productId" class="workbench-scope-note">按产品筛选有留存入账的部门和明细，金额按部门台账汇总。</p>
     <a-table :columns="columns" :data-source="report?.items || []" row-key="unitId"
       :loading="loading && !accountId" :pagination="false" :scroll="{x:760}">
       <template #bodyCell="{column,record,text}">

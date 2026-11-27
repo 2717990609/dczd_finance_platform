@@ -39,6 +39,7 @@ type catalogPaymentMatch struct {
 	} `json:"fixedParts"`
 	SalesItem     string           `json:"-"`
 	SalesStatus   string           `json:"salesStatus,omitempty"`
+	SalesDetail   string           `json:"salesDetail,omitempty"`
 	SalesParts    []vipSalesPart   `json:"salesParts,omitempty"`
 	BenefitStatus string           `json:"benefitStatus,omitempty"`
 	BenefitParts  []vipBenefitPart `json:"benefitParts,omitempty"`
@@ -71,6 +72,10 @@ type vipRuntimeData struct {
 	ConfigurationRevision                 int64
 	DirectoryFingerprint                  string
 	Claims                                map[int64][]vipClaim
+	SellerAbsent                          map[int64]bool
+	CommissionSellers                     map[int64]sourceCommissionSeller
+	OrderRecommendations                  map[int64]vipOrderRecommendation
+	RecommendationCompanies               map[string]string
 	Definitions                           map[string]json.RawMessage
 	Users, Companies, Categories          []vipLink
 	DirectoryUsers, DirectoryCompanies    []vipLink
@@ -116,6 +121,55 @@ func (h vipCompanyTypeHistory) at(at time.Time, snapshotAt *time.Time) string {
 }
 
 const vipReferralParticipantsPath = `'$.participants[*] ? (@.role == "DIRECT_PID_USER" || @.role == "LOCK_DIRECT_SHARE_USER")'`
+
+type vipOrderRecommendation struct {
+	Company  string `json:"company"`
+	Conflict bool   `json:"conflict"`
+}
+
+type vipRecommendationCompany struct {
+	Unit, Name, Issue, Detail string
+}
+
+func (d vipRuntimeData) recommendationCompany(salesUnit, sourceID string, sourceConflict bool, at time.Time) vipRecommendationCompany {
+	financeUnit, registered := d.RecommendationCompanies[salesUnit]
+	if sourceConflict {
+		return vipRecommendationCompany{Issue: "RECOMMENDATION_COMPANY_CONFLICT", Detail: "源订单包含多条推荐公司归属"}
+	}
+	if sourceID == "" {
+		switch {
+		case !registered:
+			return vipRecommendationCompany{Issue: "RECOMMENDATION_COMPANY_MISSING"}
+		case financeUnit == "":
+			return vipRecommendationCompany{}
+		case d.CompanyNames[financeUnit] == "" || financeUnit == salesUnit:
+			return vipRecommendationCompany{Issue: "RECOMMENDATION_COMPANY_MISSING"}
+		default:
+			return vipRecommendationCompany{Unit: financeUnit, Name: d.CompanyNames[financeUnit]}
+		}
+	}
+	source, mappingConflict := resolveVIPLinkRecord(d.DirectoryCompanies, sourceID, at)
+	if !mappingConflict && source.Unit == "" {
+		source, mappingConflict = resolveVIPLinkRecord(d.Companies, sourceID, at)
+	}
+	if mappingConflict || source.Unit == "" || d.CompanyNames[source.Unit] == "" {
+		return vipRecommendationCompany{Issue: "RECOMMENDATION_COMPANY_MISSING", Detail: "源订单推荐公司：" + sourceID}
+	}
+	if registered && source.Unit != financeUnit {
+		financeName := d.CompanyNames[financeUnit]
+		if financeUnit == "" {
+			financeName = "无推荐公司"
+		} else if financeName == "" {
+			financeName = financeUnit
+		}
+		return vipRecommendationCompany{Issue: "RECOMMENDATION_COMPANY_CONFLICT",
+			Detail: "源订单：" + d.CompanyNames[source.Unit] + "，财务目录：" + financeName}
+	}
+	if source.Unit == salesUnit {
+		return vipRecommendationCompany{Issue: "RECOMMENDATION_COMPANY_CONFLICT", Detail: "推荐公司与成交销售公司相同"}
+	}
+	return vipRecommendationCompany{Unit: source.Unit, Name: d.CompanyNames[source.Unit]}
+}
 
 const vipSalesCompanyLinksSQL = `companies AS MATERIALIZED (
  SELECT a.external_id AS key,a.company_uuid AS value,a.company_unit_id AS unit,a.valid_from AS "from",a.valid_to AS "to"
@@ -168,6 +222,10 @@ const vipRuntimeSQL = `WITH scope AS (
 ), keys AS MATERIALIZED (
  SELECT DISTINCT line->>'user' AS person,line->>'company' AS company
  FROM claims CROSS JOIN LATERAL jsonb_array_elements(sales_claims) line
+ UNION SELECT commission_seller->>'source_user_id',commission_seller->>'source_company_id'
+ FROM source_order_classifications WHERE source_version_id=ANY($2::bigint[]) AND commission_seller IS NOT NULL
+ UNION SELECT NULL,order_recommendation->>'company' FROM source_order_classifications
+ WHERE source_version_id=ANY($2::bigint[]) AND order_recommendation IS NOT NULL
 ), users AS MATERIALIZED (
  SELECT u.external_id AS key,` + vipPersonKey + ` AS value,p.id,u.valid_from AS "from",u.valid_to AS "to"
  FROM catalog_sales_people_sources u JOIN scope s ON u.source='DCAI' AND s.captured_at=u.observed_at
@@ -212,6 +270,14 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
    AND a->>'pool_party_id'='unit:'||o.id
  ) target),
  'claims',(SELECT jsonb_object_agg(source_version_id::text,sales_claims) FROM claims),
+ 'sellerAbsent',(SELECT jsonb_object_agg(c.source_version_id::text,true) FROM source_order_classifications c
+  WHERE c.source_version_id=ANY($2::bigint[]) AND c.dcai_order_details @> '{"sellerAbsent":true}'),
+ 'commissionSellers',(SELECT jsonb_object_agg(source_version_id::text,commission_seller) FROM source_order_classifications
+  WHERE source_version_id=ANY($2::bigint[]) AND commission_seller IS NOT NULL),
+ 'orderRecommendations',(SELECT jsonb_object_agg(source_version_id::text,order_recommendation)
+  FROM source_order_classifications WHERE source_version_id=ANY($2::bigint[]) AND order_recommendation IS NOT NULL),
+ 'recommendationCompanies',(SELECT jsonb_object_agg(r.company_id::text,coalesce(r.referrer_company_id::text,''))
+  FROM organization_company_recommendations r WHERE r.company_id IN (SELECT unit FROM companies UNION SELECT unit FROM directory_companies)),
  'definitions',(SELECT jsonb_object_agg(source_id::text,jsonb_build_object(
   'amount_basis',definition->'amount_basis','stacking_policy',definition->'stacking_policy','rounding_policy',definition->'rounding_policy',
   'refund_policy',definition->'refund_policy','sales_attribution',definition->'sales_attribution',
@@ -221,7 +287,9 @@ SELECT jsonb_build_object('product',s.code,'project',s.project_code,'benefitRead
  'users',(SELECT jsonb_agg(to_jsonb(users)-'id') FROM users),
  'directoryUsers',(SELECT jsonb_agg(to_jsonb(directory_users)-'id') FROM directory_users),
  'companyNames',(SELECT jsonb_object_agg(u.id,u.name) FROM organization_units u WHERE u.kind='COMPANY'
-  AND u.id IN (SELECT unit FROM companies UNION SELECT unit FROM directory_companies)),
+  AND u.status='ACTIVE' AND u.id IN (SELECT unit FROM companies UNION SELECT unit FROM directory_companies
+   UNION SELECT referrer_company_id FROM organization_company_recommendations
+   WHERE company_id IN (SELECT unit FROM companies UNION SELECT unit FROM directory_companies))),
  'companyTypes',CASE WHEN EXISTS(SELECT 1 FROM definitions WHERE
   jsonb_path_exists(definition,'$.benefit_actions[*].rate_table[*] ? (@.external_company_default == true)')) THEN (
   SELECT jsonb_object_agg(u.id,jsonb_build_object('companyType',u.sales_company_type,'version',u.sales_company_type_version,
@@ -312,11 +380,31 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 	req := vipSalesRequest{Order: sale.OrderID, At: sale.PaidAt, Paid: sale.commissionBasis(), OriginalPaid: *sale.PaidMinor,
 		Product: d.Product, Project: d.Project}
 	src, ok := d.Claims[sale.SourceVersionID]
-	if !ok {
-		return req, "SALES_SOURCE_MISSING"
-	}
 	req.Referrer = d.orderReferrer(src, sale.PaidAt)
-	claim, issue := vipSellerClaim(src)
+	sourceRecommendation := d.OrderRecommendations[sale.SourceVersionID]
+	req.RecommendationCompany = d.recommendationCompany("", sourceRecommendation.Company, sourceRecommendation.Conflict, req.At)
+
+	var claim vipClaim
+	var issue string
+	if seller, declared := d.CommissionSellers[sale.SourceVersionID]; declared {
+		switch seller.Status {
+		case "RESOLVED":
+			claim = vipClaim{User: seller.User, Company: seller.Company, Relationship: seller.Relationship}
+		case "MISSING":
+			company, _, ambiguous := d.salesCompanyAt(seller.Company, req.At)
+			if !ambiguous {
+				req.RecommendationCompany = d.recommendationCompany(company.Unit, sourceRecommendation.Company, sourceRecommendation.Conflict, req.At)
+			}
+			issue = "SALES_PERSON_MISSING"
+		default:
+			issue = "SALES_SOURCE_CONFLICT"
+		}
+	} else if ok || d.SellerAbsent[sale.SourceVersionID] {
+		req.sourceSellerAbsent = d.SellerAbsent[sale.SourceVersionID]
+		claim, issue = vipOrderClaim(src, req.sourceSellerAbsent)
+	} else {
+		issue = "SALES_SOURCE_MISSING"
+	}
 	if issue != "" {
 		return req, issue
 	}
@@ -335,6 +423,7 @@ func vipPaymentInputs(sale catalogPaymentMatch, d vipRuntimeData) (vipSalesReque
 	}
 	req.Company, req.CompanyUnit = company.Value, company.Unit
 	req.CompanyName = d.CompanyNames[company.Unit]
+	req.RecommendationCompany = d.recommendationCompany(req.CompanyUnit, sourceRecommendation.Company, sourceRecommendation.Conflict, req.At)
 	if history, ok := d.CompanyTypes[company.Unit]; ok {
 		req.CompanyType = history.at(sale.PaidAt, d.OrganizationSnapshotAt)
 	}
@@ -486,7 +575,7 @@ func (p vipQuotePolicies) apply(row *catalogPaymentMatch, data vipRuntimeData, r
 		newOnly := newMembershipOnly(policy.MembershipNewOnly, fallback)
 		splitStatuses := row.splitMembershipStatuses(policy, req, newOnly)
 		membershipStatus := row.membershipScopeStatus(newOnly)
-		if policy.Item == "" || policy.ConfiguredPayee || policy.Split.Independent && policy.Split.salesPayeeDisabled() || !policy.Split.usesSalesTable(req.Company) {
+		if req.sourceSellerAbsent || policy.Item == "" || policy.ConfiguredPayee || policy.Split.Independent && policy.Split.salesPayeeDisabled() || !policy.Split.usesSalesTable(req.Company) {
 			row.SalesStatus = vipSalesNotConfigured
 		} else if splitStatuses == nil && membershipStatus == vipCommissionOutsideScope {
 			row.SalesStatus = vipCommissionOutsideScope
@@ -502,6 +591,9 @@ func (p vipQuotePolicies) apply(row *catalogPaymentMatch, data vipRuntimeData, r
 		}
 		if row.SalesStatus == "" {
 			row.SalesStatus = "CALCULATED"
+		}
+		if row.SalesStatus == req.RecommendationCompany.Issue {
+			row.SalesDetail = req.RecommendationCompany.Detail
 		}
 	}
 	applyVIPBenefitQuote(row, data, p.benefits, req, issue, fallback)

@@ -3,6 +3,7 @@ import { computed, defineAsyncComponent, nextTick, onBeforeUnmount, onMounted, r
 import {
   ApartmentOutlined, BankOutlined, CloudSyncOutlined, DownOutlined, IdcardOutlined, LeftOutlined, PlusOutlined, ReloadOutlined, RightOutlined, ShopOutlined,
 } from '@ant-design/icons-vue'
+import { Switch } from 'ant-design-vue'
 import zhCN from 'ant-design-vue/es/locale/zh_CN'
 import PeriodTasks from './PeriodTasks.vue'
 import RuleArrangementFields from './RuleArrangementFields.vue'
@@ -11,11 +12,12 @@ import RuleStandardValue from './RuleStandardValue.vue'
 import PracticePersonalScopeFields from './PracticePersonalScopeFields.vue'
 import FinanceLogin from './FinanceLogin.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
+import WorkspaceScopeDivider from './WorkspaceScopeDivider.vue'
 import RuleImpactPreview from './RuleImpactPreview.vue'
 import { organizationTree } from './organization-tree'
 import { teamPoolKey } from './team-pool-key'
 import { catalogAppointmentLevels, checkPracticeCompanyArrangementScopes, copiedRuleComponents, hasPracticePaymentScope, practiceLegacyArrangementLabel,
-  practiceCompanyStandardIndicators, practiceCountStartBody, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
+  practiceCompanySalesBody, practiceCompanyStandardIndicators, practiceCountStartBody, practiceCumulativeAmountMetrics, practicePeriodScopeText, practiceRetrainServiceScopeText, practiceRetrainShareText, practiceRetrainSplitBody,
   practiceRecipientIsPerson, practiceSalesScopeText, practiceStandardRateSummary, ruleComponentLabel, tierFormUsesHistory } from './rule-component-form'
 
 const DraftWorkbench = defineAsyncComponent(() => import('./DraftWorkbench.vue'))
@@ -28,7 +30,8 @@ const OrderSyncSettings = defineAsyncComponent(() => import('./OrderSyncSettings
 const RuleVersionDetails = defineAsyncComponent(() => import('./RuleVersionDetails.vue'))
 const CatalogRuleRates = defineAsyncComponent(() => import('./CatalogRuleRates.vue'))
 const CatalogPeriodRule = defineAsyncComponent(() => import('./CatalogPeriodRule.vue'))
-const CatalogScenarioCreate = defineAsyncComponent(() => import('./CatalogScenarioCreate.vue'))
+const CommonRuleEditor = defineAsyncComponent(() => import('./CommonRuleEditor.vue'))
+const PeriodRulePluginPicker = defineAsyncComponent(() => import('./PeriodRulePluginPicker.vue'))
 const PracticeRuleSettings = defineAsyncComponent(() => import('./PracticeRuleSettings.vue'))
 const PracticePeriodBenefitEditor = defineAsyncComponent(() => import('./PracticePeriodBenefitEditor.vue'))
 const PracticeRetrainSplitEditor = defineAsyncComponent(() => import('./PracticeRetrainSplitEditor.vue'))
@@ -123,7 +126,7 @@ const orderSyncTarget = ref()
 const orderReturn = ref()
 const draftViews = {detail:'分润明细',report:'业绩与分润',issues:'待核',pools:'团队池分配',review:'结算核对',matching:'订单规则匹配'}
 const workbenchPeriod = ref()
-const workbenchView = ref('detail')
+const workbenchView = ref()
 const workbenchQuery = ref({})
 const workbench = ref()
 const active = computed(() => navigation.find(x => x.key === current.value))
@@ -140,9 +143,9 @@ const configProductScope = ref()
 const ruleBusinessScope = ref()
 const activeRuleComponent = ref(0)
 const unitScope = ref()
-const monthlyOrganizationScope = ref('')
-const workbenchOrganizationScope = computed(() => current.value==='monthly' ? monthlyOrganizationScope.value : undefined)
-const usesOrganizationScope = computed(() => ['orders','settlement','monthly','retention'].includes(current.value))
+const financeOrganizationScope = ref('')
+const workbenchOrganizationScope = computed(() => ['monthly','settlement','pools','retention'].includes(current.value) ? financeOrganizationScope.value : undefined)
+const usesOrganizationScope = computed(() => current.value==='orders' || workbenchOrganizationScope.value!==undefined)
 const scopeSearch = ref('')
 const configProductPages = new Set(['products','periods','rules','pool-config'])
 const activeProductScope = computed(() => configProductPages.has(current.value) ? configProductScope : workProductScope)
@@ -150,7 +153,7 @@ const productScope = computed({
   get: () => activeProductScope.value.value,
   set: value => { activeProductScope.value.value = value },
 })
-const productScopedPages = new Set(['products','periods','rules','tasks','settlement','monthly','pools'])
+const productScopedPages = new Set(['products','periods','tasks','settlement','monthly','pools','retention'])
 const usesProductScope = computed(() => productScopedPages.has(current.value))
 const periodWorkflowPages = new Set(['tasks','settlement','pools','rules'])
 const monthPeriodPages = new Set(['tasks','settlement','pools'])
@@ -162,11 +165,7 @@ const ruleBusinessOptions = computed(() => {
     const choices = (product.businessSkus || []).map(sku=>({
       value:product.id+':sku:'+sku.code,label:sku.label.startsWith(product.name) ? sku.label : prefix+sku.label,code:sku.code,
     }))
-    const productRules = data.value.catalogRules.filter(rule=>rule.productId===product.id)
-    if (productRules.some(rule=>rule.mixedArrangements)) {
-      choices.push({value:product.id+':mixed',label:prefix+'统一规则'})
-    }
-    if (productRules.some(rule=>!rule.mixedArrangements && rule.scopeType==='CROSS_SCENARIO_AGGREGATE')) {
+    if (data.value.catalogRules.some(rule=>rule.productId===product.id && rule.scopeType==='CROSS_SCENARIO_AGGREGATE')) {
       choices.push({value:product.id+':aggregate',label:prefix+'跨 SKU 汇总'})
     }
     if (product.periodMode==='class') {
@@ -182,6 +181,17 @@ watch(productScope,()=>{
   loadingRule.value=undefined
 })
 const showScope = computed(() => usesOrganizationScope.value || (usesProductScope.value && current.value!=='periods'))
+const hasOrganizationDivider = computed(() => usesOrganizationScope.value && (usesProductScope.value || current.value==='orders'))
+const viewport = ref({ width:window.innerWidth, height:window.innerHeight })
+const scopeWidth = ref()
+const organizationHeight = ref()
+const maxScopeWidth = computed(() => Math.min(620, Math.floor(viewport.value.width * 0.52)))
+const maxOrganizationHeight = computed(() => Math.max(264, Math.min(640, viewport.value.height - 230)))
+const visibleScopeWidth = computed(() => Math.min(scopeWidth.value ?? (viewport.value.width<=900 ? 185 : 268), maxScopeWidth.value))
+const visibleOrganizationHeight = computed(() => Math.min(organizationHeight.value ?? 264, maxOrganizationHeight.value))
+function updateViewport() {
+  viewport.value = { width:window.innerWidth, height:window.innerHeight }
+}
 const organization = ref()
 const monthlyReport = ref()
 const retention = ref()
@@ -208,7 +218,8 @@ const orderSyncSettings = ref()
 const orderDetails = ref()
 const rateRule = ref()
 const periodRule = ref()
-const catalogScenarioCreation = ref()
+const commonRuleEditor = ref()
+const periodRulePlugin = ref()
 const ruleDetails = ref()
 const loadingRule = ref()
 const ruleRetirement = ref()
@@ -219,10 +230,11 @@ const rulePreview = ref()
 const ruleImpactBusy = ref(false)
 const previewPane = ref()
 const viewedRule = computed(() => ruleDetails.value || appliedRule.value?.rule)
-const emptyData = () => ({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[]})
+const emptyData = () => ({products:[], mappings:[], periods:[], rules:[], orders:[], people:[], identities:[], sources:[], practiceCountOpenings:[], catalogRules:[], rulePlugins:[]})
 const data = ref(emptyData())
 const loading = ref(false)
 const saving = ref(false)
+const settlementSaving = ref(new Set())
 const globalError = ref('')
 const notice = ref('')
 const pulledOrderLink = ref()
@@ -281,6 +293,17 @@ const scopedProducts = computed(() => data.value.products.filter(p => current.va
 const scopeProductOptions = computed(() => scopedProducts.value.map(p=>({value:p.id,label:p.name})))
 const canPublishRule = productId => session.value?.user
   ? session.value.user.rules.some(rule => rule.productId===productId && rule.publish) : session.value?.development
+const canConfigureSettlement = productId => session.value?.user
+  ? session.value.user.workspace && session.value.user.settlementProducts?.includes(productId) : session.value?.development
+const canManageRulePlugins = computed(()=>session.value?.user
+  ? session.value.user.workspace && session.value.user.rules.some(rule=>rule.publish) : session.value?.development)
+const rulePluginColumns = [
+  {title:'规则名称',dataIndex:'label',key:'label'},
+  {title:'关联产品',key:'products'},
+  {title:'计提项',key:'arrangements'},
+  {title:'操作',key:'action',width:100},
+]
+const filteredRulePlugins = computed(()=>data.value.rulePlugins.filter(rule=>rule.label.toLowerCase().includes(filter.value.trim().toLowerCase())))
 const practiceRuleTabs = [
   {key:'',label:'分润规则'}, {key:'count-starts',label:'累计起点'},
 ]
@@ -292,16 +315,9 @@ function practiceRulesLink(tab) {
   if (tab) params.set('practiceConfig',tab)
   return '#rules?'+params
 }
-function classRuleSetupLink(period, fromWorkbench = false) {
-  if (period?.periodMode==='class' && period.classStartsAt
-      && !period.ruleVersion && canPublishRule(period.productId)) {
-    const params = new URLSearchParams({productId:period.productId,periodId:period.id})
-    if (fromWorkbench) params.set('from','settlement')
-    if (fromWorkbench && periodOrigin.value) params.set('returnFrom',periodOrigin.value)
-    if (fromWorkbench && periodOrigin.value==='person') params.set('fromPerson',personReportOrigin.value)
-    if (fromWorkbench && periodOrigin.value==='pools') copyPoolContext(poolContext.value,params)
-    if (fromWorkbench && reviewRootPeriod.value) params.set('reviewRootPeriodId',reviewRootPeriod.value)
-    return '#rules?'+params
+function periodRuleSetupLink(period) {
+  if (period?.rulePluginEditable && !period.ruleVersion && canManageRulePlugins.value && canPublishRule(period.productId)) {
+    return '#periods?'+new URLSearchParams({productId:period.productId,attachPeriodId:period.id})
   }
 }
 const ruleTargetPeriod = computed(() => {
@@ -311,16 +327,9 @@ const ruleTargetPeriod = computed(() => {
 })
 const ruleProductOptions = computed(() => data.value.products.filter(p=>(!p.catalogPending || p.periodMode==='class') && canPublishRule(p.id))
   .map(p=>({value:p.id,label:p.name})))
-const editableCatalogProducts = computed(() => current.value==='rules' ? data.value.products
-  .filter(p=>(!productScope.value || p.id===productScope.value) && canPublishRule(p.id)) : [])
-const catalogScenarioProducts = computed(() => editableCatalogProducts.value
-  .filter(p=>p.code!=='DCAI_VIP' && p.businessSkus?.some(sku=>sku.paymentRule)).map(p=>({value:p.id,label:p.name})))
-const catalogPeriodProducts = computed(() => editableCatalogProducts.value
-  .filter(p=>p.code!=='DCAI_VIP' && p.catalogPeriodRule).map(p=>({value:p.id,label:p.name})))
-const mixedCatalogProducts = computed(() => editableCatalogProducts.value
-  .filter(p=>p.code==='DCAI_VIP' && p.catalogPeriodRule).map(p=>({value:p.id,label:p.name})))
-const canCreateMixedRule = computed(() => mixedCatalogProducts.value.some(product=>
-  !data.value.catalogRules.some(rule=>rule.productId===product.value && rule.mixedArrangements)))
+const catalogPeriodProducts = computed(() => current.value==='rules' ? data.value.products
+  .filter(p=>(!productScope.value || p.id===productScope.value) && canPublishRule(p.id) && p.catalogPeriodRule)
+  .map(p=>({value:p.id,label:p.name})) : [])
 const visibleProducts = computed(() => {
   const term = scopeSearch.value.trim().toLowerCase()
   return term ? scopedProducts.value.filter(p => (p.name+' '+p.code).toLowerCase().includes(term)) : scopedProducts.value
@@ -553,9 +562,9 @@ const syncStreams = computed(() => data.value.sources
   .filter(entry => entry.configured && (!sourceFilter.value || sourceFilter.value===entry.source))
   .flatMap(entry => options(entry.source.toLowerCase()+'OrderStream')))
 const sourceLabel = key => optionLabel('source',key)?.split(' · ')[0]
-const periodPullProducts = computed(() => data.value.products.filter(product=>product.practicePeriodPull &&
+const periodPullProducts = computed(() => data.value.products.filter(product=>(product.practicePeriodPull || product.catalogPeriodRule) &&
   (!productScope.value || product.id===productScope.value)).map(product=>({label:product.name,value:product.id})))
-const titles = {product:'新增产品',mapping:'添加来源映射',periodRoster:'关联签到名单',periodPull:'同步来源期次',
+const titles = {product:'新增产品',mapping:'添加来源映射',periodRoster:'关联签到名单',periodPull:'同步期次',
   reportMonth:'设置报表月份',refundCutoff:'设置退款截止时间',rule:'配置分润规则',person:'新增人员',identity:'登记归属',pull:'重新拉取订单'}
 const actions = computed(() => {
   if (current.value === 'products') return tab.value === 'mapping' ? 'mapping' : 'product'
@@ -584,8 +593,7 @@ const labels = {ORDER_PAID:'付款',ORDER_REFUNDED:'退款',REFUND_SUCCEEDED:'�
 const catalogScopeLabels = {BUSINESS_SCENARIO:'业务场景',CROSS_SCENARIO_AGGREGATE:'跨场景汇总'}
 const canOpenAction = computed(() => current.value==='periods'
   ? periodPullProducts.value.length > 0
-  : current.value!=='rules' ||
-  ruleProductOptions.value.some(product => !productScope.value || product.value===productScope.value))
+  : current.value!=='rules' || canManageRulePlugins.value)
 function catalogRuleBadge(row) {
   const now = Date.now()
   if (!row.inLatestSnapshot) return { text:'历史版本', color:'default' }
@@ -637,26 +645,19 @@ function ratePublished(result, targetSku) {
   periodRule.value = undefined
   refresh()
 }
-function openCatalogScenarioCreation() {
-  const [id,kind,...sku] = (ruleBusinessScope.value || '').split(':')
-  const matchingProduct = catalogScenarioProducts.value.find(option=>option.value===Number(id))
-  catalogScenarioCreation.value = {productId:matchingProduct?.value || productScope.value,
-    sku:matchingProduct && kind==='sku' ? sku.join(':') : undefined}
+function openCommonRule() {
+  commonRuleEditor.value = {}
 }
-function catalogScenarioPublished(result, product, sku) {
-  catalogScenarioCreation.value = undefined
-  ruleBusinessScope.value = product+':sku:'+sku
-  notice.value = '规则 v'+result.version+' 已发布。'
+function commonRuleSaved() {
+  commonRuleEditor.value = undefined
+  ruleBusinessScope.value = undefined
+  notice.value = '分润规则已保存，可在核算期次关联。'
   refresh()
 }
-function openCatalogPeriodCreation() {
-  const [id,kind,...sku] = (ruleBusinessScope.value || '').split(':')
-  const selected = catalogPeriodProducts.value.find(option=>option.value===Number(id))
-  periodRule.value = {create:true,productId:selected?.value || productScope.value,sku:selected && kind==='sku' ? sku.join(':') : undefined}
-}
-function openMixedCatalogRule() {
-  const productId = mixedCatalogProducts.value[0]?.value
-  if (productId) periodRule.value = {create:true,productId,mixedArrangements:true}
+function periodRulePluginSaved() {
+  periodRulePlugin.value = undefined
+  notice.value = '本期规则已关联。'
+  refresh()
 }
 function copyCatalogPeriodRule(source) {
   periodRule.value = {create:true,productId:source.productId,copiedFrom:source}
@@ -665,7 +666,7 @@ function showCatalogPeriodIssueVersion({ruleId,itemKey,month}) {
   periodRule.value = {...periodRule.value,id:ruleId,focusItemKey:itemKey,reviewMonth:month}
 }
 function periodRulePublished(result, product) {
-  if (product) ruleBusinessScope.value = product+(periodRule.value?.mixedArrangements ? ':mixed' : ':aggregate')
+  if (product) ruleBusinessScope.value = product+':aggregate'
   ratePublished(result)
 }
 function periodRuleResumed(result) {
@@ -684,8 +685,7 @@ const mainRows = computed(() => {
     const businessKey = scope.join(':')
     rows = rows.filter(row=>row.productId===Number(product) && (
       kind==='sku' && row.scopeType==='BUSINESS_SCENARIO' && row.scopeId===businessKey ||
-      kind==='mixed' && row.mixedArrangements ||
-      kind==='aggregate' && !row.mixedArrangements && row.scopeType==='CROSS_SCENARIO_AGGREGATE' ||
+      kind==='aggregate' && row.scopeType==='CROSS_SCENARIO_AGGREGATE' ||
       kind==='member' && row.classMembers?.includes(businessKey)
     ))
   }
@@ -700,7 +700,8 @@ const mainRows = computed(() => {
 })
 const columns = computed(() => {
   const values = {
-    product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['业务 SKU / 报名类型','businessSkus',290],['操作','productAction',160]],
+    product:[['产品名称','name'],['产品编码','code'],['核算方式','periodMode'],['业务 SKU / 报名类型','businessSkus',290],
+      ['结算开关','settlementEnabled',118],['操作','productAction',160]],
     mapping:[['产品名称','productName'],['业务来源','source'],['业务域','domain'],['来源标识','sourceKey']],
     periodPull:[['期次名称','name',160],['所属产品','productName',180],['期数','ordinal',84],['开始日期','startsOn',118],['结束日期','endsOn',118],
       ['退款截止时间','refundCutoff',158],['报表月份','reportMonth',115],['来源期次','sourcePeriodKey',148],['签到记录','practiceRoster',150],['适用规则','ruleVersion',200]],
@@ -745,7 +746,7 @@ async function refresh(reloadOptions = false, periodsOnly = false) {
   const version = ++requestVersion
   loading.value = true
   globalError.value = ''
-  const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], pools:['products','periods'], retention:[], 'sync-config':[], 'pool-config':['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:tab.value==='identity'?['people','identities']:[]}
+  const sections = {tasks:['products','periods'], settlement:['products','periods'], monthly:['products'], pools:['products','periods'], retention:['products'], 'sync-config':[], 'pool-config':['products'], products: ['products','mappings','sources'], periods:['products','periods'], rules:['products','periods','rules','people','practiceCountOpenings','catalogRules'], orders:['orders','sources'], organization:[], people:tab.value==='identity'?['people','identities']:[]}
   if (periodContextID && periodWorkflowPages.has(current.value)) {
     const target = periodContextID
     try {
@@ -781,6 +782,7 @@ async function refresh(reloadOptions = false, periodsOnly = false) {
     const {source,externalId} = identityAccount.value
     requests.identities += '?'+new URLSearchParams({source,externalId})
   }
+  if (current.value==='rules' && canManageRulePlugins.value && !practiceSettingsView.value) requests.rulePlugins = '/rule-plugins'
   if (requests.catalogRules) requests.catalogRules = '/rule-catalog'
   if (requests.rules) requests.rules = '/rules?view=summary'
   if (requests.practiceCountOpenings) requests.practiceCountOpenings = '/practice-count-openings'
@@ -800,6 +802,14 @@ async function refresh(reloadOptions = false, periodsOnly = false) {
       else if (key==='periods' && periodPage) {
         data.value.periods = result.value.items
         nextPeriodCursor.value = result.value.nextBeforeId
+        const attachId = Number(new URLSearchParams(location.hash.split('?')[1]).get('attachPeriodId'))
+        if (attachId && canManageRulePlugins.value) {
+          const period = result.value.items.find(item=>item.id===attachId)
+          if (period?.rulePluginEditable && canPublishRule(period.productId)) periodRulePlugin.value = period
+          const params = new URLSearchParams(location.hash.split('?')[1])
+          params.delete('attachPeriodId')
+          history.replaceState(history.state,'','#periods'+(params.size ? '?'+params : ''))
+        }
       } else {
         data.value[key] = result.value
         if (key === 'products' && productScope.value && !result.value.some(product=>product.id===productScope.value)) {
@@ -859,7 +869,8 @@ function workbenchPageLink(page, values) {
   const params = new URLSearchParams(values)
   if (current.value==='settlement' && workbenchPeriod.value) {
     params.set('returnPeriodId',workbenchPeriod.value)
-    params.set('returnView',workbenchView.value)
+    const returnView = workbench.value?.view || workbenchView.value
+    if (returnView) params.set('returnView',returnView)
     if (periodOrigin.value) params.set('returnFrom',periodOrigin.value)
     if (periodOrigin.value==='person') params.set('fromPerson',personReportOrigin.value)
     if (periodOrigin.value==='pools') copyPoolContext(poolContext.value,params)
@@ -876,7 +887,7 @@ function relatedPeriodLink(periodId) {
   if (periodId) return settlementLink(periodId,'review',periodOrigin.value,reviewRootPeriod.value || workbenchPeriod.value)
   return workbenchPageLink('periods',selectedWorkbenchPeriod.value ? {productId:selectedWorkbenchPeriod.value.productId} : {})
 }
-const poolContextFields = ['pool','poolMonth','retentionMonth','retentionUnit','retentionAccount','retentionPage']
+const poolContextFields = ['pool','poolMonth','retentionMonth','retentionUnit','retentionScope','retentionProduct','retentionAccount','retentionPage']
 function copyPoolContext(from,to) {
   for (const field of poolContextFields) {
     const value = from.get(field)
@@ -892,13 +903,16 @@ function retentionPoolLink(row, accountId, page) {
   const context = new URLSearchParams({pool:teamPoolKey(row),poolMonth:row.month,
     retentionMonth:workspaceMonth.value,retentionAccount:accountId,retentionPage:page})
   if (unitScope.value) context.set('retentionUnit',unitScope.value)
+  if (financeOrganizationScope.value) context.set('retentionScope',financeOrganizationScope.value)
+  if (productScope.value) context.set('retentionProduct',productScope.value)
   return poolPageHref(row.periodId,context)
 }
 const retentionPoolReturn = computed(() => {
   const month = routeMonth(poolContext.value.get('retentionMonth'))
   if (current.value!=='pools' || !month) return
   const params = new URLSearchParams({month})
-  for (const [from,to] of [['retentionUnit','unitId'],['retentionAccount','accountId'],['retentionPage','page']]) {
+  for (const [from,to] of [['retentionUnit','unitId'],['retentionScope','scope'],['retentionProduct','productId'],
+    ['retentionAccount','accountId'],['retentionPage','page']]) {
     const value = poolContext.value.get(from)
     if (value) params.set(to,value)
   }
@@ -1015,6 +1029,9 @@ function changeRoute() {
   retentionResume.value = undefined
   if (current.value==='retention' && key==='retention' && routeMonth(params.get('month'))) {
     workspaceMonth.value = params.get('month')
+    const scope = params.get('scope')
+    financeOrganizationScope.value = ['INTERNAL','EXTERNAL'].includes(scope) ? scope : ''
+    productScope.value = productID
     unitScope.value = routeUnit(params.get('unitId'))
     retentionResume.value = {accountId:routeUnit(params.get('accountId')),page:Math.min(routeId(params.get('page')) || 1,100000)}
   }
@@ -1034,7 +1051,7 @@ function changeRoute() {
   monthlyResume.value = undefined
   if (periodOrigin.value==='monthly' && previous === 'monthly') {
     monthlyReturn.value = {month:workspaceMonth.value,view:monthlyView.value,dimension:monthlyDimension.value,
-      product:productScope.value,unit:unitScope.value,browse:monthlyReport.value?.browseState()}
+      product:productScope.value,unit:unitScope.value,scope:financeOrganizationScope.value,browse:monthlyReport.value?.browseState()}
   }
   if (current.value === 'monthly' && previous === 'settlement' && previousOrigin==='monthly' && monthlyReturn.value) {
     const saved = monthlyReturn.value
@@ -1042,8 +1059,10 @@ function changeRoute() {
     monthlyView.value = saved.view
     monthlyDimension.value = saved.dimension
     productScope.value = saved.product
-    unitScope.value = saved.unit
-    monthlyResume.value = saved.browse
+    if (saved.scope===financeOrganizationScope.value) {
+      unitScope.value = saved.unit
+      monthlyResume.value = saved.browse
+    }
   }
   if (current.value==='monthly') monthlyReturn.value = undefined
   if (periodOrigin.value==='tasks' && previous==='tasks') {
@@ -1066,7 +1085,8 @@ function changeRoute() {
   const isOrders = key === 'orders' && current.value === key
   const stream = params.get('stream')
   const fromDate = params.get('fromDate')
-  orderSyncTarget.value = isOrders && stream ? {stream,fromDate} : undefined
+  const syncPeriodId = stream === 'ORDER_FACTS' ? routeId(params.get('syncPeriodId')) : undefined
+  orderSyncTarget.value = isOrders && stream ? {stream,fromDate,periodId:syncPeriodId} : undefined
   const returnView = params.get('returnView')
   const targetView = Object.hasOwn(draftViews,returnView) ? returnView : 'review'
   const returnLink = returnPeriod ? settlementLink(returnPeriod,targetView,returnOrigin,returnRootPeriod) : undefined
@@ -1076,7 +1096,8 @@ function changeRoute() {
   orderDetails.value = undefined
   rateRule.value = undefined
   periodRule.value = undefined
-  catalogScenarioCreation.value = undefined
+  commonRuleEditor.value = undefined
+  periodRulePlugin.value = undefined
   ruleDetails.value = undefined
   loadingRule.value = undefined
   ruleRetirement.value = undefined
@@ -1112,7 +1133,7 @@ function clearWorkspace() {
   workProductScope.value = undefined
   configProductScope.value = undefined
   unitScope.value = undefined
-  monthlyOrganizationScope.value = ''
+  financeOrganizationScope.value = ''
   scopeUnits.value = undefined
   lastWorkspacePages.value = {}
   current.value = undefined
@@ -1128,7 +1149,7 @@ function clearWorkspace() {
   orderSyncTarget.value = undefined
   orderReturn.value = undefined
   workbenchPeriod.value = undefined
-  workbenchView.value = 'detail'
+  workbenchView.value = undefined
   workbenchQuery.value = {}
   periodOrigin.value = undefined
   personReportOrigin.value = undefined
@@ -1146,13 +1167,15 @@ function clearWorkspace() {
   draft.value = {}
   rateRule.value = undefined
   periodRule.value = undefined
-  catalogScenarioCreation.value = undefined
+  commonRuleEditor.value = undefined
+  periodRulePlugin.value = undefined
   ruleDetails.value = undefined
   loadingRule.value = undefined
   ruleRetirement.value = undefined
   appliedRule.value = undefined
   rulePreview.value = undefined
   saving.value = false
+  settlementSaving.value.clear()
   formError.value = ''
   globalError.value = ''
   notice.value = ''
@@ -1209,8 +1232,15 @@ async function signOut() {
     sessionBusy.value = false
   }
 }
-onMounted(() => { addEventListener('hashchange',changeRoute); loadSession() })
-onBeforeUnmount(() => removeEventListener('hashchange',changeRoute))
+onMounted(() => {
+  addEventListener('hashchange',changeRoute)
+  addEventListener('resize',updateViewport)
+  loadSession()
+})
+onBeforeUnmount(() => {
+  removeEventListener('hashchange',changeRoute)
+  removeEventListener('resize',updateViewport)
+})
 watch(() => draft.value.productId, (next, previous) => {
   if (drawer.value === 'rule' && next !== previous && !draft.value.copiedFrom && !draft.value.lockedPeriod) {
     draft.value.periodId = undefined
@@ -1286,8 +1316,8 @@ function selectOrganization(unit) {
   unitScope.value = unit
   if (current.value === 'orders') resetOrders()
 }
-function selectMonthlyOrganizationScope(scope) {
-  monthlyOrganizationScope.value = scope
+function selectWorkbenchOrganizationScope(scope) {
+  financeOrganizationScope.value = scope
   if (scope && unitScope.value && selectedUnit.value?.directoryScope!==scope) selectOrganization()
 }
 function selectProduct(product) {
@@ -1536,53 +1566,8 @@ function ruleComponentBody(row) {
     }
   }
   if (row.mode==='company_sales') {
-    const sales = row.companySales
-    must(sales.label?.trim(),'请填写收款安排名称')
-    const scopeMode = sales.scopeMode || (sales.ownSales ? 'own' : sales.general ? 'all' : 'team')
-    if (scopeMode==='team' && !sales.categories.length && sales.defaultRate == null) {
-      throw new Error('请给「'+sales.label.trim()+'」配置销售组织或销售类别的计提标准。')
-    }
-    const payee = {kind:must(sales.payee?.kind,'请选择收款对象')}
-    if (payee.kind==='order_person') payee.role=must(sales.payee.role,'请选择从订单读取的收款人')
-    if (payee.kind==='person') {
-      payee.personId=must(sales.payee.personId,'请选择收款人员')
-    }
-    if (practiceRecipientIsPerson(payee.kind) && row.recipientDuty) component.recipientDuty = row.recipientDuty
-    if (payee.kind==='company') payee.companyId=must(sales.payee.companyId,'请选择收款公司')
-    if (payee.kind==='pool') payee.pool=practicePoolBody(sales.payee.pool)
-    const value = item => {
-      const mode = must(item.mode,'请选择外部公司计算方式')
-      return {mode,value:mode==='rate' ? periodRate(item.value) : minor(must(item.value,'请填写计提金额')),
-        ...(mode==='fixed' && item.refundPolicy ? {refundPolicy:item.refundPolicy} : {}),
-        ...(row.classMember==='new' && item.recommendationRate != null ? {recommendationRate:periodRate(item.recommendationRate)} : {})}
-    }
-    component.companySales = {label:sales.label.trim(),payee,
-      ...(sales.defaultRate == null ? {} : {defaultRate:periodRate(sales.defaultRate)}),
-      ...(scopeMode==='team' ? {} : {general:value(sales.general)}),
-      ...(scopeMode==='own' ? {ownSales:true} : {}),
-      internalCompanies:sales.internalCompanies,categories:sales.categories.map(category=>{
-      const byCategory = category.scope==='category'
-      const companies = byCategory ? [] : category.companies
-      if (byCategory ? !category.salesCategoryIds.length : !companies.length && !category.salesUnits?.length) {
-        throw new Error(byCategory ? '请选择销售类别' : '请选择指定组织')
-      }
-      return {
-        companies,
-        ...(category.label ? {label:category.label} : {}),
-        ...(!byCategory && category.salesUnits?.length ? {salesUnits:category.salesUnits} : {}),
-        ...(byCategory ? {salesCategoryIds:category.salesCategoryIds} : {}),
-        ...value(category),
-        ...(category.overrides.length ? {overrides:category.overrides.map(override=>{
-          if (!override.companyIds?.length && !override.salesUnits?.length) throw new Error('请选择采用单独标准的销售组织')
-          return {companyIds:override.companyIds,salesUnits:override.salesUnits,...value(override)}
-        })} : {}),
-      }
-    })}
-    if (component.companySales.categories.some(category=>category.recommendationRate>0 ||
-      category.overrides?.some(override=>override.recommendationRate>0))) {
-      if (!row.companySales.recommendationRecipients?.length) throw new Error('请选择可直接收取推荐分润的公司')
-      component.companySales.recommendationRecipients = row.companySales.recommendationRecipients
-    }
+    component.companySales = practiceCompanySalesBody(row)
+    if (practiceRecipientIsPerson(component.companySales.payee.kind) && row.recipientDuty) component.recipientDuty = row.recipientDuty
     return component
   }
   if (row.mode === 'period_rate') {
@@ -1783,6 +1768,24 @@ function orderPullNotice(result) {
   }
   return synced
 }
+async function saveProductSettlement(product, enabled) {
+  const productId = product.id
+  if (!canConfigureSettlement(productId) || settlementSaving.value.has(productId)) return
+  const issuedFor = sessionRequest
+  settlementSaving.value.add(productId)
+  globalError.value = ''
+  try {
+    await api('/products/settlement',{method:'POST',body:JSON.stringify({productId,settlementEnabled:enabled})})
+    if (issuedFor!==sessionRequest) return
+    const savedProduct = data.value.products.find(row=>row.id===productId)
+    if (savedProduct) savedProduct.settlementEnabled = enabled
+    if (current.value==='products') await refresh()
+  } catch (err) {
+    if (issuedFor===sessionRequest) globalError.value = product.name + '结算开关保存失败：' + err.message
+  } finally {
+    if (issuedFor===sessionRequest) settlementSaving.value.delete(productId)
+  }
+}
 async function save() {
   if (saving.value) return
   const issuedFor = sessionRequest
@@ -1866,12 +1869,19 @@ function periodPullNotice(result) {
         </nav>
       </div>
     </div>
-    <div class="workspace-body" :class="{ 'with-scope':showScope }">
-      <aside v-if="showScope" class="scope-panel" aria-label="筛选范围">
+    <div class="workspace-body" :class="{ 'with-scope':showScope }"
+      :style="showScope ? { '--scope-panel-width':visibleScopeWidth+'px' } : undefined">
+      <aside v-if="showScope" id="workspace-scope-panel" class="scope-panel"
+        :class="{ 'with-organization-divider':hasOrganizationDivider }" aria-label="筛选范围">
         <h2>范围</h2>
         <WorkspaceOrganizationScope v-if="usesOrganizationScope" :selected="unitScope" :nodes="scopeTree"
           :loading="loading && !scopeUnits" :directory-scope="workbenchOrganizationScope"
-          @select="selectOrganization" @select-scope="selectMonthlyOrganizationScope" />
+          :viewport-height="hasOrganizationDivider ? visibleOrganizationHeight : undefined"
+          @select="selectOrganization" @select-scope="selectWorkbenchOrganizationScope" />
+        <WorkspaceScopeDivider v-if="hasOrganizationDivider" class="scope-height-divider desktop-scope"
+          orientation="horizontal" label="调整组织列表高度" controls="workspace-scope-tree"
+          :size="visibleOrganizationHeight" :min="112" :max="maxOrganizationHeight"
+          @update:size="organizationHeight=$event" />
         <template v-if="usesProductScope">
           <label for="scope-product-search" class="desktop-scope scope-title">产品范围</label>
           <div class="desktop-scope">
@@ -1897,6 +1907,9 @@ function periodPullNotice(result) {
             <a-select id="scope-source" :value="sourceFilter || undefined" placeholder="全部来源" :options="sources" allow-clear @change="selectSource($event || '')"/>
           </div>
         </template>
+        <WorkspaceScopeDivider class="scope-width-divider desktop-scope" orientation="vertical"
+          label="调整筛选栏宽度" controls="workspace-scope-panel" :size="visibleScopeWidth" :min="185" :max="maxScopeWidth"
+          @update:size="scopeWidth=$event" />
       </aside>
       <main class="workspace-content">
         <section v-show="!personPage" class="workspace-page-head" :class="{'organization-page-head':active.area==='data'}">
@@ -1907,12 +1920,9 @@ function periodPullNotice(result) {
             <a v-if="retentionPoolReturn" class="workspace-return" :href="retentionPoolReturn"><LeftOutlined aria-hidden="true"/>返回部门留存金</a>
             <a v-if="configurationReturn" class="workspace-return" :href="configurationReturn.href"><LeftOutlined aria-hidden="true"/>{{ configurationReturn.label }}</a>
             <a v-else-if="ruleTargetPeriod" class="workspace-return" :href="ruleReturn || '#periods?productId='+ruleTargetPeriod.productId"><LeftOutlined aria-hidden="true"/>{{ ruleReturn ? '返回本期试算' : '返回核算期次' }}</a>
-            <div v-if="!practiceSettingsView && actions && (canOpenAction || catalogScenarioProducts.length || catalogPeriodProducts.length || canCreateMixedRule) && !identityAccount" class="topbar-actions">
+            <div v-if="!practiceSettingsView && actions && canOpenAction && !identityAccount" class="topbar-actions">
               <a v-if="orderReturn" class="workspace-return" :href="orderReturn.href"><LeftOutlined aria-hidden="true"/>{{ orderReturn.label }}</a>
-              <a-button v-if="canOpenAction && actions!=='person'" type="primary" :disabled="!configurationReady" @click="open(actions)"><template #icon><component :is="['pull','periodPull'].includes(actions) ? CloudSyncOutlined : PlusOutlined" aria-hidden="true"/></template>{{ ruleTargetPeriod ? '配置本期规则' : titles[actions] }}</a-button>
-              <a-button v-if="canCreateMixedRule" :type="canOpenAction ? 'default' : 'primary'" :disabled="!configurationReady" @click="openMixedCatalogRule">新增产品规则</a-button>
-              <a-button v-if="catalogScenarioProducts.length" :type="canOpenAction ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogScenarioCreation">新增逐单规则</a-button>
-              <a-button v-if="catalogPeriodProducts.length" :type="canOpenAction || catalogScenarioProducts.length ? 'default' : 'primary'" :disabled="!configurationReady" @click="openCatalogPeriodCreation">新增整期规则</a-button>
+              <a-button v-if="actions!=='person'" type="primary" :disabled="!configurationReady" @click="actions==='rule' ? openCommonRule() : open(actions)"><template #icon><component :is="['pull','periodPull'].includes(actions) ? CloudSyncOutlined : PlusOutlined" aria-hidden="true"/></template>{{ titles[actions] }}</a-button>
             </div>
           </div>
           <nav v-if="active.area==='data'" class="workspace-nav organization-nav" aria-label="组织与人员导航">
@@ -1924,7 +1934,7 @@ function periodPullNotice(result) {
           <nav v-else-if="workspacePages.length>1" class="workspace-nav" :aria-label="activeWorkspace?.title+'导航'">
             <a v-for="entry in workspacePages" :key="entry.key" :href="'#'+entry.key" :aria-current="current===entry.key ? 'page' : undefined">{{ entry.title }}</a>
           </nav>
-          <nav v-if="practiceRulesProduct" class="workspace-nav practice-rules-nav" aria-label="实战班配置">
+          <nav v-if="practiceSettingsView" class="workspace-nav practice-rules-nav" aria-label="实战班配置">
             <a v-for="entry in practiceRuleTabs" :key="entry.key" :href="practiceRulesLink(entry.key)"
               :aria-current="(practiceSettingsView || '')===entry.key ? 'page' : undefined">{{ entry.label }}</a>
           </nav>
@@ -1955,11 +1965,12 @@ function periodPullNotice(result) {
             <template v-if="pulledOrderLink" #action><a :href="pulledOrderLink">查看最新来源订单</a></template>
           </a-alert>
           <DraftWorkbench ref="workbench" v-model:period-id="workbenchPeriod" v-model:view="workbenchView" v-model:detail-query="workbenchQuery"
+            :directory-scope="financeOrganizationScope"
             :periods="calculationPeriods" :component-options="options('component')" :member-options="classMembers" :report-dimensions="options('draftReportDimension')" :source-streams="[...options('dcaiOrderStream'), ...options('dczdOrderStream')]"
             :recovery-options="options('correctionRecovery')" :settlement-products="session.user?.settlementProducts ?? []"
             :local-settlement="session.development && !session.user"
             :api="api" :format-money="formatMoney" :format-time="formatTime" :unit-id="unitScope" :requested-period="requestedPeriod"
-            :rule-setup-link="classRuleSetupLink(selectedWorkbenchPeriod, true)" :issue-rule-link="issueRuleLink"
+            :rule-setup-link="periodRuleSetupLink(selectedWorkbenchPeriod)" :issue-rule-link="issueRuleLink"
             :related-order-link="orderRecordsLink" :related-period-link="relatedPeriodLink"
             :periods-loading="loading" :month="workspaceMonth" :requested-view="requestedView" :roster-edit-ready="configurationReady"
             @show-order="orderDetails={versionId:$event,allowPull:true}" @show-issue-order="orderDetails={versionId:$event,allowPull:true}"
@@ -1970,13 +1981,14 @@ function periodPullNotice(result) {
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <MonthlyReport ref="monthlyReport" :month="workspaceMonth" v-model:view="monthlyView" v-model:dimension="monthlyDimension"
             :api="api" :format-money="formatMoney" :product-id="productScope" :unit-id="unitScope" :unit-name="selectedUnit?.name"
-            :resume="monthlyResume" :units="scopeUnits" :directory-scope="monthlyOrganizationScope"
+            :resume="monthlyResume" :units="scopeUnits" :directory-scope="financeOrganizationScope"
             :views="options('monthlyReportView')" :dimensions="options('draftReportDimension')" @select-unit="selectOrganization"/>
         </template>
         <template v-else-if="current==='pools'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <TeamPools v-model="teamPoolPeriod" :periods="calculationPeriods" :requested-period="requestedPoolPeriod"
             :requested-pool="poolContext.get('pool')" :loading="loading" :api="api" :format-money="formatMoney" :format-time="formatTime" :product-id="productScope"
+            :unit-id="unitScope" :directory-scope="financeOrganizationScope"
             :can-configure="poolProducts.length>0" :period-link="id=>settlementLink(id,'detail','pools')"/>
         </template>
         <OrderSyncSettings v-else-if="current==='sync-config'" ref="orderSyncSettings" :api="api" :format-time="formatTime"/>
@@ -1987,6 +1999,7 @@ function periodPullNotice(result) {
         <template v-else-if="current==='retention'">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <DepartmentRetention ref="retention" :month="workspaceMonth" :unit-id="unitScope" :api="api"
+            :product-id="productScope" :directory-scope="financeOrganizationScope"
             :units="scopeUnits" :format-money="formatMoney" :format-time="formatTime" :resume="retentionResume" :pool-link="retentionPoolLink"/>
         </template>
         <template v-else-if="current==='organization'">
@@ -1995,6 +2008,32 @@ function periodPullNotice(result) {
         </template>
         <OrganizationPeopleDesk v-else-if="current==='people' && tab!=='identity'" ref="peopleDesk" :api="api"
           :person-link="personLink" :option-label="optionLabel" :can-write="session.user ? session.user.organizationWrite : session.development"/>
+        <template v-else-if="current==='rules' && !practiceSettingsView">
+          <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
+          <a-alert v-if="notice" class="feedback" type="success" :message="notice" show-icon closable @close="notice=''"/>
+          <section v-if="canManageRulePlugins" class="records">
+            <div class="records-head">
+              <h2>规则列表</h2>
+              <a-input v-model:value="filter" class="search" aria-label="搜索规则名称" placeholder="搜索规则名称" allow-clear/>
+            </div>
+            <a-table :columns="rulePluginColumns" :data-source="filteredRulePlugins" :loading="loading" row-key="id" :pagination="{pageSize:12,hideOnSinglePage:true}">
+              <template #bodyCell="{column,record}">
+                <a-button v-if="column.key==='label'" class="rule-list-name" type="link" @click="commonRuleEditor={baseRule:record}">{{ record.label }}</a-button>
+                <template v-else-if="column.key==='products'">
+                  <a-tag v-for="product in record.products" :key="product.id">{{ product.name }}</a-tag>
+                  <span v-if="!record.products?.length" class="muted">待期次关联</span>
+                </template>
+                <template v-else-if="column.key==='arrangements'">
+                  {{ record.arrangements.slice(0,3).map(item=>item.label).join('、') }}
+                  <span v-if="record.arrangements.length>3" class="muted"> 等 {{ record.arrangements.length }} 项</span>
+                </template>
+                <a-button v-else-if="column.key==='action'" type="link" size="small" @click="commonRuleEditor={baseRule:record}">编辑规则</a-button>
+              </template>
+              <template #emptyText>暂无分润规则</template>
+            </a-table>
+          </section>
+          <a-empty v-else description="当前账号无分润规则配置权限"/>
+        </template>
         <template v-else-if="practiceSettingsView">
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <PracticeRuleSettings :key="practiceRulesProduct.id"
@@ -2081,6 +2120,13 @@ function periodPullNotice(result) {
                   <strong class="primary-cell">{{ text }}</strong>
                 </template>
                 <template v-else-if="column.key==='periodMode'"><a-tag :color="text==='class'?'green':'blue'">{{ optionLabel('periodMode',text) }}</a-tag></template>
+                <template v-else-if="column.key==='settlementEnabled'">
+                  <Switch v-if="typeof record.settlementEnabled==='boolean'" :checked="record.settlementEnabled"
+                    checked-children="开启" un-checked-children="关闭" :aria-label="record.name+' 结算开关'"
+                    :loading="settlementSaving.has(record.id)" :disabled="!canConfigureSettlement(record.id) || loading || settlementSaving.has(record.id)"
+                    @change="enabled=>saveProductSettlement(record,enabled)"/>
+                  <span v-else>—</span>
+                </template>
                 <template v-else-if="column.key==='mappingCount'">{{ data.mappings.filter(x=>x.productId===record.id).length }}</template>
                 <a-space v-else-if="column.key==='identityAction'" :size="0">
                   <a-button v-if="!identityAccount" type="link" size="small" @click="showIdentityHistory(record)">查看账号历史</a-button>
@@ -2103,6 +2149,7 @@ function periodPullNotice(result) {
                 </template>
                 <template v-else-if="column.key==='sourcePeriodKey'">
                   <span v-if="text" class="numeric">{{ text }}</span>
+                  <span v-else-if="record.periodMode==='calendar' && (record.settlementMonth || record.rulePluginVersionId)">产品结算周期</span>
                   <a-tag v-else-if="record.periodMode==='class' && !record.practiceRefundMonth" color="orange">待关联来源期次</a-tag>
                   <span v-else>—</span>
                 </template>
@@ -2119,11 +2166,13 @@ function periodPullNotice(result) {
                 </template>
                 <template v-else-if="column.key==='ruleVersion'">
                   <a-tag v-if="record.practiceRefundMonth" color="blue">按结算时规则</a-tag>
-                  <a-tag v-else-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag>
-                  <a v-else-if="classRuleSetupLink(record)" :href="classRuleSetupLink(record)">
-                    待配规则
-                  </a>
-                  <a-tag v-else color="orange">{{ record.ruleMatchingAvailable ? '按订单匹配' : record.periodMode==='class' && !record.classStartsAt ? '待同步签到记录' : '待配规则' }}</a-tag>
+                  <a-tag v-else-if="record.rulePluginVersionId" color="green">{{ record.rulePluginLabel }}</a-tag>
+                  <template v-else>
+                    <a-tag v-if="text" color="green">v{{ text }} · {{ record.ruleLabel }}</a-tag>
+                    <a-button v-if="record.rulePluginEditable && canManageRulePlugins && canPublishRule(record.productId)"
+                      type="link" size="small" @click="periodRulePlugin=record">关联规则</a-button>
+                    <a-tag v-else-if="!text" color="orange">待关联规则</a-tag>
+                  </template>
                 </template>
                 <template v-else-if="column.key==='version'"><a-tag color="green">v{{ text }}</a-tag></template>
                 <template v-else-if="column.key==='effectiveFrom'">
@@ -2133,7 +2182,7 @@ function periodPullNotice(result) {
                 </template>
                 <template v-else-if="column.key==='scope'">
                   <template v-if="record.catalogPending">
-                    {{ record.mixedArrangements ? '统一规则' : record.scopeType==='CROSS_SCENARIO_AGGREGATE' ? '跨 SKU 汇总' : record.scopeLabel || catalogScopeLabels[record.scopeType] || '未细分范围' }}
+                    {{ record.scopeType==='CROSS_SCENARIO_AGGREGATE' ? '跨 SKU 汇总' : record.scopeLabel || catalogScopeLabels[record.scopeType] || '未细分范围' }}
                   </template>
                   <template v-else>
                     {{ record.periodName || (record.fromOrdinal ? '从第 '+record.fromOrdinal+' 期起' : '产品默认') }}
@@ -2147,7 +2196,7 @@ function periodPullNotice(result) {
                   <a-button v-if="record.catalogPending && record.rateConfigAvailable && record.projectMatches && (!session.user || session.user.rules.some(grant=>grant.productId===record.productId))"
                     type="link" size="small" @click="rateRule=record">分润配置</a-button>
                   <a-button v-else-if="record.periodConfigAvailable && canReadRules(record.productId)" type="link" size="small"
-                    @click="periodRule=record">{{ record.mixedArrangements ? '分润配置' : '整期分润' }}</a-button>
+                    @click="periodRule=record">规则配置</a-button>
                   <template v-else-if="!record.catalogPending">
                     <a-button type="link" size="small" :loading="loadingRule?.id===record.id && loadingRule.action==='view'"
                       @click="loadRuleVersion(record,'view')">查看规则</a-button>
@@ -2187,7 +2236,7 @@ function periodPullNotice(result) {
               <template #emptyText>
                 <div class="empty">
                   <a-empty :image="undefined" :description="(current==='periods' ? periodQuery || productScope : current==='orders' ? orderQuery : filter) ? '未找到匹配记录' : '暂无记录'"/>
-                  <a-button v-if="current!=='periods' && !filter && !orderQuery && !identityAccount && configurationReady && canOpenAction" @click="open(actions)">{{ titles[actions] }}</a-button>
+                  <a-button v-if="!['periods','rules'].includes(current) && !filter && !orderQuery && !identityAccount && configurationReady && canOpenAction" @click="open(actions)">{{ titles[actions] }}</a-button>
                 </div>
               </template>
             </a-table>
@@ -2503,15 +2552,18 @@ function periodPullNotice(result) {
   <CatalogPeriodRule v-if="(periodRule || appliedRule?.aggregate) && active && !sessionError && !sessionChecking && !loginRequested"
     :key="periodRule?.create ? 'create' : periodRule?.id || 'applied'"
     :rule="periodRule" :applied="appliedRule?.aggregate" :focus-item-key="appliedRule?.component"
-    :products="periodRule?.mixedArrangements ? mixedCatalogProducts : catalogPeriodProducts" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
+    :products="catalogPeriodProducts" :api="api" :format-time="formatTime" :format-money="formatMoney" :option-label="optionLabel"
     :can-review-activity="wholeWorkspace && !appliedRule?.aggregate"
     @close="periodRule=undefined; appliedRule=undefined" @published="periodRulePublished" @open-draft="openAggregateDraft"
     @copy="copyCatalogPeriodRule" @open-version="showCatalogPeriodIssueVersion" @resumed="periodRuleResumed"
     @show-order="orderDetails={versionId:$event}"/>
-  <CatalogScenarioCreate v-if="catalogScenarioCreation && active && !sessionError && !sessionChecking && !loginRequested"
-    :products="catalogScenarioProducts" :initial-product="catalogScenarioCreation.productId" :initial-sku="catalogScenarioCreation.sku" :api="api"
-    :periods="data.periods" :format-money="formatMoney"
-    @close="catalogScenarioCreation=undefined" @published="catalogScenarioPublished"/>
+  <CommonRuleEditor v-if="commonRuleEditor && active && !sessionError && !sessionChecking && !loginRequested"
+    :base-rule="commonRuleEditor.baseRule" :api="api" :people="peopleOptions" :practice-companies="options('practiceSalesCompany')"
+    :practice-categories="options('practiceSalesCategory')" :practice-context="!!practiceRulesProduct"
+    :practice-openings="data.practiceCountOpenings.map(row=>({value:row.id,label:(data.products.find(product=>product.id===row.productId)?.name || '实战班')+' · '+openingLabel(row)}))"
+    @close="commonRuleEditor=undefined" @saved="commonRuleSaved"/>
+  <PeriodRulePluginPicker v-if="periodRulePlugin" :period="periodRulePlugin" :api="api"
+    @close="periodRulePlugin=undefined" @saved="periodRulePluginSaved"/>
   <RuleVersionDetails v-if="viewedRule && active && !sessionError && !sessionChecking && !loginRequested"
     :rule="viewedRule" :can-copy="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId))"
     :can-edit-service="Boolean(ruleDetails && configurationReady && canPublishRule(viewedRule.productId) &&

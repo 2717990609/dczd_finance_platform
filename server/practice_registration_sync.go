@@ -118,26 +118,39 @@ func validRegistrationSourceID(value *string) bool {
 	return value == nil || positiveSourceID(*value) != 0
 }
 
-func syncPracticeRegistrations(ctx context.Context, conn *pgxpool.Conn, client orderFeedClient) error {
+type practiceSyncPeriod struct {
+	id  int64
+	key string
+}
+
+func readPracticeSyncPeriods(ctx context.Context, conn interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}, jobID, periodID int64) ([]practiceSyncPeriod, error) {
 	rows, err := conn.Query(ctx, `SELECT p.id,p.source_period_key
 	 FROM periods p JOIN products pro ON pro.id=p.product_id
 	 WHERE pro.period_mode='class' AND p.calendar_month IS NULL
 	  AND EXISTS(SELECT 1 FROM source_mappings m WHERE m.product_id=p.product_id AND m.source='DCZD' AND m.domain='PRACTICE'
 	   AND m.source_key IN ('1','4') AND m.source_key=split_part(p.source_period_key,':',3))
 	  AND NOT EXISTS(SELECT 1 FROM settlements s WHERE s.period_id=p.id)
-	 ORDER BY p.starts_on DESC,p.id DESC`)
+	  AND (p.id=$2 OR $2=0 AND `+periodReportMonthSQL+`>=date_trunc('month',coalesce(
+	   (SELECT started_at FROM dcai_sync_jobs WHERE id=$1),statement_timestamp()) AT TIME ZONE 'Asia/Shanghai')::date)
+	 ORDER BY p.starts_on DESC,p.id DESC`, jobID, periodID)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	type period struct {
-		id  int64
-		key string
-	}
-	periods, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (period, error) {
-		var item period
+	periods, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (practiceSyncPeriod, error) {
+		var item practiceSyncPeriod
 		err := row.Scan(&item.id, &item.key)
 		return item, err
 	})
+	if err == nil && periodID != 0 && len(periods) == 0 {
+		err = errPracticeNotReady
+	}
+	return periods, err
+}
+
+func syncPracticeRegistrations(ctx context.Context, conn *pgxpool.Conn, client orderFeedClient, jobID int64) error {
+	periods, err := readPracticeSyncPeriods(ctx, conn, jobID, 0)
 	if err != nil {
 		return err
 	}
@@ -147,16 +160,8 @@ func syncPracticeRegistrations(ctx context.Context, conn *pgxpool.Conn, client o
 			return fmt.Errorf("%w: %w", errPracticeRegistrationSync, err)
 		}
 		err = pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-			var productID int64
-			var key string
-			err := tx.QueryRow(ctx, practiceRosterPullScope+" FOR NO KEY UPDATE OF p", period.id).Scan(&productID, &key)
-			if errors.Is(err, pgx.ErrNoRows) || err == nil && key != period.key {
-				return nil
-			}
-			if err != nil {
-				return err
-			}
-			if _, err := readSettlement(ctx, tx, period.id); !errors.Is(err, pgx.ErrNoRows) {
+			eligible, err := lockSynchronizedPracticePeriod(ctx, tx, period)
+			if err != nil || !eligible {
 				return err
 			}
 			return storePracticeRegistrationSnapshot(ctx, tx, snapshot)
@@ -166,6 +171,23 @@ func syncPracticeRegistrations(ctx context.Context, conn *pgxpool.Conn, client o
 		}
 	}
 	return nil
+}
+
+func lockSynchronizedPracticePeriod(ctx context.Context, tx pgx.Tx, period practiceSyncPeriod) (bool, error) {
+	var productID int64
+	var key string
+	err := tx.QueryRow(ctx, practiceRosterPullScope+" FOR NO KEY UPDATE OF p", period.id).Scan(&productID, &key)
+	if errors.Is(err, pgx.ErrNoRows) || err == nil && key != period.key {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	_, err = readSettlement(ctx, tx, period.id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	return false, err
 }
 
 func storePracticeRegistrationSnapshot(ctx context.Context, tx pgx.Tx, snapshot practiceRegistrationSnapshot) error {

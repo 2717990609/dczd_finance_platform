@@ -1485,3 +1485,40 @@ func TestPracticePeriodBenefitsRespectAppointmentsScopeAndWholeClassTiers(t *tes
 		t.Fatal(err)
 	}
 }
+
+func TestPracticeCalculationGrainSeparatesSalesPayees(t *testing.T) {
+	base := int64(10009)
+	makeShare := func(id, person int64) practiceBenefitShare {
+		payment := paymentInput{ID: id, Fact: sourceFact{OrderID: strconv.FormatInt(id, 10), AmountMinor: &base}}
+		purchase := practicePurchase{payments: []paymentInput{payment}, base: base, gross: base, postingRounding: truncatePosting}
+		return practiceBenefitShare{purchase: purchase, payments: purchase.payments, people: []identityAssignment{{PersonID: person}},
+			key: payment.Fact.OrderID, net: base}
+	}
+	for _, tt := range []struct {
+		grain string
+		want  int64
+	}{{"payment", 3000}, {"period", 3001}} {
+		t.Run(tt.grain, func(t *testing.T) {
+			shares := []practiceBenefitShare{makeShare(1, 5), makeShare(2, 5), makeShare(3, 6)}
+			part := component{Value: 100000, PeriodBenefit: &practicePeriodBenefit{OrderRecipientRole: "SELLER", CalculationGrain: tt.grain}}
+			_, total, err := allocatePracticeCalculationGrain(part, shares, 0)
+			if err != nil || total != tt.want {
+				t.Fatalf("wanted %d for %s, got %d: %v", tt.want, tt.grain, total, err)
+			}
+		})
+	}
+}
+
+func TestPracticeUnifiedSellerUsesOnlyOrderSalesAttribution(t *testing.T) {
+	fact := sourceFact{Source: "DCZD", Domain: "PRACTICE",
+		Participants: []sourceParticipant{{Role: "DIRECT_REFERRER", UserID: "seller"}, {Role: "PID_USER", UserID: "other"}}}
+	identities := map[identityKey][]identityAssignment{{Source: "DCZD", ExternalID: "seller"}: {{PersonID: 42}}}
+	seller, issue := paymentBeneficiary(fact, "SELLER", identities)
+	if seller.PersonID != 42 || issue != "" {
+		t.Fatalf("seller %#v, issue %s", seller, issue)
+	}
+	fact.Participants = append(fact.Participants, sourceParticipant{Role: "PROFESSOR", UserID: "other"})
+	if _, issue := paymentBeneficiary(fact, "SELLER", identities); issue != "AMBIGUOUS_PARTICIPANT" {
+		t.Fatalf("conflicting sales claims returned %q", issue)
+	}
+}

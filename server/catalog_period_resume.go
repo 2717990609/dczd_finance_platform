@@ -45,6 +45,9 @@ func resumeCatalogPeriodRule(ctx context.Context, tx pgx.Tx, id string, at time.
 	if err != nil {
 		return err
 	}
+	if base.pluginBound {
+		return errPeriodRulePluginLocked
+	}
 	if !actor.permits(base.ProductID, true) {
 		return errRulePermission
 	}
