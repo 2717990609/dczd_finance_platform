@@ -29,6 +29,7 @@ INSERT INTO organization_units(id,kind,name,status,parent_id) VALUES
  ('00000000-0000-0000-0000-000000000003','COMPANY','乙公司','ACTIVE',NULL),
  ('00000000-0000-0000-0000-000000000004','DEPARTMENT','乙一部','ACTIVE','00000000-0000-0000-0000-000000000003');
 INSERT INTO people(name) VALUES('同名人员'),('同名人员');
+UPDATE organization_units SET sales_company_type='EXTERNAL' WHERE id='00000000-0000-0000-0000-000000000003';
 INSERT INTO identity_mappings(person_id,source,external_id,valid_from)
  VALUES(1,'DCAI','seller','2026-01-01'),(2,'DCZD','seller-a','2026-01-01'),(1,'DCZD','seller-b','2026-01-01');
 INSERT INTO rule_versions(product_id,version,label,components) VALUES(1,1,'会员规则','[]'),(2,1,'实战班规则','[]');
@@ -54,6 +55,7 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 	if _, err := s.db.Exec(ctx, seed); err != nil {
 		t.Fatal(err)
 	}
+
 	api := http.NewServeMux()
 	for _, route := range s.routes() {
 		api.HandleFunc(route.Method+" "+route.Path, route.Handler)
@@ -99,6 +101,18 @@ INSERT INTO settlements(period_id,draft_version,confirmed_by) VALUES(1,1,'fixtur
 			t.Fatalf("%s did not retain the refund's original organization: %+v", dimension, got.Items)
 		}
 	}
+	internal := get("view=current&dimension=company&scope=INTERNAL", http.StatusOK)
+	if internal.CommissionMinor != 4000 || internal.PerformanceMinor == nil || *internal.PerformanceMinor != 40000 ||
+		len(internal.Items) != 1 || internal.Items[0].Name != "甲公司" || len(internal.Periods) != 2 {
+		t.Fatalf("internal report mixed organizations or periods: %+v", internal)
+	}
+	external := get("view=current&dimension=department&scope=EXTERNAL&productId=2", http.StatusOK)
+	if external.CommissionMinor != -500 || external.PerformanceMinor == nil || *external.PerformanceMinor != -5000 ||
+		len(external.Items) != 1 || external.Items[0].Name != "乙一部" || len(external.Periods) != 1 || external.Periods[0].ID != 4 {
+		t.Fatalf("external report lost the booked refund or included other periods: %+v", external)
+	}
+	get("view=current&dimension=company&scope=EXTERNAL&snapshot="+internal.Snapshot, http.StatusConflict)
+	get("view=current&dimension=company&scope=UNKNOWN", http.StatusBadRequest)
 	personal := get("view=current&dimension=person&personId=1", http.StatusOK)
 	if personal.CommissionMinor != 4000 || len(personal.Items) != 1 || personal.Items[0].ID != "1" ||
 		personal.PerformanceMinor == nil || *personal.PerformanceMinor != 40000 || len(personal.Periods) != 2 {

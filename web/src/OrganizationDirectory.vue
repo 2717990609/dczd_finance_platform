@@ -15,7 +15,7 @@ import OrganizationHealthConflicts from './OrganizationHealthConflicts.vue'
 import OrganizationDuties from './OrganizationDuties.vue'
 import OrganizationPositions from './OrganizationPositions.vue'
 import WorkspaceOrganizationScope from './WorkspaceOrganizationScope.vue'
-import { organizationTree } from './organization-tree'
+import { organizationScopeOptions, organizationTree } from './organization-tree'
 
 const props = defineProps({api:Function, optionLabel:Function, formatTime:Function, canWrite:Boolean, appointmentKinds:Array,
   catalogRoles:Array,catalogScopes:Array,personLink:Function,panel:String,viewingPerson:Boolean,requestedCompanyId:String})
@@ -53,12 +53,7 @@ let unitRequest = 0
 let searchTimer
 
 const kindLabel = kind => props.optionLabel('organizationKind',kind)
-const scopeOptions = [
-  { value:'', label:'全部', allLabel:'全部组织' },
-  { value:'INTERNAL', label:'内部', allLabel:'全部内部组织' },
-  { value:'EXTERNAL', label:'外部', allLabel:'全部外部组织' },
-]
-const allLabel = computed(() => scopeOptions.find(option=>option.value===directoryScope.value).allLabel)
+const allLabel = computed(() => organizationScopeOptions.find(option=>option.value===directoryScope.value).allLabel)
 const visibleUnits = computed(() => directoryScope.value
   ? units.value.filter(unit=>unit.directoryScope===directoryScope.value)
   : units.value)
@@ -226,7 +221,7 @@ defineExpose({refresh})
             </a-button>
           </a-space>
         </div>
-        <RadioGroup class="organization-scope-filter" :value="directoryScope" :options="scopeOptions"
+        <RadioGroup class="organization-scope-filter" :value="directoryScope" :options="organizationScopeOptions"
           name="organization-directory-scope" role="radiogroup" aria-label="组织内外部筛选"
           option-type="button" button-style="solid" @update:value="selectScope"/>
         <WorkspaceOrganizationScope :nodes="tree" :selected="unitId" :loading="unitsLoading" :all-label="allLabel" fill-height

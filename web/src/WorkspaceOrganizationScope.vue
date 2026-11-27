@@ -1,11 +1,14 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { Tree, TreeSelect } from 'ant-design-vue'
+import { RadioGroup, Tree, TreeSelect } from 'ant-design-vue'
+import { organizationScopeOptions } from './organization-tree'
 
 const props = defineProps({ nodes: Array, selected: String, loading: Boolean, fillHeight: Boolean, hideSearchLabel: Boolean,
   allLabel: { type:String, default:'全部组织' },
+  directoryScope: String,
 })
-const emit = defineEmits(['select'])
+const emit = defineEmits(['select','select-scope'])
+const scopeLabel = computed(() => organizationScopeOptions.find(option => option.value===props.directoryScope)?.allLabel || props.allLabel)
 const treeViewport = ref()
 const treeHeight = ref(264)
 const search = ref('')
@@ -63,10 +66,13 @@ watch(treeViewport, (viewport, _, onCleanup) => {
 <template>
   <section class="scope-organization desktop-scope" aria-label="组织范围">
     <label v-if="!hideSearchLabel" for="workspace-organization-search" class="scope-title">组织范围</label>
+    <RadioGroup v-if="directoryScope!==undefined" class="scope-type-filter" :value="directoryScope"
+      :options="organizationScopeOptions" name="workspace-scope-desktop" role="radiogroup" aria-label="组织内外部筛选"
+      option-type="button" button-style="solid" @update:value="emit('select-scope',$event)"/>
     <a-input id="workspace-organization-search" v-model:value="search" aria-label="搜索组织"
       placeholder="搜索公司、部门或小组" allow-clear />
     <div class="scope-options">
-      <button type="button" :aria-pressed="!selected" @click="emit('select', undefined)">{{allLabel}}</button>
+      <button type="button" :aria-pressed="!selected" @click="emit('select', undefined)">{{scopeLabel}}</button>
     </div>
     <div v-if="visibleNodes.length" ref="treeViewport" class="scope-tree-viewport">
       <Tree v-model:expanded-keys="expandedKeys" :selected-keys="selected ? [selected] : []"
@@ -77,10 +83,20 @@ watch(treeViewport, (viewport, _, onCleanup) => {
     </div>
     <p v-else class="organization-scope-status" role="status">{{ loading ? '正在读取组织' : term ? '未找到匹配组织' : '暂无组织' }}</p>
   </section>
+  <div v-if="directoryScope!==undefined" class="mobile-scope">
+    <RadioGroup class="scope-type-filter" :value="directoryScope" :options="organizationScopeOptions"
+      name="workspace-scope-mobile" role="radiogroup" aria-label="组织内外部筛选"
+      option-type="button" button-style="solid" @update:value="emit('select-scope',$event)"/>
+  </div>
   <div class="scope-organization mobile-scope">
     <label for="workspace-organization">组织范围</label>
     <TreeSelect id="workspace-organization" :value="selected" :tree-data="nodes" :loading="loading"
-      aria-label="组织范围" :placeholder="allLabel" tree-node-filter-prop="title" show-search allow-clear
+      aria-label="组织范围" :placeholder="scopeLabel" tree-node-filter-prop="title" show-search allow-clear
       @change="emit('select', $event)" />
   </div>
 </template>
+
+<style scoped>
+.scope-type-filter {display:flex;width:100%;margin-bottom:8px}
+.scope-type-filter :deep(.ant-radio-button-wrapper) {flex:1;min-width:0;padding-inline:6px;text-align:center}
+</style>

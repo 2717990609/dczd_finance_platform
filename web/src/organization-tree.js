@@ -1,3 +1,9 @@
+export const organizationScopeOptions = [
+  { value:'', label:'全部', allLabel:'全部组织' },
+  { value:'INTERNAL', label:'内部', allLabel:'全部内部组织' },
+  { value:'EXTERNAL', label:'外部', allLabel:'全部外部组织' },
+]
+
 export function organizationTree(units, label, activeOnly = false) {
   const nodes = new Map(units.map(unit => [unit.id, {
     value:unit.id,

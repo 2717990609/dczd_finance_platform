@@ -1,9 +1,10 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RadioGroup } from 'ant-design-vue'
+import { organizationScopeOptions } from './organization-tree'
 
 const props = defineProps({ api:Function, formatMoney:Function, productId:Number, views:Array, dimensions:Array,
-  unitId:String, unitName:String, month:String, resume:Object, units:Array, personId:Number, periodLink:Function })
+  unitId:String, unitName:String, month:String, resume:Object, units:Array, personId:Number, periodLink:Function, directoryScope:String })
 const emit = defineEmits(['select-unit'])
 const month = computed(() => props.month)
 const view = defineModel('view', {type:String})
@@ -17,6 +18,8 @@ const error = ref('')
 let sequence = 0
 
 const dimensionLabel = computed(() => props.dimensions.find(option => option.value === dimension.value)?.label)
+const allOrganizationsLabel = computed(() =>
+  organizationScopeOptions.find(option => option.value===props.directoryScope)?.allLabel || '全部组织')
 const unitIds = computed(() => new Set(props.units?.map(unit=>unit.id)))
 const columns = computed(() => [
   {title:dimensionLabel.value,dataIndex:'name',key:'name',width:135},
@@ -56,6 +59,7 @@ async function load() {
   const params = new URLSearchParams({month:month.value,view:view.value,dimension:dimension.value,page:page.value})
   if (props.productId) params.set('productId',props.productId)
   if (props.unitId) params.set('unitId',props.unitId)
+  if (props.directoryScope) params.set('scope',props.directoryScope)
   if (props.personId) params.set('personId',props.personId)
   if (snapshot.value) params.set('snapshot',snapshot.value)
   try {
@@ -95,11 +99,11 @@ watch(() => props.views, choices => {
 watch(() => props.dimensions, choices => {
   if (!choices.some(option => option.value===dimension.value)) dimension.value = choices[0]?.value
 }, {immediate:true})
-watch([month,view,() => props.productId,() => props.unitId,dimension], (values, previous) => {
+watch([month,view,() => props.productId,() => props.unitId,() => props.directoryScope,dimension], (values, previous) => {
   report.value = undefined
   if (!previous.length && props.resume) {
     load()
-  } else if (values.slice(0,4).some((value,index) => value!==previous[index])) {
+  } else if (values.slice(0,5).some((value,index) => value!==previous[index])) {
     refresh()
   } else {
     page.value = 1
@@ -125,7 +129,7 @@ defineExpose({refresh,browseState})
       </div>
       <div v-if="unitName" class="topbar-actions">
         <span class="monthly-scope">组织范围 · {{ unitName }}</span>
-        <a-button type="link" size="small" @click="emit('select-unit',undefined)">恢复全部组织</a-button>
+        <a-button type="link" size="small" @click="emit('select-unit',undefined)">恢复{{ allOrganizationsLabel }}</a-button>
       </div>
     </div>
   </section>

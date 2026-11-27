@@ -58,12 +58,14 @@ const organizationAssignmentsSQL = `WITH RECURSIVE ` + organizationDirectoryScop
  SELECT jsonb_build_object('total',(SELECT count(*) FROM matching),
   'items',coalesce((SELECT jsonb_agg(to_jsonb(page) ORDER BY "nameNeedsReview","personName","validFrom" DESC,id) FROM page),'[]'))`
 
+func validOrganizationDirectoryScope(scope string) bool {
+	return scope == "" || scope == "INTERNAL" || scope == "EXTERNAL"
+}
+
 func (s workspace) organizationAssignments(w http.ResponseWriter, r *http.Request) {
 	params := r.URL.Query()
 	scope := params.Get("scope")
-	switch scope {
-	case "", "INTERNAL", "EXTERNAL":
-	default:
+	if !validOrganizationDirectoryScope(scope) {
 		respond(w, nil, invalid)
 		return
 	}

@@ -140,6 +140,8 @@ const configProductScope = ref()
 const ruleBusinessScope = ref()
 const activeRuleComponent = ref(0)
 const unitScope = ref()
+const monthlyOrganizationScope = ref('')
+const workbenchOrganizationScope = computed(() => current.value==='monthly' ? monthlyOrganizationScope.value : undefined)
 const usesOrganizationScope = computed(() => ['orders','settlement','monthly','retention'].includes(current.value))
 const scopeSearch = ref('')
 const configProductPages = new Set(['products','periods','rules','pool-config'])
@@ -247,7 +249,11 @@ const options = group => configuration.value[group] || []
 const firstOption = group => options(group)[0]?.value
 const optionLabel = (group, value) => options(group).find(option => option.value === value)?.label || value
 const orderRoleLabel = role => role==='SALES_COMPANY' ? '销售公司' : optionLabel('orderAttributionRole',role)
-const scopeTree = computed(() => organizationTree(scopeUnits.value || [],kind=>optionLabel('organizationKind',kind)))
+const scopeTree = computed(() => {
+  const units = scopeUnits.value || []
+  const scope = workbenchOrganizationScope.value
+  return organizationTree(scope ? units.filter(unit=>unit.directoryScope===scope) : units,kind=>optionLabel('organizationKind',kind))
+})
 const sources = computed(() => options('source'))
 const classMembers = computed(() => options('classMember').map(option=>option.value ? option : {...option,label:'新报和复训'}))
 const practiceActivityTypes = computed(() => options('practiceActivityType').map(option=>({...option,value:Number(option.value)})))
@@ -1106,6 +1112,7 @@ function clearWorkspace() {
   workProductScope.value = undefined
   configProductScope.value = undefined
   unitScope.value = undefined
+  monthlyOrganizationScope.value = ''
   scopeUnits.value = undefined
   lastWorkspacePages.value = {}
   current.value = undefined
@@ -1278,6 +1285,10 @@ function selectOrganization(unit) {
   if (unitScope.value === unit) return
   unitScope.value = unit
   if (current.value === 'orders') resetOrders()
+}
+function selectMonthlyOrganizationScope(scope) {
+  monthlyOrganizationScope.value = scope
+  if (scope && unitScope.value && selectedUnit.value?.directoryScope!==scope) selectOrganization()
 }
 function selectProduct(product) {
   if (productScope.value===product) return
@@ -1859,7 +1870,8 @@ function periodPullNotice(result) {
       <aside v-if="showScope" class="scope-panel" aria-label="筛选范围">
         <h2>范围</h2>
         <WorkspaceOrganizationScope v-if="usesOrganizationScope" :selected="unitScope" :nodes="scopeTree"
-          :loading="loading && !scopeUnits" @select="selectOrganization" />
+          :loading="loading && !scopeUnits" :directory-scope="workbenchOrganizationScope"
+          @select="selectOrganization" @select-scope="selectMonthlyOrganizationScope" />
         <template v-if="usesProductScope">
           <label for="scope-product-search" class="desktop-scope scope-title">产品范围</label>
           <div class="desktop-scope">
@@ -1958,7 +1970,7 @@ function periodPullNotice(result) {
           <a-alert v-if="globalError" class="feedback" type="error" :message="globalError" show-icon/>
           <MonthlyReport ref="monthlyReport" :month="workspaceMonth" v-model:view="monthlyView" v-model:dimension="monthlyDimension"
             :api="api" :format-money="formatMoney" :product-id="productScope" :unit-id="unitScope" :unit-name="selectedUnit?.name"
-            :resume="monthlyResume" :units="scopeUnits"
+            :resume="monthlyResume" :units="scopeUnits" :directory-scope="monthlyOrganizationScope"
             :views="options('monthlyReportView')" :dimensions="options('draftReportDimension')" @select-unit="selectOrganization"/>
         </template>
         <template v-else-if="current==='pools'">

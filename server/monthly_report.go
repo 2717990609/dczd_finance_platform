@@ -16,7 +16,9 @@ const periodReportMonthSQL = `coalesce(p.report_month,p.calendar_month,date_trun
 
 // Read exactly one current or confirmed result per registered scope. Monetary
 // rows still come from the same postings used by the single-period report.
-var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, scopes AS MATERIALIZED (
+var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, ` + organizationDirectoryScopes + `, directory_matches AS MATERIALIZED (
+ SELECT id FROM directory_scopes WHERE scope=$9
+), scopes AS MATERIALIZED (
  SELECT p.id AS period_id,pro.name AS product_name,p.name,p.starts_on,p.ends_on,
   CASE WHEN p.aggregate_package_id IS NOT NULL THEN 'aggregate' WHEN pro.period_mode='calendar' THEN 'calendar'
    WHEN p.calendar_month IS NOT NULL THEN 'refund_month' ELSE 'class' END AS kind,
@@ -34,11 +36,13 @@ var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, sco
  SELECT period_id,version,performance_ready FROM scopes WHERE version IS NOT NULL
 ), current_pool_allocations AS MATERIALIZED (` + currentReportPoolAllocationsSQL + `
 ), stamp AS (
- SELECT md5(jsonb_build_array($1::date,$2::bigint,$3::text,{{unit}},$8::bigint,
+ SELECT md5((jsonb_build_array($1::date,$2::bigint,$3::text,{{unit}},$8::bigint,
   (SELECT array_agg(id ORDER BY id) FROM organization_scope),
   (SELECT jsonb_agg(jsonb_build_array(period_id,product_name,name,starts_on,ends_on,version,calculated_at,issue_count,settlement_id,generation)
    ORDER BY period_id) FROM scopes),
-  (SELECT jsonb_agg(jsonb_build_array(id,revision) ORDER BY id) FROM current_pool_allocations))::text) AS snapshot
+  (SELECT jsonb_agg(jsonb_build_array(id,revision) ORDER BY id) FROM current_pool_allocations))
+  || CASE WHEN $9='' THEN '[]'::jsonb ELSE jsonb_build_array($9::text,(SELECT array_agg(id ORDER BY id) FROM directory_matches)) END
+ )::text) AS snapshot
 ), performance_events AS MATERIALIZED (
  SELECT d.period_id,v.source,v.fact->>'domain' AS domain,v.kind,v.line_id,
   coalesce(nullif(CASE WHEN a.payment_version_id IS NULL THEN v.fact->>'paymentId' ELSE v.fact->>'refundId' END,''),'') AS financial_id,
@@ -70,6 +74,7 @@ var monthlyReportTemplateSQL = `WITH RECURSIVE ` + organizationScopeCTE + `, sco
  FROM performance_groups CROSS JOIN coverage WHERE coverage.performance_ready
 ), scoped_postings AS (
  SELECT * FROM postings WHERE (` + reportInOrganization + `) AND ($8::bigint IS NULL OR person_id=$8)
+ AND ($9='' OR coalesce(company_id,department_id,group_id) IN (SELECT id FROM directory_matches))
 ), period_amounts AS (
  SELECT period_id,sum(amount_minor+refund+correction+allocation) AS commission FROM scoped_postings GROUP BY period_id
 ), matching AS (
@@ -111,11 +116,11 @@ SELECT jsonb_build_object('snapshot',stamp.snapshot,'total',(SELECT count(*) FRO
  'personPerformancePending',$8::bigint IS NOT NULL AND NOT coverage.performance_ready
   AND EXISTS(SELECT 1 FROM performance_events WHERE person_id=$8),
  'periods',coalesce((SELECT jsonb_agg(jsonb_build_object('id',period_id,'productName',product_name,
-  'name',name,'startsOn',starts_on,'endsOn',ends_on,'kind',kind,'version',version,'commissionMinor',CASE WHEN {{unit}} IS NULL AND $8::bigint IS NULL THEN scopes.commission ELSE period_amounts.commission END,'issueCount',issue_count,
+  'name',name,'startsOn',starts_on,'endsOn',ends_on,'kind',kind,'version',version,'commissionMinor',CASE WHEN {{unit}} IS NULL AND $8::bigint IS NULL AND $9='' THEN scopes.commission ELSE period_amounts.commission END,'issueCount',issue_count,
   'status',CASE WHEN settlement_id IS NOT NULL THEN 'SETTLED' WHEN version IS NULL THEN 'NOT_CALCULATED'
    WHEN generation IS NOT NULL THEN 'PENDING' WHEN issue_count>0 THEN 'NEEDS_REVIEW' ELSE 'DRAFT' END)
   ORDER BY product_name,ends_on,period_id) FROM scopes LEFT JOIN period_amounts USING(period_id)
-  WHERE ({{unit}} IS NULL AND $8::bigint IS NULL) OR period_amounts.period_id IS NOT NULL),'[]'),
+  WHERE ({{unit}} IS NULL AND $8::bigint IS NULL AND $9='') OR period_amounts.period_id IS NOT NULL),'[]'),
  'items',coalesce((SELECT jsonb_agg(to_jsonb(labeled) ORDER BY "performanceMinor" DESC,"totalMinor" DESC,id) FROM labeled),'[]'))
 FROM stamp CROSS JOIN coverage WHERE $6='' OR stamp.snapshot=$6`
 
@@ -167,8 +172,8 @@ func (s workspace) setPeriodReportMonth(ctx context.Context, input periodReportM
 func (s workspace) monthlyReport(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	month, err := parseReportMonth(query.Get("month"))
-	view, dimension := query.Get("view"), query.Get("dimension")
-	if err != nil || view != "current" && view != "settled" || !validReportDimension(dimension) {
+	view, dimension, scope := query.Get("view"), query.Get("dimension"), query.Get("scope")
+	if err != nil || view != "current" && view != "settled" || !validReportDimension(dimension) || !validOrganizationDirectoryScope(scope) {
 		respond(w, nil, invalid)
 		return
 	}
@@ -209,7 +214,7 @@ func (s workspace) monthlyReport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), scopedMonthlyReportSQL, month, product, view, dimension, offset, snapshot, unit, personID).Scan(&result)
+	err = s.db.QueryRow(r.Context(), scopedMonthlyReportSQL, month, product, view, dimension, offset, snapshot, unit, personID, scope).Scan(&result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		err = conflict
 	}
