@@ -19,14 +19,25 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const organizationUnitsSQL = `SELECT coalesce(jsonb_agg(jsonb_build_object(
+// Sales companies carry an explicit type. Ordinary organization roots are internal,
+// and their descendants inherit the nearest explicit type, including UNKNOWN.
+const organizationDirectoryScopes = `directory_scopes(id,scope) AS (
+ SELECT id,coalesce(sales_company_type,'INTERNAL') FROM organization_units WHERE parent_id IS NULL
+ UNION ALL
+ SELECT u.id,coalesce(u.sales_company_type,p.scope) FROM organization_units u JOIN directory_scopes p ON p.id=u.parent_id
+)`
+
+const organizationUnitsSQL = `WITH RECURSIVE ` + organizationDirectoryScopes + `
+ SELECT coalesce(jsonb_agg(jsonb_build_object(
  'id',u.id,'parentId',u.parent_id,'name',u.name,'kind',u.kind,'status',u.status,
+ 'directoryScope',coalesce(scope.scope,'UNKNOWN'),
  'companyType',u.sales_company_type,'salesParentId',coalesce(parent_key.unit_id,u.parent_id))
  ORDER BY u.sort_order,u.name,u.id),'[]') FROM organization_units u
+ LEFT JOIN directory_scopes scope ON scope.id=u.id
  LEFT JOIN organization_dispatch_company_keys k ON k.unit_id=u.id
  LEFT JOIN organization_dispatch_company_keys parent_key ON parent_key.wire_id=k.parent_wire_id`
 
-const organizationAssignmentsSQL = `WITH RECURSIVE branches AS (
+const organizationAssignmentsSQL = `WITH RECURSIVE ` + organizationDirectoryScopes + `, branches AS (
  SELECT $1::uuid AS id WHERE $1 IS NOT NULL
  UNION
  SELECT u.id FROM organization_units u JOIN branches b ON b.id=u.parent_id WHERE $6
@@ -37,6 +48,7 @@ const organizationAssignmentsSQL = `WITH RECURSIVE branches AS (
   a.kind,a.position,a.appointment_type AS "appointmentType",a.valid_from AS "validFrom",a.valid_to AS "validTo"
  FROM organization_assignments a JOIN people p ON p.id=a.person_id JOIN organization_units u ON u.id=a.unit_id
  WHERE ($1::uuid IS NULL OR a.unit_id IN (SELECT id FROM branches)) AND
+  ($7='' OR a.unit_id IN (SELECT id FROM directory_scopes WHERE scope=$7)) AND
   ($2::timestamptz IS NULL OR (a.valid_from<=$2 AND (a.valid_to IS NULL OR a.valid_to>$2))) AND
   ($3='' OR p.id::text=$3 OR strpos(lower(p.name),lower($3))>0) AND
   ($5::bigint IS NULL OR a.person_id=$5)
@@ -48,6 +60,13 @@ const organizationAssignmentsSQL = `WITH RECURSIVE branches AS (
 
 func (s workspace) organizationAssignments(w http.ResponseWriter, r *http.Request) {
 	params := r.URL.Query()
+	scope := params.Get("scope")
+	switch scope {
+	case "", "INTERNAL", "EXTERNAL":
+	default:
+		respond(w, nil, invalid)
+		return
+	}
 	var unitID pgtype.UUID
 	includeChildren := params.Get("includeChildren")
 	if includeChildren != "" && includeChildren != "true" {
@@ -73,7 +92,7 @@ func (s workspace) organizationAssignments(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	var result json.RawMessage
-	err = s.db.QueryRow(r.Context(), organizationAssignmentsSQL, unitID, at, name, offset, personID, includeChildren == "true").Scan(&result)
+	err = s.db.QueryRow(r.Context(), organizationAssignmentsSQL, unitID, at, name, offset, personID, includeChildren == "true", scope).Scan(&result)
 	respond(w, result, err)
 }
 

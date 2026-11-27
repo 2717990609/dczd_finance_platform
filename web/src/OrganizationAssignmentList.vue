@@ -1,4 +1,5 @@
 <script setup>
+import { Pagination } from 'ant-design-vue'
 import PersonAppointmentActions from './PersonAppointmentActions.vue'
 
 defineProps({rows:Object,loading:Boolean,emptyMessage:String,canWrite:Boolean,page:Number,
@@ -38,7 +39,7 @@ defineEmits(['page','edit'])
   </ul>
   <p v-else-if="!loading && emptyMessage" class="assignment-empty" role="status">{{emptyMessage}}</p>
   <div v-if="rows.total>25" class="assignment-footer">
-   <a-pagination :current="page" :total="rows.total" :page-size="25" :show-size-changer="false" @change="$emit('page',$event)"/>
+   <Pagination :current="page" :total="rows.total" :page-size="25" :show-size-changer="false" @change="$emit('page',$event)"/>
   </div>
  </a-spin>
 </template>

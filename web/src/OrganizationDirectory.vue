@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import { RadioGroup } from 'ant-design-vue'
 import OrganizationDispatchCreateUnit from './OrganizationDispatchCreateUnit.vue'
 import OrganizationDispatchUnit from './OrganizationDispatchUnit.vue'
 import AppointmentDateFilter from './AppointmentDateFilter.vue'
@@ -21,6 +22,7 @@ const props = defineProps({api:Function, optionLabel:Function, formatTime:Functi
 const emit = defineEmits(['update:panel','position-changed','close-company'])
 const units = ref([])
 const unitId = ref()
+const directoryScope = ref('')
 const name = ref('')
 const search = ref('')
 const on = ref('')
@@ -33,7 +35,7 @@ const loading = ref(false)
 const unitsLoading = ref(false)
 const editor = ref()
 const dispatchUnit=ref(),createUnit=ref(false)
-async function savedUnit(id){createUnit.value=false;await loadUnits();unitId.value=id}
+async function savedUnit(id){createUnit.value=false;await loadUnits();revealOrganization(id)}
 onDeactivated(()=>{dispatchUnit.value=undefined;createUnit.value=false})
 watch(()=>props.panel,()=>{dispatchUnit.value=undefined;createUnit.value=false})
 const positionsOpen = ref(false)
@@ -51,11 +53,20 @@ let unitRequest = 0
 let searchTimer
 
 const kindLabel = kind => props.optionLabel('organizationKind',kind)
-const tree = computed(() => organizationTree(units.value,kindLabel))
+const scopeOptions = [
+  { value:'', label:'全部', allLabel:'全部组织' },
+  { value:'INTERNAL', label:'内部', allLabel:'全部内部组织' },
+  { value:'EXTERNAL', label:'外部', allLabel:'全部外部组织' },
+]
+const allLabel = computed(() => scopeOptions.find(option=>option.value===directoryScope.value).allLabel)
+const visibleUnits = computed(() => directoryScope.value
+  ? units.value.filter(unit=>unit.directoryScope===directoryScope.value)
+  : units.value)
+const tree = computed(() => organizationTree(visibleUnits.value,kindLabel))
 const appointmentTree = computed(() => organizationTree(units.value,kindLabel,true))
 const includeChildren = ref(true)
 const selectedUnit = computed(() => units.value.find(unit=>unit.id===unitId.value))
-const hasChildren = computed(() => !!unitId.value && units.value.some(unit=>unit.parentId===unitId.value))
+const hasChildren = computed(() => !!unitId.value && visibleUnits.value.some(unit=>unit.parentId===unitId.value))
 const waitingForDate = computed(() => dateMode.value==='date' && !on.value)
 const emptyMessage = computed(() => {
   if (entriesError.value) return ''
@@ -79,7 +90,10 @@ async function loadUnits() {
   unitsLoading.value = true
   try {
     const rows = await props.api('/organization-units')
-    if (version === unitRequest) units.value = rows
+    if (version === unitRequest) {
+      units.value = rows
+      if (directoryScope.value && unitId.value && !visibleUnits.value.some(unit=>unit.id===unitId.value)) selectOrganization()
+    }
   } catch (error) {
     if (version === unitRequest) unitsError.value = error.message
   } finally {
@@ -97,6 +111,7 @@ async function loadEntries() {
   }
   loading.value = true
   const params = new URLSearchParams({page:page.value})
+  if (directoryScope.value) params.set('scope',directoryScope.value)
   if (unitId.value) {
     params.set('unitId',unitId.value)
     if (hasChildren.value && includeChildren.value) params.set('includeChildren','true')
@@ -130,8 +145,16 @@ function selectOrganization(id) {
   if(unitId.value!==id)notice.value=''
   unitId.value=id
 }
-function showCompanyAppointments(id) {
+function selectScope(scope) {
+  directoryScope.value = scope
+  if (unitId.value && !visibleUnits.value.some(unit=>unit.id===unitId.value)) selectOrganization()
+}
+function revealOrganization(id) {
+  if (directoryScope.value && !visibleUnits.value.some(unit=>unit.id===id)) directoryScope.value = ''
   selectOrganization(id)
+}
+function showCompanyAppointments(id) {
+  revealOrganization(id)
   emit('update:panel','organization')
 }
 function showDuties(subject) {
@@ -164,7 +187,7 @@ watch(name,value=>{
   if(!value.trim())searchPeople()
   else searchTimer=setTimeout(searchPeople,220)
 })
-watch([unitId,hasChildren,includeChildren,on,dateMode,search],filterEntries)
+watch([unitId,directoryScope,hasChildren,includeChildren,on,dateMode,search],filterEntries)
 onMounted(() => { loadUnits(); loadEntries() })
 onBeforeUnmount(() => { clearTimeout(searchTimer); request++; unitRequest++ })
 defineExpose({refresh})
@@ -203,13 +226,16 @@ defineExpose({refresh})
             </a-button>
           </a-space>
         </div>
-        <WorkspaceOrganizationScope :nodes="tree" :selected="unitId" :loading="unitsLoading" fill-height
+        <RadioGroup class="organization-scope-filter" :value="directoryScope" :options="scopeOptions"
+          name="organization-directory-scope" role="radiogroup" aria-label="组织内外部筛选"
+          option-type="button" button-style="solid" @update:value="selectScope"/>
+        <WorkspaceOrganizationScope :nodes="tree" :selected="unitId" :loading="unitsLoading" :all-label="allLabel" fill-height
           hide-search-label @select="selectOrganization"/>
       </aside>
       <section class="records organization-directory" aria-label="人员任职">
         <header class="organization-directory-header">
           <div class="organization-heading">
-            <h2>{{selectedUnit?.name || '全部组织'}}</h2>
+            <h2>{{selectedUnit?.name || allLabel}}</h2>
             <a-tag v-if="selectedUnit?.status==='INACTIVE'" class="organization-inactive">已停用</a-tag>
             <span v-if="!loading && !entriesError && !waitingForDate" class="organization-count" role="status">{{entries.total}} 条任职</span>
           </div>
@@ -253,6 +279,8 @@ defineExpose({refresh})
 .organization-tree-actions > span {color:var(--ink);font-weight:650;white-space:nowrap}
 .organization-tree-actions .ant-btn {color:var(--accent);padding-inline:4px}
 .organization-tree-actions .organization-positions-link {color:var(--muted)}
+.organization-scope-filter {display:flex;margin-bottom:8px}
+.organization-scope-filter :deep(.ant-radio-button-wrapper) {flex:1;min-width:0;padding-inline:8px;text-align:center}
 .organization-directory-header {display:flex;justify-content:space-between;align-items:center;gap:10px 14px;flex-wrap:wrap;padding:14px 16px 9px}
 .organization-directory-header h2 {font-size:18px;margin:0;overflow-wrap:anywhere}
 .organization-inactive {margin-inline-end:0}
@@ -262,7 +290,7 @@ defineExpose({refresh})
 .organization-filterbar :deep(.ant-checkbox-wrapper) {min-height:34px;align-items:center}
 .organization-filterbar > .ant-btn-link {padding-inline:0}
 @media(width>820px){
- .organization-scope {position:sticky;top:12px;display:grid;grid-template-rows:auto minmax(0,1fr);height:max(340px,calc(100dvh - 202px))}
+ .organization-scope {position:sticky;top:12px;display:grid;grid-template-rows:auto auto minmax(0,1fr);height:max(340px,calc(100dvh - 202px))}
  .organization-scope :deep(.desktop-scope) {display:flex;flex-direction:column;margin-bottom:0;padding-bottom:0;border-bottom:0}
  .organization-scope :deep(.scope-tree-viewport) {flex:1;min-height:0;contain:size}
  .organization-scope :deep(.ant-tree-list-holder) {padding-inline-end:10px}
@@ -282,6 +310,7 @@ defineExpose({refresh})
 @media(max-width:680px){
  .organization-scope {padding:10px 12px}
  .organization-tree-actions {margin-bottom:8px}
+ .organization-scope-filter :deep(.ant-radio-button-wrapper) {height:40px;line-height:38px}
  .organization-filterbar > .ant-input-affix-wrapper {width:100%;flex-basis:100%}
  .organization-directory-header :deep(.ant-btn) {min-height:38px}
 }

@@ -2,7 +2,9 @@
 import { computed, ref, watch } from 'vue'
 import { Tree, TreeSelect } from 'ant-design-vue'
 
-const props = defineProps({ nodes: Array, selected: String, loading: Boolean, fillHeight: Boolean, hideSearchLabel: Boolean })
+const props = defineProps({ nodes: Array, selected: String, loading: Boolean, fillHeight: Boolean, hideSearchLabel: Boolean,
+  allLabel: { type:String, default:'全部组织' },
+})
 const emit = defineEmits(['select'])
 const treeViewport = ref()
 const treeHeight = ref(264)
@@ -64,7 +66,7 @@ watch(treeViewport, (viewport, _, onCleanup) => {
     <a-input id="workspace-organization-search" v-model:value="search" aria-label="搜索组织"
       placeholder="搜索公司、部门或小组" allow-clear />
     <div class="scope-options">
-      <button type="button" :aria-pressed="!selected" @click="emit('select', undefined)">全部组织</button>
+      <button type="button" :aria-pressed="!selected" @click="emit('select', undefined)">{{allLabel}}</button>
     </div>
     <div v-if="visibleNodes.length" ref="treeViewport" class="scope-tree-viewport">
       <Tree v-model:expanded-keys="expandedKeys" :selected-keys="selected ? [selected] : []"
@@ -78,7 +80,7 @@ watch(treeViewport, (viewport, _, onCleanup) => {
   <div class="scope-organization mobile-scope">
     <label for="workspace-organization">组织范围</label>
     <TreeSelect id="workspace-organization" :value="selected" :tree-data="nodes" :loading="loading"
-      aria-label="组织范围" placeholder="全部组织" tree-node-filter-prop="title" show-search allow-clear
+      aria-label="组织范围" :placeholder="allLabel" tree-node-filter-prop="title" show-search allow-clear
       @change="emit('select', $event)" />
   </div>
 </template>
